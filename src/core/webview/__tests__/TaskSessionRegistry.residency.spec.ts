@@ -11,7 +11,7 @@ import type { Task } from "../../task/Task"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 
 const task = (taskId: string, taskKind: Task["taskKind"] = "subagent"): Task =>
-	({ taskId, taskKind, taskStatus: TaskStatus.Idle, clineMessages: [], isStreaming: false }) as unknown as Task
+	({ taskId, taskKind, taskStatus: TaskStatus.Idle, alphaMessages: [], isStreaming: false }) as unknown as Task
 
 const snapshot = (taskId: string): AgentLifecycleSnapshot =>
 	agentLifecycleSnapshotSchema.parse({

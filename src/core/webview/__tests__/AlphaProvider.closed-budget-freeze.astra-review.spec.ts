@@ -28,7 +28,7 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		taskId: "parent-1",
 		taskKind: "primary",
 		metadata: { task: "parent" },
-		clineMessages: [] as Array<{ subagentGroup: SubagentGroupState }>,
+		alphaMessages: [] as Array<{ subagentGroup: SubagentGroupState }>,
 		apiConversationHistory: [],
 		cwd: "F:/workspace",
 		historyWorkspacePath: "F:/workspace",
@@ -45,10 +45,10 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		emit: vi.fn(),
 		say: vi.fn(async () => undefined),
 		upsertSubagentGroup: vi.fn(async (group: SubagentGroupState) => {
-			const old = parent.clineMessages.findIndex((message) => message.subagentGroup.groupId === group.groupId)
+			const old = parent.alphaMessages.findIndex((message) => message.subagentGroup.groupId === group.groupId)
 			const message = { subagentGroup: structuredClone(group) }
-			if (old < 0) parent.clineMessages.push(message)
-			else parent.clineMessages[old] = message
+			if (old < 0) parent.alphaMessages.push(message)
+			else parent.alphaMessages[old] = message
 		}),
 	}
 	const runner: InternalTaskRunner = async (envelope) => ({
@@ -126,7 +126,7 @@ const reloadHarness = async (
 	const reloaded = makeHarness(settings, await previous.persistence.read())
 	await reloaded.ready
 	for (const [id, item] of previous.history) reloaded.history.set(id, structuredClone(item))
-	reloaded.parent.clineMessages = structuredClone(previous.parent.clineMessages)
+	reloaded.parent.alphaMessages = structuredClone(previous.parent.alphaMessages)
 	return reloaded
 }
 

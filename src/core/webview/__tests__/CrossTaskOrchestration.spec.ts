@@ -46,7 +46,7 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		subagentDelegationPolicy: { enabled: false },
 		subagentDelegationExplicitlyEnabled: false,
 		metadata: { task: "Can you launch a test thread?" },
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		abort: false,
 		abortReason: undefined,
@@ -297,7 +297,7 @@ describe("Cross-task orchestration host", () => {
 				{ role: "assistant", content: "Previous work and decisions." },
 				{ role: "user", input_origin: "human", content: "Create a new chat for ticket ALPHA-42." },
 			],
-			clineMessages: [{ ts: 10, type: "say", say: "text", text: "Old conversation" }],
+			alphaMessages: [{ ts: 10, type: "say", say: "text", text: "Old conversation" }],
 		})
 		const objective = "Work on ALPHA-42. Preserve the public API. Run the parser tests."
 		const peer = createTask({ taskId: "fresh-peer", metadata: { task: objective } })
@@ -542,7 +542,7 @@ describe("Cross-task orchestration host", () => {
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
 			isCompleted: vi.fn(() => completed),
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "say", say: "completion_result", partial: false, text: "Parser result is stable." },
 			],
 		})
@@ -675,7 +675,7 @@ describe("Cross-task orchestration host", () => {
 				createTask({
 					taskId: `child-${index}`,
 					orchestrationParentTaskId: parent.taskId,
-					clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: `Result ${index}` }],
+					alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: `Result ${index}` }],
 				}),
 			)
 			for (const child of children) history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
@@ -712,7 +712,7 @@ describe("Cross-task orchestration host", () => {
 		const child = createTask({
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
-			clineMessages: [{ ts: 200, type: "say", say: "completion_result", text: "New result" }],
+			alphaMessages: [{ ts: 200, type: "say", say: "completion_result", text: "New result" }],
 		})
 		tasks.set(parent.taskId, parent)
 		history.set(child.taskId, {
@@ -765,7 +765,7 @@ describe("Cross-task orchestration host", () => {
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
 			isCompleted: vi.fn(() => true),
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "say", say: "completion_result", partial: false, text: "Parser result is stable." },
 			],
 		})
@@ -795,7 +795,7 @@ describe("Cross-task orchestration host", () => {
 		const child = createTask({
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 		})
 		tasks.set(parent.taskId, parent)
 		history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
@@ -810,7 +810,7 @@ describe("Cross-task orchestration host", () => {
 		])
 		expect(parent.resumeCompletedTaskFollowup).toHaveBeenCalledTimes(2)
 
-		child.clineMessages.push({ ts: 200, type: "say", say: "completion_result", text: "Result" })
+		child.alphaMessages.push({ ts: 200, type: "say", say: "completion_result", text: "Result" })
 		internals.updateTaskHistory.mockImplementationOnce(async (item: Record<string, unknown>) => {
 			history.set(child.taskId, item)
 		})
@@ -833,7 +833,7 @@ describe("Cross-task orchestration host", () => {
 		const child = createTask({
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 		})
 		tasks.set(parent.taskId, parent)
 		history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
@@ -864,7 +864,7 @@ describe("Cross-task orchestration host", () => {
 		const child = createTask({
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 		})
 		tasks.set(parent.taskId, parent)
 		const pending = Array.from({ length: 100 }, (_, index) => ({
@@ -909,7 +909,7 @@ describe("Cross-task orchestration host", () => {
 			const child = createTask({
 				taskId: "child-1",
 				orchestrationParentTaskId: "parent-1",
-				clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+				alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 			})
 			const item = {
 				...taskHistoryItem(child.taskId, "parent-1"),
@@ -921,7 +921,7 @@ describe("Cross-task orchestration host", () => {
 			await saveTaskMessages({
 				taskId: child.taskId,
 				globalStoragePath: directory,
-				messages: child.clineMessages,
+				messages: child.alphaMessages,
 			})
 			// Crash after inbox append, before the delivered receipt commits.
 			internals.updateTaskHistory.mockImplementationOnce((value: Parameters<TaskHistoryStore["upsert"]>[0]) =>
@@ -967,7 +967,7 @@ describe("Cross-task orchestration host", () => {
 			const child = createTask({
 				taskId: "child-1",
 				orchestrationParentTaskId: parent.taskId,
-				clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+				alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 			})
 			tasks.set(parent.taskId, parent)
 			await store.upsert({
@@ -979,7 +979,7 @@ describe("Cross-task orchestration host", () => {
 			await saveTaskMessages({
 				taskId: child.taskId,
 				globalStoragePath: directory,
-				messages: child.clineMessages,
+				messages: child.alphaMessages,
 			})
 			await internals.notifyIndependentTaskCompletion(child, true)
 			const reserved = store.get(child.taskId)!.orchestrationCompletionNotifications![0]
@@ -1087,7 +1087,7 @@ describe("Cross-task orchestration host", () => {
 		const child = createTask({
 			taskId: "child-1",
 			orchestrationParentTaskId: parent.taskId,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 		})
 		tasks.set(parent.taskId, parent)
 		history.set(child.taskId, taskHistoryItem(child.taskId, parent.taskId))
@@ -1371,7 +1371,7 @@ describe("Cross-task orchestration host", () => {
 			taskId: "peer",
 			orchestrationParentTaskId: "original-parent",
 			isCompleted: () => completed,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Peer result" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Peer result" }],
 		})
 		tasks.set(peer.taskId, peer)
 		history.set(peer.taskId, taskHistoryItem(peer.taskId, "original-parent"))
@@ -1509,7 +1509,7 @@ describe("Cross-task orchestration host", () => {
 			isCompleted: () => true,
 			isTurnActive: () => false,
 			apiConversationHistory: api,
-			clineMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Parser is stable" }],
+			alphaMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Parser is stable" }],
 		})
 		tasks.set(peer.taskId, peer)
 		history.set(peer.taskId, {
@@ -1657,7 +1657,7 @@ describe("Cross-task orchestration host", () => {
 			orchestrationParentTaskId: parent.taskId,
 			orchestrationNotifyCompletion: false,
 			isCompleted: () => true,
-			clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Done" }],
+			alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Done" }],
 		})
 		tasks.set(parent.taskId, parent)
 		tasks.set(child.taskId, child)
@@ -1706,7 +1706,7 @@ describe("Cross-task orchestration host", () => {
 				{ role: "user", content: "Inspect", ts: 10 },
 				{ role: "assistant", content: "Done", ts: 11 },
 			],
-			clineMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Done" }],
+			alphaMessages: [{ ts: 11, type: "say", say: "completion_result", text: "Done" }],
 		})
 		tasks.set(source.taskId, source)
 		history.set(source.taskId, {

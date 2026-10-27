@@ -7,7 +7,6 @@
 
 import * as vscode from "vscode"
 import * as path from "path"
-import * as os from "os"
 
 import type {
 	WorktreeResult,
@@ -19,6 +18,7 @@ import type {
 import { worktreeService, worktreeIncludeService, type CopyProgressCallback } from "@alpha-code/core"
 
 import type { AlphaProvider } from "../AlphaProvider"
+import { getGlobalConfigDirectory } from "../../../services/config-paths/index.js"
 
 /**
  * Generate a random alphanumeric suffix for branch/folder names.
@@ -216,8 +216,7 @@ export async function handleGetWorktreeDefaults(provider: AlphaProvider): Promis
 	const workspaceFolders = vscode.workspace.workspaceFolders
 	const projectName = workspaceFolders?.[0]?.name || "project"
 
-	const legacyConfigPath = path.join(os.homedir(), ".roo")
-	const suggestedPath = path.join(legacyConfigPath, "worktrees", `${projectName}-${suffix}`)
+	const suggestedPath = path.join(getGlobalConfigDirectory(), "worktrees", `${projectName}-${suffix}`)
 
 	return {
 		suggestedBranch: `worktree/alpha-${suffix}`,

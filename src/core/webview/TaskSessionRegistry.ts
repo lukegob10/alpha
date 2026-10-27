@@ -467,14 +467,14 @@ export class TaskSessionRegistry {
 		const pendingSnapshot = options.lifecycleSnapshot ?? this.lifecycleSnapshots.get(task.taskId)
 		const projection = this.lifecycleDegradedTaskIds.has(task.taskId)
 			? projectAlphaMessageStatus({
-					messages: task.clineMessages,
+					messages: task.alphaMessages,
 					taskAsk: task.taskAsk,
 					taskStatus: task.taskStatus,
 				})
 			: pendingSnapshot
 				? projectAgentLifecycleSnapshot(pendingSnapshot, {
 						taskAsk: task.taskAsk,
-						messages: task.clineMessages,
+						messages: task.alphaMessages,
 					})
 				: undefined
 		this.sessions.set(task.taskId, {
@@ -578,7 +578,7 @@ export class TaskSessionRegistry {
 		if (!session) return
 
 		const legacy = projectAlphaMessageStatus({
-			messages: session.task.clineMessages,
+			messages: session.task.alphaMessages,
 			taskAsk: session.task.taskAsk,
 			taskStatus: session.task.taskStatus,
 		})
@@ -619,7 +619,7 @@ export class TaskSessionRegistry {
 
 		const projection = projectAgentLifecycleSnapshot(snapshot, {
 			taskAsk: session.task.taskAsk,
-			messages: session.task.clineMessages,
+			messages: session.task.alphaMessages,
 		})
 		session.lifecycle = projection.lifecycle
 		session.waitingReason = projection.waitingReason
@@ -674,7 +674,7 @@ export class TaskSessionRegistry {
 
 		// Input ownership is installed before publication. The attention fields
 		// follow a delayed timer and must not leave an already-published ask running.
-		const ask = findLast(task.clineMessages, (message) => message.ts === askTs)
+		const ask = findLast(task.alphaMessages, (message) => message.ts === askTs)
 		return ask?.type === "ask" && ask.partial !== true && !ask.isAnswered ? ask : undefined
 	}
 
@@ -685,9 +685,9 @@ export class TaskSessionRegistry {
 			// A terminal turn can already own its task's next input boundary. Project
 			// that exact live ask without converting the containing task into a failure.
 			if (snapshot.status !== "in_progress" && taskAsk) return projectAlphaMessageStatus(taskAsk)
-			return projectAgentLifecycleSnapshot(snapshot, { taskAsk, messages: task.clineMessages })
+			return projectAgentLifecycleSnapshot(snapshot, { taskAsk, messages: task.alphaMessages })
 		}
-		return projectAlphaMessageStatus({ messages: task.clineMessages, taskAsk, taskStatus: task.taskStatus })
+		return projectAlphaMessageStatus({ messages: task.alphaMessages, taskAsk, taskStatus: task.taskStatus })
 	}
 
 	private getEffectiveLifecycle(session: TaskSession): TaskLifecycleState {
@@ -793,7 +793,7 @@ export class TaskSessionRegistry {
 			lastUpdatedAt: Math.max(
 				session.lastActivityAt,
 				session.lifecycleSnapshot?.terminalAt ?? 0,
-				task.clineMessages.at(-1)?.ts ?? 0,
+				task.alphaMessages.at(-1)?.ts ?? 0,
 			),
 			waitingReason,
 			queueCount: task.messageQueueService?.messages?.length ?? task.queuedMessages?.length ?? 0,

@@ -277,7 +277,7 @@ vi.mock("../../task/Task", () => ({
 				return true
 			}),
 			handleWebviewAskResponse: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
@@ -392,7 +392,7 @@ describe("AlphaProvider", () => {
 					},
 				),
 				handleWebviewAskResponse: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				overwriteAlphaMessages: vi.fn(),
 				overwriteApiConversationHistory: vi.fn(),
@@ -647,7 +647,7 @@ describe("AlphaProvider", () => {
 		const primary = Object.assign(new EventEmitter(), {
 			taskId: "completed-primary",
 			taskKind: "primary" as const,
-			clineMessages: [],
+			alphaMessages: [],
 		}) as unknown as Task
 		const lifecycleOrder: TaskLifecycleState[] = []
 		let releaseDuplicateCompletion!: () => void
@@ -785,7 +785,7 @@ describe("AlphaProvider", () => {
 
 		const mockState: ExtensionState = {
 			version: "1.0.0",
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [],
 			shouldShowAnnouncement: false,
 			apiConfiguration: {
@@ -817,7 +817,7 @@ describe("AlphaProvider", () => {
 			maxWorkspaceFiles: 200,
 			maxConcurrentTasks: 1,
 			telemetrySetting: "unset",
-			showRooIgnoredFiles: false,
+			showAlphaIgnoredFiles: false,
 			enableSubfolderRules: false,
 			renderContext: "sidebar",
 			maxImageFileSize: 5,
@@ -871,8 +871,8 @@ describe("AlphaProvider", () => {
 		const firstState = new Promise<ExtensionState>((resolve) => {
 			resolveFirstState = resolve
 		})
-		const secondState = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
-		const firstSnapshot = { clineMessages: [], taskHistory: [] } as unknown as ExtensionState
+		const secondState = { alphaMessages: [], taskHistory: [] } as unknown as ExtensionState
+		const firstSnapshot = { alphaMessages: [], taskHistory: [] } as unknown as ExtensionState
 		vi.spyOn(provider, "getStateToPostToWebview").mockReturnValueOnce(firstState).mockResolvedValueOnce(secondState)
 
 		let releaseSecondDelivery!: () => void
@@ -889,7 +889,7 @@ describe("AlphaProvider", () => {
 		})
 
 		await vi.waitFor(() => expect(mockPostMessage).toHaveBeenCalledTimes(1))
-		expect(mockPostMessage.mock.calls[0][0].state.clineMessagesSeq).toBe(2)
+		expect(mockPostMessage.mock.calls[0][0].state.alphaMessagesSeq).toBe(2)
 		expect(secondSettled).toBe(false)
 
 		releaseSecondDelivery()
@@ -897,7 +897,7 @@ describe("AlphaProvider", () => {
 		resolveFirstState(firstSnapshot)
 		await firstPost
 
-		expect(mockPostMessage.mock.calls[1][0].state.clineMessagesSeq).toBe(1)
+		expect(mockPostMessage.mock.calls[1][0].state.alphaMessagesSeq).toBe(1)
 	})
 
 	test("publishes a task transition without building full extension state", async () => {
@@ -912,7 +912,7 @@ describe("AlphaProvider", () => {
 			type: "state",
 			state: expect.objectContaining({
 				currentView: { type: "newTaskDraft" },
-				clineMessages: [],
+				alphaMessages: [],
 				mode: "code",
 				managedAgentTree: undefined,
 			}),
@@ -967,8 +967,8 @@ describe("AlphaProvider", () => {
 			expect.objectContaining({
 				type: "messageCreated",
 				taskId: "task-1",
-				clineMessage: message,
-				clineMessagesSeq: expect.any(Number),
+				alphaMessage: message,
+				alphaMessagesSeq: expect.any(Number),
 			}),
 		)
 		expect(mockPostMessage).toHaveBeenNthCalledWith(
@@ -1350,7 +1350,7 @@ describe("AlphaProvider", () => {
 		const candidate = new Task(defaultTaskOptions)
 		Object.assign(candidate, {
 			taskAsk: { ts: 2, type: "ask", ask: "completion_result", text: "" },
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 1, type: "say", say: "completion_result", text: "Finished." },
 				{ ts: 2, type: "ask", ask: "completion_result", text: "" },
 			],
@@ -1738,7 +1738,7 @@ describe("AlphaProvider", () => {
 		// get the stack size before the abort call
 		const stackSizeBeforeAbort = provider.getTaskStackSize()
 
-		// call the removeTaskFromStack method so it will call the current cline abort and remove it from the stack
+		// call the removeTaskFromStack method so it will call the current Alpha abort and remove it from the stack
 		await provider.removeTaskFromStack()
 
 		// get the stack size after the abort call
@@ -1879,10 +1879,10 @@ describe("AlphaProvider", () => {
 		await provider.addTaskToStack(mockAlpha1)
 		await provider.addTaskToStack(mockAlpha2)
 
-		// verify cline instances were added to the stack
+		// verify Alpha instances were added to the stack
 		expect(provider.getTaskStackSize()).toBe(2)
 
-		// verify current cline instance is the last one added
+		// verify current Alpha instance is the last one added
 		expect(provider.getCurrentTask()).toBe(mockAlpha2)
 	})
 
@@ -2238,9 +2238,9 @@ describe("AlphaProvider", () => {
 
 	test("a background task does not resend the visible transcript", async () => {
 		const parent = Object.assign(new Task(defaultTaskOptions), { taskId: "visible-parent" })
-		parent.clineMessages = [
+		parent.alphaMessages = [
 			{ ts: 1, type: "say", say: "text", text: "VISIBLE-PARENT-TRANSCRIPT" },
-		] as typeof parent.clineMessages
+		] as typeof parent.alphaMessages
 		await provider.addTaskToStack(parent)
 		await provider.resolveWebviewView(mockWebviewView)
 		mockPostMessage.mockClear()
@@ -2498,24 +2498,24 @@ describe("AlphaProvider", () => {
 		expect(provider.providerSettingsManager.activateProfile).toHaveBeenCalledWith({ id: "config-id-123" })
 	})
 
-	test("handles showRooIgnoredFiles setting", async () => {
+	test("handles showAlphaIgnoredFiles setting", async () => {
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 
 		// Default value should be false
-		expect((await provider.getState()).showRooIgnoredFiles).toBe(false)
+		expect((await provider.getState()).showAlphaIgnoredFiles).toBe(false)
 
-		// Test showRooIgnoredFiles with true
-		await messageHandler({ type: "updateSettings", updatedSettings: { showRooIgnoredFiles: true } })
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("showRooIgnoredFiles", true)
+		// Test showAlphaIgnoredFiles with true
+		await messageHandler({ type: "updateSettings", updatedSettings: { showAlphaIgnoredFiles: true } })
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("showAlphaIgnoredFiles", true)
 		expect(mockPostMessage).toHaveBeenCalled()
-		expect((await provider.getState()).showRooIgnoredFiles).toBe(true)
+		expect((await provider.getState()).showAlphaIgnoredFiles).toBe(true)
 
-		// Test showRooIgnoredFiles with false
-		await messageHandler({ type: "updateSettings", updatedSettings: { showRooIgnoredFiles: false } })
-		expect(mockContext.globalState.update).toHaveBeenCalledWith("showRooIgnoredFiles", false)
+		// Test showAlphaIgnoredFiles with false
+		await messageHandler({ type: "updateSettings", updatedSettings: { showAlphaIgnoredFiles: false } })
+		expect(mockContext.globalState.update).toHaveBeenCalledWith("showAlphaIgnoredFiles", false)
 		expect(mockPostMessage).toHaveBeenCalled()
-		expect((await provider.getState()).showRooIgnoredFiles).toBe(false)
+		expect((await provider.getState()).showAlphaIgnoredFiles).toBe(false)
 	})
 
 	test("handles updatePrompt message correctly", async () => {
@@ -2698,7 +2698,7 @@ describe("AlphaProvider", () => {
 
 			// Setup Task instance with auto-mock from the top of the file
 			const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
-			mockAlphaTask.clineMessages = mockMessages // Set test-specific messages
+			mockAlphaTask.alphaMessages = mockMessages // Set test-specific messages
 			mockAlphaTask.apiConversationHistory = mockApiHistory // Set API history
 			await provider.addTaskToStack(mockAlphaTask) // Add the mocked instance to the stack
 
@@ -2744,14 +2744,14 @@ describe("AlphaProvider", () => {
 		})
 
 		test("handles case when no current task exists", async () => {
-			// Clear the cline stack
+			// Clear the Alpha stack
 			;(provider as any).taskStack = []
 
 			// Trigger message deletion
 			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 			await messageHandler({ type: "deleteMessage", value: 2000 })
 
-			// Verify no dialog was shown since there's no current cline
+			// Verify no dialog was shown since there's no current Alpha
 			expect(mockPostMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({
 					type: "showDeleteMessageDialog",
@@ -2787,7 +2787,7 @@ describe("AlphaProvider", () => {
 
 			// Setup Task instance with auto-mock from the top of the file
 			const mockAlphaTask = new Task(defaultTaskOptions) // Create a new mocked instance
-			mockAlphaTask.clineMessages = mockMessages // Set test-specific messages
+			mockAlphaTask.alphaMessages = mockMessages // Set test-specific messages
 			mockAlphaTask.apiConversationHistory = mockApiHistory // Set API history
 
 			// Explicitly mock the overwrite methods since they're not being called in the tests
@@ -3493,7 +3493,7 @@ describe("Project MCP Settings", () => {
 		})
 
 		// Check that fs.mkdir was called with the correct path
-		expect(mockedFs.mkdir).toHaveBeenCalledWith("/test/workspace/.roo", { recursive: true })
+		expect(mockedFs.mkdir).toHaveBeenCalledWith("/test/workspace/.alpha", { recursive: true })
 
 		// Verify file was created with default content
 		expect(safeWriteJson).toHaveBeenCalledWith("/test/workspace/.alpha/mcp.json", { mcpServers: {} })
@@ -3789,7 +3789,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			] as AlphaMessage[]
 
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = mockMessages
+			mockAlphaTask.alphaMessages = mockMessages
 			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
 			mockAlphaTask.overwriteAlphaMessages = vi.fn()
 			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
@@ -3849,7 +3849,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			] as AlphaMessage[]
 
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = mockMessages
+			mockAlphaTask.alphaMessages = mockMessages
 			mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }] as any[]
 			mockAlphaTask.overwriteAlphaMessages = vi.fn()
 			mockAlphaTask.overwriteApiConversationHistory = vi.fn()
@@ -3900,7 +3900,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 		test("handles network timeout during edit submission", async () => {
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = [
+			mockAlphaTask.alphaMessages = [
 				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
 				{ ts: 2000, type: "say", say: "text", text: "AI response" },
 			] as AlphaMessage[]
@@ -3943,7 +3943,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 		test("handles connection drops during edit operation", async () => {
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = [
+			mockAlphaTask.alphaMessages = [
 				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
 				{ ts: 2000, type: "say", say: "text", text: "AI response" },
 			] as AlphaMessage[]
@@ -3994,7 +3994,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 		test("handles race conditions with simultaneous edits", async () => {
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = [
+			mockAlphaTask.alphaMessages = [
 				{ ts: 1000, type: "say", say: "user_feedback", text: "Message 1", value: 2000 },
 				{ ts: 2000, type: "say", say: "text", text: "AI response 1" },
 				{ ts: 3000, type: "say", say: "user_feedback", text: "Message 2", value: 4000 },
@@ -4061,7 +4061,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 		})
 
 		test("handles edit permission failures", async () => {
-			// Mock no current cline (simulating permission failure)
+			// Mock no current Alpha (simulating permission failure)
 			vi.spyOn(provider, "getCurrentTask").mockReturnValue(undefined)
 
 			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
@@ -4072,13 +4072,13 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				editedMessageContent: "Edited message",
 			})
 
-			// Should not show confirmation dialog when no current cline
+			// Should not show confirmation dialog when no current Alpha
 			expect(vscode.window.showInformationMessage).not.toHaveBeenCalled()
 		})
 
 		test("handles authorization failures during edit", async () => {
 			const mockAlphaTask = new Task(defaultTaskOptions)
-			mockAlphaTask.clineMessages = [
+			mockAlphaTask.alphaMessages = [
 				{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
 				{ ts: 2000, type: "say", say: "text", text: "AI response" },
 			] as AlphaMessage[]
@@ -4164,7 +4164,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				;(vscode.window.showInformationMessage as any) = vi.fn()
 
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Original message" },
 					{ ts: 2000, type: "say", say: "text", text: "AI response" },
 				] as AlphaMessage[]
@@ -4199,7 +4199,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("handles edit operations on deleted messages", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Existing message" },
 				] as AlphaMessage[]
 				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }] as any[]
@@ -4239,7 +4239,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("handles delete operations on non-existent messages", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Existing message" },
 				] as AlphaMessage[]
 				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }] as any[]
@@ -4283,7 +4283,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("validates proper cleanup during failed edit operations", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Original message", value: 2000 },
 					{ ts: 2000, type: "say", say: "text", text: "AI response" },
 				] as AlphaMessage[]
@@ -4331,7 +4331,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("validates proper cleanup during failed delete operations", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to delete" },
 					{ ts: 2000, type: "say", say: "text", text: "AI response" },
 				] as AlphaMessage[]
@@ -4386,7 +4386,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				] as AlphaMessage[]
 
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = mockMessages
+				mockAlphaTask.alphaMessages = mockMessages
 				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }] as any[]
 				mockAlphaTask.overwriteAlphaMessages = vi.fn()
 				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
@@ -4437,7 +4437,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				] as AlphaMessage[]
 
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = mockMessages
+				mockAlphaTask.alphaMessages = mockMessages
 				mockAlphaTask.apiConversationHistory = [{ ts: 1000 }, { ts: 2000 }, { ts: 3000 }, { ts: 4000 }] as any[]
 				mockAlphaTask.overwriteAlphaMessages = vi.fn()
 				mockAlphaTask.overwriteApiConversationHistory = vi.fn()
@@ -4477,7 +4477,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("provides user feedback for successful operations", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to delete" },
 					{ ts: 2000, type: "say", say: "text", text: "AI response" },
 				] as AlphaMessage[]
@@ -4516,7 +4516,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				// Test cancellation by not sending confirmation
 
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Message to edit" },
 					{ ts: 2000, type: "say", say: "text", text: "AI response" },
 				] as AlphaMessage[]
@@ -4551,7 +4551,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 			test("handles messages with identical timestamps", async () => {
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Message 1" },
 					{ ts: 1000, type: "say", say: "text", text: "Message 2 (same timestamp)" },
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Message 3 (same timestamp)" },
@@ -4588,7 +4588,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			test("handles messages with future timestamps", async () => {
 				const futureTimestamp = Date.now() + 100000 // Future timestamp
 				const mockAlphaTask = new Task(defaultTaskOptions)
-				mockAlphaTask.clineMessages = [
+				mockAlphaTask.alphaMessages = [
 					{ ts: 1000, type: "say", say: "user_feedback", text: "Past message" },
 					{
 						ts: futureTimestamp,
@@ -4950,8 +4950,8 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			await provider.resolveWebviewView(mockWebviewView)
 			const parent = Object.assign(new Task(defaultTaskOptions), { taskId: "parent-task" })
 			const child = Object.assign(new Task(defaultTaskOptions), { taskId: "child-task" })
-			parent.clineMessages = [{ ts: 1, type: "say", say: "text", text: "parent transcript" }]
-			child.clineMessages = [{ ts: 2, type: "say", say: "text", text: "child transcript" }]
+			parent.alphaMessages = [{ ts: 1, type: "say", say: "text", text: "parent transcript" }]
+			child.alphaMessages = [{ ts: 2, type: "say", say: "text", text: "child transcript" }]
 			await provider.addTaskToStack(parent)
 			await provider.addTaskToStack(child)
 
@@ -4976,17 +4976,17 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			)
 			expect(
 				mockPostMessage.mock.calls.some(
-					([message]: [{ type?: string; state?: { clineMessages?: unknown[] } }]) =>
-						message.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0,
+					([message]: [{ type?: string; state?: { alphaMessages?: unknown[] } }]) =>
+						message.type === "state" && (message.state?.alphaMessages?.length ?? 0) > 0,
 				),
 			).toBe(false)
 
 			await provider.showTaskWithId(child.taskId)
-			parent.clineMessages = [
-				...parent.clineMessages,
+			parent.alphaMessages = [
+				...parent.alphaMessages,
 				{ ts: 3, type: "say", say: "text", text: "new parent message" },
 			]
-			await provider.postTaskMessageToWebview("messageCreated", parent.taskId, parent.clineMessages.at(-1)!)
+			await provider.postTaskMessageToWebview("messageCreated", parent.taskId, parent.alphaMessages.at(-1)!)
 			const updatedRevision = provider.getLiveTaskMetadata()[parent.taskId].transcriptRevision
 			expect(updatedRevision).toBeGreaterThan(parentRevision!)
 
@@ -4995,8 +4995,8 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			await vi.waitFor(() =>
 				expect(
 					mockPostMessage.mock.calls.some(
-						([message]: [{ type?: string; state?: { clineMessages?: unknown[] } }]) =>
-							message.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0,
+						([message]: [{ type?: string; state?: { alphaMessages?: unknown[] } }]) =>
+							message.type === "state" && (message.state?.alphaMessages?.length ?? 0) > 0,
 					),
 				).toBe(true),
 			)
@@ -5012,13 +5012,13 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				say: "text" as const,
 				text: `row-${index}-${"x".repeat(2000)}`,
 			}))
-			parent.clineMessages = transcript as typeof parent.clineMessages
+			parent.alphaMessages = transcript as typeof parent.alphaMessages
 			await provider.addTaskToStack(parent)
 
 			mockPostMessage.mockImplementation(
-				async (message: { type?: string; state?: { clineMessages?: unknown[] } }) => {
-					if (message?.type === "state" && (message.state?.clineMessages?.length ?? 0) > 0) {
-						structuredClone(message.state?.clineMessages)
+				async (message: { type?: string; state?: { alphaMessages?: unknown[] } }) => {
+					if (message?.type === "state" && (message.state?.alphaMessages?.length ?? 0) > 0) {
+						structuredClone(message.state?.alphaMessages)
 					}
 				},
 			)
@@ -5040,13 +5040,13 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			let identityBytes = 0
 			let transcriptBytes = 0
 			mockPostMessage.mockImplementation(
-				async (message: { type?: string; state?: { clineMessages?: unknown[] } }) => {
+				async (message: { type?: string; state?: { alphaMessages?: unknown[] } }) => {
 					if (message?.type === "taskOpenResult") {
 						ackPosted = true
 						await ackHeld
 						return
 					}
-					const messages = message?.type === "state" ? message.state?.clineMessages : undefined
+					const messages = message?.type === "state" ? message.state?.alphaMessages : undefined
 					if (!Array.isArray(messages)) return
 					const bytes = Buffer.byteLength(JSON.stringify(message))
 					if (messages.length === 0) identityBytes = bytes
@@ -5078,12 +5078,12 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			const anchor = Object.assign(new Task(defaultTaskOptions), { taskId: "anchor-task" })
 			const first = Object.assign(new Task(defaultTaskOptions), { taskId: "first-task" })
 			const second = Object.assign(new Task(defaultTaskOptions), { taskId: "second-task" })
-			first.clineMessages = [
+			first.alphaMessages = [
 				{ ts: 1, type: "say", say: "text", text: "OLD-TRANSCRIPT-MARKER" },
-			] as typeof first.clineMessages
-			second.clineMessages = [
+			] as typeof first.alphaMessages
+			second.alphaMessages = [
 				{ ts: 1, type: "say", say: "text", text: "NEW-TRANSCRIPT-MARKER" },
-			] as typeof second.clineMessages
+			] as typeof second.alphaMessages
 			await provider.addTaskToStack(first)
 			await provider.addTaskToStack(second)
 			await provider.addTaskToStack(anchor)
@@ -5093,11 +5093,11 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				releaseFirst = resolve
 			})
 			mockPostMessage.mockImplementation(
-				async (message: { type?: string; state?: { currentTaskId?: string; clineMessages?: unknown[] } }) => {
+				async (message: { type?: string; state?: { currentTaskId?: string; alphaMessages?: unknown[] } }) => {
 					if (
 						message?.type === "state" &&
 						message.state?.currentTaskId === "first-task" &&
-						(message.state.clineMessages?.length ?? 0) === 0
+						(message.state.alphaMessages?.length ?? 0) === 0
 					) {
 						await firstHeld
 					}
@@ -5109,7 +5109,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				expect(mockPostMessage).toHaveBeenCalledWith(
 					expect.objectContaining({
 						type: "state",
-						state: expect.objectContaining({ currentTaskId: "first-task", clineMessages: [] }),
+						state: expect.objectContaining({ currentTaskId: "first-task", alphaMessages: [] }),
 					}),
 				),
 			)
@@ -5172,7 +5172,7 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 			const posted = mockPostMessage.mock.calls.find(
 				(call: [{ type?: string }]) => call[0]?.type === "state",
 			)?.[0]
-			expect(posted?.state?.clineMessages).toBeUndefined()
+			expect(posted?.state?.alphaMessages).toBeUndefined()
 		})
 	})
 })

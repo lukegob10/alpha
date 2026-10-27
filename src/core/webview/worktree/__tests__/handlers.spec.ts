@@ -1,15 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
+import * as path from "path"
 
 import type { AlphaProvider } from "../../AlphaProvider"
-import { handleSwitchWorktree } from "../handlers"
+import { handleGetWorktreeDefaults, handleSwitchWorktree } from "../handlers"
+import { getGlobalConfigDirectory } from "../../../../services/config-paths/index.js"
 
 vi.mock("vscode", () => ({
 	Uri: { file: vi.fn((filePath: string) => ({ fsPath: filePath })) },
 	commands: { executeCommand: vi.fn() },
+	workspace: { workspaceFolders: [{ name: "example" }] },
 }))
 
 vi.mock("@alpha-code/core", () => ({ worktreeService: {}, worktreeIncludeService: {} }))
+vi.mock("../../../../services/config-paths/index.js", () => ({
+	getGlobalConfigDirectory: vi.fn(() => "/home/alpha/.alpha"),
+}))
+
+describe("handleGetWorktreeDefaults", () => {
+	it("keeps worktrees under the canonical global configuration directory", async () => {
+		const defaults = await handleGetWorktreeDefaults({} as AlphaProvider)
+
+		expect(path.dirname(defaults.suggestedPath)).toBe(path.join(getGlobalConfigDirectory(), "worktrees"))
+		const worktreeName = path.basename(defaults.suggestedPath)
+		expect(worktreeName).toMatch(/^example-[a-z0-9]{5}$/)
+		expect(defaults.suggestedBranch).toBe(`worktree/alpha-${worktreeName.slice("example-".length)}`)
+	})
+})
 
 describe("handleSwitchWorktree", () => {
 	beforeEach(() => {

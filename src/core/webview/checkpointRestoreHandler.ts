@@ -108,7 +108,7 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 				})
 				if (restored === false) throw new Error("The checkpoint is no longer available")
 				await saveTaskMessages({
-					messages: currentAlpha.clineMessages,
+					messages: currentAlpha.alphaMessages,
 					taskId: currentAlpha.taskId,
 					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				})

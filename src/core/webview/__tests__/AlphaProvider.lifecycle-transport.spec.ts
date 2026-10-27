@@ -43,7 +43,7 @@ const createProvider = (taskSessions = new TaskSessionRegistry()) => {
 		taskStatus: TaskStatus.Running,
 		isStreaming: false,
 		isTurnActive: () => true,
-		clineMessages: [],
+		alphaMessages: [],
 		metadata: {},
 	} as unknown as Task
 	taskSessions.register(task)

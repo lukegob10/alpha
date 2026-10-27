@@ -15,7 +15,7 @@ const createTask = (taskId: string, overrides: Partial<Task> = {}): Task =>
 		taskStatus: TaskStatus.Running,
 		isStreaming: true,
 		taskAsk: undefined,
-		clineMessages: [{ ts: 100, type: "say", say: "text", text: taskId }],
+		alphaMessages: [{ ts: 100, type: "say", say: "text", text: taskId }],
 		tokenUsage: {
 			totalTokensIn: 1,
 			totalTokensOut: 2,
@@ -403,7 +403,7 @@ describe("TaskSessionRegistry", () => {
 				{ ts: 1, type: "say", say: "text", text: "prompt" },
 				{ ts: 2, type: "ask", ask: "followup", text: "Question?" },
 				{ ts: 3, type: "say", say: "text", text: "response" },
-			] as Task["clineMessages"],
+			] as Task["alphaMessages"],
 			{
 				get(target, property, receiver) {
 					if (property === Symbol.iterator) throw new Error("transcript must not be copied")
@@ -412,7 +412,7 @@ describe("TaskSessionRegistry", () => {
 			},
 		)
 		const registry = new TaskSessionRegistry(1)
-		registry.register(createTask("legacy", { clineMessages: messages }))
+		registry.register(createTask("legacy", { alphaMessages: messages }))
 
 		expect(registry.getMetadata().legacy).toMatchObject({
 			status: TaskStatus.Interactive,
@@ -691,7 +691,7 @@ describe("TaskSessionRegistry", () => {
 		const task = createTask("task-completion-race", {
 			isStreaming: false,
 			taskAsk: undefined,
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "say", say: "text", text: "Answer" },
 				{ ts: 101, type: "ask", ask: "completion_result" },
 			],
@@ -738,7 +738,7 @@ describe("TaskSessionRegistry", () => {
 		if (degraded) registry.markLifecycleDegraded(taskId)
 
 		registry.register(
-			createTask(taskId, { clineMessages: [{ ts: 100, type: "say", say: "error", text: "Failed" }] }),
+			createTask(taskId, { alphaMessages: [{ ts: 100, type: "say", say: "error", text: "Failed" }] }),
 			{ lifecycleSnapshot: snapshot },
 		)
 
@@ -786,7 +786,7 @@ describe("TaskSessionRegistry", () => {
 	it.each([false, true])("does not revive an answered ask in fallback metadata (degraded: %s)", (degraded) => {
 		const registry = new TaskSessionRegistry(1)
 		const task = createTask("answered-ask", {
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 1, type: "say", say: "text", text: "Initial task" },
 				{ ts: 2, type: "ask", ask: "followup", text: "Question?", isAnswered: true },
 				{ ts: 3, type: "say", say: "user_feedback", text: "The answer" },

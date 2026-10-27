@@ -844,7 +844,7 @@ describe("AlphaProvider native Stop caller ownership", () => {
 		await entered.promise
 		const records = Reflect.get(harness.provider, "subagentRunFinalizations") as Map<string, unknown>
 		const before = records.get(taskId)
-		const messages = structuredClone(harness.root.clineMessages)
+		const messages = structuredClone(harness.root.alphaMessages)
 		const reservations = Reflect.get(harness.provider, "reservedSubagentSlots") as Map<string, unknown>
 		const reservation = reservations.get(prepared.group.groupId)
 		await expect(
@@ -860,7 +860,7 @@ describe("AlphaProvider native Stop caller ownership", () => {
 			),
 		).toBe(prepared)
 		expect(reservations.get(prepared.group.groupId)).toBe(reservation)
-		expect(harness.root.clineMessages).toEqual(messages)
+		expect(harness.root.alphaMessages).toEqual(messages)
 		expect(originalSignal.aborted).toBe(false)
 		held.resolve()
 		const handle = await first
