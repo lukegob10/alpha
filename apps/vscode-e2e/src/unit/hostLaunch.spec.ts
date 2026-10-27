@@ -3,11 +3,109 @@ import * as assert from "node:assert/strict"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import childProcess, { ChildProcess, execFile } from "node:child_process"
+import childProcess, { ChildProcess, execFile, type SpawnOptions } from "node:child_process"
 import { promisify } from "node:util"
 import { launchExtensionHost, HostLaunchCancelledError, HostLaunchFailureError } from "../hostLaunch"
 import { LIVE_HOST_STARTUP_TIMEOUT_MS } from "../liveHostProtocol"
 import { randomUUID } from "node:crypto"
+
+test("user-home isolation changes only GUI children for both launch kinds", async (context) => {
+	for (const platform of ["win32", "linux"] as const) {
+		for (const launchKind of ["extension-test", "development-sidecar"] as const) {
+			await context.test(`${platform}/${launchKind}`, async (fixture) => {
+				const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform")!
+				Object.defineProperty(process, "platform", { value: platform })
+				fixture.after(() => Object.defineProperty(process, "platform", platformDescriptor))
+				const previousOverride = process.env.ALPHA_E2E_USER_HOME
+				fixture.after(() => {
+					if (previousOverride === undefined) delete process.env.ALPHA_E2E_USER_HOME
+					else process.env.ALPHA_E2E_USER_HOME = previousOverride
+				})
+				const isolatedHome = path.resolve(os.tmpdir(), "alpha-owned-host-home")
+				process.env.ALPHA_E2E_USER_HOME = isolatedHome
+				const homeKey = platform === "win32" ? "USERPROFILE" : "HOME"
+				const otherHomeKey = platform === "win32" ? "HOME" : "USERPROFILE"
+				const runnerHome = process.env[homeKey]
+				const runnerAlphaHome = process.env.ALPHA_HOME
+				const extensionTestsEnv = {
+					ALPHA_HOME: "fixture-memory-home",
+					ALPHA_HOST_ENV_FIXTURE: "preserved",
+					[otherHomeKey]: "fixture-other-home",
+				}
+				const child = new ChildProcess()
+				let spawned: SpawnOptions | undefined
+				fixture.mock.method(childProcess, "spawn", (...args: Parameters<typeof childProcess.spawn>) => {
+					spawned = args[2]
+					return child
+				})
+				const options = {
+					vscodeExecutablePath: process.execPath,
+					extensionDevelopmentPath: process.cwd(),
+					extensionTestsEnv,
+				}
+				const pending = launchExtensionHost(
+					launchKind === "extension-test"
+						? { ...options, launchKind, extensionTestsPath: "fixture-tests" }
+						: { ...options, launchKind },
+				)
+				child.emit("close", 0, null)
+				assert.equal(await pending, 0)
+				assert.equal(spawned?.env?.[homeKey], isolatedHome)
+				assert.equal(spawned?.env?.[otherHomeKey], "fixture-other-home")
+				assert.equal(spawned?.env?.ALPHA_HOME, "fixture-memory-home")
+				assert.equal(spawned?.env?.ALPHA_HOST_ENV_FIXTURE, "preserved")
+				assert.equal(process.env[homeKey], runnerHome, "The runner must keep its toolchain home")
+				assert.equal(process.env.ALPHA_HOME, runnerAlphaHome)
+				assert.equal(extensionTestsEnv[homeKey], undefined, "Caller environment options must not be mutated")
+			})
+		}
+	}
+})
+
+test("unset user-home isolation preserves explicit child home values", async (context) => {
+	const child = new ChildProcess()
+	let spawned: SpawnOptions | undefined
+	context.mock.method(childProcess, "spawn", (...args: Parameters<typeof childProcess.spawn>) => {
+		spawned = args[2]
+		return child
+	})
+	const pending = launchExtensionHost({
+		vscodeExecutablePath: process.execPath,
+		extensionDevelopmentPath: process.cwd(),
+		extensionTestsPath: "fixture-tests",
+		extensionTestsEnv: {
+			ALPHA_E2E_USER_HOME: undefined,
+			USERPROFILE: "fixture-user-profile",
+			HOME: "fixture-home",
+		},
+	})
+	child.emit("close", 0, null)
+	assert.equal(await pending, 0)
+	assert.equal(spawned?.env?.USERPROFILE, "fixture-user-profile")
+	assert.equal(spawned?.env?.HOME, "fixture-home")
+})
+
+test("invalid user-home isolation paths fail before launching either host kind", async (context) => {
+	const spawning = context.mock.method(childProcess, "spawn", () => assert.fail("Invalid home must not launch"))
+	for (const launchKind of ["extension-test", "development-sidecar"] as const) {
+		for (const home of ["relative-home", "", `${path.resolve(os.tmpdir())}\0invalid`]) {
+			const options = {
+				vscodeExecutablePath: process.execPath,
+				extensionDevelopmentPath: process.cwd(),
+				extensionTestsEnv: { ALPHA_E2E_USER_HOME: home },
+			}
+			await assert.rejects(
+				launchExtensionHost(
+					launchKind === "extension-test"
+						? { ...options, launchKind, extensionTestsPath: "fixture-tests" }
+						: { ...options, launchKind },
+				),
+				{ code: "invalid-options" },
+			)
+		}
+	}
+	assert.equal(spawning.mock.callCount(), 0)
+})
 
 test("host cancellation joins its still-live POSIX group after the root closes", async (context) => {
 	const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
