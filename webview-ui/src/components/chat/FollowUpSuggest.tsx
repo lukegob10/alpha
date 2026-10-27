@@ -9,7 +9,6 @@ import { SuggestionItem } from "@alpha-code/types"
 import { cn } from "@/lib/utils"
 import { getUserFacingModeName, normalizeUserFacingSuggestionMode } from "@/utils/modePresentation"
 
-const DEFAULT_FOLLOWUP_TIMEOUT_MS = 60000
 const COUNTDOWN_INTERVAL_MS = 1000
 
 interface FollowUpSuggestProps {
@@ -41,16 +40,17 @@ export const FollowUpSuggest = ({
 		if (
 			autoApprovalEnabled &&
 			alwaysAllowFollowupQuestions &&
+			typeof followupAutoApproveTimeoutMs === "number" &&
+			Number.isFinite(followupAutoApproveTimeoutMs) &&
+			followupAutoApproveTimeoutMs > 0 &&
+			followupAutoApproveTimeoutMs <= 2_147_483_647 &&
 			suggestions.length > 0 &&
 			!suggestionSelected &&
 			!isAnswered &&
 			!isFollowUpAutoApprovalPaused
 		) {
 			// Start with the configured timeout in seconds
-			const timeoutMs =
-				typeof followupAutoApproveTimeoutMs === "number" && !isNaN(followupAutoApproveTimeoutMs)
-					? followupAutoApproveTimeoutMs
-					: DEFAULT_FOLLOWUP_TIMEOUT_MS
+			const timeoutMs = followupAutoApproveTimeoutMs
 
 			// Convert milliseconds to seconds for the countdown
 			setCountdown(Math.floor(timeoutMs / 1000))

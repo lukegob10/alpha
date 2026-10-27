@@ -220,7 +220,7 @@ describe("agent hotkey view ownership", () => {
 		expect(AlphaProvider.getVisibleInstance()).toBe(inactive)
 	})
 
-	it("opens and focuses the next registered task without cancelling either view's work", async () => {
+	it("opens the next newer history task without cancelling either view's work", async () => {
 		const directory = storage()
 		const sidebar = makeProvider(directory)
 		const panel = makeProvider(directory)
@@ -228,12 +228,149 @@ describe("agent hotkey view ownership", () => {
 		const second = makeTask("second")
 		await sidebar.addTaskToStack(first)
 		await panel.addTaskToStack(second)
+		Object.assign(sidebar, {
+			taskHistoryStore: {
+				getByWorkspace: () => [
+					{ ...history, id: "second", ts: 2 },
+					{ ...history, id: "first", ts: 1 },
+				],
+			},
+		})
 		await sidebar.navigateTask(1)
 		expect(sidebar.getActiveTaskId()).toBe("second")
 		expect(panel.getActiveTaskId()).toBe("second")
 		expect(first.abortTask).not.toHaveBeenCalled()
 		expect(second.abortTask).not.toHaveBeenCalled()
 		expect(sidebar.postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "focusInput" })
+	})
+
+	it("walks older saved chats in order and stops at both ends instead of cycling loaded tasks", async () => {
+		const provider = makeProvider(storage())
+		let current = "newest"
+		const rows = [
+			{ ...history, id: "newest", ts: 3 },
+			{ ...history, id: "middle", ts: 2 },
+			{ ...history, id: "oldest", ts: 1 },
+		]
+		Object.assign(provider, { taskHistoryStore: { getByWorkspace: () => rows } })
+		vi.spyOn(provider, "getActiveTaskId").mockImplementation(() => current)
+		const open = vi.spyOn(provider, "showTaskWithId").mockImplementation(async (id) => {
+			current = id
+		})
+		await provider.navigateTask(-1)
+		await provider.navigateTask(-1)
+		await provider.navigateTask(-1)
+		expect(open.mock.calls.map(([id]) => id)).toEqual(["middle", "oldest"])
+		await provider.navigateTask(1)
+		await provider.navigateTask(1)
+		await provider.navigateTask(1)
+		expect(open.mock.calls.map(([id]) => id)).toEqual(["middle", "oldest", "middle", "newest"])
+	})
+
+	it("advances repeated Previous keys while an earlier live chat publication is held", async () => {
+		const provider = makeProvider(storage())
+		const tasks = [makeTask("newest"), makeTask("middle"), makeTask("oldest")]
+		for (const task of tasks) await provider.addTaskToStack(task)
+		await provider.focusTask("newest")
+		Object.assign(provider, {
+			taskHistoryStore: {
+				getByWorkspace: () => tasks.map((task, index) => ({ ...history, id: task.taskId, ts: 3 - index })),
+			},
+		})
+		const entered = barrier()
+		const release = barrier()
+		vi.mocked(provider.postTaskStateToWebview).mockImplementationOnce(async () => {
+			entered.resolve()
+			await release.promise
+		})
+		const first = provider.navigateTask(-1)
+		await entered.promise
+		try {
+			await provider.navigateTask(-1)
+			expect(provider.getActiveTaskId()).toBe("oldest")
+		} finally {
+			release.resolve()
+			await first
+		}
+		expect(provider.getActiveTaskId()).toBe("oldest")
+		await provider.navigateTask(-1)
+		expect(provider.getActiveTaskId()).toBe("oldest")
+		for (const task of tasks) expect(task.abortTask).not.toHaveBeenCalled()
+	})
+
+	it("retries the same history neighbor after a failed cold restore", async () => {
+		const provider = makeProvider(storage())
+		const rows = ["newest", "middle", "oldest"].map((id, index) => ({ ...history, id, ts: 3 - index }))
+		Object.assign(provider, { taskHistoryStore: { getByWorkspace: () => rows } })
+		vi.spyOn(provider, "getActiveTaskId").mockReturnValue("newest")
+		const open = vi.spyOn(provider, "showTaskWithId").mockRejectedValue(new Error("Restore failed"))
+		await expect(provider.navigateTask(-1)).rejects.toThrow("Restore failed")
+		await expect(provider.navigateTask(-1)).rejects.toThrow("Restore failed")
+		expect(open.mock.calls.map(([id]) => id)).toEqual(["middle", "middle"])
+	})
+
+	it("keeps input-seeking navigation independent of saved-history initialization", async () => {
+		const provider = makeProvider(storage())
+		const ready = barrier()
+		Object.assign(provider, { taskHistoryStoreReady: ready.promise })
+		vi.spyOn(sessions(provider), "getAdjacentTaskId").mockReturnValue("question")
+		vi.spyOn(provider, "getActiveTaskId").mockReturnValue("question")
+		const open = vi.spyOn(provider, "showTaskWithId").mockResolvedValue(undefined)
+		try {
+			await provider.navigateTask(1, true)
+			expect(open).toHaveBeenCalledExactlyOnceWith("question")
+		} finally {
+			ready.resolve()
+		}
+	})
+
+	it.each(["selection", "workspace", "disposal"])(
+		"does not apply a history hotkey after %s changes while initialization is pending",
+		async (change) => {
+			const provider = makeProvider(storage())
+			await provider.addTaskToStack(makeTask("newest"))
+			const ready = barrier()
+			Object.assign(provider, {
+				taskHistoryStoreReady: ready.promise,
+				taskHistoryStore: { getByWorkspace: () => [{ ...history, id: "older" }] },
+			})
+			const open = vi.spyOn(provider, "showTaskWithId")
+			const navigation = provider.navigateTask(-1)
+			if (change === "selection") await provider.focusTask("newest")
+			else if (change === "workspace") Object.assign(provider, { currentWorkspacePath: "/other-workspace" })
+			else Object.assign(provider, { _disposed: true })
+			ready.resolve()
+			await navigation
+			expect(open).not.toHaveBeenCalled()
+		},
+	)
+
+	it("restores a saved history neighbor through the existing cold-open path", async () => {
+		const provider = makeProvider(storage())
+		const newest = makeTask("newest")
+		await provider.addTaskToStack(newest)
+		const older = { ...history, id: "older", ts: 1 }
+		Object.assign(provider, {
+			taskHistoryStore: { getByWorkspace: () => [{ ...history, id: "newest", ts: 2 }, older] },
+		})
+		const load = vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
+			historyItem: older,
+			taskDirPath: "/saved/older",
+			apiConversationHistoryFilePath: "/saved/older/api_conversation_history.json",
+			uiMessagesFilePath: "/saved/older/ui_messages.json",
+			apiConversationHistory: [],
+		})
+		const restore = vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation(async (item, options) => {
+			const task = makeTask(item.id)
+			sessions(provider).register(task)
+			await provider.focusTask(task.taskId, options?.navigationGeneration)
+			return task
+		})
+		await provider.navigateTask(-1)
+		expect(load).toHaveBeenCalledWith("older", { includeApiConversationHistory: false })
+		expect(restore).toHaveBeenCalledWith(older, expect.objectContaining({ preserveExisting: true }))
+		expect(provider.getActiveTaskId()).toBe("older")
+		expect(newest.abortTask).not.toHaveBeenCalled()
 	})
 })
 

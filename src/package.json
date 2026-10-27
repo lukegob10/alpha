@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.11",
+	"version": "3.2.12",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -72,6 +72,20 @@
 			]
 		},
 		"commands": [
+			{
+				"command": "alpha.diagramZoomOut",
+				"title": "%command.diagramZoomOut.title%",
+				"category": "%configuration.title%",
+				"icon": "$(zoom-out)",
+				"enablement": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
+			},
+			{
+				"command": "alpha.diagramZoomIn",
+				"title": "%command.diagramZoomIn.title%",
+				"category": "%configuration.title%",
+				"icon": "$(zoom-in)",
+				"enablement": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
+			},
 			{
 				"command": "alpha.sidebarNewChat",
 				"title": "%command.newTask.title%",
@@ -265,6 +279,14 @@
 		"menus": {
 			"commandPalette": [
 				{
+					"command": "alpha.diagramZoomOut",
+					"when": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
+				},
+				{
+					"command": "alpha.diagramZoomIn",
+					"when": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
+				},
+				{
 					"command": "alpha.sidebarNewChat",
 					"when": "false"
 				},
@@ -364,7 +386,18 @@
 					"when": "view == alpha.SidebarProvider"
 				}
 			],
-			"editor/title": []
+			"editor/title": [
+				{
+					"command": "alpha.diagramZoomOut",
+					"when": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'",
+					"group": "navigation@1"
+				},
+				{
+					"command": "alpha.diagramZoomIn",
+					"when": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'",
+					"group": "navigation@2"
+				}
+			]
 		},
 		"keybindings": [
 			{

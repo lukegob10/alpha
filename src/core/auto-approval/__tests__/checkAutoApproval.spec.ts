@@ -38,6 +38,43 @@ const readInside = JSON.stringify({ tool: "readFile", path: "src/foo.ts", isOuts
 const readOutside = JSON.stringify({ tool: "readFile", path: "../code.ts", isOutsideWorkspace: true })
 
 describe("checkAutoApproval", () => {
+	it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+		"waits for a human answer in Full Access with question timeout %s",
+		async (followupAutoApproveTimeoutMs) => {
+			await expect(
+				checkAutoApproval({
+					state: { approvalMode: "bypass", followupAutoApproveTimeoutMs },
+					ask: "followup",
+					text: JSON.stringify({ suggest: [{ answer: "Recommended answer" }] }),
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		},
+	)
+
+	it.each(["ask", "auto"] as const)(
+		"keeps %s question answers manual even with a saved delay",
+		async (approvalMode) => {
+			await expect(
+				checkAutoApproval({
+					state: { approvalMode, followupAutoApproveTimeoutMs: 60_000 },
+					ask: "followup",
+					text: JSON.stringify({ suggest: [{ answer: "Recommended answer" }] }),
+				}),
+			).resolves.toEqual({ decision: "ask" })
+		},
+	)
+
+	it("preserves a configured finite question timeout in Full Access", async () => {
+		const result = await checkAutoApproval({
+			state: { approvalMode: "bypass", followupAutoApproveTimeoutMs: 60_000 },
+			ask: "followup",
+			text: JSON.stringify({ suggest: [{ answer: "Recommended answer" }] }),
+		})
+		expect(result).toMatchObject({ decision: "timeout", timeout: 60_000 })
+		if (result.decision !== "timeout") throw new Error("Expected a configured question timeout")
+		expect(result.fn()).toEqual({ askResponse: "messageResponse", text: "Recommended answer" })
+	})
+
 	it.each([
 		"git status --short",
 		"git add src/file.ts",

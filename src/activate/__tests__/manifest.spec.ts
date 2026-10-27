@@ -7,6 +7,7 @@ type ExtensionManifest = {
 			command: string
 			icon?: string | { light: string; dark: string }
 			title?: string
+			enablement?: string
 		}>
 		keybindings: Array<{ command: string; key: string; mac?: string; when?: string; args?: string }>
 		menus: Record<string, Array<{ command: string; group?: string; when?: string }>>
@@ -103,7 +104,9 @@ describe("extension command manifest", () => {
 			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
 			{ command: "alpha.sidebarMarketplace", group: "overflow@2", when: "view == alpha.SidebarProvider" },
 		])
-		expect(manifest.contributes.menus["editor/title"]).toEqual([])
+		for (const { command } of manifest.contributes.menus["view/title"]) {
+			expect(manifest.contributes.menus["editor/title"].some((item) => item.command === command)).toBe(false)
+		}
 		for (const command of ["sidebarNewChat", "sidebarSettings", "sidebarScheduledTasks", "sidebarMarketplace"]) {
 			expect(manifest.contributes.commands.some((item) => item.command === `alpha.${command}`)).toBe(true)
 			expect(manifest.contributes.menus.commandPalette).toContainEqual({
@@ -115,6 +118,26 @@ describe("extension command manifest", () => {
 			command: "alpha.openIncidents",
 			when: "config.alpha.debug",
 		})
+	})
+
+	it("provides visible zoom controls only in the native SVG preview", () => {
+		const when = "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
+		expect(manifest.contributes.menus["editor/title"]).toEqual(
+			["Out", "In"].map((direction, index) => ({
+				command: `alpha.diagramZoom${direction}`,
+				when,
+				group: `navigation@${index + 1}`,
+			})),
+		)
+		for (const direction of ["Out", "In"]) {
+			const command = `alpha.diagramZoom${direction}`
+			expect(manifest.contributes.commands.find((item) => item.command === command)).toMatchObject({
+				title: `%command.diagramZoom${direction}.title%`,
+				icon: `$(zoom-${direction.toLowerCase()})`,
+				enablement: when,
+			})
+			expect(manifest.contributes.menus.commandPalette).toContainEqual({ command, when })
+		}
 	})
 
 	it("resolves every contributed localization reference to a nonempty English label", () => {

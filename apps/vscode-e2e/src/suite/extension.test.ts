@@ -1,15 +1,64 @@
 import * as assert from "assert"
+import { randomUUID } from "node:crypto"
 import * as vscode from "vscode"
 
 import { retiredProviderNames, type AlphaCodeSettings } from "@alpha-code/types"
 
 import { assertRequestedHostVersion, setDefaultSuiteTimeout } from "./test-utils"
+import { waitFor } from "./utils"
 
 suite("Alpha Extension", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("Runs on the requested VS Code version", () => {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
+	})
+
+	test("opens a vector diagram with visible native zoom controls", async () => {
+		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri
+		assert.ok(workspace)
+		const image = vscode.Uri.joinPath(workspace, `alpha-mermaid-${randomUUID()}.svg`)
+		await vscode.workspace.fs.writeFile(
+			image,
+			Buffer.from(
+				'<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="200" viewBox="0 0 1200 200"><rect width="1200" height="200" fill="#ffffff"/><text x="20" y="40" fill="#202020">Source records → Workbook</text></svg>',
+			),
+		)
+		const imageTab = () =>
+			vscode.window.tabGroups.all
+				.flatMap((group) => group.tabs)
+				.find(
+					(tab) =>
+						tab.input instanceof vscode.TabInputCustom && tab.input.uri.toString() === image.toString(),
+				)
+		try {
+			await vscode.commands.executeCommand("vscode.openWith", image, "imagePreview.previewEditor")
+			await waitFor(() => imageTab() !== undefined, { timeout: 10_000 })
+			const input = imageTab()?.input
+			assert.ok(input instanceof vscode.TabInputCustom)
+			assert.equal(input.viewType, "imagePreview.previewEditor")
+			const extension = vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)
+			assert.ok(extension)
+			const toolbar = extension.packageJSON.contributes.menus["editor/title"] as Array<{
+				command: string
+				when?: string
+			}>
+			const commands = await vscode.commands.getCommands(true)
+			for (const direction of ["In", "Out"]) {
+				const command = `alpha.diagramZoom${direction}`
+				assert.ok(commands.includes(command))
+				assert.ok(commands.includes(`imagePreview.zoom${direction}`))
+				assert.equal(
+					toolbar.find((item) => item.command === command)?.when,
+					"activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'",
+				)
+				await vscode.commands.executeCommand(command)
+			}
+		} finally {
+			const tab = imageTab()
+			if (tab) await vscode.window.tabGroups.close(tab)
+			await vscode.workspace.fs.delete(image)
+		}
 	})
 
 	test("Retired settings do not reappear in configuration or host projections", async () => {

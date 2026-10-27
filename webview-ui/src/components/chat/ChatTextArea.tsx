@@ -1449,6 +1449,7 @@ export const ChatTextArea = memo(
 								/>
 								<ChatReasoningControl profileLoading={reasoningProfileLoading} />
 								<AutoApproveDropdown
+									isVisible={isVisible && !isEditMode}
 									isDraft={isTaskDraft}
 									draftApprovalMode={draftApprovalMode}
 									onDraftApprovalModeChange={onDraftApprovalModeChange}

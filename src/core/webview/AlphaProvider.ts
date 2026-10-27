@@ -5,6 +5,7 @@ import {
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/TaskReasoning"
+import { TaskHistoryNavigator } from "./TaskHistoryNavigator"
 import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
 import { arePathsEqual } from "../../utils/path"
@@ -658,6 +659,7 @@ export class AlphaProvider
 	private taskStateSeq = 0
 	/** Latest task open wins. Older navigations must not focus or publish over it. */
 	private taskNavigationGeneration = 0
+	private taskHistoryNavigator?: TaskHistoryNavigator
 	private readonly publishedTaskTranscriptRevisions = new Map<string, number>()
 	private get configurationQueue(): Promise<void> {
 		return AlphaProvider.configurationQueues.get(this.context.secrets) ?? Promise.resolve()
@@ -1117,7 +1119,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.11-security-and-reliability"
+	public readonly latestAnnouncementId = "october-2026-v3.2.12-chat-controls-and-diagrams"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1762,6 +1764,15 @@ export class AlphaProvider
 				Boolean(instance.view && "active" in instance.view && instance.view.active),
 			) ?? visible.at(-1)
 		)
+	}
+
+	public async focusInput(): Promise<void> {
+		if (this._disposed || !this.view) return
+		// Reveal this provider's own view, including when several editor chats are open.
+		// WebviewView.show / WebviewPanel.reveal: VS Code API and 1.125.0 types checked 2026-10-26.
+		if ("reveal" in this.view) this.view.reveal(undefined, false)
+		else this.view.show(false)
+		await this.postMessageToWebview({ type: "action", action: "focusInput" })
 	}
 
 	public async setWebviewFocused(focused: boolean): Promise<void> {
@@ -2460,6 +2471,7 @@ export class AlphaProvider
 			"queueMessage",
 			"sendAndSteer",
 			"steerQueuedMessage",
+			"steerNextQueuedMessage",
 			"removeQueuedMessage",
 			"editQueuedMessage",
 			"reorderQueuedMessage",
@@ -5435,7 +5447,7 @@ export class AlphaProvider
 			hasOpenedModeSelector: this.getGlobalState("hasOpenedModeSelector") ?? false,
 			lockApiConfigAcrossModes: lockApiConfigAcrossModes ?? false,
 			alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
-			followupAutoApproveTimeoutMs: followupAutoApproveTimeoutMs ?? 60000,
+			followupAutoApproveTimeoutMs: followupAutoApproveTimeoutMs ?? 0,
 			includeDiagnosticMessages: includeDiagnosticMessages ?? true,
 			maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
 			includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
@@ -5506,7 +5518,7 @@ export class AlphaProvider
 			subagentInterruptMessage: stateValues.subagentInterruptMessage ?? true,
 			subagentAgentTypes: stateValues.subagentAgentTypes,
 			alwaysAllowFollowupQuestions: approval.alwaysAllowFollowupQuestions,
-			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 60000,
+			followupAutoApproveTimeoutMs: stateValues.followupAutoApproveTimeoutMs ?? 0,
 			diagnosticsEnabled: stateValues.diagnosticsEnabled ?? true,
 			allowedMaxRequests: stateValues.allowedMaxRequests,
 			allowedMaxCost: stateValues.allowedMaxCost,
@@ -7781,11 +7793,41 @@ export class AlphaProvider
 	}
 
 	public async navigateTask(direction: -1 | 1, needsInputOnly = false): Promise<void> {
-		const taskId = this.taskSessions.getAdjacentTaskId(direction, needsInputOnly)
+		const navigator = (this.taskHistoryNavigator ??= new TaskHistoryNavigator())
+		const requestedGeneration = this.taskNavigationGeneration
+		const requestedWorkspace = this.cwd
+		if (!needsInputOnly) await this.taskHistoryStoreReady
+		const context = { generation: this.taskNavigationGeneration, workspace: this.cwd }
+		if (
+			this._disposed ||
+			requestedWorkspace !== context.workspace ||
+			(requestedGeneration !== context.generation && !navigator.isCurrent(context))
+		)
+			return
+		const taskId = needsInputOnly
+			? this.taskSessions.getAdjacentTaskId(direction, true)
+			: navigator.select(
+					this.taskHistoryStore.getByWorkspace(this.cwd),
+					this.getActiveTaskId(),
+					direction,
+					context,
+				)
 		if (!taskId) return
-		await this.showTaskWithId(taskId)
-		if (this.getActiveTaskId() === taskId) {
-			await this.postMessageToWebview({ type: "action", action: "focusInput" })
+		// Reserve the cursor before awaiting a cold restore. Repeated keys advance
+		// through history while the existing latest-open-wins generation handles publication.
+		const opening = this.showTaskWithId(taskId)
+		const generation = this.taskNavigationGeneration
+		if (needsInputOnly) navigator.reset()
+		else navigator.recordOpen(generation)
+		try {
+			await opening
+			if (this._disposed || generation !== this.taskNavigationGeneration) return
+			if (this.getActiveTaskId() === taskId) {
+				await this.postMessageToWebview({ type: "action", action: "focusInput" })
+			} else navigator.reset()
+		} catch (error) {
+			if (generation === this.taskNavigationGeneration) navigator.reset()
+			throw error
 		}
 	}
 

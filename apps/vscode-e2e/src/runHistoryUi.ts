@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto"
 import { downloadAndUnzipVSCode } from "@vscode/test-electron"
 import { runExtensionTests, type ExtensionTestRunResult } from "./runTest"
 import { CdpConnection } from "./ui/cdp"
+import { createRenderedAcceptanceControls } from "./ui/renderedAcceptance"
 import { activateNativeChatHeader, readNativeChatHeader } from "./ui/nativeChatHeader"
 import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
@@ -460,6 +461,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 				)
 			}
 		}
+		const controls = createRenderedAcceptanceControls(connection, sessionId, abort.signal)
 		let pointerInteractionSequence = 0
 		const inspectHistoryInteraction = async (taskId: string, baseline: HistoryStyleMetrics) => {
 			const rowSelector = `[data-testid="task-item-${taskId}"]`
@@ -498,26 +500,31 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 					assert.ok(typeof originX === "number" && typeof originY === "number")
 					diagnostic.localPoint = point
 					diagnostic.frameQuad = model.content.slice(0, 8)
-					diagnostic.dispatchedPoint = { x: originX + point.x, y: originY + point.y }
+					diagnostic.workbenchPoint = { x: originX + point.x, y: originY + point.y }
 					await record("beforeDispatch", () =>
 						evaluate(historyPointerProbeExpression(rowSelector, "snapshot")),
 					)
 					await record("workbenchHit", () =>
 						evaluate(
-							`(()=>{const point=${javascriptLiteral(diagnostic.dispatchedPoint)},e=document.elementFromPoint(point.x,point.y);return {focused:document.hasFocus(),hit:e?{tag:String(e.tagName).slice(0,32),testId:e.getAttribute('data-testid')?.slice(0,80)??null}:null}})()`,
+							`(()=>{const point=${javascriptLiteral(diagnostic.workbenchPoint)},e=document.elementFromPoint(point.x,point.y);return {focused:document.hasFocus(),hit:e?{tag:String(e.tagName).slice(0,32),testId:e.getAttribute('data-testid')?.slice(0,80)??null}:null}})()`,
 							pageSession,
 							false,
 						),
 					)
-					await connection.request(
-						"Input.dispatchMouseEvent",
-						{ type: "mouseMoved", x: originX + point.x, y: originY + point.y },
-						pageSession,
-					)
+					// CDP coordinates belong to the input handler's renderer; use its own stable frame geometry.
+					diagnostic.dispatchTarget = "webview"
+					diagnostic.dispatchedPoint = await controls.hover(`d.querySelector(${selector})`)
 					await Promise.all([
 						record("afterDispatch", () => evaluate(historyPointerProbeExpression(rowSelector, "snapshot"))),
 						check(`d.querySelector(${selector}).matches(':hover')`),
 					])
+					const pointerEntry = await evaluate<{ events: Array<{ trusted: boolean }> }>(
+						historyPointerProbeExpression(rowSelector, "snapshot"),
+					)
+					assert.ok(
+						pointerEntry.events.some((event) => event.trusted),
+						"Hover requires a trusted pointer entry",
+					)
 					await check(
 						`d.defaultView.getComputedStyle(d.querySelector(${selector}).querySelector('[data-testid=task-content]')).color===${javascriptLiteral(baseline.expected.foreground)}`,
 					)
@@ -952,7 +959,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			key: (key: "Tab" | "Escape", shift?: boolean) =>
 				dispatchRenderedDialogKey(connection, sessionId, key, shift),
 		}
-		await verifyRenderedDialogFocus(dialogDriver, '[role="dialog"]', "Mermaid diagram")
+		await verifyRenderedDialogFocus(dialogDriver, '[role="dialog"]', "Mermaid Code")
 		await capture("diagram-modal-keyboard")
 		await dismissRenderedDialogAndRestoreFocus(
 			dialogDriver,

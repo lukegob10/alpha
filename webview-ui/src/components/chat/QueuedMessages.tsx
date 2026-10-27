@@ -18,6 +18,7 @@ interface QueuedMessagesProps {
 	onReorder: (fromIndex: number, toIndex: number) => void
 	editingMessageId?: string
 	steeringMessageId?: string
+	steeringPending?: boolean
 	pendingMessageId?: string
 }
 
@@ -29,6 +30,7 @@ export const QueuedMessages = ({
 	onReorder,
 	editingMessageId,
 	steeringMessageId,
+	steeringPending = false,
 	pendingMessageId,
 }: QueuedMessagesProps) => {
 	const { t } = useTranslation("chat")
@@ -42,6 +44,7 @@ export const QueuedMessages = ({
 	// Claimed and not-yet-admitted rows have no selectable queue position.
 	// Suspend reordering until the host finishes that handoff.
 	const reorderDisabled =
+		steeringPending ||
 		steeringMessageId !== undefined ||
 		pendingMessageId !== undefined ||
 		queue.some((message) => message.deliveryState === "delivering")
@@ -113,7 +116,8 @@ export const QueuedMessages = ({
 					const isSteering = steeringMessageId === message.id
 					const isPending = pendingMessageId === message.id
 					const isDelivering = message.deliveryState === "delivering"
-					const controlsDisabled = isEditing || isPending || isDelivering || steeringMessageId !== undefined
+					const controlsDisabled =
+						isEditing || isPending || isDelivering || steeringPending || steeringMessageId !== undefined
 					const dragDisabled = controlsDisabled || reorderDisabled
 
 					return (

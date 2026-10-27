@@ -542,6 +542,33 @@ describe("AlphaProvider", () => {
 		expect(AlphaProvider.getVisibleInstance()).toBe(provider)
 	})
 
+	test.each(["sidebar", "editor"])("reveals its own %s view before focusing the composer", async (surface) => {
+		const reveal = vi.fn()
+		const show = vi.fn()
+		const view = surface === "editor" ? { reveal } : { show }
+		Object.assign(provider, { view })
+		const post = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+
+		await provider.focusInput()
+
+		if (surface === "editor") expect(reveal).toHaveBeenCalledExactlyOnceWith(undefined, false)
+		else expect(show).toHaveBeenCalledExactlyOnceWith(false)
+		expect(post).toHaveBeenCalledExactlyOnceWith({ type: "action", action: "focusInput" })
+		expect((surface === "editor" ? reveal : show).mock.invocationCallOrder[0]).toBeLessThan(
+			post.mock.invocationCallOrder[0],
+		)
+	})
+
+	test("does not focus an unattached or disposed view", async () => {
+		const post = vi.spyOn(provider, "postMessageToWebview").mockResolvedValue(undefined)
+		await provider.focusInput()
+		const show = vi.fn()
+		Object.assign(provider, { view: { show }, _disposed: true })
+		await provider.focusInput()
+		expect(show).not.toHaveBeenCalled()
+		expect(post).not.toHaveBeenCalled()
+	})
+
 	test.each(["success", "failure"])(
 		"waits for startup configuration before constructor memory initialization (%s)",
 		async (outcome) => {
@@ -674,8 +701,8 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.11 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.11-security-and-reliability"
+	test("shows the v3.2.12 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.12-chat-controls-and-diagrams"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -1884,6 +1911,16 @@ describe("AlphaProvider", () => {
 			await provider.contextProxy.initialize()
 			expect(await provider.getState()).not.toHaveProperty("personality")
 			expect(await provider.getStateToPostToWebview()).not.toHaveProperty("personality")
+		},
+	)
+
+	test.each([undefined, 0, 60_000])(
+		"projects question answer timeout %s to runtime and Settings",
+		async (timeout) => {
+			await provider.contextProxy.setValue("approvalMode", "bypass")
+			await provider.contextProxy.setValue("followupAutoApproveTimeoutMs", timeout)
+			expect((await provider.getState()).followupAutoApproveTimeoutMs).toBe(timeout ?? 0)
+			expect((await provider.getStateToPostToWebview()).followupAutoApproveTimeoutMs).toBe(timeout ?? 0)
 		},
 	)
 

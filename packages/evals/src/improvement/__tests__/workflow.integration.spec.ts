@@ -167,7 +167,9 @@ async function reviewedDraft(
 			endpoint: "https://offline-review.invalid/v1/responses",
 			model: "offline-review-fixture",
 			apiKeyEnv: "OFFLINE_REVIEW_KEY",
-			timeoutMs: 5_000,
+			// This mocked request also verifies retained filesystem evidence. Its
+			// budget must accommodate that local work on Windows under test load.
+			timeoutMs: 30_000,
 			maxRequestBytes: 131_072,
 			maxResponseBytes: 131_072,
 			maxOutputTokens: 2_048,
@@ -469,7 +471,9 @@ describe("offline improvement workflow composition", () => {
 		})
 		expect(imported.status).toBe("inconclusive")
 		expect(imported.reasons).toContain("Imported or archived outputs do not establish fresh execution")
-	}, 30_000)
+		// The complete workflow executes several real Node/Git subprocesses and
+		// verifies immutable artifact ancestry; individual operation limits remain.
+	}, 90_000)
 
 	it("retains original attempt evidence and immutable human adjudication ancestry", async () => {
 		const fixture = await observedIteration()

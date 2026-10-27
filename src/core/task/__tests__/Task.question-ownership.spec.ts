@@ -69,7 +69,7 @@ function createQuestionTask(mode: "code" | "architect", approvalMode: ApprovalMo
 		emit: vi.fn(),
 		say,
 	})
-	return { task, say, postMessageToWebview, select: (value: boolean) => (selected = value) }
+	return { task, state, say, postMessageToWebview, select: (value: boolean) => (selected = value) }
 }
 
 function requestQuestion(task: Task) {
@@ -196,8 +196,14 @@ describe("primary question ownership", () => {
 		}
 	})
 
-	it.each(["scheduler", "task"] as const)("cancels the offscreen question through %s", async (source) => {
-		const { task, say } = createQuestionTask("architect", "ask")
+	it.each([
+		["ask", "scheduler"],
+		["ask", "task"],
+		["bypass", "scheduler"],
+		["bypass", "task"],
+	] as const)("cancels an indefinite offscreen %s question through %s", async (approvalMode, source) => {
+		const { task, state, say } = createQuestionTask("architect", approvalMode)
+		state.followupAutoApproveTimeoutMs = 0
 		const request = requestQuestion(task)
 		try {
 			await vi.advanceTimersByTimeAsync(2_100)
@@ -210,6 +216,37 @@ describe("primary question ownership", () => {
 			expect(request.callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ answers: {} }))
 			expect(request.callbacks.handleError).not.toHaveBeenCalled()
 			expect(say).not.toHaveBeenCalled()
+			expect(task.getActiveAskTimestamp()).toBeUndefined()
+		} finally {
+			await cancelRequest(request)
+		}
+	})
+
+	it.each([false, true])("keeps a Full Access question pending indefinitely with onScreen=%s", async (onScreen) => {
+		const { task, state, say } = createQuestionTask("code", "bypass", onScreen)
+		state.followupAutoApproveTimeoutMs = 0
+		const request = requestQuestion(task)
+		try {
+			await vi.advanceTimersByTimeAsync(120_000)
+			expect(request.isSettled()).toBe(false)
+			expect(say).not.toHaveBeenCalled()
+			expect(task.clineMessages[0]?.isAnswered).not.toBe(true)
+
+			expect(
+				task.handleWebviewAskResponse(
+					"messageResponse",
+					JSON.stringify({ answers: submittedAnswers }),
+					undefined,
+					undefined,
+					task.getActiveAskTimestamp(),
+				),
+			).toBe(true)
+			await vi.advanceTimersByTimeAsync(100)
+			await request.pending
+			expect(request.callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({ answers: submittedAnswers }),
+			)
+			expect(task.clineMessages[0]?.isAnswered).toBe(true)
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
 		} finally {
 			await cancelRequest(request)

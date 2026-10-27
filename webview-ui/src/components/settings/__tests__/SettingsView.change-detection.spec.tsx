@@ -208,7 +208,20 @@ vi.mock("../ApiOptions", () => ({
 }))
 
 vi.mock("../AutoApproveSettings", () => ({
-	AutoApproveSettings: () => null,
+	AutoApproveSettings: ({
+		followupAutoApproveTimeoutMs,
+		setCachedStateField,
+	}: {
+		followupAutoApproveTimeoutMs?: number
+		setCachedStateField: (field: "followupAutoApproveTimeoutMs", value: number) => void
+	}) => (
+		<button
+			data-testid="wait-for-question-answers"
+			data-timeout={followupAutoApproveTimeoutMs}
+			onClick={() => setCachedStateField("followupAutoApproveTimeoutMs", 0)}>
+			Wait indefinitely for answers
+		</button>
+	),
 }))
 
 vi.mock("../SectionHeader", () => ({
@@ -344,6 +357,39 @@ describe("SettingsView - Change Detection Fix", () => {
 				mutations: { retry: false },
 			},
 		})
+	})
+
+	it("buffers indefinite question waiting across live refreshes and saves only on Settings Save", async () => {
+		const liveState = createExtensionState({ didHydrateState: true, followupAutoApproveTimeoutMs: 60_000 })
+		;(useExtensionState as any).mockReturnValue(liveState)
+		const view = (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="autoApprove" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view)
+		await waitFor(() =>
+			expect(screen.getByTestId("wait-for-question-answers")).toHaveAttribute("data-timeout", "60000"),
+		)
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("wait-for-question-answers"))
+		expect(screen.getByTestId("wait-for-question-answers")).toHaveAttribute("data-timeout", "0")
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		;(useExtensionState as any).mockReturnValue({ ...liveState, followupAutoApproveTimeoutMs: 120_000 })
+		rerender(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="autoApprove" />
+			</QueryClientProvider>,
+		)
+		expect(screen.getByTestId("wait-for-question-answers")).toHaveAttribute("data-timeout", "0")
+		fireEvent.click(screen.getByTestId("save-button"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "updateSettings",
+				updatedSettings: expect.objectContaining({ followupAutoApproveTimeoutMs: 0 }),
+			}),
+		)
 	})
 
 	it("does not resave a retired preference supplied by stale state", async () => {

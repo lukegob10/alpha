@@ -227,7 +227,7 @@
 	"sendMessage": "Send message",
 	"pressToSend": "Press {{keyCombination}} to send",
 	"pressToQueue": "Press {{keyCombination}} to queue",
-	"pressToSteer": "Press {{keyCombination}} to send and steer",
+	"pressToSteer": "Press {{keyCombination}} to steer",
 	"typeMessage": "Type a message...",
 	"typeTask": "What should I work on?",
 	"composer": {
@@ -493,11 +493,11 @@
 		"modeDescription": {
 			"ask": "Auto-approve workspace reads. Ask before writes, commands, sub-agent launches, tickets, MCP, and outside paths. A saved command prefix can allow matching commands.",
 			"auto": "Auto-approve workspace reads, in-workspace file changes and commands, and Alpha Tickets for the current project. Ask for outside or protected changes, sub-agent launches, and MCP. Command deny rules still apply.",
-			"bypass": "Also auto-approve outside paths, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands."
+			"bypass": "Also auto-approve outside paths, protected files, and MCP. Follow-up questions use the saved answer setting in Auto-Approve settings. The deny-list still blocks forbidden commands."
 		},
 		"bypassWarning": {
 			"title": "Enable Full Access for this task?",
-			"body": "Full Access for this task auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands. This does not change the default for new tasks.",
+			"body": "Full Access for this task auto-approves writes and commands outside the opened workspace, protected files, and MCP. Follow-up questions use your saved answer setting. The deny-list still blocks forbidden commands. This does not change the default for new tasks.",
 			"confirm": "Enable for this task",
 			"cancel": "Cancel"
 		}
@@ -511,11 +511,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves security and reliability while preserving local memories.",
-			"taskContinuity": "Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
-			"toolsAndProviders": "Choose curated frontier models and supported reasoning settings across providers.",
-			"delegation": "Enable local memories with separate controls for use, background generation, and reset.",
-			"workspaceExperience": "Use a cleaner settings layout and notification sounds without legacy speech controls."
+			"welcome": "Alpha v{{version}} improves chat controls, saved-chat navigation, and diagram previews.",
+			"taskContinuity": "Browse older and newer saved chats in a stable workspace history.",
+			"toolsAndProviders": "Steer queued messages in order while keeping unsent text and images intact.",
+			"delegation": "Cycle approval modes and keep questions open until you answer by default.",
+			"workspaceExperience": "Open readable Mermaid diagrams in vector previews with native editor zoom controls."
 		}
 	},
 	"crossTasks": {

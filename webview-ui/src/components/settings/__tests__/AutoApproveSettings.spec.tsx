@@ -35,6 +35,81 @@ vi.mock("@vscode/webview-ui-toolkit/react", async (importOriginal) => {
 })
 
 describe("AutoApproveSettings session dial", () => {
+	it.each(["ask", "auto", "bypass"] as const)(
+		"lets %s users choose indefinite question waiting in the edit buffer",
+		(approvalMode) => {
+			const setCachedStateField = vi.fn()
+			const { rerender } = render(
+				<AutoApproveSettings
+					approvalMode={approvalMode}
+					followupAutoApproveTimeoutMs={60_000}
+					setCachedStateField={setCachedStateField}
+				/>,
+			)
+			const checkbox = screen.getByRole("checkbox", {
+				name: settingsLocale.autoApprove.followupQuestions.waitLabel,
+			})
+			expect(checkbox).not.toBeChecked()
+			expect(checkbox).toHaveAccessibleDescription(/until you answer, including in Full Access/)
+			fireEvent.click(checkbox)
+			expect(setCachedStateField).toHaveBeenCalledTimes(1)
+			expect(setCachedStateField).toHaveBeenCalledWith("followupAutoApproveTimeoutMs", 0)
+
+			rerender(
+				<AutoApproveSettings
+					approvalMode={approvalMode}
+					followupAutoApproveTimeoutMs={0}
+					setCachedStateField={setCachedStateField}
+				/>,
+			)
+			expect(checkbox).toBeChecked()
+			expect(
+				screen.queryByLabelText(settingsLocale.autoApprove.followupQuestions.timeoutLabel),
+			).not.toBeInTheDocument()
+			fireEvent.click(checkbox)
+			expect(setCachedStateField).toHaveBeenLastCalledWith("followupAutoApproveTimeoutMs", 60_000)
+		},
+	)
+
+	it("defaults to waiting for answers and preserves that preference when changing approval modes", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AutoApproveSettings
+				approvalMode="auto"
+				approvalModeBypassAcknowledged
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+		expect(
+			screen.getByRole("checkbox", { name: settingsLocale.autoApprove.followupQuestions.waitLabel }),
+		).toBeChecked()
+		fireEvent.click(screen.getByTestId("approval-mode-bypass"))
+		expect(setCachedStateField).toHaveBeenCalledWith("approvalMode", "bypass")
+		expect(setCachedStateField).not.toHaveBeenCalledWith("followupAutoApproveTimeoutMs", expect.anything())
+	})
+
+	it("edits an automatic question delay in seconds without accepting invalid delays", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<AutoApproveSettings
+				approvalMode="bypass"
+				followupAutoApproveTimeoutMs={60_000}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+		const input = screen.getByRole("spinbutton", {
+			name: settingsLocale.autoApprove.followupQuestions.timeoutLabel,
+		})
+		expect(input).toHaveValue(60)
+		fireEvent.change(input, { target: { value: "180" } })
+		expect(setCachedStateField).toHaveBeenCalledTimes(1)
+		expect(setCachedStateField).toHaveBeenCalledWith("followupAutoApproveTimeoutMs", 180_000)
+		for (const value of ["", "0", "-1", "2147484"]) {
+			fireEvent.change(input, { target: { value } })
+		}
+		expect(setCachedStateField).toHaveBeenCalledTimes(1)
+	})
+
 	it("shows Ask / Auto / Full Access and nested command rules without leftover chips", () => {
 		const setCachedStateField = vi.fn()
 		render(

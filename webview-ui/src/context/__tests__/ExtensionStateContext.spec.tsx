@@ -26,6 +26,11 @@ const TicketApprovalTestComponent = () => {
 	return <button onClick={() => setAlwaysAllowTickets(!alwaysAllowTickets)}>{String(alwaysAllowTickets)}</button>
 }
 
+const ApprovalModeTestComponent = () => {
+	const { approvalMode } = useExtensionState()
+	return <div data-testid="global-approval-mode">{approvalMode}</div>
+}
+
 const TestComponent = () => {
 	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowAlphaIgnoredFiles } =
 		useExtensionState()
@@ -169,6 +174,17 @@ const makeLifecycleDegradedSignal = (degraded: boolean) =>
 describe("ExtensionStateContext", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals()
+	})
+
+	it("leaves saved defaults unchanged when the composer receives an approval-cycle shortcut", () => {
+		render(
+			<ExtensionStateContextProvider>
+				<ApprovalModeTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+		act(() => dispatchExtensionState({ approvalMode: "ask" }))
+		fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		expect(screen.getByTestId("global-approval-mode")).toHaveTextContent("ask")
 	})
 
 	it("defaults new-install Auto ticket approval on and hydrates leftover off, toggles, and reloads", () => {

@@ -1,9 +1,10 @@
-import { act, render } from "@/utils/test-utils"
+import { act, cleanup, fireEvent, render, screen } from "@/utils/test-utils"
 
 const mermaidMocks = vi.hoisted(() => ({
 	initialize: vi.fn(),
 	parse: vi.fn(),
 	render: vi.fn(),
+	postMessage: vi.fn(),
 }))
 
 vi.mock("mermaid", () => ({
@@ -17,6 +18,8 @@ vi.mock("../CodeBlock", () => ({
 vi.mock("../MermaidButton", () => ({
 	MermaidButton: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
+
+vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: mermaidMocks.postMessage } }))
 
 vi.mock("@src/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({ t: (key: string) => key }),
@@ -34,21 +37,151 @@ const deferred = <T,>() => {
 	return { promise, resolve }
 }
 
+const originalClass = document.body.className
+const originalStyle = document.body.getAttribute("style")
+afterEach(() => {
+	cleanup()
+	document.body.className = originalClass
+	if (originalStyle === null) document.body.removeAttribute("style")
+	else document.body.setAttribute("style", originalStyle)
+	vi.useRealTimers()
+})
+
 describe("MermaidBlock security configuration", () => {
-	it("initializes Mermaid with strict sanitization", async () => {
-		await import("../MermaidBlock")
+	it("initializes Mermaid with strict sanitization and a customizable theme", async () => {
+		vi.useFakeTimers()
+		mermaidMocks.parse.mockResolvedValue(true)
+		mermaidMocks.render.mockResolvedValue({ svg: '<svg viewBox="0 0 100 100"></svg>' })
+		const { default: MermaidBlock } = await import("../MermaidBlock")
+		render(<MermaidBlock code="flowchart LR; A-->B" />)
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
 
 		expect(mermaidMocks.initialize).toHaveBeenCalledWith(
 			expect.objectContaining({
 				startOnLoad: false,
 				securityLevel: "strict",
+				theme: "base",
 			}),
 		)
+		vi.useRealTimers()
 	})
 })
 
 describe("MermaidBlock rendering", () => {
 	afterEach(() => vi.useRealTimers())
+
+	it("opens the rendered SVG directly with UTF-8 text and its theme background", async () => {
+		vi.useFakeTimers()
+		mermaidMocks.postMessage.mockClear()
+		mermaidMocks.parse.mockResolvedValue(true)
+		mermaidMocks.render.mockResolvedValue({
+			svg: '<svg viewBox="0 0 1200 600"><foreignObject width="200" height="40"><div>Revenue £ → résumé</div></foreignObject></svg>',
+		})
+		const { default: MermaidBlock } = await import("../MermaidBlock")
+		render(<MermaidBlock code="flowchart LR; A-->B" />)
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		fireEvent.click(screen.getByRole("button", { name: "common:mermaid.buttons.open" }))
+		expect(mermaidMocks.postMessage).toHaveBeenCalledTimes(1)
+		const message = mermaidMocks.postMessage.mock.calls[0]![0]
+		expect(message.type).toBe("openImage")
+		expect(message.text).toMatch(/^data:image\/svg\+xml;base64,/)
+		const markup = new TextDecoder().decode(
+			Uint8Array.from(atob(message.text.split(",")[1]), (character) => character.charCodeAt(0)),
+		)
+		expect(markup).toContain("Revenue £ → résumé")
+		expect(markup).toContain('xmlns="http://www.w3.org/1999/xhtml"')
+		expect(markup).toContain('fill="#1e1e1e"')
+		expect(markup).toContain('width="1200"')
+	})
+
+	it("uses VS Code colors and rerenders safely when the theme changes", async () => {
+		vi.useFakeTimers()
+		document.body.className = "vscode-light"
+		document.body.style.setProperty("--vscode-editor-background", "#ffffff")
+		document.body.style.setProperty("--vscode-editor-foreground", "#202020")
+		mermaidMocks.parse.mockResolvedValue(true)
+		mermaidMocks.render.mockResolvedValue({ svg: '<svg viewBox="0 0 100 100"></svg>' })
+		const { default: MermaidBlock } = await import("../MermaidBlock")
+		render(<MermaidBlock code="flowchart LR; A-->B" />)
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		expect(mermaidMocks.initialize).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				securityLevel: "strict",
+				themeVariables: expect.objectContaining({
+					background: "#ffffff",
+					textColor: "#202020",
+					darkMode: false,
+				}),
+			}),
+		)
+		await act(async () => {
+			document.body.className = "vscode-dark"
+			document.body.style.setProperty("--vscode-editor-background", "#1e1e1e")
+			document.body.style.setProperty("--vscode-editor-foreground", "#eeeeee")
+			await Promise.resolve()
+		})
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		expect(mermaidMocks.initialize).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				securityLevel: "strict",
+				themeVariables: expect.objectContaining({
+					background: "#1e1e1e",
+					textColor: "#eeeeee",
+					darkMode: true,
+				}),
+			}),
+		)
+		await act(async () => {
+			document.body.style.setProperty("--vscode-editor-background", "#101820")
+			await Promise.resolve()
+		})
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		expect(
+			screen.getByRole("button", { name: "common:mermaid.buttons.open" }).querySelector("svg > rect"),
+		).toHaveAttribute("fill", "#101820")
+	})
+
+	it("disconnects theme observation and cancels scheduled work when unmounted", async () => {
+		vi.useFakeTimers()
+		mermaidMocks.render.mockClear()
+		mermaidMocks.parse.mockResolvedValue(true)
+		mermaidMocks.render.mockResolvedValue({ svg: '<svg viewBox="0 0 100 100"></svg>' })
+		const { default: MermaidBlock } = await import("../MermaidBlock")
+		const { unmount } = render(<MermaidBlock code="flowchart LR; A-->B" />)
+		unmount()
+		await act(async () => {
+			document.body.className = "vscode-light"
+			await vi.advanceTimersByTimeAsync(1000)
+		})
+		expect(mermaidMocks.render).not.toHaveBeenCalled()
+	})
+
+	it("preserves a wide diagram's readable SVG dimensions instead of shrinking it to the chat width", async () => {
+		vi.useFakeTimers()
+		mermaidMocks.parse.mockResolvedValue(true)
+		mermaidMocks.render.mockResolvedValue({
+			svg: '<svg xmlns="http://www.w3.org/2000/svg" width="100%" style="max-width: 1800px;" viewBox="0 0 1800 900"><text>Source records</text></svg>',
+		})
+		const { default: MermaidBlock } = await import("../MermaidBlock")
+		const { container } = render(<MermaidBlock code="flowchart LR; A-->B" />)
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		const svg = container.querySelector("svg")!
+		expect(svg).toHaveAttribute("width", "1800")
+		expect(svg).toHaveAttribute("height", "900")
+		expect(svg.style.maxWidth).toBe("none")
+	})
 
 	it("does not let an older render overwrite newer code", async () => {
 		vi.useFakeTimers()

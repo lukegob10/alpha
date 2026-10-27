@@ -1124,6 +1124,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowTickets={alwaysAllowTickets}
 					alwaysAllowExecute={alwaysAllowExecute}
 					autoApprovalEnabled={autoApprovalEnabled}
+					followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
 					allowedCommands={allowedCommands}
 					allowedMaxRequests={allowedMaxRequests ?? undefined}
 					allowedMaxCost={allowedMaxCost ?? undefined}

@@ -110,6 +110,102 @@ describe("AutoApproveDropdown", () => {
 		vi.useRealTimers()
 	})
 
+	it("cycles the current task Ask, Auto, Full Access, Ask through acknowledged host updates", () => {
+		mockState.currentTaskApprovalMode = "ask"
+		mockState.approvalModeBypassAcknowledged = true
+		render(<AutoApproveDropdown />)
+		for (const mode of ["auto", "bypass", "ask"]) {
+			fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+			expect(latestTaskApprovalUpdate().approvalMode).toBe(mode)
+			respondToTaskApprovalUpdate("applied")
+			expect(screen.getByTestId("auto-approve-dropdown-trigger")).toHaveTextContent(
+				`chat:autoApprove.modes.${mode}`,
+			)
+		}
+		expect(vscode.postMessage).toHaveBeenCalledTimes(3)
+		expect(mockSetters.setApprovalMode).not.toHaveBeenCalled()
+	})
+
+	it("requires the existing Full Access acknowledgment for a shortcut escalation", () => {
+		mockState.currentTaskApprovalMode = "auto"
+		render(<AutoApproveDropdown />)
+		fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		expect(screen.getByText("chat:autoApprove.bypassWarning.title")).toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByTestId("approval-mode-bypass-confirm"))
+		expect(latestTaskApprovalUpdate().approvalMode).toBe("bypass")
+	})
+
+	it("does not duplicate pending cycles or advance on a rejected update", () => {
+		mockState.currentTaskApprovalMode = "ask"
+		render(<AutoApproveDropdown />)
+		const cycle = () =>
+			fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		cycle()
+		cycle()
+		expect(allTaskApprovalUpdates()).toHaveLength(1)
+		respondToTaskApprovalUpdate("rejected")
+		cycle()
+		expect(allTaskApprovalUpdates().map((update) => update.approvalMode)).toEqual(["auto", "auto"])
+	})
+
+	it("resumes from a new canonical task mode after a host projection refresh", () => {
+		mockState.currentTaskApprovalMode = "ask"
+		mockState.approvalModeBypassAcknowledged = true
+		const view = render(<AutoApproveDropdown />)
+		fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		respondToTaskApprovalUpdate("applied")
+		expect(screen.getByTestId("auto-approve-dropdown-trigger")).toHaveTextContent("chat:autoApprove.modes.auto")
+		mockState.currentTaskApprovalMode = "bypass"
+		view.rerender(<AutoApproveDropdown />)
+		expect(screen.getByTestId("auto-approve-dropdown-trigger")).toHaveTextContent("chat:autoApprove.modes.bypass")
+		fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		expect(latestTaskApprovalUpdate().approvalMode).toBe("ask")
+	})
+
+	it("cycles new-chat drafts without changing the previous task or global defaults", () => {
+		mockState.approvalModeBypassAcknowledged = true
+		const onChange = vi.fn()
+		const view = render(
+			<AutoApproveDropdown isDraft draftApprovalMode="ask" onDraftApprovalModeChange={onChange} />,
+		)
+		for (const [current, next] of [
+			["ask", "auto"],
+			["auto", "bypass"],
+			["bypass", "ask"],
+		] as const) {
+			view.rerender(
+				<AutoApproveDropdown isDraft draftApprovalMode={current} onDraftApprovalModeChange={onChange} />,
+			)
+			fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+			expect(onChange).toHaveBeenLastCalledWith(next)
+		}
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([{ isVisible: false }, { disabled: true }])(
+		"ignores cycles when the composer is unavailable: %j",
+		(props) => {
+			render(<AutoApproveDropdown {...props} />)
+			fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+			expect(screen.queryByText("chat:autoApprove.bypassWarning.title")).not.toBeInTheDocument()
+		},
+	)
+
+	it("does not transfer a Full Access warning to a newly selected task", () => {
+		const view = render(<AutoApproveDropdown />)
+		fireEvent(window, new MessageEvent("message", { data: { type: "action", action: "toggleAutoApprove" } }))
+		expect(screen.getByTestId("approval-mode-bypass-confirm")).toBeInTheDocument()
+		mockState.currentTaskId = "task-2"
+		view.rerender(<AutoApproveDropdown />)
+		expect(screen.queryByTestId("approval-mode-bypass-confirm")).not.toBeInTheDocument()
+		mockState.currentTaskId = "task-1"
+		view.rerender(<AutoApproveDropdown />)
+		expect(screen.queryByTestId("approval-mode-bypass-confirm")).not.toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
 	it("shows the session dial name on the composer trigger", () => {
 		render(<AutoApproveDropdown />)
 		expect(screen.getAllByText("chat:autoApprove.modes.auto").length).toBeGreaterThan(0)
@@ -117,7 +213,7 @@ describe("AutoApproveDropdown", () => {
 		expect(screen.queryByTestId("auto-approve-alwaysAllowReadOnly")).not.toBeInTheDocument()
 	})
 
-	it("allows draft mode selection without updating a stale current task or global settings", () => {
+	it("allows draft mode selection without changing a stale task or the global approval mode", () => {
 		mockState.currentTaskApprovalMode = "ask"
 		const onDraftApprovalModeChange = vi.fn()
 		const view = render(
@@ -162,7 +258,11 @@ describe("AutoApproveDropdown", () => {
 		expect(onDraftApprovalModeChange).not.toHaveBeenCalledWith("bypass")
 		fireEvent.click(screen.getByTestId("approval-mode-bypass-confirm"))
 		expect(onDraftApprovalModeChange).toHaveBeenLastCalledWith("bypass")
-		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "updateSettings",
+			updatedSettings: { approvalModeBypassAcknowledged: true },
+		})
 		expect(mockSetters.setApprovalMode).not.toHaveBeenCalled()
 	})
 

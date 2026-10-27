@@ -35,6 +35,7 @@ import {
 	scheduledTaskSkillsRequestSchema,
 	taskReasoningUpdateSchema,
 	sendAndSteerMessageSchema,
+	steerNextQueuedMessageSchema,
 	webviewFocusChangedMessageSchema,
 	cancelEnhancePromptMessageSchema,
 	subagentAgentTypesSchema,
@@ -3801,16 +3802,22 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
+		case "steerNextQueuedMessage":
 		case "steerQueuedMessage": {
+			const command = message.type
+			if (command === "steerNextQueuedMessage" && !steerNextQueuedMessageSchema.safeParse(message).success) {
+				await postChatCommandResult(command, "rejected", "unknown")
+				break
+			}
 			const parsedExpectedTurn = sendAndSteerMessageSchema.shape.expectedTurnId.safeParse(message.expectedTurnId)
 			if (!parsedExpectedTurn.success) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "unknown")
+				await postChatCommandResult(command, "rejected", "unknown")
 				break
 			}
 			const task = getTaskForMessage(provider, message)
 			if (!task) {
 				provider.log("[webviewMessageHandler] Ignoring steerQueuedMessage: missing or unknown taskId")
-				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				await postChatCommandResult(command, "rejected", "task_unavailable")
 				break
 			}
 			// Capture before queue hydration; an older client cannot retarget a later turn while waiting.
@@ -3822,7 +3829,7 @@ export const webviewMessageHandler = async (
 						? !task.matchesExpectedTurn(expectedTurnId)
 						: provider.getAgentLifecycleSnapshot?.(task.taskId)?.turnId !== expectedTurnId))
 			if (isStaleTurn()) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "stale_turn")
+				await postChatCommandResult(command, "rejected", "stale_turn")
 				break
 			}
 			const canResumeCompletedFollowup = () =>
@@ -3839,24 +3846,31 @@ export const webviewMessageHandler = async (
 				(task.isCompleted?.() ? canResumeCompletedFollowup() : provider.canAcceptTaskInput(message.taskId))
 			if (!canAdmitSteer()) {
 				provider.log(`[webviewMessageHandler] Ignoring steerQueuedMessage: task ${message.taskId} is terminal`)
-				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				await postChatCommandResult(command, "rejected", "task_unavailable")
 				break
 			}
 
 			await task.messageQueueService.ready
 			if (isStaleTurn()) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "stale_turn")
+				await postChatCommandResult(command, "rejected", "stale_turn")
 				break
 			}
 			if (!canAdmitSteer()) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "task_unavailable")
+				await postChatCommandResult(command, "rejected", "task_unavailable")
 				break
 			}
 			// Selection stays recoverable until the containing transcript is committed.
-			const queued = task.messageQueueService.getMessage(message.text ?? "")
+			// Choose from the task-owned queue after hydration, never from a stale UI projection.
+			// Claimed/delivering messages are excluded by MessageQueueService.messages.
+			// Codex also separates queued input from pending steers (openai/codex@c587d6e54cb1).
+			const queued =
+				command === "steerNextQueuedMessage"
+					? task.messageQueueService.messages[0]
+					: task.messageQueueService.getMessage(message.text ?? "")
 
 			if (!queued) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "message_not_found")
+				if (command === "steerNextQueuedMessage") await postChatCommandResult(command, "accepted")
+				else await postChatCommandResult(command, "rejected", "message_not_found")
 				break
 			}
 			const resumeCompletedFollowup = canResumeCompletedFollowup()
@@ -3865,7 +3879,7 @@ export const webviewMessageHandler = async (
 				typeof task.canAcceptSteerMessage === "function" &&
 				!task.canAcceptSteerMessage()
 			) {
-				await postChatCommandResult("steerQueuedMessage", "rejected", "steer_pending")
+				await postChatCommandResult(command, "rejected", "steer_pending")
 				break
 			}
 
@@ -3881,22 +3895,25 @@ export const webviewMessageHandler = async (
 					})
 					if (admissionLost) {
 						await postChatCommandResult(
-							"steerQueuedMessage",
+							command,
 							"rejected",
 							isStaleTurn() ? "stale_turn" : "task_unavailable",
 						)
 						break
 					}
 				} else {
-					await task.steerQueuedUserMessage(queued.id, expectedTurnId)
+					await task.steerQueuedUserMessage(
+						command === "steerNextQueuedMessage" ? undefined : queued.id,
+						expectedTurnId,
+					)
 				}
-				await postChatCommandResult("steerQueuedMessage", "accepted")
+				await postChatCommandResult(command, "accepted")
 			} catch (error) {
 				provider.log(
 					`[webviewMessageHandler] steerQueuedMessage failed for task ${task.taskId}: ${error instanceof Error ? error.message : String(error)}`,
 				)
 				await postChatCommandResult(
-					"steerQueuedMessage",
+					command,
 					"rejected",
 					isStaleTurn()
 						? "stale_turn"

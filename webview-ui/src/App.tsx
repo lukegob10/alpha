@@ -261,6 +261,9 @@ const App = () => {
 			if (message.type === "sendAndSteer") {
 				chatViewRef.current?.sendAndSteer(message.taskId)
 			}
+			if (message.type === "steerNextQueuedMessage") {
+				chatViewRef.current?.steerNextQueuedMessage(message.taskId)
+			}
 		},
 		[switchTab, navigateToTab, startNewChat, currentTaskId],
 	)

@@ -35,6 +35,7 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	alwaysAllowTickets?: boolean
 	alwaysAllowSubagents?: boolean
 	alwaysAllowReadOnlyOutsideWorkspace?: boolean
+	followupAutoApproveTimeoutMs?: number
 	allowedCommands?: string[]
 	allowedMaxRequests?: number | undefined
 	allowedMaxCost?: number | undefined
@@ -53,6 +54,7 @@ type AutoApproveSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "alwaysAllowTickets"
 		| "alwaysAllowExecute"
 		| "alwaysAllowFollowupQuestions"
+		| "followupAutoApproveTimeoutMs"
 		| "autoApprovalEnabled"
 		| "allowedCommands"
 		| "allowedMaxRequests"
@@ -76,6 +78,7 @@ export const AutoApproveSettings = ({
 	alwaysAllowTickets,
 	alwaysAllowSubagents,
 	alwaysAllowReadOnlyOutsideWorkspace,
+	followupAutoApproveTimeoutMs,
 	allowedCommands,
 	allowedMaxRequests,
 	allowedMaxCost,
@@ -90,6 +93,13 @@ export const AutoApproveSettings = ({
 	const allowedCommandInputId = useId()
 	const deniedCommandInputId = useId()
 	const mcpPolicyDescriptionId = useId()
+	const questionWaitDescriptionId = useId()
+	const questionTimeoutInputId = useId()
+	const waitForAnswers =
+		typeof followupAutoApproveTimeoutMs !== "number" ||
+		!Number.isFinite(followupAutoApproveTimeoutMs) ||
+		followupAutoApproveTimeoutMs <= 0 ||
+		followupAutoApproveTimeoutMs > 2_147_483_647
 	const mode = migrateApprovalMode({
 		approvalMode,
 		autoApprovalEnabled,
@@ -172,6 +182,47 @@ export const AutoApproveSettings = ({
 								{t(`settings:autoApprove.mode.${mode}Description`)}
 							</p>
 						</div>
+					</SearchableSetting>
+
+					<SearchableSetting
+						settingId="auto-approve-followup-questions"
+						section="autoApprove"
+						label={t("settings:autoApprove.followupQuestions.waitLabel")}>
+						<VSCodeCheckbox
+							checked={waitForAnswers}
+							aria-describedby={questionWaitDescriptionId}
+							onChange={(event) => {
+								const target = event.target
+								if (target !== null && "checked" in target && typeof target.checked === "boolean") {
+									setCachedStateField("followupAutoApproveTimeoutMs", target.checked ? 0 : 60_000)
+								}
+							}}
+							data-testid="wait-for-question-answers-checkbox">
+							<span className="font-medium">{t("settings:autoApprove.followupQuestions.waitLabel")}</span>
+						</VSCodeCheckbox>
+						<p id={questionWaitDescriptionId} className="text-vscode-descriptionForeground text-sm mt-1">
+							{t("settings:autoApprove.followupQuestions.waitDescription")}
+						</p>
+						{!waitForAnswers && (
+							<div className="mt-2">
+								<label htmlFor={questionTimeoutInputId} className="block font-medium mb-1">
+									{t("settings:autoApprove.followupQuestions.timeoutLabel")}
+								</label>
+								<Input
+									id={questionTimeoutInputId}
+									type="number"
+									min={1}
+									max={2_147_483}
+									value={followupAutoApproveTimeoutMs / 1000}
+									onChange={(event) => {
+										const seconds = event.target.valueAsNumber
+										if (Number.isFinite(seconds) && seconds >= 1 && seconds <= 2_147_483) {
+											setCachedStateField("followupAutoApproveTimeoutMs", seconds * 1000)
+										}
+									}}
+								/>
+							</div>
+						)}
 					</SearchableSetting>
 
 					<MaxLimitInputs

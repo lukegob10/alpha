@@ -184,11 +184,15 @@ function getAlphaToolContractSection(
 				? "\n\nAlpha managed delegation is proactive only when a distinct subtask materially advances the objective. Keep child scopes bounded and integrate and verify their results."
 				: ""
 
+	// The model base can describe code-mode helpers that Alpha does not expose.
+	// Native batching must be explicit without changing the captured model instructions.
 	return `====
 
 ALPHA TOOL CONTRACT
 
-Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions. ${patchToolGuidance}${delegationGuidance}`
+Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions. ${patchToolGuidance}
+
+Use multiple supplied native tool calls in the same assistant response for independent reads, searches, and read-only commands whose inputs are known. No batching wrapper is needed. Alpha settles approvals and returns all results before the next model request. Keep dependent work, mutations, interactive terminal input, and lifecycle barriers sequential; call tools that require isolation alone.${delegationGuidance}`
 }
 
 function getAlphaEnvironmentFactsSection(cwd: string, commandShell?: string): string {

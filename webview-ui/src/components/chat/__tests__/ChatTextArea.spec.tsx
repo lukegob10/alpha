@@ -90,6 +90,35 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	it.each(Array.from({ length: 12 }, (_, index) => `F${index + 13}`))(
+		"leaves %s available to VS Code keybindings without submitting the draft",
+		(key) => {
+			render(<ChatTextArea {...defaultProps} inputValue="Unsent draft" />)
+			const textarea = screen.getByRole("textbox")
+			const received = vi.fn()
+			window.addEventListener("keydown", received)
+			try {
+				for (const modifiers of [{}, { ctrlKey: true }, { shiftKey: true }, { altKey: true }]) {
+					const event = new KeyboardEvent("keydown", {
+						key,
+						code: key,
+						bubbles: true,
+						cancelable: true,
+						...modifiers,
+					})
+					fireEvent(textarea, event)
+					expect(event.defaultPrevented).toBe(false)
+					expect(received).toHaveBeenLastCalledWith(event)
+				}
+				expect(defaultProps.onSend).not.toHaveBeenCalled()
+				expect(defaultProps.setInputValue).not.toHaveBeenCalled()
+				expect(textarea).toHaveValue("Unsent draft")
+			} finally {
+				window.removeEventListener("keydown", received)
+			}
+		},
+	)
+
 	describe("composer scrolling", () => {
 		it.each(["default", "newTask"] as const)("keeps the %s text viewport square", (appearance) => {
 			render(<ChatTextArea {...defaultProps} appearance={appearance} />)
@@ -219,7 +248,7 @@ describe("ChatTextArea", () => {
 			/>,
 		)
 		fireEvent.click(
-			screen.getByRole("button", { name: autoSteer ? "Press Enter to send and steer" : "Press Enter to queue" }),
+			screen.getByRole("button", { name: autoSteer ? "Press Enter to steer" : "Press Enter to queue" }),
 		)
 		expect(defaultProps.onSend).toHaveBeenCalledTimes(1)
 		if (autoSteer) {

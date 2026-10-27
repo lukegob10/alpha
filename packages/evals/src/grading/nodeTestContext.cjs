@@ -9,6 +9,14 @@ const nativeTest = require("node:test")
 const nativeAssert = require("node:assert/strict")
 
 const active = new AsyncLocalStorage()
+// Native run() calls other instance methods internally. Pin the complete method
+// set before candidate imports so prototype replacement cannot expose or alter
+// the private assertion state, even through getStore() or enterWith().
+for (const name of Object.getOwnPropertyNames(AsyncLocalStorage.prototype)) {
+	const method = Object.getOwnPropertyDescriptor(AsyncLocalStorage.prototype, name)?.value
+	if (name !== "constructor" && typeof method === "function")
+		Object.defineProperty(active, name, { value: method.bind(active) })
+}
 const expected = JSON.parse(process.env.ALPHA_EXPECTED_NODE_TESTS)
 const AssertionError = nativeAssert.AssertionError
 const stringify = JSON.stringify.bind(JSON)

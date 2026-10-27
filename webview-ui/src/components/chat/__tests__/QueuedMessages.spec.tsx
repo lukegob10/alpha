@@ -43,6 +43,22 @@ describe("QueuedMessages", () => {
 		{ id: "msg1", timestamp: 1, text: "first", images: [] },
 		{ id: "msg2", timestamp: 2, text: "second", images: [] },
 	]
+	it("locks queue controls while the host selects the next steer, before a message identity is known", () => {
+		render(
+			<QueuedMessages
+				queue={queue}
+				steeringPending
+				onRemove={vi.fn()}
+				onSteer={vi.fn()}
+				onEdit={vi.fn()}
+				onReorder={vi.fn()}
+			/>,
+		)
+		for (const button of screen.getAllByTitle("queuedMessages.steerTooltip")) expect(button).toBeDisabled()
+		for (const button of screen.getAllByTitle("queuedMessages.editTooltip")) expect(button).toBeDisabled()
+		for (const button of screen.getAllByLabelText("common:answers.remove")) expect(button).toBeDisabled()
+		expect(screen.getAllByLabelText("queuedMessages.dragHandle").every((handle) => !handle.draggable)).toBe(true)
+	})
 	it.each(["pending", "delivering"] as const)(
 		"keeps %s input visible and prevents duplicate queue mutations",
 		(state) => {

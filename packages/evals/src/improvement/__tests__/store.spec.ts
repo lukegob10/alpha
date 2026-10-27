@@ -123,7 +123,8 @@ describe("immutable improvement artifacts", () => {
 		})
 		expect(await store.read(stageReference(boundary.manifest))).toEqual(boundary)
 		expect((await store.read(stageReference(first.manifest))).value).toEqual(failure)
-	}, 15000)
+		// Two 128-record filesystem chains exercise the reader bound, not latency.
+	}, 60_000)
 
 	it.each(["duplicate-parent", "unknown-stage"] as const)(
 		"rejects unsupported sealed ancestry on resume without rewriting it: %s",

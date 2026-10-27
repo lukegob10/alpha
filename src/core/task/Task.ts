@@ -11235,14 +11235,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		})
 	}
 
-	public async steerQueuedUserMessage(messageId: string, expectedTurnId?: string): Promise<void> {
+	/** Manual Steer selects the oldest unclaimed message inside the durable admission queue (FIFO). */
+	public async steerQueuedUserMessage(messageId: string | undefined, expectedTurnId?: string): Promise<void> {
 		const turnId = expectedTurnId ?? this.agentTurnId ?? this.getCanonicalLifecycleSnapshot()?.turnId
 		const assertExpectedTurn = () => {
 			if (turnId !== undefined && !this.matchesExpectedTurn(turnId))
 				throw new Error("The active turn changed before steering admission")
 		}
 		assertExpectedTurn()
-		return this.enqueueDurableSteer(() => this.applyQueuedSteeringMessage(messageId, assertExpectedTurn))
+		return this.enqueueDurableSteer(async () => {
+			await this.messageQueueService.ready
+			assertExpectedTurn()
+			const selectedId = messageId ?? this.messageQueueService.messages[0]?.id
+			if (selectedId) await this.applyQueuedSteeringMessage(selectedId, assertExpectedTurn)
+		})
 	}
 
 	private enqueueDurableSteer(operation: () => Promise<void>): Promise<void> {
