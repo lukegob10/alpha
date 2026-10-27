@@ -15,7 +15,6 @@ import {
 	type EditorChatState,
 	type ApprovalMode,
 	type AlphaMessage,
-	settingsForApprovalMode,
 	type LiveTaskMetadata,
 	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
@@ -898,22 +897,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					}
 					if (newState.marketplaceInstalledMetadata !== undefined) {
 						setMarketplaceInstalledMetadata(newState.marketplaceInstalledMetadata)
-					}
-					break
-				}
-				case "action": {
-					if (message.action === "toggleAutoApprove") {
-						setState((prevState) => {
-							const nextMode = prevState.approvalMode === "ask" ? "auto" : "ask"
-							const settings = settingsForApprovalMode(nextMode, {
-								alwaysAllowWriteProtected:
-									nextMode === "auto" ? prevState.alwaysAllowWriteProtected === true : undefined,
-								alwaysAllowMcp: prevState.alwaysAllowMcp === true,
-								approvalModeBypassAcknowledged: prevState.approvalModeBypassAcknowledged === true,
-							})
-							vscode.postMessage({ type: "updateSettings", updatedSettings: settings })
-							return { ...prevState, ...settings }
-						})
 					}
 					break
 				}

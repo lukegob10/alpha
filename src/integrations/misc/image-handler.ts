@@ -1,5 +1,6 @@
 import * as path from "path"
 import * as os from "os"
+import { randomUUID } from "node:crypto"
 import * as vscode from "vscode"
 import { getWorkspacePath } from "../../utils/path"
 import { t } from "../../i18n"
@@ -43,7 +44,7 @@ export async function openImage(dataUriOrPath: string, options?: { values?: { ac
 	}
 
 	// Handle data URI (existing logic)
-	const matches = dataUriOrPath.match(/^data:image\/([a-zA-Z]+);base64,(.+)$/)
+	const matches = dataUriOrPath.match(/^data:image\/([a-zA-Z]+|svg\+xml);base64,(.+)$/)
 	if (!matches) {
 		vscode.window.showErrorMessage(t("common:errors.invalid_data_uri"))
 		return
@@ -52,7 +53,8 @@ export async function openImage(dataUriOrPath: string, options?: { values?: { ac
 	const imageBuffer = Buffer.from(base64Data, "base64")
 
 	// Default behavior: open the image
-	const tempFilePath = path.join(os.tmpdir(), `temp_image_${Date.now()}.${format}`)
+	const extension = format === "svg+xml" ? "svg" : format
+	const tempFilePath = path.join(os.tmpdir(), `temp_image_${randomUUID()}.${extension}`)
 	try {
 		await vscode.workspace.fs.writeFile(vscode.Uri.file(tempFilePath), imageBuffer)
 		// Check if this is a copy action
@@ -84,7 +86,17 @@ export async function openImage(dataUriOrPath: string, options?: { values?: { ac
 			}
 			return
 		}
-		await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(tempFilePath))
+		if (format === "svg+xml") {
+			// The built-in SVG image editor is available on both 1.125.0 and 1.138.0
+			// (VS Code media-preview/package.json, verified 2026-10-26).
+			await vscode.commands.executeCommand(
+				"vscode.openWith",
+				vscode.Uri.file(tempFilePath),
+				"imagePreview.previewEditor",
+			)
+		} else {
+			await vscode.commands.executeCommand("vscode.open", vscode.Uri.file(tempFilePath))
+		}
 	} catch (error) {
 		vscode.window.showErrorMessage(t("common:errors.error_opening_image", { error }))
 	}

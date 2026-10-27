@@ -1,6 +1,20 @@
 import { describe, expect, it } from "vitest"
 
-import { sendAndSteerMessageSchema } from "../vscode-extension-host.js"
+import { sendAndSteerMessageSchema, steerNextQueuedMessageSchema } from "../vscode-extension-host.js"
+
+describe("queue-only steering wire contract", () => {
+	const request = { type: "steerNextQueuedMessage", taskId: "task", requestId: "request", expectedTurnId: "turn" }
+	it("requires task and request identity without accepting composer text or images", () => {
+		expect(steerNextQueuedMessageSchema.safeParse(request).success).toBe(true)
+		for (const field of ["taskId", "requestId"] as const) {
+			expect(steerNextQueuedMessageSchema.safeParse({ ...request, [field]: "" }).success).toBe(false)
+			expect(steerNextQueuedMessageSchema.safeParse({ ...request, [field]: undefined }).success).toBe(false)
+		}
+		expect(steerNextQueuedMessageSchema.safeParse({ ...request, text: "unsent draft" }).success).toBe(false)
+		expect(steerNextQueuedMessageSchema.safeParse({ ...request, images: [] }).success).toBe(false)
+		expect(steerNextQueuedMessageSchema.safeParse({ ...request, expectedTurnId: "" }).success).toBe(false)
+	})
+})
 
 describe("direct steering wire contract", () => {
 	const submission = {

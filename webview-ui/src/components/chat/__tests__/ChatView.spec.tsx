@@ -4981,23 +4981,28 @@ describe("ChatView - Message Queueing Tests", () => {
 		},
 	)
 
-	it("preserves a hidden composer's draft when the steering command arrives", async () => {
-		const ref = React.createRef<ChatViewRef>()
-		const view = renderChatView({ isHidden: true }, ref)
-		mockPostMessage({
-			currentTaskId: "task-1",
-			clineMessages: [
-				{ type: "say", say: "task", ts: 1, text: "Initial task" },
-				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
-			],
-		})
-		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
-		fireEvent.change(input, { target: { value: "Draft for later" } })
-		vi.mocked(vscode.postMessage).mockClear()
-		act(() => ref.current!.sendAndSteer("task-1"))
-		expect(vscode.postMessage).not.toHaveBeenCalled()
-		expect(input).toHaveValue("Draft for later")
-	})
+	it.each(["sendAndSteer", "steerNextQueuedMessage"] as const)(
+		"preserves a hidden composer's draft for %s",
+		async (command) => {
+			const ref = React.createRef<ChatViewRef>()
+			const view = renderChatView({ isHidden: true }, ref)
+			mockPostMessage({
+				currentTaskId: "task-1",
+				clineMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Initial task" },
+					{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
+				],
+			})
+			const input = await waitFor(
+				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
+			)
+			fireEvent.change(input, { target: { value: "Draft for later" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			act(() => ref.current![command]("task-1"))
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+			expect(input).toHaveValue("Draft for later")
+		},
+	)
 
 	it("does not approve a pending action when send-and-steer has an empty draft", async () => {
 		const ref = React.createRef<ChatViewRef>()
@@ -5018,6 +5023,58 @@ describe("ChatView - Message Queueing Tests", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 		act(() => ref.current!.sendAndSteer("task-1"))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([false, true])("steers the host queue without submitting the composer (empty queue: %s)", async (empty) => {
+		const ref = React.createRef<ChatViewRef>()
+		const view = renderChatView({}, ref)
+		mockPostMessage({
+			currentTaskId: "task-1",
+			clineMessages: [
+				{ type: "say", say: "task", ts: 1, text: "Initial task" },
+				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
+			],
+			messageQueue: empty ? [] : [{ id: "queued-1", text: "first queued input", images: [] }],
+		})
+		const input = await view.findByRole("textbox")
+		fireEvent.change(input, { target: { value: "leave this unsent draft alone" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		act(() => {
+			ref.current!.steerNextQueuedMessage("task-1")
+			ref.current!.steerNextQueuedMessage("task-1")
+		})
+		const requests = () =>
+			vi
+				.mocked(vscode.postMessage)
+				.mock.calls.flatMap(([message]) => (message.type === "steerNextQueuedMessage" ? [message] : []))
+		expect(requests()).toHaveLength(1)
+		const request = requests()[0]
+		expect(request).not.toHaveProperty("text")
+		expect(request).not.toHaveProperty("images")
+		expect(input).toHaveValue("leave this unsent draft alone")
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "chatCommandResult",
+						taskId: "task-1",
+						requestId: request.requestId,
+						chatCommandResult: {
+							requestId: request.requestId,
+							taskId: "task-1",
+							command: "steerNextQueuedMessage",
+							status: "accepted",
+						},
+					},
+				}),
+			),
+		)
+		// The host selects the next item even if the displayed queue has not refreshed yet.
+		act(() => ref.current!.steerNextQueuedMessage("task-1"))
+		expect(requests()).toHaveLength(2)
+		expect(requests()[1].requestId).not.toBe(request.requestId)
+		expect(input).toHaveValue("leave this unsent draft alone")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "sendAndSteer" }))
 	})
 
 	it("renders a steer button for queued messages and posts steerQueuedMessage with the task id", async () => {

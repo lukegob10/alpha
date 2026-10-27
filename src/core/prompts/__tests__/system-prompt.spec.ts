@@ -527,6 +527,42 @@ describe("SYSTEM_PROMPT", () => {
 		expect(userContextPart?.role).toBe("user")
 	})
 
+	it.each(["claude-haiku-5.5", "claude-sonnet-5.5", "grok-4.6", "gpt-6.1-sol"])(
+		"explains native same-response batching for %s without requiring an unavailable wrapper",
+		async (modelId) => {
+			const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+				mockContext,
+				"/test/path",
+				false,
+				undefined,
+				undefined,
+				defaultModeSlug,
+				undefined,
+				undefined,
+				undefined,
+				experiments,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				modelId,
+			)
+			const contract = fragments.instructionParts.find(({ origin }) => origin === "alpha-feature-overlay")
+
+			expect(contract?.role).toBe("developer")
+			expect(contract?.content).toContain(
+				"Use multiple supplied native tool calls in the same assistant response",
+			)
+			expect(contract?.content).toContain(
+				"independent reads, searches, and read-only commands whose inputs are known",
+			)
+			expect(contract?.content).toContain("No batching wrapper is needed")
+			expect(contract?.content).toContain("call tools that require isolation alone")
+			expect(contract?.content).not.toContain("functions.exec")
+			expect(fragments.instructionParts[0]?.content).toBe(resolveCodexModelPrompt(modelId).instructions)
+		},
+	)
+
 	it.each([
 		[defaultModeSlug, undefined],
 		[planModeSlug, undefined],
@@ -850,7 +886,8 @@ describe("SYSTEM_PROMPT", () => {
 
 		// Previous Alpha-only base prompt: 2,158 o200k tokens. Blindly appending the 3,552-token GPT-5.6 base costs 5,710.
 		// Codex-compatible patch routing guidance adds 48 local tokens to the captured Code prompt.
-		expect(newTokenCount).toBe(4227)
+		// Direct native batching guidance adds 67 tokens; no wrapper tool or duplicate model prompt is needed.
+		expect(newTokenCount).toBe(4294)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

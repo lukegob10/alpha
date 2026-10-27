@@ -303,6 +303,121 @@ function queuedSteeringFixture(persistence?: MessageQueuePersistence) {
 	return { task, queue, provider, request, requestController, stepController }
 }
 
+it("steers queued messages in FIFO order, skipping claimed input and leaving an empty queue alone", async () => {
+	const { task, queue, provider } = queuedSteeringFixture()
+	try {
+		await queue.addMessageDurably("first guidance", [], "first")
+		await queue.addMessageDurably("second guidance", ["image.png"], "second")
+		vi.spyOn(task, "canAcceptSteerMessage").mockReturnValue(true)
+		const handoff = vi.spyOn(task, "steerUserMessage").mockResolvedValue(undefined)
+		for (const requestId of ["press-1", "press-2", "empty-press"]) {
+			await webviewMessageHandler(provider, {
+				type: "steerNextQueuedMessage",
+				taskId: task.taskId,
+				requestId,
+				expectedTurnId: "original",
+			})
+		}
+		expect(handoff.mock.calls.map((args) => args[3])).toEqual([["first"], ["second"]])
+		expect(handoff).toHaveBeenNthCalledWith(2, "second guidance", ["image.png"], undefined, ["second"])
+		expect(queue.messages).toEqual([])
+		expect(queue.getClaimedMessageIds()).toEqual(["first", "second"])
+		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({
+					requestId: "empty-press",
+					command: "steerNextQueuedMessage",
+					status: "accepted",
+				}),
+			}),
+		)
+	} finally {
+		queue.dispose()
+	}
+})
+
+it("uses the real durable steering boundary for the oldest queued input", async () => {
+	const { task, queue, provider, requestController } = queuedSteeringFixture()
+	try {
+		await queue.addMessageDurably("first", [], "first")
+		await queue.addMessageDurably("second", [], "second")
+		await webviewMessageHandler(provider, {
+			type: "steerNextQueuedMessage",
+			taskId: task.taskId,
+			requestId: "press",
+			expectedTurnId: "original",
+		})
+		expect(queue.messages.map(({ id }) => id)).toEqual(["second"])
+		expect(queue.getClaimedMessageIds()).toEqual(["first"])
+		expect(task.hasPendingSteerMessage()).toBe(true)
+		expect(requestController.signal.aborted).toBe(true)
+		expect(task.abort).toBe(false)
+	} finally {
+		queue.dispose()
+	}
+})
+
+it("selects distinct FIFO items when two views request steering during queue hydration", async () => {
+	const loaded = barrier()
+	const { task, queue, provider } = queuedSteeringFixture({
+		load: async () => {
+			await loaded.promise
+			return [
+				{ id: "first", timestamp: 1, text: "first" },
+				{ id: "second", timestamp: 2, text: "second" },
+			]
+		},
+		save: async () => undefined,
+	})
+	vi.spyOn(task, "canAcceptSteerMessage").mockReturnValue(true)
+	const deliver = vi.spyOn(task, "steerUserMessage").mockResolvedValue(undefined)
+	const requests = ["sidebar", "editor"].map((requestId) =>
+		webviewMessageHandler(provider, {
+			type: "steerNextQueuedMessage",
+			taskId: task.taskId,
+			requestId,
+			expectedTurnId: "original",
+		}),
+	)
+	try {
+		loaded.resolve()
+		await Promise.all(requests)
+		expect(deliver.mock.calls.map((args) => args[3])).toEqual([["first"], ["second"]])
+	} finally {
+		loaded.resolve()
+		await Promise.all(requests)
+		queue.dispose()
+	}
+})
+
+it.each(["busy", "stale", "failure"])("preserves queued input when next-item steering is %s", async (condition) => {
+	const { task, queue, provider, requestController } = queuedSteeringFixture()
+	try {
+		await queue.addMessageDurably("first", [], "first")
+		await queue.addMessageDurably("second", [], "second")
+		if (condition === "busy") vi.spyOn(task, "canAcceptSteerMessage").mockReturnValue(false)
+		if (condition === "stale") Reflect.set(task, "agentTurnId", "successor")
+		if (condition === "failure")
+			vi.spyOn(task, "steerQueuedUserMessage").mockRejectedValue(new Error("Delivery failed"))
+		await webviewMessageHandler(provider, {
+			type: "steerNextQueuedMessage",
+			taskId: task.taskId,
+			requestId: "press",
+			expectedTurnId: "original",
+		})
+		expect(queue.messages.map(({ id }) => id)).toEqual(["first", "second"])
+		expect(queue.getClaimedMessageIds()).toEqual([])
+		expect(requestController.signal.aborted).toBe(false)
+		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ command: "steerNextQueuedMessage", status: "rejected" }),
+			}),
+		)
+	} finally {
+		queue.dispose()
+	}
+})
+
 it("rejects an invalid queued steering turn identity without selecting input", async () => {
 	const { task, queue, provider, request, requestController } = queuedSteeringFixture()
 	await queue.addMessageDurably("PRESERVE_INPUT", [], request.text)
@@ -338,7 +453,7 @@ it("rejects a queued steering request for an earlier turn before selecting input
 	queue.dispose()
 })
 
-it.each(["explicit", "legacy"] as const)(
+it.each(["explicit", "legacy", "next"] as const)(
 	"retains %s queued steering when the turn changes during hydration",
 	async (client) => {
 		const loading = barrier()
@@ -353,10 +468,17 @@ it.each(["explicit", "legacy"] as const)(
 			save: async () => undefined,
 		})
 		const handoff = vi.spyOn(task, "steerQueuedUserMessage")
-		const pending = webviewMessageHandler(provider, {
-			...request,
-			expectedTurnId: client === "explicit" ? request.expectedTurnId : undefined,
-		})
+		const pending = webviewMessageHandler(
+			provider,
+			client === "next"
+				? {
+						type: "steerNextQueuedMessage",
+						taskId: task.taskId,
+						requestId: "next-press",
+						expectedTurnId: request.expectedTurnId,
+					}
+				: { ...request, expectedTurnId: client === "explicit" ? request.expectedTurnId : undefined },
+		)
 		try {
 			await loading.promise
 			Reflect.set(task, "agentTurnId", "successor")

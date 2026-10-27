@@ -7,81 +7,47 @@ import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { useCopyToClipboard } from "@src/utils/clipboard"
 import CodeBlock from "./CodeBlock"
 import { MermaidButton } from "@/components/common/MermaidButton"
+import { prepareMermaidSvg, mermaidSvgDataUri, type MermaidDiagram } from "./mermaidSvg"
 
-// Removed previous attempts at static imports for individual diagram types
-// as the paths were incorrect for Mermaid v11.4.1 and caused errors.
-// The primary strategy will now rely on Vite's bundling configuration.
-
-const MERMAID_THEME = {
-	background: "#1e1e1e", // VS Code dark theme background
-	textColor: "#ffffff", // Main text color
-	mainBkg: "#2d2d2d", // Background for nodes
-	nodeBorder: "#888888", // Border color for nodes
-	lineColor: "#cccccc", // Lines connecting nodes
-	primaryColor: "#3c3c3c", // Primary color for highlights
-	primaryTextColor: "#ffffff", // Text in primary colored elements
-	primaryBorderColor: "#888888",
-	secondaryColor: "#2d2d2d", // Secondary color for alternate elements
-	tertiaryColor: "#454545", // Third color for special elements
-
-	// Class diagram specific
-	classText: "#ffffff",
-
-	// State diagram specific
-	labelColor: "#ffffff",
-
-	// Sequence diagram specific
-	actorLineColor: "#cccccc",
-	actorBkg: "#2d2d2d",
-	actorBorder: "#888888",
-	actorTextColor: "#ffffff",
-
-	// Flow diagram specific
-	fillType0: "#2d2d2d",
-	fillType1: "#3c3c3c",
-	fillType2: "#454545",
-}
-
-mermaid.initialize({
-	startOnLoad: false,
-	securityLevel: "strict",
-	theme: "dark",
-	suppressErrorRendering: true,
-	themeVariables: {
-		...MERMAID_THEME,
+function getMermaidTheme() {
+	const styles = getComputedStyle(document.body)
+	const light =
+		document.body.classList.contains("vscode-light") ||
+		document.body.classList.contains("vscode-high-contrast-light")
+	const token = (name: string, fallback: string) => styles.getPropertyValue(`--vscode-${name}`).trim() || fallback
+	const background = token("editor-background", light ? "#ffffff" : "#1e1e1e")
+	const foreground = token("editor-foreground", light ? "#202020" : "#cccccc")
+	const node = token("editorWidget-background", background)
+	const border = token("contrastBorder", token("panel-border", foreground))
+	return {
+		darkMode: !light,
+		background,
 		fontSize: "16px",
-		fontFamily: "var(--vscode-font-family, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif)",
-
-		// Additional styling
-		noteTextColor: "#ffffff",
-		noteBkgColor: "#454545",
-		noteBorderColor: "#888888",
-
-		// Improve contrast for special elements
-		critBorderColor: "#ff9580",
-		critBkgColor: "#803d36",
-
-		// Task diagram specific
-		taskTextColor: "#ffffff",
-		taskTextOutsideColor: "#ffffff",
-		taskTextLightColor: "#ffffff",
-
-		// Numbers/sections
-		sectionBkgColor: "#2d2d2d",
-		sectionBkgColor2: "#3c3c3c",
-
-		// Alt sections in sequence diagrams
-		altBackground: "#2d2d2d",
-
-		// Links
-		linkColor: "#6cb6ff",
-
-		// Borders and lines
-		compositeBackground: "#2d2d2d",
-		compositeBorder: "#888888",
-		titleColor: "#ffffff",
-	},
-})
+		fontFamily: token("font-family", "Segoe UI, sans-serif"),
+		textColor: foreground,
+		primaryColor: node,
+		primaryTextColor: foreground,
+		primaryBorderColor: border,
+		secondaryColor: background,
+		secondaryTextColor: foreground,
+		tertiaryColor: node,
+		lineColor: foreground,
+		mainBkg: node,
+		nodeBorder: border,
+		clusterBkg: background,
+		clusterBorder: border,
+		actorBkg: node,
+		actorTextColor: foreground,
+		actorBorder: border,
+		actorLineColor: foreground,
+		noteBkgColor: node,
+		noteTextColor: foreground,
+		noteBorderColor: border,
+		labelColor: foreground,
+		classText: foreground,
+		titleColor: foreground,
+	}
+}
 
 interface MermaidBlockProps {
 	code: string
@@ -93,10 +59,20 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 	const [isLoading, setIsLoading] = useState(false)
 	const [error, setError] = useState<string | null>(null)
 	const [isErrorExpanded, setIsErrorExpanded] = useState(false)
+	const [diagram, setDiagram] = useState<MermaidDiagram>()
+	const [themeRevision, setThemeRevision] = useState(0)
 	const { showCopyFeedback, copyWithFeedback } = useCopyToClipboard()
 	const { t } = useAppTranslation()
 
-	// 1) Whenever `code` changes, mark that we need to re-render a new chart
+	useEffect(() => {
+		const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
+		observer.observe(document.body, {
+			attributes: true,
+			attributeFilter: ["class", "style", "data-vscode-theme-id", "data-vscode-theme-kind"],
+		})
+		return () => observer.disconnect()
+	}, [])
+
 	useEffect(() => {
 		const generation = ++renderGeneration.current
 		setIsLoading(true)
@@ -105,19 +81,24 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 		return () => {
 			renderGeneration.current = generation + 1
 		}
-	}, [code])
+	}, [code, themeRevision])
 
 	// 2) Debounce the actual parse/render
 	useDebounceEffect(
 		() => {
-			if (containerRef.current) {
-				containerRef.current.innerHTML = ""
-			}
-
 			const generation = renderGeneration.current
 
 			const renderDiagram = async () => {
 				try {
+					const theme = getMermaidTheme()
+					// Mermaid 11.16.1 custom palettes require base (upstream theming.md, retrieved 2026-10-26).
+					mermaid.initialize({
+						startOnLoad: false,
+						securityLevel: "strict",
+						theme: "base",
+						suppressErrorRendering: true,
+						themeVariables: theme,
+					})
 					await mermaid.parse(code)
 					if (generation !== renderGeneration.current) return
 
@@ -125,9 +106,7 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 					const { svg } = await mermaid.render(id, code)
 					if (generation !== renderGeneration.current) return
 
-					if (containerRef.current) {
-						containerRef.current.innerHTML = svg
-					}
+					setDiagram(prepareMermaidSvg(svg, theme.background))
 				} catch (err) {
 					if (generation !== renderGeneration.current) return
 
@@ -143,14 +122,15 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 			void renderDiagram()
 		},
 		500, // Delay 500ms
-		[code], // Dependencies for scheduling
+		[code, themeRevision],
 	)
 
-	/**
-	 * Called when user clicks the rendered diagram.
-	 * Converts the <svg> to a PNG and sends it to the extension.
-	 */
-	const handleClick = async () => {
+	const handleOpen = () => {
+		if (!diagram) return
+		vscode.postMessage({ type: "openImage", text: mermaidSvgDataUri(diagram.svg) })
+	}
+
+	const handleSave = async () => {
 		if (!containerRef.current) return
 		const svgEl = containerRef.current.querySelector("svg")
 		if (!svgEl) return
@@ -158,8 +138,8 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 		try {
 			const pngDataUrl = await svgToPng(svgEl)
 			vscode.postMessage({
-				type: "openImage",
-				text: pngDataUrl,
+				type: "saveImage",
+				dataUri: pngDataUrl,
 			})
 		} catch (err) {
 			console.error("Error converting SVG to PNG:", err)
@@ -230,14 +210,18 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 					)}
 				</div>
 			) : (
-				<MermaidButton containerRef={containerRef} code={code} isLoading={isLoading} svgToPng={svgToPng}>
-					<SvgContainer
-						type="button"
-						aria-label={t("common:mermaid.buttons.open")}
-						onClick={handleClick}
-						ref={containerRef}
-						$isLoading={isLoading}
-					/>
+				<MermaidButton code={code} isLoading={isLoading || !diagram} onOpen={handleOpen} onSave={handleSave}>
+					<PreviewViewport role="region" aria-label={t("common:mermaid.preview")} tabIndex={0}>
+						<SvgContainer
+							type="button"
+							aria-label={t("common:mermaid.buttons.open")}
+							onClick={handleOpen}
+							disabled={isLoading || !diagram}
+							ref={containerRef}
+							$isLoading={isLoading}
+							dangerouslySetInnerHTML={{ __html: diagram?.svg ?? "" }}
+						/>
+					</PreviewViewport>
 				</MermaidButton>
 			)}
 		</MermaidBlockContainer>
@@ -249,22 +233,23 @@ async function svgToPng(svgEl: SVGElement): Promise<string> {
 	const svgClone = svgEl.cloneNode(true) as SVGElement
 
 	// Get the original viewBox
-	const viewBox = svgClone.getAttribute("viewBox")?.split(" ").map(Number) || []
-	const originalWidth = viewBox[2] || svgClone.clientWidth
-	const originalHeight = viewBox[3] || svgClone.clientHeight
+	const originalWidth = Number(svgClone.getAttribute("width"))
+	const originalHeight = Number(svgClone.getAttribute("height"))
 
-	// Calculate the scale factor to fit editor width while maintaining aspect ratio
-
-	// Unless we can find a way to get the actual editor window dimensions through the VS Code API (which might be possible but would require changes to the extension side),
-	// the fixed width seems like a reliable approach.
-	const editorWidth = 3_600
-
-	const scale = editorWidth / originalWidth
-	const scaledHeight = originalHeight * scale
+	// Bound PNG export memory; viewing and zooming always retain the vector SVG.
+	const scale = Math.min(
+		3600 / originalWidth,
+		8192 / originalHeight,
+		Math.sqrt(16_000_000 / (originalWidth * originalHeight)),
+	)
+	const editorWidth = Math.max(1, Math.round(originalWidth * scale))
+	const scaledHeight = Math.max(1, Math.round(originalHeight * scale))
 
 	// Update SVG dimensions
 	svgClone.setAttribute("width", `${editorWidth}`)
 	svgClone.setAttribute("height", `${scaledHeight}`)
+	svgClone.style.width = `${editorWidth}px`
+	svgClone.style.height = `${scaledHeight}px`
 
 	const serializer = new XMLSerializer()
 	const svgString = serializer.serializeToString(svgClone)
@@ -286,8 +271,7 @@ async function svgToPng(svgEl: SVGElement): Promise<string> {
 			const ctx = canvas.getContext("2d")
 			if (!ctx) return reject("Canvas context not available")
 
-			// Fill background with Mermaid's dark theme background color
-			ctx.fillStyle = MERMAID_THEME.background
+			ctx.fillStyle = getMermaidTheme().background
 			ctx.fillRect(0, 0, canvas.width, canvas.height)
 
 			ctx.imageSmoothingEnabled = true
@@ -304,6 +288,17 @@ async function svgToPng(svgEl: SVGElement): Promise<string> {
 const MermaidBlockContainer = styled.div`
 	position: relative;
 	margin: 8px 0;
+	min-width: 0;
+	max-width: 100%;
+`
+
+const PreviewViewport = styled.div`
+	max-height: 400px;
+	overflow: auto;
+	border: 1px solid var(--vscode-panel-border, var(--vscode-editorWidget-border));
+	border-radius: 4px;
+	background: var(--vscode-editor-background);
+	padding: 12px;
 `
 
 const LoadingMessage = styled.div`
@@ -336,22 +331,18 @@ interface SvgContainerProps {
 
 const SvgContainer = styled.button<SvgContainerProps>`
 	opacity: ${(props) => (props.$isLoading ? 0.3 : 1)};
-	width: 100%;
+	width: fit-content;
+	max-width: none;
 	min-height: 20px;
-	transition: opacity 0.2s ease;
 	cursor: pointer;
 	padding: 0;
 	border: 0;
 	background: transparent;
 	color: inherit;
-	display: flex;
-	justify-content: center;
-	max-height: 400px;
+	display: block;
+	margin: 0 auto;
 
-	/* Ensure the SVG scales within the container */
 	& > svg {
-		display: block; /* Ensure block layout */
-		width: 100%;
-		max-height: 100%; /* Respect container's max-height */
+		display: block;
 	}
 `

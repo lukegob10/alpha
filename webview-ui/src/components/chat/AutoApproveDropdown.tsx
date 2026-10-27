@@ -21,6 +21,7 @@ import { Popover, PopoverContent, PopoverTrigger, StandardTooltip, Button } from
 
 interface AutoApproveDropdownProps {
 	disabled?: boolean
+	isVisible?: boolean
 	triggerClassName?: string
 	isDraft?: boolean
 	draftApprovalMode?: ApprovalMode
@@ -32,13 +33,16 @@ const APPROVAL_MODE_UPDATE_TIMEOUT_MS = 15_000
 
 export const AutoApproveDropdown = ({
 	disabled = false,
+	isVisible = true,
 	triggerClassName = "",
 	isDraft = false,
 	draftApprovalMode,
 	onDraftApprovalModeChange,
 }: AutoApproveDropdownProps) => {
 	const [open, setOpen] = React.useState(false)
-	const [bypassWarningOpen, setBypassWarningOpen] = React.useState(false)
+	const [bypassWarningTarget, setBypassWarningTarget] = React.useState<
+		{ taskId: string | undefined; isDraft: boolean } | undefined
+	>()
 	const [taskModeOverrides, setTaskModeOverrides] = React.useState<Record<string, ApprovalMode>>({})
 	const [pendingUpdates, setPendingUpdates] = React.useState<Record<string, string>>({})
 	const [updateFailures, setUpdateFailures] = React.useState<
@@ -55,6 +59,7 @@ export const AutoApproveDropdown = ({
 		currentTaskApprovalMode,
 		approvalMode,
 		approvalModeBypassAcknowledged,
+		setApprovalModeBypassAcknowledged,
 		autoApprovalEnabled,
 		alwaysAllowWrite,
 		alwaysAllowWriteOutsideWorkspace,
@@ -82,11 +87,25 @@ export const AutoApproveDropdown = ({
 	const mode = isDraft
 		? (draftApprovalMode ?? defaultMode)
 		: targetTaskId
-			? (currentTaskApprovalMode ?? taskModeOverrides[targetTaskId] ?? defaultMode)
+			? (taskModeOverrides[targetTaskId] ?? currentTaskApprovalMode ?? defaultMode)
 			: defaultMode
 	const failureForCurrentTask = targetTaskId ? updateFailures[targetTaskId] : undefined
 	const isUpdatingCurrentTask = Boolean(targetTaskId && pendingUpdates[targetTaskId])
 	const canChangeMode = isDraft ? Boolean(onDraftApprovalModeChange) : Boolean(targetTaskId)
+
+	React.useEffect(() => {
+		setBypassWarningTarget(undefined)
+	}, [targetTaskId, isDraft, isVisible])
+
+	React.useEffect(() => {
+		if (!targetTaskId || currentTaskApprovalMode == null) return
+		setTaskModeOverrides((previous) => {
+			if (previous[targetTaskId] === undefined) return previous
+			const next = { ...previous }
+			delete next[targetTaskId]
+			return next
+		})
+	}, [currentTaskApprovalMode, targetTaskId])
 
 	const settlePendingUpdate = React.useCallback((requestId: string) => {
 		const taskId = pendingTaskByRequest.current.get(requestId)
@@ -196,13 +215,25 @@ export const AutoApproveDropdown = ({
 			)
 				return
 			if (next === "bypass" && mode !== "bypass" && approvalModeBypassAcknowledged !== true) {
-				setBypassWarningOpen(true)
+				setBypassWarningTarget({ taskId: targetTaskId, isDraft })
 				return
 			}
 			applyMode(next)
 		},
 		[applyMode, approvalModeBypassAcknowledged, canChangeMode, isDraft, mode, targetTaskId],
 	)
+
+	React.useEffect(() => {
+		if (!isVisible || disabled || bypassWarningTarget) return
+		const handleShortcut = (event: MessageEvent) => {
+			if (event.data?.type !== "action" || event.data.action !== "toggleAutoApprove") return
+			// User-requested Alpha divergence: include Full Access. Codex's shortcut excludes it
+			// (openai/codex@c587d6e54cb1); keep Alpha's existing explicit acknowledgment path.
+			selectMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length])
+		}
+		window.addEventListener("message", handleShortcut)
+		return () => window.removeEventListener("message", handleShortcut)
+	}, [bypassWarningTarget, disabled, isVisible, mode, selectMode])
 
 	const handleOpenSettings = React.useCallback(
 		() =>
@@ -285,7 +316,16 @@ export const AutoApproveDropdown = ({
 					</div>
 				</PopoverContent>
 			</Popover>
-			<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
+			<AlertDialog
+				open={
+					Boolean(bypassWarningTarget) &&
+					bypassWarningTarget?.taskId === targetTaskId &&
+					bypassWarningTarget?.isDraft === isDraft &&
+					isVisible
+				}
+				onOpenChange={(open) => {
+					if (!open) setBypassWarningTarget(undefined)
+				}}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("chat:autoApprove.bypassWarning.title")}</AlertDialogTitle>
@@ -296,6 +336,19 @@ export const AutoApproveDropdown = ({
 						<AlertDialogAction
 							data-testid="approval-mode-bypass-confirm"
 							onClick={() => {
+								if (
+									disabled ||
+									!isVisible ||
+									bypassWarningTarget?.taskId !== targetTaskId ||
+									bypassWarningTarget?.isDraft !== isDraft
+								)
+									return
+								setBypassWarningTarget(undefined)
+								setApprovalModeBypassAcknowledged(true)
+								vscode.postMessage({
+									type: "updateSettings",
+									updatedSettings: { approvalModeBypassAcknowledged: true },
+								})
 								applyMode("bypass")
 							}}>
 							{t("chat:autoApprove.bypassWarning.confirm")}

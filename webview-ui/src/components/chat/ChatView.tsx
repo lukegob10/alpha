@@ -85,6 +85,7 @@ export interface ChatViewProps {
 export interface ChatViewRef {
 	acceptInput: () => void
 	sendAndSteer: (taskId?: string) => void
+	steerNextQueuedMessage: (taskId?: string) => void
 	startNewChat: () => void
 }
 
@@ -2368,7 +2369,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 
 					if (
-						result.command === "steerQueuedMessage" &&
+						(result.command === "steerQueuedMessage" || result.command === "steerNextQueuedMessage") &&
 						draft.pendingSteerRequest?.requestId === result.requestId
 					) {
 						if (owner === visibleCurrentTaskId) pendingSteerRequestRef.current = null
@@ -3319,6 +3320,31 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	useImperativeHandle(ref, () => ({
 		startNewChat: () => startNewTask(),
+		steerNextQueuedMessage: (taskId) => {
+			if (
+				!taskId ||
+				taskId !== visibleCurrentTaskId ||
+				isHidden ||
+				isManagedSubagent ||
+				isProfileDisabled ||
+				isCondensing ||
+				editingQueuedMessage ||
+				pendingQueueRequestRef.current ||
+				pendingSteerRequestRef.current ||
+				pendingResumeRequestRef.current ||
+				pendingEditRequestRef.current
+			)
+				return
+			const request = { requestId: crypto.randomUUID(), taskId }
+			pendingSteerRequestRef.current = request
+			setPendingSteerRequest(request)
+			setChatCommandError(undefined)
+			vscode.postMessage({
+				type: "steerNextQueuedMessage",
+				...request,
+				...(visibleTurnId ? { expectedTurnId: visibleTurnId } : {}),
+			})
+		},
 		sendAndSteer: (taskId) => {
 			if (
 				taskId !== visibleCurrentTaskId ||
@@ -3759,6 +3785,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						}
 						editingMessageId={editingQueuedMessage?.id}
 						steeringMessageId={pendingSteerRequest?.messageId}
+						steeringPending={Boolean(pendingSteerRequest)}
 						onRemove={(index) => {
 							if (visibleMessageQueue[index]) {
 								vscode.postMessage({

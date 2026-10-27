@@ -558,6 +558,7 @@ export const hostTestInventory = [
 		[
 			"alpha-tickets-live.test",
 			"approval-github-live.test",
+			"claude-copilot-batching-live.test",
 			"claude-copilot-live.test",
 			"command-file-diff-live.test",
 			"file-tools-live.test",

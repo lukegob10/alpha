@@ -349,6 +349,7 @@ export type ChatCommand =
 	| "queueMessage"
 	| "sendAndSteer"
 	| "steerQueuedMessage"
+	| "steerNextQueuedMessage"
 	| "editQueuedMessage"
 	| "resumeCompletedTask"
 	| "steerSubagent"
@@ -382,6 +383,12 @@ export const sendAndSteerMessageSchema = z.object({
 	text: z.string(),
 	images: z.array(z.string()).optional(),
 })
+
+/** Queue-only action: the host selects one eligible message; composer text is never submitted. */
+export const steerNextQueuedMessageSchema = sendAndSteerMessageSchema
+	.pick({ taskId: true, requestId: true, expectedTurnId: true })
+	.extend({ type: z.literal("steerNextQueuedMessage"), text: z.never().optional(), images: z.never().optional() })
+	.strict()
 
 export const webviewFocusChangedMessageSchema = z.object({
 	type: z.literal("webviewFocusChanged"),
@@ -467,6 +474,7 @@ export interface ExtensionMessage {
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "sendAndSteer"
+		| "steerNextQueuedMessage"
 		| "setHistoryPreviewCollapsed"
 		| "commandExecutionStatus"
 		| "mcpExecutionStatus"
@@ -1006,6 +1014,7 @@ interface WebviewMessageBase {
 		| "removeQueuedMessage"
 		| "editQueuedMessage"
 		| "steerQueuedMessage"
+		| "steerNextQueuedMessage"
 		| "reorderQueuedMessage"
 		| "dismissUpsell"
 		| "getDismissedUpsells"
@@ -1237,6 +1246,8 @@ export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
 			z.infer<typeof sendAndSteerMessageSchema> & { clientSubmittedAt?: number })
+	| (Omit<WebviewMessageBase, "type" | "taskId" | "requestId" | "text" | "images"> &
+			z.infer<typeof steerNextQueuedMessageSchema>)
 	| (Omit<WebviewMessageBase, "type"> & { type: "webviewUiReady"; durationMs: number })
 	| (Omit<WebviewMessageBase, "type"> & z.infer<typeof webviewFocusChangedMessageSchema>)
 	| (Omit<WebviewMessageBase, "type"> & {
@@ -1249,6 +1260,7 @@ export type WebviewMessage =
 				| "webviewError"
 				| "queueMessage"
 				| "sendAndSteer"
+				| "steerNextQueuedMessage"
 				| "toolApprovalResponse"
 				| "setTaskApprovalMode"
 				| "renameApiConfiguration"

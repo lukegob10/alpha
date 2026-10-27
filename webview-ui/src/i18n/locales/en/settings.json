@@ -264,11 +264,11 @@
 			"bypass": "Full Access",
 			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, managed-agent launches, Alpha Tickets, and outside paths. Saved command prefixes can allow matching commands; MCP tools ask unless enabled below for an individually granted tool.",
 			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, Alpha Tickets for the current project, and eligible bounded managed-agent launches. Agents settings separately control explicit-only or proactive delegation; child authority stays within the parent's policy. Ask for outside changes, protected changes unless enabled below, and MCP without an enabled saved tool grant. Command deny rules still apply.",
-			"bypassDescription": "Also auto-approve outside paths, protected files, valid MCP tool calls, and follow-up suggestions. Command deny rules still apply. Managed-agent delegation policy and inherited child authority still apply."
+			"bypassDescription": "Also auto-approve outside paths, protected files, and valid MCP tool calls. Follow-up questions use the answer setting below. Command deny rules still apply. Managed-agent delegation policy and inherited child authority still apply."
 		},
 		"bypassWarning": {
 			"title": "Enable Full Access?",
-			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, MCP, and follow-up suggestions. The deny-list still blocks forbidden commands.",
+			"body": "Full Access auto-approves writes and commands outside the opened workspace, protected files, and MCP. Follow-up questions use your saved answer setting. The deny-list still blocks forbidden commands.",
 			"confirm": "Enable Full Access",
 			"cancel": "Cancel"
 		},
@@ -321,7 +321,9 @@
 		"followupQuestions": {
 			"label": "Question",
 			"description": "Automatically select the first suggested answer for follow-up questions after the configured timeout",
-			"timeoutLabel": "Time to wait before auto-selecting the first answer"
+			"timeoutLabel": "Automatic answer delay (seconds)",
+			"waitLabel": "Wait indefinitely for question answers",
+			"waitDescription": "Keep follow-up questions open until you answer, including in Full Access. Turn this off to let Full Access select the first suggested answer for each question after the delay below. Ask and Auto always wait for your answers."
 		},
 		"execute": {
 			"label": "Command rules",

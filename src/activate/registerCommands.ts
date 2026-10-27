@@ -72,6 +72,9 @@ export const registerCommands = (options: RegisterCommandOptions) => {
 
 const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOptions): Record<CommandId, any> => ({
 	activationCompleted: () => {},
+	// Native media-preview commands are supported on VS Code 1.125.0 and 1.138.0 (verified 2026-10-26).
+	diagramZoomOut: () => vscode.commands.executeCommand("imagePreview.zoomOut"),
+	diagramZoomIn: () => vscode.commands.executeCommand("imagePreview.zoomIn"),
 	// Native view/title actions must keep their sidebar owner even while an editor Alpha view is focused.
 	// VS Code 1.125.0 forwards no reliable originating view identity through menu activation arguments.
 	sidebarNewChat: async () => {
@@ -104,14 +107,8 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 
 		await visibleProvider.postMessageToWebview({
 			type: "action",
-			action: "chatButtonClicked",
-			values: { force: true },
+			action: "newChatButtonClicked",
 		})
-		await visibleProvider.startBlankTask()
-		await visibleProvider.refreshWorkspace()
-		// Send focusInput action immediately after chatButtonClicked
-		// This ensures the focus happens after the view has switched
-		await visibleProvider.postMessageToWebview({ type: "action", action: "focusInput" })
 	},
 	popoutButtonClicked: () => {
 		TelemetryService.instance.captureTitleButtonClicked("popout")
@@ -194,12 +191,8 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	},
 	focusInput: async () => {
 		try {
-			await focusPanel(tabPanel, sidebarPanel)
-
-			// Send focus input message only for sidebar panels
-			if (sidebarPanel && getPanel() === sidebarPanel) {
-				provider.postMessageToWebview({ type: "action", action: "focusInput" })
-			}
+			const visibleProvider = await AlphaProvider.getInstance()
+			await visibleProvider?.focusInput()
 		} catch (error) {
 			outputChannel.appendLine(`Error focusing input: ${error}`)
 		}
@@ -224,7 +217,7 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
 		if (!visibleProvider) return
 		await visibleProvider.postMessageToWebview({
-			type: "sendAndSteer",
+			type: "steerNextQueuedMessage",
 			taskId: visibleProvider.getActiveTaskId(),
 		})
 	},

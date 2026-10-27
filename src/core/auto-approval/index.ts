@@ -173,12 +173,15 @@ export async function checkAutoApproval({
 		if (flags.alwaysAllowFollowupQuestions) {
 			try {
 				const suggestion = (JSON.parse(text || "{}") as FollowUpData).suggest?.[0]
+				// Zero keeps answers user-owned even in Full Access. Timed defaults are Alpha's
+				// explicit alternative to Codex Plan's blocking request_user_input (retrieved 2026-10-26).
 				const timeout =
-					typeof state.followupAutoApproveTimeoutMs === "number" && state.followupAutoApproveTimeoutMs > 0
+					typeof state.followupAutoApproveTimeoutMs === "number" &&
+					Number.isFinite(state.followupAutoApproveTimeoutMs) &&
+					state.followupAutoApproveTimeoutMs > 0 &&
+					state.followupAutoApproveTimeoutMs <= 2_147_483_647
 						? state.followupAutoApproveTimeoutMs
-						: mode === "bypass"
-							? 1
-							: 0
+						: 0
 
 				if (suggestion && timeout > 0) {
 					return {

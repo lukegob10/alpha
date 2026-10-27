@@ -41,6 +41,8 @@ export const commandIds = [
 	"settingsButtonClicked",
 
 	"openInNewTab",
+	"diagramZoomOut",
+	"diagramZoomIn",
 
 	"newTask",
 

@@ -20,6 +20,46 @@ The exact development and release reference host is VS Code **1.138.0**; it does
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
 policy or workspace protections.
 
+Default Windows keyboard shortcuts:
+
+| Shortcut                                | Action                               | Scope                                                |
+| --------------------------------------- | ------------------------------------ | ---------------------------------------------------- |
+| `Ctrl+Alt+N`                            | New Chat                             | Anywhere; uses the focused Alpha view when available |
+| `Ctrl+Alt+S`                            | Steer                                | Focused Alpha view                                   |
+| `Alt+,` / `Alt+.`                       | Decrease / increase reasoning effort | Focused Alpha view                                   |
+| `Ctrl+Alt+PageUp` / `Ctrl+Alt+PageDown` | Previous / next task                 | Focused Alpha view                                   |
+| `Ctrl+Alt+Home`                         | Next task needing input              | Focused Alpha view                                   |
+| `Ctrl+K Ctrl+A`                         | Add selection to chat context        | Text editor with a selection                         |
+| `Ctrl+Alt+A`                            | Cycle Ask / Auto / Full Access       | Visible Alpha chat composer                          |
+| `Shift+Tab`                             | Switch Plan / Code                   | Chat composer                                        |
+
+Use VS Code's **Keyboard Shortcuts** editor and search `alpha.` to customize bindings, including **Focus Input** and
+**Accept Input**, which have no default binding. The context-selection chord and approval toggle also have macOS and
+Linux defaults; the other host shortcuts above are Windows-only. Enter behavior follows the chat setting.
+
+Macro-pad keys **F13–F24** can be assigned to Alpha commands through VS Code's Keyboard Shortcuts editor or
+`keybindings.json` (`"key": "f24"`, for example). Alpha leaves these keys available to VS Code, including while typing
+in the composer. For commands with separate editor and sidebar bindings, customize both entries; retain
+`"args": "sidebar"` on the sidebar entry so the shortcut targets that view.
+
+Steer applies the oldest available queued message first (FIFO). Further presses advance through the remaining queue.
+An empty queue does nothing; unsent composer text and images stay untouched. Existing bindings to `alpha.sendAndSteer`
+use this queue-only action.
+
+Cycle Approval Mode advances **Ask → Auto → Full Access → Ask** for the current chat or new-chat draft. The first
+selection of Full Access requires its acknowledgment; cycling does not change the default approval mode for other chats.
+
+Previous Task walks toward older saved chats in the current workspace; Next Task walks toward newer chats. Navigation
+keeps a stable history order while browsing and stops at either end. It includes chats that are no longer loaded.
+
+Enable **Settings → Auto-Approve → Wait indefinitely for question answers**, then **Save**, to keep questions open until
+you answer, including in Full Access. Turning it off lets Full Access use first suggested answers after a configurable
+delay. Ask and Auto always wait for your answers.
+
+Mermaid diagrams keep readable text in chat; scroll large diagrams to see the rest. Select **Open diagram** for the
+full editor SVG preview. Use **Zoom Out** and **Zoom In** in the editor toolbar. To fit the entire diagram again, select
+the zoom percentage in the status bar, then **Whole Image**. **Save Image** exports a PNG.
+
 Supported chat providers are native OpenAI, Anthropic, Gemini, xAI, OpenRouter, GCP Vertex AI, VS Code LM API, Stellar,
 and OpenAI Compatible. Native providers and OpenRouter offer a curated frontier-model catalog. Select the provider and
 model in Settings, enter that provider's API key, and click **Save**. Choose reasoning separately in the task composer;

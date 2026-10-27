@@ -86,6 +86,24 @@ async function grade(
 }
 
 describe("expected command assertion completion", () => {
+	it("keeps trusted assertion state private when candidate code replaces async context methods", async () => {
+		const result = await grade(
+			'import { AsyncLocalStorage } from "node:async_hooks"; const original = AsyncLocalStorage.prototype.run; AsyncLocalStorage.prototype.run = function(state, callback, ...args) { if (state?.context && typeof state.completed === "number") { state.completed = 2; state.failed = false; state.context.assert.ok(true); state.context.assert.ok(true); return } return original.call(this, state, callback, ...args) }; export const value = () => 0',
+		)
+		expect(result.decision).toBe("outcome_failed")
+		expect(JSON.parse(result.output.stdout!).completions).toEqual([])
+	})
+
+	it.each(["run", "getStore", "enterWith"])(
+		"does not expose trusted assertion state to candidate instrumentation of %s",
+		async (method) => {
+			const result = await grade(
+				`import { AsyncLocalStorage } from "node:async_hooks"; let exposed = false; const original = AsyncLocalStorage.prototype.${method}; const inspect = value => { if (value?.context && typeof value.completed === "number" && typeof value.failed === "boolean") exposed = true }; AsyncLocalStorage.prototype.${method} = function(...args) { args.forEach(inspect); const result = original.apply(this, args); inspect(result); return result }; export const value = input => { if (exposed) throw new Error("trusted assertion context exposed"); return input * 2 }`,
+			)
+			expect(result.decision).toBe("passed")
+		},
+	)
+
 	it.each(["({ lease: { release() {} } })", "({ lease: Symbol('open') })"])(
 		"retains ordinary assertion failures with nonserializable compared values: %s",
 		async (value) => {

@@ -15,7 +15,7 @@ export interface TaskComposerDraft {
 	pendingNewTaskRequest: ComposerSubmission | null
 	editingQueuedMessage: { taskId: string; id: string; priorText: string; priorImages: string[] } | null
 	pendingQueueRequest: (ComposerSubmission & { command?: "sendAndSteer" }) | null
-	pendingSteerRequest: { requestId: string; taskId: string; messageId: string } | null
+	pendingSteerRequest: { requestId: string; taskId: string; messageId?: string } | null
 	pendingEditRequest: (ComposerSubmission & { messageId: string }) | null
 	pendingResumeRequest: ComposerSubmission | null
 	pendingAskRequests: (ComposerSubmission & { askMessageTs?: number; isNativeUserInput?: true })[]

@@ -28,7 +28,7 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 interface TestExtensionState {
 	autoApprovalEnabled: boolean
 	alwaysAllowFollowupQuestions: boolean
-	followupAutoApproveTimeoutMs: number
+	followupAutoApproveTimeoutMs: number | undefined
 }
 
 const TestExtensionStateContext = createContext<TestExtensionState | undefined>(undefined)
@@ -222,6 +222,18 @@ describe("FollowUpSuggest", () => {
 		// Should not show countdown
 		expect(screen.queryByText(/\d+s/)).not.toBeInTheDocument()
 	})
+
+	it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+		"keeps suggestions available without a countdown for timeout %s",
+		(followupAutoApproveTimeoutMs) => {
+			renderWithTestProviders(
+				<FollowUpSuggest suggestions={mockSuggestions} onSuggestionClick={mockOnSuggestionClick} ts={123} />,
+				{ ...defaultTestState, followupAutoApproveTimeoutMs },
+			)
+			expect(screen.getByText("First suggestion")).toBeInTheDocument()
+			expect(screen.queryByText(/Selecting in/)).not.toBeInTheDocument()
+		},
+	)
 
 	it("should use custom timeout value from extension state", () => {
 		const testState: TestExtensionState = {

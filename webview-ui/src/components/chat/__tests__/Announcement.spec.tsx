@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.11",
+		version: "3.2.12",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.11" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.12" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.11")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.12")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.11 improves security and reliability while preserving local memories."),
+			screen.getByText("Alpha v3.2.12 improves chat controls, saved-chat navigation, and diagram previews."),
 		).toBeInTheDocument()
 	})
 
@@ -51,18 +51,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText(
-				"Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
-			),
+			screen.getByText("Browse older and newer saved chats in a stable workspace history."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Choose curated frontier models and supported reasoning settings across providers."),
+			screen.getByText("Steer queued messages in order while keeping unsent text and images intact."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Enable local memories with separate controls for use, background generation, and reset."),
+			screen.getByText("Cycle approval modes and keep questions open until you answer by default."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Use a cleaner settings layout and notification sounds without legacy speech controls."),
+			screen.getByText("Open readable Mermaid diagrams in vector previews with native editor zoom controls."),
 		).toBeInTheDocument()
 	})
 
@@ -70,12 +68,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.11 improves security and reliability while preserving local memories."),
+			screen.getByText("Alpha v3.2.12 improves chat controls, saved-chat navigation, and diagram previews."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Preserve conversation state and execution settings through follow-ups, recovery, and reloads.",
-			),
+			screen.getByText("Browse older and newer saved chats in a stable workspace history."),
 		).toBeInTheDocument()
 	})
 })

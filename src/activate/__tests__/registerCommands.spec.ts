@@ -1,6 +1,8 @@
 import type { Mock } from "vitest"
 import * as vscode from "vscode"
+import { readFileSync } from "node:fs"
 import { AlphaProvider } from "../../core/webview/AlphaProvider"
+import { registerCodeActions } from "../registerCodeActions"
 
 import { getPanel, getVisibleProviderOrLog, registerCommands, setPanel } from "../registerCommands"
 
@@ -23,6 +25,7 @@ vi.mock("vscode", () => ({
 	},
 	commands: {
 		registerCommand: vi.fn((command, callback) => ({ command, callback, dispose: vi.fn() })),
+		executeCommand: vi.fn(),
 	},
 	window: {
 		createTextEditorDecorationType: vi.fn().mockReturnValue({ dispose: vi.fn() }),
@@ -113,6 +116,39 @@ describe("registerCommands", () => {
 		vi.clearAllMocks()
 	})
 
+	it("registers exactly one handler for every contributed keyboard shortcut", () => {
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: {} as AlphaProvider })
+		registerCodeActions(context)
+		const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+			contributes: { keybindings: Array<{ command: string }>; commands: Array<{ command: string }> }
+		}
+		const registered = vi.mocked(vscode.commands.registerCommand).mock.calls.map(([id]) => id)
+		for (const { command } of manifest.contributes.keybindings) {
+			expect(
+				registered.filter((id) => id === command),
+				command,
+			).toHaveLength(1)
+			expect(
+				manifest.contributes.commands.some((item) => item.command === command),
+				command,
+			).toBe(true)
+		}
+	})
+
+	it.each(["In", "Out"])("routes diagram zoom %s to the native preview", async (direction) => {
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: {} as AlphaProvider })
+		const registration = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([command]) => command === `alpha.diagramZoom${direction}`)
+		expect(registration).toBeDefined()
+
+		await registration![1]()
+
+		expect(vscode.commands.executeCommand).toHaveBeenCalledExactlyOnceWith(`imagePreview.zoom${direction}`)
+	})
+
 	it.each([undefined, "/user/settings.json"])("routes settings import %s through its provider", async (filePath) => {
 		const importSettings = vi.fn().mockResolvedValue(undefined)
 		const visibleProvider = { importSettings } as unknown as AlphaProvider
@@ -128,7 +164,7 @@ describe("registerCommands", () => {
 		expect(importSettings).toHaveBeenCalledExactlyOnceWith(filePath)
 	})
 
-	it("backgrounds the active task instead of aborting it when the plus button starts a blank task", async () => {
+	it("routes New Chat through the UI guard before changing the active task", async () => {
 		const startBlankTask = vi.fn().mockResolvedValue(undefined)
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		const visibleProvider = {
@@ -149,18 +185,13 @@ describe("registerCommands", () => {
 
 		await plusRegistration![1]()
 
-		expect(visibleProvider.startBlankTask).toHaveBeenCalledTimes(1)
+		expect(visibleProvider.startBlankTask).not.toHaveBeenCalled()
 		expect(visibleProvider.removeTaskFromStack).not.toHaveBeenCalled()
-		expect(visibleProvider.refreshWorkspace).toHaveBeenCalledTimes(1)
-		expect(visibleProvider.postMessageToWebview).toHaveBeenCalledWith({
+		expect(visibleProvider.refreshWorkspace).not.toHaveBeenCalled()
+		expect(visibleProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 			type: "action",
-			action: "chatButtonClicked",
-			values: { force: true },
+			action: "newChatButtonClicked",
 		})
-		expect(visibleProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "focusInput" })
-		expect(postMessageToWebview.mock.invocationCallOrder[0]).toBeLessThan(
-			startBlankTask.mock.invocationCallOrder[0],
-		)
 	})
 
 	it("does not register the removed Goal Seek command", () => {
@@ -242,23 +273,36 @@ describe("registerCommands", () => {
 		expect(editor[method]).not.toHaveBeenCalled()
 	})
 
-	it("captures the editor task identity when requesting a steering submission", async () => {
-		const editor = {
-			getActiveTaskId: vi.fn(() => "editor-task"),
-			postMessageToWebview: vi.fn(),
-		} as unknown as AlphaProvider
-		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor)
-		registerCommands({
-			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
-			outputChannel: mockOutputChannel,
-			provider: {} as AlphaProvider,
-		})
-		const callback = vi
-			.mocked(vscode.commands.registerCommand)
-			.mock.calls.find(([id]) => id === "alpha.sendAndSteer")![1]
-		await callback()
-		expect(editor.postMessageToWebview).toHaveBeenCalledWith({ type: "sendAndSteer", taskId: "editor-task" })
-	})
+	it.each(["editor", "sidebar"])(
+		"captures the %s task identity when requesting a steering submission",
+		async (surface) => {
+			const editor = {
+				getActiveTaskId: vi.fn(() => "editor-task"),
+				postMessageToWebview: vi.fn(),
+			} as unknown as AlphaProvider
+			const sidebar = {
+				getActiveTaskId: vi.fn(() => "sidebar-task"),
+				postMessageToWebview: vi.fn(),
+			} as unknown as AlphaProvider
+			vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor)
+			registerCommands({
+				context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+				outputChannel: mockOutputChannel,
+				provider: sidebar,
+			})
+			const callback = vi
+				.mocked(vscode.commands.registerCommand)
+				.mock.calls.find(([id]) => id === "alpha.sendAndSteer")![1]
+			await callback(surface === "sidebar" ? "sidebar" : undefined)
+			const target = surface === "sidebar" ? sidebar : editor
+			const other = surface === "sidebar" ? editor : sidebar
+			expect(target.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+				type: "steerNextQueuedMessage",
+				taskId: `${surface}-task`,
+			})
+			expect(other.postMessageToWebview).not.toHaveBeenCalled()
+		},
+	)
 
 	it("reveals Alpha when starting a new chat without a visible view", async () => {
 		const sidebar = {
@@ -278,6 +322,27 @@ describe("registerCommands", () => {
 			.mock.calls.find(([id]) => id === "alpha.plusButtonClicked")![1]
 		await callback()
 		expect(AlphaProvider.getInstance).toHaveBeenCalledTimes(1)
-		expect(sidebar.startBlankTask).toHaveBeenCalledTimes(1)
+		expect(sidebar.startBlankTask).not.toHaveBeenCalled()
+		expect(sidebar.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "action",
+			action: "newChatButtonClicked",
+		})
+	})
+
+	it("focuses the visible provider's composer even when it is an editor chat", async () => {
+		const editor = { focusInput: vi.fn() } as unknown as AlphaProvider
+		vi.mocked(AlphaProvider.getInstance).mockResolvedValue(editor)
+		const sidebar = { focusInput: vi.fn() } as unknown as AlphaProvider
+		registerCommands({
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+			outputChannel: mockOutputChannel,
+			provider: sidebar,
+		})
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === "alpha.focusInput")![1]
+		await callback()
+		expect(editor.focusInput).toHaveBeenCalledExactlyOnceWith()
+		expect(sidebar.focusInput).not.toHaveBeenCalled()
 	})
 })

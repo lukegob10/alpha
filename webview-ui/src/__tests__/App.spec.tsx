@@ -11,7 +11,12 @@ import {
 
 import AppWithProviders from "../App"
 
-const mockChatCommands = vi.hoisted(() => ({ acceptInput: vi.fn(), sendAndSteer: vi.fn(), startNewChat: vi.fn() }))
+const mockChatCommands = vi.hoisted(() => ({
+	acceptInput: vi.fn(),
+	sendAndSteer: vi.fn(),
+	steerNextQueuedMessage: vi.fn(),
+	startNewChat: vi.fn(),
+}))
 const mockCheckUnsavedChanges = vi.hoisted(() => vi.fn<(onContinue: () => void) => void>())
 const mockStateSubscriptionRead = vi.hoisted(() => vi.fn())
 
@@ -412,6 +417,18 @@ describe("App", () => {
 		expect(mockChatCommands.acceptInput).not.toHaveBeenCalled()
 	})
 
+	it("routes queue-only steering separately from composer submission", () => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "steerNextQueuedMessage", taskId: "captured-task" } }),
+			),
+		)
+		expect(mockChatCommands.steerNextQueuedMessage).toHaveBeenCalledWith("captured-task")
+		expect(mockChatCommands.sendAndSteer).not.toHaveBeenCalled()
+		expect(mockChatCommands.acceptInput).not.toHaveBeenCalled()
+	})
+
 	const triggerForcedChatMessage = () => {
 		const messageEvent = new MessageEvent("message", {
 			data: {
@@ -555,8 +572,8 @@ describe("App", () => {
 		expect(screen.getByTestId("chat-view")).toBeVisible()
 	})
 
-	it("waits for the Settings guard before starting one chat from the native sidebar action", async () => {
-		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
+	it.each(["sidebar", "editor"])("guards the New Chat host action in the %s view", async (renderContext) => {
+		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext })
 		render(<AppWithProviders />)
 		act(() => triggerMessage("settingsButtonClicked"))
 		await screen.findByTestId("settings-view")

@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog"
-import { useRef } from "react"
+import { useRef, type RefObject } from "react"
 
 interface ModalProps {
 	isOpen: boolean
@@ -7,9 +7,10 @@ interface ModalProps {
 	title: string
 	children: React.ReactNode
 	className?: string
+	initialFocusRef?: RefObject<HTMLElement>
 }
 
-export function Modal({ isOpen, onClose, title, children, className = "" }: ModalProps) {
+export function Modal({ isOpen, onClose, title, children, className = "", initialFocusRef }: ModalProps) {
 	const contentRef = useRef<HTMLDivElement>(null)
 	const openerRef = useRef<HTMLElement | null>(null)
 
@@ -27,7 +28,7 @@ export function Modal({ isOpen, onClose, title, children, className = "" }: Moda
 							const firstControl = contentRef.current?.querySelector<HTMLElement>(
 								'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
 							)
-							const focusTarget = firstControl ?? contentRef.current
+							const focusTarget = initialFocusRef?.current ?? firstControl ?? contentRef.current
 							focusTarget?.focus()
 						}}
 						onCloseAutoFocus={(event) => {
