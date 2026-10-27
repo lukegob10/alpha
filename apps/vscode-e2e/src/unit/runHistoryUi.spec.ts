@@ -4,7 +4,12 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { createContext, runInContext } from "node:vm"
-import { completeHistoryUiRun, historyPointerProbeExpression, withHistoryPointerEvidence } from "../runHistoryUi"
+import {
+	completeHistoryUiRun,
+	enterHistoryFrame,
+	historyPointerProbeExpression,
+	withHistoryPointerEvidence,
+} from "../runHistoryUi"
 
 const verifiedHost = {
 	status: "passed",
@@ -67,6 +72,69 @@ function pointerDocumentFixture() {
 		},
 	}
 }
+
+test("history hover crosses the outer frame boundary before entering a row and waits for input settlement", async () => {
+	const moves: Array<{ x: number; y: number }> = []
+	let settleExit!: () => void
+	const exitSettled = new Promise<void>((resolve) => {
+		settleExit = resolve
+	})
+	const entering = enterHistoryFrame({ x: 48, y: 70 }, { x: 192.5, y: 316.28125 }, async (point) => {
+		moves.push(point)
+		if (moves.length === 1) await exitSettled
+	})
+	try {
+		assert.deepEqual(moves, [{ x: 47, y: 316.28125 }])
+		await Promise.resolve()
+		assert.equal(moves.length, 1, "The target move waits for the outer-frame move to settle")
+	} finally {
+		settleExit()
+	}
+	await entering
+	assert.deepEqual(moves, [
+		{ x: 47, y: 316.28125 },
+		{ x: 192.5, y: 316.28125 },
+	])
+})
+
+test("history hover can enter through the top boundary and preserves input failures without a target move", async () => {
+	const moves: Array<{ x: number; y: number }> = []
+	const inputFailure = new Error("owned input session ended")
+	await assert.rejects(
+		enterHistoryFrame({ x: 0, y: 70 }, { x: 144, y: 316 }, async (point) => {
+			moves.push(point)
+			throw inputFailure
+		}),
+		(error) => error === inputFailure,
+	)
+	assert.deepEqual(moves, [{ x: 144, y: 69 }])
+})
+
+test("invalid history frame geometry fails before any pointer input", async () => {
+	let moves = 0
+	for (const [origin, target] of [
+		[
+			{ x: 0, y: 0 },
+			{ x: 100, y: 100 },
+		],
+		[
+			{ x: 48, y: 70 },
+			{ x: Number.NaN, y: 100 },
+		],
+		[
+			{ x: 48, y: 70 },
+			{ x: 47, y: 100 },
+		],
+	] as const) {
+		await assert.rejects(
+			enterHistoryFrame(origin, target, async () => {
+				moves++
+			}),
+			/History (?:pointer|frame)/,
+		)
+	}
+	assert.equal(moves, 0)
+})
 
 test("history pointer diagnostics retain current geometry, focus and a hit-test without manufacturing hover", () => {
 	const fixture = pointerDocumentFixture()

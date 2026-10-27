@@ -113,6 +113,31 @@ export function historyPointerProbeExpression(selector: string, action: "install
 	})()`
 }
 
+/** Each hover starts with a fresh native entry into the iframe after keyboard-driven layout changes. */
+export async function enterHistoryFrame(
+	origin: { x: number; y: number },
+	target: { x: number; y: number },
+	move: (point: { x: number; y: number }) => Promise<void>,
+): Promise<void> {
+	assert.ok(
+		[origin.x, origin.y, target.x, target.y].every(Number.isFinite) &&
+			origin.x >= 0 &&
+			origin.y >= 0 &&
+			target.x >= origin.x &&
+			target.y >= origin.y,
+		"History pointer coordinates must address the current frame",
+	)
+	const outside =
+		origin.x > 0
+			? { x: Math.max(0, origin.x - 1), y: target.y }
+			: origin.y > 0
+				? { x: target.x, y: Math.max(0, origin.y - 1) }
+				: undefined
+	assert.ok(outside, "History frame has no in-viewport pointer entry boundary")
+	await move(outside)
+	await move(target)
+}
+
 /** Diagnostic failures must not replace the interaction's result or its original assertion. */
 export async function withHistoryPointerEvidence<T>(
 	operation: () => Promise<T>,
@@ -509,15 +534,28 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 							false,
 						),
 					)
-					await connection.request(
-						"Input.dispatchMouseEvent",
-						{ type: "mouseMoved", x: originX + point.x, y: originY + point.y },
-						pageSession,
+					await enterHistoryFrame(
+						{ x: originX, y: originY },
+						{ x: originX + point.x, y: originY + point.y },
+						async (position) => {
+							await connection.request(
+								"Input.dispatchMouseEvent",
+								{ type: "mouseMoved", ...position },
+								pageSession,
+							)
+						},
 					)
 					await Promise.all([
 						record("afterDispatch", () => evaluate(historyPointerProbeExpression(rowSelector, "snapshot"))),
 						check(`d.querySelector(${selector}).matches(':hover')`),
 					])
+					const pointerEntry = await evaluate<{ events: Array<{ trusted: boolean }> }>(
+						historyPointerProbeExpression(rowSelector, "snapshot"),
+					)
+					assert.ok(
+						pointerEntry.events.some((event) => event.trusted),
+						"Hover requires a trusted pointer entry",
+					)
 					await check(
 						`d.defaultView.getComputedStyle(d.querySelector(${selector}).querySelector('[data-testid=task-content]')).color===${javascriptLiteral(baseline.expected.foreground)}`,
 					)
@@ -952,7 +990,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			key: (key: "Tab" | "Escape", shift?: boolean) =>
 				dispatchRenderedDialogKey(connection, sessionId, key, shift),
 		}
-		await verifyRenderedDialogFocus(dialogDriver, '[role="dialog"]', "Mermaid diagram")
+		await verifyRenderedDialogFocus(dialogDriver, '[role="dialog"]', "Mermaid Code")
 		await capture("diagram-modal-keyboard")
 		await dismissRenderedDialogAndRestoreFocus(
 			dialogDriver,
