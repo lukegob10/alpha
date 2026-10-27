@@ -1,11 +1,11 @@
 import * as vscode from "vscode"
 import * as path from "path"
 import * as fs from "fs/promises"
+import * as yaml from "yaml"
 import { fileExistsAtPath } from "../utils/fs"
 import { GlobalFileNames } from "../shared/globalFileNames"
 import { migrateSettings } from "../utils/migrateSettings"
 
-// Mock dependencies
 vitest.mock("vscode")
 vitest.mock("fs/promises", () => ({
 	mkdir: vitest.fn().mockResolvedValue(undefined),
@@ -17,237 +17,150 @@ vitest.mock("fs/promises", () => ({
 vitest.mock("fs")
 vitest.mock("../utils/fs")
 
-describe("Settings Migration", () => {
+describe("Alpha settings migration", () => {
 	let mockContext: vscode.ExtensionContext
 	let mockOutputChannel: vscode.OutputChannel
+	let globalState: Map<string, unknown>
 	const mockStoragePath = "/mock/storage"
 	const mockSettingsDir = path.join(mockStoragePath, "settings")
-
-	// Legacy file names
-	const legacyCustomModesJson = path.join(mockSettingsDir, "custom_modes.json")
-	const legacyClineCustomModesPath = path.join(mockSettingsDir, "cline_custom_modes.json")
-	const legacyMcpSettingsPath = path.join(mockSettingsDir, "cline_mcp_settings.json")
-
-	// New file names
-	const newCustomModesYaml = path.join(mockSettingsDir, GlobalFileNames.customModes)
-	const newMcpSettingsPath = path.join(mockSettingsDir, GlobalFileNames.mcpSettings)
+	const customModesJson = path.join(mockSettingsDir, "custom_modes.json")
+	const customModesYaml = path.join(mockSettingsDir, GlobalFileNames.customModes)
 
 	beforeEach(() => {
-		vitest.clearAllMocks()
-
-		// Mock output channel
+		vitest.resetAllMocks()
+		vitest.mocked(fs.mkdir).mockResolvedValue(undefined)
+		vitest.mocked(fs.writeFile).mockResolvedValue(undefined)
+		globalState = new Map()
 		mockOutputChannel = {
 			appendLine: vitest.fn(),
-			append: vitest.fn(),
-			clear: vitest.fn(),
-			show: vitest.fn(),
-			hide: vitest.fn(),
-			dispose: vitest.fn(),
 		} as unknown as vscode.OutputChannel
-
-		// Mock extension context
 		mockContext = {
 			globalStorageUri: { fsPath: mockStoragePath },
+			globalState: {
+				get: vitest.fn((key: string) => globalState.get(key)),
+				update: vitest.fn(async (key: string, value: unknown) => {
+					globalState.set(key, value)
+				}),
+			},
 		} as unknown as vscode.ExtensionContext
-
-		// Set global outputChannel for all tests
-		;(global as any).outputChannel = mockOutputChannel
 	})
 
-	it("should migrate custom modes file if old file exists and new file doesn't", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
+	function existingFiles(...paths: string[]) {
+		const existing = new Set([mockSettingsDir, ...paths])
+		vitest.mocked(fileExistsAtPath).mockImplementation(async (filename: string) => existing.has(filename))
+	}
 
-		// Setup mock for rename function
-		const mockRename = vitest.mocked(fs.rename).mockResolvedValue(undefined)
+	function expectNoFileChanges() {
+		expect(fs.writeFile).not.toHaveBeenCalled()
+		expect(fs.rename).not.toHaveBeenCalled()
+		expect(fs.unlink).not.toHaveBeenCalled()
+	}
 
-		// Mock file existence checks - only return true for paths we want to exist
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyClineCustomModesPath) return true
-			return false // All other paths don't exist, including destination files
-		})
-
-		// Run the migration
-		await migrateSettings(mockContext, mockOutputChannel)
-
-		// Verify expected rename call - cline_custom_modes.json should be renamed to custom_modes.json
-		expect(mockRename).toHaveBeenCalledWith(legacyClineCustomModesPath, legacyCustomModesJson)
-	})
-
-	it("should migrate MCP settings file if old file exists and new file doesn't", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
-
-		// Setup mock for rename function
-		const mockRename = vitest.mocked(fs.rename).mockResolvedValue(undefined)
-
-		// Ensure the other files don't interfere with this test
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyMcpSettingsPath) return true
-			if (path === legacyClineCustomModesPath) return false // Ensure this file doesn't exist
-			if (path === legacyCustomModesJson) return false // Ensure this file doesn't exist
-			return false // All other paths don't exist, including destination files
-		})
-
-		// Run the migration
-		await migrateSettings(mockContext, mockOutputChannel)
-
-		// Verify expected rename call
-		expect(mockRename).toHaveBeenCalledWith(legacyMcpSettingsPath, newMcpSettingsPath)
-	})
-
-	it("should not migrate if new file already exists", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
-
-		// Setup mock for rename function
-		const mockRename = vitest.mocked(fs.rename).mockResolvedValue(undefined)
-
-		// Mock file existence checks - both source and destination exist
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyClineCustomModesPath) return true
-			if (path === legacyCustomModesJson) return true // Destination already exists
-			if (path === legacyMcpSettingsPath) return true
-			if (path === newMcpSettingsPath) return true
-			return false
-		})
+	it("returns without reading or rewriting files when settings are absent", async () => {
+		vitest.mocked(fileExistsAtPath).mockResolvedValue(false)
 
 		await migrateSettings(mockContext, mockOutputChannel)
 
-		// Verify rename was not called since destination files exist
-		expect(mockRename).not.toHaveBeenCalled()
-	})
-
-	it("should handle errors gracefully", async () => {
-		// Clear mocks
-		vitest.clearAllMocks()
-
-		// Mock file existence to throw error
-		vitest.mocked(fileExistsAtPath).mockRejectedValue(new Error("Test error"))
-
-		await migrateSettings(mockContext, mockOutputChannel)
-
-		// Verify error was logged
+		expect(fs.readFile).not.toHaveBeenCalled()
+		expectNoFileChanges()
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
-			expect.stringContaining("Error migrating settings files"),
+			"No settings directory found, no migrations necessary",
 		)
 	})
 
-	it("should convert custom_modes.json to YAML format", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
-
-		const testJsonContent = JSON.stringify({ customModes: [{ slug: "test-mode", name: "Test Mode" }] })
-
-		// Setup mock functions
-		const mockWrite = vitest.mocked(fs.writeFile).mockResolvedValue(undefined)
-		const mockUnlink = vitest.mocked(fs.unlink).mockResolvedValue(undefined)
-
-		// Mock file read to return JSON content
-		vitest.mocked(fs.readFile).mockImplementation(async (path: any) => {
-			if (path === legacyCustomModesJson) {
-				return testJsonContent
-			}
-			throw new Error("File not found: " + path)
-		})
-
-		// Isolate this test by making sure only the specific JSON file exists
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyCustomModesJson) return true
-			if (path === legacyClineCustomModesPath) return false
-			if (path === legacyMcpSettingsPath) return false
-			return false
-		})
+	it("does not read or rewrite existing MCP settings when no Alpha mode JSON exists", async () => {
+		existingFiles(path.join(mockSettingsDir, GlobalFileNames.mcpSettings))
 
 		await migrateSettings(mockContext, mockOutputChannel)
 
-		// Verify file operations
-		expect(mockWrite).toHaveBeenCalledWith(newCustomModesYaml, expect.any(String), "utf-8")
-		// We don't delete the original JSON file to allow for rollback
-		expect(mockUnlink).not.toHaveBeenCalled()
+		expect(fs.readFile).not.toHaveBeenCalled()
+		expectNoFileChanges()
+		expect(vitest.mocked(fileExistsAtPath).mock.calls.map(([filename]) => filename)).toEqual([
+			mockSettingsDir,
+			customModesJson,
+			customModesYaml,
+		])
+	})
 
-		// Verify log message mentions preservation of original file
+	it("converts Alpha custom_modes.json to equivalent YAML while preserving its source", async () => {
+		const content = { customModes: [{ slug: "test-mode", name: "Test Mode" }] }
+		existingFiles(customModesJson)
+		vitest.mocked(fs.readFile).mockResolvedValue(JSON.stringify(content))
+
+		await migrateSettings(mockContext, mockOutputChannel)
+
+		expect(fs.readFile).toHaveBeenCalledWith(customModesJson, "utf-8")
+		expect(fs.writeFile).toHaveBeenCalledOnce()
+		const [destination, written, encoding] = vitest.mocked(fs.writeFile).mock.calls[0]
+		expect(destination).toBe(customModesYaml)
+		expect(encoding).toBe("utf-8")
+		expect(yaml.parse(String(written))).toEqual(content)
+		expect(fs.rename).not.toHaveBeenCalled()
+		expect(fs.unlink).not.toHaveBeenCalled()
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
 			expect.stringContaining("original JSON file preserved for rollback purposes"),
 		)
 	})
 
-	it("should handle corrupt JSON gracefully", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
-
-		// Setup mock functions
-		const mockWrite = vitest.mocked(fs.writeFile).mockResolvedValue(undefined)
-		const mockUnlink = vitest.mocked(fs.unlink).mockResolvedValue(undefined)
-
-		// Mock file read to return corrupt JSON
-		vitest.mocked(fs.readFile).mockImplementation(async (path: any) => {
-			if (path === legacyCustomModesJson) {
-				return "{ invalid json content" // This will cause an error when parsed
-			}
-			throw new Error("File not found: " + path)
-		})
-
-		// Isolate this test
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyCustomModesJson) return true
-			if (path === legacyClineCustomModesPath) return false
-			if (path === legacyMcpSettingsPath) return false
-			return false
-		})
+	it("does not overwrite an existing YAML configuration", async () => {
+		existingFiles(customModesJson, customModesYaml)
 
 		await migrateSettings(mockContext, mockOutputChannel)
 
-		// Verify error was logged
-		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
-			expect.stringContaining("Error parsing custom_modes.json"),
-		)
-
-		// Verify no write/unlink operations were performed
-		expect(mockWrite).not.toHaveBeenCalled()
-		expect(mockUnlink).not.toHaveBeenCalled()
-	})
-
-	it("should skip migration when YAML file already exists", async () => {
-		// Clear all previous mocks to ensure clean test environment
-		vitest.clearAllMocks()
-
-		// Setup mock functions
-		const mockWrite = vitest.mocked(fs.writeFile).mockResolvedValue(undefined)
-		const mockUnlink = vitest.mocked(fs.unlink).mockResolvedValue(undefined)
-
-		// Mock file read
-		vitest.mocked(fs.readFile).mockImplementation(async (path: any) => {
-			if (path === legacyCustomModesJson) {
-				return JSON.stringify({ customModes: [] })
-			}
-			throw new Error("File not found: " + path)
-		})
-
-		// Mock file existence checks - both source and yaml destination exist
-		vitest.mocked(fileExistsAtPath).mockImplementation(async (path: string) => {
-			if (path === mockSettingsDir) return true
-			if (path === legacyCustomModesJson) return true
-			if (path === newCustomModesYaml) return true // YAML already exists
-			if (path === legacyClineCustomModesPath) return false
-			if (path === legacyMcpSettingsPath) return false
-			return false
-		})
-
-		await migrateSettings(mockContext, mockOutputChannel)
-
-		// Verify skip message was logged
+		expect(fs.readFile).not.toHaveBeenCalled()
+		expectNoFileChanges()
 		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
 			"custom_modes.yaml already exists, skipping migration",
 		)
+	})
 
-		// Verify no file operations occurred
-		expect(mockWrite).not.toHaveBeenCalled()
-		expect(mockUnlink).not.toHaveBeenCalled()
+	it("reports corrupt JSON without writing or deleting configuration", async () => {
+		existingFiles(customModesJson)
+		vitest.mocked(fs.readFile).mockResolvedValue("{ invalid json content")
+
+		await migrateSettings(mockContext, mockOutputChannel)
+
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("Error parsing custom_modes.json"),
+		)
+		expectNoFileChanges()
+	})
+
+	it("reports source read errors without writing or deleting configuration", async () => {
+		existingFiles(customModesJson)
+		vitest.mocked(fs.readFile).mockRejectedValue(Object.assign(new Error("permission denied"), { code: "EACCES" }))
+
+		await migrateSettings(mockContext, mockOutputChannel)
+
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("Error reading custom_modes.json"),
+		)
+		expectNoFileChanges()
+	})
+
+	it("reports settings-discovery errors without changing files", async () => {
+		vitest.mocked(fileExistsAtPath).mockRejectedValue(new Error("Test error"))
+
+		await migrateSettings(mockContext, mockOutputChannel)
+
+		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
+			expect.stringContaining("Error migrating settings files"),
+		)
+		expectNoFileChanges()
+	})
+
+	it("removes former command defaults once while preserving explicit argument rules", async () => {
+		vitest.mocked(fileExistsAtPath).mockResolvedValue(false)
+		globalState.set("allowedCommands", ["npm install", "npm install express", "git log", "echo hello"])
+
+		await migrateSettings(mockContext, mockOutputChannel)
+
+		expect(globalState.get("allowedCommands")).toEqual(["npm install express", "echo hello"])
+		expect(globalState.get("defaultCommandsMigrationCompleted")).toBe(true)
+		expect(globalState.get("autoApprovalCommandDefaultsMigrationCompleted")).toBe(true)
+		vitest.mocked(mockContext.globalState.update).mockClear()
+		await migrateSettings(mockContext, mockOutputChannel)
+		expect(mockContext.globalState.update).not.toHaveBeenCalled()
+		expectNoFileChanges()
 	})
 })
