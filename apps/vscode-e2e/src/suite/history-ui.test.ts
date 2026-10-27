@@ -14,7 +14,7 @@ interface NavigationFixtureTask {
 	abort: boolean
 	didComplete: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	waitForTermination(): Promise<void>
 	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
 }
@@ -159,13 +159,13 @@ suite("Inline Chats rendered history", function () {
 					partial: true,
 				}),
 			)
-			await task.overwriteAlphaMessages([...task.clineMessages, ...syntheticMessages])
+			await task.overwriteAlphaMessages([...task.alphaMessages, ...syntheticMessages])
 			await provider.postStateToWebview()
 			await uiFixtureBarrier("navigation-ready", {
 				version: vscode.version,
 				taskId,
 				expectedVisibleMessages: SYNTHETIC_TRANSCRIPT_MESSAGES,
-				persistedTranscriptMessages: task.clineMessages.length,
+				persistedTranscriptMessages: task.alphaMessages.length,
 				sentinel: TRANSCRIPT_SENTINEL,
 			})
 
@@ -184,11 +184,11 @@ suite("Inline Chats rendered history", function () {
 			const reopenedTask = provider.getLiveTask(taskId)
 			assert.ok(reopenedTask)
 			await reopenedTask.overwriteAlphaMessages([
-				...reopenedTask.clineMessages,
+				...reopenedTask.alphaMessages,
 				{
 					type: "say",
 					say: "text",
-					ts: Math.max(Date.now(), reopenedTask.clineMessages.at(-1)?.ts ?? 0) + 1,
+					ts: Math.max(Date.now(), reopenedTask.alphaMessages.at(-1)?.ts ?? 0) + 1,
 					text: "```mermaid\ngraph TD\n    ready[Alpha lazy diagram ready] --> verified[Verified]\n```",
 					partial: false,
 				},
@@ -197,11 +197,11 @@ suite("Inline Chats rendered history", function () {
 			await uiFixtureBarrier("diagram-ready", { version: vscode.version, taskId })
 
 			await reopenedTask.overwriteAlphaMessages([
-				...reopenedTask.clineMessages,
+				...reopenedTask.alphaMessages,
 				{
 					type: "say",
 					say: "user_feedback",
-					ts: Math.max(Date.now(), reopenedTask.clineMessages.at(-1)?.ts ?? 0) + 1,
+					ts: Math.max(Date.now(), reopenedTask.alphaMessages.at(-1)?.ts ?? 0) + 1,
 					text: TICKET_PREVIEW_TEXT,
 				},
 			])

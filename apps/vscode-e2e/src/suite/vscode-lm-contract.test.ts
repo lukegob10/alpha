@@ -92,7 +92,7 @@ interface ContractTask {
 	isTaskLoopActive?: boolean
 	isWaitingForFirstChunk?: boolean
 	taskAsk?: { ask?: string }
-	clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
+	alphaMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	approveAsk(): void
 	resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
 	waitForTermination(): Promise<void>
@@ -236,7 +236,7 @@ const getTaskDiagnostics = async (provider: ContractHostProvider, fixture: VsCod
 		didComplete: task?.didComplete,
 		abort: task?.abort,
 		taskAsk: task?.taskAsk?.ask,
-		transcriptTail: task?.clineMessages?.slice(-6).map(({ ask, say, text, partial }) => ({
+		transcriptTail: task?.alphaMessages?.slice(-6).map(({ ask, say, text, partial }) => ({
 			message: ask ?? say,
 			partial,
 			text: text?.slice(0, 500),
@@ -445,7 +445,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			await waitForRequestCount(provider, fixture, taskId, 2)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
 			assert.equal(fixture.getRequests().length, 2)
-			assert.ok(!provider.getLiveTask(taskId)?.clineMessages?.some(({ ask }) => ask === "api_req_failed"))
+			assert.ok(!provider.getLiveTask(taskId)?.alphaMessages?.some(({ ask }) => ask === "api_req_failed"))
 			assert.deepStrictEqual(fixture.getRequests()[1]!.messages, fixture.getRequests()[0]!.messages)
 		} finally {
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
@@ -525,7 +525,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			fixture.releaseRequest(1)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
 			assert.ok(
-				initialTask.clineMessages?.some(
+				initialTask.alphaMessages?.some(
 					(message) =>
 						(message.say === "text" || message.say === "completion_result") &&
 						!message.partial &&
@@ -556,7 +556,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			)
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 2)
 			assert.ok(
-				initialTask.clineMessages?.some(
+				initialTask.alphaMessages?.some(
 					(message) =>
 						(message.say === "text" || message.say === "completion_result") &&
 						!message.partial &&
@@ -741,7 +741,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				},
 			)
 			assert.equal(
-				provider.getLiveTask(taskId)?.clineMessages?.some(({ say }) => say === "command_output"),
+				provider.getLiveTask(taskId)?.alphaMessages?.some(({ say }) => say === "command_output"),
 				false,
 				"Read presentation must wait for the assistant response to be durably saved",
 			)
@@ -821,7 +821,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			assert.equal(
 				provider
 					.getLiveTask(taskId)
-					?.clineMessages?.filter(({ say, text }) => say === "command_output" && text?.includes(READ_PROOF))
+					?.alphaMessages?.filter(({ say, text }) => say === "command_output" && text?.includes(READ_PROOF))
 					.length,
 				1,
 				"The deferred read presentation must publish exactly once after provider completion",
@@ -900,7 +900,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				() =>
 					provider
 						.getLiveTask(cancelledTaskId)
-						?.clineMessages?.some(
+						?.alphaMessages?.some(
 							({ say, text }) => say === "text" && text?.includes(CANCELLATION_PROOF),
 						) === true,
 				{
@@ -1091,7 +1091,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			assert.equal(providerUsage[0]!.outputTokens, 45)
 			const requestProjection = provider
 				.getLiveTask(taskId)!
-				.clineMessages!.filter(({ say }) => say === "api_req_started")
+				.alphaMessages!.filter(({ say }) => say === "api_req_started")
 				.map(({ text }) => jsonObject(JSON.parse(text ?? "{}")))
 				.filter((request) => request.tokensIn === 321)
 			assert.equal(requestProjection.length, 1, "Known host usage must reach the request UI once")
@@ -1184,7 +1184,7 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			await waitForRequestCount(provider, fixture, taskId, 1)
 			await waitFor(
 				() =>
-					provider.getLiveTask(taskId)?.clineMessages?.some(({ say }) => say === "api_req_retry_delayed") ===
+					provider.getLiveTask(taskId)?.alphaMessages?.some(({ say }) => say === "api_req_retry_delayed") ===
 					true,
 				{
 					timeout: 30_000,

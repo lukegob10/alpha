@@ -12,7 +12,7 @@ interface ReviewTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 }
@@ -102,8 +102,8 @@ suite("Rendered file review", function () {
 				diffs.length > 0 &&
 				diffs.every(
 					(diff) =>
-						diff.original.scheme === "cline-diff" &&
-						diff.modified.scheme === "cline-diff" &&
+						diff.original.scheme === "alpha-diff" &&
+						diff.modified.scheme === "alpha-diff" &&
 						diff.original.path.includes(suffix) &&
 						diff.modified.path.includes(suffix),
 				)
@@ -115,8 +115,8 @@ suite("Rendered file review", function () {
 			await waitFor(() => !allTabs().some(ownsTab), { description: "fixture diff editors to close" })
 		}
 		const assertSnapshot = async (diff: vscode.TabInputTextDiff, snapshot: (typeof snapshots)[number]) => {
-			assert.equal(diff.original.scheme, "cline-diff")
-			assert.equal(diff.modified.scheme, "cline-diff")
+			assert.equal(diff.original.scheme, "alpha-diff")
+			assert.equal(diff.modified.scheme, "alpha-diff")
 			assert.ok(diff.original.path.endsWith(`/${snapshot.fileName}/before`))
 			assert.ok(diff.modified.path.endsWith(`/${snapshot.fileName}/after`))
 			assert.equal((await vscode.workspace.openTextDocument(diff.original)).getText(), snapshot.originalContent)
@@ -187,7 +187,7 @@ suite("Rendered file review", function () {
 					Boolean(
 						host
 							.getLiveTask(taskId)
-							?.clineMessages.some((message) => message.text?.includes('"appliedDiff"')),
+							?.alphaMessages.some((message) => message.text?.includes('"appliedDiff"')),
 					),
 				{
 					description: "persisted file change in reopened task",

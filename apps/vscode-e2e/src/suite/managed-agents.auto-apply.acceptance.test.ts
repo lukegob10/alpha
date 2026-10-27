@@ -39,7 +39,7 @@ function deferred() {
 interface LiveTask {
 	taskId: string
 	metadata: { task: string }
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	didComplete: boolean
 	messageQueueService: { hasUnconsumedInput(): boolean }
 	waitForTermination(): Promise<void>
@@ -111,7 +111,7 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
 }
 
 function groupsFor(task: LiveTask): SubagentGroupState[] {
-	return task.clineMessages.flatMap((message) =>
+	return task.alphaMessages.flatMap((message) =>
 		message.subagentGroup?.parentTaskId === task.taskId ? [message.subagentGroup] : [],
 	)
 }
@@ -444,7 +444,7 @@ suite("Managed-agent automatic Apply Extension Host acceptance", function () {
 			assert.deepEqual(transactions.errors, [])
 			assert.equal(transactions.callCount, transactions.resultCount)
 			assert.equal(JSON.stringify(history).split(STEERING).length - 1, 1, "Human steering must be persisted once")
-			assert.equal(root.clineMessages.filter((message) => !message.partial && message.text === RESULT).length, 1)
+			assert.equal(root.alphaMessages.filter((message) => !message.partial && message.text === RESULT).length, 1)
 			await fs.writeFile(
 				path.join(artifacts, "managed-agents-auto-apply.json"),
 				JSON.stringify(

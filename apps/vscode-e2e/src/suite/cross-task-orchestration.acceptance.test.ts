@@ -63,7 +63,7 @@ interface CrossTaskHostProvider {
 
 interface HostTask {
 	taskId: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskAsk?: AlphaMessage
 	abort: boolean
 	didComplete: boolean
@@ -934,7 +934,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			assert.equal(scripted.peerSteeringStarted, true)
 			assert.equal(peer.abort, true)
 			assert.equal(provider.getLiveTask(peerTaskId), undefined, "Stopping a peer must release its live session")
-			const incoming = peer.clineMessages.filter((message) => message.say === "agent_message")
+			const incoming = peer.alphaMessages.filter((message) => message.say === "agent_message")
 			assert.deepEqual(
 				incoming.map((message) => message.text),
 				[PEER_FOLLOWUP, PEER_STEERING, "Independent peer acceptance complete"],
@@ -968,7 +968,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 				"A stop receipt must not enqueue another model prompt",
 			)
 			assert.equal(
-				peer.clineMessages.some((message) => message.text === "Continue with the pending agent messages."),
+				peer.alphaMessages.some((message) => message.text === "Continue with the pending agent messages."),
 				false,
 				"Internal thread wake instructions must not appear as chat input",
 			)

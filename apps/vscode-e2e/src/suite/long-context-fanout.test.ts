@@ -54,7 +54,7 @@ function requestTextMessages(messages: unknown[]): Array<{ index: number; role: 
 interface LiveTask {
 	taskId: string
 	metadata: { task: string }
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	didComplete: boolean
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -387,7 +387,7 @@ suite("Large ticket prompt and parallel agents", function () {
 			assert.deepEqual(transactions.errors, [])
 			assert.equal(transactions.callCount, TICKET_COUNT + 1)
 			assert.equal(transactions.resultCount, TICKET_COUNT + 1)
-			assert.ok(root.clineMessages.some((message) => !message.partial && message.text === RESULT))
+			assert.ok(root.alphaMessages.some((message) => !message.partial && message.text === RESULT))
 		}, [
 			() => {
 				observation.allChildrenEntered.resolve()

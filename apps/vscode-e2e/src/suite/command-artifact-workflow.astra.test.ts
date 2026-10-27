@@ -20,7 +20,7 @@ type Mode = "code" | "architect"
 interface ArtifactTask {
 	taskId: string
 	didComplete: boolean
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	getActiveAskTimestamp(): number | undefined
 	getCommandExecutionEvidence(): readonly unknown[]
 	waitForTermination(): Promise<void>
@@ -353,7 +353,7 @@ suite("Native command artifact workflow", function () {
 					const toolResults = taskEvents
 						.filter((event) => event.type === "tool_result_recorded")
 						.map((event) => event.payload.item)
-					const readMetadata = task.clineMessages
+					const readMetadata = task.alphaMessages
 						.filter((message) => message.type === "say" && message.say === "tool" && !message.partial)
 						.map((message) => {
 							assert.equal(typeof message.text, "string")
@@ -501,7 +501,7 @@ suite("Native command artifact workflow", function () {
 					assert.equal(projected?.isTurnActive, false)
 					assert.equal(projected?.isWaitingForInput, false)
 					assert.equal(task.getActiveAskTimestamp(), undefined)
-					const finalMessages = task.clineMessages.filter(
+					const finalMessages = task.alphaMessages.filter(
 						(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
 					)
 					assert.equal(finalMessages.length, 1)
@@ -518,7 +518,7 @@ suite("Native command artifact workflow", function () {
 						1,
 					)
 					assert.ok(
-						!task.clineMessages.some(
+						!task.alphaMessages.some(
 							(message) =>
 								message.say === "error" ||
 								message.ask === "api_req_failed" ||

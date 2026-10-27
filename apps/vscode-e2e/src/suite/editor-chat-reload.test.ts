@@ -20,7 +20,7 @@ interface EditorTask {
 	taskId: string
 	didComplete: boolean
 	taskAsk?: { ask?: string }
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	messageQueueService: {
 		ready: Promise<void>
 		messages: Array<{ id: string; text: string }>
@@ -188,7 +188,7 @@ suite("Native editor chat persistence across owned host processes", function () 
 					[{ id: queueId, text: draft }],
 				)
 				assert.deepEqual(task.messageQueueService.getClaimedMessageIds(), [])
-				assert.ok(task.clineMessages.some((message) => message.text === marker))
+				assert.ok(task.alphaMessages.some((message) => message.text === marker))
 				assert.equal((await editor.getStateToPostToWebview()).currentView?.type, "task")
 			}
 			await uiFixtureBarrier("restored", { version: vscode.version, pid: process.pid, taskIds })
@@ -219,7 +219,7 @@ suite("Native editor chat persistence across owned host processes", function () 
 							retainedDraft: text === EDITOR_RELOAD_DRAFTS[0],
 							freshHumanContinuation: text === EDITOR_RELOAD_FRESH_INPUT,
 						})),
-						transcriptTail: first.clineMessages.slice(-10).map(({ ts, type, ask, say, partial }) => ({
+						transcriptTail: first.alphaMessages.slice(-10).map(({ ts, type, ask, say, partial }) => ({
 							ts,
 							type,
 							ask,
@@ -236,7 +236,7 @@ suite("Native editor chat persistence across owned host processes", function () 
 				},
 			})
 			await first.waitForTermination()
-			assert.ok(first.clineMessages.some((message) => message.text === EDITOR_RELOAD_COMPLETION))
+			assert.ok(first.alphaMessages.some((message) => message.text === EDITOR_RELOAD_COMPLETION))
 			assert.equal(secondEditor.getActiveTaskId(), secondTaskId)
 			const second: EditorTask | undefined = secondEditor.getLiveTask(secondTaskId)
 			assert.ok(second)

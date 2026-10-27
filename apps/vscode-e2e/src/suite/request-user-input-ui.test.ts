@@ -79,7 +79,7 @@ const EXPECTED_RECEIPT = {
 interface InputTask {
 	taskKind: string
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -207,7 +207,7 @@ suite("Rendered native question wizard", function () {
 			})
 			assert.equal(model.getRequests().length, 1, "Drafts and review must not send an answer to the model")
 			assert.equal(task.taskAsk?.ask, "followup", "Review must retain the pending ask")
-			assert.equal(task.clineMessages.filter((message) => message.userInputResponse).length, 0)
+			assert.equal(task.alphaMessages.filter((message) => message.userInputResponse).length, 0)
 			await uiFixtureBarrier("input-send", { version: vscode.version, taskId })
 			await waitFor(
 				() => {
@@ -235,11 +235,11 @@ suite("Rendered native question wizard", function () {
 			assert.equal(provider.getLiveTask(taskId), undefined, "Reopen must start without an in-memory task")
 			await provider.showTaskWithId(taskId)
 			await waitFor(
-				() => Boolean(provider.getLiveTask(taskId)?.clineMessages.some((message) => message.userInputResponse)),
+				() => Boolean(provider.getLiveTask(taskId)?.alphaMessages.some((message) => message.userInputResponse)),
 				{ timeout: 15_000 },
 			)
 			assert.deepEqual(
-				provider.getLiveTask(taskId)!.clineMessages.find((message) => message.userInputResponse)
+				provider.getLiveTask(taskId)!.alphaMessages.find((message) => message.userInputResponse)
 					?.userInputResponse,
 				EXPECTED_RECEIPT,
 			)
