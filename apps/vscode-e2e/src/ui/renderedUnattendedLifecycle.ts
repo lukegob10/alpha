@@ -24,6 +24,7 @@ interface UnattendedSample {
 	nativeInputs: number
 	frameTicks: number
 	pendingFrames: number
+	heldFrameRequests: number
 	selected: boolean
 	toolbarVisible: boolean
 	composerVisible: boolean
@@ -54,6 +55,7 @@ export async function exerciseUnattendedLifecycle(
 			const composer=d.querySelector('[data-testid=chat-bottom-dock] textarea');
 			return {documentRetained:s?.nonce===${javascriptLiteral(nonce)},visibility:d.visibilityState,
 				nativeInputs:s?.nativeInputs??-1,frameTicks:s?.frameTicks??-1,pendingFrames:s?.pending.size??-1,
+				heldFrameRequests:s?.heldFrameRequests??-1,
 				selected:!!d.getSelection()?.rangeCount&&!d.getSelection().isCollapsed,
 				toolbarVisible:visible(d.querySelector('.chat-toolbar')),composerVisible:visible(composer),
 				composerDisabled:!!composer?.disabled,
@@ -64,10 +66,10 @@ export async function exerciseUnattendedLifecycle(
 			await ready(unattendedStage("start", round))
 			await evaluate(`(()=>{d.defaultView.__alphaUnattended?.dispose();
 				const w=d.defaultView;const originalRequest=w.requestAnimationFrame;const originalCancel=w.cancelAnimationFrame;
-				const s={nonce:${javascriptLiteral(nonce)},nativeInputs:0,frameTicks:0,held:${testCase.mode === "held-frames"},pending:new Map()};
+				const s={nonce:${javascriptLiteral(nonce)},nativeInputs:0,frameTicks:0,heldFrameRequests:0,held:${testCase.mode === "held-frames"},pending:new Map()};
 				let nextId=1000000000;
 				w.requestAnimationFrame=callback=>{if(!s.held)return originalRequest.call(w,callback);
-					const id=nextId++;s.pending.set(id,{callback});return id};
+					const id=nextId++;s.heldFrameRequests++;s.pending.set(id,{callback});return id};
 				w.cancelAnimationFrame=id=>{const pending=s.pending.get(id);if(!pending)return originalCancel.call(w,id);
 					if(pending.nativeId!==undefined)originalCancel.call(w,pending.nativeId);s.pending.delete(id)};
 				s.resumeFrames=()=>{s.held=false;for(const [id,pending]of s.pending){if(pending.nativeId!==undefined)continue;
@@ -113,8 +115,10 @@ export async function exerciseUnattendedLifecycle(
 					before.frameTicks,
 					"The controlled scheduler must hold frame callbacks",
 				)
+				// Completion snapshots can flush partial updates and cancel their queued callbacks.
+				// Scheduling still proves application work was held, even if the queue has since shrunk.
 				assert.ok(
-					completed.pendingFrames > before.pendingFrames,
+					completed.heldFrameRequests > before.heldFrameRequests,
 					"Actual application frame work must be queued",
 				)
 				await evaluate("d.defaultView.__alphaUnattended.resumeFrames()")
