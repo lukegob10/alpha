@@ -1,6 +1,5 @@
 import fs from "fs/promises"
 import path from "path"
-import * as os from "os"
 import { Dirent } from "fs"
 
 import { DEFAULT_MODES, isLanguage } from "@alpha-code/types"
@@ -9,10 +8,10 @@ import type { SystemPromptSettings } from "../types"
 
 import { LANGUAGES } from "../../../shared/language"
 import {
-	getAllLegacyConfigDirectoriesForCwd,
+	getAllConfigDirectoriesForCwd,
 	getProjectInstructionDirectoriesForCwd,
 	getSafeProjectInstructionFilenames,
-	getLegacyGlobalConfigDirectory,
+	getConfigDirectoriesForCwd,
 	type ProjectInstructionDiscoveryOptions,
 } from "../../../services/config-paths"
 
@@ -298,13 +297,8 @@ function formatDirectoryContent(files: Array<{ filename: string; content: string
 		.join("\n\n")
 }
 
-function getAlphaDirectoriesForCwd(cwd: string): string[] {
-	return [path.join(os.homedir(), ".alpha"), path.join(cwd, ".alpha")]
-}
-
 interface InstructionDirectories {
 	alpha: string[]
-	legacy: string[]
 	projectAgents: string[]
 	agents: string[]
 	agentTrustRoot: string
@@ -315,28 +309,19 @@ async function captureInstructionDirectories(
 	enableSubfolderRules: boolean,
 	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<InstructionDirectories> {
-	const alphaDirectories = getAlphaDirectoriesForCwd(cwd)
-	const legacyDirectories = enableSubfolderRules
-		? await getAllLegacyConfigDirectoriesForCwd(cwd)
-		: [getLegacyGlobalConfigDirectory(), path.join(cwd, ".roo")]
+	const alphaDirectories = enableSubfolderRules
+		? await getAllConfigDirectoriesForCwd(cwd)
+		: getConfigDirectoriesForCwd(cwd)
 	const projectInstructions = await getProjectInstructionDirectoriesForCwd(cwd, discoveryOptions)
 
-	const alphaSubfolders = legacyDirectories
-		.map((dir) => {
-			const parent = path.dirname(dir)
-			return path.join(parent, ".alpha")
-		})
-		.filter((dir) => !alphaDirectories.includes(dir))
-
 	return {
-		alpha: enableSubfolderRules ? [...alphaDirectories, ...alphaSubfolders] : alphaDirectories,
-		legacy: legacyDirectories,
+		alpha: alphaDirectories,
 		projectAgents: projectInstructions.directories,
 		// Project instructions follow the captured project boundary through cwd. Alpha's
-		// optional .roo subfolder rule discovery remains scoped below cwd.
+		// optional .alpha subfolder rule discovery remains scoped below cwd.
 		agents: [
 			...projectInstructions.directories,
-			...legacyDirectories
+			...alphaDirectories
 				.slice(2)
 				.map((directory) => path.dirname(directory))
 				.filter(
@@ -363,7 +348,7 @@ export async function loadRuleFiles(cwd: string, enableSubfolderRules: boolean =
 
 async function loadRuleFilesFromDirectories(cwd: string, directories: InstructionDirectories): Promise<string> {
 	const rules: string[] = []
-	const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
+	const { alpha: alphaDirectories } = directories
 
 	// Check for .alpha/rules/ directories in order (global, project-local, and optionally subfolders)
 	for (const alphaDir of alphaDirectories) {
@@ -382,23 +367,8 @@ async function loadRuleFilesFromDirectories(cwd: string, directories: Instructio
 		return "\n# Rules from .alpha directories:\n\n" + rules.join("\n\n")
 	}
 
-	for (const legacyDir of legacyDirectories) {
-		const rulesDir = path.join(legacyDir, "rules")
-		if (await directoryExists(rulesDir)) {
-			const files = await readTextFilesFromDirectory(rulesDir, getRuleTrustRoot(cwd, legacyDir))
-			if (files.length > 0) {
-				const content = formatDirectoryContent(files, cwd)
-				rules.push(content)
-			}
-		}
-	}
-
-	if (rules.length > 0) {
-		return "\n# Rules from legacy .roo directories:\n\n" + rules.join("\n\n")
-	}
-
-	// Fall back to existing behavior for legacy .alpharules/.clinerules files.
-	const ruleFiles = [".alpharules", ".clinerules"]
+	// Flat Alpha rule files remain supported when no rule directory has content.
+	const ruleFiles = [".alpharules"]
 
 	for (const file of ruleFiles) {
 		const content = await safeReadFileWithinRoot(path.join(cwd, file), cwd)
@@ -420,9 +390,9 @@ async function loadModeRuleFilesFromDirectories(
 
 	if (mode) {
 		const modeRules: string[] = []
-		const { alpha: alphaDirectories, legacy: legacyDirectories } = directories
+		const { alpha: alphaDirectories } = directories
 
-		// Check Alpha directories before legacy directories, preserving their captured order.
+		// Read Alpha directories in their captured precedence order.
 		for (const alphaDir of alphaDirectories) {
 			const modeRulesDir = path.join(alphaDir, `rules-${mode}`)
 			if (await directoryExists(modeRulesDir)) {
@@ -438,32 +408,9 @@ async function loadModeRuleFilesFromDirectories(
 			modeRuleContent = "\n" + modeRules.join("\n\n")
 			usedRuleFile = `rules-${mode} directories`
 		} else {
-			for (const legacyDir of legacyDirectories) {
-				const modeRulesDir = path.join(legacyDir, `rules-${mode}`)
-				if (await directoryExists(modeRulesDir)) {
-					const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, legacyDir))
-					if (files.length > 0) {
-						modeRules.push(formatDirectoryContent(files, cwd))
-					}
-				}
-			}
-		}
-
-		if (!modeRuleContent && modeRules.length > 0) {
-			modeRuleContent = "\n" + modeRules.join("\n\n")
-			usedRuleFile = `legacy rules-${mode} directories`
-		} else if (!modeRuleContent) {
-			const legacyRooModeRuleFile = `.alpharules-${mode}`
-			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyRooModeRuleFile), cwd)
-			if (modeRuleContent) {
-				usedRuleFile = legacyRooModeRuleFile
-			} else {
-				const legacyClineModeRuleFile = `.clinerules-${mode}`
-				modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, legacyClineModeRuleFile), cwd)
-				if (modeRuleContent) {
-					usedRuleFile = legacyClineModeRuleFile
-				}
-			}
+			const modeRuleFile = `.alpharules-${mode}`
+			modeRuleContent = await safeReadFileWithinRoot(path.join(cwd, modeRuleFile), cwd)
+			if (modeRuleContent) usedRuleFile = modeRuleFile
 		}
 	}
 
@@ -579,7 +526,7 @@ async function loadAgentRulesFileFromDirectory(
 }
 
 /**
- * Load all AGENTS.md files from project root and optionally subdirectories with .roo folders
+ * Load all AGENTS.md files from project root and optionally subdirectories with .alpha folders
  * Returns combined content with clear path headers for each file
  *
  * @param cwd - Current working directory (project root)
@@ -804,7 +751,7 @@ export async function addCustomInstructionParts(
 
 	// Add mode-specific rules first if they exist
 	if (modeRuleContent && modeRuleContent.trim()) {
-		if (usedRuleFile.includes(path.join(".roo", `rules-${mode}`))) {
+		if (usedRuleFile.includes(path.join(".alpha", `rules-${mode}`))) {
 			rules.push({ role: "user", origin: "mode-rules", content: modeRuleContent.trim() })
 		} else {
 			rules.push({

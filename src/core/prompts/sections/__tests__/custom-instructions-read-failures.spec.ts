@@ -105,21 +105,21 @@ describe("agent instruction read failures", () => {
 
 		async function writeRuleSources() {
 			const preferredDirectory = path.join(cwd, ".alpha", directoryName)
-			const legacyDirectory = path.join(cwd, ".roo", directoryName)
+			const ignoredDirectory = path.join(cwd, ".config-archive", directoryName)
 			await fs.mkdir(preferredDirectory, { recursive: true })
-			await fs.mkdir(legacyDirectory, { recursive: true })
+			await fs.mkdir(ignoredDirectory, { recursive: true })
 			const preferredFile = path.join(preferredDirectory, "preferred.md")
 			await fs.writeFile(preferredFile, "Preferred Alpha rules")
 			await fs.writeFile(path.join(preferredDirectory, "other.md"), "Other Alpha rules")
-			await fs.writeFile(path.join(legacyDirectory, "legacy.md"), "Weaker legacy directory rules")
-			await fs.writeFile(path.join(cwd, `.alpha${directoryName}`), "Weaker legacy file rules")
-			return { preferredDirectory, preferredFile, legacyDirectory }
+			await fs.writeFile(path.join(ignoredDirectory, "legacy.md"), "Ignored directory rules")
+			await fs.writeFile(path.join(cwd, `.alpha${directoryName}`), "Flat Alpha fallback rules")
+			return { preferredDirectory, preferredFile, ignoredDirectory }
 		}
 
 		it.each(failures)(
 			"rejects $operation $code without partial rules or weaker fallbacks",
 			async ({ operation, code }) => {
-				const { preferredDirectory, preferredFile, legacyDirectory } = await writeRuleSources()
+				const { preferredDirectory, preferredFile, ignoredDirectory } = await writeRuleSources()
 				const failedPath = operation === "readFile" ? preferredFile : preferredDirectory
 				const original = fs[operation].bind(fs)
 				vi.spyOn(fs, operation).mockImplementation(async (...args: unknown[]) => {
@@ -136,7 +136,7 @@ describe("agent instruction read failures", () => {
 				await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.not.toThrow(
 					"private filesystem contents",
 				)
-				expect(read.mock.calls.some(([file]) => String(file).startsWith(legacyDirectory + path.sep))).toBe(
+				expect(read.mock.calls.some(([file]) => String(file).startsWith(ignoredDirectory + path.sep))).toBe(
 					false,
 				)
 				expect(
@@ -156,14 +156,14 @@ describe("agent instruction read failures", () => {
 			})
 
 			const missing = renderCustomInstructionParts(await addCustomInstructionParts("", "", cwd, "code"))
-			expect(missing).toContain("Weaker legacy directory rules")
+			expect(missing).toContain("Flat Alpha fallback rules")
 			expect(missing).not.toContain("Preferred Alpha rules")
 
 			vi.restoreAllMocks()
 			const restored = renderCustomInstructionParts(await addCustomInstructionParts("", "", cwd, "code"))
 			expect(restored).toContain("Preferred Alpha rules")
-			expect(restored).not.toContain("Weaker legacy directory rules")
-			expect(restored).not.toContain("Weaker legacy file rules")
+			expect(restored).not.toContain("Ignored directory rules")
+			expect(restored).not.toContain("Flat Alpha fallback rules")
 		})
 
 		it.each(["EACCES", "EIO"])("rejects %s while resolving an included rule symlink", async (code) => {
@@ -185,11 +185,11 @@ describe("agent instruction read failures", () => {
 		})
 	})
 
-	it("does not replace an inaccessible legacy Alpha rule file with Cline rules", async () => {
+	it("rejects an inaccessible flat Alpha rule file without reading unrelated files", async () => {
 		const alphaRules = path.join(cwd, ".alpharules")
-		const clineRules = path.join(cwd, ".clinerules")
-		await fs.writeFile(alphaRules, "Preferred legacy Alpha rules")
-		await fs.writeFile(clineRules, "Weaker Cline rules")
+		const unrelatedRules = path.join(cwd, ".unrelated-rules")
+		await fs.writeFile(alphaRules, "Preferred flat Alpha rules")
+		await fs.writeFile(unrelatedRules, "Unrelated rules")
 		const original = fs.realpath.bind(fs)
 		vi.spyOn(fs, "realpath").mockImplementation(async (...args: unknown[]) => {
 			if (String(args[0]) === alphaRules) throw Object.assign(new Error("private details"), { code: "EACCES" })
@@ -200,6 +200,6 @@ describe("agent instruction read failures", () => {
 		await expect(addCustomInstructionParts("", "", cwd, "code")).rejects.toThrow(
 			`Unable to load rule instructions from "${alphaRules}" (EACCES)`,
 		)
-		expect(read.mock.calls.some(([file]) => String(file) === clineRules)).toBe(false)
+		expect(read.mock.calls.some(([file]) => String(file) === unrelatedRules)).toBe(false)
 	})
 })

@@ -154,9 +154,6 @@ describe("loadRuleFiles", () => {
 			if (filePath.toString().endsWith(".alpharules")) {
 				return Promise.resolve("alpha rules content")
 			}
-			if (filePath.toString().endsWith(".clinerules")) {
-				return Promise.resolve("cline rules content")
-			}
 			return Promise.reject({ code: "ENOENT" })
 		})
 
@@ -177,9 +174,6 @@ describe("loadRuleFiles", () => {
 		// Simulate no .alpha/rules directory
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })
 		readFileMock.mockImplementation((filePath: PathLike) => {
-			if (filePath.toString().endsWith(".clinerules")) {
-				return Promise.reject({ code: "EISDIR" })
-			}
 			if (filePath.toString().endsWith(".alpharules")) {
 				return Promise.reject({ code: "EISDIR" })
 			}
@@ -1334,20 +1328,9 @@ Mode-specific Instructions:\n${modeInstructions}
 		expect(result).toContain("Rules from .alpharules-test-mode:\nmode specific rules from file")
 	})
 
-	it("should fall back to .clinerules-test-mode when .alpha/rules-test-mode/ and .alpharules-test-mode do not exist", async () => {
-		// Simulate .alpha/rules-test-mode directory does not exist
-		statMock.mockRejectedValueOnce({ code: "ENOENT" })
-
-		// Simulate file reading
-		readFileMock.mockImplementation((filePath: PathLike) => {
-			if (filePath.toString().includes(".alpharules-test-mode")) {
-				return Promise.reject({ code: "ENOENT" })
-			}
-			if (filePath.toString().includes(".clinerules-test-mode")) {
-				return Promise.resolve("mode specific rules from cline file")
-			}
-			return Promise.reject({ code: "ENOENT" })
-		})
+	it("omits mode rules when neither canonical directory nor flat file exists", async () => {
+		statMock.mockRejectedValue({ code: "ENOENT" })
+		readFileMock.mockRejectedValue({ code: "ENOENT" })
 
 		const result = await addCustomInstructions(
 			"mode instructions",
@@ -1356,7 +1339,8 @@ Mode-specific Instructions:\n${modeInstructions}
 			"test-mode",
 		)
 
-		expect(result).toContain("Rules from .clinerules-test-mode:\nmode specific rules from cline file")
+		expect(result).toContain("mode instructions")
+		expect(result).not.toContain("Rules from")
 	})
 
 	it("should correctly format content from directories when using .alpha/rules-test-mode/", async () => {

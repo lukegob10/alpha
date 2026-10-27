@@ -130,16 +130,12 @@ describe("custom instruction preparation latency", () => {
 	})
 
 	it("reads fresh sources and keeps Alpha and AGENTS override precedence on each preparation", async () => {
-		write(".roo/rules-code/legacy.md", "Legacy mode guidance")
-		write(".roo/rules/legacy.md", "Legacy generic guidance")
 		write("AGENTS.override.md", "Preferred agent guidance")
 		const firstPending = assemble()
 		await vi.runAllTimersAsync()
 		const first = renderCustomInstructionParts(await firstPending)
 		expect(first).toContain("Preferred agent guidance")
 		expect(first).not.toContain("Project agent guidance")
-		expect(first).not.toContain("Legacy mode guidance")
-		expect(first).not.toContain("Legacy generic guidance")
 
 		write("AGENTS.override.md", "Updated preferred agent guidance")
 		write(".alpha/rules-code/mode.md", "Updated mode guidance")

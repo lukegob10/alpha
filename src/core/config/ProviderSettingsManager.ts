@@ -206,8 +206,8 @@ export interface ProviderProfileRename {
 }
 
 export class ProviderSettingsManager {
-	// Keep the existing SecretStorage namespace so a source rename cannot orphan saved profiles.
-	private static readonly SCOPE_PREFIX = "roo_cline_config_"
+	// Profile storage is isolated under the canonical Alpha namespace.
+	private static readonly SCOPE_PREFIX = "alpha_config_"
 	private static readonly storageLocks = new WeakMap<ExtensionContext["secrets"], Promise<void>>()
 	// Fresh views must agree before the first settings write; persisted IDs remain authoritative.
 	private readonly defaultConfigId = "default"
