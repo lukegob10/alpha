@@ -22,7 +22,7 @@ interface BoundaryTask {
 	taskId: string
 	didComplete: boolean
 	abort: boolean
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	getActiveAskTimestamp(): number | undefined
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -236,7 +236,7 @@ suite("Core response boundary contracts", function () {
 						assert.equal(task.didComplete, false, "An invalid or incomplete response must not complete")
 						return (
 							provider.getAgentLifecycleSnapshot(task.taskId)?.status === expectedStatus[scenario] &&
-							task.clineMessages.some(
+							task.alphaMessages.some(
 								(message) =>
 									message.ts === task.getActiveAskTimestamp() &&
 									message.ask === "resume_task" &&
@@ -257,7 +257,7 @@ suite("Core response boundary contracts", function () {
 				const state = await provider.getStateToPostToWebview()
 				const snapshot = provider.getAgentLifecycleSnapshot(task.taskId)
 				const projected = state.liveTasksById?.[task.taskId]
-				const recoveryAsks = task.clineMessages.filter((message) => message.ask === "resume_task")
+				const recoveryAsks = task.alphaMessages.filter((message) => message.ask === "resume_task")
 				assert.ok(snapshot, "Every tested terminal outcome must have canonical lifecycle state")
 				assert.deepEqual(snapshot.acceptedToolCallIds, [])
 				assert.deepEqual(snapshot.effectStartedToolCallIds, [], "These responses must not start a tool effect")
@@ -321,9 +321,9 @@ suite("Core response boundary contracts", function () {
 					assert.equal(projected.status, TaskStatus.Idle)
 					assert.equal(projected.isWaitingForInput, false)
 					assert.equal(recoveryAsks.length, 0)
-					assert.ok(task.clineMessages.some((message) => !message.partial && message.text === FINAL))
+					assert.ok(task.alphaMessages.some((message) => !message.partial && message.text === FINAL))
 					assert.ok(
-						!task.clineMessages.some(
+						!task.alphaMessages.some(
 							(message) => message.say === "error" || message.ask === "api_req_failed",
 						),
 					)
@@ -341,9 +341,9 @@ suite("Core response boundary contracts", function () {
 					assert.equal(recoveryAsks.length, 1)
 					assert.equal(Boolean(recoveryAsks[0]!.partial), false)
 					assert.equal(recoveryAsks[0]!.ts, task.getActiveAskTimestamp())
-					assert.equal(task.clineMessages.filter((message) => message.say === "error").length, 1)
+					assert.equal(task.alphaMessages.filter((message) => message.say === "error").length, 1)
 					assert.ok(
-						!task.clineMessages.some(
+						!task.alphaMessages.some(
 							(message) =>
 								message.ask === "api_req_failed" ||
 								message.ask === "completion_result" ||
@@ -353,7 +353,7 @@ suite("Core response boundary contracts", function () {
 					if (scenario === "incomplete-output") {
 						assert.equal(terminalEvents[0]!.payload.reason, INCOMPLETE_REASON)
 						assert.ok(
-							task.clineMessages.some(
+							task.alphaMessages.some(
 								(message) =>
 									message.say === "error" &&
 									message.text ===
@@ -454,7 +454,7 @@ suite("Coding workflow tool recovery", function () {
 			assert.deepEqual(snapshot?.terminalToolCallIds, ["missing-workflow-read", "corrected-workflow-read"])
 			assert.equal(task.getActiveAskTimestamp(), undefined)
 			assert.ok(
-				!task.clineMessages.some(
+				!task.alphaMessages.some(
 					(message) =>
 						message.ask === "api_req_failed" ||
 						message.ask === "resume_task" ||

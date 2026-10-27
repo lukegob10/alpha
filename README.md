@@ -101,6 +101,27 @@ Open the checkout in VS Code 1.138.0, select **Run Extension** in Run and Debug,
 Host with webview hot reload. Extension code rebuilds automatically; restart the development host to load those changes.
 Select **Run Extension (debugger)** when you need breakpoint debugging.
 
+### Isolated release maintenance
+
+Keep the verified release commit and its VSIX available while developing a cleanup on a separate branch and worktree.
+Give each parallel change its own branch and worktree, then integrate complete, tested changes into the cleanup branch.
+Fix release bugs against the release version first and merge those fixes into cleanup before continuing integration.
+
+Run the release and cleanup packages in separate VS Code 1.138.0 instances, each with its own `--user-data-dir` and
+`--extensions-dir`. Scope `ALPHA_HOME` and the child process's home directory to each instance so global rules, skills,
+and memory use separate filesystem roots. On Windows, a launcher-local `USERPROFILE` can provide that home without
+changing the operating-system profile. Install each VSIX only into its matching extension directory. Initialize
+credentials separately and use copies of task and configuration data for compatibility tests; keep the everyday
+editor profile intact.
+
+For automated extension-host runs, set `ALPHA_E2E_USER_HOME` to an owned absolute directory. The runner applies it only
+to the editor child process, leaving pnpm and build-tool configuration in the runner's normal home.
+
+The naming cleanup deliberately uses Alpha-only configuration paths, credential keys, serialized fields, and public
+exports. Prior names and automatic compatibility aliases are removed. Configure a fresh cleanup profile and verify
+saved-data handling before promoting it to a release. Returning to an earlier Git commit does not restore editor data;
+use the retained release profile and package when investigating release bugs.
+
 ## Testing
 
 Start with the focused tests and owning typecheck in the [validation matrix](AGENTS.md#validation-matrix).

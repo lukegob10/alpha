@@ -59,7 +59,7 @@ function fixture(options: { messages?: AlphaMessage[]; snapshot?: AgentLifecycle
 		canonicalLifecycleQueue: Promise.resolve(),
 		canonicalLifecycleStartedSteps: new Set<string>(),
 		taskCancellationController: new AbortController(),
-		clineMessages: structuredClone(options.messages ?? []),
+		alphaMessages: structuredClone(options.messages ?? []),
 		apiConversationHistory: [],
 		userMessageContent: [],
 		messageQueueService: new MessageQueueService(),
@@ -86,7 +86,7 @@ function fixture(options: { messages?: AlphaMessage[]; snapshot?: AgentLifecycle
 		}),
 		emit: vi.fn(),
 		saveAlphaMessages: vi.fn(async () => {
-			persisted.push(structuredClone(task.clineMessages))
+			persisted.push(structuredClone(task.alphaMessages))
 			return true
 		}),
 		enqueueAlphaMessagesSave: vi.fn(async (createSnapshot: () => AlphaMessage[], onPersisted?: () => void) => {
@@ -117,7 +117,7 @@ describe("Task transcript turn attribution", () => {
 		const openingMessageTs = await task["sayOpeningInput"]("text", "Inspect the parser.")
 		expect(openingMessageTs).toEqual(expect.any(Number))
 		expect(task.captureMessageTurn()).toBeUndefined()
-		expect(task.clineMessages[0].turn).toBeUndefined()
+		expect(task.alphaMessages[0].turn).toBeUndefined()
 		const entered = deferred()
 		const release = deferred()
 		provider.replayAgentLifecycle.mockImplementationOnce(async () => {
@@ -142,17 +142,17 @@ describe("Task transcript turn attribution", () => {
 					isNonInteractive: true,
 				},
 			)
-			expect(task.clineMessages.find(({ ts }) => ts === openingMessageTs)?.turn).toBeUndefined()
+			expect(task.alphaMessages.find(({ ts }) => ts === openingMessageTs)?.turn).toBeUndefined()
 		} finally {
 			release.resolve()
 			await running
 		}
 
 		const start = events.find(({ type }) => type === "turn_started")!
-		const opening = task.clineMessages.find(({ ts }) => ts === openingMessageTs)!
+		const opening = task.alphaMessages.find(({ ts }) => ts === openingMessageTs)!
 		expect(opening.turn).toEqual({ runId: start.runId, turnId: start.turnId, inputKind: "start" })
 		expect(persisted.at(-1)?.find(({ ts }) => ts === openingMessageTs)).toEqual(opening)
-		expect(task.clineMessages.find(({ say }) => say === "command_output")?.turn).toEqual({
+		expect(task.alphaMessages.find(({ say }) => say === "command_output")?.turn).toEqual({
 			runId: "earlier-run",
 			turnId: "earlier-turn",
 		})
@@ -176,15 +176,15 @@ describe("Task transcript turn attribution", () => {
 		})
 
 		expect(events.filter(({ type }) => type === "turn_started")).toHaveLength(1)
-		const openingTurn = membership(task.clineMessages[0].turn)
-		expect(task.clineMessages.map((message) => membership(message.turn))).toEqual(
-			Array(task.clineMessages.length).fill(openingTurn),
+		const openingTurn = membership(task.alphaMessages[0].turn)
+		expect(task.alphaMessages.map((message) => membership(message.turn))).toEqual(
+			Array(task.alphaMessages.length).fill(openingTurn),
 		)
-		expect(task.clineMessages.find(({ text }) => text === "Also check cancellation.")?.turn).toEqual({
+		expect(task.alphaMessages.find(({ text }) => text === "Also check cancellation.")?.turn).toEqual({
 			...openingTurn,
 			inputKind: "steer",
 		})
-		expect(task.clineMessages.find(({ text }) => text === "Retry the request.")?.turn).toEqual(openingTurn)
+		expect(task.alphaMessages.find(({ text }) => text === "Retry the request.")?.turn).toEqual(openingTurn)
 	})
 
 	it("retains the exact plain-text final when queued input opens a successor turn", async () => {
@@ -197,16 +197,16 @@ describe("Task transcript turn attribution", () => {
 			samples++
 			if (samples === 1) {
 				await task.say("text", "The first request is done.", undefined, false)
-				firstFinalTs = task.clineMessages.at(-1)!.ts
+				firstFinalTs = task.alphaMessages.at(-1)!.ts
 				firstTurn = task.captureMessageTurn()
 				return completedResponse("The first request is done.")
 			}
 			expect(samples).toBe(2)
-			expect(task.clineMessages.find(({ ts }) => ts === firstFinalTs)).toMatchObject({
+			expect(task.alphaMessages.find(({ ts }) => ts === firstFinalTs)).toMatchObject({
 				say: "text",
 				turn: { ...firstTurn, terminalStatus: "completed" },
 			})
-			const successor = task.clineMessages.find(({ text }) => text === "Second request.")!
+			const successor = task.alphaMessages.find(({ text }) => text === "Second request.")!
 			expect(successor.turn?.inputKind).toBe("start")
 			expect(successor.turn?.turnId).not.toBe(firstTurn?.turnId)
 			await task.say("text", "The second request is done.", undefined, false)
@@ -225,7 +225,7 @@ describe("Task transcript turn attribution", () => {
 			text: "The first request is done.",
 			turn: { ...firstTurn, terminalStatus: "completed" },
 		})
-		expect(task.clineMessages.filter(({ turn }) => turn?.terminalStatus === "completed")).toHaveLength(2)
+		expect(task.alphaMessages.filter(({ turn }) => turn?.terminalStatus === "completed")).toHaveLength(2)
 	})
 
 	it("resumes an open identity without replacing its original opening input", async () => {
@@ -249,13 +249,13 @@ describe("Task transcript turn attribution", () => {
 		})
 
 		expect(events.filter(({ type }) => type === "turn_started")).toEqual([])
-		expect(task.clineMessages[0]).toEqual(original)
-		expect(task.clineMessages.find(({ ts }) => ts === openingMessageTs)?.turn).toEqual({
+		expect(task.alphaMessages[0]).toEqual(original)
+		expect(task.alphaMessages.find(({ ts }) => ts === openingMessageTs)?.turn).toEqual({
 			runId: snapshot.runId,
 			turnId: snapshot.turnId,
 			inputKind: "steer",
 		})
-		expect(task.clineMessages.at(-1)?.turn).toEqual({
+		expect(task.alphaMessages.at(-1)?.turn).toEqual({
 			runId: snapshot.runId,
 			turnId: snapshot.turnId,
 			terminalStatus: "completed",
@@ -301,15 +301,15 @@ describe("Task transcript turn attribution", () => {
 				await pending
 			}
 
-			const earlier = task.clineMessages.find(
+			const earlier = task.alphaMessages.find(
 				({ commandExecutionId }) => commandExecutionId === "earlier-command",
 			)!
-			const successor = task.clineMessages.find(
+			const successor = task.alphaMessages.find(
 				({ commandExecutionId }) => commandExecutionId === "successor-command",
 			)!
 			expect(earlier).toMatchObject({ text: "Earlier command finished.", partial: false, turn: producerTurn })
 			expect(successor.turn).toEqual(task.captureMessageTurn())
-			expect(persisted.at(-1)).toEqual(task.clineMessages)
+			expect(persisted.at(-1)).toEqual(task.alphaMessages)
 		},
 	)
 
@@ -323,13 +323,13 @@ describe("Task transcript turn attribution", () => {
 
 		await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }], undefined, { openingMessageTs })
 
-		const final = task.clineMessages.find(({ text }) => text === "The work is complete.")!
+		const final = task.alphaMessages.find(({ text }) => text === "The work is complete.")!
 		expect(final).toMatchObject({ say: "completion_result", turn: { terminalStatus: "completed" } })
-		expect(task.clineMessages.find(({ text }) => text === "Warning: optional hook diagnostic.")).toMatchObject({
+		expect(task.alphaMessages.find(({ text }) => text === "Warning: optional hook diagnostic.")).toMatchObject({
 			say: "text",
 			turn: membership(final.turn),
 		})
-		expect(task.clineMessages.filter(({ turn }) => turn?.terminalStatus)).toEqual([final])
+		expect(task.alphaMessages.filter(({ turn }) => turn?.terminalStatus)).toEqual([final])
 	})
 
 	it("attributes a completion-tool final created during effects instead of retained commentary", async () => {
@@ -365,10 +365,10 @@ describe("Task transcript turn attribution", () => {
 
 		await task["initiateTaskLoop"]([])
 
-		const final = task.clineMessages.find(({ say }) => say === "completion_result")!
+		const final = task.alphaMessages.find(({ say }) => say === "completion_result")!
 		expect(final).toMatchObject({ text: "The verified result.", turn: { ...turn, terminalStatus: "completed" } })
-		expect(task.clineMessages.find(({ ts }) => ts === 2)?.turn).toEqual(turn)
-		expect(task.clineMessages.filter(({ turn: attribution }) => attribution?.terminalStatus)).toEqual([final])
+		expect(task.alphaMessages.find(({ ts }) => ts === 2)?.turn).toEqual(turn)
+		expect(task.alphaMessages.filter(({ turn: attribution }) => attribution?.terminalStatus)).toEqual([final])
 	})
 
 	it.each(["text", "completion_result"] as const)(
@@ -377,7 +377,7 @@ describe("Task transcript turn attribution", () => {
 			const { task, persisted } = fixture()
 			await task["beginCanonicalLifecycleTurn"]()
 			await task.say("text", "Candidate answer.", undefined, false)
-			const timestamp = task.clineMessages.at(-1)!.ts
+			const timestamp = task.alphaMessages.at(-1)!.ts
 			await task["finishCanonicalLifecycleTurn"](
 				{ ...completedResponse("Candidate answer."), steps: 1, completionReason: "assistant" },
 				undefined,
@@ -385,11 +385,11 @@ describe("Task transcript turn attribution", () => {
 				timestamp,
 			)
 			if (say === "completion_result") await task.presentCompletionResult("Candidate answer.")
-			const turn = membership(task.clineMessages[0].turn)
+			const turn = membership(task.alphaMessages[0].turn)
 
 			await task.retractCompletionResult()
 
-			expect(task.clineMessages).toEqual([
+			expect(task.alphaMessages).toEqual([
 				expect.objectContaining({
 					ts: timestamp,
 					say: "text",
@@ -414,7 +414,7 @@ describe("Task transcript turn attribution", () => {
 
 		const reloaded = await readTaskMessages({ taskId: task.taskId, globalStoragePath, requireExisting: true })
 
-		expect(reloaded).toEqual(task.clineMessages)
+		expect(reloaded).toEqual(task.alphaMessages)
 		expect(reloaded[0]).toEqual(legacy)
 		expect(reloaded.find(({ ts }) => ts === openingMessageTs)?.turn?.inputKind).toBe("start")
 		expect(reloaded.at(-1)?.turn?.terminalStatus).toBe("completed")

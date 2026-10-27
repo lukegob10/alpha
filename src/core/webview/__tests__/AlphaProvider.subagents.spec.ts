@@ -96,7 +96,7 @@ const makeProviderHarness = (
 	const taskSessions = new TaskSessionRegistry(3)
 	for (let index = 0; index < 3 - availableCapacity; index++) {
 		taskSessions.register(
-			{ taskId: `capacity-fixture-${index}`, taskKind: "primary", clineMessages: [] } as unknown as Task,
+			{ taskId: `capacity-fixture-${index}`, taskKind: "primary", alphaMessages: [] } as unknown as Task,
 			{ focus: false },
 		)
 	}
@@ -188,7 +188,7 @@ const makeParent = () => ({
 	taskId: "parent-1",
 	taskKind: "primary",
 	metadata: { task: "parent" },
-	clineMessages: [] as any[],
+	alphaMessages: [] as any[],
 	apiConversationHistory: [] as any[],
 	cwd: "F:/workspace",
 	historyWorkspacePath: "F:/workspace",
@@ -377,7 +377,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 					const child = Object.assign(new EventEmitter(), options, {
 						taskId: prepared.envelopes[0].id,
 						cwd: workspace,
-						clineMessages: [{ type: "say", say: "completion_result", text: "Corrected the source." }],
+						alphaMessages: [{ type: "say", say: "completion_result", text: "Corrected the source." }],
 						getTokenUsage: () => ({ totalTokensIn: 1, totalTokensOut: 1 }),
 						getTaskLifetimeCancellationSignal: () => new AbortController().signal,
 						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
@@ -578,7 +578,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 							taskId: options?.taskId,
 							taskKind: "subagent",
 							rootTaskId: parent.taskId,
-							clineMessages: [
+							alphaMessages: [
 								{ type: "say", say: "completion_result", text: "Retained owner inspected." },
 							],
 							getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0, totalCost: 0 }),
@@ -948,7 +948,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			)
 			const record = records.get(prepared.envelopes[0].id)
 			expect(record).toBeDefined()
-			parent.clineMessages.push({ subagentGroup: structuredClone(prepared.group) })
+			parent.alphaMessages.push({ subagentGroup: structuredClone(prepared.group) })
 			Reflect.get(provider, "preparedSubagentGroups").clear()
 			Reflect.get(provider, "subagentDescriptors").clear()
 			const restored = await Reflect.get(provider, "restorePreparedSubagentForFollowup").call(
@@ -1141,7 +1141,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		])
 
 		;(provider as any).taskSessions.register(
-			{ taskId: first.envelopes[0].id, taskKind: "subagent", clineMessages: [] },
+			{ taskId: first.envelopes[0].id, taskKind: "subagent", alphaMessages: [] },
 			{ focus: false },
 		)
 
@@ -1381,7 +1381,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				return Object.assign(emitter, {
 					taskId: options.taskId,
-					clineMessages: [{ type: "say", say: "completion_result", text: "Context inspected" }],
+					alphaMessages: [{ type: "say", say: "completion_result", text: "Context inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -1600,7 +1600,7 @@ If complete, use attempt_completion.
 				taskId: options?.taskId,
 				taskKind: "subagent",
 				rootTaskId: parent.taskId,
-				clineMessages: [{ type: "say", say: "completion_result", text: "Selection inspected." }],
+				alphaMessages: [{ type: "say", say: "completion_result", text: "Selection inspected." }],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0, totalCost: 0 }),
 				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -2153,7 +2153,7 @@ If complete, use attempt_completion.
 					const child = Object.assign(emitter, {
 						taskId: options.taskId,
 						getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-						clineMessages: [] as Task["clineMessages"],
+						alphaMessages: [] as Task["alphaMessages"],
 						abort: false,
 						getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
@@ -2255,7 +2255,7 @@ If complete, use attempt_completion.
 			const child = Object.assign(emitter, {
 				taskId: "",
 				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-				clineMessages: [] as Task["clineMessages"],
+				alphaMessages: [] as Task["alphaMessages"],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -2332,7 +2332,7 @@ If complete, use attempt_completion.
 			const emitter = new EventEmitter()
 			const child = Object.assign(emitter, {
 				taskId: "",
-				clineMessages: [] as Task["clineMessages"],
+				alphaMessages: [] as Task["alphaMessages"],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 				persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -2956,7 +2956,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				const child = Object.assign(emitter, {
 					taskId: options.taskId,
-					clineMessages: [
+					alphaMessages: [
 						{
 							type: "say",
 							say: "completion_result",
@@ -3019,7 +3019,7 @@ If complete, use attempt_completion.
 				child = Object.assign(emitter, {
 					taskId: options.taskId,
 					subagentCompletionOutcome: "blocked",
-					clineMessages: [
+					alphaMessages: [
 						{
 							type: "say",
 							say: "completion_result",
@@ -3090,7 +3090,7 @@ If complete, use attempt_completion.
 					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					taskKind: "subagent",
 					rootTaskId: parent.taskId,
-					clineMessages: [
+					alphaMessages: [
 						{ type: "say", say: "completion_result", text: "This report exceeds the frozen limit." },
 					],
 					getTokenUsage: () => testCase.usage,
@@ -3136,7 +3136,7 @@ If complete, use attempt_completion.
 					taskId: options.taskId,
 					taskKind: "subagent",
 					rootTaskId: parent.taskId,
-					clineMessages: [{ type: "say", say: "completion_result", text: "Review complete." }],
+					alphaMessages: [{ type: "say", say: "completion_result", text: "Review complete." }],
 					getTokenUsage: () => usage,
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -3191,7 +3191,7 @@ If complete, use attempt_completion.
 			child = Object.assign(emitter, {
 				taskId,
 				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-				clineMessages: [
+				alphaMessages: [
 					// Deliberately collides with the current run's startedAt. Runtime message
 					// boundaries, not timestamps, must keep this report out of the result.
 					{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" },
@@ -3252,7 +3252,7 @@ If complete, use attempt_completion.
 					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
 					taskKind: "subagent",
 					rootTaskId: parent.taskId,
-					clineMessages: [],
+					alphaMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5, totalCost: 0 }),
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -3328,7 +3328,7 @@ If complete, use attempt_completion.
 				const child = Object.assign(new EventEmitter(), {
 					taskId,
 					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-					clineMessages: [],
+					alphaMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
@@ -3362,7 +3362,7 @@ If complete, use attempt_completion.
 				const { provider, prepared, taskId } = await setupRetainedRun()
 				const child = Object.assign(new EventEmitter(), {
 					taskId,
-					clineMessages: [],
+					alphaMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
@@ -3404,7 +3404,7 @@ If complete, use attempt_completion.
 				const child = Object.assign(new EventEmitter(), {
 					taskId,
 					getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-					clineMessages: [],
+					alphaMessages: [],
 					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
 					cancelCurrentRequest: vi.fn(),
@@ -3446,7 +3446,7 @@ If complete, use attempt_completion.
 			const child = Object.assign(new EventEmitter(), {
 				taskId,
 				getTaskLifetimeCancellationSignal: vi.fn().mockReturnValue(new AbortController().signal),
-				clineMessages: [],
+				alphaMessages: [],
 				getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
 				finalizeSubagentHistory: vi.fn(async () => undefined),
 				cancelCurrentRequest: vi.fn(),
@@ -3530,7 +3530,7 @@ If complete, use attempt_completion.
 			const emitter = new EventEmitter()
 			child = Object.assign(emitter, {
 				taskId,
-				clineMessages: [{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" }],
+				alphaMessages: [{ ts: 200, type: "say", say: "completion_result", text: "Initial retained report" }],
 				getTokenUsage: () => ({ totalTokensIn: 15, totalTokensOut: 8 }),
 				readmitGoalAccountingBinding: vi.fn(async () => {
 					admissionOrder.push("admitted")
@@ -3554,7 +3554,7 @@ If complete, use attempt_completion.
 						say: "completion_result",
 						text: "Current follow-up report",
 					}
-					child.clineMessages.push(message)
+					child.alphaMessages.push(message)
 					emitter.emit(AlphaCodeEventName.Message, { action: "created", message })
 					emitter.emit(AlphaCodeEventName.TaskCompleted, taskId, {
 						totalTokensIn: 15,
@@ -3666,7 +3666,7 @@ If complete, use attempt_completion.
 							completedAt: 2,
 						},
 					],
-					clineMessages: [
+					alphaMessages: [
 						{ type: "say", say: "completion_result", text: "No documentation change was needed." },
 					],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
@@ -5086,7 +5086,7 @@ If complete, use attempt_completion.
 					entered()
 					await publication
 				}
-				parent.clineMessages.splice(0, parent.clineMessages.length, { subagentGroup: structuredClone(group) })
+				parent.alphaMessages.splice(0, parent.alphaMessages.length, { subagentGroup: structuredClone(group) })
 			})
 			const completed = (taskId: string) => ({
 				taskId,
@@ -6391,7 +6391,7 @@ If complete, use attempt_completion.
 			objective: "Inspect delivery",
 			status: "completed",
 		})
-		parent.clineMessages = [
+		parent.alphaMessages = [
 			{
 				subagentGroup: {
 					groupId: "group-delivered",
@@ -6527,7 +6527,7 @@ If complete, use attempt_completion.
 				},
 			],
 		}
-		parent.clineMessages = [
+		parent.alphaMessages = [
 			{
 				type: "say",
 				say: "subagent_group",
@@ -6539,7 +6539,7 @@ If complete, use attempt_completion.
 			envelopes: [],
 		})
 		parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
-			parent.clineMessages[0].subagentGroup = structuredClone(group)
+			parent.alphaMessages[0].subagentGroup = structuredClone(group)
 		})
 		await (provider as any).agentControlStore.appendEvent({
 			rootTaskId: root.rootTaskId,
@@ -6574,7 +6574,7 @@ If complete, use attempt_completion.
 			}),
 		])
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
-		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
+		expect(parent.alphaMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 		expect(
 			(provider as any).agentControlStore.getUnacknowledgedMailboxEntries(root.taskId, {
 				rootTaskId: root.rootTaskId,
@@ -6589,7 +6589,7 @@ If complete, use attempt_completion.
 		await (parent.upsertSubagentGroup as any)(liveGroup)
 
 		expect(parent.upsertSubagentGroup).toHaveBeenCalledOnce()
-		expect(parent.clineMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
+		expect(parent.alphaMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
 	it("returns ordered completion, failure, and cancellation provenance and blocks completion until its native receipt", async () => {
@@ -6760,7 +6760,7 @@ If complete, use attempt_completion.
 			objective: "Send a mailbox update",
 			status: "completed",
 		})
-		parent.clineMessages = [
+		parent.alphaMessages = [
 			{
 				subagentGroup: {
 					groupId: "group-message-only",
@@ -6800,7 +6800,7 @@ If complete, use attempt_completion.
 			expect.objectContaining({ kind: "message" }),
 		])
 		expect(parent.upsertSubagentGroup).not.toHaveBeenCalled()
-		expect(parent.clineMessages[0].subagentGroup.agents[0].resultDeliveredAt).toBeUndefined()
+		expect(parent.alphaMessages[0].subagentGroup.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
 	it("lets two targeted terminal waits claim only their own results and leaves lifecycle traffic unread", async () => {
@@ -7437,7 +7437,7 @@ If complete, use attempt_completion.
 		group.executionMode = "async"
 		group.status = "interrupted"
 		group.agents[0].status = "interrupted"
-		parent.clineMessages = [{ subagentGroup: group }] as any
+		parent.alphaMessages = [{ subagentGroup: group }] as any
 
 		const root = await (provider as any).ensureAgentControlRoot(parent)
 		const retained = await (provider as any).agentControlStore.createAgent({
@@ -7551,7 +7551,7 @@ If complete, use attempt_completion.
 		group.executionMode = "async"
 		group.status = "interrupted"
 		group.agents[0].status = "interrupted"
-		parent.clineMessages = [{ subagentGroup: group }] as any
+		parent.alphaMessages = [{ subagentGroup: group }] as any
 
 		const root = await (provider as any).ensureAgentControlRoot(parent)
 		const retained = await (provider as any).agentControlStore.createAgent({
@@ -7757,7 +7757,7 @@ If complete, use attempt_completion.
 		group.executionMode = "async"
 		group.status = "completed"
 		group.agents[0].status = "completed"
-		parent.clineMessages = [{ subagentGroup: group }] as any
+		parent.alphaMessages = [{ subagentGroup: group }] as any
 
 		const root = await (provider as any).ensureAgentControlRoot(parent)
 		const retained = await (provider as any).agentControlStore.createAgent({
@@ -7820,7 +7820,7 @@ If complete, use attempt_completion.
 		group.executionMode = "async"
 		group.status = "interrupted"
 		group.agents[0].status = "interrupted"
-		parent.clineMessages = [{ subagentGroup: group }] as any
+		parent.alphaMessages = [{ subagentGroup: group }] as any
 		const tamperedManifest = structuredClone(
 			(provider as any).subagentDescriptors.get(prepared.envelopes[0].id).contextManifest,
 		)
@@ -7872,7 +7872,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				return Object.assign(emitter, {
 					taskId: options.taskId,
-					clineMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
+					alphaMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -7910,11 +7910,11 @@ If complete, use attempt_completion.
 			sessions.register(parent as unknown as Task, { focus: false })
 			sessions.markLifecycle(parent.taskId, TaskLifecycleState.Running)
 			parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
-				const existing = parent.clineMessages.find(
+				const existing = parent.alphaMessages.find(
 					(message) => message.subagentGroup?.groupId === group.groupId,
 				)
 				if (existing) existing.subagentGroup = structuredClone(group)
-				else parent.clineMessages.push({ subagentGroup: structuredClone(group) })
+				else parent.alphaMessages.push({ subagentGroup: structuredClone(group) })
 			})
 			const result = (taskId: string, summary: string) => ({
 				taskId,
@@ -7938,7 +7938,7 @@ If complete, use attempt_completion.
 						subagentGroupId: prepared.group.groupId,
 						rootTaskId: parent.taskId,
 						parentTask: parent,
-						clineMessages: [],
+						alphaMessages: [],
 						isStreaming: false,
 						isCompleted: () => true,
 						getTaskCancellationSignal: () => lifetimeSignal,
@@ -8016,7 +8016,7 @@ If complete, use attempt_completion.
 			"resumes %s siblings concurrently without replacing the original batch",
 			async (source) => {
 				const { provider, parent, prepared, result } = await setupCompletedBatch(source === "retained")
-				const originalGroup = structuredClone(parent.clineMessages[0].subagentGroup)
+				const originalGroup = structuredClone(parent.alphaMessages[0].subagentGroup)
 				const store = (provider as any).agentControlStore as AgentControlStore
 				const manifests = prepared.envelopes.map(
 					(envelope) => store.getAgent(envelope.id, parent.taskId)!.snapshot!.contextManifest,
@@ -8056,7 +8056,7 @@ If complete, use attempt_completion.
 						)
 					}
 					expect(
-						parent.clineMessages.find(
+						parent.alphaMessages.find(
 							(message) => message.subagentGroup?.groupId === prepared.group.groupId,
 						),
 					).toMatchObject({ subagentGroup: originalGroup })
@@ -8067,11 +8067,11 @@ If complete, use attempt_completion.
 					pending.get(handles[1].taskId)!(result(handles[1].taskId, "Second continuation report"))
 					await ownedFinalization((provider as any).subagentRunFinalizations.get(handles[1].taskId))
 					expect(
-						parent.clineMessages.find(
+						parent.alphaMessages.find(
 							(message) => message.subagentGroup?.groupId === prepared.group.groupId,
 						),
 					).toMatchObject({ subagentGroup: originalGroup })
-					const continuedGroups = parent.clineMessages
+					const continuedGroups = parent.alphaMessages
 						.flatMap((message) => (message.subagentGroup ? [message.subagentGroup] : []))
 						.filter((group) => group.groupId !== prepared.group.groupId)
 					expect(continuedGroups).toHaveLength(2)
@@ -8109,7 +8109,7 @@ If complete, use attempt_completion.
 				const taskId = prepared.envelopes[1].id
 				const previous = store.getAgent(taskId, parent.taskId)!
 				const previousDescriptor = (provider as any).subagentDescriptors.get(taskId)
-				const originalMessages = structuredClone(parent.clineMessages)
+				const originalMessages = structuredClone(parent.alphaMessages)
 				vi.spyOn(provider as any, "startPreparedSubagentRun").mockRejectedValueOnce(
 					new Error("Continuation startup publication failed"),
 				)
@@ -8123,7 +8123,7 @@ If complete, use attempt_completion.
 					...previous,
 					pendingFollowupEventId: expect.any(String),
 				})
-				expect(parent.clineMessages).toEqual(originalMessages)
+				expect(parent.alphaMessages).toEqual(originalMessages)
 				expect((provider as any).preparedSubagentGroups.size).toBe(0)
 				expect((provider as any).subagentDescriptors.get(taskId)).toBe(previousDescriptor)
 				expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["followup"] })).toEqual([
@@ -8139,7 +8139,7 @@ If complete, use attempt_completion.
 			const store = (provider as any).agentControlStore as AgentControlStore
 			const previous = store.getAgent(taskId, parent.taskId)
 			const descriptor = (provider as any).subagentDescriptors.get(taskId)
-			const originalMessages = structuredClone(parent.clineMessages)
+			const originalMessages = structuredClone(parent.alphaMessages)
 			vi.spyOn(provider as any, "assertRetainedAgentRelaunchCapacity").mockImplementationOnce(() => {
 				throw new Error("No continuation capacity")
 			})
@@ -8152,7 +8152,7 @@ If complete, use attempt_completion.
 			expect(store.getAgent(taskId, parent.taskId)).toEqual(previous)
 			expect((provider as any).preparedSubagentGroups.size).toBe(0)
 			expect((provider as any).subagentDescriptors.get(taskId)).toBe(descriptor)
-			expect(parent.clineMessages).toEqual(originalMessages)
+			expect(parent.alphaMessages).toEqual(originalMessages)
 			expect(store.getUnacknowledgedMailboxEntries(taskId, { kinds: ["followup"] })).toEqual([])
 			expectCompletedBatchState()
 		})
@@ -8161,7 +8161,7 @@ If complete, use attempt_completion.
 			const { provider, parent, prepared } = await setupCompletedBatch()
 			const taskId = prepared.envelopes[1].id
 			const store = (provider as any).agentControlStore as AgentControlStore
-			const originalMessages = structuredClone(parent.clineMessages)
+			const originalMessages = structuredClone(parent.alphaMessages)
 			const manifest = store.getAgent(taskId, parent.taskId)!.snapshot!.contextManifest
 			;(provider as any).__historyItems.set(taskId, {
 				id: taskId,
@@ -8190,7 +8190,7 @@ If complete, use attempt_completion.
 			const interrupted = reloaded.getAgent(taskId, parent.taskId)!
 			expect(interrupted).toMatchObject({ status: "interrupted", pendingFollowupEventId: expect.any(String) })
 			expect(interrupted.groupId).not.toBe(prepared.group.groupId)
-			expect(parent.clineMessages).toEqual(originalMessages)
+			expect(parent.alphaMessages).toEqual(originalMessages)
 			;(provider as any).agentControlStore = reloaded
 			;(provider as any).agentControlStoreReady = Promise.resolve()
 			;(provider as any).preparedSubagentGroups.clear()
@@ -8209,9 +8209,9 @@ If complete, use attempt_completion.
 			).toHaveLength(1)
 			expect(reloaded.getAgent(taskId, parent.taskId)?.snapshot?.contextManifest).toEqual(manifest)
 			expect(
-				parent.clineMessages.find((message) => message.subagentGroup?.groupId === prepared.group.groupId),
+				parent.alphaMessages.find((message) => message.subagentGroup?.groupId === prepared.group.groupId),
 			).toEqual(originalMessages[0])
-			expect(parent.clineMessages).toHaveLength(2)
+			expect(parent.alphaMessages).toHaveLength(2)
 		})
 
 		it.each(["original", "advanced"] as const)(
@@ -8220,7 +8220,7 @@ If complete, use attempt_completion.
 				const { provider, parent, prepared, result } = await setupCompletedBatch()
 				const taskId = prepared.envelopes[1].id
 				const store = (provider as any).agentControlStore as AgentControlStore
-				const originalMessages = structuredClone(parent.clineMessages)
+				const originalMessages = structuredClone(parent.alphaMessages)
 				const manifest = store.getAgent(taskId, parent.taskId)!.snapshot!.contextManifest
 				const childHistory = {
 					id: taskId,
@@ -8277,7 +8277,7 @@ If complete, use attempt_completion.
 					const receipt = crashedState.mailbox.find(
 						(entry) => entry.recipientTaskId === taskId && entry.kind === "followup",
 					)!
-					expect(parent.clineMessages).toEqual(originalMessages)
+					expect(parent.alphaMessages).toEqual(originalMessages)
 					const reloaded = new AgentControlStore(new InMemoryAgentControlPersistence(crashedState))
 					await reloaded.initialize()
 					const interrupted = reloaded.getAgent(taskId, parent.taskId)!
@@ -8289,7 +8289,7 @@ If complete, use attempt_completion.
 						subagentGroupId: historyLocation === "advanced" ? handle.groupId : childHistory.subagentGroupId,
 					})
 					const recoveredParent = makeParent()
-					recoveredParent.clineMessages = structuredClone(originalMessages)
+					recoveredParent.alphaMessages = structuredClone(originalMessages)
 					const restoration = (recoveredProvider as any).restorePreparedSubagentForFollowup(
 						recoveredParent,
 						interrupted,
@@ -8303,7 +8303,7 @@ If complete, use attempt_completion.
 						reloaded.getSnapshot().mailbox.filter((entry) => entry.eventId === receipt.eventId),
 					).toHaveLength(1)
 					expect((recoveredProvider as any).subagentDescriptors.get(taskId).contextManifest).toEqual(manifest)
-					expect(recoveredParent.clineMessages).toEqual(originalMessages)
+					expect(recoveredParent.alphaMessages).toEqual(originalMessages)
 					const missingReceiptState = structuredClone(crashedState)
 					missingReceiptState.mailbox = missingReceiptState.mailbox.filter(
 						(entry) => entry.eventId !== receipt.eventId,
@@ -8335,7 +8335,7 @@ If complete, use attempt_completion.
 			const { provider, parent, prepared, result } = await setupCompletedBatch()
 			const taskId = prepared.envelopes[1].id
 			const store = (provider as any).agentControlStore as AgentControlStore
-			const originalMessages = structuredClone(parent.clineMessages)
+			const originalMessages = structuredClone(parent.alphaMessages)
 			let finishRun!: (value: ReturnType<typeof result>) => void
 			const resultGate = new Promise<ReturnType<typeof result>>((resolve) => (finishRun = resolve))
 			const bounded = new BoundedDelegationManager(async () => await resultGate)
@@ -8373,14 +8373,14 @@ If complete, use attempt_completion.
 						payload: { message: "Resume after publication recovers" },
 					}),
 				])
-				expect(parent.clineMessages).toEqual(originalMessages)
+				expect(parent.alphaMessages).toEqual(originalMessages)
 				const reloaded = new AgentControlStore(new InMemoryAgentControlPersistence(store.getSnapshot()))
 				await reloaded.initialize()
 				const recoveredProvider = makeProviderHarness(3)
 				;(recoveredProvider as any).agentControlStore = reloaded
 				;(recoveredProvider as any).agentControlStoreReady = Promise.resolve()
 				const recoveredParent = makeParent()
-				recoveredParent.clineMessages = structuredClone(originalMessages)
+				recoveredParent.alphaMessages = structuredClone(originalMessages)
 				await expect(
 					(recoveredProvider as any).restorePreparedSubagentForFollowup(
 						recoveredParent,
@@ -8576,7 +8576,7 @@ If complete, use attempt_completion.
 				const emitter = new EventEmitter()
 				return Object.assign(emitter, {
 					taskId: options.taskId,
-					clineMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
+					alphaMessages: [{ type: "say", say: "completion_result", text: "Parser inspected" }],
 					getTokenUsage: () => ({ totalTokensIn: 10, totalTokensOut: 5 }),
 					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
 					finalizeSubagentHistory: vi.fn(async () => undefined),
@@ -9010,7 +9010,7 @@ If complete, use attempt_completion.
 	it("summarizes useful partial work from an incomplete child transcript", () => {
 		const provider = makeProviderHarness()
 		const child = {
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "ask",
 					ask: "tool",
@@ -9027,7 +9027,7 @@ If complete, use attempt_completion.
 			],
 		}
 
-		const inspected = (provider as any).getSubagentInspectedPaths(child.clineMessages)
+		const inspected = (provider as any).getSubagentInspectedPaths(child.alphaMessages)
 		const summary = (provider as any).describeIncompleteSubagent("timed_out", inspected)
 
 		expect(inspected).toEqual(["src/server.ts", "src/router.ts", "src/auth.ts"])

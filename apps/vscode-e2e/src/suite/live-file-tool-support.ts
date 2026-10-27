@@ -30,7 +30,7 @@ export interface LiveTask {
 	didComplete?: boolean
 	abort?: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -238,7 +238,7 @@ export async function runLiveCase(
 			const finalResponse = finalAssistantResponse(history)
 			await verify(
 				calls,
-				task.clineMessages,
+				task.alphaMessages,
 				workspace,
 				answer,
 				task,

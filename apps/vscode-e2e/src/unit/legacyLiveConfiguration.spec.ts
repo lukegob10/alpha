@@ -109,7 +109,7 @@ unitTest("legacy live fixture configuration and Markdown source contracts", asyn
 				}
 				const task = {
 					didComplete: true,
-					clineMessages: [completion],
+					alphaMessages: [completion],
 					messageQueueService: { hasUnconsumedInput: () => false },
 					waitForTermination: async () => {},
 				}

@@ -58,7 +58,7 @@ const state = (turnId: string, sequence: number, taskStateSeq: number): Extensio
 	checkpointTimeout: 15,
 	maxOpenTabsContext: 20,
 	maxWorkspaceFiles: 100,
-	showRooIgnoredFiles: false,
+	showAlphaIgnoredFiles: false,
 	enableSubfolderRules: false,
 	maxImageFileSize: 5,
 	maxTotalImageSize: 20,
@@ -75,7 +75,7 @@ const state = (turnId: string, sequence: number, taskStateSeq: number): Extensio
 	activeTaskId: taskId,
 	currentView: { type: "task", taskId },
 	taskStateSeq,
-	clineMessages: [],
+	alphaMessages: [],
 	liveTaskIds: [taskId],
 	liveTasksById: { [taskId]: metadata },
 	agentLifecycleSnapshots: { [taskId]: snapshot(turnId, sequence) },
@@ -122,7 +122,7 @@ describe("follow-up lifecycle projection", () => {
 				{
 					currentTaskId: taskId,
 					activeTaskId: taskId,
-					clineMessages: [
+					alphaMessages: [
 						{ ts: 1, type: "say", say: "text", text: "Original task" },
 						{ ts: 2, type: "ask", ask: askType, text: "Previous boundary", isAnswered: true },
 						{ ts: 3, type: "say", say: "user_feedback", text: "Continue" },
@@ -142,7 +142,7 @@ describe("follow-up lifecycle projection", () => {
 			{
 				currentTaskId: taskId,
 				activeTaskId: taskId,
-				clineMessages: [
+				alphaMessages: [
 					{ ts: 1, type: "say", say: "api_req_started", text: "{}" },
 					{ ts: 2, type: "ask", ask: "followup", text: "What should happen next?" },
 				],
@@ -168,7 +168,7 @@ describe("follow-up lifecycle projection", () => {
 					tokensOut: 0,
 					totalCost: 0,
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ ts: 2, type: "ask", ask: "resume_completed_task", isAnswered: true },
 					{ ts: 3, type: "say", say: "user_feedback", text: "Continue" },
 					{ ts: 4, type: "say", say: "api_req_started", text: "{}" },

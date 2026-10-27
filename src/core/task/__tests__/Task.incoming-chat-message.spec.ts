@@ -41,7 +41,7 @@ describe("incoming chat presentation", () => {
 			taskKind: "primary",
 			abort: false,
 			alphaMessagesHydrated: true,
-			clineMessages: [{ ts: 10, type: "say", say: "text", text: "Initial prompt" }],
+			alphaMessages: [{ ts: 10, type: "say", say: "text", text: "Initial prompt" }],
 			apiConversationHistory: history,
 			agentMessageInbox: inbox,
 			agentMessageAdmissions: new Set(),
@@ -73,7 +73,7 @@ describe("incoming chat presentation", () => {
 			agentMessage: { senderTaskId: "peer", stopStatus: "requested" },
 			isProtected: true,
 		})
-		expect(task.clineMessages.filter((message) => message.agentMessage?.stopStatus)).toHaveLength(1)
+		expect(task.alphaMessages.filter((message) => message.agentMessage?.stopStatus)).toHaveLength(1)
 		expect(provider.postTaskMessageToWebview).toHaveBeenCalledTimes(1)
 		expect(inbox.hasPending()).toBe(false)
 		expect(task.hasPendingAgentMessages()).toBe(false)
@@ -91,9 +91,9 @@ describe("incoming chat presentation", () => {
 		await task["finalizeAgentStopMessage"](ownership)
 		expect(saved).toHaveLength(2)
 		expect(saved.at(-1)?.at(-1)?.agentMessage?.stopStatus).toBe("stopped")
-		const reloaded = fixture({ clineMessages: structuredClone(saved.at(-1)!) })
+		const reloaded = fixture({ alphaMessages: structuredClone(saved.at(-1)!) })
 		await reloaded.task["deliverAgentMessages"]()
-		expect(reloaded.task.clineMessages.at(-1)?.agentMessage?.stopStatus).toBe("stopped")
+		expect(reloaded.task.alphaMessages.at(-1)?.agentMessage?.stopStatus).toBe("stopped")
 		expect(reloaded.task.hasPendingAgentMessages()).toBe(false)
 		expect(reloaded.history).toEqual([])
 	})
@@ -103,14 +103,14 @@ describe("incoming chat presentation", () => {
 		await task.recordAgentStopRequest("peer", "Stop safely.")
 		await task["finalizeAgentStopMessage"]({ guard: () => false, provider: task.providerRef.deref() })
 		expect(saved).toHaveLength(1)
-		expect(task.clineMessages.at(-1)?.agentMessage?.stopStatus).toBe("requested")
+		expect(task.alphaMessages.at(-1)?.agentMessage?.stopStatus).toBe("requested")
 	})
 
 	it("rejects a stop notice before transcript hydration without changing saved history", async () => {
 		const { task, saved } = fixture({ alphaMessagesHydrated: false })
 		await expect(task.recordAgentStopRequest("peer")).rejects.toThrow(t("common:tasks.peer_stop_loading"))
 		expect(saved).toEqual([])
-		expect(task.clineMessages).toHaveLength(1)
+		expect(task.alphaMessages).toHaveLength(1)
 	})
 
 	it("does not retain peer cancellation attribution when the notice cannot be persisted", async () => {
@@ -118,7 +118,7 @@ describe("incoming chat presentation", () => {
 		enqueue.mockResolvedValue(false)
 		await expect(task.recordAgentStopRequest("peer", "Stop safely.")).rejects.toThrow("Unable to persist")
 		expect(task["agentStopMessageId"]).toBeUndefined()
-		expect(task.clineMessages).toHaveLength(1)
+		expect(task.alphaMessages).toHaveLength(1)
 		expect(provider.postTaskMessageToWebview).not.toHaveBeenCalled()
 		expect(inbox.hasPending()).toBe(false)
 	})
@@ -151,21 +151,21 @@ describe("incoming chat presentation", () => {
 		await task["deliverAgentMessages"]()
 		await task.receiveAgentMessage(incoming)
 		await task["deliverAgentMessages"]()
-		expect(task.clineMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
+		expect(task.alphaMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
 		expect(history).toHaveLength(1)
 		expect(history[0]).toMatchObject({ input_origin: "agent", agent_message_id: incoming.id })
 		expect(JSON.stringify(history)).not.toContain("<user_message>")
 	})
 
 	it("defers a cold recipient's receipt until hydration and preserves its saved conversation", async () => {
-		const { task, saved } = fixture({ alphaMessagesHydrated: false, clineMessages: [] })
+		const { task, saved } = fixture({ alphaMessagesHydrated: false, alphaMessages: [] })
 		await task.receiveAgentMessage(incoming)
 		expect(saved).toEqual([])
 		const original: AlphaMessage = { ts: 1, type: "say", say: "text", text: "Saved conversation" }
-		task.clineMessages = [original]
+		task.alphaMessages = [original]
 		task["alphaMessagesHydrated"] = true
 		await task["deliverAgentMessages"]()
-		expect(task.clineMessages[0]).toEqual(original)
+		expect(task.alphaMessages[0]).toEqual(original)
 		expect(saved.at(-1)).toHaveLength(2)
 		expect(saved.at(-1)?.at(-1)?.agentMessage?.id).toBe(incoming.id)
 	})
@@ -177,7 +177,7 @@ describe("incoming chat presentation", () => {
 		task["alphaMessagesHydrated"] = true
 		await task["deliverAgentMessages"]()
 		expect(history).toHaveLength(1)
-		expect(task.clineMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
+		expect(task.alphaMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
 	})
 
 	it.each(["text", "reasoning", "command_output"] as const)(
@@ -185,15 +185,15 @@ describe("incoming chat presentation", () => {
 		async (say) => {
 			const partial: AlphaMessage = { ts: 11, type: "say", say, text: "Working", partial: true }
 			const { task } = fixture({
-				clineMessages: [partial],
+				alphaMessages: [partial],
 				currentAssistantResponseMessageTs: 11,
 				updateAlphaMessage: vi.fn(async () => undefined),
 			})
 			await task.receiveAgentMessage(incoming)
 			await task.say(say, "Working on the parser", undefined, true)
-			expect(task.clineMessages).toHaveLength(2)
-			expect(task.clineMessages[0]).toMatchObject({ ts: 11, text: "Working on the parser", partial: true })
-			expect(task.clineMessages[1]).toMatchObject({ say: "agent_message", text: incoming.text })
+			expect(task.alphaMessages).toHaveLength(2)
+			expect(task.alphaMessages[0]).toMatchObject({ ts: 11, text: "Working on the parser", partial: true })
+			expect(task.alphaMessages[1]).toMatchObject({ say: "agent_message", text: incoming.text })
 		},
 	)
 
@@ -203,11 +203,11 @@ describe("incoming chat presentation", () => {
 		enqueue.mockResolvedValue(false)
 		await expect(task.receiveAgentMessage(incoming)).rejects.toThrow("Unable to persist the incoming chat message")
 		expect(inbox.hasPending()).toBe(true)
-		expect(task.clineMessages).toHaveLength(1)
+		expect(task.alphaMessages).toHaveLength(1)
 		expect(provider.postTaskMessageToWebview).not.toHaveBeenCalled()
 		enqueue.mockImplementation(write)
 		await task["deliverAgentMessages"]()
-		expect(task.clineMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
+		expect(task.alphaMessages.filter((message) => message.agentMessage?.id === incoming.id)).toHaveLength(1)
 		expect(inbox.hasPending()).toBe(false)
 	})
 

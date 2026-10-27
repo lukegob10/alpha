@@ -12,7 +12,7 @@ import { latencyObservation } from "../evidence/latencyObservation"
 interface StartupTask {
 	taskId: string
 	didComplete: boolean
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	start(): void
 }
 
@@ -129,7 +129,7 @@ suite("First prompt admission latency", function () {
 						timeout: 30_000,
 					})
 					assert.ok(firstRequestMs !== undefined, "The initial prompt must reach the provider")
-					assert.ok(task.clineMessages.some((message) => message.say === "completion_result"))
+					assert.ok(task.alphaMessages.some((message) => message.say === "completion_result"))
 					samples.push({ sample, taskCreatedMs, firstRequestMs, spans })
 				} finally {
 					for (const cleanup of restore.reverse()) cleanup()

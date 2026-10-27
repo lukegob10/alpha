@@ -53,7 +53,7 @@ describe("AlphaProvider primary verification", () => {
 			taskKind: "primary",
 			cwd: workspace,
 			metadata: { task: "Coordinate work" },
-			clineMessages: [],
+			alphaMessages: [],
 			getCommandExecutionEvidence: vi.fn(() => commandEvidence),
 			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 		}
@@ -498,7 +498,7 @@ describe("AlphaProvider primary verification", () => {
 				subagentRole: parent.subagentRole,
 				subagentContextManifest: parent.subagentContextManifest,
 				workspacePath: alias,
-				clineMessages: [],
+				alphaMessages: [],
 				providerRef: new WeakRef(provider),
 				commandExecutionEvidence: new Map(),
 				abort: false,

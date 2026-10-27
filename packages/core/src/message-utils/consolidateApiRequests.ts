@@ -1,7 +1,7 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
 /**
- * Consolidates API request start and finish messages in an array of ClineMessages.
+ * Consolidates API request start and finish messages in an array of AlphaMessage objects.
  *
  * This function looks for pairs of 'api_req_started' and 'api_req_finished' messages.
  * When it finds a pair, it consolidates them into a single message.

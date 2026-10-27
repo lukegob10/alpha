@@ -26,14 +26,14 @@ function createTask(onScreen = true) {
 		isTaskLoopActive: false,
 		isAgentTurnEngineActive: false,
 		isStreaming: false,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		messageQueueService: queue,
 		providerRef: {
 			deref: () => ({ getState: async () => ({}), isTaskOnScreen: () => onScreen }),
 		},
 		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		}),
 		saveAlphaMessages: vi.fn(async () => true),
 		enqueueAlphaMessagesSave: vi.fn(async (snapshot: () => AlphaMessage[], onPersisted?: () => void) => {
@@ -416,8 +416,8 @@ it.each([undefined, false, true] as const)(
 		})
 		queuedMessageIds.push("another-request")
 
-		expect(task.clineMessages).toHaveLength(1)
-		expect(task.clineMessages[0]).toMatchObject({
+		expect(task.alphaMessages).toHaveLength(1)
+		expect(task.alphaMessages[0]).toMatchObject({
 			type: "say",
 			say: "user_feedback",
 			text: "The following question.",
@@ -433,8 +433,8 @@ it("retains the exact admission identity when partial feedback is finalized", as
 	})
 	await task.say("user_feedback", "The following question.", [], false)
 
-	expect(task.clineMessages).toHaveLength(1)
-	expect(task.clineMessages[0]).toMatchObject({
+	expect(task.alphaMessages).toHaveLength(1)
+	expect(task.alphaMessages[0]).toMatchObject({
 		type: "say",
 		say: "user_feedback",
 		partial: false,
@@ -448,7 +448,7 @@ it("keeps already-consumed feedback immutable when its receipt is retried", asyn
 	await task.say("user_feedback", "Accepted question.", ["accepted.png"], undefined, undefined, undefined, {
 		queuedMessageIds: ["accepted-request"],
 	})
-	const accepted = structuredClone(task.clineMessages[0])
+	const accepted = structuredClone(task.alphaMessages[0])
 	task.apiConversationHistory.push({
 		role: "user",
 		content: "Accepted question.",
@@ -470,7 +470,7 @@ it("keeps already-consumed feedback immutable when its receipt is retried", asyn
 		queuedMessageIds: ["accepted-request"],
 	})
 
-	expect(task.clineMessages).toEqual([accepted])
+	expect(task.alphaMessages).toEqual([accepted])
 	expect(task["updateAlphaMessage"]).not.toHaveBeenCalled()
 	expect(task["enqueueAlphaMessagesSave"]).not.toHaveBeenCalled()
 	expect(resetProgress).not.toHaveBeenCalled()
@@ -488,7 +488,7 @@ it("keeps matching text with different admission IDs as distinct feedback", asyn
 		})
 	}
 
-	expect(task.clineMessages.map((message) => message.queuedMessageIds)).toEqual([
+	expect(task.alphaMessages.map((message) => message.queuedMessageIds)).toEqual([
 		["first-request"],
 		["second-request"],
 	])
@@ -503,7 +503,7 @@ it("does not merge an overlapping batch of admission IDs into earlier feedback",
 		queuedMessageIds: ["second-request"],
 	})
 
-	expect(task.clineMessages.map((message) => message.text)).toEqual(["First batch.", "Overlapping batch."])
+	expect(task.alphaMessages.map((message) => message.text)).toEqual(["First batch.", "Overlapping batch."])
 })
 
 it("keeps automatic feedback separate from retried human admission", async () => {
@@ -511,7 +511,7 @@ it("keeps automatic feedback separate from retried human admission", async () =>
 	await task.say("user_feedback", "Pending question.", [], undefined, undefined, undefined, {
 		queuedMessageIds: ["pending-request"],
 	})
-	const feedbackTs = task.clineMessages[0].ts
+	const feedbackTs = task.alphaMessages[0].ts
 	await task.say("user_feedback", "Automatic retry guidance.", [], undefined, undefined, undefined, {
 		feedbackSource: "automatic",
 		queuedMessageIds: ["pending-request"],
@@ -520,16 +520,16 @@ it("keeps automatic feedback separate from retried human admission", async () =>
 		queuedMessageIds: ["pending-request"],
 	})
 
-	expect(task.clineMessages).toEqual([
+	expect(task.alphaMessages).toEqual([
 		expect.objectContaining({ ts: feedbackTs, text: "Edited question.", queuedMessageIds: ["pending-request"] }),
 		expect.objectContaining({ text: "Automatic retry guidance." }),
 	])
-	expect(task.clineMessages[1].queuedMessageIds).toBeUndefined()
+	expect(task.alphaMessages[1].queuedMessageIds).toBeUndefined()
 })
 
 it("matches receipt identity when unrelated transcript rows share its timestamp", async () => {
 	const { task } = createTask()
-	task.clineMessages = [
+	task.alphaMessages = [
 		{ ts: 1, type: "say", say: "text", text: "An unrelated row." },
 		{ ts: 1, type: "say", say: "user_feedback", text: "Pending question.", queuedMessageIds: ["pending-request"] },
 	]
@@ -537,7 +537,7 @@ it("matches receipt identity when unrelated transcript rows share its timestamp"
 		queuedMessageIds: ["pending-request"],
 	})
 
-	expect(task.clineMessages.map((message) => message.text)).toEqual(["An unrelated row.", "Edited question."])
+	expect(task.alphaMessages.map((message) => message.text)).toEqual(["An unrelated row.", "Edited question."])
 })
 
 it("leaves an unconsumed feedback row unchanged when its retry update cannot be saved", async () => {
@@ -545,7 +545,7 @@ it("leaves an unconsumed feedback row unchanged when its retry update cannot be 
 	await task.say("user_feedback", "Keep this pending question.", [], undefined, undefined, undefined, {
 		queuedMessageIds: ["pending-request"],
 	})
-	const pending = structuredClone(task.clineMessages[0])
+	const pending = structuredClone(task.alphaMessages[0])
 	vi.mocked(task["enqueueAlphaMessagesSave"]).mockResolvedValue(false)
 
 	await expect(
@@ -553,7 +553,7 @@ it("leaves an unconsumed feedback row unchanged when its retry update cannot be 
 			queuedMessageIds: ["pending-request"],
 		}),
 	).rejects.toThrow("Unable to persist the retried user feedback")
-	expect(task.clineMessages).toEqual([pending])
+	expect(task.alphaMessages).toEqual([pending])
 	expect(task["updateAlphaMessage"]).not.toHaveBeenCalled()
 })
 
@@ -569,8 +569,8 @@ it("preserves a pending partial feedback update instead of reusing an earlier co
 		queuedMessageIds: ["pending-request"],
 	})
 
-	expect(task.clineMessages.map((message) => message.text)).toEqual(["Earlier question.", "Final partial question."])
-	expect(task.clineMessages[1].partial).toBe(false)
+	expect(task.alphaMessages.map((message) => message.text)).toEqual(["Earlier question.", "Final partial question."])
+	expect(task.alphaMessages[1].partial).toBe(false)
 	expect(task["enqueueAlphaMessagesSave"]).not.toHaveBeenCalled()
 })
 
@@ -662,7 +662,7 @@ it("retains accepted completed-task input in FIFO when retained preparation and 
 		expect.objectContaining({ id: "request-1", text: "Keep this accepted follow-up available." }),
 	])
 	expect(task.apiConversationHistory.some((message) => message.queued_message_ids?.includes("request-1"))).toBe(false)
-	expect(task.clineMessages.some((message) => message.queuedMessageIds?.includes("request-1"))).toBe(false)
+	expect(task.alphaMessages.some((message) => message.queuedMessageIds?.includes("request-1"))).toBe(false)
 })
 
 it("does not clear a newer lifecycle owner when an older lifecycle settles", async () => {

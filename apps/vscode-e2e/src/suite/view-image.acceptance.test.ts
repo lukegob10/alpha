@@ -83,7 +83,7 @@ class ViewImageScriptedAI {
 
 type AcceptanceTask = {
 	taskAsk?: { ask?: string; partial?: boolean }
-	clineMessages: Array<{ say?: string; text?: string; partial?: boolean }>
+	alphaMessages: Array<{ say?: string; text?: string; partial?: boolean }>
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -263,7 +263,7 @@ suite("Alpha view_image native tool acceptance", function () {
 				"The spoofed PNG result must not add any image payload to provider history",
 			)
 			assert.ok(
-				task.clineMessages.some(
+				task.alphaMessages.some(
 					({ say, text, partial }) =>
 						(say === "text" || say === "completion_result") &&
 						partial !== true &&

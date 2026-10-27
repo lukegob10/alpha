@@ -13,7 +13,7 @@ interface CommandDiffTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	getCommandExecutionEvidence(): Array<{ toolCallId: string; exitCode?: number }>
@@ -194,7 +194,7 @@ suite("Command file diffs in the extension host", function () {
 				assert.match(diffs[0]!.diff, /\+after success/)
 				assert.ok(diffs[0]!.commandExecutionId, "The diff must identify its settled command")
 			}
-			assertDiffs(task.clineMessages)
+			assertDiffs(task.alphaMessages)
 			const { uiMessagesFilePath } = await host.getTaskWithId(taskId)
 			const persisted = JSON.parse(await fs.readFile(uiMessagesFilePath, "utf8")) as AlphaMessage[]
 			assertDiffs(persisted)
@@ -205,7 +205,7 @@ suite("Command file diffs in the extension host", function () {
 				() => {
 					const reopened = host.getLiveTask(taskId)
 					return (
-						reopened !== undefined && reopened !== task && commandDiffs(reopened.clineMessages).length > 0
+						reopened !== undefined && reopened !== task && commandDiffs(reopened.alphaMessages).length > 0
 					)
 				},
 				{
@@ -215,13 +215,13 @@ suite("Command file diffs in the extension host", function () {
 						persistedDiffCount: commandDiffs(
 							JSON.parse(await fs.readFile(uiMessagesFilePath, "utf8")) as AlphaMessage[],
 						).length,
-						reopenedMessageCount: host.getLiveTask(taskId)?.clineMessages.length,
+						reopenedMessageCount: host.getLiveTask(taskId)?.alphaMessages.length,
 					}),
 				},
 			)
 			const reopened = host.getLiveTask(taskId)
 			assert.ok(reopened)
-			assertDiffs(reopened.clineMessages)
+			assertDiffs(reopened.alphaMessages)
 		}, [
 			() => api.clearCurrentTask(),
 			() => scripted.removeFromCache?.(),

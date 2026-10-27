@@ -79,6 +79,7 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	// VS Code 1.125.0 forwards no reliable originating view identity through menu activation arguments.
 	sidebarNewChat: async () => {
 		TelemetryService.instance.captureTitleButtonClicked("plus")
+		await provider.focusInput()
 		// App owns the Settings unsaved-changes guard and the subsequent startBlankTask request.
 		await provider.postMessageToWebview({ type: "action", action: "newChatButtonClicked" })
 	},
@@ -105,6 +106,8 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 
 		TelemetryService.instance.captureTitleButtonClicked("plus")
 
+		// Keyboard commands can run from Quick Input; focus the native owner before the UI starts a draft.
+		await visibleProvider.focusInput()
 		await visibleProvider.postMessageToWebview({
 			type: "action",
 			action: "newChatButtonClicked",

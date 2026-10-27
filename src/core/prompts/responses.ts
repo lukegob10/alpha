@@ -127,7 +127,7 @@ Otherwise, if work remains and no input is missing, your next response must cont
 		files: string[],
 		didHitLimit: boolean,
 		alphaIgnoreController: AlphaIgnoreController | undefined,
-		showRooIgnoredFiles: boolean,
+		showAlphaIgnoredFiles: boolean,
 		alphaProtectedController?: AlphaProtectedController,
 	): string => {
 		const sorted = files
@@ -171,7 +171,7 @@ Otherwise, if work remains and no input is missing, your next response must cont
 
 				if (isIgnored) {
 					// If file is ignored and we're not showing ignored files, skip it
-					if (!showRooIgnoredFiles) {
+					if (!showAlphaIgnoredFiles) {
 						continue
 					}
 					// Otherwise, mark it with a lock symbol

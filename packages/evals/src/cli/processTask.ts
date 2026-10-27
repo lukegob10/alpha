@@ -1040,7 +1040,7 @@ function secretValues(jobToken: string | null): string[] {
 
 function inheritedSecretEnvironment(jobToken: string | null): Record<string, string> {
 	const values: Record<string, string | undefined> = {
-		ROO_CODE_CLOUD_TOKEN: jobToken ?? undefined,
+		ALPHA_CODE_CLOUD_TOKEN: jobToken ?? undefined,
 		OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 	}
 	return Object.fromEntries(Object.entries(values).filter((entry): entry is [string, string] => Boolean(entry[1])))

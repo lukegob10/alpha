@@ -14,6 +14,53 @@ suite("Alpha Extension", function () {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
 	})
 
+	test("New Chat commands leave Quick Open and open a draft through the extension UI", async () => {
+		const api = globalThis.api
+		const originalConfiguration = api.getConfiguration()
+		const host = (
+			api as unknown as {
+				sidebarProvider: {
+					startBlankTask(): Promise<void>
+					getStateToPostToWebview(): Promise<{ currentView?: { type: string }; activeTaskId?: string }>
+				}
+			}
+		).sidebarProvider
+		const startBlankTask = host.startBlankTask
+		let draftsOpened = 0
+		host.startBlankTask = async () => {
+			await startBlankTask.call(host)
+			draftsOpened++
+		}
+
+		try {
+			// The composer is intentionally unavailable before provider onboarding.
+			await api.setConfiguration({ ...originalConfiguration, apiProvider: "fake-ai" })
+			await vscode.commands.executeCommand("alpha.SidebarProvider.focus")
+			for (const [command, args] of [
+				["alpha.newTask", undefined],
+				["alpha.plusButtonClicked", undefined],
+				["alpha.plusButtonClicked", "sidebar"],
+				["alpha.sidebarNewChat", undefined],
+			] as const) {
+				const expectedDrafts = draftsOpened + 1
+				await vscode.commands.executeCommand("workbench.action.quickOpen")
+				await vscode.commands.executeCommand(command, args)
+				await waitFor(() => draftsOpened === expectedDrafts, {
+					description: `${command} to open one draft through the rendered Alpha view`,
+					timeout: 10_000,
+				})
+				const state = await host.getStateToPostToWebview()
+				assert.equal(state.currentView?.type, "newTaskDraft")
+				assert.equal(state.activeTaskId, undefined)
+			}
+			assert.equal(draftsOpened, 4)
+		} finally {
+			host.startBlankTask = startBlankTask
+			await vscode.commands.executeCommand("workbench.action.closeQuickOpen")
+			await api.setConfiguration(originalConfiguration)
+		}
+	})
+
 	test("opens a vector diagram with visible native zoom controls", async () => {
 		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri
 		assert.ok(workspace)

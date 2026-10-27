@@ -397,7 +397,7 @@ type CompactionHost = {
 				isTaskLoopActive?: boolean
 				taskAsk?: { ask?: string }
 				approveAsk(): void
-				clineMessages: Array<{
+				alphaMessages: Array<{
 					ask?: string
 					say?: string
 					text?: string
@@ -480,8 +480,8 @@ suite("Alpha native compaction acceptance", function () {
 				assert.equal(summaries.length, automatic ? 1 : 0)
 				if (automatic) assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
 				const task = provider.getLiveTask(taskId)!
-				assert.ok(task.clineMessages.some(({ say }) => say === "sliding_window_truncation"))
-				assert.ok(!task.clineMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"))
+				assert.ok(task.alphaMessages.some(({ say }) => say === "sliding_window_truncation"))
+				assert.ok(!task.alphaMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"))
 				const persisted = (await provider.getTaskWithId(taskId)).apiConversationHistory
 				assert.equal(
 					persisted.filter(
@@ -538,7 +538,7 @@ suite("Alpha native compaction acceptance", function () {
 			const failed = provider.getLiveTask(failedId)!
 			assert.equal(failed.isStreaming, false)
 			assert.equal(failed.isWaitingForFirstChunk, false)
-			const requestRow = failed.clineMessages.find(({ say }) => say === "api_req_started")
+			const requestRow = failed.alphaMessages.find(({ say }) => say === "api_req_started")
 			assert.ok(requestRow?.text, "The rejected request must retain its visible error row")
 			const requestError = JSON.parse(requestRow.text) as {
 				cancelReason?: string
@@ -611,7 +611,7 @@ suite("Alpha native compaction acceptance", function () {
 						assert.ok(task, "The same retained task must remain live")
 						assert.equal(task.instanceId, instanceId, "Follow-ups must reuse the retained task instance")
 						assert.ok(
-							!task.clineMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"),
+							!task.alphaMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"),
 							"Context recovery must not require a manual Retry or resume prompt",
 						)
 						return completions.filter((id) => id === taskId).length === count
@@ -654,8 +654,8 @@ suite("Alpha native compaction acceptance", function () {
 			)
 			const task = provider.getLiveTask(taskId)
 			assert.ok(task)
-			assert.equal(task.clineMessages.filter(({ say }) => say === "completion_result").length, RETAINED_TURNS + 2)
-			const receipt = task.clineMessages.find(
+			assert.equal(task.alphaMessages.filter(({ say }) => say === "completion_result").length, RETAINED_TURNS + 2)
+			const receipt = task.alphaMessages.find(
 				(message) => message.say === "condense_context" && !!message.contextCondense?.condenseId,
 			)?.contextCondense
 			assert.ok(receipt?.condenseId, "The long-thread recovery must publish a durable compaction receipt")
@@ -743,7 +743,7 @@ suite("Alpha native compaction acceptance", function () {
 				() =>
 					provider
 						.getLiveTask(taskId)
-						?.clineMessages.some(
+						?.alphaMessages.some(
 							(message) => message.say === "condense_context" && !!message.contextCondense?.condenseId,
 						) ?? false,
 				{ timeout: 30_000, description: "a durable post-turn compaction receipt" },
@@ -754,7 +754,7 @@ suite("Alpha native compaction acceptance", function () {
 			const completedTask = provider.getLiveTask(taskId)
 			assert.ok(completedTask)
 			assert.ok(
-				completedTask.clineMessages.some(
+				completedTask.alphaMessages.some(
 					({ say, text, partial }) =>
 						(say === "text" || say === "completion_result") &&
 						partial !== true &&
@@ -763,7 +763,7 @@ suite("Alpha native compaction acceptance", function () {
 				),
 				"The task must present the answer produced from the real command result",
 			)
-			const receipt = completedTask.clineMessages.find(
+			const receipt = completedTask.alphaMessages.find(
 				(message) => message.say === "condense_context" && !!message.contextCondense?.condenseId,
 			)?.contextCondense
 			assert.ok(receipt?.newContextTokens !== undefined)
@@ -816,7 +816,7 @@ suite("Alpha native compaction acceptance", function () {
 			assert.ok(
 				provider
 					.getLiveTask(taskId)
-					?.clineMessages.some(
+					?.alphaMessages.some(
 						({ say, text, partial }) =>
 							(say === "text" || say === "completion_result") &&
 							partial !== true &&
@@ -916,9 +916,9 @@ suite("Alpha native compaction acceptance", function () {
 			assert.ok(JSON.stringify(model.summaryRequests[0]).includes(OVERFLOW_MARKER))
 			const task = provider.getLiveTask(taskId)
 			assert.ok(task)
-			assert.equal(task.clineMessages.filter((message) => message.say === "completion_result").length, 1)
+			assert.equal(task.alphaMessages.filter((message) => message.say === "completion_result").length, 1)
 			assert.ok(
-				task.clineMessages.some(
+				task.alphaMessages.some(
 					({ say, text, partial }) =>
 						(say === "text" || say === "completion_result") &&
 						partial !== true &&

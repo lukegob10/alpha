@@ -288,12 +288,3 @@ export const taskEventSchema = z.discriminatedUnion("eventName", [
 ])
 
 export type TaskEvent = z.infer<typeof taskEventSchema>
-
-/** @deprecated Use AlphaCodeEventName. Retained for existing API consumers. */
-export { AlphaCodeEventName as RooCodeEventName }
-
-/** @deprecated Use alphaCodeEventsSchema. Retained for existing API consumers. */
-export { alphaCodeEventsSchema as rooCodeEventsSchema }
-
-/** @deprecated Use AlphaCodeEvents. Retained for existing API consumers. */
-export type { AlphaCodeEvents as RooCodeEvents }

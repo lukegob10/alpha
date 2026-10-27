@@ -18,7 +18,7 @@ const createTask = (taskId: string, overrides: Partial<Task> = {}): Task =>
 		taskKind: "primary",
 		taskStatus: TaskStatus.Running,
 		isStreaming: true,
-		clineMessages: [{ ts: 100, type: "say", say: "text", text: taskId }],
+		alphaMessages: [{ ts: 100, type: "say", say: "text", text: taskId }],
 		metadata: { task: taskId },
 		api: {
 			getModel: vi.fn(() => ({ id: "fixture", info: { contextWindow: 200_000, maxTokens: 10_000 } })),
@@ -190,20 +190,20 @@ describe("incremental task metadata", () => {
 		const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
 			taskSessions,
 			currentView: { type: "task", taskId: target.taskId },
-			clineMessagesSeq: 0,
+			alphaMessagesSeq: 0,
 			publishedTaskTranscriptRevisions: new Map(),
 			getHostProviders: () => [provider],
 			postMessageToWebview: post,
 			htmlDocumentAutoOpen: { handle: vi.fn(async () => undefined) },
 		})
 
-		await provider.postTaskMessageToWebview("messageUpdated", target.taskId, target.clineMessages[0])
+		await provider.postTaskMessageToWebview("messageUpdated", target.taskId, target.alphaMessages[0])
 
 		expect(post).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "messageUpdated",
 				taskId: target.taskId,
-				clineMessagesSeq: 1,
+				alphaMessagesSeq: 1,
 				liveTask: expect.objectContaining({ id: target.taskId, tokensIn: 10 }),
 			}),
 		)

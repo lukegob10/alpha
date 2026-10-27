@@ -246,7 +246,7 @@ vi.mock("../../task/Task", () => ({
 			api: undefined,
 			abortTask: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
@@ -991,9 +991,9 @@ describe("AlphaProvider Task History Synchronization", () => {
 				expect(state).toEqual(expect.objectContaining({ apiConfiguration: expect.any(Object), mode: "code" }))
 				expect(state).not.toHaveProperty("taskHistory")
 				if (method === "postStateToWebviewWithoutAlphaMessages") {
-					expect(state).not.toHaveProperty("clineMessages")
+					expect(state).not.toHaveProperty("alphaMessages")
 				} else {
-					expect(state).toHaveProperty("clineMessages", [])
+					expect(state).toHaveProperty("alphaMessages", [])
 				}
 			},
 		)

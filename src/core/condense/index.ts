@@ -785,7 +785,7 @@ export type SummarizeResponse = {
 	prevContextTokens?: number
 	error?: string // Populated iff the operation fails: error message shown to the user on failure (see Task.ts)
 	errorDetails?: string // Detailed error information including stack trace and API error info
-	condenseId?: string // The unique ID of the created Summary message, for linking to condense_context clineMessage
+	condenseId?: string // The unique ID of the created Summary message, for linking to condense_context alphaMessage
 	/** Explicit bounded outcome for callers that need to decide whether to fall back. */
 	status?: ContextRecoveryStatus
 	retainedTailTokens?: number

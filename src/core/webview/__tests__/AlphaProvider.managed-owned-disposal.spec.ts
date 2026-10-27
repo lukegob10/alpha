@@ -119,7 +119,7 @@ async function expectDurableCompletion(fixture: Harness, child: Child, summary: 
 	const { historyItem } = await fixture.provider.getTaskWithId(child.taskId, { includeApiConversationHistory: false })
 	expect(historyItem).toMatchObject({ id: child.taskId, status: "completed", completionResultSummary: summary })
 	expect(
-		fixture.root.clineMessages.some((message) =>
+		fixture.root.alphaMessages.some((message) =>
 			message.subagentGroup?.agents.some((agent) => agent.taskId === child.taskId && agent.summary === summary),
 		),
 	).toBe(true)

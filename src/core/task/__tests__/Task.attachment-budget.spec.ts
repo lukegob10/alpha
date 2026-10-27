@@ -32,7 +32,7 @@ function fixture() {
 		abandoned: false,
 		didComplete: false,
 		taskCancellationController: new AbortController(),
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		userMessageContent: [],
 		isTaskLoopActive: false,

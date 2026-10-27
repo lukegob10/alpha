@@ -239,25 +239,25 @@ export const mergeExtensionState = (
 		newState.taskStateSeq !== undefined ||
 		newState.messageQueueSeq !== undefined ||
 		newState.currentTaskTodosSeq !== undefined
-	const legacyDomainSequence = hasDedicatedDomainSequence ? undefined : newState.clineMessagesSeq
+	const legacyDomainSequence = hasDedicatedDomainSequence ? undefined : newState.alphaMessagesSeq
 	const incomingTaskStateSeq = newState.taskStateSeq ?? legacyDomainSequence
 	const incomingQueueSeq = newState.messageQueueSeq ?? legacyDomainSequence
 	const incomingTodosSeq = newState.currentTaskTodosSeq ?? legacyDomainSequence
 	const previousTaskStateSeq =
-		prevState.taskStateSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+		prevState.taskStateSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.alphaMessagesSeq)
 	const previousQueueSeq =
-		prevState.messageQueueSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+		prevState.messageQueueSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.alphaMessagesSeq)
 	const previousTodosSeq =
-		prevState.currentTaskTodosSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.clineMessagesSeq)
+		prevState.currentTaskTodosSeq ?? (hasDedicatedDomainSequence ? undefined : prevState.alphaMessagesSeq)
 	const isStale = (incoming: number | undefined, previous: number | undefined) =>
 		incoming !== undefined && previous !== undefined && incoming <= previous
 
 	// Transcript, lifecycle, queue, and todos are delivered independently. Guard
 	// each domain separately so a tiny queue patch cannot suppress a valid later
 	// lifecycle snapshot (or let an older full snapshot erase a newer queue).
-	if (isStale(newState.clineMessagesSeq, prevState.clineMessagesSeq)) {
-		rest.clineMessages = prevState.clineMessages
-		rest.clineMessagesSeq = prevState.clineMessagesSeq
+	if (isStale(newState.alphaMessagesSeq, prevState.alphaMessagesSeq)) {
+		rest.alphaMessages = prevState.alphaMessages
+		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
 
 	const taskStateIsStale = isStale(incomingTaskStateSeq, previousTaskStateSeq)
@@ -321,10 +321,10 @@ export const mergeExtensionState = (
 		typeof newState.taskStateSeq === "number" &&
 		typeof prevState.taskStateSeq === "number" &&
 		newState.taskStateSeq < prevState.taskStateSeq &&
-		Object.prototype.hasOwnProperty.call(newState, "clineMessages")
+		Object.prototype.hasOwnProperty.call(newState, "alphaMessages")
 	) {
-		rest.clineMessages = prevState.clineMessages
-		rest.clineMessagesSeq = prevState.clineMessagesSeq
+		rest.alphaMessages = prevState.alphaMessages
+		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
 
 	const targetsDifferentTask =
@@ -366,8 +366,8 @@ export const mergeExtensionState = (
 	if (rejectScopedDomains) {
 		// A consumed-input queue receipt may include its transcript. A late receipt
 		// cannot project that transcript onto a chat selected by another navigation.
-		rest.clineMessages = prevState.clineMessages
-		rest.clineMessagesSeq = prevState.clineMessagesSeq
+		rest.alphaMessages = prevState.alphaMessages
+		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
 	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
 		rest.messageQueue = prevState.messageQueue
@@ -398,7 +398,7 @@ export const mergeExtensionState = (
 			cacheTaskTranscript(
 				transcriptCache,
 				previousTaskId,
-				prevState.clineMessages,
+				prevState.alphaMessages,
 				prevState.liveTasksById?.[previousTaskId]?.transcriptRevision,
 			)
 		}
@@ -407,26 +407,26 @@ export const mergeExtensionState = (
 			taskChanged &&
 			currentTaskId &&
 			newState.currentTaskId === currentTaskId &&
-			Array.isArray(newState.clineMessages) &&
-			newState.clineMessages.length === 0
+			Array.isArray(newState.alphaMessages) &&
+			newState.alphaMessages.length === 0
 		) {
 			const cached = getCachedTaskTranscript(transcriptCache, currentTaskId)
 			const revision = mergedState.liveTasksById?.[currentTaskId]?.transcriptRevision
 			if (cached && revision !== undefined && cached.revision === revision) {
-				mergedState.clineMessages = cached.messages
+				mergedState.alphaMessages = cached.messages
 			}
 		}
 
 		if (
 			currentTaskId &&
 			newState.currentTaskId === currentTaskId &&
-			Array.isArray(newState.clineMessages) &&
-			newState.clineMessages.length > 0
+			Array.isArray(newState.alphaMessages) &&
+			newState.alphaMessages.length > 0
 		) {
 			cacheTaskTranscript(
 				transcriptCache,
 				currentTaskId,
-				mergedState.clineMessages,
+				mergedState.alphaMessages,
 				mergedState.liveTasksById?.[currentTaskId]?.transcriptRevision,
 			)
 		}
@@ -436,8 +436,8 @@ export const mergeExtensionState = (
 }
 
 const TRANSCRIPT_STATE_KEYS = [
-	"clineMessages",
-	"clineMessagesSeq",
+	"alphaMessages",
+	"alphaMessagesSeq",
 	"messageQueue",
 	"messageQueueSeq",
 	"currentTaskTodos",
@@ -519,7 +519,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [state, setState] = useState<ExtensionState>({
 		apiConfiguration: {},
 		version: "",
-		clineMessages: [],
+		alphaMessages: [],
 		taskHistory: [],
 		scheduledTasks: [],
 		scheduledTaskRuns: [],
@@ -556,7 +556,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		maxWorkspaceFiles: 200,
 		cwd: "",
 		telemetrySetting: "unset",
-		showRooIgnoredFiles: true, // Default to showing .alphaignore'd files with lock symbol (current behavior).
+		showAlphaIgnoredFiles: true, // Default to showing .alphaignore'd files with lock symbol (current behavior).
 		enableSubfolderRules: false, // Default to disabled - must be enabled to load rules from subdirectories
 		renderContext: "sidebar",
 		maxReadFileLine: -1, // Default max line limit for read_file tool (-1 for default)
@@ -627,8 +627,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const latestTaskTodosSeqRef = useRef<number>()
 	type IncrementalMessage = {
 		taskId?: string
-		clineMessage: AlphaMessage
-		clineMessagesSeq?: number
+		alphaMessage: AlphaMessage
+		alphaMessagesSeq?: number
 		liveTask?: LiveTaskMetadata
 	}
 	const pendingMessageUpdatesRef = useRef(new Map<string, IncrementalMessage>())
@@ -656,20 +656,20 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		if (updates.length === 0) return
 
 		setState((prevState) => {
-			let nextMessages = prevState.clineMessages
-			let nextSequence = prevState.clineMessagesSeq
+			let nextMessages = prevState.alphaMessages
+			let nextSequence = prevState.alphaMessagesSeq
 			let didChange = false
 			let liveTasksById = prevState.liveTasksById
 
-			for (const { taskId, clineMessage, clineMessagesSeq, liveTask } of updates) {
+			for (const { taskId, alphaMessage, alphaMessagesSeq, liveTask } of updates) {
 				const isVisibleTask = !taskId || taskId === prevState.currentTaskId
 				// The live metadata belongs to the same publication as the transcript.
 				// Reject both before a delayed update can restore stale running controls.
 				if (
 					isVisibleTask &&
-					clineMessagesSeq !== undefined &&
+					alphaMessagesSeq !== undefined &&
 					nextSequence !== undefined &&
-					clineMessagesSeq <= nextSequence
+					alphaMessagesSeq <= nextSequence
 				) {
 					continue
 				}
@@ -679,10 +679,10 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				if (!isVisibleTask) continue
 
-				const index = findLastIndex(nextMessages, (msg) => msg.ts === clineMessage.ts)
+				const index = findLastIndex(nextMessages, (msg) => msg.ts === alphaMessage.ts)
 				if (index === -1) {
 					console.warn(
-						`[messageUpdated] Received update for unknown message ts=${clineMessage.ts}, dropping. ` +
+						`[messageUpdated] Received update for unknown message ts=${alphaMessage.ts}, dropping. ` +
 							`Frontend has ${nextMessages.length} messages.`,
 					)
 					continue
@@ -692,25 +692,25 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					nextMessages = [...nextMessages]
 					didChange = true
 				}
-				nextMessages[index] = clineMessage
-				if (clineMessagesSeq !== undefined) nextSequence = clineMessagesSeq
+				nextMessages[index] = alphaMessage
+				if (alphaMessagesSeq !== undefined) nextSequence = alphaMessagesSeq
 			}
 
 			return didChange || liveTasksById !== prevState.liveTasksById
-				? { ...prevState, clineMessages: nextMessages, clineMessagesSeq: nextSequence, liveTasksById }
+				? { ...prevState, alphaMessages: nextMessages, alphaMessagesSeq: nextSequence, liveTasksById }
 				: prevState
 		})
 	}, [])
 
 	const applyMessageCreation = useCallback(
-		({ taskId, clineMessage, clineMessagesSeq, liveTask }: IncrementalMessage) => {
+		({ taskId, alphaMessage, alphaMessagesSeq, liveTask }: IncrementalMessage) => {
 			setState((prevState) => {
 				const isVisibleTask = !taskId || taskId === prevState.currentTaskId
 				if (
 					isVisibleTask &&
-					clineMessagesSeq !== undefined &&
-					prevState.clineMessagesSeq !== undefined &&
-					clineMessagesSeq <= prevState.clineMessagesSeq
+					alphaMessagesSeq !== undefined &&
+					prevState.alphaMessagesSeq !== undefined &&
+					alphaMessagesSeq <= prevState.alphaMessagesSeq
 				) {
 					return prevState
 				}
@@ -724,20 +724,20 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 
 				const existingIndex = findLastIndex(
-					prevState.clineMessages,
-					(message) => message.ts === clineMessage.ts,
+					prevState.alphaMessages,
+					(message) => message.ts === alphaMessage.ts,
 				)
-				const clineMessages = [...prevState.clineMessages]
+				const alphaMessages = [...prevState.alphaMessages]
 				if (existingIndex === -1) {
-					clineMessages.push(clineMessage)
+					alphaMessages.push(alphaMessage)
 				} else {
-					clineMessages[existingIndex] = clineMessage
+					alphaMessages[existingIndex] = alphaMessage
 				}
 
 				return {
 					...prevState,
-					clineMessages,
-					clineMessagesSeq: clineMessagesSeq ?? prevState.clineMessagesSeq,
+					alphaMessages,
+					alphaMessagesSeq: alphaMessagesSeq ?? prevState.alphaMessagesSeq,
 					liveTasksById,
 				}
 			})
@@ -751,8 +751,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		// Replacing a Map value retains its original insertion position. Sort by the
 		// latest wire sequence so interleaved updates for multiple messages all apply.
 		updates.sort((left, right) => {
-			if (left.clineMessagesSeq === undefined || right.clineMessagesSeq === undefined) return 0
-			return left.clineMessagesSeq - right.clineMessagesSeq
+			if (left.alphaMessagesSeq === undefined || right.alphaMessagesSeq === undefined) return 0
+			return left.alphaMessagesSeq - right.alphaMessagesSeq
 		})
 		return updates
 	}, [])
@@ -769,20 +769,20 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const queuePartialMessageUpdate = useCallback(
 		(
 			taskId: string | undefined,
-			clineMessage: AlphaMessage,
-			clineMessagesSeq?: number,
+			alphaMessage: AlphaMessage,
+			alphaMessagesSeq?: number,
 			liveTask?: LiveTaskMetadata,
 		) => {
-			const key = `${taskId ?? ""}:${clineMessage.ts}`
+			const key = `${taskId ?? ""}:${alphaMessage.ts}`
 			const pending = pendingMessageUpdatesRef.current.get(key)
 			if (
-				clineMessagesSeq !== undefined &&
-				pending?.clineMessagesSeq !== undefined &&
-				clineMessagesSeq <= pending.clineMessagesSeq
+				alphaMessagesSeq !== undefined &&
+				pending?.alphaMessagesSeq !== undefined &&
+				alphaMessagesSeq <= pending.alphaMessagesSeq
 			) {
 				return
 			}
-			pendingMessageUpdatesRef.current.set(key, { taskId, clineMessage, clineMessagesSeq, liveTask })
+			pendingMessageUpdatesRef.current.set(key, { taskId, alphaMessage, alphaMessagesSeq, liveTask })
 
 			if (messageUpdateFrameRef.current !== undefined) return
 			messageUpdateFrameRef.current = requestAnimationFrame(() => {
@@ -919,14 +919,14 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					break
 				}
 				case "messageUpdated": {
-					const clineMessage = message.clineMessage!
-					const key = `${message.taskId ?? ""}:${clineMessage.ts}`
+					const alphaMessage = message.alphaMessage!
+					const key = `${message.taskId ?? ""}:${alphaMessage.ts}`
 
-					if (clineMessage.partial) {
+					if (alphaMessage.partial) {
 						queuePartialMessageUpdate(
 							message.taskId,
-							clineMessage,
-							message.clineMessagesSeq,
+							alphaMessage,
+							message.alphaMessagesSeq,
 							message.liveTask,
 						)
 					} else {
@@ -937,8 +937,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 						applyMessageUpdates([
 							{
 								taskId: message.taskId,
-								clineMessage,
-								clineMessagesSeq: message.clineMessagesSeq,
+								alphaMessage,
+								alphaMessagesSeq: message.alphaMessagesSeq,
 								liveTask: message.liveTask,
 							},
 						])
@@ -949,8 +949,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					flushPendingMessageUpdates()
 					applyMessageCreation({
 						taskId: message.taskId,
-						clineMessage: message.clineMessage!,
-						clineMessagesSeq: message.clineMessagesSeq,
+						alphaMessage: message.alphaMessage!,
+						alphaMessagesSeq: message.alphaMessagesSeq,
 						liveTask: message.liveTask,
 					})
 					break
@@ -1163,7 +1163,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setMaxOpenTabsContext: (value) => setState((prevState) => ({ ...prevState, maxOpenTabsContext: value })),
 		setMaxWorkspaceFiles: (value) => setState((prevState) => ({ ...prevState, maxWorkspaceFiles: value })),
 		setTelemetrySetting: (value) => setState((prevState) => ({ ...prevState, telemetrySetting: value })),
-		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showRooIgnoredFiles: value })),
+		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showAlphaIgnoredFiles: value })),
 		setEnableSubfolderRules: (value) => setState((prevState) => ({ ...prevState, enableSubfolderRules: value })),
 		setAwsUsePromptCache: (value) => setState((prevState) => ({ ...prevState, awsUsePromptCache: value })),
 		setMaxImageFileSize: (value) => setState((prevState) => ({ ...prevState, maxImageFileSize: value })),

@@ -15,7 +15,7 @@ describe("Task async user input message", () => {
 			abort: false,
 			taskId: "root-task",
 			instanceId: "primary",
-			clineMessages: emitted,
+			alphaMessages: emitted,
 			lastMessageTs: 123,
 			captureMessageTurn: Task.prototype.captureMessageTurn,
 			observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],

@@ -94,7 +94,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 			taskKind: "primary",
 			_taskMode: "code",
 			metadata: { task: "Coordinate work" },
-			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
+			alphaMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 			abort: false,
 			taskCancellationController: new AbortController(),
 			didComplete: false,
@@ -344,8 +344,8 @@ describe("AlphaProvider Worker change-set actions", () => {
 			}
 			const expectedStatus = action === "auto-apply" ? "applied" : "discarded"
 			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe(expectedStatus)
-			expect(parent.clineMessages[0]!.subagentGroup?.agents[0]?.changeSet?.status).toBe(expectedStatus)
-			expect(parent.clineMessages[0]!.subagentGroup).not.toBe(prepared.group)
+			expect(parent.alphaMessages[0]!.subagentGroup?.agents[0]?.changeSet?.status).toBe(expectedStatus)
+			expect(parent.alphaMessages[0]!.subagentGroup).not.toBe(prepared.group)
 
 			await Reflect.get(provider, "finalizeSpawnedSubagent").call(
 				provider,
@@ -358,7 +358,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 				vi.fn(),
 			)
 
-			expect(parent.clineMessages[0]!.subagentGroup?.agents[0]).toMatchObject({
+			expect(parent.alphaMessages[0]!.subagentGroup?.agents[0]).toMatchObject({
 				changeSet: { status: expectedStatus },
 				parentVerification: { status: action === "auto-apply" ? "pending" : "not_applicable" },
 				requiresParentVerification: false,
@@ -567,7 +567,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 				subagentRole: "worker",
 				subagentContextManifest: { runtimePolicy: { role: "worker" } },
 				metadata: { task: "Own the private checkout" },
-				clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
+				alphaMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 				abort: false,
 				taskCancellationController: new AbortController(),
 				didComplete: false,

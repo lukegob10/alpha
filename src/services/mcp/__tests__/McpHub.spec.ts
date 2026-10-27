@@ -1155,7 +1155,7 @@ describe("McpHub", () => {
 
 			// Verify the config was updated with initialized alwaysAllow
 			// Find the write call with the normalized path
-			const normalizedSettingsPath = "/mock/settings/path/cline_mcp_settings.json"
+			const normalizedSettingsPath = "/mock/settings/path/mcp_settings.json"
 			const writeCalls = vi.mocked(fs.writeFile).mock.calls
 
 			// Find the write call with the normalized path
@@ -1443,7 +1443,7 @@ describe("McpHub", () => {
 
 			// Verify the config was updated with initialized disabledTools
 			// Find the write call with the normalized path
-			const normalizedSettingsPath = "/mock/settings/path/cline_mcp_settings.json"
+			const normalizedSettingsPath = "/mock/settings/path/mcp_settings.json"
 			const writeCalls = (fs.writeFile as Mock).mock.calls
 
 			// Find the write call with the normalized path
@@ -1492,7 +1492,7 @@ describe("McpHub", () => {
 
 			// Verify the config was updated correctly
 			// Find the write call with the normalized path
-			const normalizedSettingsPath = "/mock/settings/path/cline_mcp_settings.json"
+			const normalizedSettingsPath = "/mock/settings/path/mcp_settings.json"
 			const writeCalls = vi.mocked(fs.writeFile).mock.calls
 
 			// Find the write call with the normalized path
@@ -1916,7 +1916,7 @@ describe("McpHub", () => {
 
 				// Verify the config was updated correctly
 				// Find the write call with the normalized path
-				const normalizedSettingsPath = "/mock/settings/path/cline_mcp_settings.json"
+				const normalizedSettingsPath = "/mock/settings/path/mcp_settings.json"
 				const writeCalls = vi.mocked(fs.writeFile).mock.calls
 
 				// Find the write call with the normalized path

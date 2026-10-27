@@ -15,7 +15,7 @@ interface LaunchTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -256,7 +256,7 @@ suite("Background application launch completion", function () {
 							timeout: 60_000,
 							onTimeout: () => ({
 								commands: observation.task?.getCommandExecutionEvidence(),
-								messages: observation.task?.clineMessages.slice(-6),
+								messages: observation.task?.alphaMessages.slice(-6),
 							}),
 						},
 					)
@@ -339,7 +339,7 @@ suite("Background application launch completion", function () {
 					if (application === "web") {
 						await waitFor(
 							() =>
-								task.clineMessages.some((message) => {
+								task.alphaMessages.some((message) => {
 									if (message.say !== "tool" || message.partial || !message.text) return false
 									const payload = JSON.parse(message.text) as {
 										tool?: string

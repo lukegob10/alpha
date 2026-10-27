@@ -41,7 +41,7 @@ function preferenceViews(initialAutoSteer: boolean) {
 		currentView: { type: "newTaskDraft" },
 		contextProxy,
 		view: makeView(sidebarMessages),
-		clineMessagesSeq: 0,
+		alphaMessagesSeq: 0,
 		taskStateSeq: 0,
 		messageQueueSeq: 0,
 		currentTaskTodosSeq: 0,
@@ -125,7 +125,7 @@ it("does not revive delivered input in another view when an earlier publication 
 		currentView: { type: "task", taskId: "shared-task" },
 		messageQueueSeq: 0,
 		taskStateSeq: 1,
-		clineMessagesSeq: 0,
+		alphaMessagesSeq: 0,
 		postMessageToWebview: vi.fn().mockImplementationOnce(async () => {
 			entered.resolve()
 			await held.promise
@@ -136,7 +136,7 @@ it("does not revive delivered input in another view when an earlier publication 
 		currentView: { type: "task", taskId: "shared-task" },
 		messageQueueSeq: 0,
 		taskStateSeq: 1,
-		clineMessagesSeq: 0,
+		alphaMessagesSeq: 0,
 		postMessageToWebview: vi.fn(async (message: ExtensionMessage) => {
 			received.push(structuredClone(message))
 		}),

@@ -49,7 +49,7 @@ test("partial and automatically answered prompts do not become manual reviews", 
 		assertLiveFileToolBoundary({ abort: true, taskAsk: { ask: "followup", text: "Cancelled question" } }, commands),
 	)
 	const transientTranscript = {
-		clineMessages: [{ type: "ask", ask: "command", partial: false, text: "rg --no-config -n needle read.txt" }],
+		alphaMessages: [{ type: "ask", ask: "command", partial: false, text: "rg --no-config -n needle read.txt" }],
 		taskAsk: undefined,
 	}
 	assert.doesNotThrow(() => assertLiveFileToolBoundary(transientTranscript, commands))

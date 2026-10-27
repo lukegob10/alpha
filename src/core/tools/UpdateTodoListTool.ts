@@ -251,7 +251,7 @@ export function restoreTodoListForTask(alphaTask: Task, todoList?: TodoItem[]) {
 		alphaTask.todoList = Array.isArray(todoList) ? todoList : []
 		return
 	}
-	alphaTask.todoList = getLatestTodo(alphaTask.clineMessages)
+	alphaTask.todoList = getLatestTodo(alphaTask.alphaMessages)
 }
 
 function todoListToMarkdown(todos: TodoItem[]): string {

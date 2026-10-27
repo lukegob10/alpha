@@ -1057,7 +1057,7 @@ describe("webviewMessageHandler - captured diff review", () => {
 
 	it("reports a failed editor command without exposing snapshots embedded in the error URI", async () => {
 		const secretSnapshot = Buffer.from("private file contents").toString("base64")
-		vi.mocked(openDiff).mockRejectedValueOnce(new Error(`Failed to resolve cline-diff:/file?${secretSnapshot}`))
+		vi.mocked(openDiff).mockRejectedValueOnce(new Error(`Failed to resolve alpha-diff:/file?${secretSnapshot}`))
 
 		await expect(webviewMessageHandler(mockAlphaProvider, { type: "openDiff", payload })).resolves.toBeUndefined()
 
@@ -2775,7 +2775,7 @@ describe("webviewMessageHandler - deleteCustomMode", () => {
 		vi.clearAllMocks()
 		vi.mocked(getWorkspacePath).mockReturnValue("/mock/workspace")
 		vi.mocked(vscode.window.showErrorMessage).mockResolvedValue(undefined)
-		vi.mocked(ensureSettingsDirectoryExists).mockResolvedValue("/mock/global/storage/.roo")
+		vi.mocked(ensureSettingsDirectoryExists).mockResolvedValue("/mock/global/storage/.alpha")
 	})
 
 	it("should delete a project mode and its rules folder", async () => {
@@ -2805,7 +2805,7 @@ describe("webviewMessageHandler - deleteCustomMode", () => {
 	it("should delete a global mode and its rules folder", async () => {
 		const slug = "test-global-mode"
 		const homeDir = os.homedir()
-		const rulesFolderPath = path.join(homeDir, ".roo", `rules-${slug}`)
+		const rulesFolderPath = path.join(homeDir, ".alpha", `rules-${slug}`)
 
 		vi.mocked(mockAlphaProvider.customModesManager.getCustomModes).mockResolvedValue([
 			{
@@ -2953,7 +2953,7 @@ describe("non-checkpoint transcript deletion", () => {
 				joined()
 				await termination
 			}),
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 10, type: "say", say: "task", text: "Keep" },
 				{ ts: 20, type: "say", say: "text", text: "Delete" },
 			],
@@ -3002,7 +3002,7 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
 			taskId: "test-task-id",
 			apiConversationHistory: [],
-			clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
+			alphaMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 		} as any)
 		// Reset getValue mock
 		vi.mocked(mockAlphaProvider.contextProxy.getValue).mockReturnValue(false)
@@ -3012,9 +3012,9 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 		it("should always show dialog for delete confirmation", async () => {
 			vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
 				taskId: "test-task-id",
-				clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
+				alphaMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 				apiConversationHistory: [],
-			} as any) // Mock current cline with proper structure
+			} as any) // Mock current Alpha with proper structure
 
 			await webviewMessageHandler(mockAlphaProvider, {
 				type: "deleteMessage",
@@ -3034,9 +3034,9 @@ describe("webviewMessageHandler - message dialog preferences", () => {
 		it("should always show dialog for edit confirmation", async () => {
 			vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
 				taskId: "test-task-id",
-				clineMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
+				alphaMessages: [{ ts: 123456789, type: "say", say: "user_feedback", text: "Original prompt" }],
 				apiConversationHistory: [],
-			} as any) // Mock current cline with proper structure
+			} as any) // Mock current Alpha with proper structure
 
 			await webviewMessageHandler(mockAlphaProvider, {
 				type: "submitEditedMessage",

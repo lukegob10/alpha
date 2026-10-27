@@ -66,7 +66,7 @@ vi.mock("../../task/Task", () => ({
 			_taskApiConfigName: options.taskApiConfigName ?? options.historyItem?.apiConfigName ?? "default",
 			apiConfiguration: options.apiConfiguration,
 			saveAlphaMessages: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
@@ -443,10 +443,10 @@ describe("AlphaProvider - Sticky Mode", () => {
 					taskMode: currentMode,
 					taskApiConfigName: "shared-code-plan-profile",
 				})
-				;(task as any).clineMessages.push({ type: "say", text: "keep this conversation" })
+				;(task as any).alphaMessages.push({ type: "say", text: "keep this conversation" })
 				;(task as any).apiConversationHistory.push({ role: "user", content: "keep this history" })
 
-				const originalMessages = (task as any).clineMessages
+				const originalMessages = (task as any).alphaMessages
 				const originalConversationHistory = (task as any).apiConversationHistory
 				const getModeConfigIdSpy = vi.spyOn(provider.providerSettingsManager, "getModeConfigId")
 				const setTaskProviderProfileSpy = vi.spyOn(provider, "setTaskProviderProfile")
@@ -458,7 +458,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				expect((task as any)._taskMode).toBe(newMode)
 				expect((task as any).apiConfiguration).toBe(apiConfiguration)
 				expect(await (task as any).getTaskApiConfigName()).toBe("shared-code-plan-profile")
-				expect((task as any).clineMessages).toBe(originalMessages)
+				expect((task as any).alphaMessages).toBe(originalMessages)
 				expect((task as any).apiConversationHistory).toBe(originalConversationHistory)
 				expect(getModeConfigIdSpy).not.toHaveBeenCalled()
 				expect(setTaskProviderProfileSpy).not.toHaveBeenCalled()
@@ -677,7 +677,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			Object.assign(task, {
 				taskKind: "primary",
 				designHandoff: handoff,
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "ask",
 						ask: "completion_result",
@@ -711,7 +711,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			expect(await task.getTaskApiConfigName()).toBe("sticky-plan-profile")
 			expect(task.handleWebviewAskResponse).toHaveBeenCalledWith("messageResponse", expect.any(String))
 			expect(task.resumeCompletedTaskFollowup).not.toHaveBeenCalled()
-			expect(task.clineMessages).toHaveLength(1)
+			expect(task.alphaMessages).toHaveLength(1)
 		})
 
 		it("resumes a completed plan and admits only one continuation for duplicate clicks", async () => {
@@ -736,7 +736,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 
 		it.each(["resume_task", "resume_completed_task"])("continues a reloaded plan at %s", async (ask) => {
 			const { task, handoff } = createPlanHandoffTask()
-			task.clineMessages = [{ type: "ask", ask }]
+			task.alphaMessages = [{ type: "ask", ask }]
 			await provider.addTaskToStack(task)
 			vi.spyOn(provider, "updateTaskHistory").mockResolvedValue([])
 
@@ -751,7 +751,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			async (ask) => {
 				const { task, handoff } = createPlanHandoffTask()
 				task._taskMode = "code"
-				task.clineMessages = [{ type: "ask", ask }]
+				task.alphaMessages = [{ type: "ask", ask }]
 				await provider.addTaskToStack(task)
 
 				await provider.handleModeSwitch("architect")
@@ -832,7 +832,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 			expect(missing.task._taskMode).toBe("architect")
 
 			const streamed = createPlanHandoffTask("streamed-handoff")
-			streamed.task.clineMessages[0].partial = true
+			streamed.task.alphaMessages[0].partial = true
 			await provider.addTaskToStack(streamed.task)
 			await expect(provider.handleImplementPlan(streamed.task.taskId, streamed.handoff.digest)).rejects.toThrow(
 				"Wait for the Plan result",
@@ -982,7 +982,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				taskMode: "code", // Initial mode
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1434,7 +1434,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "code",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1501,7 +1501,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					// Simulate slow save
 					await new Promise((resolve) => setTimeout(resolve, 100))
 				}),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1553,7 +1553,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "code",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1585,7 +1585,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					}
 				}),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1641,7 +1641,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "code",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1688,7 +1688,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "code",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1698,7 +1698,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "architect",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1708,7 +1708,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "debug",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1855,7 +1855,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 				_taskMode: "code",
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}))

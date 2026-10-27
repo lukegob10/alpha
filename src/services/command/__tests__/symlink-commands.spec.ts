@@ -5,9 +5,9 @@ import { getCommand, getCommands } from "../commands"
 
 // Mock fs and path modules
 vi.mock("fs/promises")
-vi.mock("../config-paths", () => ({
-	getLegacyGlobalConfigDirectory: vi.fn(() => "/mock/global/.roo"),
-	getLegacyProjectConfigDirectory: vi.fn(() => "/mock/project/.roo"),
+vi.mock("../../config-paths", () => ({
+	getGlobalConfigDirectory: vi.fn(() => path.join("/mock/global", ".alpha")),
+	getProjectConfigDirectory: vi.fn((cwd: string) => path.join(cwd, ".alpha")),
 }))
 vi.mock("../built-in-commands", () => ({
 	getBuiltInCommands: vi.fn(() => Promise.resolve([])),

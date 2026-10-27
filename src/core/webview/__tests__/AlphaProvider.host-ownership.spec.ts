@@ -39,7 +39,7 @@ function makeTask(taskId: string) {
 		instanceId: crypto.randomUUID(),
 		taskKind: "primary" as const,
 		metadata: { task: taskId },
-		clineMessages: [],
+		alphaMessages: [],
 		apiConfiguration: { apiProvider: "openai" },
 		taskMode: "code",
 		getTaskMode: vi.fn(async () => "code"),
@@ -97,7 +97,7 @@ function makeProvider(storagePath: string) {
 		taskEventListeners: new WeakMap(),
 		taskCreationCallback: vi.fn(),
 		independentTaskWaiters: new Map(),
-		clineMessagesSeq: 0,
+		alphaMessagesSeq: 0,
 		taskStateSeq: 0,
 		messageQueueSeq: 0,
 		currentTaskTodosSeq: 0,
@@ -402,7 +402,7 @@ describe("AlphaProvider host ownership", () => {
 			const child = Object.assign(makeTask("child"), {
 				orchestrationParentTaskId: parent.taskId,
 				isCompleted: () => completed,
-				clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+				alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 			})
 			await sidebar.addTaskToStack(parent)
 			await panel.addTaskToStack(child)
@@ -448,7 +448,7 @@ describe("AlphaProvider host ownership", () => {
 			await firstStore.initialize()
 			const child = Object.assign(makeTask("child"), {
 				orchestrationParentTaskId: "parent",
-				clineMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
+				alphaMessages: [{ ts: 100, type: "say", say: "completion_result", text: "Result" }],
 			})
 			await firstStore.upsert({
 				...history,
@@ -462,7 +462,7 @@ describe("AlphaProvider host ownership", () => {
 			await saveTaskMessages({
 				taskId: child.taskId,
 				globalStoragePath: directory,
-				messages: child.clineMessages as any,
+				messages: child.alphaMessages as any,
 			})
 			const first = makeProvider(directory)
 			const second = makeProvider(directory)
@@ -752,7 +752,7 @@ describe("AlphaProvider host ownership", () => {
 			await older
 			const publications = vi.mocked(second.postMessageToWebview).mock.calls.map(([message]) => {
 				if (message.type === "messageUpdated") {
-					return { text: message.clineMessage?.text, sequence: message.clineMessagesSeq ?? 0 }
+					return { text: message.alphaMessage?.text, sequence: message.alphaMessagesSeq ?? 0 }
 				}
 				return {
 					text: message.state?.currentTaskTodos?.[0].content,
@@ -788,7 +788,7 @@ describe("AlphaProvider host ownership", () => {
 		const borrowed = makeProvider(host)
 		const unrelated = makeProvider(host)
 		const task = makeTask("input-task")
-		task.clineMessages.push({ ts: 1, type: "say", say: "user_feedback", text: "accepted input" })
+		task.alphaMessages.push({ ts: 1, type: "say", say: "user_feedback", text: "accepted input" })
 		await owner.addTaskToStack(task)
 		await borrowed.focusTask(task.taskId)
 		await unrelated.addTaskToStack(makeTask("different-task"))
@@ -801,8 +801,8 @@ describe("AlphaProvider host ownership", () => {
 					currentTaskId: task.taskId,
 					messageQueue: [],
 					messageQueueSeq: expect.any(Number),
-					clineMessages: task.clineMessages,
-					clineMessagesSeq: expect.any(Number),
+					alphaMessages: task.alphaMessages,
+					alphaMessagesSeq: expect.any(Number),
 					taskStateSeq: expect.any(Number),
 				},
 			})
@@ -848,7 +848,7 @@ describe("AlphaProvider host ownership", () => {
 			const parent = Object.assign(makeTask("parent"), {
 				flushPendingToolResultsToHistory: vi.fn(async () => true),
 				getTaskApiConfigName: vi.fn(async () => "default"),
-				clineMessages: [
+				alphaMessages: [
 					{
 						ts: 1,
 						type: "ask",

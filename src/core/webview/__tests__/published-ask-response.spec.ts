@@ -22,7 +22,7 @@ function correlatedFixture(save: () => Promise<void>) {
 		abort: false,
 		isInitialized: false,
 		_started: false,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		activeAsk: { type: "followup", ts: 10 },
 		messageQueueService: queue,
@@ -61,12 +61,12 @@ describe("published ask response admission", () => {
 				taskId: "published-ask-task",
 				instanceId: "published-ask-instance",
 				taskKind: "primary",
-				workspacePath: "F:/roo-fork/Alpha-Code",
+				workspacePath: "F:/alpha-fork/Alpha-Code",
 				abort: false,
-				clineMessages: [] as AlphaMessage[],
+				alphaMessages: [] as AlphaMessage[],
 				messageQueueService: new MessageQueueService(),
 				providerRef: { deref: () => undefined },
-				addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.clineMessages.push(message)),
+				addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.alphaMessages.push(message)),
 				saveAlphaMessages: vi.fn(async () => undefined),
 				updateAlphaMessage: vi.fn(async () => undefined),
 				cancelAutoApprovalTimeout: vi.fn(),
@@ -83,7 +83,7 @@ describe("published ask response admission", () => {
 			void pending.catch(() => undefined)
 			try {
 				await vi.waitFor(() => expect(task["activeAsk"]?.type).toBe(askType))
-				const publishedAsk = task.clineMessages.at(-1)!
+				const publishedAsk = task.alphaMessages.at(-1)!
 				expect(task.taskAsk).toBeUndefined()
 				await webviewMessageHandler(provider, {
 					type: "askResponse",

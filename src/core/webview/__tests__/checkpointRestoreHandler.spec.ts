@@ -40,7 +40,7 @@ describe("checkpointRestoreHandler", () => {
 			waitForTermination: vi.fn(async () => undefined),
 			checkpointRestore: vi.fn(),
 			messageManager: { rewindToTimestamp: vi.fn() },
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 1, type: "user", say: "user", text: "First message" },
 				{ ts: 2, type: "assistant", say: "assistant", text: "Response" },
 				{
@@ -61,7 +61,7 @@ describe("checkpointRestoreHandler", () => {
 			runWorkspaceMutation: vi.fn(async (_task, _label, run) => run()),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
-				historyItem: { id: "test-task-123", messages: mockAlphaTask.clineMessages },
+				historyItem: { id: "test-task-123", messages: mockAlphaTask.alphaMessages },
 			})),
 			createTaskWithHistoryItem: vi.fn().mockResolvedValue({ resumeWithEditedMessage: vi.fn() }),
 			contextProxy: {
@@ -318,7 +318,7 @@ describe("checkpointRestoreHandler", () => {
 		it("should save messages after delete operation", async () => {
 			// Mock the checkpoint restore to simulate message deletion
 			mockAlphaTask.checkpointRestore.mockImplementation(async () => {
-				mockAlphaTask.clineMessages = mockAlphaTask.clineMessages.slice(0, 2)
+				mockAlphaTask.alphaMessages = mockAlphaTask.alphaMessages.slice(0, 2)
 			})
 
 			await handleCheckpointRestoreOperation({
@@ -332,7 +332,7 @@ describe("checkpointRestoreHandler", () => {
 
 			// Verify saveTaskMessages was called
 			expect(saveTaskMessages).toHaveBeenCalledWith({
-				messages: mockAlphaTask.clineMessages,
+				messages: mockAlphaTask.alphaMessages,
 				taskId: "test-task-123",
 				globalStoragePath: "/test/storage",
 			})
@@ -344,7 +344,7 @@ describe("checkpointRestoreHandler", () => {
 		it.each(["delete", "edit"] as const)(
 			"preserves history when the checkpoint is unavailable for %s",
 			async (operation) => {
-				const messages = mockAlphaTask.clineMessages
+				const messages = mockAlphaTask.alphaMessages
 				const originalMessages = structuredClone(messages)
 				mockAlphaTask.checkpointRestore.mockResolvedValue(false)
 
@@ -363,8 +363,8 @@ describe("checkpointRestoreHandler", () => {
 					}),
 				).rejects.toThrow("The checkpoint is no longer available")
 
-				expect(mockAlphaTask.clineMessages).toBe(messages)
-				expect(mockAlphaTask.clineMessages).toEqual(originalMessages)
+				expect(mockAlphaTask.alphaMessages).toBe(messages)
+				expect(mockAlphaTask.alphaMessages).toEqual(originalMessages)
 				expect(mockAlphaTask.messageManager.rewindToTimestamp).not.toHaveBeenCalled()
 				expect(saveTaskMessages).not.toHaveBeenCalled()
 				expect(mockProvider.getTaskWithId).not.toHaveBeenCalled()
@@ -375,7 +375,7 @@ describe("checkpointRestoreHandler", () => {
 		it("should reinitialize task with correct history item after delete", async () => {
 			const expectedHistoryItem = {
 				id: "test-task-123",
-				messages: mockAlphaTask.clineMessages,
+				messages: mockAlphaTask.alphaMessages,
 			}
 
 			await handleCheckpointRestoreOperation({

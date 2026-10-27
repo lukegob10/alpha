@@ -10,7 +10,7 @@ export type ParsedApiReqStartedTextType = {
 }
 
 /**
- * Consolidates token usage metrics from an array of ClineMessages.
+ * Consolidates token usage metrics from an array of AlphaMessage objects.
  *
  * This function processes 'condense_context' messages and 'api_req_started' messages that have been
  * consolidated with their corresponding 'api_req_finished' messages by the consolidateApiRequests function.

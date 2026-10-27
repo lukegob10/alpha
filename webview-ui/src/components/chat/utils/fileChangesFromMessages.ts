@@ -138,7 +138,7 @@ export interface FileChangeTurn {
 }
 
 /**
- * Derives a list of file changes from clineMessages for the current conversation.
+ * Derives a list of file changes from alphaMessages for the current conversation.
  * Includes:
  * - type "say" + say "tool" (completed edit records)
  * - type "ask" + ask "tool" (legacy answered approval previews)

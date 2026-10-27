@@ -89,7 +89,7 @@ function harness(approvalMode: ApprovalMode = "auto", apiProvider: "openai" | "v
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: [{ role: "user", content: "Inspect the saved review-policy fixture" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		toolCatalogCache: new TaskToolCatalogCache(),
@@ -111,7 +111,7 @@ function harness(approvalMode: ApprovalMode = "auto", apiProvider: "openai" | "v
 		saveAlphaMessages: vi.fn(async () => true),
 		updateAlphaMessage: vi.fn(async () => {}),
 		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 			published.push(structuredClone(message))
 			if (!message.isAnswered) task.handleWebviewAskResponse(manualResponse)
 		}),

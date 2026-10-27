@@ -19,7 +19,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 		const providerEmit = vi.fn()
 		const parentTask = {
 			taskId: "parent-1",
-			clineMessages: [],
+			alphaMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
@@ -129,7 +129,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 
 		const parentTask = {
 			taskId: "parent-1",
-			clineMessages: [],
+			alphaMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),
@@ -186,7 +186,7 @@ describe("AlphaProvider.delegateParentAndOpenChild()", () => {
 	it("delegates from a live parent even when another task is focused", async () => {
 		const parentTask = {
 			taskId: "parent-1",
-			clineMessages: [],
+			alphaMessages: [],
 			emit: vi.fn(),
 			flushPendingToolResultsToHistory: vi.fn().mockResolvedValue(true),
 			getTaskApiConfigName: vi.fn().mockResolvedValue("profile-1"),

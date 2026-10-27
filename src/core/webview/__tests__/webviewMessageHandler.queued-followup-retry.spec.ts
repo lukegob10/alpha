@@ -33,7 +33,7 @@ function completedTaskFixture(load?: () => Promise<QueuedMessage[]>) {
 		isAgentTurnEngineActive: false,
 		isStreaming: false,
 		taskCancellationController: new AbortController(),
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		messageQueueService: queue,
 		resetMistakeRecoveryState: vi.fn(),

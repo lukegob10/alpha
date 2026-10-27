@@ -312,11 +312,11 @@ describe("hidden directory exclusion", () => {
 	})
 
 	it("should allow explicit targeting of hidden directories", async () => {
-		// Mock filesystem structure for explicit .roo-memory targeting
+		// Mock filesystem structure for explicit .alpha-memory targeting
 		const mockReaddir = vi.fn()
 		vi.mocked(fs.promises).readdir = mockReaddir
 
-		// Mock .roo-memory directory contents
+		// Mock .alpha-memory directory contents
 		mockReaddir.mockResolvedValueOnce([
 			{ name: "tasks", isDirectory: () => true, isSymbolicLink: () => false },
 			{ name: "context", isDirectory: () => true, isSymbolicLink: () => false },
@@ -344,15 +344,15 @@ describe("hidden directory exclusion", () => {
 		}
 		mockSpawn.mockReturnValue(mockProcess as any)
 
-		// Call listFiles explicitly targeting .roo-memory directory
-		const [result] = await listFiles("/test/.roo-memory", true, 100)
+		// Call listFiles explicitly targeting .alpha-memory directory
+		const [result] = await listFiles("/test/.alpha-memory", true, 100)
 
 		// When explicitly targeting a hidden directory, its subdirectories should be included
 		const directories = result.filter((item) => item.endsWith("/"))
 
-		const hasTasksDir = directories.some((dir) => dir.includes(".roo-memory/tasks/") || dir.includes("tasks/"))
+		const hasTasksDir = directories.some((dir) => dir.includes(".alpha-memory/tasks/") || dir.includes("tasks/"))
 		const hasContextDir = directories.some(
-			(dir) => dir.includes(".roo-memory/context/") || dir.includes("context/"),
+			(dir) => dir.includes(".alpha-memory/context/") || dir.includes("context/"),
 		)
 
 		expect(hasTasksDir).toBe(true)

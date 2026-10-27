@@ -19,7 +19,6 @@ import {
 	ToggleSwitch,
 	StandardTooltip,
 } from "@src/components/ui"
-import { buildDocLink } from "@src/utils/docLinks"
 import { Section } from "@src/components/settings/Section"
 import { SectionHeader } from "@src/components/settings/SectionHeader"
 
@@ -53,7 +52,7 @@ const McpView = ({ mcpEnabled, onMcpEnabledChange }: McpViewProps) => {
 					}}>
 					<Trans i18nKey="mcp:description">
 						<VSCodeLink
-							href={buildDocLink("features/mcp/using-mcp-in-roo", "mcp_settings")}
+							href="https://modelcontextprotocol.io/docs/getting-started/intro"
 							style={{ display: "inline" }}>
 							Learn More
 						</VSCodeLink>
@@ -156,21 +155,6 @@ const McpView = ({ mcpEnabled, onMcpEnabledChange }: McpViewProps) => {
 									{t("mcp:marketplace")}
 								</Button>
 							</StandardTooltip>
-						</div>
-						<div
-							style={{
-								marginTop: "15px",
-								fontSize: "12px",
-								color: "var(--vscode-descriptionForeground)",
-							}}>
-							<VSCodeLink
-								href={buildDocLink(
-									"features/mcp/using-mcp-in-roo#editing-mcp-settings-files",
-									"mcp_edit_settings",
-								)}
-								style={{ display: "inline" }}>
-								{t("mcp:learnMoreEditingSettings")}
-							</VSCodeLink>
 						</div>
 					</>
 				)}

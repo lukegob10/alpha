@@ -778,7 +778,7 @@ describe("Alpha", () => {
 				alphaTask.taskId,
 				"Fix chat naming",
 			)
-			expect(alphaTask.clineMessages).toEqual([])
+			expect(alphaTask.alphaMessages).toEqual([])
 			expect(alphaTask.apiConversationHistory).toEqual([])
 			expect(titleHandler.dispose).toHaveBeenCalledOnce()
 		})
@@ -839,7 +839,7 @@ describe("Alpha", () => {
 				getEnabledMcpToolsCount: async () => ({ enabledToolCount: 0, enabledServerCount: 0 }),
 			})
 			vi.spyOn(alphaTask, "say").mockImplementationOnce(async () => {
-				alphaTask.clineMessages.push({ ts: 1, type: "say", say: "text", text: "Implement governed work" })
+				alphaTask.alphaMessages.push({ ts: 1, type: "say", say: "text", text: "Implement governed work" })
 				return undefined
 			})
 
@@ -870,7 +870,7 @@ describe("Alpha", () => {
 				say: "reasoning",
 				text: "Already-visible reasoning remains part of the task response.",
 			}
-			alphaTask.clineMessages.push(message)
+			alphaTask.alphaMessages.push(message)
 			const createHandler = vi.spyOn(alphaTask, "createReasoningSummaryHandler")
 			Object.assign(alphaTask, {
 				currentAgentStep: {
@@ -889,7 +889,7 @@ describe("Alpha", () => {
 				).summarizeReasoning(message)
 				expect(vi.getTimerCount()).toBe(timers)
 				expect(createHandler).not.toHaveBeenCalled()
-				expect(alphaTask.clineMessages).toEqual([message])
+				expect(alphaTask.alphaMessages).toEqual([message])
 				expect(message.text).toBe("Already-visible reasoning remains part of the task response.")
 				expect(message.reasoningSummary).toBeUndefined()
 			} finally {
@@ -998,8 +998,8 @@ describe("Alpha", () => {
 				expect.objectContaining({
 					type: "messageCreated",
 					taskId: alphaTask.taskId,
-					clineMessage: message,
-					clineMessagesSeq: expect.any(Number),
+					alphaMessage: message,
+					alphaMessagesSeq: expect.any(Number),
 				}),
 			)
 			expect(mockProvider.postTaskStateToWebview).not.toHaveBeenCalled()
@@ -1272,7 +1272,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock previous API request message
-				alphaTask.clineMessages = [
+				alphaTask.alphaMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -1414,7 +1414,7 @@ describe("Alpha", () => {
 				})
 
 				// Mock previous API request message
-				alphaTask.clineMessages = [
+				alphaTask.alphaMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -2841,7 +2841,7 @@ describe("Alpha", () => {
 				task["activeAsk"] = { type: "followup", ts: 1 }
 
 				// Set up some existing messages to simulate an ongoing conversation
-				task.clineMessages = [
+				task.alphaMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -2920,7 +2920,7 @@ describe("Alpha", () => {
 				task["activeAsk"] = { type: "followup", ts: 1 }
 
 				// Test with no messages (new task scenario)
-				task.clineMessages = []
+				task.alphaMessages = []
 				await task.submitUserMessage("new task", ["image1.png"])
 
 				expect(handleResponseSpy).toHaveBeenCalledWith(
@@ -2935,7 +2935,7 @@ describe("Alpha", () => {
 				task["askResponse"] = undefined
 
 				// Test with existing messages (ongoing task scenario)
-				task.clineMessages = [
+				task.alphaMessages = [
 					{
 						ts: Date.now(),
 						type: "say",
@@ -3251,7 +3251,7 @@ describe("Alpha", () => {
 				startTask: false,
 			})
 			;(task as any).didComplete = true
-			task.clineMessages = [
+			task.alphaMessages = [
 				{ ts: 1, type: "say", say: "text", text: "initial task" },
 				{ ts: 2, type: "say", say: "completion_result", text: "done" },
 			]
@@ -3318,7 +3318,7 @@ describe("Alpha", () => {
 			})
 			;(task as any).didComplete = true
 			;(task as any).didEmitTaskCompleted = true
-			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			task.alphaMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
 			const originalHistory = [
 				{ role: "user", content: [{ type: "text", text: "initial task" }] },
 				{
@@ -3357,7 +3357,7 @@ describe("Alpha", () => {
 			task.messageQueueService.removeListener("stateChanged", task["messageQueueStateChangedHandler"]!)
 			task["messageQueueStateChangedHandler"] = undefined
 			task.markCompleted()
-			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			task.alphaMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
 			task.apiConversationHistory = [
 				{ role: "user", content: [{ type: "text", text: "initial task" }] },
 				{ role: "assistant", content: [{ type: "text", text: "done" }] },
@@ -3367,9 +3367,9 @@ describe("Alpha", () => {
 				saveApiConversationHistory: Task["saveApiConversationHistory"]
 				initiateTaskLoop: Task["initiateTaskLoop"]
 			}
-			let savedMessages = structuredClone(task.clineMessages)
+			let savedMessages = structuredClone(task.alphaMessages)
 			vi.spyOn(persistence, "enqueueAlphaMessagesSave").mockImplementation(async (snapshot, onPersisted) => {
-				savedMessages = structuredClone(snapshot?.() ?? task.clineMessages)
+				savedMessages = structuredClone(snapshot?.() ?? task.alphaMessages)
 				onPersisted?.()
 				return true
 			})
@@ -3418,7 +3418,7 @@ describe("Alpha", () => {
 			await task.resumeCompletedTaskFollowup(edited.text, edited.images, "human", [edited.id])
 			await task["waitForOwnedLifecycle"]()
 
-			expect(task.clineMessages.filter((message) => message.say === "user_feedback")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "user_feedback")).toEqual([
 				expect.objectContaining({
 					ts: feedbackTs,
 					text: "Edited follow-up.",
@@ -3426,7 +3426,7 @@ describe("Alpha", () => {
 					queuedMessageIds: [edited.id],
 				}),
 			])
-			expect(savedMessages).toEqual(task.clineMessages)
+			expect(savedMessages).toEqual(task.alphaMessages)
 			expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
 			expect(
 				task.apiConversationHistory.filter((message) => message.queued_message_ids?.includes(edited.id)),
@@ -3585,7 +3585,7 @@ describe("Alpha", () => {
 					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly,
-					showRooIgnoredFiles: false,
+					showAlphaIgnoredFiles: false,
 				} as any)
 				vi.spyOn(task as any, "getSystemPrompt").mockResolvedValue("test instructions")
 				vi.spyOn(task.api, "createMessage").mockImplementation(async function* () {
@@ -6228,7 +6228,7 @@ describe("Alpha", () => {
 			const task = createTask()
 			task.messageQueueService.removeListener("stateChanged", task["messageQueueStateChangedHandler"]!)
 			task["messageQueueStateChangedHandler"] = undefined
-			task.clineMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
+			task.alphaMessages = [{ ts: 1, type: "say", say: "completion_result", text: "done" }]
 			task.apiConversationHistory = [
 				{ role: "user", content: [{ type: "text", text: "initial task" }] },
 				{ role: "assistant", content: [{ type: "text", text: "done" }] },
@@ -6632,7 +6632,7 @@ describe("Alpha", () => {
 			const task = createTask()
 			const presentationSummary = "Retained child presentation is not model input."
 			const mailboxSummary = "Canonical child mailbox finding."
-			task.clineMessages.push({
+			task.alphaMessages.push({
 				ts: 1,
 				type: "say",
 				say: "subagent_group",
@@ -6705,7 +6705,7 @@ describe("Alpha", () => {
 				),
 			).not.toContain(mailboxSummary)
 			expect(task.hasPendingAgentMessages()).toBe(false)
-			expect(JSON.stringify(task.clineMessages)).toContain(presentationSummary)
+			expect(JSON.stringify(task.alphaMessages)).toContain(presentationSummary)
 		})
 
 		it("persists tool results before agent input and sends both to the next provider request", async () => {
@@ -6980,7 +6980,7 @@ describe("Alpha", () => {
 			const state = {
 				autoApprovalEnabled: true,
 				alwaysAllowReadOnly: true,
-				showRooIgnoredFiles: false,
+				showAlphaIgnoredFiles: false,
 				...(scenario.command ? { alwaysAllowExecute: true, allowedCommands: [scenario.command.command] } : {}),
 			}
 			mockProvider.getState = vi.fn().mockResolvedValue(state)
@@ -8531,7 +8531,7 @@ describe("Alpha", () => {
 			expect(completed).toHaveBeenCalledOnce()
 			expect(Reflect.get(task, "didComplete")).toBe(true)
 			expect(task.subagentCompletionOutcome).toBe("completed")
-			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "completion_result")).toEqual([
 				expect.objectContaining({ text: "The parser handles the reported case correctly.", partial: false }),
 			])
 			expect(JSON.stringify(task.apiConversationHistory)).not.toContain(formatResponse.noToolsUsed())
@@ -10019,7 +10019,7 @@ describe("Alpha", () => {
 			task.on(AlphaCodeEventName.TaskCompleted, completed)
 			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 				await task.say("text", "The requested explanation.", undefined, false)
-				streamedMessageTs = task.clineMessages.at(-1)?.ts
+				streamedMessageTs = task.alphaMessages.at(-1)?.ts
 				task.assistantMessageContent = [{ type: "text", content: "The requested explanation.", partial: false }]
 				return false
 			})
@@ -10029,7 +10029,7 @@ describe("Alpha", () => {
 			expect(requestStep).toHaveBeenCalledOnce()
 			expect(ask).not.toHaveBeenCalled()
 			expect(say).not.toHaveBeenCalledWith("completion_result", expect.anything())
-			const visibleFinals = task.clineMessages.filter(
+			const visibleFinals = task.alphaMessages.filter(
 				(message) => message.type === "say" && message.say === "completion_result",
 			)
 			expect(visibleFinals).toHaveLength(1)
@@ -10038,7 +10038,7 @@ describe("Alpha", () => {
 				text: "The requested explanation.",
 				partial: false,
 			})
-			expect(task.clineMessages).not.toContainEqual(
+			expect(task.alphaMessages).not.toContainEqual(
 				expect.objectContaining({ type: "say", say: "text", text: "The requested explanation." }),
 			)
 			expect(flush).toHaveBeenCalledOnce()
@@ -10218,10 +10218,10 @@ describe("Alpha", () => {
 					"Authorization: Bearer test-secret\nPrivate prompt: do not publish\n at internalFrame"
 				const save = vi.mocked((task as any).saveAlphaMessages)
 				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
-					const errors = task.clineMessages.filter((message) => message.say === "error")
+					const errors = task.alphaMessages.filter((message) => message.say === "error")
 					expect(errors).toHaveLength(1)
 					expect(errors[0].text).toBe(enCommon.errors[`task_recovery_${status}`])
-					expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+					expect(JSON.stringify(task.alphaMessages)).not.toContain(privateReason)
 					expect(save).toHaveBeenCalled()
 					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledExactlyOnceWith(
 						"messageCreated",
@@ -10239,7 +10239,7 @@ describe("Alpha", () => {
 
 				expect(ask).toHaveBeenCalledExactlyOnceWith("resume_task")
 				expect(requestStep).toHaveBeenCalledTimes(2)
-				expect(task.clineMessages.filter((message) => message.say === "error")).toHaveLength(1)
+				expect(task.alphaMessages.filter((message) => message.say === "error")).toHaveLength(1)
 			},
 		)
 
@@ -10255,12 +10255,12 @@ describe("Alpha", () => {
 
 				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-				const errors = task.clineMessages.filter((message) => message.say === "error")
+				const errors = task.alphaMessages.filter((message) => message.say === "error")
 				expect(errors).toHaveLength(1)
 				expect(errors[0].text).toContain("automatically recovers abandoned locks")
 				expect(errors[0].text).toContain("close all VS Code windows")
 				expect(errors[0].text).toContain("agent_control.json.transaction.lock")
-				expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+				expect(JSON.stringify(task.alphaMessages)).not.toContain(privateReason)
 			},
 		)
 
@@ -10275,11 +10275,11 @@ describe("Alpha", () => {
 
 			await Reflect.get(task, "initiateTaskLoop").call(task, [{ type: "text", text: "start" }])
 
-			const errors = task.clineMessages.filter((message) => message.say === "error")
+			const errors = task.alphaMessages.filter((message) => message.say === "error")
 			expect(errors).toHaveLength(1)
 			expect(errors[0].text).toContain("waiting for Alpha's task storage")
 			expect(errors[0].text).toContain("then resume")
-			expect(JSON.stringify(task.clineMessages)).not.toContain(privateReason)
+			expect(JSON.stringify(task.alphaMessages)).not.toContain(privateReason)
 			expect(ask).toHaveBeenCalledExactlyOnceWith("resume_task")
 			expect(request).toHaveBeenCalledTimes(2)
 		})
@@ -10293,7 +10293,7 @@ describe("Alpha", () => {
 
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "error")).toEqual([
 				expect.objectContaining({ text: enCommon.errors.task_recovery_failed }),
 			])
 		})
@@ -10316,7 +10316,7 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 			expect(request).not.toHaveBeenCalled()
-			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "error")).toEqual([
 				expect.objectContaining({ text: enCommon.errors.task_recovery_persistence }),
 			])
 		})
@@ -10347,8 +10347,8 @@ describe("Alpha", () => {
 
 				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
-				expect(task.clineMessages).toHaveLength(1)
-				expect(task.clineMessages[0].say).toBe(say)
+				expect(task.alphaMessages).toHaveLength(1)
+				expect(task.alphaMessages[0].say).toBe(say)
 			},
 		)
 
@@ -10386,7 +10386,7 @@ describe("Alpha", () => {
 
 			expect(request).toHaveBeenCalledOnce()
 			expect(
-				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+				task.alphaMessages.filter((message) => message.say === "error").map((message) => message.text),
 			).toEqual(["Recovered provider attempt.", enCommon.errors.task_recovery_persistence])
 		})
 
@@ -10404,7 +10404,7 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 			expect(
-				task.clineMessages.filter((message) => message.say === "error").map((message) => message.text),
+				task.alphaMessages.filter((message) => message.say === "error").map((message) => message.text),
 			).toEqual(["Earlier recoverable tool error.", enCommon.errors.task_recovery_failed])
 		})
 
@@ -10415,7 +10415,7 @@ describe("Alpha", () => {
 				.mockResolvedValueOnce(true)
 			vi.spyOn(task, "ask").mockResolvedValue({ response: "yesButtonClicked" })
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
-			let saved = structuredClone(task.clineMessages)
+			let saved = structuredClone(task.alphaMessages)
 			saved.push({ ts: Date.now() + 1, type: "ask", ask: "resume_task" })
 			vi.spyOn(task as any, "getSavedAlphaMessages").mockImplementation(async () => structuredClone(saved))
 			vi.spyOn(task as any, "overwriteAlphaMessages").mockImplementation(async (...args: unknown[]) => {
@@ -10431,10 +10431,10 @@ describe("Alpha", () => {
 
 			await (task as any).resumeTaskFromHistory()
 
-			expect(task.clineMessages.filter((message) => message.say === "error")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "error")).toEqual([
 				expect.objectContaining({ text: enCommon.errors.task_recovery_incomplete }),
 			])
-			expect(task.clineMessages.some((message) => message.ask === "resume_task")).toBe(false)
+			expect(task.alphaMessages.some((message) => message.ask === "resume_task")).toBe(false)
 			// Hydration cleans the in-memory view; this mocked ask does not persist
 			// an interaction, so the original saved bytes must remain untouched.
 			expect(saved.some((message) => message.ask === "resume_task")).toBe(true)
@@ -10458,11 +10458,11 @@ describe("Alpha", () => {
 				await (task as any).initiateTaskLoop([{ type: "text", text: "Search the codebase." }])
 				expect(request).toHaveBeenCalledOnce()
 				expect(ask).toHaveBeenCalledWith("resume_task")
-				const reports = task.clineMessages.filter((message) => message.say === (persisted ? "text" : "error"))
+				const reports = task.alphaMessages.filter((message) => message.say === (persisted ? "text" : "error"))
 				expect(reports).toEqual([expect.objectContaining({ text: expect.stringContaining(report) })])
 				expect(reports[0].partial).not.toBe(true)
-				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
-				expect(task.clineMessages.some((message) => message.say === "error")).toBe(!persisted)
+				expect(task.alphaMessages.some((message) => message.say === "completion_result")).toBe(false)
+				expect(task.alphaMessages.some((message) => message.say === "error")).toBe(!persisted)
 				expect(Reflect.get(task, "didComplete")).toBe(false)
 			},
 		)
@@ -10768,7 +10768,7 @@ describe("Alpha", () => {
 					]),
 				]),
 			)
-			expect(task.clineMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
+			expect(task.alphaMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
 			expect(publish).not.toHaveBeenCalled()
 		})
 
@@ -10781,7 +10781,7 @@ describe("Alpha", () => {
 				text: "Persisted final answer.",
 				partial: false,
 			}
-			task.clineMessages = [completion]
+			task.alphaMessages = [completion]
 			;(task as any).currentAssistantResponseMessageTs = completion.ts
 			const stagedSnapshots: any[][] = []
 			vi.mocked((task as any).enqueueAlphaMessagesSave).mockImplementation(
@@ -10798,7 +10798,7 @@ describe("Alpha", () => {
 
 			expect(stagedSnapshots).toHaveLength(3)
 			expect(stagedSnapshots[0]).toContainEqual(expect.objectContaining({ say: "text", partial: false }))
-			expect(task.clineMessages).toEqual([completion])
+			expect(task.alphaMessages).toEqual([completion])
 			expect(update).not.toHaveBeenCalled()
 			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
 		})
@@ -10826,7 +10826,7 @@ describe("Alpha", () => {
 				await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 				expect(ask).not.toHaveBeenCalledWith("completion_result", expect.anything(), expect.anything())
-				expect(task.clineMessages).not.toContainEqual(
+				expect(task.alphaMessages).not.toContainEqual(
 					expect.objectContaining({ type: "say", say: "completion_result" }),
 				)
 				expect(requestStep).toHaveBeenCalledTimes(2)
@@ -10924,7 +10924,7 @@ describe("Alpha", () => {
 					false,
 				])
 				expect(task.messageQueueService.isEmpty()).toBe(true)
-				expect(task.clineMessages).toContainEqual(
+				expect(task.alphaMessages).toContainEqual(
 					expect.objectContaining({ say: "completion_result", text: "Initial answer." }),
 				)
 			},
@@ -10981,12 +10981,12 @@ describe("Alpha", () => {
 					turn: null,
 				}),
 			)
-			expect(task.clineMessages.find((message) => message.say === "user_feedback")).toMatchObject({
+			expect(task.alphaMessages.find((message) => message.say === "user_feedback")).toMatchObject({
 				queuedMessageIds: [followupId],
 			})
 			expect(ask).not.toHaveBeenCalled()
 			expect(
-				task.clineMessages
+				task.alphaMessages
 					.filter((message) => message.say === "completion_result")
 					.map((message) => message.text),
 			).toEqual(["First answer.", "Expanded answer."])
@@ -11031,7 +11031,7 @@ describe("Alpha", () => {
 
 			expect(requestStep).toHaveBeenCalledOnce()
 			expect(say.mock.calls.some(([type]) => type === "user_feedback")).toBe(false)
-			expect(task.clineMessages).toContainEqual(
+			expect(task.alphaMessages).toContainEqual(
 				expect.objectContaining({ type: "say", say: "completion_result", text: "Premature answer." }),
 			)
 			expect((task as any).pendingTurnSuspension?.reason).toContain("paused before another model request")
@@ -11186,7 +11186,7 @@ describe("Alpha", () => {
 				expect(request).toHaveBeenCalledOnce()
 				expect(completed).not.toHaveBeenCalled()
 				expect(Reflect.get(task, "didComplete")).toBe(false)
-				expect(task.clineMessages.some((message) => message.say === "completion_result")).toBe(false)
+				expect(task.alphaMessages.some((message) => message.say === "completion_result")).toBe(false)
 			},
 		)
 
@@ -11215,7 +11215,7 @@ describe("Alpha", () => {
 					})
 					.mockImplementationOnce(async () => {
 						expect(completed).not.toHaveBeenCalled()
-						expect(task.clineMessages.some((row) => row.say === "completion_result")).toBe(false)
+						expect(task.alphaMessages.some((row) => row.say === "completion_result")).toBe(false)
 						return {
 							status: "completed",
 							response: createAgentResponse([{ type: "text", text: "Catalog validation verified." }]),
@@ -11228,7 +11228,7 @@ describe("Alpha", () => {
 				expect(request.mock.calls[1]?.[0]).toEqual([
 					expect.objectContaining({ text: expect.stringContaining(message) }),
 				])
-				expect(task.clineMessages.some((row) => row.say === "error")).toBe(false)
+				expect(task.alphaMessages.some((row) => row.say === "error")).toBe(false)
 				expect(completed).toHaveBeenCalledOnce()
 			},
 		)
@@ -11258,12 +11258,12 @@ describe("Alpha", () => {
 
 			expect(request).toHaveBeenCalledTimes(3)
 			expect(completed).not.toHaveBeenCalled()
-			expect(task.clineMessages.filter((row) => row.say === "error")).toEqual([
+			expect(task.alphaMessages.filter((row) => row.say === "error")).toEqual([
 				expect.objectContaining({
 					text: expect.stringContaining("incomplete and unverified after repeated attempts"),
 				}),
 			])
-			expect(task.clineMessages.some((row) => row.say === "completion_result")).toBe(false)
+			expect(task.alphaMessages.some((row) => row.say === "completion_result")).toBe(false)
 		})
 
 		it("allows a managed final answer after a recoverable completion rejection", async () => {
@@ -11327,7 +11327,7 @@ describe("Alpha", () => {
 			expect(request.mock.calls[1]?.[0]).toEqual([
 				{ type: "text", text: "<user_message>\nInclude the cancellation case.\n</user_message>" },
 			])
-			expect(task.clineMessages.filter((message) => message.say === "completion_result")).toEqual([
+			expect(task.alphaMessages.filter((message) => message.say === "completion_result")).toEqual([
 				expect.objectContaining({ text: "Expanded review." }),
 			])
 			expect(completed).toHaveBeenCalledOnce()
@@ -11492,7 +11492,7 @@ describe("Alpha", () => {
 				await task["resumeTaskFromHistory"]()
 
 				expect(ask).toHaveBeenCalledExactlyOnceWith(expectedAsk)
-				expect(task.clineMessages).toEqual(savedUi)
+				expect(task.alphaMessages).toEqual(savedUi)
 				expect(task.isCompleted()).toBe(false)
 			},
 		)
@@ -11552,12 +11552,12 @@ describe("Alpha", () => {
 			await readStarted
 			await vi.waitFor(() => expect(mockProvider.postTaskStateToWebview).toHaveBeenCalled())
 			const effectsBeforeRead = [overwrite.mock.calls.length, save.mock.calls.length, ask.mock.calls.length]
-			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
+			expect(task.alphaMessages).toEqual(savedUi.slice(0, 2))
 			releaseRead()
 			await resume
 			expect(effectsBeforeRead).toEqual([0, 0, 0])
 			expect(overwrite).not.toHaveBeenCalled()
-			expect(task.clineMessages).toEqual(savedUi.slice(0, 2))
+			expect(task.alphaMessages).toEqual(savedUi.slice(0, 2))
 			expect(ask).toHaveBeenCalledOnce()
 		})
 
@@ -11601,10 +11601,10 @@ describe("Alpha", () => {
 			expect(save).not.toHaveBeenCalled()
 			expect(ask).not.toHaveBeenCalled()
 			if (phase === "ui") {
-				expect(task.clineMessages).toEqual([])
+				expect(task.alphaMessages).toEqual([])
 				expect(task.apiConversationHistory).toEqual([])
 			} else {
-				expect(task.clineMessages).toEqual([{ ts: 1, type: "say", say: "text", text: "saved" }])
+				expect(task.alphaMessages).toEqual([{ ts: 1, type: "say", say: "text", text: "saved" }])
 				expect(task.apiConversationHistory).toEqual([])
 			}
 		})
@@ -11747,12 +11747,12 @@ describe("Alpha", () => {
 				partial: false,
 				subagentGroup: structuredClone(group),
 			}
-			task.clineMessages = [
+			task.alphaMessages = [
 				{ ts: group.createdAt, type: "say", say: "text", text: "Unrelated message at the same timestamp" },
 				sibling,
 				...(operation === "update" ? [original] : []),
 			]
-			const baseline = structuredClone(task.clineMessages)
+			const baseline = structuredClone(task.alphaMessages)
 			const nextGroup: SubagentGroupState = {
 				...group,
 				status: "completed",
@@ -11787,9 +11787,9 @@ describe("Alpha", () => {
 						"Unable to persist the sub-agent group",
 					)
 					expect(save).toHaveBeenCalledTimes(3)
-					expect(task.clineMessages).toEqual(baseline)
-					expect(task.clineMessages[1]).toBe(sibling)
-					if (operation === "update") expect(task.clineMessages[2]).toBe(original)
+					expect(task.alphaMessages).toEqual(baseline)
+					expect(task.alphaMessages[1]).toBe(sibling)
+					if (operation === "update") expect(task.alphaMessages[2]).toBe(original)
 					expect(projection).not.toHaveBeenCalled()
 					expect(messageEvents).not.toHaveBeenCalled()
 					expect(releaseReview).not.toHaveBeenCalled()
@@ -11820,20 +11820,20 @@ describe("Alpha", () => {
 						saved = true
 					})
 				projection.mockImplementation(async () => {
-					projectionObservations.push({ saved, message: structuredClone(task.clineMessages[2]) })
+					projectionObservations.push({ saved, message: structuredClone(task.alphaMessages[2]) })
 				})
 				const committing = task.upsertSubagentGroup(nextGroup)
 				try {
 					await saveEntered
 					expect(snapshot).toEqual([...baseline.slice(0, 2), expected])
-					expect(task.clineMessages).toEqual(baseline)
+					expect(task.alphaMessages).toEqual(baseline)
 					expect(projection).not.toHaveBeenCalled()
 					expect(messageEvents).not.toHaveBeenCalled()
 					expect(releaseReview).not.toHaveBeenCalled()
 					releaseSave()
 					await committing
-					expect(task.clineMessages).toEqual(snapshot)
-					expect(task.clineMessages[1]).toBe(sibling)
+					expect(task.alphaMessages).toEqual(snapshot)
+					expect(task.alphaMessages[1]).toBe(sibling)
 					expect(projectionObservations).toEqual([{ saved: true, message: expected }])
 					expect(projection).toHaveBeenCalledExactlyOnceWith(
 						operation === "create" ? "messageCreated" : "messageUpdated",
@@ -11941,7 +11941,7 @@ describe("Alpha", () => {
 			expect(task.designHandoff).toEqual(persisted)
 
 			await task.presentCompletionResult("<proposed_plan>\n# Incomplete revision")
-			const exactIncompleteRow = task.clineMessages
+			const exactIncompleteRow = task.alphaMessages
 				.filter((message) => message.type === "say" && message.say === "completion_result")
 				.at(-1)
 			expect(
@@ -11949,7 +11949,7 @@ describe("Alpha", () => {
 			).not.toBe(true)
 
 			await task.presentCompletionResult("Draft:\n<proposed_plan>\n# Preamble leaves this incomplete")
-			const preambleIncompleteRow = task.clineMessages
+			const preambleIncompleteRow = task.alphaMessages
 				.filter((message) => message.type === "say" && message.say === "completion_result")
 				.at(-1)
 			const latestHistory = mockProvider.updateTaskHistory.mock.lastCall?.[0]
@@ -11971,7 +11971,7 @@ describe("Alpha", () => {
 			)
 
 			expect(task.designHandoff).toBeUndefined()
-			expect(task.clineMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
+			expect(task.alphaMessages).not.toContainEqual(expect.objectContaining({ say: "completion_result" }))
 		})
 
 		it("does not let a child completion author or replace the parent handoff", async () => {
@@ -12427,7 +12427,7 @@ describe("Task typed tool approval bridge", () => {
 			await runApprovalTool(task, "tool", reviewMessage)
 
 			expect(askSpy.mock.calls[0]![1]).toBe(reviewMessage)
-			const message = task.clineMessages.at(-1)!
+			const message = task.alphaMessages.at(-1)!
 			expect(message.text).toBe(reviewMessage)
 			expect(message.toolApprovalRequest!.description!.length).toBeLessThan(100_000)
 			expect(alphaMessageSchema.safeParse(message).success).toBe(true)
@@ -12469,7 +12469,7 @@ describe("Task typed tool approval bridge", () => {
 
 		await task.ask("command", approval.description, undefined, undefined, undefined, true, approval)
 
-		expect(task.clineMessages.at(-1)?.toolApprovalRequest).toMatchObject({
+		expect(task.alphaMessages.at(-1)?.toolApprovalRequest).toMatchObject({
 			requestId: approval.requestId,
 			taskId: task.taskId,
 			toolName: "exec_command",
@@ -12495,7 +12495,7 @@ describe("Task typed tool approval bridge", () => {
 
 		await task.ask("command", approval.description, undefined, undefined, undefined, false, approval)
 
-		expect(task.clineMessages.at(-1)?.toolApprovalRequest).toMatchObject({
+		expect(task.alphaMessages.at(-1)?.toolApprovalRequest).toMatchObject({
 			availableDecisions: ["approve_once", "approve_persistently", "deny", "abort"],
 			proposedPersistentAmendment: {
 				kind: "command_prefix",
@@ -12540,7 +12540,7 @@ describe("Task typed tool approval bridge", () => {
 			text: "pnpm test",
 			isAnswered: true,
 		})
-		expect(task.clineMessages.at(-1)?.isAnswered).toBe(true)
+		expect(task.alphaMessages.at(-1)?.isAnswered).toBe(true)
 	})
 
 	it("evaluates the original worker command while publishing only redacted private paths", async () => {
@@ -12585,8 +12585,8 @@ describe("Task typed tool approval bridge", () => {
 		})
 		expect(publishedMessages).toHaveLength(1)
 		expect(publishedMessages[0]).toMatchObject({ type: "ask", ask: "command", isAnswered: true })
-		expect(JSON.stringify(task.clineMessages)).not.toContain(privateWorkspace)
-		expect(task.clineMessages.at(-1)?.text).toContain(`.${path.sep}build`)
+		expect(JSON.stringify(task.alphaMessages)).not.toContain(privateWorkspace)
+		expect(task.alphaMessages.at(-1)?.text).toContain(`.${path.sep}build`)
 	})
 
 	it.each([

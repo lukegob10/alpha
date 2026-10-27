@@ -486,9 +486,3 @@ export function extractConsecutiveMistakeErrorProperties(error: ConsecutiveMista
 		...(error.modelId !== undefined && { modelId: error.modelId }),
 	}
 }
-
-/** @deprecated Use alphaCodeTelemetryEventSchema. Retained for existing API consumers. */
-export { alphaCodeTelemetryEventSchema as rooCodeTelemetryEventSchema }
-
-/** @deprecated Use AlphaCodeTelemetryEvent. Retained for existing API consumers. */
-export type { AlphaCodeTelemetryEvent as RooCodeTelemetryEvent }

@@ -1,4 +1,5 @@
 import { spawn } from "child_process"
+import * as path from "node:path"
 import { downloadAndUnzipVSCode, type TestOptions } from "@vscode/test-electron"
 import { TestRunError, type TestRunFailureCode } from "./runFailure"
 import { terminateOwnedProcess } from "./campaign/ownedProcess"
@@ -60,6 +61,15 @@ export async function launchExtensionHost(
 	) {
 		throw new TestRunError("invalid-options", "Invalid extension host launch mode")
 	}
+	const extensionTestsEnv = { ...process.env, ...options.extensionTestsEnv }
+	const userHome = extensionTestsEnv.ALPHA_E2E_USER_HOME
+	if (userHome !== undefined) {
+		if (!path.isAbsolute(userHome) || userHome.includes("\0")) {
+			throw new TestRunError("invalid-options", "ALPHA_E2E_USER_HOME must be an absolute path")
+		}
+		// Keep package-manager configuration in the runner's home; isolate only the GUI process.
+		extensionTestsEnv[process.platform === "win32" ? "USERPROFILE" : "HOME"] = userHome
+	}
 	const executable = options.vscodeExecutablePath ?? (await downloadAndUnzipVSCode(options))
 	if (signal?.aborted) throw new HostLaunchCancelledError()
 	const developments = Array.isArray(options.extensionDevelopmentPath)
@@ -76,7 +86,6 @@ export async function launchExtensionHost(
 		...(launchKind === "extension-test" ? [`--extensionTestsPath=${options.extensionTestsPath}`] : []),
 		...developments.map((directory) => `--extensionDevelopmentPath=${directory}`),
 	]
-	const extensionTestsEnv = { ...process.env, ...options.extensionTestsEnv }
 	// A GUI host must start the workbench, even when launched from an Electron Node process.
 	delete extensionTestsEnv.ELECTRON_RUN_AS_NODE
 	const child = spawn(executable, args, {

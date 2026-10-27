@@ -27,7 +27,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 		// Setup mock Alpha instance
 		mockAlphaTask = {
 			taskId: "test-task-123",
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 1, type: "user", say: "user", text: "First message" },
 				{ ts: 2, type: "assistant", say: "checkpoint_saved", text: "abc123" },
 				{ ts: 3, type: "user", say: "user", text: "Message to delete" },
@@ -45,7 +45,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 		mockAlphaTask.abortTask = vi.fn().mockResolvedValue(undefined)
 		mockAlphaTask.waitForTermination = vi.fn().mockResolvedValue(undefined)
 		mockAlphaTask.commitConversationRewind = vi.fn(
-			async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+			async (uiMessages: Task["alphaMessages"], apiHistory: Task["apiConversationHistory"]) => {
 				await mockAlphaTask.overwriteAlphaMessages(uiMessages)
 				await mockAlphaTask.overwriteApiConversationHistory(apiHistory)
 				return true
@@ -59,7 +59,7 @@ describe("webviewMessageHandler - checkpoint operations", () => {
 			getLiveTask: vi.fn(() => mockAlphaTask),
 			postMessageToWebview: vi.fn(),
 			getTaskWithId: vi.fn(() => ({
-				historyItem: { id: "test-task-123", messages: mockAlphaTask.clineMessages },
+				historyItem: { id: "test-task-123", messages: mockAlphaTask.alphaMessages },
 			})),
 			createTaskWithHistoryItem: vi.fn(),
 			setPendingEditOperation: vi.fn(),

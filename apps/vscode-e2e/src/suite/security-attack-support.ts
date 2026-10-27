@@ -26,7 +26,7 @@ export interface SecurityTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	denyAsk(): void
 	waitForTermination(): Promise<void>

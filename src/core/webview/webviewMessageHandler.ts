@@ -4,6 +4,7 @@ import * as os from "os"
 import * as fs from "fs/promises"
 import {
 	getConfigDirectoriesForCwd,
+	getGlobalConfigDirectory,
 	getProjectConfigDirectory,
 	getProjectConfigPathForRead,
 	getProjectMcpConfigPath,
@@ -313,7 +314,7 @@ export const webviewMessageHandler = async (
 	 */
 	const findMessageIndices = (messageTs: number, currentAlpha: any) => {
 		// Find the exact message by timestamp, not the first one after a cutoff
-		const messageIndex = currentAlpha.clineMessages.findIndex((msg: AlphaMessage) => msg.ts === messageTs)
+		const messageIndex = currentAlpha.alphaMessages.findIndex((msg: AlphaMessage) => msg.ts === messageTs)
 
 		// Find all matching API messages by timestamp
 		const allApiMatches = currentAlpha.apiConversationHistory
@@ -355,7 +356,7 @@ export const webviewMessageHandler = async (
 
 		if (messageIndex !== -1) {
 			// Find the last checkpoint before this message
-			const checkpoints = currentAlpha.clineMessages.filter(
+			const checkpoints = currentAlpha.alphaMessages.filter(
 				(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 			)
 			hasCheckpoint = checkpoints.length > 0
@@ -391,7 +392,7 @@ export const webviewMessageHandler = async (
 			const { messageIndex, apiConversationHistoryIndex } = findMessageIndices(messageTs, currentAlpha)
 			// Determine API truncation index with timestamp fallback if exact match not found
 			let apiIndexToUse = apiConversationHistoryIndex
-			const tsThreshold = currentAlpha.clineMessages[messageIndex]?.ts
+			const tsThreshold = currentAlpha.alphaMessages[messageIndex]?.ts
 			if (apiIndexToUse === -1 && typeof tsThreshold === "number") {
 				apiIndexToUse = findFirstApiIndexAtOrAfter(tsThreshold, currentAlpha)
 			}
@@ -401,12 +402,12 @@ export const webviewMessageHandler = async (
 				return
 			}
 
-			const targetMessage = currentAlpha.clineMessages[messageIndex]
+			const targetMessage = currentAlpha.alphaMessages[messageIndex]
 
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentAlpha.clineMessages.filter(
+				const checkpoints = currentAlpha.alphaMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -431,7 +432,7 @@ export const webviewMessageHandler = async (
 				// Store checkpoints from messages that will be preserved
 				const preservedCheckpoints = new Map<number, any>()
 				for (let i = 0; i < messageIndex; i++) {
-					const msg = currentAlpha.clineMessages[i]
+					const msg = currentAlpha.alphaMessages[i]
 					if (msg?.checkpoint && msg.ts) {
 						preservedCheckpoints.set(msg.ts, msg.checkpoint)
 					}
@@ -442,15 +443,15 @@ export const webviewMessageHandler = async (
 
 				// Restore checkpoint associations for preserved messages
 				for (const [ts, checkpoint] of preservedCheckpoints) {
-					const msgIndex = currentAlpha.clineMessages.findIndex((msg) => msg.ts === ts)
+					const msgIndex = currentAlpha.alphaMessages.findIndex((msg) => msg.ts === ts)
 					if (msgIndex !== -1) {
-						currentAlpha.clineMessages[msgIndex].checkpoint = checkpoint
+						currentAlpha.alphaMessages[msgIndex].checkpoint = checkpoint
 					}
 				}
 
 				// Save the updated messages with restored checkpoints
 				await saveTaskMessages({
-					messages: currentAlpha.clineMessages,
+					messages: currentAlpha.alphaMessages,
 					taskId: currentAlpha.taskId,
 					globalStoragePath: provider.contextProxy.globalStorageUri.fsPath,
 				})
@@ -479,13 +480,13 @@ export const webviewMessageHandler = async (
 			const { messageIndex } = findMessageIndices(messageTs, currentAlpha)
 			if (messageIndex !== -1) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentAlpha.clineMessages.filter(
+				const checkpoints = currentAlpha.alphaMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
 				hasCheckpoint = checkpoints.length > 0
 			} else {
-				console.log("[webviewMessageHandler] Edit - Message not found in clineMessages!")
+				console.log("[webviewMessageHandler] Edit - Message not found in alphaMessages!")
 				return
 			}
 		} else {
@@ -532,9 +533,9 @@ export const webviewMessageHandler = async (
 
 		try {
 			// Older clients may address an assistant row. Replace its preceding prompt.
-			let targetMessage = currentAlpha.clineMessages[messageIndex]
+			let targetMessage = currentAlpha.alphaMessages[messageIndex]
 			for (let i = messageIndex; i >= 0; i--) {
-				const candidate = currentAlpha.clineMessages[i]
+				const candidate = currentAlpha.alphaMessages[i]
 				if (
 					candidate.type === "say" &&
 					(candidate.say === "user_feedback" || (i === 0 && candidate.say === "text"))
@@ -547,7 +548,7 @@ export const webviewMessageHandler = async (
 			// If checkpoint restoration is requested, find and restore to the last checkpoint before this message
 			if (restoreCheckpoint) {
 				// Find the last checkpoint before this message
-				const checkpoints = currentAlpha.clineMessages.filter(
+				const checkpoints = currentAlpha.alphaMessages.filter(
 					(msg) => msg.say === "checkpoint_saved" && msg.ts > messageTs,
 				)
 
@@ -1999,7 +2000,7 @@ export const webviewMessageHandler = async (
 							listApiConfigMeta,
 							enhancementApiConfigId: effectiveEnhancementApiConfigId,
 							includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
-							currentAlphaMessages: currentAlpha?.clineMessages,
+							currentAlphaMessages: currentAlpha?.alphaMessages,
 							providerSettingsManager: provider.providerSettingsManager,
 							signal: request.signal,
 						}),
@@ -2116,12 +2117,12 @@ export const webviewMessageHandler = async (
 				}
 
 				try {
-					// Get showRooIgnoredFiles setting from state
-					const { showRooIgnoredFiles = false } = (await provider.getState()) ?? {}
+					// Get showAlphaIgnoredFiles setting from state
+					const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
 
-					// Filter results using AlphaIgnoreController if showRooIgnoredFiles is false
+					// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
 					let filteredResults = results
-					if (!showRooIgnoredFiles && alphaIgnoreController) {
+					if (!showAlphaIgnoredFiles && alphaIgnoreController) {
 						const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
 						filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 					}
@@ -2593,9 +2594,7 @@ export const webviewMessageHandler = async (
 						break
 					}
 				} else {
-					// Global scope - use OS home directory
-					const homeDir = os.homedir()
-					rulesFolderPath = path.join(homeDir, ".roo", `rules-${message.slug}`)
+					rulesFolderPath = path.join(getGlobalConfigDirectory(), `rules-${message.slug}`)
 				}
 
 				// Check if the rules folder exists
@@ -3504,8 +3503,7 @@ export const webviewMessageHandler = async (
 				// Determine the commands directory based on source
 				let commandsDir: string
 				if (source === "global") {
-					const globalConfigDir = path.join(os.homedir(), ".roo")
-					commandsDir = path.join(globalConfigDir, "commands")
+					commandsDir = path.join(getGlobalConfigDirectory(), "commands")
 				} else {
 					if (!vscode.workspace.workspaceFolders?.length) {
 						vscode.window.showErrorMessage(t("common:errors.no_workspace"))

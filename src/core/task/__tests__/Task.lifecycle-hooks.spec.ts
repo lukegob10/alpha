@@ -37,7 +37,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
 		providerRef: { deref: vi.fn(() => undefined) },
 		taskCancellationController: new AbortController(),
 		isCurrentApiConversationHistoryOwner: vi.fn(() => true),
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: history,
 		userMessageContent: [],
 		consecutiveMistakeLimit: 0,

@@ -175,7 +175,7 @@ describe("configured completion hook continuations", () => {
 			})
 		const failure = new HookCommandCleanupError("Stop", retry, new Error("tree kill failed"))
 		Object.assign(task, {
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			taskCancellationController: controller,
 			subagentRuntimeUnloadStarted: false,

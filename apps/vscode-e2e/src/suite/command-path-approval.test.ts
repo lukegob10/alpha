@@ -12,7 +12,7 @@ interface ApprovalTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	waitForTermination(): Promise<void>
 }
@@ -126,7 +126,7 @@ suite("Command and path approval in the extension host", function () {
 			await waitFor(
 				async () => {
 					const task = observation.task
-					const error = task?.clineMessages.find((message) => message.say === "error")
+					const error = task?.alphaMessages.find((message) => message.say === "error")
 					assert.equal(error, undefined, error?.text)
 					const ask = task?.taskAsk
 					if (

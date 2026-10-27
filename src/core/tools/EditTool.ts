@@ -67,7 +67,7 @@ export class EditTool extends BaseTool<"edit"> {
 			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
-				await task.say("rooignore_error", relPath)
+				await task.say("alphaignore_error", relPath)
 				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
@@ -219,7 +219,7 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Track file edit operation
 			if (relPath) {
-				await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
+				await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
 			}
 
 			task.didEditFile = true

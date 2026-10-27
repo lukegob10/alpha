@@ -1,7 +1,6 @@
 import * as path from "path"
 import * as os from "os"
 import * as fs from "fs/promises"
-import { constants } from "fs"
 
 /** Captured host settings; project files cannot change their own discovery boundary. */
 export interface ProjectInstructionDiscoveryOptions {
@@ -31,78 +30,25 @@ export function getProjectConfigDirectory(cwd: string): string {
 	return path.join(cwd, ".alpha")
 }
 
-/** Project-local Alpha configuration overrides existing legacy configuration. */
-export function getConfigDirectoriesForCwd(cwd: string): string[] {
-	return [...getLegacyConfigDirectoriesForCwd(cwd), getProjectConfigDirectory(cwd)]
-}
-
-/** Reads existing project configuration without rewriting the legacy source. */
+/** Resolve a canonical Alpha path without creating or rewriting configuration. */
 export async function getProjectConfigPathForRead(cwd: string, relativePath: string): Promise<string> {
 	const projectPath = path.join(getProjectConfigDirectory(cwd), relativePath)
 	try {
 		await fs.access(projectPath)
-		return projectPath
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-		return path.join(getLegacyProjectConfigDirectory(cwd), relativePath)
-	}
-}
-
-/**
- * Preserve an existing project MCP configuration on the first use of its Alpha path.
- * An exclusive copy keeps concurrent edits or an existing .alpha/mcp.json authoritative.
- */
-export async function getProjectMcpConfigPath(cwd: string): Promise<string> {
-	const projectPath = path.join(getProjectConfigDirectory(cwd), "mcp.json")
-	try {
-		await fs.access(projectPath)
-		return projectPath
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-	}
-
-	const legacyPath = path.join(getLegacyProjectConfigDirectory(cwd), "mcp.json")
-	try {
-		await fs.access(legacyPath)
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return projectPath
-		throw error
-	}
-
-	await fs.mkdir(path.dirname(projectPath), { recursive: true })
-	try {
-		await fs.copyFile(legacyPath, projectPath, constants.COPYFILE_EXCL)
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
 	}
 	return projectPath
 }
 
-/**
- * Gets the global .roo directory path based on the current platform
- *
- * @returns The absolute path to the global .roo directory
- *
- * @example Platform-specific paths:
- * ```
- * // macOS/Linux: ~/.roo/
- * // Example: /Users/john/.roo
- *
- * // Windows: %USERPROFILE%\.roo\
- * // Example: C:\Users\john\.roo
- * ```
- *
- * @example Usage:
- * ```typescript
- * const globalDir = getLegacyGlobalConfigDirectory()
- * // Returns: "/Users/john/.roo" (on macOS/Linux)
- * // Returns: "C:\\Users\\john\\.roo" (on Windows)
- * ```
- */
-// These roots intentionally retain their on-disk names for existing rules, commands, modes, and custom tools.
-export function getLegacyGlobalConfigDirectory(): string {
-	const homeDir = os.homedir()
-	return path.join(homeDir, ".roo")
+/** Return the canonical project MCP path; discovery never writes configuration. */
+export async function getProjectMcpConfigPath(cwd: string): Promise<string> {
+	return getProjectConfigPathForRead(cwd, "mcp.json")
+}
+
+/** Canonical root for per-user Alpha configuration. */
+export function getGlobalConfigDirectory(): string {
+	return path.join(os.homedir(), ".alpha")
 }
 
 /**
@@ -147,39 +93,6 @@ export function getGlobalAgentsDirectory(): string {
  */
 export function getProjectAgentsDirectoryForCwd(cwd: string): string {
 	return path.join(cwd, ".agents")
-}
-
-/**
- * Gets the project-local .roo directory path for a given cwd
- *
- * @param cwd - Current working directory (project path)
- * @returns The absolute path to the project-local .roo directory
- *
- * @example
- * ```typescript
- * const projectDir = getLegacyProjectConfigDirectory('/Users/john/my-project')
- * // Returns: "/Users/john/my-project/.roo"
- *
- * const windowsProjectDir = getLegacyProjectConfigDirectory('C:\\Users\\john\\my-project')
- * // Returns: "C:\\Users\\john\\my-project\\.roo"
- * ```
- *
- * @example Directory structure:
- * ```
- * /Users/john/my-project/
- * ├── .alpha/                    # Project-local configuration directory
- * │   ├── rules/
- * │   │   └── rules.md
- * │   ├── custom-instructions.md
- * │   └── config/
- * │       └── settings.json
- * ├── src/
- * │   └── index.ts
- * └── package.json
- * ```
- */
-export function getLegacyProjectConfigDirectory(cwd: string): string {
-	return path.join(cwd, ".roo")
 }
 
 /**
@@ -233,27 +146,27 @@ export async function readFileIfExists(filePath: string): Promise<string | null>
 }
 
 /**
- * Discovers all .roo directories in subdirectories of the workspace
+ * Discovers all .alpha directories in subdirectories of the workspace
  *
  * @param cwd - Current working directory (workspace root)
- * @returns Array of absolute paths to .roo directories found in subdirectories,
- *          sorted alphabetically. Does not include the root .roo directory.
+ * @returns Array of absolute paths to .alpha directories found in subdirectories,
+ *          sorted alphabetically. Does not include the root .alpha directory.
  *
  * @example
  * ```typescript
- * const subfolderRoos = await discoverLegacySubfolderConfigDirectories('/Users/john/monorepo')
+ * const subfolderConfigs = await discoverSubfolderConfigDirectories('/Users/john/monorepo')
  * // Returns:
  * // [
- * //   '/Users/john/monorepo/package-a/.roo',
- * //   '/Users/john/monorepo/package-b/.roo',
- * //   '/Users/john/monorepo/packages/shared/.roo'
+ * //   '/Users/john/monorepo/package-a/.alpha',
+ * //   '/Users/john/monorepo/package-b/.alpha',
+ * //   '/Users/john/monorepo/packages/shared/.alpha'
  * // ]
  * ```
  *
  * @example Directory structure:
  * ```
  * /Users/john/monorepo/
- * ├── .roo/                      # Root .roo (NOT included - use getLegacyProjectConfigDirectory)
+ * ├── .alpha/                      # Root .alpha (NOT included - use getProjectConfigDirectory)
  * ├── package-a/
  * │   └── .alpha/                # Included
  * │       └── rules/
@@ -266,21 +179,21 @@ export async function readFileIfExists(filePath: string): Promise<string | null>
  *             └── rules/
  * ```
  */
-export async function discoverLegacySubfolderConfigDirectories(cwd: string): Promise<string[]> {
+export async function discoverSubfolderConfigDirectories(cwd: string): Promise<string[]> {
 	try {
 		// Dynamic import to avoid vscode dependency at module load time
 		// This is necessary because file-search.ts imports vscode, which is not
 		// available in the webview context
 		const { executeRipgrep } = await import("../search/file-search")
 
-		// Use ripgrep to find any file inside any .roo directory
-		// This efficiently discovers all .roo folders regardless of their content
+		// Use ripgrep to find any file inside any .alpha directory
+		// This efficiently discovers all .alpha folders regardless of their content
 		const args = [
 			"--files",
 			"--hidden",
 			"--follow",
 			"-g",
-			"**/.roo/**",
+			"**/.alpha/**",
 			"-g",
 			"!node_modules/**",
 			"-g",
@@ -290,25 +203,25 @@ export async function discoverLegacySubfolderConfigDirectories(cwd: string): Pro
 
 		const results = await executeRipgrep({ args, workspacePath: cwd })
 
-		// Extract unique .roo directory paths
-		const legacyConfigDirs = new Set<string>()
-		const rootLegacyConfigDir = path.join(cwd, ".roo")
+		// Extract unique .alpha directory paths
+		const configDirs = new Set<string>()
+		const rootConfigDir = path.join(cwd, ".alpha")
 
 		for (const result of results) {
 			// Match paths like "subfolder/.alpha/anything" or "subfolder/nested/.alpha/anything"
 			// Handle both forward slashes (Unix) and backslashes (Windows)
-			const match = result.path.match(/^(.+?)[/\\]\.roo[/\\]/)
+			const match = result.path.match(/^(.+?)[/\\]\.alpha[/\\]/)
 			if (match) {
-				const legacyConfigDir = path.join(cwd, match[1], ".roo")
-				// Exclude the root .roo directory (already handled by getLegacyProjectConfigDirectory)
-				if (legacyConfigDir !== rootLegacyConfigDir) {
-					legacyConfigDirs.add(legacyConfigDir)
+				const configDir = path.join(cwd, match[1], ".alpha")
+				// Exclude the root .alpha directory (already handled by getProjectConfigDirectory)
+				if (configDir !== rootConfigDir) {
+					configDirs.add(configDir)
 				}
 			}
 		}
 
 		// Return sorted alphabetically
-		return Array.from(legacyConfigDirs).sort()
+		return Array.from(configDirs).sort()
 	} catch (error) {
 		// If discovery fails (e.g., ripgrep not available), return empty array
 		return []
@@ -316,7 +229,7 @@ export async function discoverLegacySubfolderConfigDirectories(cwd: string): Pro
 }
 
 /**
- * Gets the ordered list of .roo directories to check (global first, then project-local)
+ * Gets the ordered list of .alpha directories to check (global first, then project-local)
  *
  * @param cwd - Current working directory (project path)
  * @returns Array of directory paths to check in order [global, project-local]
@@ -324,11 +237,11 @@ export async function discoverLegacySubfolderConfigDirectories(cwd: string): Pro
  * @example
  * ```typescript
  * // For a project at /Users/john/my-project
- * const directories = getLegacyConfigDirectoriesForCwd('/Users/john/my-project')
+ * const directories = getConfigDirectoriesForCwd('/Users/john/my-project')
  * // Returns:
  * // [
- * //   '/Users/john/.roo',           // Global directory
- * //   '/Users/john/my-project/.roo' // Project-local directory
+ * //   '/Users/john/.alpha',           // Global directory
+ * //   '/Users/john/my-project/.alpha' // Project-local directory
  * // ]
  * ```
  *
@@ -348,48 +261,48 @@ export async function discoverLegacySubfolderConfigDirectories(cwd: string): Pro
  *         └── index.ts
  * ```
  */
-export function getLegacyConfigDirectoriesForCwd(cwd: string): string[] {
+export function getConfigDirectoriesForCwd(cwd: string): string[] {
 	const directories: string[] = []
 
 	// Add global directory first
-	directories.push(getLegacyGlobalConfigDirectory())
+	directories.push(getGlobalConfigDirectory())
 
 	// Add project-local directory second
-	directories.push(getLegacyProjectConfigDirectory(cwd))
+	directories.push(getProjectConfigDirectory(cwd))
 
 	return directories
 }
 
 /**
- * Gets the ordered list of all .roo directories including subdirectories
+ * Gets the ordered list of all .alpha directories including subdirectories
  *
  * @param cwd - Current working directory (project path)
  * @returns Array of directory paths in order: [global, project-local, ...subfolders (alphabetically)]
  *
  * @example
  * ```typescript
- * // For a monorepo at /Users/john/monorepo with .roo in subfolders
- * const directories = await getAllLegacyConfigDirectoriesForCwd('/Users/john/monorepo')
+ * // For a monorepo at /Users/john/monorepo with .alpha in subfolders
+ * const directories = await getAllConfigDirectoriesForCwd('/Users/john/monorepo')
  * // Returns:
  * // [
- * //   '/Users/john/.roo',                    // Global directory
- * //   '/Users/john/monorepo/.roo',           // Project-local directory
- * //   '/Users/john/monorepo/package-a/.roo', // Subfolder (alphabetical)
- * //   '/Users/john/monorepo/package-b/.roo'  // Subfolder (alphabetical)
+ * //   '/Users/john/.alpha',                    // Global directory
+ * //   '/Users/john/monorepo/.alpha',           // Project-local directory
+ * //   '/Users/john/monorepo/package-a/.alpha', // Subfolder (alphabetical)
+ * //   '/Users/john/monorepo/package-b/.alpha'  // Subfolder (alphabetical)
  * // ]
  * ```
  */
-export async function getAllLegacyConfigDirectoriesForCwd(cwd: string): Promise<string[]> {
+export async function getAllConfigDirectoriesForCwd(cwd: string): Promise<string[]> {
 	const directories: string[] = []
 
 	// Add global directory first
-	directories.push(getLegacyGlobalConfigDirectory())
+	directories.push(getGlobalConfigDirectory())
 
 	// Add project-local directory second
-	directories.push(getLegacyProjectConfigDirectory(cwd))
+	directories.push(getProjectConfigDirectory(cwd))
 
-	// Discover and add subfolder .roo directories
-	const subfolderDirs = await discoverLegacySubfolderConfigDirectories(cwd)
+	// Discover and add subfolder .alpha directories
+	const subfolderDirs = await discoverSubfolderConfigDirectories(cwd)
 	directories.push(...subfolderDirs)
 
 	return directories
@@ -397,7 +310,7 @@ export async function getAllLegacyConfigDirectoriesForCwd(cwd: string): Promise<
 
 /**
  * Gets project instruction directories from the nearest .git root through cwd,
- * followed by parent directories of discovered subfolder .roo directories.
+ * followed by parent directories of discovered subfolder .alpha directories.
  *
  * @param cwd - Current working directory (project path)
  * @returns Ordered directories to check for agent instruction files
@@ -411,12 +324,12 @@ export async function getAllLegacyConfigDirectoriesForCwd(cwd: string): Promise<
 export async function getAgentsDirectoriesForCwd(cwd: string): Promise<string[]> {
 	const { directories } = await getProjectInstructionDirectoriesForCwd(cwd)
 
-	// Get all subfolder .roo directories
-	const legacySubfolderConfigDirs = await discoverLegacySubfolderConfigDirectories(cwd)
+	// Get all subfolder .alpha directories
+	const subfolderConfigDirs = await discoverSubfolderConfigDirectories(cwd)
 
-	// Extract parent directories (remove .roo from path)
-	for (const legacyConfigDir of legacySubfolderConfigDirs) {
-		const parentDir = path.dirname(legacyConfigDir)
+	// Extract parent directories (remove .alpha from path)
+	for (const configDir of subfolderConfigDirs) {
+		const parentDir = path.dirname(configDir)
 		if (!directories.some((directory) => path.resolve(directory) === path.resolve(parentDir))) {
 			directories.push(parentDir)
 		}
@@ -476,9 +389,9 @@ export async function getProjectInstructionDirectoriesForCwd(
 }
 
 /**
- * Loads configuration from multiple .roo directories with project overriding global
+ * Loads configuration from multiple .alpha directories with project overriding global
  *
- * @param relativePath - The relative path within each .roo directory (e.g., 'rules/rules.md')
+ * @param relativePath - The relative path within each .alpha directory (e.g., 'rules/rules.md')
  * @param cwd - Current working directory (project path)
  * @returns Object with global and project content, plus merged content
  *
@@ -534,8 +447,8 @@ export async function loadConfiguration(
 	project: string | null
 	merged: string
 }> {
-	const globalDir = getLegacyGlobalConfigDirectory()
-	const projectDir = getLegacyProjectConfigDirectory(cwd)
+	const globalDir = getGlobalConfigDirectory()
+	const projectDir = getProjectConfigDirectory(cwd)
 
 	const globalFilePath = path.join(globalDir, relativePath)
 	const projectFilePath = path.join(projectDir, relativePath)

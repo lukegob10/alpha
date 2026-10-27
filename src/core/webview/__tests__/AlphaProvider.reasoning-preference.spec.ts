@@ -53,7 +53,7 @@ vi.mock("../../task/Task", () => ({
 			taskId: options.historyItem?.id ?? options.taskId ?? `created-${++providerTestState.nextTaskId}`,
 			instanceId: `instance-${providerTestState.nextTaskId}`,
 			taskKind: "primary",
-			clineMessages: [],
+			alphaMessages: [],
 			parentTask: options.parentTask,
 			rootTask: options.rootTask,
 			reasoningPreference: options.reasoningPreference ??

@@ -223,7 +223,7 @@ export const ChatRowContent = (props: ChatRowContentProps) => {
 		currentTaskId: extensionState.currentTaskId,
 		reasoningBlockCollapsed: extensionState.reasoningBlockCollapsed,
 		modelSupportsImages: model?.supportsImages,
-		getAlphaMessages: () => extensionState.clineMessages,
+		getAlphaMessages: () => extensionState.alphaMessages,
 		onShowTask: (taskId) => {
 			const cachedTranscriptRevision = extensionState.getCachedTranscriptRevision?.(taskId)
 			vscode.postMessage({
@@ -281,7 +281,7 @@ const ChatRowContentInner = ({
 	const isAgentMessage = message.type === "say" && message.say === "agent_message"
 	const userMessageActionsDisabled =
 		messageActionsDisabled || !currentTaskId || currentTaskItem?.taskKind === "subagent" || isAgentMessage
-	const clineMessages = getAlphaMessages()
+	const alphaMessages = getAlphaMessages()
 	const [isEditing, setIsEditing] = useState(false)
 	const [editedContent, setEditedContent] = useState("")
 	const [editMode, setEditMode] = useState<Mode>(mode || "code")
@@ -800,7 +800,7 @@ const ChatRowContentInner = ({
 			case "updateTodoList" as any: {
 				const todos = (tool as any).todos || []
 				// Get previous todos from the latest todos in the task context
-				const previousTodos = getPreviousTodos(clineMessages, message.ts)
+				const previousTodos = getPreviousTodos(alphaMessages, message.ts)
 
 				return <TodoChangeDisplay previousTodos={previousTodos} newTodos={todos} />
 			}
@@ -1112,15 +1112,15 @@ const ChatRowContentInner = ({
 					</ActivityStep>
 				)
 			case "newTask":
-				const childTaskId = resolveLegacyChildLink(message, clineMessages, currentTaskItem ?? undefined)
+				const childTaskId = resolveLegacyChildLink(message, alphaMessages, currentTaskItem ?? undefined)
 
 				// The adjacent result replaces this link only when it names the same child.
-				const currentMessageIndex = clineMessages.findIndex((msg) => msg.ts === message.ts)
-				const nextMessage = currentMessageIndex >= 0 ? clineMessages[currentMessageIndex + 1] : undefined
+				const currentMessageIndex = alphaMessages.findIndex((msg) => msg.ts === message.ts)
+				const nextMessage = currentMessageIndex >= 0 ? alphaMessages[currentMessageIndex + 1] : undefined
 				const isFollowedBySubtaskResult =
 					nextMessage?.type === "say" &&
 					nextMessage?.say === "subtask_result" &&
-					resolveLegacyChildLink(nextMessage, clineMessages, currentTaskItem ?? undefined) === childTaskId
+					resolveLegacyChildLink(nextMessage, alphaMessages, currentTaskItem ?? undefined) === childTaskId
 
 				return (
 					<ActivityStep
@@ -1365,7 +1365,7 @@ const ChatRowContentInner = ({
 					// Get the child task ID that produced this result
 					const completedChildTaskId = resolveLegacyChildLink(
 						message,
-						clineMessages,
+						alphaMessages,
 						currentTaskItem ?? undefined,
 					)
 					return (
@@ -1439,7 +1439,7 @@ const ChatRowContentInner = ({
 									message={apiRequestFailedMessage || apiReqStreamingFailedMessage || ""}
 									docsURL={
 										apiRequestFailedMessage?.toLowerCase().includes("powershell")
-											? "https://github.com/cline/cline/wiki/TroubleShooting-%E2%80%90-%22PowerShell-is-not-recognized-as-an-internal-or-external-command%22"
+											? "https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows"
 											: undefined
 									}
 									errorDetails={apiReqStreamingFailedMessage}
@@ -1544,7 +1544,7 @@ const ChatRowContentInner = ({
 					return null // we should never see this message type
 				case "text":
 					return (
-						<article className="group py-1 text-sm" aria-label={t("chat:text.rooSaid")}>
+						<article className="group py-1 text-sm" aria-label={t("chat:text.alphaSaid")}>
 							<Markdown
 								markdown={message.text}
 								partial={message.partial}

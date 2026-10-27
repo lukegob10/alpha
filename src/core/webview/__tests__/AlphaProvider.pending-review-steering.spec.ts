@@ -128,7 +128,7 @@ describe("native parent steering while a Worker proposal awaits review", () => {
 			expect(JSON.stringify(readResults)).toContain("saved-review-worker")
 			expect(JSON.stringify(history)).toContain(reply.summary)
 			expect(
-				root.clineMessages.find((message) => message.subagentGroup?.groupId === group.groupId)?.subagentGroup
+				root.alphaMessages.find((message) => message.subagentGroup?.groupId === group.groupId)?.subagentGroup
 					?.agents[0].changeSet?.status,
 			).toBe("pending_review")
 			expect((await root.getCompletionGateDecision()).allowed).toBe(false)

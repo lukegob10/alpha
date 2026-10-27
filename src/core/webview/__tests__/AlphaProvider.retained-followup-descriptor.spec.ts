@@ -38,7 +38,7 @@ async function createFixture(retainDescriptor = false) {
 	})
 	const parent = {
 		taskId: record.parentTaskId,
-		clineMessages: [{ ts: 1, type: "say", say: "text", text: "Retained parent history" }],
+		alphaMessages: [{ ts: 1, type: "say", say: "text", text: "Retained parent history" }],
 	} as unknown as Task
 	const prepared: PreparedSubagentGroup = {
 		group: {

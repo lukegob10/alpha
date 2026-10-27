@@ -67,7 +67,7 @@ vi.mock("../../task/Task", () => ({
 			taskId: options.taskId || `test-task-id-${++taskIdCounter}`,
 			apiConfiguration: options.apiConfiguration,
 			saveAlphaMessages: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
@@ -257,7 +257,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 	let mockOutputChannel: vscode.OutputChannel
 	let mockWebviewView: vscode.WebviewView
 	let mockPostMessage: any
-	let originalRooCliRuntimeEnv: string | undefined
+	let originalAlphaCliRuntimeEnv: string | undefined
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
@@ -267,8 +267,8 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
 		)
 		taskIdCounter = 0
-		originalRooCliRuntimeEnv = process.env.ROO_CLI_RUNTIME
-		delete process.env.ROO_CLI_RUNTIME
+		originalAlphaCliRuntimeEnv = process.env.ALPHA_CLI_RUNTIME
+		delete process.env.ALPHA_CLI_RUNTIME
 
 		if (!TelemetryService.hasInstance()) {
 			TelemetryService.createInstance([])
@@ -355,10 +355,10 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 	afterEach(() => {
 		vi.mocked(AgentControlStore.forGlobalStorage).mockRestore()
-		if (originalRooCliRuntimeEnv === undefined) {
-			delete process.env.ROO_CLI_RUNTIME
+		if (originalAlphaCliRuntimeEnv === undefined) {
+			delete process.env.ALPHA_CLI_RUNTIME
 		} else {
-			process.env.ROO_CLI_RUNTIME = originalRooCliRuntimeEnv
+			process.env.ALPHA_CLI_RUNTIME = originalAlphaCliRuntimeEnv
 		}
 	})
 
@@ -396,7 +396,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				abortTask: vi.fn().mockResolvedValue(undefined),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 			}
 		}
@@ -1140,7 +1140,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 		})
 
 		it("returns committed metadata identity despite a legacy name field when the inverse secret write rejects", async () => {
-			const profilesKey = "roo_cline_config_api_config"
+			const profilesKey = "alpha_config_api_config"
 			const persisted = JSON.parse((await mockContext.secrets.get(profilesKey))!)
 			persisted.apiConfigs.saved.name = "legacy-profile-field"
 			await mockContext.secrets.store(profilesKey, JSON.stringify(persisted))
@@ -1249,7 +1249,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				setTaskApiConfigName: vi.fn(),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1310,7 +1310,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				}),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1366,7 +1366,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				}),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1452,7 +1452,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 		it("restores the saved task profile even with the retired CLI environment flag", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
-			process.env.ROO_CLI_RUNTIME = "1"
+			process.env.ALPHA_CLI_RUNTIME = "1"
 
 			const historyItem: HistoryItem = {
 				id: "test-task-id",
@@ -1496,7 +1496,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 		it("restores the saved mode profile even with the retired CLI environment flag", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
-			process.env.ROO_CLI_RUNTIME = "1"
+			process.env.ALPHA_CLI_RUNTIME = "1"
 
 			const historyItem: HistoryItem = {
 				id: "test-task-id",
@@ -1662,7 +1662,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				setTaskApiConfigName: vi.fn(),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1725,7 +1725,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				}),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1739,7 +1739,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				}),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}
@@ -1826,7 +1826,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				setTaskApiConfigName: vi.fn(),
 				emit: vi.fn(),
 				saveAlphaMessages: vi.fn(),
-				clineMessages: [],
+				alphaMessages: [],
 				apiConversationHistory: [],
 				updateApiConfiguration: vi.fn(),
 			}

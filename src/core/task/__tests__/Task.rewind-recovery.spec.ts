@@ -86,7 +86,7 @@ function fixture() {
 	Object.assign(task, {
 		taskId: "rewind-task",
 		globalStoragePath: directory,
-		clineMessages: [...retainedUi, { ts: 200, type: "say", say: "text", text: "deleted" }],
+		alphaMessages: [...retainedUi, { ts: 200, type: "say", say: "text", text: "deleted" }],
 		apiConversationHistory: [...retainedApi, removedCall],
 		canonicalLifecycleQueue: Promise.resolve(),
 		flushApiConversationHistoryPersistence: vi.fn().mockResolvedValue(undefined),
@@ -94,7 +94,7 @@ function fixture() {
 		getCanonicalLifecycleSnapshot: vi.fn(() => snapshot),
 		enqueueCanonicalLifecycleEvent: vi.fn(),
 		overwriteAlphaMessages: vi.fn(async (messages: AlphaMessage[]) => {
-			task.clineMessages = messages
+			task.alphaMessages = messages
 			return true
 		}),
 		overwriteApiConversationHistory: vi.fn(async (messages: ApiMessage[]) => {
@@ -126,7 +126,7 @@ describe("Task rewind/reload consistency", () => {
 
 		const replacement = fixture().task
 		await replacement.recoverConversationRewind()
-		expect(replacement.clineMessages).toEqual(retainedUi)
+		expect(replacement.alphaMessages).toEqual(retainedUi)
 		expect(replacement.apiConversationHistory).toEqual(retainedApi)
 		expect((await store.read())?.pending).toBeUndefined()
 	})
@@ -135,7 +135,7 @@ describe("Task rewind/reload consistency", () => {
 		const { task, store } = fixture()
 		vi.mocked(task.overwriteAlphaMessages).mockImplementationOnce(async (messages) => {
 			expect((await store.read())?.pending).toEqual({ uiMessages: retainedUi, apiHistory: retainedApi })
-			task.clineMessages = messages
+			task.alphaMessages = messages
 			return true
 		})
 		vi.mocked(task.overwriteApiConversationHistory).mockRejectedValueOnce(new Error("process exited"))

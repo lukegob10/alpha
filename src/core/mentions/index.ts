@@ -172,7 +172,7 @@ export async function parseMentions(
 	cwd: string,
 	fileContextTracker?: FileContextTracker,
 	alphaIgnoreController?: AlphaIgnoreController,
-	showRooIgnoredFiles: boolean = false,
+	showAlphaIgnoredFiles: boolean = false,
 	includeDiagnosticMessages: boolean = true,
 	maxDiagnosticMessages: number = 50,
 	skillsManager?: SkillLookup,
@@ -312,7 +312,7 @@ export async function parseMentions(
 					mentionPath,
 					cwd,
 					alphaIgnoreController,
-					showRooIgnoredFiles,
+					showAlphaIgnoredFiles,
 					fileContextTracker,
 					signal,
 				)
@@ -403,7 +403,7 @@ async function getFileOrFolderContentWithMetadata(
 	mentionPath: string,
 	cwd: string,
 	alphaIgnoreController?: any,
-	showRooIgnoredFiles: boolean = false,
+	showAlphaIgnoredFiles: boolean = false,
 	fileContextTracker?: FileContextTracker,
 	signal?: AbortSignal,
 ): Promise<MentionContentBlock> {
@@ -483,7 +483,7 @@ async function getFileOrFolderContentWithMetadata(
 					isIgnored = !alphaIgnoreController.validateAccess(entryPath)
 				}
 
-				if (isIgnored && !showRooIgnoredFiles) {
+				if (isIgnored && !showAlphaIgnoredFiles) {
 					continue
 				}
 

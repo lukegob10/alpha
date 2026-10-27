@@ -392,7 +392,7 @@ async function createTask(approval: "approve" | "deny" = "approve"): Promise<Tas
 			taskKind: "primary",
 			subagentRole: undefined,
 			workspacePath: fixture.workspacePath,
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			lastMessageTs: 1_700_000_000_000,
 			didRejectTool: false,

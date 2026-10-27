@@ -407,7 +407,7 @@
 	"response": "Response",
 	"arguments": "Arguments",
 	"text": {
-		"rooSaid": "Alpha said"
+		"alphaSaid": "Alpha said"
 	},
 	"feedback": {
 		"youSaid": "You said",
@@ -511,11 +511,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves chat controls, saved-chat navigation, and diagram previews.",
-			"taskContinuity": "Browse older and newer saved chats in a stable workspace history.",
-			"toolsAndProviders": "Steer queued messages in order while keeping unsent text and images intact.",
-			"delegation": "Cycle approval modes and keep questions open until you answer by default.",
-			"workspaceExperience": "Open readable Mermaid diagrams in vector previews with native editor zoom controls."
+			"welcome": "Alpha v{{version}} completes the Alpha naming cleanup and fixes New Chat shortcut focus.",
+			"taskContinuity": "Open a new task directly in Alpha with the New Chat shortcut.",
+			"toolsAndProviders": "Use Alpha-only configuration paths, credentials, saved fields, and public APIs.",
+			"delegation": "Configure a fresh profile; previous naming aliases are no longer supported.",
+			"workspaceExperience": "Keep your previous release profile and package available when returning to an earlier version."
 		}
 	},
 	"crossTasks": {

@@ -37,8 +37,8 @@ describe("custom instruction assembly discovery", () => {
 		vi.mocked(os.homedir).mockReturnValue(home)
 		vi.mocked(executeRipgrep).mockReset()
 		vi.mocked(executeRipgrep).mockResolvedValue([
-			{ path: "z/.roo/rules/rule.md", type: "file" },
-			{ path: "a/.roo/rules/rule.md", type: "file" },
+			{ path: "z/.alpha/rules/rule.md", type: "file" },
+			{ path: "a/.alpha/rules/rule.md", type: "file" },
 		])
 		for (const [directory, label] of [
 			["home", "global"],
@@ -48,8 +48,6 @@ describe("custom instruction assembly discovery", () => {
 		]) {
 			await write(`${directory}/.alpha/rules-code/rule.md`, `${label} mode`)
 			await write(`${directory}/.alpha/rules/rule.md`, `${label} generic`)
-			await write(`${directory}/.roo/rules-code/rule.md`, `${label} legacy mode`)
-			await write(`${directory}/.roo/rules/rule.md`, `${label} legacy generic`)
 		}
 		await write("workspace/AGENTS.md", "root agent")
 		await write("workspace/AGENTS.local.md", "root personal")
@@ -76,7 +74,7 @@ describe("custom instruction assembly discovery", () => {
 		const first = await assemble()
 		await write("workspace/a/AGENT.md", "updated a agent")
 		await write("workspace/new/AGENTS.md", "new agent")
-		vi.mocked(executeRipgrep).mockResolvedValue([{ path: "new/.roo/rules/rule.md", type: "file" }])
+		vi.mocked(executeRipgrep).mockResolvedValue([{ path: "new/.alpha/rules/rule.md", type: "file" }])
 		const second = await assemble()
 		expect(first).toContain("a agent")
 		expect(second).toContain("new agent")
@@ -101,7 +99,7 @@ describe("custom instruction assembly discovery", () => {
 		expect(executeRipgrep).toHaveBeenCalledTimes(2)
 	})
 
-	it("preserves legacy fallback and disabled agent rules", async () => {
+	it("omits absent rule sources and disabled agent rules", async () => {
 		for (const directory of [home, cwd, path.join(cwd, "a"), path.join(cwd, "z")]) {
 			await fs.rm(path.join(directory, ".alpha"), { recursive: true })
 		}

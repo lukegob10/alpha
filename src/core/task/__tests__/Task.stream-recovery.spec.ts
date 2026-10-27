@@ -287,7 +287,7 @@ async function harness(
 		contextTokens: 0,
 	})
 	vi.spyOn(task, "say").mockImplementation(async (say, text, _images, partial) => {
-		task.clineMessages.push({ ts: task.clineMessages.length + 1, type: "say", say, text, partial })
+		task.alphaMessages.push({ ts: task.alphaMessages.length + 1, type: "say", say, text, partial })
 	})
 	vi.spyOn(task, "emitFinalTokenUsageUpdate").mockImplementation(() => undefined)
 	vi.spyOn(task, "ask").mockImplementation(async () => {

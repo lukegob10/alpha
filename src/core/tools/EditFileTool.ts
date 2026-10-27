@@ -172,7 +172,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 				// Finalize the partial tool preview before emitting any say() messages.
 				await finalizePartialToolAskIfNeeded(relPath)
 				task.didToolFailInCurrentTurn = true
-				await task.say("rooignore_error", relPath)
+				await task.say("alphaignore_error", relPath)
 				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
@@ -415,7 +415,7 @@ export class EditFileTool extends BaseTool<"edit_file"> {
 
 			// Track file edit operation
 			if (relPath) {
-				await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
+				await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
 			}
 
 			task.didEditFile = true

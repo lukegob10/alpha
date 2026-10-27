@@ -64,7 +64,7 @@ interface HostTask {
 	taskId: string
 	api: unknown
 	apiConversationHistory: unknown[]
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskAsk?: AlphaMessage
 	didComplete?: boolean
 	approveAsk(): void
@@ -524,7 +524,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		await this.assertUiTask(taskId)
 		const task = this.requireTask(taskId)
 		const previousAsk = task.taskAsk
-		const previousTimestamp = Math.max(previousAsk?.ts ?? 0, task.clineMessages.at(-1)?.ts ?? 0)
+		const previousTimestamp = Math.max(previousAsk?.ts ?? 0, task.alphaMessages.at(-1)?.ts ?? 0)
 		const guidance = workflowPrompt(prompt, step)
 		this.activePrompt = prompt
 		this.activePromptStep = step
@@ -811,7 +811,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		const task = this.requireTask(taskId)
 		if (
 			!task.didComplete ||
-			!task.clineMessages.some((message) => message.say === "completion_result" && !message.partial)
+			!task.alphaMessages.some((message) => message.say === "completion_result" && !message.partial)
 		)
 			throw new WorkflowFailure("lifecycle", "completed_task_unavailable")
 		await task.waitForTermination()
@@ -828,7 +828,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			liveTaskIds: state.liveTaskIds,
 			liveTasksById: { [taskId]: state.liveTasksById?.[taskId] },
 			agentLifecycleSnapshots: { [taskId]: this.provider.getAgentLifecycleSnapshot(taskId) },
-			clineMessages: task.clineMessages.slice(-2),
+			alphaMessages: task.alphaMessages.slice(-2),
 		}
 	}
 
@@ -836,7 +836,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		const task = this.requireTask(taskId)
 		return {
 			runtime: this.provider.getTaskSettlementDiagnostics(task),
-			shellIntegrationWarnings: task.clineMessages.filter(
+			shellIntegrationWarnings: task.alphaMessages.filter(
 				(message) => message.say === "shell_integration_warning",
 			).length,
 		}
@@ -893,7 +893,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			apiMessages: messages.length,
 			apiHistoryBytes: Buffer.byteLength(JSON.stringify(task.apiConversationHistory)),
 			summaries: messages.filter((message) => message?.isSummary === true).length,
-			emptyWarnings: task.clineMessages.filter(
+			emptyWarnings: task.alphaMessages.filter(
 				(message) => message.say === "error" && message.text === "MODEL_NO_ASSISTANT_MESSAGES",
 			).length,
 			receiptPresent: report.trim() === expectedReceipt,
@@ -921,7 +921,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	}
 
 	admissionsAreUnique(taskId: string): boolean {
-		const messages = this.requireTask(taskId).clineMessages
+		const messages = this.requireTask(taskId).alphaMessages
 		const expected = this.admissions.filter((admission) => admission.taskId === taskId)
 		return expected.every(
 			(admission, index) =>
@@ -974,7 +974,7 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 			.reverse()
 			.map(record)
 			.find((message) => message?.isSummary === true)
-		const message = [...task.clineMessages]
+		const message = [...task.alphaMessages]
 			.reverse()
 			.find((item) => item.say === "condense_context" && item.contextCondense)
 		const receipt = message?.contextCondense

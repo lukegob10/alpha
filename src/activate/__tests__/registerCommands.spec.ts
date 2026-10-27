@@ -169,6 +169,7 @@ describe("registerCommands", () => {
 		const postMessageToWebview = vi.fn().mockResolvedValue(undefined)
 		const visibleProvider = {
 			startBlankTask,
+			focusInput: vi.fn().mockResolvedValue(undefined),
 			removeTaskFromStack: vi.fn().mockResolvedValue(undefined),
 			refreshWorkspace: vi.fn().mockResolvedValue(undefined),
 			postMessageToWebview,
@@ -188,6 +189,7 @@ describe("registerCommands", () => {
 		expect(visibleProvider.startBlankTask).not.toHaveBeenCalled()
 		expect(visibleProvider.removeTaskFromStack).not.toHaveBeenCalled()
 		expect(visibleProvider.refreshWorkspace).not.toHaveBeenCalled()
+		expect(visibleProvider.focusInput).toHaveBeenCalledTimes(1)
 		expect(visibleProvider.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 			type: "action",
 			action: "newChatButtonClicked",
@@ -218,6 +220,7 @@ describe("registerCommands", () => {
 		async (command, messages) => {
 			const sidebar = {
 				postMessageToWebview: vi.fn().mockResolvedValue(undefined),
+				focusInput: vi.fn().mockResolvedValue(undefined),
 				startBlankTask: vi.fn(),
 				refreshWorkspace: vi.fn(),
 			} as unknown as AlphaProvider
@@ -243,6 +246,7 @@ describe("registerCommands", () => {
 			expect(sidebar.startBlankTask).not.toHaveBeenCalled()
 			expect(sidebar.refreshWorkspace).not.toHaveBeenCalled()
 			expect(editor.startBlankTask).not.toHaveBeenCalled()
+			if (command === "sidebarNewChat") expect(sidebar.focusInput).toHaveBeenCalledTimes(3)
 		},
 	)
 
@@ -307,6 +311,7 @@ describe("registerCommands", () => {
 	it("reveals Alpha when starting a new chat without a visible view", async () => {
 		const sidebar = {
 			startBlankTask: vi.fn(),
+			focusInput: vi.fn().mockResolvedValue(undefined),
 			refreshWorkspace: vi.fn(),
 			postMessageToWebview: vi.fn(),
 		} as unknown as AlphaProvider
@@ -322,11 +327,44 @@ describe("registerCommands", () => {
 			.mock.calls.find(([id]) => id === "alpha.plusButtonClicked")![1]
 		await callback()
 		expect(AlphaProvider.getInstance).toHaveBeenCalledTimes(1)
+		expect(sidebar.focusInput).toHaveBeenCalledTimes(1)
 		expect(sidebar.startBlankTask).not.toHaveBeenCalled()
 		expect(sidebar.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 			type: "action",
 			action: "newChatButtonClicked",
 		})
+	})
+
+	it.each(["editor", "sidebar"])("focuses the originating %s before requesting New Chat", async (surface) => {
+		const sidebar = {
+			focusInput: vi.fn().mockResolvedValue(undefined),
+			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		const editor = {
+			focusInput: vi.fn().mockResolvedValue(undefined),
+			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		vi.mocked(AlphaProvider.getVisibleInstance).mockReturnValue(editor)
+		registerCommands({
+			context: { subscriptions: [] } as unknown as vscode.ExtensionContext,
+			outputChannel: mockOutputChannel,
+			provider: sidebar,
+		})
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === "alpha.plusButtonClicked")![1]
+
+		await callback(surface === "sidebar" ? "sidebar" : undefined)
+
+		const target = surface === "sidebar" ? sidebar : editor
+		const other = surface === "sidebar" ? editor : sidebar
+		expect(target.focusInput).toHaveBeenCalledTimes(1)
+		expect(target.postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "newChatButtonClicked" })
+		expect(vi.mocked(target.focusInput).mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(target.postMessageToWebview).mock.invocationCallOrder[0],
+		)
+		expect(other.focusInput).not.toHaveBeenCalled()
+		expect(other.postMessageToWebview).not.toHaveBeenCalled()
 	})
 
 	it("focuses the visible provider's composer even when it is an editor chat", async () => {

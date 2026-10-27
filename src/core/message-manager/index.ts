@@ -75,15 +75,15 @@ export class MessageManager {
 	 *
 	 * @param ts - The timestamp to rewind to
 	 * @param options - Rewind options
-	 * @throws Error if timestamp not found in clineMessages
+	 * @throws Error if timestamp not found in alphaMessages
 	 */
 	async rewindToTimestamp(ts: number, options: RewindOptions = {}): Promise<void> {
 		const { includeTargetMessage = false, skipCleanup = false } = options
 
-		// Find the index in clineMessages
-		const alphaIndex = this.task.clineMessages.findIndex((m) => m.ts === ts)
+		// Find the index in alphaMessages
+		const alphaIndex = this.task.alphaMessages.findIndex((m) => m.ts === ts)
 		if (alphaIndex === -1) {
-			throw new Error(`Message with timestamp ${ts} not found in clineMessages`)
+			throw new Error(`Message with timestamp ${ts} not found in alphaMessages`)
 		}
 
 		// Calculate the actual cutoff index
@@ -93,14 +93,14 @@ export class MessageManager {
 	}
 
 	/**
-	 * Rewind conversation to a specific index in clineMessages.
+	 * Rewind conversation to a specific index in alphaMessages.
 	 * Keeps messages [0, toIndex) and removes [toIndex, end].
 	 *
 	 * @param toIndex - The index to rewind to (exclusive)
 	 * @param options - Rewind options
 	 */
 	async rewindToIndex(toIndex: number, options: RewindOptions = {}): Promise<void> {
-		const cutoffTs = this.task.clineMessages[toIndex]?.ts ?? Date.now()
+		const cutoffTs = this.task.alphaMessages[toIndex]?.ts ?? Date.now()
 		await this.performRewind(toIndex, cutoffTs, options)
 	}
 
@@ -111,8 +111,8 @@ export class MessageManager {
 		const { skipCleanup = false } = options
 		const artifactCandidates = skipCleanup
 			? undefined
-			: collectArtifactExecutionIds([...this.task.clineMessages, ...this.task.apiConversationHistory])
-		const firstMessage = this.task.clineMessages[0]
+			: collectArtifactExecutionIds([...this.task.alphaMessages, ...this.task.apiConversationHistory])
+		const firstMessage = this.task.alphaMessages[0]
 		const replacesOpeningPrompt =
 			firstMessage?.ts === cutoffTs && firstMessage.type === "say" && firstMessage.say === "text"
 
@@ -121,14 +121,14 @@ export class MessageManager {
 
 		// Calculate both projections before persisting either. The task commits the durable
 		// rollback receipt first, so reload can distinguish this deletion from crash damage.
-		const uiMessages = this.task.clineMessages.slice(0, toIndex)
+		const uiMessages = this.task.alphaMessages.slice(0, toIndex)
 		const apiHistory = this.truncateApiHistoryWithCleanup(cutoffTs, removedIds, skipCleanup, replacesOpeningPrompt)
 		if ((await this.task.commitConversationRewind(uiMessages, apiHistory)) !== true) {
 			throw new Error("Conversation rewind could not be persisted")
 		}
 		if (artifactCandidates && this.isArtifactCleanupIdle()) {
 			const retainedIds = collectArtifactExecutionIds([
-				...this.task.clineMessages,
+				...this.task.alphaMessages,
 				...this.task.apiConversationHistory,
 			])
 			await this.cleanupOrphanedArtifacts(retainedIds, artifactCandidates)
@@ -140,15 +140,15 @@ export class MessageManager {
 	 * that will be removed during the rewind.
 	 *
 	 * This is critical for maintaining the linkage between:
-	 * - condense_context (clineMessage) ↔ Summary (apiMessage)
-	 * - sliding_window_truncation (clineMessage) ↔ Truncation marker (apiMessage)
+	 * - condense_context (alphaMessage) ↔ Summary (apiMessage)
+	 * - sliding_window_truncation (alphaMessage) ↔ Truncation marker (apiMessage)
 	 */
 	private collectRemovedContextEventIds(fromIndex: number): ContextEventIds {
 		const condenseIds = new Set<string>()
 		const truncationIds = new Set<string>()
 
-		for (let i = fromIndex; i < this.task.clineMessages.length; i++) {
-			const msg = this.task.clineMessages[i]
+		for (let i = fromIndex; i < this.task.alphaMessages.length; i++) {
+			const msg = this.task.alphaMessages[i]
 
 			// Collect condenseIds from condense_context events
 			if (msg.say === "condense_context" && msg.contextCondense?.condenseId) {
@@ -169,9 +169,9 @@ export class MessageManager {
 	 * The caller commits this together with the UI projection through the task.
 	 *
 	 * Note on timestamp handling:
-	 * Due to async execution during streaming, clineMessage timestamps may not
+	 * Due to async execution during streaming, alphaMessage timestamps may not
 	 * perfectly align with API message timestamps. Specifically, a "user_feedback"
-	 * clineMessage can have a timestamp BEFORE the assistant API message that
+	 * alphaMessage can have a timestamp BEFORE the assistant API message that
 	 * triggered it (because tool execution happens concurrently with stream
 	 * completion). To handle this race condition, we find the first API user
 	 * message at or after the cutoff and use its timestamp as the actual boundary.
@@ -195,7 +195,7 @@ export class MessageManager {
 
 		if (!hasExactMatch && hasMessageBeforeCutoff) {
 			// No exact match but there are earlier messages means we might have a race
-			// condition where the clineMessage timestamp is earlier than any API message
+			// condition where the alphaMessage timestamp is earlier than any API message
 			// due to async execution. In this case, look for the first API user message
 			// at or after the cutoff to use as the actual boundary.
 			// This ensures assistant messages that preceded the user's response are preserved.
@@ -285,7 +285,7 @@ export class MessageManager {
 					return (
 						this.isArtifactCleanupIdle() &&
 						!collectArtifactExecutionIds([
-							...this.task.clineMessages,
+							...this.task.alphaMessages,
 							...this.task.apiConversationHistory,
 						]).has(id)
 					)

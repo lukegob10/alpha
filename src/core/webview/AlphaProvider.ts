@@ -402,7 +402,7 @@ const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => 
 // authorization. Changing mode here leaves the prompt and transcript intact.
 const isTaskAwaitingContinuation = (task: Task): boolean => {
 	if (!task.hasPendingAsk?.()) return false
-	const ask = task.taskAsk ?? task.clineMessages.at(-1)
+	const ask = task.taskAsk ?? task.alphaMessages.at(-1)
 	return (
 		ask?.type === "ask" &&
 		ask.partial !== true &&
@@ -553,7 +553,7 @@ export class AlphaProvider
 	private taskStack: Task[] = []
 	private taskCreationQueue: Promise<void> = Promise.resolve()
 	private taskSessions: TaskSessionRegistry
-	/** Canonical lifecycle state is projected independently from ClineMessages. */
+	/** Canonical lifecycle state is projected independently from AlphaMessages. */
 	private readonly agentLifecycleProjector: AgentLifecycleProjector
 	/** Durable journals are opened lazily for canonical lifecycle producers. */
 	private readonly agentLifecycleJournals = new Map<string, Promise<AgentLifecycleJournal>>()
@@ -655,7 +655,7 @@ export class AlphaProvider
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 
 	/** Independent wire-order guards for task-view state domains. */
-	private clineMessagesSeq = 0
+	private alphaMessagesSeq = 0
 	private taskStateSeq = 0
 	/** Latest task open wins. Older navigations must not focus or publish over it. */
 	private taskNavigationGeneration = 0
@@ -1119,7 +1119,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.12-chat-controls-and-diagrams"
+	public readonly latestAnnouncementId = "october-2026-v3.2.13-alpha-cleanup-and-new-chat"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1239,7 +1239,7 @@ export class AlphaProvider
 					return
 				}
 				const parentWasWaiting = this.independentTaskWaiters.has(taskId)
-				const completion = this.getIndependentCompletionMessage(instance.clineMessages)
+				const completion = this.getIndependentCompletionMessage(instance.alphaMessages)
 				void this.completeTaskLifecycle(taskId, tokenUsage, toolUsage, { rootAlreadyPrepared: true }).then(
 					() => {
 						if (instance.orchestrationParentTaskId) {
@@ -2538,7 +2538,7 @@ export class AlphaProvider
 						)
 						context = {
 							taskIdSha256: hashAgentTurnEvidenceId(task.taskId),
-							messageCount: task.clineMessages.length,
+							messageCount: task.alphaMessages.length,
 							apiMessageCount: task.apiConversationHistory.length,
 							phase: phase.success ? phase.data : undefined,
 						}
@@ -3741,12 +3741,12 @@ export class AlphaProvider
 		const currentView = this.currentView
 		const visibleTaskId = currentView.type === "task" ? currentView.taskId : undefined
 		const transcriptRevision = visibleTaskId ? this.taskSessions.markTranscriptChanged(visibleTaskId) : undefined
-		const clineMessagesSeq = ++this.clineMessagesSeq
+		const alphaMessagesSeq = ++this.alphaMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview()
-		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
+		Object.assign(state, { alphaMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const selectionIsCurrent =
 			navigationGeneration === this.taskNavigationGeneration && currentView === this.currentView
 		const publications = selectionIsCurrent ? [this.postMessageToWebview({ type: "state", state })] : []
@@ -3780,7 +3780,7 @@ export class AlphaProvider
 	async postTaskMessageToWebview(
 		type: "messageCreated" | "messageUpdated",
 		taskId: string,
-		clineMessage: AlphaMessage,
+		alphaMessage: AlphaMessage,
 	): Promise<void> {
 		this.taskSessions.markActivity(taskId)
 		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
@@ -3790,9 +3790,9 @@ export class AlphaProvider
 		// older broadcast from superseding a newer update on a later view.
 		for (const provider of this.getHostProviders()) {
 			if (provider._disposed) continue
-			const clineMessagesSeq = ++provider.clineMessagesSeq
+			const alphaMessagesSeq = ++provider.alphaMessagesSeq
 			publications.push(
-				provider.postMessageToWebview({ type, taskId, clineMessage, clineMessagesSeq, liveTask }).then(() => {
+				provider.postMessageToWebview({ type, taskId, alphaMessage, alphaMessagesSeq, liveTask }).then(() => {
 					if (provider.isTaskSelected(taskId) && provider.publishedTaskTranscriptRevisions.has(taskId)) {
 						provider.recordPublishedTaskTranscript(taskId, transcriptRevision)
 					}
@@ -3805,7 +3805,7 @@ export class AlphaProvider
 			await this.htmlDocumentAutoOpen.handle(
 				task,
 				taskId,
-				clineMessage,
+				alphaMessage,
 				() =>
 					!this._disposed &&
 					!task.abort &&
@@ -3838,8 +3838,8 @@ export class AlphaProvider
 						messageQueueSeq,
 						...(task
 							? {
-									clineMessages: task.clineMessages,
-									clineMessagesSeq: ++provider.clineMessagesSeq,
+									alphaMessages: task.alphaMessages,
+									alphaMessagesSeq: ++provider.alphaMessagesSeq,
 									taskStateSeq: provider.taskStateSeq,
 								}
 							: {}),
@@ -4570,7 +4570,7 @@ export class AlphaProvider
 			options.includeTranscript === false || !currentTaskId
 				? undefined
 				: this.taskSessions.markTranscriptChanged(currentTaskId)
-		const clineMessagesSeq = ++this.clineMessagesSeq
+		const alphaMessagesSeq = ++this.alphaMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
@@ -4606,10 +4606,10 @@ export class AlphaProvider
 			liveTaskIds: this.getLiveTaskIds(),
 			liveTasksById: this.getLiveTaskMetadata(),
 			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
-			clineMessages: options.includeTranscript === false ? [] : (currentTask?.clineMessages ?? []),
+			alphaMessages: options.includeTranscript === false ? [] : (currentTask?.alphaMessages ?? []),
 			messageQueue:
 				currentTask?.messageQueueService?.visibleMessages ?? currentTask?.messageQueueService?.messages,
-			clineMessagesSeq,
+			alphaMessagesSeq,
 			taskStateSeq,
 			messageQueueSeq,
 			currentTaskTodosSeq,
@@ -4647,8 +4647,8 @@ export class AlphaProvider
 		const task = this.getLiveTask(taskId)
 		if (!task) return
 		const transcriptRevision = this.taskSessions.getTranscriptRevision(taskId)
-		const clineMessages = task.clineMessages
-		const clineMessagesSeq = ++this.clineMessagesSeq
+		const alphaMessages = task.alphaMessages
+		const alphaMessagesSeq = ++this.alphaMessagesSeq
 		if (!this.canPublishTranscript(taskId, taskStateSeq, navigationGeneration)) return
 		await this.postMessageToWebview({
 			type: "state",
@@ -4656,8 +4656,8 @@ export class AlphaProvider
 				currentTaskId: taskId,
 				currentView: { type: "task", taskId },
 				taskStateSeq,
-				clineMessages,
-				clineMessagesSeq,
+				alphaMessages,
+				alphaMessagesSeq,
 			},
 		})
 		this.recordPublishedTaskTranscript(taskId, transcriptRevision)
@@ -4685,7 +4685,7 @@ export class AlphaProvider
 	 * Publish live-task metadata without reserializing the transcript or settings.
 	 *
 	 * Token usage, lifecycle ticks, and snapshot updates used to ship a full
-	 * extension snapshot minus taskHistory. That still copied clineMessages on
+	 * extension snapshot minus taskHistory. That still copied alphaMessages on
 	 * every heartbeat and stalled the webview. Keep those paths on this patch.
 	 */
 	async postTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean } = {}): Promise<void> {
@@ -4766,13 +4766,13 @@ export class AlphaProvider
 	async postStateToWebviewWithoutTaskHistory(): Promise<void> {
 		const navigationGeneration = this.taskNavigationGeneration
 		const currentView = this.currentView
-		const clineMessagesSeq = ++this.clineMessagesSeq
+		const alphaMessagesSeq = ++this.alphaMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
 		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
 		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
-		Object.assign(state, { clineMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
+		Object.assign(state, { alphaMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const { taskHistory: _omit, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
 		await this.restoreSupersededManagedAgentTree(
@@ -4784,11 +4784,11 @@ export class AlphaProvider
 	}
 
 	/**
-	 * Like postStateToWebview but intentionally omits both clineMessages and taskHistory.
+	 * Like postStateToWebview but intentionally omits both alphaMessages and taskHistory.
 	 *
 	 * Rationale:
 	 * - Mode changes trigger state pushes that have nothing to do with chat messages. Including
-	 *   clineMessages in these pushes creates race conditions where a stale snapshot of clineMessages
+	 *   alphaMessages in these pushes creates race conditions where a stale snapshot of alphaMessages
 	 *   overwrites newer messages the task has streamed in the meantime.
 	 */
 	async postStateToWebviewWithoutAlphaMessages(): Promise<void> {
@@ -4800,7 +4800,7 @@ export class AlphaProvider
 		const state = await this.getStateToPostToWebview({ includeTaskHistory: false })
 		if (navigationGeneration !== this.taskNavigationGeneration || currentView !== this.currentView) return
 		Object.assign(state, { taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
-		const { clineMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
+		const { alphaMessages: _omitMessages, taskHistory: _omitHistory, ...rest } = state
 		await this.postMessageToWebview({ type: "state", state: rest })
 		await this.restoreSupersededManagedAgentTree(
 			state.managedAgentTree,
@@ -5229,7 +5229,7 @@ export class AlphaProvider
 			maxWorkspaceFiles,
 			disabledTools,
 			telemetrySetting,
-			showRooIgnoredFiles,
+			showAlphaIgnoredFiles,
 			enableSubfolderRules,
 			language,
 			maxImageFileSize,
@@ -5356,7 +5356,7 @@ export class AlphaProvider
 			agentLifecycleDegraded: this.getAgentLifecycleDegraded(),
 			managedAgentTree,
 			currentTaskItem: currentTask?.taskId ? this.taskHistoryStore.get(currentTask.taskId) : undefined,
-			clineMessages: currentTask?.clineMessages || [],
+			alphaMessages: currentTask?.alphaMessages || [],
 			currentTaskTodos: currentTask?.todoList || [],
 			messageQueue:
 				currentTask?.messageQueueService?.visibleMessages ?? currentTask?.messageQueueService?.messages,
@@ -5406,7 +5406,7 @@ export class AlphaProvider
 			telemetrySetting,
 			telemetryKey,
 			machineId,
-			showRooIgnoredFiles: showRooIgnoredFiles ?? false,
+			showAlphaIgnoredFiles: showAlphaIgnoredFiles ?? false,
 			enableSubfolderRules: enableSubfolderRules ?? false,
 			language: language ?? formatLanguage(vscode.env.language),
 			renderContext: this.renderContext,
@@ -5478,7 +5478,7 @@ export class AlphaProvider
 	async getState({ includeTaskHistory = true }: { includeTaskHistory?: boolean } = {}): Promise<
 		Omit<
 			ExtensionState,
-			"clineMessages" | "renderContext" | "hasOpenedModeSelector" | "version" | "shouldShowAnnouncement"
+			"alphaMessages" | "renderContext" | "hasOpenedModeSelector" | "version" | "shouldShowAnnouncement"
 		>
 	> {
 		const stateValues = this.contextProxy.getValues()
@@ -5568,7 +5568,7 @@ export class AlphaProvider
 			maxWorkspaceFiles: stateValues.maxWorkspaceFiles ?? 200,
 			disabledTools: stateValues.disabledTools,
 			telemetrySetting: stateValues.telemetrySetting || "unset",
-			showRooIgnoredFiles: stateValues.showRooIgnoredFiles ?? false,
+			showAlphaIgnoredFiles: stateValues.showAlphaIgnoredFiles ?? false,
 			enableSubfolderRules: stateValues.enableSubfolderRules ?? false,
 			maxImageFileSize: stateValues.maxImageFileSize ?? 5,
 			maxTotalImageSize: stateValues.maxTotalImageSize ?? 20,
@@ -5880,7 +5880,7 @@ export class AlphaProvider
 	}
 
 	get messages() {
-		return this.getCurrentTask()?.clineMessages || []
+		return this.getCurrentTask()?.alphaMessages || []
 	}
 
 	public getMcpHub(): McpHub | undefined {
@@ -6262,7 +6262,7 @@ export class AlphaProvider
 			return
 		}
 
-		const latestMessage = task.clineMessages.at(-1)
+		const latestMessage = task.alphaMessages.at(-1)
 		const hasCompletionCandidate =
 			task.taskAsk?.ask === "completion_result" ||
 			(latestMessage?.type === "ask" && latestMessage.ask === "completion_result")
@@ -6586,7 +6586,7 @@ export class AlphaProvider
 							: undefined,
 			apiMessages,
 			lifecycleEvents,
-			uiMessages: task?.clineMessages,
+			uiMessages: task?.alphaMessages,
 			options,
 		})
 	}
@@ -6621,7 +6621,7 @@ export class AlphaProvider
 					? [...source.task.apiConversationHistory]
 					: await readThreadApiMessages(sourceTaskId, globalStoragePath, signal)
 			const uiMessages = source.task
-				? [...source.task.clineMessages]
+				? [...source.task.alphaMessages]
 				: await readTaskMessages({ taskId: sourceTaskId, globalStoragePath, requireExisting: true })
 			// UI restoration uses the lifecycle ownership fence rather than this
 			// control queue. Never copy a cold snapshot after a new producer appeared.
@@ -6886,7 +6886,7 @@ export class AlphaProvider
 						const resolvedLifecycle = lifecycle ?? latest.lifecycle
 						const completion =
 							kind === "changed" && resolvedLifecycle === "completed" && ownsCompletionReceipt
-								? this.getIndependentCompletionMessage(task.clineMessages)
+								? this.getIndependentCompletionMessage(task.alphaMessages)
 								: undefined
 						try {
 							if (completion) await this.notifyIndependentTaskCompletion(task, true, completion)
@@ -7039,7 +7039,7 @@ export class AlphaProvider
 	private async notifyIndependentTaskCompletion(
 		child: Task,
 		parentWasWaiting = false,
-		completion = this.getIndependentCompletionMessage(child.clineMessages),
+		completion = this.getIndependentCompletionMessage(child.alphaMessages),
 	): Promise<void> {
 		if (!child.orchestrationParentTaskId || child.orchestrationNotifyCompletion === false || !completion) return
 		const owner = this.getTaskOwner(child.taskId)
@@ -7653,7 +7653,7 @@ export class AlphaProvider
 			...(currentHistory?.forkedFromId ? { forked_from_id: currentHistory.forkedFromId } : {}),
 		}
 		if (!includeResult || !this.isCrossTaskTerminal(lifecycle)) return record
-		let messages = task?.clineMessages
+		let messages = task?.alphaMessages
 		if (!messages) {
 			messages = await readTaskMessages({
 				taskId,
@@ -9487,7 +9487,7 @@ export class AlphaProvider
 		// the admitted control row is pending, even if the runner has already started.
 		let pendingContinuationSummary: SubagentGroupState | undefined =
 			controlRecord.pendingFollowupEventId &&
-			!parent.clineMessages.some(
+			!parent.alphaMessages.some(
 				(message) =>
 					message.subagentGroup?.groupId === prepared.group.groupId &&
 					message.subagentGroup.parentTaskId === parent.taskId &&
@@ -10260,7 +10260,7 @@ export class AlphaProvider
 
 	private async refreshParentVerificationProjections(parent: Task): Promise<void> {
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
-		for (const message of parent.clineMessages) {
+		for (const message of parent.alphaMessages) {
 			const group = message.subagentGroup
 			if (!group || group.parentTaskId !== parent.taskId) continue
 			let changed = false
@@ -10291,7 +10291,7 @@ export class AlphaProvider
 		)
 			return
 		await this.agentControlStoreReady
-		for (const message of parent.clineMessages) {
+		for (const message of parent.alphaMessages) {
 			const projectedGroup = message.subagentGroup
 			if (!projectedGroup || projectedGroup.parentTaskId !== parent.taskId) continue
 			const retainedGroup = this.preparedSubagentGroups.get(projectedGroup.groupId)?.group
@@ -12464,8 +12464,8 @@ export class AlphaProvider
 		}
 
 		const persistedMessages =
-			parent.clineMessages.length > 0
-				? parent.clineMessages
+			parent.alphaMessages.length > 0
+				? parent.alphaMessages
 				: await readTaskMessages({
 						taskId: parent.taskId,
 						globalStoragePath: this.context.globalStorageUri.fsPath,
@@ -13479,7 +13479,7 @@ export class AlphaProvider
 					// A retained follow-up shares its transcript with earlier runs. Use the
 					// messages emitted after this run's listeners were installed instead of
 					// comparing millisecond timestamps, which can collide.
-					const resultMessages = followupInstruction ? currentRunMessages : child.clineMessages
+					const resultMessages = followupInstruction ? currentRunMessages : child.alphaMessages
 					const inspectedPaths = this.getSubagentInspectedPaths(resultMessages)
 					const summary =
 						summaryOverride ??
@@ -13974,7 +13974,7 @@ export class AlphaProvider
 
 	private getWorkerChangeSetTarget(parentTaskId: string, groupId: string, changeSetId: string) {
 		const parent = this.getLiveTask(parentTaskId)
-		const group = parent?.clineMessages.find(
+		const group = parent?.alphaMessages.find(
 			(message) => message.say === "subagent_group" && message.subagentGroup?.groupId === groupId,
 		)?.subagentGroup
 		const agent = group?.agents.find((item) => item.changeSet?.id === changeSetId)
@@ -14135,7 +14135,7 @@ export class AlphaProvider
 		// including when current policy requires explicit approval for new writes.
 		await this.synchronizeParentVerificationObligations(parent)
 
-		const pendingChangeSets = parent.clineMessages.flatMap((message) => {
+		const pendingChangeSets = parent.alphaMessages.flatMap((message) => {
 			const group = message.subagentGroup
 			if (!group || group.parentTaskId !== parentTaskId) return []
 			return group.agents
@@ -14629,7 +14629,7 @@ export class AlphaProvider
 	private getRetainedSubagentRuntimeCandidates() {
 		const candidates = new Map<string, { taskId: string; task?: Task; runId?: string; completedAt: number }>()
 		for (const task of this.taskSessions.getTerminalSubagentTasks()) {
-			candidates.set(task.taskId, { taskId: task.taskId, task, completedAt: task.clineMessages.at(-1)?.ts ?? 0 })
+			candidates.set(task.taskId, { taskId: task.taskId, task, completedAt: task.alphaMessages.at(-1)?.ts ?? 0 })
 		}
 		for (const snapshot of this.asyncSubagentRunManager.listSnapshots()) {
 			if (["pending", "running", "cancelling"].includes(snapshot.status)) continue
@@ -14872,7 +14872,7 @@ export class AlphaProvider
 			.filter((provider) => provider.isTaskSelected(parentTaskId))
 			.map((provider) => ({ provider, generation: provider.taskNavigationGeneration }))
 		const childRunsInBackground = !this.isTaskSelected(parentTaskId)
-		const initiatingAsk = findLast(parent.clineMessages, (entry) => {
+		const initiatingAsk = findLast(parent.alphaMessages, (entry) => {
 			if (entry.type !== "ask" || entry.ask !== "tool" || !entry.text) return false
 			try {
 				return JSON.parse(entry.text).tool === "newTask"
@@ -14937,7 +14937,7 @@ export class AlphaProvider
 				await saveTaskMessages({
 					taskId: parentTaskId,
 					globalStoragePath: this.contextProxy.globalStorageUri.fsPath,
-					messages: parent.clineMessages,
+					messages: parent.alphaMessages,
 				})
 			}
 			const { historyItem } = await this.getTaskWithId(parentTaskId, { includeApiConversationHistory: false })

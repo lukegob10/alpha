@@ -131,7 +131,7 @@ function harness() {
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: [{ role: "user", content: "original request" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		currentTaskToolSurface: currentSurface,

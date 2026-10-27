@@ -84,7 +84,7 @@ describe("ContextManagementSettings", () => {
 		autoCondenseContextPercent: 80,
 		maxOpenTabsContext: 20,
 		maxWorkspaceFiles: 200,
-		showRooIgnoredFiles: false,
+		showAlphaIgnoredFiles: false,
 		includeDiagnosticMessages: true,
 		maxDiagnosticMessages: 50,
 		writeDelayMs: 1000,
@@ -191,7 +191,7 @@ describe("ContextManagementSettings", () => {
 		expect(screen.getByTestId("workspace-files-limit-slider")).toBeInTheDocument()
 
 		// Check for checkboxes
-		expect(screen.getByTestId("show-rooignored-files-checkbox")).toBeInTheDocument()
+		expect(screen.getByTestId("show-alphaignored-files-checkbox")).toBeInTheDocument()
 		expect(screen.getByTestId("auto-condense-context-checkbox")).toBeInTheDocument()
 	})
 
@@ -444,7 +444,7 @@ describe("ContextManagementSettings", () => {
 	it("handles undefined optional props gracefully", () => {
 		const propsWithUndefined = {
 			...defaultProps,
-			showRooIgnoredFiles: undefined,
+			showAlphaIgnoredFiles: undefined,
 		}
 
 		expect(() => {
@@ -489,7 +489,7 @@ describe("ContextManagementSettings", () => {
 
 			expect(screen.getByTestId("open-tabs-limit-slider")).toBeInTheDocument()
 			expect(screen.getByTestId("workspace-files-limit-slider")).toBeInTheDocument()
-			expect(screen.getByTestId("show-rooignored-files-checkbox")).toBeInTheDocument()
+			expect(screen.getByTestId("show-alphaignored-files-checkbox")).toBeInTheDocument()
 		})
 	})
 

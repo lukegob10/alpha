@@ -171,7 +171,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		mockTask1 = {
 			taskId: "task-1",
 			instanceId: "instance-1",
-			clineMessages: [],
+			alphaMessages: [],
 			emit: vi.fn(),
 			abortTask: vi.fn().mockResolvedValue(undefined),
 			abandoned: false,
@@ -183,7 +183,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		mockTask2 = {
 			taskId: "task-1", // Same ID for rehydration scenario
 			instanceId: "instance-2", // Different instance
-			clineMessages: [],
+			alphaMessages: [],
 			emit: vi.fn(),
 			on: vi.fn(),
 			off: vi.fn(),
@@ -245,16 +245,16 @@ describe("AlphaProvider flicker-free cancel", () => {
 		const order: string[] = []
 		const preservedMessage = { ts: 1, type: "say", say: "text", text: "Preserve this transcript" }
 		let persistedMessages: unknown[] = []
-		mockTask1.clineMessages = [preservedMessage]
+		mockTask1.alphaMessages = [preservedMessage]
 		mockTask1.abortTask = vi.fn(async () => {
 			order.push("abort-started")
 			await Promise.resolve()
-			persistedMessages = structuredClone(mockTask1.clineMessages)
+			persistedMessages = structuredClone(mockTask1.alphaMessages)
 			order.push("transcript-persisted")
 		})
 		vi.mocked(Task).mockImplementation(function () {
 			order.push("replacement-constructed")
-			return { ...mockTask2, clineMessages: structuredClone(persistedMessages) } as any
+			return { ...mockTask2, alphaMessages: structuredClone(persistedMessages) } as any
 		})
 		;(provider as any).taskStack = [mockTask1]
 
@@ -270,7 +270,7 @@ describe("AlphaProvider flicker-free cancel", () => {
 		})
 
 		expect(order).toEqual(["abort-started", "transcript-persisted", "replacement-constructed"])
-		expect((provider as any).taskStack[0].clineMessages).toEqual([preservedMessage])
+		expect((provider as any).taskStack[0].alphaMessages).toEqual([preservedMessage])
 	})
 
 	it("waits for cancellation persistence before starting rehydration", async () => {

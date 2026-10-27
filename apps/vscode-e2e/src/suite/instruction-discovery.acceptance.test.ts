@@ -115,7 +115,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 						sidebarProvider: {
 							getLiveTask(
 								taskId: string,
-							): { clineMessages: Array<{ partial?: boolean; text?: string }> } | undefined
+							): { alphaMessages: Array<{ partial?: boolean; text?: string }> } | undefined
 						}
 					}
 				).sidebarProvider
@@ -165,7 +165,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 					() =>
 						provider
 							.getLiveTask(taskId!)
-							?.clineMessages.some(
+							?.alphaMessages.some(
 								(message) =>
 									!message.partial && message.text === "Instruction discovery completed visibly.",
 							) ?? false,

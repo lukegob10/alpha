@@ -57,7 +57,7 @@ vi.mock("../../task/Task", () => ({
 		return {
 			taskId: options.taskId || "test-task-id",
 			saveAlphaMessages: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),

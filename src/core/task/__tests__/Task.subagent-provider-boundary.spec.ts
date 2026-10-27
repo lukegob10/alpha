@@ -110,7 +110,7 @@ function harness(apiConfigName: string | undefined, approvalMode: "ask" | "auto"
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: [{ role: "user", content: "Original human request" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		getTaskMode: vi.fn(async () => "code"),

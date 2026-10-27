@@ -53,7 +53,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 			if (!accessAllowed) {
 				callbacks.setResultMetadata?.({ status: "denied" })
-				await task.say("rooignore_error", relPath)
+				await task.say("alphaignore_error", relPath)
 				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
 			}
@@ -225,7 +225,7 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 
 			// Track file edit operation
 			if (relPath) {
-				await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
+				await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
 			}
 
 			// Used to determine if we should wait for busy terminal to update before sending api request

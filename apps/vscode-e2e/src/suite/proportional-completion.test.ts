@@ -55,7 +55,7 @@ interface CompletionTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: { ask?: string }
-	clineMessages: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
+	alphaMessages: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	getCompletionGateDecision(): Promise<GateDecision>
 	getCompletionStageMetrics?: () => CompletionMetrics
 	beginCommandExecution(callId: string, executionId: string, command: string): void
@@ -384,7 +384,7 @@ suite("Alpha proportional completion settlement measurements", function () {
 						assert.equal(task.abort, false)
 						assert.equal(observation.completedEvents, 1)
 						assert.equal(observation.completionReviewAcknowledgements, 0)
-						assert.ok(!task.clineMessages.some((message) => message.ask === "completion_result"))
+						assert.ok(!task.alphaMessages.some((message) => message.ask === "completion_result"))
 						assert.equal(observation.allowedGateObserved, true)
 						assert.ok(observation.firstGateAt !== undefined && observation.settledAt !== undefined)
 						assert.equal(
@@ -399,14 +399,14 @@ suite("Alpha proportional completion settlement measurements", function () {
 							}),
 						)
 						assert.ok(
-							task.clineMessages.some(
+							task.alphaMessages.some(
 								(message) =>
 									(message.say === "text" || message.say === "completion_result") &&
 									!message.partial &&
 									message.text === ANSWER,
 							),
 						)
-						assert.ok(!task.clineMessages.some((message) => message.ask === "resume_task"))
+						assert.ok(!task.alphaMessages.some((message) => message.ask === "resume_task"))
 						assert.ok(
 							!provider.agentControlStore
 								.getVerificationObligations({ parentTaskId: task.taskId })

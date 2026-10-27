@@ -84,3 +84,31 @@ describe("ErrorRow diagnostics download", () => {
 		expect(typeof payload.values.timestamp).toBe("string")
 	})
 })
+
+describe("ErrorRow documentation links", () => {
+	it.each([
+		{
+			url: "alpha://settings",
+			expectedMessage: { type: "switchTab", tab: "settings", values: { section: "providers" } },
+		},
+		{
+			url: "https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows",
+			expectedMessage: {
+				type: "openExternal",
+				url: "https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows",
+			},
+		},
+	])("routes $url to its intended destination", ({ url, expectedMessage }) => {
+		const mockPostMessage = vi.mocked(vscode.postMessage)
+		mockPostMessage.mockClear()
+
+		render(<ErrorRow type="api_failure" message="Request failed" docsURL={url} />)
+
+		const link = screen.getByRole("link")
+		expect(link).toHaveAttribute("href", url)
+		fireEvent.click(link)
+
+		expect(mockPostMessage).toHaveBeenCalledTimes(1)
+		expect(mockPostMessage).toHaveBeenCalledWith(expectedMessage)
+	})
+})

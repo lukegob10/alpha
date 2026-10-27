@@ -138,7 +138,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					if (ignored) {
 						files[index].reason = `Access denied by .alphaignore: ${ignored}`
 						if (status === "success") status = "denied"
-						await task.say("rooignore_error", ignored)
+						await task.say("alphaignore_error", ignored)
 						continue
 					}
 					const absolutePath = path.resolve(task.cwd, hunk.path)
@@ -444,7 +444,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		onApplied()
 		// Track file edit operation
-		await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
+		await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
 		task.didEditFile = true
 
 		const message = await task.diffViewProvider.pushToolWriteResult(task, task.cwd, true)
@@ -611,7 +611,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		if (effectiveMovePath && moveAbsolutePath) {
 			const moveAccessAllowed = task.alphaIgnoreController?.validateAccess(effectiveMovePath)
 			if (!moveAccessAllowed) {
-				await task.say("rooignore_error", effectiveMovePath)
+				await task.say("alphaignore_error", effectiveMovePath)
 				await task.diffViewProvider.reset()
 				return { status: "error", result: formatResponse.alphaIgnoreError(effectiveMovePath) }
 			}
@@ -719,7 +719,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			// The destination is committed even if cancellation or source cleanup
 			// prevents the move from finishing. Preserve that effect in the receipt.
 			onApplied()
-			await task.fileContextTracker.trackFileContext(effectiveMovePath, "roo_edited" as RecordSource)
+			await task.fileContextTracker.trackFileContext(effectiveMovePath, "alpha_edited" as RecordSource)
 			const cancelledMove = async (): Promise<ApplyPatchChangeOutcome> => {
 				await task.diffViewProvider.reset()
 				task.processQueuedMessages()
@@ -781,7 +781,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 
 			onApplied()
-			await task.fileContextTracker.trackFileContext(relPath, "roo_edited" as RecordSource)
+			await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
 		}
 
 		task.didEditFile = true

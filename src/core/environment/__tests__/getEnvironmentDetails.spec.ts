@@ -94,7 +94,7 @@ describe("getEnvironmentDetails", () => {
 			experiments: {},
 			customInstructions: "test instructions",
 			language: "en",
-			showRooIgnoredFiles: false,
+			showAlphaIgnoredFiles: false,
 		}
 
 		mockProvider = {
@@ -122,7 +122,7 @@ describe("getEnvironmentDetails", () => {
 				removeFromIgnore: vi.fn(),
 				dispose: vi.fn(),
 			} as unknown as AlphaIgnoreController,
-			clineMessages: [],
+			alphaMessages: [],
 			api: {
 				getModel: vi.fn().mockReturnValue({ id: "test-model", info: { contextWindow: 100000 } }),
 				createMessage: vi.fn(),
@@ -166,7 +166,7 @@ describe("getEnvironmentDetails", () => {
 
 		expect(result).toContain("<name>Code</name>")
 
-		expect(getApiMetrics).toHaveBeenCalledWith(mockAlphaTask.clineMessages)
+		expect(getApiMetrics).toHaveBeenCalledWith(mockAlphaTask.alphaMessages)
 	})
 
 	it("reuses the request state snapshot instead of re-reading provider state", async () => {

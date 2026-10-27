@@ -1,7 +1,6 @@
 import * as vscode from "vscode"
 import * as path from "path"
 import * as fs from "fs/promises"
-import * as os from "os"
 
 import * as yaml from "yaml"
 import stripBom from "strip-bom"
@@ -11,8 +10,7 @@ import { type ModeConfig, type PromptComponent, customModesSettingsSchema, modeC
 import { fileExistsAtPath } from "../../utils/fs"
 import { getWorkspacePath } from "../../utils/path"
 import {
-	getLegacyGlobalConfigDirectory,
-	getLegacyProjectConfigDirectory,
+	getGlobalConfigDirectory,
 	getProjectConfigDirectory,
 	getProjectConfigPathForRead,
 } from "../../services/config-paths"
@@ -618,17 +616,12 @@ export class CustomModesManager {
 			if (scope === "project") {
 				const workspacePath = getWorkspacePath()
 				if (workspacePath) {
-					rulesFolderPaths = [
-						getProjectConfigDirectory(workspacePath),
-						getLegacyProjectConfigDirectory(workspacePath),
-					].map((directory) => path.join(directory, `rules-${slug}`))
+					rulesFolderPaths = [path.join(getProjectConfigDirectory(workspacePath), `rules-${slug}`)]
 				} else {
 					return // No workspace, can't delete project rules
 				}
 			} else {
-				// Global scope - use OS home directory
-				const homeDir = os.homedir()
-				rulesFolderPaths = [path.join(homeDir, ".roo", `rules-${slug}`)]
+				rulesFolderPaths = [path.join(getGlobalConfigDirectory(), `rules-${slug}`)]
 			}
 
 			// Check if the rules folder exists and delete it
@@ -717,11 +710,11 @@ export class CustomModesManager {
 			const isGlobalMode = mode?.source === "global"
 
 			if (isGlobalMode) {
-				// For global modes, check in global .roo directory
-				const legacyGlobalConfigDir = getLegacyGlobalConfigDirectory()
-				modeRulesDir = path.join(legacyGlobalConfigDir, `rules-${slug}`)
+				// For global modes, check in global .alpha directory
+				const globalConfigDir = getGlobalConfigDirectory()
+				modeRulesDir = path.join(globalConfigDir, `rules-${slug}`)
 			} else {
-				// Project Alpha rules take priority, with legacy rules remaining readable.
+				// Project mode rules use the canonical Alpha directory.
 				const workspacePath = getWorkspacePath()
 				if (!workspacePath) {
 					return false
@@ -818,8 +811,8 @@ export class CustomModesManager {
 			const isGlobalMode = mode.source === "global"
 			let baseDir: string
 			if (isGlobalMode) {
-				// For global modes, use the global .roo directory
-				baseDir = getLegacyGlobalConfigDirectory()
+				// For global modes, use the global .alpha directory
+				baseDir = getGlobalConfigDirectory()
 			} else {
 				// For project modes, use the workspace directory
 				const workspacePath = getWorkspacePath()
@@ -912,7 +905,7 @@ export class CustomModesManager {
 		let rulesFolderPath: string
 
 		if (source === "global") {
-			baseDir = getLegacyGlobalConfigDirectory()
+			baseDir = getGlobalConfigDirectory()
 			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
 		} else {
 			const workspacePath = getWorkspacePath()
@@ -920,15 +913,7 @@ export class CustomModesManager {
 			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
 		}
 
-		// Replacing a project mode also clears its legacy rules so fallback reads cannot
-		// resurrect instructions omitted by the imported mode.
-		const existingRulesFolders =
-			source === "project"
-				? [
-						rulesFolderPath,
-						path.join(getLegacyProjectConfigDirectory(getWorkspacePath()), `rules-${importMode.slug}`),
-					]
-				: [rulesFolderPath]
+		const existingRulesFolders = [rulesFolderPath]
 		for (const existingRulesFolder of existingRulesFolders) {
 			try {
 				await fs.rm(existingRulesFolder, { recursive: true, force: true })

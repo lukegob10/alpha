@@ -21,7 +21,7 @@ function fixture() {
 	const log = vi.fn()
 	const getCurrentTask = vi.fn(() => ({
 		taskId: secret,
-		clineMessages: [{ text: secret }, { text: secret }],
+		alphaMessages: [{ text: secret }, { text: secret }],
 		apiConversationHistory: [{ content: secret }],
 	}))
 	const getMetadataForTask = vi.fn(() => ({ activityPhase: "compacting", providerData: secret }))

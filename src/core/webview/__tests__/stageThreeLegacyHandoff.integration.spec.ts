@@ -153,7 +153,7 @@ async function createHarness() {
 			workspacePath: directory,
 			globalStoragePath: storagePath,
 			abort: false,
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			commandExecutionEvidence: new Map(),
 			pendingCommandVerification: Promise.resolve(),
@@ -175,7 +175,7 @@ async function createHarness() {
 			await task.flushApiConversationHistoryPersistence()
 		})
 		task.overwriteAlphaMessages = vi.fn<Task["overwriteAlphaMessages"]>(async (messages) => {
-			task.clineMessages = structuredClone(messages)
+			task.alphaMessages = structuredClone(messages)
 			await saveTaskMessages({ messages, taskId, globalStoragePath: storagePath })
 			return true
 		})

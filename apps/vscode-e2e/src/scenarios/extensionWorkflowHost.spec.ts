@@ -83,7 +83,7 @@ test("provider recovery resumes the same task with its current context-probe ste
 	const task = {
 		taskId: "resumable-fault",
 		taskAsk: undefined as AlphaMessage | undefined,
-		clineMessages: [] as AlphaMessage[],
+		alphaMessages: [] as AlphaMessage[],
 		approveAsk: () => assert.fail("resume_task requires explicit same-task input, not approval"),
 	}
 	let starts = 0
@@ -109,12 +109,12 @@ test("provider recovery resumes the same task with its current context-probe ste
 		sendMessage: async (text: string) => {
 			messages.push(text)
 			const message: AlphaMessage = {
-				ts: Math.max(task.taskAsk?.ts ?? 0, task.clineMessages.at(-1)?.ts ?? 0) + 1,
+				ts: Math.max(task.taskAsk?.ts ?? 0, task.alphaMessages.at(-1)?.ts ?? 0) + 1,
 				type: "say",
 				say: "user_feedback",
 				text,
 			}
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 			task.taskAsk = undefined
 			budget.consume()
 			api.emit(AlphaCodeEventName.Message, { taskId: task.taskId, action: "created", message })
@@ -334,7 +334,7 @@ test("compaction evidence ties the latest measured receipt to the saved summary"
 		apiConversationHistory: [
 			{ role: "user", content: "ALPHA-CONTEXT-ANCHOR-7f3a", isSummary: true, condenseId: "summary-1" },
 		],
-		clineMessages: [
+		alphaMessages: [
 			{
 				say: "condense_context",
 				contextCondense: {
@@ -363,7 +363,7 @@ test("compaction evidence ties the latest measured receipt to the saved summary"
 			previousTokens: 900,
 			currentTokens: 450,
 		})
-		task.clineMessages.push({
+		task.alphaMessages.push({
 			say: "condense_context",
 			contextCondense: {
 				prevContextTokens: 450,
@@ -422,7 +422,7 @@ test("completion is observed without an approval and retains its completed state
 	const task = {
 		taskId: "review-task",
 		didComplete: true,
-		clineMessages: [
+		alphaMessages: [
 			{ ts: 1, type: "say", say: "completion_result", text: "Done", partial: false },
 		] as AlphaMessage[],
 		waitForTermination: async () => undefined,
@@ -473,7 +473,7 @@ test("completion is observed without an approval and retains its completed state
 		await host.complete(task.taskId)
 		const state = await host.captureCompletedTask(task.taskId)
 		assert.equal(state.currentTaskId, task.taskId)
-		assert.deepEqual(state.clineMessages, task.clineMessages)
+		assert.deepEqual(state.alphaMessages, task.alphaMessages)
 		assert.deepEqual(state.agentLifecycleSnapshots, { [task.taskId]: snapshot })
 		assert.deepEqual(state.liveTasksById, { [task.taskId]: projected })
 	} finally {
@@ -553,7 +553,7 @@ function approvalWorkflowFixture(updateResult?: (update: TaskApprovalModeUpdate)
 		taskId,
 		taskAsk: { ts: 1, type: "ask", ask: "command", text: WORKFLOW_COMMANDS.test } as AlphaMessage | undefined,
 		apiConversationHistory: history(WORKFLOW_COMMANDS.test),
-		clineMessages: [] as AlphaMessage[],
+		alphaMessages: [] as AlphaMessage[],
 		didComplete: false,
 		approveAsk: () => assert.fail("the cancellation hold must never approve its command"),
 	}
@@ -622,7 +622,7 @@ function approvalWorkflowFixture(updateResult?: (update: TaskApprovalModeUpdate)
 			actions.push("guidance")
 			current.taskAsk = undefined
 			const message: AlphaMessage = { ts: 3, type: "say", say: "user_feedback", text }
-			current.clineMessages.push(message)
+			current.alphaMessages.push(message)
 			api.emit(AlphaCodeEventName.Message, { taskId, action: "created", message })
 		},
 	})
@@ -968,7 +968,7 @@ test("resume retains its instance and waits for same-task guidance admission aft
 	const task = {
 		taskId,
 		taskAsk: { ts: 1, type: "ask", ask: "resume_task" } as AlphaMessage | undefined,
-		clineMessages: [] as AlphaMessage[],
+		alphaMessages: [] as AlphaMessage[],
 		didComplete: true,
 	}
 	let submissions = 0
@@ -1029,9 +1029,9 @@ test("resume retains its instance and waits for same-task guidance admission aft
 		await resuming
 		assert.equal(submissions, 1)
 		assert.equal(host.admissionsAreUnique(taskId), false, "an event alone does not prove persisted admission")
-		task.clineMessages.push({ ts: 2, type: "say", say: "user_feedback", text: sentText })
+		task.alphaMessages.push({ ts: 2, type: "say", say: "user_feedback", text: sentText })
 		assert.equal(host.admissionsAreUnique(taskId), true)
-		task.clineMessages.push({ ts: 3, type: "say", say: "user_feedback", text: sentText })
+		task.alphaMessages.push({ ts: 3, type: "say", say: "user_feedback", text: sentText })
 		assert.equal(host.admissionsAreUnique(taskId), false, "duplicate admissions must fail acceptance")
 		assert.equal(provider.getLiveTask(taskId), task)
 		assert.equal(api.listenerCount(AlphaCodeEventName.Message), 0)
@@ -1048,7 +1048,7 @@ test("reload applies scenario policy before saved-task construction and reports 
 	const task = {
 		taskId,
 		taskAsk: { ts: 1, type: "ask", ask: "resume_completed_task" } as AlphaMessage,
-		clineMessages: [] as AlphaMessage[],
+		alphaMessages: [] as AlphaMessage[],
 		didComplete: true,
 	}
 	let live = false
@@ -1123,7 +1123,7 @@ test("problem solving denies an outside read and continues to completion", async
 		taskId: "problem-task",
 		didComplete: false,
 		apiConversationHistory: [],
-		clineMessages: [],
+		alphaMessages: [],
 		get taskAsk(): AlphaMessage {
 			return phase === "outside"
 				? {

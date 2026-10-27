@@ -79,7 +79,7 @@ describe("AlphaProvider provisional batch admission rollback", () => {
 			expect(finalizations(fixture.harness).size).toBe(0)
 			expect(taskSessions.getReservedTaskSlots(root.taskId, () => false)).toEqual({ total: 0, root: 0 })
 			expect(taskSessions.getAvailableTaskCapacity()).toBe(fixture.capacityBefore)
-			expect(root.clineMessages.at(-1)?.subagentGroup).toMatchObject({
+			expect(root.alphaMessages.at(-1)?.subagentGroup).toMatchObject({
 				status,
 				agents: [{ status }, { status }],
 			})

@@ -17,7 +17,7 @@ interface ExtensionStateMessage {
 	type: "state"
 	state: {
 		version: string
-		clineMessages: AlphaMessage[]
+		alphaMessages: AlphaMessage[]
 		currentTaskId?: string
 		currentTaskItem?: { id: string; number: number; task: string; ts: number }
 		taskHistory: unknown[]
@@ -144,12 +144,12 @@ const buildMessagesWithCheckpoint = (baseTs: number): AlphaMessage[] => [
 	{ type: "say", say: "text", ts: baseTs + 3, text: "row-2" },
 ]
 
-const postState = (clineMessages: AlphaMessage[], taskId?: string) => {
+const postState = (alphaMessages: AlphaMessage[], taskId?: string) => {
 	const message: ExtensionStateMessage = {
 		type: "state",
 		state: {
 			version: "1.0.0",
-			clineMessages,
+			alphaMessages,
 			...(taskId
 				? {
 						currentTaskId: taskId,
@@ -181,13 +181,13 @@ const renderView = () =>
 		</ExtensionStateContextProvider>,
 	)
 
-const hydrate = async (clineMessages = buildMessages(Date.now() - 3_000)) => {
+const hydrate = async (alphaMessages = buildMessages(Date.now() - 3_000)) => {
 	renderView()
-	await act(async () => postState(clineMessages))
+	await act(async () => postState(alphaMessages))
 	await waitFor(() => {
 		const content = document.querySelector("[data-testid='chat-transcript-content']")
 		expect(content).toBeTruthy()
-		expect(content?.getAttribute("data-count")).toBe(String(Math.max(0, clineMessages.length - 1)))
+		expect(content?.getAttribute("data-count")).toBe(String(Math.max(0, alphaMessages.length - 1)))
 	})
 }
 

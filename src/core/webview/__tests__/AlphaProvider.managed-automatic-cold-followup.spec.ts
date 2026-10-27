@@ -415,7 +415,7 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 			expect(
 				childMessages.filter((message) => message.say === "completion_result").map((message) => message.text),
 			).toEqual([target.turn.summary, successorTurn.summary])
-			expect(fixture.root.clineMessages.filter((message) => message.say === "completion_result")).toHaveLength(1)
+			expect(fixture.root.alphaMessages.filter((message) => message.say === "completion_result")).toHaveLength(1)
 			expect(successor.subagentContextManifest).toEqual(manifest)
 		} finally {
 			cleanup.release.resolve()

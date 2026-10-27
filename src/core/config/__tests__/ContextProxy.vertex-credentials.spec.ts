@@ -32,7 +32,7 @@ describe("Vertex credential SecretStorage migration", () => {
 	it("stores legacy credentials before removing plaintext and preserves provider reads and saved profiles", async () => {
 		const storage = createStorage(legacyCredentials)
 		const savedProfiles = JSON.stringify({ apiConfigs: { saved: { vertexJsonCredentials: legacyCredentials } } })
-		storage.secrets.set("roo_cline_config_api_config", savedProfiles)
+		storage.secrets.set("alpha_config_api_config", savedProfiles)
 		let release!: () => void
 		let enter!: () => void
 		const held = new Promise<void>((resolve) => {
@@ -61,7 +61,7 @@ describe("Vertex credential SecretStorage migration", () => {
 		expect(storage.globalState.has(credentialKey)).toBe(false)
 		expect(proxy.getValue(credentialKey)).toBe(legacyCredentials)
 		expect(proxy.getProviderSettings().vertexJsonCredentials).toBe(legacyCredentials)
-		expect(storage.secrets.get("roo_cline_config_api_config")).toBe(savedProfiles)
+		expect(storage.secrets.get("alpha_config_api_config")).toBe(savedProfiles)
 		await new ContextProxy(storage.context).initialize()
 		expect(storage.storeSecret).toHaveBeenCalledOnce()
 	})

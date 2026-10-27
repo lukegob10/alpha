@@ -19,7 +19,7 @@ type AsyncInputHost = {
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				markAsyncUserInputAnswered(messageTs: number): Promise<boolean>
-				clineMessages: Array<{
+				alphaMessages: Array<{
 					ts: number
 					type: string
 					say?: string
@@ -161,7 +161,7 @@ suite("Alpha async user input acceptance", function () {
 			const task = provider.getLiveTask(taskId)
 			assert.ok(task)
 			assert.notEqual(task.taskAsk?.ask, "followup", "Async input must not leave a followup ask pending")
-			const cards = task.clineMessages.filter(
+			const cards = task.alphaMessages.filter(
 				(message) => message.type === "say" && message.say === "async_user_input",
 			)
 			assert.equal(cards.length, 1, "One tool call must produce one nonblocking card")
@@ -192,14 +192,14 @@ suite("Alpha async user input acceptance", function () {
 			await provider.showTaskWithId(taskId)
 			await waitFor(
 				() =>
-					provider.getLiveTask(taskId)?.clineMessages.find((message) => message.ts === card.ts)
+					provider.getLiveTask(taskId)?.alphaMessages.find((message) => message.ts === card.ts)
 						?.isAnswered === true,
 				{ timeout: 10_000, description: "the answered async card to hydrate after task reload" },
 			)
 			const reopened = provider.getLiveTask(taskId)
 			assert.ok(reopened)
 			assert.equal(
-				reopened.clineMessages.find((message) => message.ts === card.ts)?.isAnswered,
+				reopened.alphaMessages.find((message) => message.ts === card.ts)?.isAnswered,
 				true,
 				"The card must remain answered after task reload",
 			)

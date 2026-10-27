@@ -6,10 +6,10 @@ import { usePromptHistory } from "./usePromptHistory"
 describe("usePromptHistory", () => {
 	it("does not restore a different chat's saved draft when prompt histories are identical", () => {
 		const setInputValue = vi.fn()
-		const clineMessages: AlphaMessage[] = [{ type: "say", say: "user_feedback", text: "same prompt", ts: 1 }]
+		const alphaMessages: AlphaMessage[] = [{ type: "say", say: "user_feedback", text: "same prompt", ts: 1 }]
 		const { result, rerender } = renderHook(
 			({ taskId, inputValue }) =>
-				usePromptHistory({ taskId, clineMessages, taskHistory: [], cwd: "/repo", inputValue, setInputValue }),
+				usePromptHistory({ taskId, alphaMessages, taskHistory: [], cwd: "/repo", inputValue, setInputValue }),
 			{ initialProps: { taskId: "task-a", inputValue: "private draft A" } },
 		)
 		const textarea = document.createElement("textarea")
@@ -56,10 +56,10 @@ describe("usePromptHistory", () => {
 			ts: 1,
 		}
 		const { result, rerender } = renderHook(
-			({ clineMessages, inputValue }) =>
-				usePromptHistory({ clineMessages, taskHistory: [], cwd: "/repo", inputValue, setInputValue }),
+			({ alphaMessages, inputValue }) =>
+				usePromptHistory({ alphaMessages, taskHistory: [], cwd: "/repo", inputValue, setInputValue }),
 			{
-				initialProps: { clineMessages: [userMessage], inputValue: "current draft" },
+				initialProps: { alphaMessages: [userMessage], inputValue: "current draft" },
 			},
 		)
 		const textarea = {
@@ -80,7 +80,7 @@ describe("usePromptHistory", () => {
 		expect(result.current.historyIndex).toBe(0)
 
 		rerender({
-			clineMessages: [userMessage, { type: "say", say: "text", text: "streamed token", ts: 2, partial: true }],
+			alphaMessages: [userMessage, { type: "say", say: "text", text: "streamed token", ts: 2, partial: true }],
 			inputValue: "previous prompt",
 		})
 

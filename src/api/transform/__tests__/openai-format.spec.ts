@@ -423,7 +423,6 @@ describe("convertToOpenAiMessages", () => {
 		// This test ensures that assistant messages with only tool_use blocks (no text)
 		// have content set to "" instead of undefined. Some providers require
 		// every message to have at least one "parts" field, which fails if content is undefined.
-		// See: ROO-425
 		const anthropicMessages: Anthropic.Messages.MessageParam[] = [
 			{
 				role: "assistant",

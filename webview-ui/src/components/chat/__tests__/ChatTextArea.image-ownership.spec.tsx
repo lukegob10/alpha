@@ -10,8 +10,8 @@ vi.mock("@src/components/common/CodeBlock")
 vi.mock("@src/components/common/MarkdownBlock")
 vi.mock("../ChatView", () => ({ MAX_IMAGES_PER_MESSAGE: 20 }))
 vi.mock("@src/context/ExtensionStateContext", () => ({
-	useShellState: () => ({ filePaths: [], openedTabs: [], taskHistory: [], clineMessages: [], cwd: "/workspace" }),
-	useExtensionState: () => ({ filePaths: [], openedTabs: [], taskHistory: [], clineMessages: [], cwd: "/workspace" }),
+	useShellState: () => ({ filePaths: [], openedTabs: [], taskHistory: [], alphaMessages: [], cwd: "/workspace" }),
+	useExtensionState: () => ({ filePaths: [], openedTabs: [], taskHistory: [], alphaMessages: [], cwd: "/workspace" }),
 }))
 
 class ControlledFileReader {
@@ -79,7 +79,7 @@ function Composer({
 				setMode={noOp}
 				modeShortcutText=""
 				conversationTaskId={taskId}
-				conversationClineMessages={[]}
+				conversationAlphaMessages={[]}
 				isVisible={visible}
 			/>
 		</>

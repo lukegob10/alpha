@@ -5,9 +5,9 @@ import { getCommand, getCommands } from "../commands"
 
 // Mock fs and path modules
 vi.mock("fs/promises")
-vi.mock("../config-paths", () => ({
-	getLegacyGlobalConfigDirectory: vi.fn(() => "/mock/global/.roo"),
-	getLegacyProjectConfigDirectory: vi.fn(() => "/mock/project/.roo"),
+vi.mock("../../config-paths", () => ({
+	getGlobalConfigDirectory: vi.fn(() => path.join("/mock/global", ".alpha")),
+	getProjectConfigDirectory: vi.fn((cwd: string) => path.join(cwd, ".alpha")),
 }))
 vi.mock("../built-in-commands", () => ({
 	getBuiltInCommands: vi.fn(() => Promise.resolve([])),
@@ -23,46 +23,63 @@ describe("Command loading with frontmatter", () => {
 	})
 
 	describe("getCommand with frontmatter", () => {
-		it("prefers an Alpha project command over a legacy command with the same name", async () => {
+		it("loads a project command from its canonical directory", async () => {
 			mockFs.stat = vi.fn().mockResolvedValue({ isDirectory: () => true })
 			mockFs.readFile = vi
 				.fn()
 				.mockImplementation(async (filePath) =>
 					String(filePath).includes(path.join(".alpha", "commands"))
 						? "Alpha project command"
-						: "Legacy command",
+						: "Global command",
 				)
 			const command = await getCommand("/test/cwd", "setup")
 			expect(command?.content).toBe("Alpha project command")
 			expect(command?.filePath).toBe(path.join("/test/cwd", ".alpha", "commands", "setup.md"))
+			expect(mockFs.readFile).toHaveBeenCalledTimes(1)
 		})
 
-		it("keeps a legacy project command available when the Alpha command is absent", async () => {
+		it("checks the global directory once when the project directory is absent", async () => {
+			const globalDirectory = path.join("/mock/global", ".alpha", "commands")
 			mockFs.stat = vi.fn().mockImplementation(async (directory) => ({
-				isDirectory: () => String(directory).includes(path.join(".roo", "commands")),
+				isDirectory: () => String(directory) === globalDirectory,
 			}))
-			mockFs.readFile = vi.fn().mockResolvedValue("Legacy project command")
+			mockFs.readFile = vi.fn().mockResolvedValue("Global command")
 			const command = await getCommand("/test/cwd", "setup")
-			expect(command?.content).toBe("Legacy project command")
-			expect(command?.source).toBe("project")
-			expect(command?.filePath).toBe(path.join("/test/cwd", ".roo", "commands", "setup.md"))
+			expect(command?.content).toBe("Global command")
+			expect(command?.source).toBe("global")
+			expect(command?.filePath).toBe(path.join(globalDirectory, "setup.md"))
+			expect(mockFs.stat.mock.calls.map(([directory]) => String(directory))).toEqual([
+				path.join("/test/cwd", ".alpha", "commands"),
+				globalDirectory,
+			])
 		})
 
-		it("lists Alpha commands with matching precedence while retaining unique legacy commands", async () => {
+		it("scans each canonical source once and preserves project precedence", async () => {
+			const projectDirectory = path.join("/test/cwd", ".alpha", "commands")
+			const globalDirectory = path.join("/mock/global", ".alpha", "commands")
 			mockFs.stat = vi.fn().mockResolvedValue({ isDirectory: () => true })
 			mockFs.readdir = vi.fn().mockImplementation(async (directory) => {
-				if (!String(directory).startsWith(path.join("/test/cwd"))) return []
-				const names = String(directory).includes(".alpha") ? ["setup.md"] : ["setup.md", "legacy-only.md"]
+				const names =
+					String(directory) === projectDirectory
+						? ["setup.md", "project-only.md"]
+						: ["setup.md", "global-only.md"]
 				return names.map((name) => ({ name, isFile: () => true, isSymbolicLink: () => false }))
 			})
 			mockFs.readFile = vi
 				.fn()
 				.mockImplementation(async (filePath) =>
-					String(filePath).includes(".alpha") ? "Alpha command" : "Legacy command",
+					path.dirname(path.resolve(String(filePath))) === path.resolve(projectDirectory)
+						? "Project command"
+						: "Global command",
 				)
 			const commands = await getCommands("/test/cwd")
-			expect(commands.find((command) => command.name === "setup")?.content).toBe("Alpha command")
-			expect(commands.find((command) => command.name === "legacy-only")?.content).toBe("Legacy command")
+			expect(commands.find((command) => command.name === "setup")?.content).toBe("Project command")
+			expect(commands.find((command) => command.name === "global-only")?.content).toBe("Global command")
+			expect(commands.find((command) => command.name === "project-only")?.content).toBe("Project command")
+			expect(mockFs.readdir.mock.calls.map(([directory]) => String(directory))).toEqual([
+				globalDirectory,
+				projectDirectory,
+			])
 		})
 
 		it.each(["../outside", "..\\outside", "/absolute", "folder/command", "folder\\command"])(
@@ -234,7 +251,7 @@ Global setup instructions.`
 				name: "setup",
 				content: "# Global Setup\n\nGlobal setup instructions.",
 				source: "global",
-				filePath: expect.stringContaining(path.join(".roo", "commands", "setup.md")),
+				filePath: expect.stringContaining(path.join(".alpha", "commands", "setup.md")),
 				description: "Global setup command",
 				argumentHint: undefined,
 				mode: undefined,
