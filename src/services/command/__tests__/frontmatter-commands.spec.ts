@@ -68,7 +68,9 @@ describe("Command loading with frontmatter", () => {
 			mockFs.readFile = vi
 				.fn()
 				.mockImplementation(async (filePath) =>
-					String(filePath).startsWith(projectDirectory) ? "Project command" : "Global command",
+					path.dirname(path.resolve(String(filePath))) === path.resolve(projectDirectory)
+						? "Project command"
+						: "Global command",
 				)
 			const commands = await getCommands("/test/cwd")
 			expect(commands.find((command) => command.name === "setup")?.content).toBe("Project command")
