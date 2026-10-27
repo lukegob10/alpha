@@ -108,6 +108,7 @@ describe("ErrorRow documentation links", () => {
 		expect(link).toHaveAttribute("href", url)
 		fireEvent.click(link)
 
-		expect(mockPostMessage).toHaveBeenCalledExactlyOnceWith(expectedMessage)
+		expect(mockPostMessage).toHaveBeenCalledTimes(1)
+		expect(mockPostMessage).toHaveBeenCalledWith(expectedMessage)
 	})
 })
