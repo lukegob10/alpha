@@ -118,7 +118,7 @@ async function commandFixture(
 		getTaskLifetimeCancellationSignal: () => lifetime.signal,
 		providerRef: { deref: () => provider },
 		lastMessageTs: 1_000,
-		clineMessages: [],
+		alphaMessages: [],
 		consecutiveMistakeCount: 0,
 		commandExecutionEvidence: new Map<string, CommandExecutionEvidence>(),
 		pendingCommandVerification: Promise.resolve(),
@@ -134,7 +134,7 @@ async function commandFixture(
 		observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
 		addToAlphaMessages: async (message: AlphaMessage) => {
 			task["observeUiMessageTimestamps"]([message])
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		},
 		prepareCommandEvidenceSlot: Task.prototype["prepareCommandEvidenceSlot"],
 		enqueueCommandEvidence: Task.prototype["enqueueCommandEvidence"],
@@ -144,7 +144,7 @@ async function commandFixture(
 		ask: vi.fn(async () => ({ response: "yesButtonClicked" as const })),
 		say: vi.fn<Task["say"]>(async (type, _text, _images, _partial, _progress, _protected, options) => {
 			if (type === "command_output") {
-				const approval = task.clineMessages.find(
+				const approval = task.alphaMessages.find(
 					(message) =>
 						message.type === "ask" &&
 						message.ask === "command" &&
@@ -175,7 +175,7 @@ async function commandFixture(
 			expect(type).toBe("command")
 			if (!publishApprovalRows) return { response: "yesButtonClicked" as const }
 			task.lastMessageTs = (task.lastMessageTs ?? 0) + 1
-			task.clineMessages.push({ ts: task.lastMessageTs, type: "ask", ask: "command", text: command })
+			task.alphaMessages.push({ ts: task.lastMessageTs, type: "ask", ask: "command", text: command })
 			return { response: "yesButtonClicked" as const, commandExecutionId: task.lastMessageTs.toString() }
 		}),
 		pushToolResultToUserContent(result) {
@@ -428,7 +428,7 @@ describe("command reads through the built-in registry and real subprocesses", ()
 			expect(provider.reservePrimaryMutation).toHaveBeenCalledTimes(4)
 			expect(provider.releasePrimaryMutation).toHaveBeenCalledTimes(4)
 			expect(provider.recordPrimaryMutation).not.toHaveBeenCalled()
-			const approvalRows = task.clineMessages.filter(
+			const approvalRows = task.alphaMessages.filter(
 				(message) => message.type === "ask" && message.ask === "command",
 			)
 			const approvalIds = approvalRows.map(({ ts }) => ts.toString())
@@ -528,7 +528,7 @@ describe("command reads through the built-in registry and real subprocesses", ()
 			const artifacts = results.map((result) => result.commandResult?.artifact_id)
 			expect(artifacts.every((artifact) => typeof artifact === "string")).toBe(true)
 			expect(new Set(artifacts).size).toBe(2)
-			const approvals = task.clineMessages.filter(
+			const approvals = task.alphaMessages.filter(
 				(message) => message.type === "ask" && message.ask === "command",
 			)
 			expect(approvals.map(({ ts, isAnswered }) => [ts, isAnswered])).toEqual([

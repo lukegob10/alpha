@@ -432,7 +432,7 @@ describe("sub-agent task authority", () => {
 			taskId: "child-1",
 			taskKind: "subagent",
 			initialStatus: "active",
-			clineMessages: [],
+			alphaMessages: [],
 			saveAlphaMessages,
 			providerRef: {
 				deref: () => ({
@@ -463,7 +463,7 @@ describe("sub-agent task authority", () => {
 				completionResultSummary: "Timed out after inspecting 4 files.",
 			}),
 		)
-		expect((child as any).clineMessages).toContainEqual(
+		expect((child as any).alphaMessages).toContainEqual(
 			expect.objectContaining({ say: "error", text: "Timed out after inspecting 4 files.", partial: false }),
 		)
 	})
@@ -475,7 +475,7 @@ describe("sub-agent task authority", () => {
 			taskId: "child-2",
 			taskKind: "subagent",
 			initialStatus: "active",
-			clineMessages: [{ ts: 1, type: "say", say: "api_req_started", text: "{}" }],
+			alphaMessages: [{ ts: 1, type: "say", say: "api_req_started", text: "{}" }],
 			saveAlphaMessages,
 			providerRef: {
 				deref: () => ({
@@ -497,7 +497,7 @@ describe("sub-agent task authority", () => {
 
 		await child.finalizeSubagentHistory("completed", "Durable terminal report")
 
-		expect((child as any).clineMessages).toContainEqual(
+		expect((child as any).alphaMessages).toContainEqual(
 			expect.objectContaining({
 				type: "say",
 				say: "completion_result",
@@ -541,7 +541,7 @@ describe("sub-agent task authority", () => {
 			],
 		}
 		const parent = Object.assign(Object.create(Task.prototype), {
-			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
+			alphaMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 			saveAlphaMessages,
 			providerRef: { deref: () => ({ getLiveTaskIds: () => [] }) },
 		}) as Task
@@ -576,7 +576,7 @@ describe("sub-agent task authority", () => {
 			],
 		}
 		const parent = Object.assign(Object.create(Task.prototype), {
-			clineMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
+			alphaMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 			saveAlphaMessages,
 			providerRef: { deref: () => ({ getLiveTaskIds: () => [] }) },
 		}) as Task

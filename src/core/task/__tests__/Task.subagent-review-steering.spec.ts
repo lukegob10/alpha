@@ -37,7 +37,7 @@ function fixture() {
 		isAwaitingSubagentReview: false,
 		taskCancellationController: new AbortController(),
 		providerRef: { deref: () => provider },
-		clineMessages: [{ type: "say", say: "subagent_group", subagentGroup: { agents: [{ changeSet }] } }],
+		alphaMessages: [{ type: "say", say: "subagent_group", subagentGroup: { agents: [{ changeSet }] } }],
 		messageQueueService: { isEmpty: () => true },
 		commandExecutionEvidence: new Map(),
 		pendingCommandVerification: Promise.resolve(),

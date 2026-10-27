@@ -541,7 +541,7 @@ describe("ApplyPatchTool", () => {
 		await new ApplyPatchTool().execute({ patch }, task, callbacks as any)
 
 		expect(mockedFs.readFile).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("allowed.txt"), "utf8")
-		expect(task.say).toHaveBeenCalledWith("rooignore_error", "ignored.txt")
+		expect(task.say).toHaveBeenCalledWith("alphaignore_error", "ignored.txt")
 		expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
 	})
 
@@ -924,7 +924,7 @@ describe("ApplyPatchTool", () => {
 			expect(mockedFs.unlink).not.toHaveBeenCalled()
 			expect(task.didEditFile).toBe(true)
 			expect(task.fileContextTracker.trackFileContext).toHaveBeenCalledOnce()
-			expect(task.fileContextTracker.trackFileContext).toHaveBeenCalledWith("moved.txt", "roo_edited")
+			expect(task.fileContextTracker.trackFileContext).toHaveBeenCalledWith("moved.txt", "alpha_edited")
 			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
 			expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
 			expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([

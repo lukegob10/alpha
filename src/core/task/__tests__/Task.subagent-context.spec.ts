@@ -48,7 +48,7 @@ function startupHarness(messages = inheritedMessages()) {
 		isInitialized: false,
 		taskCancellationController: controller,
 		subagentHistoryFork: historyFork,
-		clineMessages: [{ type: "say", say: "text", text: "Stale UI", ts: 1 }],
+		alphaMessages: [{ type: "say", say: "text", text: "Stale UI", ts: 1 }],
 		apiConversationHistory: [{ role: "user", content: "Stale transcript" }],
 		invalidateBackgroundUsageDrain: vi.fn(),
 		persistFrozenSubagentInstructions: vi.fn(async () => undefined),

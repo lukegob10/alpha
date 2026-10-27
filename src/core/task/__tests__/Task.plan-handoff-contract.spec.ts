@@ -17,11 +17,11 @@ function createCompletionTask(mode: "code" | "architect" = "architect", taskKind
 			mutate: (message: AlphaMessage | undefined) => AlphaMessage | undefined,
 			handoff?: TaskDesignHandoff,
 		) => {
-			const index = task.clineMessages.findIndex((message) => message.ts === timestamp)
-			const message = mutate(index >= 0 ? structuredClone(task.clineMessages[index]) : undefined)
+			const index = task.alphaMessages.findIndex((message) => message.ts === timestamp)
+			const message = mutate(index >= 0 ? structuredClone(task.alphaMessages[index]) : undefined)
 			if (!message) return undefined
-			if (index >= 0) task.clineMessages[index] = message
-			else task.clineMessages.push(message)
+			if (index >= 0) task.alphaMessages[index] = message
+			else task.alphaMessages.push(message)
 			if (handoff) task.designHandoff = structuredClone(handoff)
 			return { message, created: index < 0 }
 		},
@@ -31,7 +31,7 @@ function createCompletionTask(mode: "code" | "architect" = "architect", taskKind
 	Object.assign(task, {
 		taskId: "plan-handoff-root",
 		taskKind,
-		clineMessages: [],
+		alphaMessages: [],
 		getTaskMode: vi.fn(async () => mode),
 		commitAlphaMessageMutation,
 		publishAlphaMessageCreated: vi.fn(async () => {}),
@@ -62,7 +62,7 @@ describe("terminal Plan handoff ownership", () => {
 
 		await task.presentCompletionResult(text)
 
-		expect(task.clineMessages).toEqual([
+		expect(task.alphaMessages).toEqual([
 			expect.objectContaining({ type: "say", say: "completion_result", text, partial: false }),
 		])
 		expect(task.designHandoff).toBeUndefined()
@@ -79,7 +79,7 @@ describe("terminal Plan handoff ownership", () => {
 
 		await task.presentCompletionResult(plan, ["diagram.png"])
 
-		expect(task.clineMessages).toEqual([
+		expect(task.alphaMessages).toEqual([
 			expect.objectContaining({ text: plan, images: ["diagram.png"], partial: false }),
 		])
 		expect(task.designHandoff).toEqual({
@@ -105,8 +105,8 @@ describe("terminal Plan handoff ownership", () => {
 		await task.presentCompletionResult(clarification)
 
 		expect(task.designHandoff).toEqual(stored)
-		expect(task.clineMessages.at(-1)).toMatchObject({ say: "completion_result", text: clarification })
-		expect(parseProposedPlan(task.clineMessages.at(-1)?.text ?? "")).toBeUndefined()
+		expect(task.alphaMessages.at(-1)).toMatchObject({ say: "completion_result", text: clarification })
+		expect(parseProposedPlan(task.alphaMessages.at(-1)?.text ?? "")).toBeUndefined()
 		expect(commitAlphaMessageMutation).toHaveBeenCalledWith(
 			expect.any(Number),
 			"the completion result",
@@ -134,7 +134,7 @@ describe("terminal Plan handoff ownership", () => {
 		await task.presentCompletionResult(plan)
 
 		expect(task.designHandoff).toBeUndefined()
-		expect(task.clineMessages[0]?.text).toBe(plan)
+		expect(task.alphaMessages[0]?.text).toBe(plan)
 		expect(commitAlphaMessageMutation).toHaveBeenCalledWith(
 			expect.any(Number),
 			"the completion result",

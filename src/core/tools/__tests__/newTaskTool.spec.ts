@@ -707,7 +707,7 @@ describe("newTaskTool delegation flow", () => {
 			handleModeSwitch: vi.fn(),
 		} as any
 
-		// Use a fresh local cline instance to avoid cross-test interference
+		// Use a fresh local alpha instance to avoid cross-test interference
 		const localEmit = vi.fn()
 		const localAlpha = {
 			ask: vi.fn(),

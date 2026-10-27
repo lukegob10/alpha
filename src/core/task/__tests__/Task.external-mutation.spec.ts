@@ -18,7 +18,7 @@ const makeTask = (overrides: Record<string, unknown> = {}) =>
 		pendingSteerMessage: undefined,
 		commandExecutionEvidence: new Map(),
 		messageQueueService: { isEmpty: () => true },
-		clineMessages: [{ ts: 1, type: "ask", ask: "followup", text: "Review changes", isAnswered: false }],
+		alphaMessages: [{ ts: 1, type: "ask", ask: "followup", text: "Review changes", isAnswered: false }],
 		checkpointSave: vi.fn(async () => undefined),
 		saveAlphaMessages: vi.fn(async () => undefined),
 		cancelAutoApprovalTimeout: vi.fn(),
@@ -86,7 +86,7 @@ describe("Task external mutation capability", () => {
 		lease.release!()
 		expect((task as any).askResponse).toBe("messageResponse")
 		expect((task as any).askResponseText).toBe("APPLIED")
-		expect((task as any).clineMessages[0].isAnswered).toBe(true)
+		expect((task as any).alphaMessages[0].isAnswered).toBe(true)
 	})
 
 	it("does not publish a child command as parent verification evidence", () => {

@@ -86,8 +86,8 @@ function legacyEntry(overrides: Partial<FileMetadataEntry> = {}): FileMetadataEn
 		path: "src/one.ts",
 		record_state: "stale",
 		record_source: "read_tool",
-		roo_read_date: 100,
-		roo_edit_date: null,
+		alpha_read_date: 100,
+		alpha_edit_date: null,
 		user_edit_date: null,
 		...overrides,
 	}
@@ -147,7 +147,7 @@ describe("FileContextTracker metadata updates", () => {
 				path: "src/repeated.ts",
 				record_state: "active",
 				record_source: "read_tool",
-				roo_read_date: 1_700_000_000_127,
+				alpha_read_date: 1_700_000_000_127,
 			}),
 		])
 		expect(await tracker.getFilesReadByAlpha(1_700_000_000_127)).toEqual(["src/repeated.ts"])
@@ -158,17 +158,17 @@ describe("FileContextTracker metadata updates", () => {
 		const { tracker, metadata } = createPersistedTracker({
 			files_in_context: [
 				legacyEntry(),
-				legacyEntry({ roo_read_date: 200, roo_edit_date: 150, user_edit_date: 180 }),
-				legacyEntry({ record_source: "file_mentioned", roo_read_date: 300 }),
-				legacyEntry({ record_source: "roo_edited", roo_read_date: 400, roo_edit_date: 400 }),
+				legacyEntry({ alpha_read_date: 200, alpha_edit_date: 150, user_edit_date: 180 }),
+				legacyEntry({ record_source: "file_mentioned", alpha_read_date: 300 }),
+				legacyEntry({ record_source: "alpha_edited", alpha_read_date: 400, alpha_edit_date: 400 }),
 				legacyEntry({
 					record_source: "user_edited",
 					record_state: "active",
-					roo_read_date: 400,
-					roo_edit_date: 400,
+					alpha_read_date: 400,
+					alpha_edit_date: 400,
 					user_edit_date: 450,
 				}),
-				legacyEntry({ path: "src/two.ts", record_state: "active", roo_read_date: 350 }),
+				legacyEntry({ path: "src/two.ts", record_state: "active", alpha_read_date: 350 }),
 			],
 		})
 		vi.spyOn(Date, "now").mockReturnValue(500)
@@ -177,17 +177,17 @@ describe("FileContextTracker metadata updates", () => {
 
 		expect(metadata().files_in_context.filter((entry) => entry.path === "src/one.ts")).toHaveLength(4)
 		expect(metadata().files_in_context.filter((entry) => entry.record_state === "active")).toEqual([
-			legacyEntry({ path: "src/two.ts", record_state: "active", roo_read_date: 350 }),
+			legacyEntry({ path: "src/two.ts", record_state: "active", alpha_read_date: 350 }),
 			expect.objectContaining({
 				path: "src/one.ts",
 				record_source: "user_edited",
-				roo_read_date: 400,
-				roo_edit_date: 400,
+				alpha_read_date: 400,
+				alpha_edit_date: 400,
 				user_edit_date: 500,
 			}),
 		])
 		expect(metadata().files_in_context).toContainEqual(
-			legacyEntry({ roo_read_date: 200, roo_edit_date: 150, user_edit_date: 180 }),
+			legacyEntry({ alpha_read_date: 200, alpha_edit_date: 150, user_edit_date: 180 }),
 		)
 		expect(await tracker.getFilesReadByAlpha()).toEqual(["src/two.ts", "src/one.ts"])
 		expect(await tracker.getFilesReadByAlpha(300)).toEqual(["src/two.ts", "src/one.ts"])
@@ -201,7 +201,7 @@ describe("FileContextTracker metadata updates", () => {
 
 	it("preserves conservative timestamp filtering for legacy undated reads", async () => {
 		const { tracker, metadata } = createPersistedTracker({
-			files_in_context: [legacyEntry({ roo_read_date: null }), legacyEntry({ roo_read_date: 100 })],
+			files_in_context: [legacyEntry({ alpha_read_date: null }), legacyEntry({ alpha_read_date: 100 })],
 		})
 		vi.spyOn(Date, "now").mockReturnValue(200)
 
@@ -214,12 +214,12 @@ describe("FileContextTracker metadata updates", () => {
 	it("bounds mixed observations while retaining both undated read sources and checkpoint evidence", async () => {
 		const { tracker, metadata } = createPersistedTracker({
 			files_in_context: [
-				legacyEntry({ roo_read_date: null }),
-				legacyEntry({ record_source: "file_mentioned", roo_read_date: null }),
+				legacyEntry({ alpha_read_date: null }),
+				legacyEntry({ record_source: "file_mentioned", alpha_read_date: null }),
 			],
 		})
 		const now = vi.spyOn(Date, "now")
-		const sources = ["read_tool", "file_mentioned", "roo_edited", "user_edited"] as const
+		const sources = ["read_tool", "file_mentioned", "alpha_edited", "user_edited"] as const
 		for (let index = 0; index < 64; index++) {
 			now.mockReturnValue(1_000 + index)
 			await tracker.addFileToFileContextTracker("task-1", "src/one.ts", sources[index % sources.length])
@@ -230,8 +230,8 @@ describe("FileContextTracker metadata updates", () => {
 		expect(metadata().files_in_context.filter((entry) => entry.record_state === "active")).toEqual([
 			expect.objectContaining({
 				record_source: "user_edited",
-				roo_read_date: 1_062,
-				roo_edit_date: 1_062,
+				alpha_read_date: 1_062,
+				alpha_edit_date: 1_062,
 				user_edit_date: 1_063,
 			}),
 		])
@@ -312,7 +312,7 @@ describe("FileContextTracker watcher ownership", () => {
 		const tracker = createTracker()
 		const { watcher, fireChange } = createWatcher()
 		vi.mocked(vscode.workspace.createFileSystemWatcher).mockReturnValue(watcher)
-		await tracker.trackFileContext("src/one.ts", "roo_edited")
+		await tracker.trackFileContext("src/one.ts", "alpha_edited")
 
 		fireChange()
 
@@ -337,7 +337,7 @@ describe("FileContextTracker watcher ownership", () => {
 		const { watcher, fireChange } = createWatcher()
 		vi.mocked(vscode.workspace.createFileSystemWatcher).mockReturnValue(watcher)
 		await tracker.trackFileContext("src/one.ts", "read_tool")
-		await tracker.trackFileContext("src/one.ts", "roo_edited")
+		await tracker.trackFileContext("src/one.ts", "alpha_edited")
 
 		fireChange()
 

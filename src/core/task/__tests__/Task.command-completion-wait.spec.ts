@@ -58,7 +58,7 @@ function createFixture(request: string, command: string, overrides: Partial<Comm
 				content: [{ type: "tool_result", tool_use_id: "preview", content: "The website is loaded and ready." }],
 			},
 		],
-		clineMessages: [],
+		alphaMessages: [],
 		abort: false,
 		taskCancellationController: cancellation,
 		commandExecutionEvidence: new Map([[evidence.toolCallId, evidence]]),

@@ -50,7 +50,7 @@ export async function processUserContentMentions({
 	cwd,
 	fileContextTracker,
 	alphaIgnoreController,
-	showRooIgnoredFiles = false,
+	showAlphaIgnoredFiles = false,
 	includeDiagnosticMessages = true,
 	maxDiagnosticMessages = 50,
 	skillsManager,
@@ -66,7 +66,7 @@ export async function processUserContentMentions({
 	cwd: string
 	fileContextTracker: FileContextTracker
 	alphaIgnoreController?: any
-	showRooIgnoredFiles?: boolean
+	showAlphaIgnoredFiles?: boolean
 	includeDiagnosticMessages?: boolean
 	maxDiagnosticMessages?: number
 	skillsManager?: SkillLookup
@@ -116,7 +116,7 @@ export async function processUserContentMentions({
 							cwd,
 							fileContextTracker,
 							alphaIgnoreController,
-							showRooIgnoredFiles,
+							showAlphaIgnoredFiles,
 							includeDiagnosticMessages,
 							maxDiagnosticMessages,
 							textSkillLookup,
@@ -165,7 +165,7 @@ export async function processUserContentMentions({
 								cwd,
 								fileContextTracker,
 								alphaIgnoreController,
-								showRooIgnoredFiles,
+								showAlphaIgnoredFiles,
 								includeDiagnosticMessages,
 								maxDiagnosticMessages,
 								feedbackSkillLookup,
@@ -210,7 +210,7 @@ export async function processUserContentMentions({
 											cwd,
 											fileContextTracker,
 											alphaIgnoreController,
-											showRooIgnoredFiles,
+											showAlphaIgnoredFiles,
 											includeDiagnosticMessages,
 											maxDiagnosticMessages,
 											feedbackSkillLookup,
@@ -252,7 +252,7 @@ export async function processUserContentMentions({
 				}
 
 				// Legacy backward compat: tool_result / tool-result blocks from older formats
-				// are passed through unchanged (tool results are now in separate RooToolMessages).
+				// are passed through unchanged (tool results are now in separate AlphaToolMessages).
 				return block
 			}),
 		)

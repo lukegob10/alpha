@@ -56,7 +56,7 @@ describe("deterministic environment request construction measurements", () => {
 			providerRef: { deref: () => ({ getState: async () => state }) },
 			getTaskMode: async () => "code",
 			api: { getModel: () => ({ id: "offline-fixture" }) },
-			clineMessages: [],
+			alphaMessages: [],
 			fileContextTracker: { captureRecentlyModifiedFiles: () => ({ files: [], commit: () => undefined }) },
 		} as unknown as Task
 		encoder = new Tiktoken(o200kBase.bpe_ranks, o200kBase.special_tokens, o200kBase.pat_str)

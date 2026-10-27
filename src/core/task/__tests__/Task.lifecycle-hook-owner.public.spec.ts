@@ -567,7 +567,7 @@ describe("public Task lifecycle-hook ownership through asynchronous barriers", (
 				// Context saving follows the already committed warning; that admission remains legitimate.
 				const admittedWarnings = boundary === "context save admission" ? 1 : 0
 				expect(warningMessages(ui)).toHaveLength(admittedWarnings)
-				expect(warningMessages(fixture.task.clineMessages)).toHaveLength(admittedWarnings)
+				expect(warningMessages(fixture.task.alphaMessages)).toHaveLength(admittedWarnings)
 				expect(fixture.task["lifecycleHookStoppedThisTurn"]).toBe(false)
 				expect(operation.onPersisted).not.toHaveBeenCalled()
 				expect(fixture.task["messageQueueService"].getClaimedMessageIds()).toContain(operation.queued.id)
@@ -719,7 +719,7 @@ describe("public Task lifecycle-hook ownership through asynchronous barriers", (
 					expect(fixture.effects).toEqual([readCommand])
 				}
 				expect(operation.onPersisted).toHaveBeenCalledTimes(1)
-				expect(warningMessages(fixture.task.clineMessages)).toHaveLength(1)
+				expect(warningMessages(fixture.task.alphaMessages)).toHaveLength(1)
 			} finally {
 				fixture.release()
 				await operation.settled
@@ -822,7 +822,7 @@ describe("public Task-built scheduler lifecycle-hook ownership", () => {
 				expect(fixture.task.userMessageContent).toEqual(admittedContent)
 				expect(fixture.task["pendingLifecycleHookContexts"] ?? []).toEqual(admittedContexts)
 				expect(fixture.task["lifecycleHookStoppedThisTurn"]).toBe(false)
-				expect(warningMessages(fixture.task.clineMessages)).toEqual([])
+				expect(warningMessages(fixture.task.alphaMessages)).toEqual([])
 				const savedMessages = await readTaskMessages({
 					taskId: fixture.taskId,
 					globalStoragePath: fixture.storage,
@@ -854,7 +854,7 @@ describe("public Task-built scheduler lifecycle-hook ownership", () => {
 				expect(fixture.executor).toHaveBeenCalledTimes(1)
 				expect(fixture.effects).toEqual([readCommand])
 				expect(JSON.stringify(await savedHistory(fixture))).toContain(contextText)
-				expect(warningMessages(fixture.task.clineMessages)).toHaveLength(1)
+				expect(warningMessages(fixture.task.alphaMessages)).toHaveLength(1)
 			}
 			expect(operation.onPersisted).toHaveBeenCalledTimes(1)
 			expect(runLifecycleHooks).toHaveBeenCalledTimes(1)
@@ -932,7 +932,7 @@ describe("public Task termination hook identity and independent deadline", () =>
 			expect(fixture.executor).not.toHaveBeenCalled()
 			expect(fixture.task["lifecycleHookStoppedThisTurn"]).not.toBe(true)
 			expect(fixture.task.apiConversationHistory.some((message) => message.hook_prompt)).toBe(false)
-			expect(warningMessages(fixture.task.clineMessages)).toEqual([])
+			expect(warningMessages(fixture.task.alphaMessages)).toEqual([])
 			if (replaced) expect(fixture.owns()).toBe(false)
 			else expect(deadlines.some(({ milliseconds }) => milliseconds === 1_000)).toBe(true)
 		} finally {

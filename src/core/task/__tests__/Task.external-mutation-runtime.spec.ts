@@ -69,7 +69,7 @@ describe("Task external mutation runtime state", () => {
 		const task = makePausedTask({
 			activeAsk: undefined,
 			providerRef: { deref: () => provider },
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "subagent_group",
@@ -130,7 +130,7 @@ describe("Task external mutation runtime state", () => {
 		const task = makePausedTask({
 			activeAsk: undefined,
 			providerRef: { deref: () => provider },
-			clineMessages: [{ type: "say", say: "subagent_group", subagentGroup: group }],
+			alphaMessages: [{ type: "say", say: "subagent_group", subagentGroup: group }],
 			isAwaitingSubagentReview: false,
 			subagentReviewBarrier: undefined,
 		})

@@ -67,10 +67,10 @@ describe("executeCommand", () => {
 				deref: vitest.fn().mockResolvedValue(mockProvider),
 			},
 			say: vitest.fn().mockResolvedValue(undefined),
-			clineMessages: [],
+			alphaMessages: [],
 			presentApprovedCommand: vitest.fn(async function (this: Task, command: string) {
 				presentationTimestamp = Math.max(Date.now(), presentationTimestamp + 1, (this.lastMessageTs ?? 0) + 1)
-				this.clineMessages.push({
+				this.alphaMessages.push({
 					ts: presentationTimestamp,
 					type: "ask",
 					ask: "command",
@@ -923,7 +923,7 @@ describe("executeCommand", () => {
 				return mockProcess
 			})
 			mockTask.lastMessageTs = 1000
-			mockTask.clineMessages = [{ ts: 999, type: "ask", ask: "command", text: "earlier command" }]
+			mockTask.alphaMessages = [{ ts: 999, type: "ask", ask: "command", text: "earlier command" }]
 			mockTask.ask = vitest.fn(async () => ({ response: "yesButtonClicked" }))
 			mockTask.say = vitest.fn<Task["say"]>(async (type, _text, _images, partial) => {
 				if (type === "command_output" && partial === true) notifyPartial()
@@ -933,7 +933,7 @@ describe("executeCommand", () => {
 			mockTask.getTaskCommandDenialReason = vitest.fn(async () => undefined)
 			mockTask.getTaskMode = vitest.fn(async () => "code")
 			mockTask.presentApprovedCommand = vitest.fn(async (command: string) => {
-				mockTask.clineMessages.push({ ts: 1001, type: "ask", ask: "command", text: command, isAnswered: true })
+				mockTask.alphaMessages.push({ ts: 1001, type: "ask", ask: "command", text: command, isAnswered: true })
 				return "1001"
 			})
 			vitest.mocked(Terminal.compressTerminalOutput).mockImplementation((output) => output)
@@ -1002,7 +1002,7 @@ describe("executeCommand", () => {
 				mockProcess.isOutputFinalized = false
 				vitest.mocked(TerminalRegistry.getTerminals).mockReturnValue([])
 				fixture.callbacks.askCommandApproval.mockImplementation(async () => {
-					mockTask.clineMessages.push({
+					mockTask.alphaMessages.push({
 						ts: 1001,
 						type: "ask",
 						ask: "command",
@@ -1077,7 +1077,7 @@ describe("executeCommand", () => {
 		it("uses the request-owned approval row after feedback and another ask change the latest message", async () => {
 			const fixture = controlledCommand()
 			fixture.callbacks.askCommandApproval.mockImplementation(async () => {
-				mockTask.clineMessages.push(
+				mockTask.alphaMessages.push(
 					{ ts: 1001, type: "ask", ask: "command", text: "echo owned" },
 					{ ts: 1002, type: "say", say: "user_feedback", text: "accepted feedback" },
 					{ ts: 1003, type: "ask", ask: "followup", text: "another question" },
@@ -1104,7 +1104,7 @@ describe("executeCommand", () => {
 					expect(mockTask.getTaskCommandDenialReason).toHaveBeenCalledTimes(2)
 					expect(mockTask.getTaskMode).toHaveBeenCalledOnce()
 					expect(mockTerminal.runCommand).not.toHaveBeenCalled()
-					mockTask.clineMessages.push({
+					mockTask.alphaMessages.push({
 						ts: 1001,
 						type: "ask",
 						ask: "command",

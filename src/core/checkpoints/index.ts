@@ -427,7 +427,7 @@ export async function checkpointRestore(
 		return false
 	}
 
-	const index = task.clineMessages.findIndex((m) => m.ts === ts)
+	const index = task.alphaMessages.findIndex((m) => m.ts === ts)
 
 	if (index === -1) {
 		return false
@@ -451,7 +451,7 @@ export async function checkpointRestore(
 
 		if (mode === "restore") {
 			// Calculate metrics from messages that will be deleted (must be done before rewind)
-			const deletedMessages = task.clineMessages.slice(index + 1)
+			const deletedMessages = task.alphaMessages.slice(index + 1)
 
 			const { totalTokensIn, totalTokensOut, totalCacheWrites, totalCacheReads, totalCost } = getApiMetrics(
 				task.combineMessages(deletedMessages),
@@ -466,9 +466,9 @@ export async function checkpointRestore(
 			// The task is stopped; say() correctly rejects new agent output after abort.
 			// Persist the host's accounting row through the transcript owner instead.
 			await task.overwriteAlphaMessages([
-				...task.clineMessages,
+				...task.alphaMessages,
 				{
-					ts: Math.max(Date.now(), (task.clineMessages.at(-1)?.ts ?? 0) + 1),
+					ts: Math.max(Date.now(), (task.alphaMessages.at(-1)?.ts ?? 0) + 1),
 					type: "say",
 					say: "api_req_deleted",
 					text: JSON.stringify({
@@ -516,7 +516,7 @@ export async function checkpointDiff(task: Task, { ts, previousCommitHash, commi
 	let toHash: string | undefined
 	let title: string
 
-	const checkpoints = task.clineMessages.filter(({ say }) => say === "checkpoint_saved").map(({ text }) => text!)
+	const checkpoints = task.alphaMessages.filter(({ say }) => say === "checkpoint_saved").map(({ text }) => text!)
 
 	if (["from-init", "full"].includes(mode) && checkpoints.length < 1) {
 		vscode.window.showInformationMessage(t("common:errors.checkpoint_no_first"))

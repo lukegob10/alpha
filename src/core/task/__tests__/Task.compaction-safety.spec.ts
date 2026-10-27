@@ -141,7 +141,7 @@ function harness() {
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		toolCatalogCache: new TaskToolCatalogCache(),
 		userMessageContent: [],
-		clineMessages: [],
+		alphaMessages: [],
 		getTaskMode: vi.fn(async () => "code"),
 		getSystemPrompt: vi.fn(async () => "System prompt"),
 		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
@@ -923,7 +923,7 @@ describe("Task manual compaction boundary", () => {
 describe("Task post-turn compaction", () => {
 	it("restores the after-prefix baseline from a persisted compaction receipt", () => {
 		const { task } = harness()
-		task.clineMessages = [
+		task.alphaMessages = [
 			{
 				ts: 1,
 				type: "say",
@@ -937,9 +937,9 @@ describe("Task post-turn compaction", () => {
 			},
 		]
 		const { task: reloaded } = harness()
-		reloaded.clineMessages = structuredClone(task.clineMessages)
+		reloaded.alphaMessages = structuredClone(task.alphaMessages)
 		expect(Reflect.get(reloaded, "getCompactionWindowPrefillTokens").call(reloaded)).toBe(125)
-		reloaded.clineMessages = [
+		reloaded.alphaMessages = [
 			{ ts: 2, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 125, tokensOut: 50 }) },
 		]
 		expect(Reflect.get(reloaded, "getCompactionWindowPrefillTokens").call(reloaded)).toBe(125)

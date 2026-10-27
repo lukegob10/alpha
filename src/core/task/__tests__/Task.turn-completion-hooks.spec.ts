@@ -61,7 +61,7 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		canonicalLifecycleQueue: Promise.resolve(),
 		canonicalLifecycleStartedSteps: new Set<string>(),
 		taskCancellationController: controller,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		userMessageContent: [],
 		messageQueueService: new MessageQueueService(),

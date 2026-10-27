@@ -244,10 +244,10 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 				if (fileResult.status !== "pending") continue
 				const relPath = fileResult.path
 
-				// RooIgnore validation
+				// AlphaIgnore validation
 				const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 				if (accessAllowed === false) {
-					await task.say("rooignore_error", relPath)
+					await task.say("alphaignore_error", relPath)
 					const errorMsg = formatResponse.alphaIgnoreError(relPath)
 					updateFileResult(fileResult, {
 						status: "blocked",
@@ -295,7 +295,7 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 						nativeContent: `File: ${relPath}\nError: ${errorMsg}`,
 					})
 					callbacks.setResultMetadata?.({ status: "denied" })
-					await task.say("rooignore_error", relPath)
+					await task.say("alphaignore_error", relPath)
 					continue
 				}
 

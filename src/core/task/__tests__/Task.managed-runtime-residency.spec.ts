@@ -248,7 +248,7 @@ describe("Task managed runtime unload boundary", () => {
 		const { child } = createIdleChild()
 		Reflect.deleteProperty(child, "dispose")
 		Object.assign(child, {
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			debouncedEmitTokenUsage: { cancel: vi.fn() },
 			stopGoalForTaskCancellation: vi.fn(async () => undefined),

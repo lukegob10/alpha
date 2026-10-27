@@ -42,7 +42,7 @@ function createTask(
 	const say = vi.fn(async () => {})
 	const addToAlphaMessages = vi.fn(async (message: AlphaMessage) => {
 		await options.beforePublish?.(message)
-		task.clineMessages.push(message)
+		task.alphaMessages.push(message)
 	})
 	Object.assign(task, {
 		taskId: "question-cancellation-root",
@@ -51,7 +51,7 @@ function createTask(
 		_taskMode: "architect",
 		taskApprovalMode: "ask",
 		abort: false,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		messageQueueService: new MessageQueueService(),
 		providerRef: {
@@ -135,7 +135,7 @@ describe("question cancellation owns its Task ask", () => {
 				if (late === "resolve") state.resolve(undefined)
 				else state.reject(new Error("late provider read failed"))
 				await vi.advanceTimersByTimeAsync(100)
-				expect(task.clineMessages).toEqual([])
+				expect(task.alphaMessages).toEqual([])
 				expect(request.callbacks.pushToolResult).toHaveBeenCalledOnce()
 			} finally {
 				state.resolve(undefined)
@@ -167,7 +167,7 @@ describe("question cancellation owns its Task ask", () => {
 			expect(task.abort).toBe(false)
 			expect(say).not.toHaveBeenCalled()
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
-			expect(task.clineMessages).toEqual([
+			expect(task.alphaMessages).toEqual([
 				expect.objectContaining({ type: "ask", ask: "followup", isAnswered: true }),
 			])
 		} finally {
@@ -232,7 +232,7 @@ describe("question cancellation owns its Task ask", () => {
 				state.resolve(undefined)
 				await vi.advanceTimersByTimeAsync(0)
 				expect(task.getActiveAskTimestamp()).toBe(timestamp)
-				expect(task.clineMessages).toHaveLength(1)
+				expect(task.alphaMessages).toHaveLength(1)
 				if (kind === "accepted-response") {
 					expect(Reflect.get(task, "askResponseText")).toBe("The user's accepted answer")
 				} else {
@@ -366,7 +366,7 @@ describe("question cancellation owns its Task ask", () => {
 			const { task } = createTask()
 			const controller = new AbortController()
 			const hydratedTimestamp = Date.now() + 10_000
-			task.clineMessages.push({ ts: hydratedTimestamp, type: "say", say: "text", text: "Hydrated history" })
+			task.alphaMessages.push({ ts: hydratedTimestamp, type: "say", say: "text", text: "Hydrated history" })
 			const observer = vi.fn((_id: string) => {
 				expect(task.getActiveAskTimestamp()).toBeUndefined()
 			})
@@ -395,7 +395,7 @@ describe("question cancellation owns its Task ask", () => {
 				await vi.advanceTimersByTimeAsync(100)
 				await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
 				expect(observer).toHaveBeenCalledExactlyOnceWith(timestamp!.toString())
-				expect(task.clineMessages.at(-1)).toMatchObject({ ts: timestamp, type: "ask", ask: "command" })
+				expect(task.alphaMessages.at(-1)).toMatchObject({ ts: timestamp, type: "ask", ask: "command" })
 				expect(getEventListeners(controller.signal, "abort")).toHaveLength(0)
 				controller.abort()
 				expect(task.abort).toBe(false)

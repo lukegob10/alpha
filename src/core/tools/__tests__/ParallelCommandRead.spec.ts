@@ -82,7 +82,7 @@ describe("command-read classification and session execution boundary", () => {
 			getTaskLifetimeCancellationSignal: () => lifetime.signal,
 			providerRef: { deref: () => currentProvider },
 			abort: false,
-			clineMessages: [],
+			alphaMessages: [],
 			commandExecutionEvidence: new Map<string, CommandExecutionEvidence>(),
 			pendingCommandVerification: Promise.resolve(),
 			completionRuntimeRevision: 0,
@@ -115,7 +115,7 @@ describe("command-read classification and session execution boundary", () => {
 				toolCallId: "call-1",
 				askApproval: vi.fn(async () => true),
 				askCommandApproval: vi.fn(async (_type, command) => {
-					task.clineMessages.push({ ts: 1_001, type: "ask", ask: "command", text: command })
+					task.alphaMessages.push({ ts: 1_001, type: "ask", ask: "command", text: command })
 					return { approved: true, commandExecutionId: "1001" }
 				}),
 				handleError: vi.fn(),

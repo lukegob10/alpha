@@ -49,7 +49,7 @@ describe("rewind command artifact retention", () => {
 			isTurnActive: vi.fn(() => false),
 			hasActiveCommandExecutions: vi.fn(() => false),
 			hasPendingSteerMessage: vi.fn(() => false),
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "ask", ask: "command", text: "git diff" },
 				{ ts: 200, type: "say", say: "command_output", text: `Artifact ID: ${artifactName(retainedUiId)}` },
 				{ ts: 400, type: "say", say: "text", text: "Remove the following work" },
@@ -84,7 +84,7 @@ describe("rewind command artifact retention", () => {
 				{ ts: 500, role: "assistant", content: `Removed ${artifactName(removedId)}` },
 			],
 			overwriteAlphaMessages: vi.fn(async (messages: AlphaMessage[]) => {
-				task.clineMessages = messages
+				task.alphaMessages = messages
 				return true
 			}),
 			overwriteApiConversationHistory: vi.fn(async (messages: ApiMessage[]) => {
@@ -131,7 +131,7 @@ describe("rewind command artifact retention", () => {
 	it.each(["ui", "api"] as const)("keeps artifacts when the %s transcript save returns false", async (source) => {
 		if (source === "ui") {
 			vi.mocked(task.overwriteAlphaMessages).mockImplementation(async (messages) => {
-				task.clineMessages = messages
+				task.alphaMessages = messages
 				return false
 			})
 		} else {
@@ -157,7 +157,7 @@ describe("rewind command artifact retention", () => {
 		})
 		if (source === "ui") {
 			vi.mocked(task.overwriteAlphaMessages).mockImplementation(async (messages) => {
-				task.clineMessages = messages
+				task.alphaMessages = messages
 				started()
 				return receipt
 			})
@@ -181,7 +181,7 @@ describe("rewind command artifact retention", () => {
 	it.each([false, true])(
 		"requires a new API receipt after an earlier failed save (retry saved: %s)",
 		async (saved) => {
-			task.clineMessages = [
+			task.alphaMessages = [
 				{ ts: 100, type: "say", say: "text", text: "Original task" },
 				{ ts: 200, type: "say", say: "command_output", text: `Artifact ID: ${artifactName(removedId)}` },
 				{ ts: 400, type: "say", say: "text", text: "Rewind here first" },
@@ -218,7 +218,7 @@ describe("rewind command artifact retention", () => {
 
 	it("preserves artifacts for legacy overwrite implementations without a commit receipt", async () => {
 		vi.mocked(task.overwriteAlphaMessages).mockImplementation(async (messages) => {
-			task.clineMessages = messages
+			task.alphaMessages = messages
 			return undefined as unknown as boolean
 		})
 		await expect(manager.rewindToTimestamp(400)).rejects.toThrow("Conversation rewind could not be persisted")
@@ -379,7 +379,7 @@ describe("rewind command artifact retention", () => {
 		})
 		const rewind = manager.rewindToTimestamp(400)
 		await unlinking
-		task.clineMessages.push({ ts: 600, type: "say", say: "text", text: `Retain ${artifactName(removedId)}` })
+		task.alphaMessages.push({ ts: 600, type: "say", say: "text", text: `Retain ${artifactName(removedId)}` })
 		release()
 		await rewind
 

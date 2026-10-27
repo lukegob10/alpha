@@ -69,7 +69,7 @@ describe("executeCommandTool", () => {
 	let mockHandleError: any
 	let mockPushToolResult: any
 	let mockToolUse: ToolUse<"execute_command">
-	const originalCliRuntime = process.env.ROO_CLI_RUNTIME
+	const originalCliRuntime = process.env.ALPHA_CLI_RUNTIME
 
 	beforeEach(() => {
 		// Reset mocks
@@ -85,14 +85,14 @@ describe("executeCommandTool", () => {
 			getTaskLifetimeCancellationSignal: vitest.fn(() => new AbortController().signal),
 			ask: vitest.fn().mockResolvedValue(undefined),
 			say: vitest.fn().mockResolvedValue(undefined),
-			clineMessages: [],
+			alphaMessages: [],
 			presentApprovedCommand: vitest.fn(async function (
 				this: Task,
 				command: string,
 				progressStatus?: ToolProgressStatus,
 			) {
 				presentationTimestamp = Math.max(Date.now(), presentationTimestamp + 1, (this.lastMessageTs ?? 0) + 1)
-				this.clineMessages.push({
+				this.alphaMessages.push({
 					ts: presentationTimestamp,
 					type: "ask",
 					ask: "command",
@@ -155,8 +155,8 @@ describe("executeCommandTool", () => {
 	})
 
 	afterEach(() => {
-		if (originalCliRuntime === undefined) delete process.env.ROO_CLI_RUNTIME
-		else process.env.ROO_CLI_RUNTIME = originalCliRuntime
+		if (originalCliRuntime === undefined) delete process.env.ALPHA_CLI_RUNTIME
+		else process.env.ALPHA_CLI_RUNTIME = originalCliRuntime
 	})
 
 	it.each(["echo '&amp;amp;'", "echo '&lt;tag&gt; &quot;quoted&quot; &#39;literal&#39;'"])(
@@ -773,7 +773,7 @@ describe("executeCommandTool", () => {
 				validateCommand: validateCommandMock,
 			}
 
-			const mockAlphaIgnoreError = "RooIgnore error"
+			const mockAlphaIgnoreError = "AlphaIgnore error"
 			;(formatResponse.alphaIgnoreError as any).mockReturnValue(mockAlphaIgnoreError)
 
 			// Execute
@@ -785,7 +785,7 @@ describe("executeCommandTool", () => {
 
 			// Verify
 			expect(validateCommandMock).toHaveBeenCalledWith("cat .env", undefined)
-			expect(mockAlphaTask.say).toHaveBeenCalledWith("rooignore_error", ".env")
+			expect(mockAlphaTask.say).toHaveBeenCalledWith("alphaignore_error", ".env")
 			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith(".env")
 			expect(mockPushToolResult).toHaveBeenCalledWith(mockAlphaIgnoreError)
 			expect(mockAskApproval).not.toHaveBeenCalled()
@@ -809,7 +809,7 @@ describe("executeCommandTool", () => {
 
 			expect(mockAskApproval).not.toHaveBeenCalled()
 			expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
-			expect(mockAlphaTask.say).toHaveBeenCalledWith("rooignore_error", "keys.json")
+			expect(mockAlphaTask.say).toHaveBeenCalledWith("alphaignore_error", "keys.json")
 			expect(setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "denied" }))
 			expect(mockHandleError).not.toHaveBeenCalled()
 		})
@@ -851,12 +851,12 @@ describe("executeCommandTool", () => {
 		})
 
 		it("honors model timeout even when the retired CLI environment flag is inherited", () => {
-			process.env.ROO_CLI_RUNTIME = "1"
+			process.env.ALPHA_CLI_RUNTIME = "1"
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})
 
 		it("honors model timeout in the normal extension environment", () => {
-			delete process.env.ROO_CLI_RUNTIME
+			delete process.env.ALPHA_CLI_RUNTIME
 			expect(executeCommandModule.resolveAgentTimeoutMs(30)).toBe(30_000)
 		})
 

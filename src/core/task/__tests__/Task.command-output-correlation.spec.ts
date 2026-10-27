@@ -42,7 +42,7 @@ function createTask(seed: AlphaMessage[] = []) {
 		cwd: process.cwd(),
 		abort: false,
 		abandoned: false,
-		clineMessages: messages,
+		alphaMessages: messages,
 		apiConversationHistory: [],
 		lastMessageTs: 900,
 		captureMessageTurn: Task.prototype.captureMessageTurn,
@@ -562,7 +562,7 @@ describe("Task UI message identity reservation", () => {
 		const fixture = createTask()
 		fixture.clock.mockReturnValue(1_000)
 		fixture.saveAlphaMessages.mockImplementation(async () => {
-			fixture.persisted.push(structuredClone(fixture.task.clineMessages))
+			fixture.persisted.push(structuredClone(fixture.task.alphaMessages))
 			return true
 		})
 		await fixture.output("first", false, "1001")
@@ -570,15 +570,15 @@ describe("Task UI message identity reservation", () => {
 			{ ts: 9_000, type: "say", say: "text", text: "replacement" },
 		])
 		await fixture.output("second", false, "1002")
-		expect(fixture.task.clineMessages.map(({ ts }) => ts)).toEqual([9_000, 9_001])
+		expect(fixture.task.alphaMessages.map(({ ts }) => ts)).toEqual([9_000, 9_001])
 		await Task.prototype.overwriteAlphaMessages.call(fixture.task, [
 			{ ts: 50, type: "say", say: "text", text: "older replacement" },
 		])
 		await fixture.output("third", false, "1003")
 
-		expect(fixture.task.clineMessages.map(({ ts }) => ts)).toEqual([50, 9_002])
+		expect(fixture.task.alphaMessages.map(({ ts }) => ts)).toEqual([50, 9_002])
 		expect(fixture.task.lastMessageTs).toBe(900)
-		expect(fixture.persisted.at(-1)).toEqual(fixture.task.clineMessages)
+		expect(fixture.persisted.at(-1)).toEqual(fixture.task.alphaMessages)
 	})
 
 	it("gives a forced managed terminal row a distinct same-clock identity", async () => {

@@ -57,11 +57,11 @@ function createQuestionTask(mode: "code" | "architect", approvalMode: ApprovalMo
 		_taskMode: mode,
 		taskApprovalMode: approvalMode,
 		abort: false,
-		clineMessages: [],
+		alphaMessages: [],
 		messageQueueService: new MessageQueueService(),
 		providerRef: { deref: () => provider },
 		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		}),
 		saveAlphaMessages: vi.fn(async () => true),
 		updateAlphaMessage: vi.fn(async () => {}),
@@ -116,10 +116,10 @@ describe("primary question ownership", () => {
 				type: "interactionRequired",
 				taskId: task.taskId,
 			})
-			expect(task.clineMessages).toHaveLength(1)
-			expect(task.clineMessages[0]).toMatchObject({ type: "ask", ask: "followup" })
-			expect(task.clineMessages[0]?.isAnswered).not.toBe(true)
-			expect(JSON.parse(task.clineMessages[0]?.text ?? "{}")).toMatchObject({
+			expect(task.alphaMessages).toHaveLength(1)
+			expect(task.alphaMessages[0]).toMatchObject({ type: "ask", ask: "followup" })
+			expect(task.alphaMessages[0]?.isAnswered).not.toBe(true)
+			expect(JSON.parse(task.alphaMessages[0]?.text ?? "{}")).toMatchObject({
 				requestUserInput: { questions },
 			})
 			expect(task.messageQueueService.messages[0]?.text).toBe("Keep this guidance for the next turn")
@@ -173,7 +173,7 @@ describe("primary question ownership", () => {
 					},
 				},
 			)
-			expect(task.clineMessages[0]?.isAnswered).toBe(true)
+			expect(task.alphaMessages[0]?.isAnswered).toBe(true)
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
 			expect(task.messageQueueService.messages).toHaveLength(1)
 		} finally {
@@ -230,7 +230,7 @@ describe("primary question ownership", () => {
 			await vi.advanceTimersByTimeAsync(120_000)
 			expect(request.isSettled()).toBe(false)
 			expect(say).not.toHaveBeenCalled()
-			expect(task.clineMessages[0]?.isAnswered).not.toBe(true)
+			expect(task.alphaMessages[0]?.isAnswered).not.toBe(true)
 
 			expect(
 				task.handleWebviewAskResponse(
@@ -246,7 +246,7 @@ describe("primary question ownership", () => {
 			expect(request.callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
 				JSON.stringify({ answers: submittedAnswers }),
 			)
-			expect(task.clineMessages[0]?.isAnswered).toBe(true)
+			expect(task.alphaMessages[0]?.isAnswered).toBe(true)
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
 		} finally {
 			await cancelRequest(request)
@@ -299,7 +299,7 @@ describe("primary question ownership", () => {
 			expect(request.callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "cancelled" })
 			expect(request.callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify({ answers: {} }))
 			expect(say).not.toHaveBeenCalled()
-			expect(task.clineMessages[0]?.isAnswered).toBe(true)
+			expect(task.alphaMessages[0]?.isAnswered).toBe(true)
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
 		} finally {
 			await cancelRequest(request)

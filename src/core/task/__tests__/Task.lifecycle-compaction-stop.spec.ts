@@ -38,7 +38,7 @@ function fixture(configuration: CompletionHookConfig) {
 		taskCancellationController: new AbortController(),
 		agentRunId: "run-1",
 		agentTurnId: "turn-1",
-		clineMessages: [],
+		alphaMessages: [],
 		completionHookConfig: configuration,
 		lifecycleHookStartConsumed: false,
 		lifecycleHookStoppedThisTurn: false,
@@ -63,7 +63,7 @@ function fixture(configuration: CompletionHookConfig) {
 	task["enqueueAlphaMessagesSave"] = vi.fn<Task["enqueueAlphaMessagesSave"]>(
 		async (createSnapshot, onPersisted, _designHandoff, _reasoning, ownership) => {
 			if (ownership && !ownership.guard()) return false
-			const snapshot = createSnapshot ? createSnapshot() : structuredClone(task.clineMessages)
+			const snapshot = createSnapshot ? createSnapshot() : structuredClone(task.alphaMessages)
 			await Promise.resolve()
 			if (ownership && !ownership.guard()) return false
 			persistedUiMessages.set(task.taskId, structuredClone(snapshot))
@@ -159,8 +159,8 @@ describe("current lifecycle stops suppress automatic post-turn compaction", () =
 			},
 		])
 		expect(save.mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(runLifecycleHooks).mock.invocationCallOrder[0])
-		expect(persistedUiMessages.get(task.taskId)).toEqual(task.clineMessages)
-		expect(task.clineMessages).toEqual([
+		expect(persistedUiMessages.get(task.taskId)).toEqual(task.alphaMessages)
+		expect(task.alphaMessages).toEqual([
 			expect.objectContaining({ type: "say", say: "text", text: "Pause after compaction" }),
 		])
 		expect(vi.mocked(runLifecycleHooks).mock.calls.map(([, request]) => request.hook_event_name)).toEqual([

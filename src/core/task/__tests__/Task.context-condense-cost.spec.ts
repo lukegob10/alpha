@@ -123,7 +123,7 @@ function harness() {
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		toolCatalogCache: new TaskToolCatalogCache(),
 		userMessageContent: [],
-		clineMessages: [],
+		alphaMessages: [],
 		getTaskMode: vi.fn(async () => "code"),
 		getSystemPrompt: vi.fn(async () => "System prompt"),
 		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
@@ -172,7 +172,7 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 
 describe("failed summary cost receipts", () => {
 	function captureRows(task: Task) {
-		task.clineMessages = [
+		task.alphaMessages = [
 			{ ts: 1, type: "say", say: "text", text: "Original task" },
 			{
 				ts: 2,
@@ -183,8 +183,8 @@ describe("failed summary cost receipts", () => {
 		]
 		vi.mocked(task.say).mockImplementation(
 			async (say, text, images, partial, _checkpoint, _progress, options, contextCondense, contextTruncation) => {
-				task.clineMessages.push({
-					ts: task.clineMessages.length + 1,
+				task.alphaMessages.push({
+					ts: task.alphaMessages.length + 1,
 					type: "say",
 					say,
 					text,
@@ -203,7 +203,7 @@ describe("failed summary cost receipts", () => {
 			task,
 			"addToAlphaMessages",
 			vi.fn(async (message: import("@alpha-code/types").AlphaMessage) => {
-				task.clineMessages.push(message)
+				task.alphaMessages.push(message)
 			}),
 		)
 		Reflect.set(
@@ -218,7 +218,7 @@ describe("failed summary cost receipts", () => {
 		)
 	}
 	function verifyFailure(task: Task, expectedCost = 2.01) {
-		const rows = task.clineMessages
+		const rows = task.alphaMessages
 		const failureRows = rows.filter((row) => row.say === "condense_context_error")
 		expect(failureRows).toHaveLength(1)
 		expect(failureRows[0]).toMatchObject({ text: "Summary unavailable" })
@@ -230,7 +230,7 @@ describe("failed summary cost receipts", () => {
 			totalTokensIn: 100,
 			totalTokensOut: 20,
 		})
-		task.clineMessages = JSON.parse(JSON.stringify(rows))
+		task.alphaMessages = JSON.parse(JSON.stringify(rows))
 		expect(Task.prototype.getTokenUsage.call(task)).toMatchObject({ totalCost: expectedCost, contextTokens: 120 })
 	}
 	it.each(["manual", "automatic"] as const)(
@@ -263,9 +263,9 @@ describe("failed summary cost receipts", () => {
 			.mockResolvedValueOnce({ messages: history, summary: "", cost: 0.01, error: "Second summary unavailable" })
 		captureRows(task)
 		await runRecovery(task, "manual")
-		task.clineMessages = JSON.parse(JSON.stringify(task.clineMessages))
+		task.alphaMessages = JSON.parse(JSON.stringify(task.alphaMessages))
 		await runRecovery(task, "manual")
-		const failures = task.clineMessages.filter((row) => row.say === "condense_context_error")
+		const failures = task.alphaMessages.filter((row) => row.say === "condense_context_error")
 		expect(failures).toHaveLength(2)
 		expect(failures.map((row) => row.contextCondenseErrorCost)).toEqual([0.01, 0.01])
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.02)
@@ -288,7 +288,7 @@ describe("failed summary cost receipts", () => {
 			})
 			captureRows(task)
 			await runRecovery(task, trigger)
-			const fallbacks = task.clineMessages.filter((row) => row.say === "sliding_window_truncation")
+			const fallbacks = task.alphaMessages.filter((row) => row.say === "sliding_window_truncation")
 			expect(fallbacks).toHaveLength(1)
 			expect(fallbacks[0]).toMatchObject({
 				contextCondenseErrorCost: 0.01,
@@ -296,7 +296,7 @@ describe("failed summary cost receipts", () => {
 				contextTruncation: { truncationId: "fallback-1", prevContextTokens: 100, newContextTokens: 40 },
 			})
 			expect(
-				task.clineMessages.some(
+				task.alphaMessages.some(
 					(row) => row.say === "condense_context_error" || row.say === "condense_context",
 				),
 			).toBe(false)
@@ -307,7 +307,7 @@ describe("failed summary cost receipts", () => {
 				totalTokensOut: 20,
 				contextTokens: 40,
 			})
-			task.clineMessages = JSON.parse(JSON.stringify(task.clineMessages))
+			task.alphaMessages = JSON.parse(JSON.stringify(task.alphaMessages))
 			expect(Task.prototype.getTokenUsage.call(task)).toEqual(usage)
 		},
 	)
@@ -323,7 +323,7 @@ describe("failed summary cost receipts", () => {
 		})
 		captureRows(task)
 		await runRecovery(task, "automatic")
-		const receipts = task.clineMessages.filter((row) => row.say === "condense_context")
+		const receipts = task.alphaMessages.filter((row) => row.say === "condense_context")
 		expect(receipts).toHaveLength(1)
 		expect(receipts[0]).toMatchObject({
 			contextCondense: {
@@ -335,7 +335,7 @@ describe("failed summary cost receipts", () => {
 			},
 		})
 		expect(
-			task.clineMessages.some(
+			task.alphaMessages.some(
 				(row) => row.say === "condense_context_error" || row.contextCondenseErrorCost !== undefined,
 			),
 		).toBe(false)
@@ -359,9 +359,9 @@ describe("failed summary cost receipts", () => {
 			vi.mocked(manageContext).mockResolvedValue(result)
 			captureRows(task)
 			await runRecovery(task, trigger)
-			expect(task.clineMessages.filter((row) => row.say === "condense_context")).toHaveLength(1)
+			expect(task.alphaMessages.filter((row) => row.say === "condense_context")).toHaveLength(1)
 			expect(
-				task.clineMessages.some(
+				task.alphaMessages.some(
 					(row) => row.say === "condense_context_error" || row.contextCondenseErrorCost !== undefined,
 				),
 			).toBe(false)
@@ -403,7 +403,7 @@ describe("failed summary cost receipts", () => {
 			vi.mocked(manageContext).mockRejectedValue(cancelled)
 			captureRows(task)
 			await expect(runRecovery(task, trigger)).rejects.toMatchObject({ name: "AbortError" })
-			expect(task.clineMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
+			expect(task.alphaMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
 			expect(Task.prototype.getTokenUsage.call(task).totalCost).toBe(2)
 		},
 	)
@@ -417,10 +417,10 @@ describe("failed summary cost receipts", () => {
 	function verifyKnownCancelledCost(task: Task, history: ApiMessage[]) {
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 		expect(Task.prototype.getTokenUsage.call(task).contextTokens).toBe(120)
-		expect(task.clineMessages.some((row) => row.say === "condense_context")).toBe(false)
-		expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+		expect(task.alphaMessages.some((row) => row.say === "condense_context")).toBe(false)
+		expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 		expect(task.apiConversationHistory).toBe(history)
-		task.clineMessages = JSON.parse(JSON.stringify(task.clineMessages))
+		task.alphaMessages = JSON.parse(JSON.stringify(task.alphaMessages))
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 	}
 	it("preserves observed summary cost and original cancellation during a stalled stream", async () => {
@@ -517,7 +517,7 @@ describe("failed summary cost receipts", () => {
 		async (clockMode) => {
 			const { task, history, save } = harness()
 			captureRows(task)
-			task.clineMessages.push(
+			task.alphaMessages.push(
 				{ ts: 9_000, type: "ask", ask: "command", text: "echo retained", isAnswered: true },
 				{
 					ts: 9_001,
@@ -544,13 +544,13 @@ describe("failed summary cost receipts", () => {
 					undefined,
 					{ isNonInteractive: true },
 				)
-				const archived = task.clineMessages.pop()!
+				const archived = task.alphaMessages.pop()!
 				expect(archived.ts).toBeGreaterThan(9_100)
-				const retained = JSON.parse(JSON.stringify(task.clineMessages))
+				const retained = JSON.parse(JSON.stringify(task.alphaMessages))
 				const inputBoundary = Reflect.get(task, "lastMessageTs")
 				let persisted = ""
 				const saveReceipt = vi.fn(async () => {
-					persisted = JSON.stringify(task.clineMessages)
+					persisted = JSON.stringify(task.alphaMessages)
 					return true
 				})
 				Reflect.set(task, "saveAlphaMessages", saveReceipt)
@@ -564,8 +564,8 @@ describe("failed summary cost receipts", () => {
 					throw reason
 				})
 				await expect(task.condenseContext()).rejects.toBe(reason)
-				expect(task.clineMessages.slice(0, retained.length)).toEqual(retained)
-				const receipts = task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)
+				expect(task.alphaMessages.slice(0, retained.length)).toEqual(retained)
+				const receipts = task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)
 				expect(receipts).toHaveLength(1)
 				expect(receipts[0]).toMatchObject({
 					type: "say",
@@ -573,9 +573,9 @@ describe("failed summary cost receipts", () => {
 					contextCondenseErrorCost: 0.01,
 				})
 				expect(receipts[0].ts).toBeGreaterThan(archived.ts)
-				expect(new Set(task.clineMessages.map((row) => row.ts)).size).toBe(task.clineMessages.length)
+				expect(new Set(task.alphaMessages.map((row) => row.ts)).size).toBe(task.alphaMessages.length)
 				expect(Reflect.get(task, "lastMessageTs")).toBe(inputBoundary)
-				expect(task.clineMessages.find((row) => row.say === "command_output")).toMatchObject({
+				expect(task.alphaMessages.find((row) => row.say === "command_output")).toMatchObject({
 					ts: 9_001,
 					commandExecutionId: "9000",
 					text: "retained output",
@@ -583,11 +583,11 @@ describe("failed summary cost receipts", () => {
 				})
 				expect(saveReceipt).toHaveBeenCalledOnce()
 				expect(save).not.toHaveBeenCalled()
-				expect(JSON.parse(persisted)).toEqual(task.clineMessages)
+				expect(JSON.parse(persisted)).toEqual(task.alphaMessages)
 				verifyKnownCancelledCost(task, history)
-				task.clineMessages = JSON.parse(persisted)
+				task.alphaMessages = JSON.parse(persisted)
 				expect(Task.prototype.getTokenUsage.call(task)).toMatchObject({ totalCost: 2.01, contextTokens: 120 })
-				expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+				expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 			} finally {
 				clock.mockRestore()
 			}
@@ -598,7 +598,7 @@ describe("failed summary cost receipts", () => {
 		async (failure) => {
 			const { task, history } = harness()
 			captureRows(task)
-			task.clineMessages.push({
+			task.alphaMessages.push({
 				ts: failure === "exhausted high-water" ? Number.MAX_VALUE : 9_001,
 				type: "say",
 				say: "command_output",
@@ -607,7 +607,7 @@ describe("failed summary cost receipts", () => {
 				commandExecutionId: "9000",
 			})
 			Reflect.set(task, "lastMessageTs", 9_100)
-			const retained = JSON.parse(JSON.stringify(task.clineMessages))
+			const retained = JSON.parse(JSON.stringify(task.alphaMessages))
 			const saveReceipt = vi.fn(async () => true)
 			Reflect.set(task, "saveAlphaMessages", saveReceipt)
 			let now = 1_000
@@ -623,8 +623,8 @@ describe("failed summary cost receipts", () => {
 			})
 			try {
 				await expect(task.condenseContext()).rejects.toBe(reason)
-				expect(task.clineMessages).toEqual(retained)
-				expect(task.clineMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
+				expect(task.alphaMessages).toEqual(retained)
+				expect(task.alphaMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
 				expect(saveReceipt).not.toHaveBeenCalled()
 				expect(warning).toHaveBeenCalledWith(
 					"Unable to persist observed context compaction cost during failure cleanup.",
@@ -640,9 +640,9 @@ describe("failed summary cost receipts", () => {
 	it("surfaces receipt allocation failure when cleanup has no earlier error", async () => {
 		const { task } = harness()
 		captureRows(task)
-		task.clineMessages.push({ ts: Number.MAX_VALUE, type: "say", say: "text", text: "Retained high-water" })
+		task.alphaMessages.push({ ts: Number.MAX_VALUE, type: "say", say: "text", text: "Retained high-water" })
 		Reflect.set(task, "lastMessageTs", 9_100)
-		const retained = JSON.parse(JSON.stringify(task.clineMessages))
+		const retained = JSON.parse(JSON.stringify(task.alphaMessages))
 		const saveReceipt = vi.fn(async () => true)
 		Reflect.set(task, "saveAlphaMessages", saveReceipt)
 		const createAccounting = Reflect.get(task, "createContextCondenseAccounting")
@@ -655,7 +655,7 @@ describe("failed summary cost receipts", () => {
 		await expect(accounting.persistUnreportedCost(false)).rejects.toThrow(
 			"Unable to allocate a unique UI message timestamp.",
 		)
-		expect(task.clineMessages).toEqual(retained)
+		expect(task.alphaMessages).toEqual(retained)
 		expect(saveReceipt).not.toHaveBeenCalled()
 		expect(Reflect.get(task, "lastMessageTs")).toBe(9_100)
 	})
@@ -670,8 +670,8 @@ describe("failed summary cost receipts", () => {
 		expect(task.apiConversationHistory).not.toBe(history)
 		expect(task.apiConversationHistory.at(-1)?.content).toBe("New externally retained history")
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
-		expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
-		expect(task.clineMessages.some((row) => row.say === "condense_context")).toBe(false)
+		expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+		expect(task.alphaMessages.some((row) => row.say === "condense_context")).toBe(false)
 	})
 	it("charges a returned failed summary before rejecting an expired manual deadline", async () => {
 		const { task, history } = harness()
@@ -685,8 +685,8 @@ describe("failed summary cost receipts", () => {
 		try {
 			await expect(task.condenseContext()).rejects.toThrow(/deadline|timed out/i)
 			expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
-			expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
-			expect(task.clineMessages.some((row) => row.say === "condense_context")).toBe(false)
+			expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+			expect(task.alphaMessages.some((row) => row.say === "condense_context")).toBe(false)
 		} finally {
 			clock.mockRestore()
 		}
@@ -710,7 +710,7 @@ describe("failed summary cost receipts", () => {
 			Reflect.set(task, "saveAlphaMessages", saveReceipt)
 			await expect(task.condenseContext()).rejects.toBe(reason)
 			expect(saveReceipt).toHaveBeenCalledOnce()
-			expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+			expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 			expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 		},
 	)
@@ -744,7 +744,7 @@ describe("failed summary cost receipts", () => {
 				type: "condenseTaskContextResponse",
 				text: task.taskId,
 			})
-			expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+			expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 			expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 		},
 	)
@@ -763,14 +763,14 @@ describe("failed summary cost receipts", () => {
 			task,
 			"addToAlphaMessages",
 			vi.fn(async (row: import("@alpha-code/types").AlphaMessage) => {
-				task.clineMessages.push(row)
+				task.alphaMessages.push(row)
 				await saveReceipt()
 			}),
 		)
 		task.say = Task.prototype.say.bind(task)
 		await task.condenseContext()
 		expect(saveReceipt).toHaveBeenCalledTimes(2)
-		expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+		expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 	})
 	it.each(["false", "throw"] as const)(
@@ -802,7 +802,7 @@ describe("failed summary cost receipts", () => {
 				type: "condenseTaskContextResponse",
 				text: task.taskId,
 			})
-			expect(task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
+			expect(task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)).toHaveLength(1)
 		},
 	)
 	it("recognizes a preexisting partial error finalized by this attempt as its single receipt", async () => {
@@ -814,7 +814,7 @@ describe("failed summary cost receipts", () => {
 			error: "Summary unavailable",
 		})
 		captureRows(task)
-		task.clineMessages.push({
+		task.alphaMessages.push({
 			ts: 3,
 			type: "say",
 			say: "condense_context_error",
@@ -823,7 +823,7 @@ describe("failed summary cost receipts", () => {
 		})
 		task.say = Task.prototype.say.bind(task)
 		await task.condenseContext()
-		const receipts = task.clineMessages.filter((row) => row.contextCondenseErrorCost !== undefined)
+		const receipts = task.alphaMessages.filter((row) => row.contextCondenseErrorCost !== undefined)
 		expect(receipts).toHaveLength(1)
 		expect(receipts[0]).toMatchObject({ ts: 3, partial: false, contextCondenseErrorCost: 0.01 })
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
@@ -838,7 +838,7 @@ describe("failed summary cost receipts", () => {
 		captureRows(task)
 		await task.condenseContext()
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBe(2)
-		expect(task.clineMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
+		expect(task.alphaMessages.some((row) => row.contextCondenseErrorCost !== undefined)).toBe(false)
 	})
 	it.each([false, true])(
 		"manual compaction termination joins its cost save before replacement (settles before abort join: %s)",
@@ -863,7 +863,7 @@ describe("failed summary cost receipts", () => {
 				const summaryEntered = gate<void>()
 				const saving = gate<void>()
 				const releaseSave = gate<void>()
-				let persisted = structuredClone(task.clineMessages)
+				let persisted = structuredClone(task.alphaMessages)
 				const events: string[] = []
 				vi.mocked(summarizeConversation).mockImplementation((options) => {
 					options.observeCost?.(0.01)
@@ -881,7 +881,7 @@ describe("failed summary cost receipts", () => {
 						events.push("cost-save-started")
 						saving.resolve()
 						await releaseSave.promise
-						persisted = structuredClone(task.clineMessages)
+						persisted = structuredClone(task.alphaMessages)
 						events.push("cost-save-committed")
 						return true
 					}),
@@ -916,7 +916,7 @@ describe("failed summary cost receipts", () => {
 				await termination
 				expect(finalUsage).toHaveBeenCalledOnce()
 				expect(events).toEqual(["cost-save-started", "cost-save-committed", "termination-finished"])
-				task.clineMessages = JSON.parse(JSON.stringify(persisted))
+				task.alphaMessages = JSON.parse(JSON.stringify(persisted))
 				expect(Task.prototype.getTokenUsage.call(task).totalCost).toBeCloseTo(2.01)
 			} finally {
 				vi.useRealTimers()
@@ -926,7 +926,7 @@ describe("failed summary cost receipts", () => {
 	it.each([false, undefined])("actual say persists a completed cost receipt (partial: %s)", async (partial) => {
 		const { task } = harness()
 		const add = vi.fn(async (message: import("@alpha-code/types").AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		})
 		Reflect.set(task, "addToAlphaMessages", add)
 		await Task.prototype.say.call(
@@ -940,11 +940,11 @@ describe("failed summary cost receipts", () => {
 			{ isNonInteractive: true, contextCondenseErrorCost: 0.01 },
 		)
 		expect(add).toHaveBeenCalledOnce()
-		expect(task.clineMessages[0]).toMatchObject({ say: "condense_context_error", contextCondenseErrorCost: 0.01 })
+		expect(task.alphaMessages[0]).toMatchObject({ say: "condense_context_error", contextCondenseErrorCost: 0.01 })
 	})
 	it("actual say finalizes a previous partial error with exactly one cost receipt", async () => {
 		const { task } = harness()
-		task.clineMessages = [
+		task.alphaMessages = [
 			{ ts: 1, type: "say", say: "text", text: "Original task" },
 			{ ts: 2, type: "say", say: "condense_context_error", text: "Summarizing", partial: true },
 		]
@@ -971,8 +971,8 @@ describe("failed summary cost receipts", () => {
 			{ isNonInteractive: true, contextCondenseErrorCost: 0.01 },
 		)
 		expect(add).not.toHaveBeenCalled()
-		expect(task.clineMessages).toHaveLength(2)
-		expect(task.clineMessages[1]).toMatchObject({ partial: false, contextCondenseErrorCost: 0.01 })
+		expect(task.alphaMessages).toHaveLength(2)
+		expect(task.alphaMessages[1]).toMatchObject({ partial: false, contextCondenseErrorCost: 0.01 })
 		expect(Task.prototype.getTokenUsage.call(task).totalCost).toBe(0.01)
 	})
 	it.each([

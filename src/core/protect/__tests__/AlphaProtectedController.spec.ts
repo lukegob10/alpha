@@ -22,8 +22,8 @@ describe("AlphaProtectedController", () => {
 			expect(controller.isWriteProtected(".alpha/modes/custom.json")).toBe(true)
 		})
 
-		it("should protect .rooprotected file", () => {
-			expect(controller.isWriteProtected(".rooprotected")).toBe(true)
+		it("should protect .alphaprotected file", () => {
+			expect(controller.isWriteProtected(".alphaprotected")).toBe(true)
 		})
 
 		it("should protect .alphamodes files", () => {
@@ -188,7 +188,7 @@ describe("AlphaProtectedController", () => {
 				".alpha/**",
 				".vscode/**",
 				"*.code-workspace",
-				".rooprotected",
+				".alphaprotected",
 				"AGENTS.md",
 				"AGENT.md",
 			])

@@ -1292,7 +1292,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	// LLM Messages & Chat Messages
 	apiConversationHistory: ApiMessage[] = []
-	clineMessages: AlphaMessage[] = []
+	alphaMessages: AlphaMessage[] = []
 	private uiMessageTimestampHighWater?: number
 	private alphaMessagesSaveQueue: Promise<void> = Promise.resolve()
 	private alphaMessagesHydrated: boolean
@@ -1415,7 +1415,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!owner.controller.signal.aborted &&
 			!this.abort &&
 			!this.abandoned &&
-			this.clineMessages[owner.messageIndex] === owner.message
+			this.alphaMessages[owner.messageIndex] === owner.message
 		)
 	}
 
@@ -6655,13 +6655,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getLastNonAgentMessage(): AlphaMessage | undefined {
-		return this.clineMessages[findLastIndex(this.clineMessages, (message) => message.say !== "agent_message")]
+		return this.alphaMessages[findLastIndex(this.alphaMessages, (message) => message.say !== "agent_message")]
 	}
 
-	private observeUiMessageTimestamps(messages: readonly AlphaMessage[] = this.clineMessages): void {
+	private observeUiMessageTimestamps(messages: readonly AlphaMessage[] = this.alphaMessages): void {
 		let latest = this.uiMessageTimestampHighWater ?? 0
-		if (this.uiMessageTimestampHighWater === undefined && messages !== this.clineMessages) {
-			for (const message of this.clineMessages) {
+		if (this.uiMessageTimestampHighWater === undefined && messages !== this.alphaMessages) {
+			for (const message of this.alphaMessages) {
 				if (Number.isFinite(message.ts)) latest = Math.max(latest, message.ts)
 			}
 		}
@@ -6694,7 +6694,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	) {
 		if (!message.turn && turn) message.turn = { ...turn }
 		this.observeUiMessageTimestamps([message])
-		this.clineMessages.push(message)
+		this.alphaMessages.push(message)
 		onCreated?.(message)
 		await this.publishAlphaMessageCreated(message, stateUpdate)
 		const saved = await this.saveAlphaMessages()
@@ -6722,7 +6722,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				await provider.postMessageToWebview({
 					type: "messageCreated",
 					taskId: this.taskId,
-					clineMessage: message,
+					alphaMessage: message,
 				})
 			} else {
 				await provider?.postStateToWebviewWithoutTaskHistory()
@@ -6751,7 +6751,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.reasoningSummaries?.dispose()
 		this.reasoningSummaries = undefined
 		this.invalidateBackgroundUsageDrain("UI transcript was replaced")
-		this.clineMessages = newMessages
+		this.alphaMessages = newMessages
 		this.observeUiMessageTimestamps()
 		this.alphaMessagesHydrated = true
 		restoreTodoListForTask(this)
@@ -6767,7 +6767,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (typeof provider?.postTaskMessageToWebview === "function") {
 			await provider.postTaskMessageToWebview("messageUpdated", this.taskId, message)
 		} else {
-			await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, clineMessage: message })
+			await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, alphaMessage: message })
 		}
 		if (ownership && !ownership.guard()) return
 		this.emit(AlphaCodeEventName.Message, { action: "updated", message })
@@ -6842,7 +6842,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const step = this.currentAgentStep
 		if (this.presentationModelCalls === false || this.abort || !step || message?.say !== "reasoning") return
 		this.reasoningSummaries ??= new ReasoningSummary(this.taskId, async (updated) => {
-			if (this.abort || !this.clineMessages.includes(updated)) return
+			if (this.abort || !this.alphaMessages.includes(updated)) return
 			await this.updateAlphaMessage(updated)
 			await this.saveAlphaMessages()
 		})
@@ -6884,7 +6884,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async enqueueAlphaMessagesSave(
-		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.clineMessages),
+		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.alphaMessages),
 		onPersisted?: () => void,
 		designHandoff?: TaskDesignHandoff,
 		reasoning?: { preference: TaskReasoningPreference; state: TaskReasoningState },
@@ -7015,7 +7015,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			let committedMessage: AlphaMessage | undefined
 			const saved = await this.enqueueAlphaMessagesSave(
 				() => {
-					const messages = structuredClone(this.clineMessages)
+					const messages = structuredClone(this.alphaMessages)
 					const index = messages.findIndex(matchesMessage)
 					created = index < 0
 					stagedMessage = mutate(index >= 0 ? messages[index] : undefined)
@@ -7028,11 +7028,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				() => {
 					if (!stagedMessage) return
 					if (designHandoff) this.designHandoff = structuredClone(designHandoff)
-					const liveIndex = this.clineMessages.findIndex(matchesMessage)
+					const liveIndex = this.alphaMessages.findIndex(matchesMessage)
 					committedMessage = structuredClone(stagedMessage)
 					this.observeUiMessageTimestamps([committedMessage])
-					if (liveIndex >= 0) this.clineMessages[liveIndex] = committedMessage
-					else this.clineMessages.push(committedMessage)
+					if (liveIndex >= 0) this.alphaMessages[liveIndex] = committedMessage
+					else this.alphaMessages.push(committedMessage)
 				},
 				designHandoff,
 				undefined,
@@ -7058,9 +7058,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private findMessageByTimestamp(ts: number): AlphaMessage | undefined {
-		for (let i = this.clineMessages.length - 1; i >= 0; i--) {
-			if (this.clineMessages[i].ts === ts) {
-				return this.clineMessages[i]
+		for (let i = this.alphaMessages.length - 1; i >= 0; i--) {
+			if (this.alphaMessages[i].ts === ts) {
+				return this.alphaMessages[i]
 			}
 		}
 
@@ -7916,13 +7916,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private markToolApprovalPromptAnswered(requestId: string): void {
 		const messageIndex = findLastIndex(
-			this.clineMessages,
+			this.alphaMessages,
 			(message) =>
 				message.type === "ask" && message.toolApprovalRequest?.requestId === requestId && !message.isAnswered,
 		)
 		if (messageIndex === -1) return
 
-		const message = this.clineMessages[messageIndex]
+		const message = this.alphaMessages[messageIndex]
 		message.isAnswered = true
 		void this.updateAlphaMessage(message)
 		this.saveAlphaMessages().catch((error) => {
@@ -8092,13 +8092,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		) {
 			// Find the last unanswered follow-up message using findLastIndex
 			const lastFollowUpIndex = findLastIndex(
-				this.clineMessages,
+				this.alphaMessages,
 				(msg) => msg.type === "ask" && msg.ask === "followup" && !msg.isAnswered,
 			)
 
 			if (lastFollowUpIndex !== -1) {
 				// Mark this follow-up as answered
-				this.clineMessages[lastFollowUpIndex].isAnswered = true
+				this.alphaMessages[lastFollowUpIndex].isAnswered = true
 				// Save the updated messages
 				this.saveAlphaMessages().catch((error) => {
 					console.error("Failed to save answered follow-up state:", error)
@@ -8109,12 +8109,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Mark the last tool-approval ask as answered when user approves (or auto-approval)
 		if (askResponse === "yesButtonClicked") {
 			const lastToolAskIndex = findLastIndex(
-				this.clineMessages,
+				this.alphaMessages,
 				(msg) => msg.type === "ask" && msg.ask === "tool" && !msg.isAnswered,
 			)
 			if (lastToolAskIndex !== -1) {
-				this.clineMessages[lastToolAskIndex].isAnswered = true
-				void this.updateAlphaMessage(this.clineMessages[lastToolAskIndex])
+				this.alphaMessages[lastToolAskIndex].isAnswered = true
+				void this.updateAlphaMessage(this.alphaMessages[lastToolAskIndex])
 				this.saveAlphaMessages().catch((error) => {
 					console.error("Failed to save answered tool-ask state:", error)
 				})
@@ -8872,11 +8872,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					text: redactTaskPrivatePaths(this, text),
 					turn: invocation.turn,
 				}
-				return [...structuredClone(this.clineMessages), message]
+				return [...structuredClone(this.alphaMessages), message]
 			},
 			() => {
 				if (!message) return
-				this.clineMessages.push(message)
+				this.alphaMessages.push(message)
 				this.lastMessageTs = message.ts
 				this.currentAssistantResponseMessageTs = message.ts
 			},
@@ -9729,7 +9729,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	): Promise<void> {
 		try {
 			this.providerRef.deref()?.markCompletionWait?.(this.taskId, active ? decision?.reasonCode : undefined)
-			if (typeof this.say !== "function" || !Array.isArray(this.clineMessages)) return
+			if (typeof this.say !== "function" || !Array.isArray(this.alphaMessages)) return
 			if (!active) {
 				await this.say("api_req_rate_limit_wait", undefined, undefined, false)
 				return
@@ -10282,7 +10282,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const liveTaskIds = new Set(this.providerRef.deref()?.getLiveTaskIds() ?? [])
 		let changed = false
 
-		for (const message of this.clineMessages) {
+		for (const message of this.alphaMessages) {
 			const group = message.subagentGroup
 			if (!group || !["pending", "running", "cancelling"].includes(group.status)) continue
 
@@ -10515,7 +10515,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private hasPendingSubagentChangeSetReview(): boolean {
-		return (this.clineMessages ?? []).some((message) =>
+		return (this.alphaMessages ?? []).some((message) =>
 			message.subagentGroup?.agents.some((agent) =>
 				["pending_review", "conflicted"].includes(agent.changeSet?.status ?? ""),
 			),
@@ -10780,7 +10780,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (this.taskKind !== "subagent") return
 
 		const terminalSay = status === "completed" || status === "blocked" ? "completion_result" : "error"
-		const hasTerminalMessage = this.clineMessages.some(
+		const hasTerminalMessage = this.alphaMessages.some(
 			(message) =>
 				message.type === "say" &&
 				message.say === terminalSay &&
@@ -10796,7 +10796,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				partial: false,
 			}
 			this.observeUiMessageTimestamps([message])
-			this.clineMessages.push(message)
+			this.alphaMessages.push(message)
 			this.emit(AlphaCodeEventName.Message, { action: "created", message })
 		}
 
@@ -11411,7 +11411,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// managed-agent notifications keep their existing lifecycle presentation.
 		if (!this.alphaMessagesHydrated || message.notification) return
 		const matches = (entry: AlphaMessage) => entry.agentMessage?.id === message.id
-		if (this.clineMessages.some(matches)) return
+		if (this.alphaMessages.some(matches)) return
 		const timestamp = this.reserveUiMessageTimestamp()
 		const committed = await this.commitAlphaMessageMutation(
 			timestamp,
@@ -11443,7 +11443,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}): Promise<void> {
 		const id = this.agentStopMessageId
 		if (!id) return
-		const receipt = this.clineMessages.find((message) => message.agentMessage?.id === id)
+		const receipt = this.alphaMessages.find((message) => message.agentMessage?.id === id)
 		if (receipt?.agentMessage?.stopStatus !== "requested") return
 		const committed = await this.commitAlphaMessageMutation(
 			receipt.ts,
@@ -11951,8 +11951,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getCompactionWindowPrefillTokens(): number | undefined {
-		for (let index = this.clineMessages.length - 1; index >= 0; index--) {
-			const message = this.clineMessages[index]
+		for (let index = this.alphaMessages.length - 1; index >= 0; index--) {
+			const message = this.alphaMessages[index]
 			const tokens =
 				message.say === "condense_context"
 					? message.contextCondense?.newContextTokens
@@ -11961,7 +11961,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						: undefined
 			if (tokens !== undefined && Number.isFinite(tokens) && tokens >= 0) return tokens
 		}
-		for (const message of this.clineMessages) {
+		for (const message of this.alphaMessages) {
 			if (message.say !== "api_req_started") continue
 			try {
 				const tokens = (JSON.parse(message.text ?? "{}") as Partial<AlphaApiReqInfo>).tokensIn
@@ -12243,12 +12243,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return {
 			observeCost: (cost) => {
 				if (!Number.isFinite(cost) || cost < 0) return
-				if (cost > 0) previousReceipts ??= new Set(this.clineMessages.filter(isReceipt))
+				if (cost > 0) previousReceipts ??= new Set(this.alphaMessages.filter(isReceipt))
 				observedCost = cost > 0 ? cost : undefined
 			},
 			persistUnreportedCost: async (preserveError) => {
 				if (observedCost === undefined) return
-				const hasReceipt = this.clineMessages.some(
+				const hasReceipt = this.alphaMessages.some(
 					(message) =>
 						isReceipt(message) &&
 						!previousReceipts?.has(message) &&
@@ -12259,7 +12259,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (!hasReceipt) {
 						// Usage is task data even after Stop, deadline expiry, or a stale-history rejection.
 						// Persist through the existing save queue without reviving the disposed UI.
-						this.clineMessages.push({
+						this.alphaMessages.push({
 							ts: this.reserveUiMessageTimestamp(),
 							type: "say",
 							say: "condense_context_error",
@@ -12394,7 +12394,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		const lastFeedback = this.clineMessages.at(-1)
+		const lastFeedback = this.alphaMessages.at(-1)
 		if (
 			feedbackReceiptIds &&
 			!(lastFeedback?.type === "say" && lastFeedback.say === type && lastFeedback.partial)
@@ -12406,12 +12406,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!message.partial &&
 				message.queuedMessageIds?.length === feedbackReceiptIds.size &&
 				message.queuedMessageIds.every((id) => feedbackReceiptIds.has(id))
-			const previousIndex = findLastIndex(this.clineMessages, isSameFeedback)
+			const previousIndex = findLastIndex(this.alphaMessages, isSameFeedback)
 			if (previousIndex >= 0) {
 				// Feedback can be visible before provider admission fails. Reuse only
 				// that exact receipt; consumed input is immutable even on a stale retry.
 				const committed = await this.commitAlphaMessageMutation(
-					this.clineMessages[previousIndex].ts,
+					this.alphaMessages[previousIndex].ts,
 					"the retried user feedback",
 					(message) =>
 						!this.abort && !this.abandoned && !isFeedbackConsumed() && isSameFeedback(message)
@@ -12439,14 +12439,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Output from another command may arrive while this command's row is still partial.
 			const previousMessageIndex = commandOutputExecutionId
 				? findLastIndex(
-						this.clineMessages,
+						this.alphaMessages,
 						(message) =>
 							message.type === "say" &&
 							message.say === type &&
 							message.commandExecutionId === commandOutputExecutionId,
 					)
-				: findLastIndex(this.clineMessages, (message) => message.say !== "agent_message")
-			const lastMessage = this.clineMessages[previousMessageIndex]
+				: findLastIndex(this.alphaMessages, (message) => message.say !== "agent_message")
+			const lastMessage = this.alphaMessages[previousMessageIndex]
 			// Boolean publications are cumulative snapshots of one command invocation.
 			if (commandOutputExecutionId && lastMessage && !lastMessage.partial) return
 
@@ -12781,14 +12781,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private async startTask(task?: string, images?: string[], goalAdmission?: GoalInputAdmission): Promise<void> {
 		try {
-			// `conversationHistory` (for API) and `clineMessages` (for webview)
+			// `conversationHistory` (for API) and `alphaMessages` (for webview)
 			// need to be in sync.
 			// If the extension process were killed, then on restart the
-			// `clineMessages` might not be empty, so we need to set it to [] when
+			// `alphaMessages` might not be empty, so we need to set it to [] when
 			// we create a new Alpha client (otherwise webview would show stale
 			// messages from previous session).
 			this.invalidateBackgroundUsageDrain("A fresh task transcript was started")
-			this.clineMessages = []
+			this.alphaMessages = []
 			this.observeUiMessageTimestamps()
 			this.apiConversationHistory =
 				this.subagentHistoryFork?.kind === "native" ? structuredClone(this.subagentHistoryFork.messages) : []
@@ -12807,7 +12807,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// No need to add any messages - the todoList property is already set
 
 			const openingMessageTs = await this.sayOpeningInput("text", task, images, undefined, "task")
-			const firstUserMessage = this.clineMessages[0]
+			const firstUserMessage = this.alphaMessages[0]
 			void this.scheduleInitialTaskTitle(
 				firstUserMessage?.text?.trim() || (images?.length ? "Review the attached image" : ""),
 			)
@@ -13140,7 +13140,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// transcripts. Its prior lifecycle was joined before entering this method,
 			// so re-reading and rewriting both full histories only adds startup latency.
 			const modifiedAlphaMessages = useRetainedHistory
-				? structuredClone(this.clineMessages)
+				? structuredClone(this.alphaMessages)
 				: await this.getSavedAlphaMessages(true)
 			if (this.abort || this.abandoned) return
 			const savedApiHistoryPromise = useRetainedHistory
@@ -13192,7 +13192,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Paint the cleaned UI transcript before provider history finishes.
 			// Continue still waits for both reads; this does not persist or ask.
 			this.invalidateBackgroundUsageDrain("The task transcript was resumed")
-			this.clineMessages = modifiedAlphaMessages
+			this.alphaMessages = modifiedAlphaMessages
 			this.observeUiMessageTimestamps()
 			this.alphaMessagesHydrated = true
 			restoreTodoListForTask(this)
@@ -13254,7 +13254,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return
 			}
 
-			const lastAlphaMessage = this.clineMessages
+			const lastAlphaMessage = this.alphaMessages
 				.slice()
 				.reverse()
 				.find((m) => !(m.ask === "resume_task" || m.ask === "resume_completed_task")) // Could be multiple resume tasks.
@@ -13272,7 +13272,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				responseQueuedMessageIds = options.queuedMessageIds
 				if (!(options.inputOrigin === "agent" && this.hasPendingAgentMessages())) {
 					const messageType =
-						options.inputOrigin === "agent" || this.clineMessages.length === 0 ? "text" : "user_feedback"
+						options.inputOrigin === "agent" || this.alphaMessages.length === 0 ? "text" : "user_feedback"
 					openingMessageTs = await this.sayOpeningInput(
 						messageType,
 						followupText,
@@ -13496,7 +13496,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (tokenChanged || toolChanged) {
 			this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
 			this.tokenUsageSnapshot = tokenUsage
-			this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
+			this.tokenUsageSnapshotAt = this.alphaMessages.at(-1)?.ts
 			// Deep copy tool usage for snapshot
 			this.toolUsageSnapshot = JSON.parse(JSON.stringify(toolUsage))
 		}
@@ -13542,7 +13542,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		outputs: readonly TaskCommandOutputFinalization[],
 		guard: CanonicalLifecycleEventGuard,
 	): TaskCommandOutputCleanup {
-		const candidates = collectArtifactExecutionIds([...this.clineMessages, ...this.apiConversationHistory])
+		const candidates = collectArtifactExecutionIds([...this.alphaMessages, ...this.apiConversationHistory])
 		for (const output of outputs) {
 			if (output.archiveExecutionId !== undefined) candidates.add(output.archiveExecutionId)
 		}
@@ -14144,7 +14144,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.captureAgentStepOwnership(),
 			)
 		const outputReferences = outputCleanup.guard()
-			? collectArtifactExecutionIds([...this.clineMessages, ...this.apiConversationHistory])
+			? collectArtifactExecutionIds([...this.alphaMessages, ...this.apiConversationHistory])
 			: undefined
 		const outputStoragePath = this.globalStoragePath
 		const outputTaskId = this.taskId
@@ -14231,7 +14231,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							return (
 								outputCleanup.guard() &&
 								!collectArtifactExecutionIds([
-									...this.clineMessages,
+									...this.alphaMessages,
 									...this.apiConversationHistory,
 								]).has(id)
 							)
@@ -14457,7 +14457,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				ownsSampledStep = ownsStep
 				this.deferAgentResultNotifications = false
 				// Legacy hosts may return without entering the request loop.
-				this.recoveryAttemptMessageStart = this.clineMessages.length
+				this.recoveryAttemptMessageStart = this.alphaMessages.length
 				recoveryExplanationPublished = false
 				this.goalTurnCompletionText = undefined
 				const inheritedGoal = await this.inheritedGoalBinding
@@ -14579,7 +14579,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// historical boolean result. Normalize that boundary while keeping all
 				// production paths on explicit step statuses.
 				const responseMessageIndex = findLastIndex(
-					this.clineMessages,
+					this.alphaMessages,
 					(message) =>
 						message.type === "say" &&
 						(message.say === "text" || message.say === "completion_result") &&
@@ -14588,7 +14588,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						!message.turn?.inputKind,
 				)
 				const assistantMessageTs =
-					this.clineMessages[responseMessageIndex]?.ts ?? this.currentAssistantResponseMessageTs
+					this.alphaMessages[responseMessageIndex]?.ts ?? this.currentAssistantResponseMessageTs
 				const legacyDidEndLoop = typeof rawStepResult === "boolean" && rawStepResult
 				const result: TaskStepExecutionResult =
 					typeof rawStepResult === "boolean" ? { status: "completed" } : rawStepResult
@@ -15206,7 +15206,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (this.taskKind !== "primary" || this.abort || this.didComplete) return undefined
 
 			if (failure && !recoveryExplanationPublished) {
-				const hasVisibleError = this.clineMessages.slice(this.recoveryAttemptMessageStart).some((message) => {
+				const hasVisibleError = this.alphaMessages.slice(this.recoveryAttemptMessageStart).some((message) => {
 					if (message.type !== "say") return false
 					if (message.say === "error") return Boolean(message.text?.trim())
 					if (message.say !== "api_req_started") return false
@@ -15816,7 +15816,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const currentItem = stack.pop()!
 				// A recovered attempt must not hide a later failure, including one
 				// before the next provider request has started.
-				this.recoveryAttemptMessageStart = this.clineMessages.length
+				this.recoveryAttemptMessageStart = this.alphaMessages.length
 				const precedingMessages = currentItem.precedingMessages ?? []
 				// Capture each source before merging host deliveries or promoting the envelope's display origin.
 				this.captureInputBlockOrigins(currentItem.userContent, currentItem.inputOrigin ?? "human")
@@ -16007,7 +16007,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const provider = this.providerRef.deref()
 				let state = provider ? await provider.getState() : undefined
 
-				const showRooIgnoredFiles = state?.showRooIgnoredFiles ?? false
+				const showAlphaIgnoredFiles = state?.showAlphaIgnoredFiles ?? false
 				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
 				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
 				const currentMode = await this.getTaskMode()
@@ -16033,7 +16033,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						cwd: this.cwd,
 						fileContextTracker: this.fileContextTracker,
 						alphaIgnoreController: this.alphaIgnoreController,
-						showRooIgnoredFiles,
+						showAlphaIgnoredFiles,
 						includeDiagnosticMessages,
 						maxDiagnosticMessages,
 						skillsManager: invocationSkills,
@@ -16256,7 +16256,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					} satisfies AlphaApiReqInfo),
 				)
 
-				const lastApiReqIndex = findLastIndex(this.clineMessages, (m) => m.say === "api_req_started")
+				const lastApiReqIndex = findLastIndex(this.alphaMessages, (m) => m.say === "api_req_started")
 				const taskWasCancelled = () =>
 					this.abort || this.abandoned || this.getTaskLifetimeCancellationSignal().aborted
 				let recoverCancelledResponse: (() => Promise<TaskStepExecutionResult>) | undefined
@@ -16287,14 +16287,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						streamingFailedMessage?: string,
 						expectedMessage?: AlphaMessage,
 					): boolean => {
-						if (lastApiReqIndex < 0 || !this.clineMessages[lastApiReqIndex]) {
+						if (lastApiReqIndex < 0 || !this.alphaMessages[lastApiReqIndex]) {
 							return false
 						}
-						if (expectedMessage && this.clineMessages[lastApiReqIndex] !== expectedMessage) {
+						if (expectedMessage && this.alphaMessages[lastApiReqIndex] !== expectedMessage) {
 							return false
 						}
 
-						const existingData = JSON.parse(this.clineMessages[lastApiReqIndex].text || "{}")
+						const existingData = JSON.parse(this.alphaMessages[lastApiReqIndex].text || "{}")
 
 						// Use the protocol captured for this request. A profile switch after
 						// streaming must not recost an older response under the new provider.
@@ -16315,7 +16315,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 										cacheReadTokens,
 									)
 
-						this.clineMessages[lastApiReqIndex].text = JSON.stringify({
+						this.alphaMessages[lastApiReqIndex].text = JSON.stringify({
 							...existingData,
 							tokensIn: costResult.totalInputTokens,
 							tokensOut: costResult.totalOutputTokens,
@@ -16950,7 +16950,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							cacheRead: cacheReadTokens,
 							total: totalCost,
 						}
-						const usageMessage = this.clineMessages[lastApiReqIndex]
+						const usageMessage = this.alphaMessages[lastApiReqIndex]
 						const usageDrainOwner = usageMessage
 							? this.beginBackgroundUsageDrain(
 									this.currentRequestAbortController,
@@ -17002,7 +17002,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									if (!this.isBackgroundUsageDrainCurrent(owner)) return
 
 									// Update the specific message in the webview
-									const apiReqMessage = this.clineMessages[messageIndex]
+									const apiReqMessage = this.alphaMessages[messageIndex]
 									if (apiReqMessage) {
 										await this.updateAlphaMessage(apiReqMessage)
 									}
@@ -17622,16 +17622,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// (other messages like text blocks or tool uses may have been added after it during streaming)
 					if (reasoningMessage) {
 						const lastReasoningIndex = findLastIndex(
-							this.clineMessages,
+							this.alphaMessages,
 							(m) => m.type === "say" && m.say === "reasoning",
 						)
 
-						if (lastReasoningIndex !== -1 && this.clineMessages[lastReasoningIndex].partial) {
-							this.clineMessages[lastReasoningIndex].partial = false
-							await this.updateAlphaMessage(this.clineMessages[lastReasoningIndex])
+						if (lastReasoningIndex !== -1 && this.alphaMessages[lastReasoningIndex].partial) {
+							this.alphaMessages[lastReasoningIndex].partial = false
+							await this.updateAlphaMessage(this.alphaMessages[lastReasoningIndex])
 							if (!ownsResponseStep()) return supersededResponseResult()
 							if (taskWasCancelled()) return await cancelResponseBeforeCommit()
-							this.summarizeReasoning(this.clineMessages[lastReasoningIndex])
+							this.summarizeReasoning(this.alphaMessages[lastReasoningIndex])
 						}
 					}
 
@@ -19967,7 +19967,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const approvalResult = await waitForBoundedPreflight(
 			this.autoApprovalHandler.checkAutoApprovalLimits(
 				state,
-				this.combineMessages(this.clineMessages.slice(1)),
+				this.combineMessages(this.alphaMessages.slice(1)),
 				async (type, data) => waitForBoundedPreflight(this.ask(type, data)),
 				{ currentRequestRecorded: options.ownerHandlesRetry === true },
 			),
@@ -20041,7 +20041,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							capturedApprovalFlags.autoApprovalEnabled &&
 							capturedApprovalFlags.alwaysAllowReadOnly,
 						workspaceRoot: this.cwd,
-						showIgnoredFiles: state?.showRooIgnoredFiles === true,
+						showIgnoredFiles: state?.showAlphaIgnoredFiles === true,
 					},
 					allowedToolNames: this.getTaskAllowedToolNames(),
 					taskKind: this.taskKind,
@@ -20905,7 +20905,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public getTokenUsage(): TokenUsage {
-		return getApiMetrics(this.combineMessages(this.clineMessages.slice(1)))
+		return getApiMetrics(this.combineMessages(this.alphaMessages.slice(1)))
 	}
 
 	public recordToolUsage(toolName: ToolName) {
@@ -21245,7 +21245,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		this.tokenUsageSnapshot = this.getTokenUsage()
-		this.tokenUsageSnapshotAt = this.clineMessages.at(-1)?.ts
+		this.tokenUsageSnapshotAt = this.alphaMessages.at(-1)?.ts
 
 		return this.tokenUsageSnapshot
 	}

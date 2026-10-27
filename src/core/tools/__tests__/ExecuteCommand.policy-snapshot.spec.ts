@@ -73,7 +73,7 @@ function fixture() {
 		taskKind: "primary",
 		cwd,
 		abort: false,
-		clineMessages: [],
+		alphaMessages: [],
 		providerRef: { deref: () => provider },
 		getTaskLifetimeCancellationSignal: () => lifetime.signal,
 		getTaskMode: vi.fn(async () => "code"),

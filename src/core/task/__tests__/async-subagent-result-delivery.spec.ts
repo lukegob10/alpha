@@ -40,7 +40,7 @@ const makeTask = (groups: SubagentGroupState[]) => {
 	const saveAlphaMessages = vi.fn(async () => true)
 	const task = Object.assign(Object.create(Task.prototype), {
 		taskKind: "primary",
-		clineMessages: groups.map((subagentGroup) => ({
+		alphaMessages: groups.map((subagentGroup) => ({
 			ts: subagentGroup.createdAt,
 			type: "say",
 			say: "subagent_group",
@@ -66,7 +66,7 @@ describe("Task asynchronous sub-agent result delivery", () => {
 		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(true)
 
-		active.clineMessages = []
+		active.alphaMessages = []
 		expect((active as any).shouldExposeAgentLifecycleTools()).toBe(true)
 
 		Object.assign(active, { taskKind: "subagent" })
@@ -83,9 +83,9 @@ describe("Task asynchronous sub-agent result delivery", () => {
 
 		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 
-		idle.clineMessages = makeTask([
+		idle.alphaMessages = makeTask([
 			makeGroup({ groupId: "known-group", executionMode: "async", summary: "Known result." }),
-		]).task.clineMessages
+		]).task.alphaMessages
 		expect((idle as any).shouldExposeAgentLifecycleTools()).toBe(true)
 	})
 

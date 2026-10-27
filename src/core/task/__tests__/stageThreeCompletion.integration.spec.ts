@@ -106,7 +106,7 @@ async function createHarness() {
 		userMessageContentReady: false,
 		apiConversationHistory: [],
 		persistedToolResultIds: new Set<string>(),
-		clineMessages: [],
+		alphaMessages: [],
 		messageQueueService: new MessageQueueService(),
 		taskCancellationController: cancellation,
 		commandExecutionEvidence: new Map(),

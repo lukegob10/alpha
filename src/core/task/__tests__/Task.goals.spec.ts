@@ -47,7 +47,7 @@ function fixture(store = new MemoryStore()) {
 		isAgentTurnEngineActive: false,
 		isStreaming: false,
 		isPaused: false,
-		clineMessages: [],
+		alphaMessages: [],
 		// These fixtures own their in-memory transcript storage; rewind I/O has dedicated coverage.
 		recoverConversationRewind: vi.fn(async () => undefined),
 		apiConversationHistory: [],
@@ -718,7 +718,7 @@ describe("Task goal integration through the shared turn engine", () => {
 			release = barrier(),
 			loop = vi.fn(async () => undefined)
 		Object.assign(task, {
-			clineMessages: [{ type: "say", say: "text", text: "Earlier reply.", ts: 0 }],
+			alphaMessages: [{ type: "say", say: "text", text: "Earlier reply.", ts: 0 }],
 			apiConversationHistory: [{ role: "user", content: "Existing request." }],
 			getSavedAlphaMessages: vi.fn(async () => [{ type: "say", say: "text", text: "Earlier reply.", ts: 0 }]),
 			getSavedApiConversationHistory: vi.fn(async () => [{ role: "user", content: "Existing request." }]),

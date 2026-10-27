@@ -485,8 +485,8 @@ describe("processUserContentMentions", () => {
 		})
 	})
 
-	describe("showRooIgnoredFiles parameter", () => {
-		it("should default showRooIgnoredFiles to false", async () => {
+	describe("showAlphaIgnoredFiles parameter", () => {
+		it("should default showAlphaIgnoredFiles to false", async () => {
 			const userContent = [
 				{
 					type: "text" as const,
@@ -505,7 +505,7 @@ describe("processUserContentMentions", () => {
 				"/test",
 				mockFileContextTracker,
 				undefined,
-				false, // showRooIgnoredFiles should default to false
+				false, // showAlphaIgnoredFiles should default to false
 				true, // includeDiagnosticMessages
 				50, // maxDiagnosticMessages
 				undefined,
@@ -515,7 +515,7 @@ describe("processUserContentMentions", () => {
 			)
 		})
 
-		it("should respect showRooIgnoredFiles when explicitly set to false", async () => {
+		it("should respect showAlphaIgnoredFiles when explicitly set to false", async () => {
 			const userContent = [
 				{
 					type: "text" as const,
@@ -527,7 +527,7 @@ describe("processUserContentMentions", () => {
 				userContent,
 				cwd: "/test",
 				fileContextTracker: mockFileContextTracker,
-				showRooIgnoredFiles: false,
+				showAlphaIgnoredFiles: false,
 			})
 
 			expect(parseMentions).toHaveBeenCalledWith(

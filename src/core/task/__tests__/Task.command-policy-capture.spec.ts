@@ -82,7 +82,7 @@ function harness(apiProvider: "openai" | "vscode-lm" = "openai") {
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: [{ role: "user", content: "Inspect the saved proof file" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		toolCatalogCache: new TaskToolCatalogCache(),
@@ -104,7 +104,7 @@ function harness(apiProvider: "openai" | "vscode-lm" = "openai") {
 		saveAlphaMessages: vi.fn(async () => true),
 		updateAlphaMessage: vi.fn(async () => {}),
 		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 			published.push(structuredClone(message))
 			// A prompt is denied deterministically so a missing grant fails without waiting for UI input.
 			if (!message.isAnswered) task.handleWebviewAskResponse("noButtonClicked")

@@ -24,7 +24,7 @@ function createIdleTask() {
 		isTaskLoopActive: false,
 		isAgentTurnEngineActive: false,
 		isStreaming: false,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		messageQueueService: queue,
 		providerRef: { deref: () => ({}) },

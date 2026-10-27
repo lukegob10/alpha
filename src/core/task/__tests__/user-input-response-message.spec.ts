@@ -19,7 +19,7 @@ function createTask(messages: AlphaMessage[] = []) {
 	const updated: AlphaMessage[] = []
 	const task = Object.create(Task.prototype) as Task
 	const saveAlphaMessages = vi.fn(async () => {
-		persisted.push(JSON.parse(JSON.stringify(task.clineMessages)))
+		persisted.push(JSON.parse(JSON.stringify(task.alphaMessages)))
 		return true
 	})
 	Object.assign(task, {
@@ -28,7 +28,7 @@ function createTask(messages: AlphaMessage[] = []) {
 		instanceId: "primary",
 		abort: false,
 		abandoned: false,
-		clineMessages: structuredClone(messages),
+		alphaMessages: structuredClone(messages),
 		apiConversationHistory: [],
 		lastMessageTs: 123,
 		resetCompletionRecoveryState: vi.fn(),
@@ -67,7 +67,7 @@ describe("Task user input response metadata", () => {
 		onTestFinished(async () => fs.rm(globalStoragePath, { recursive: true, force: true }))
 		const { task, saveAlphaMessages } = createTask()
 		saveAlphaMessages.mockImplementation(async () => {
-			await saveTaskMessages({ messages: task.clineMessages, taskId: task.taskId, globalStoragePath })
+			await saveTaskMessages({ messages: task.alphaMessages, taskId: task.taskId, globalStoragePath })
 			return true
 		})
 

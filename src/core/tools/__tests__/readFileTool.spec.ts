@@ -3,7 +3,7 @@
  *
  * These tests cover:
  * - Input validation (missing path parameter)
- * - RooIgnore blocking
+ * - AlphaIgnore blocking
  * - Directory read error handling
  * - Binary file handling (images, PDF, DOCX, unsupported)
  * - Image memory limits
@@ -378,7 +378,7 @@ describe("ReadFileTool", () => {
 		})
 	})
 
-	describe("RooIgnore handling", () => {
+	describe("AlphaIgnore handling", () => {
 		it.each([{ path: "secret.env" }, { files: [{ path: "secret.env" }] }])(
 			"rechecks ignore access after approval for %j",
 			async (params) => {
@@ -406,7 +406,7 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "secret.env" }, mockTask as any, callbacks)
 
-			expect(mockTask.say).toHaveBeenCalledWith("rooignore_error", "secret.env")
+			expect(mockTask.say).toHaveBeenCalledWith("alphaignore_error", "secret.env")
 			expect(formatResponse.alphaIgnoreError).toHaveBeenCalledWith("secret.env")
 			expect(callbacks.pushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("blocked by the .alphaignore"),
