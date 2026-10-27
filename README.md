@@ -114,6 +114,9 @@ changing the operating-system profile. Install each VSIX only into its matching 
 credentials separately and use copies of task and configuration data for compatibility tests; keep the everyday
 editor profile intact.
 
+For automated extension-host runs, set `ALPHA_E2E_USER_HOME` to an owned absolute directory. The runner applies it only
+to the editor child process, leaving pnpm and build-tool configuration in the runner's normal home.
+
 The naming cleanup deliberately uses Alpha-only configuration paths, credential keys, serialized fields, and public
 exports. Prior names and automatic compatibility aliases are removed. Configure a fresh cleanup profile and verify
 saved-data handling before promoting it to a release. Returning to an earlier Git commit does not restore editor data;
