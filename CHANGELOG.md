@@ -7,7 +7,7 @@
 - Steer queued messages in FIFO order while preserving unsent text and images, and keep keyboard commands attached to the focused chat.
 - Navigate older and newer saved chats in a stable workspace history, including chats that are no longer loaded.
 - Cycle Ask, Auto, and Full Access with the existing acknowledgment, and wait indefinitely for question answers by default with an optional saved delay.
-- Keep Mermaid diagrams readable in chat and open vector previews with native editor zoom controls while retaining PNG export.
+- Keep Mermaid diagrams readable in chat, open vector previews with native editor zoom controls, and preserve source-dialog focus and PNG export.
 - Clarify native batching for independent read-only tool calls without changing execution policy or approval boundaries.
 - Protect evaluator assertion state from candidate instrumentation and allow filesystem-heavy evaluator fixtures sufficient bounded execution time.
 - Update the extension and in-app announcement together for Alpha 3.2.12. Windows x64 packaging, the VS Code 1.125.0 minimum, and exact 1.138.0 reference host remain unchanged.

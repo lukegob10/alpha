@@ -139,6 +139,16 @@ describe("MermaidBlock rendering", () => {
 				}),
 			}),
 		)
+		await act(async () => {
+			document.body.style.setProperty("--vscode-editor-background", "#101820")
+			await Promise.resolve()
+		})
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(500)
+		})
+		expect(
+			screen.getByRole("button", { name: "common:mermaid.buttons.open" }).querySelector("svg > rect"),
+		).toHaveAttribute("fill", "#101820")
 	})
 
 	it("disconnects theme observation and cancels scheduled work when unmounted", async () => {

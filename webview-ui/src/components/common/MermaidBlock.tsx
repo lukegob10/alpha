@@ -65,7 +65,14 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 	const { t } = useAppTranslation()
 
 	useEffect(() => {
-		const observer = new MutationObserver(() => setThemeRevision((revision) => revision + 1))
+		let palette = JSON.stringify(getMermaidTheme())
+		const observer = new MutationObserver(() => {
+			const nextPalette = JSON.stringify(getMermaidTheme())
+			// Modal focus and scroll locks also change body styles; they do not change the diagram palette.
+			if (nextPalette === palette) return
+			palette = nextPalette
+			setThemeRevision((revision) => revision + 1)
+		})
 		observer.observe(document.body, {
 			attributes: true,
 			attributeFilter: ["class", "style", "data-vscode-theme-id", "data-vscode-theme-kind"],
