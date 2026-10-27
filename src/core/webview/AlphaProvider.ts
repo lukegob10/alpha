@@ -1119,7 +1119,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.12-chat-controls-and-diagrams"
+	public readonly latestAnnouncementId = "october-2026-v3.2.13-alpha-cleanup-and-new-chat"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

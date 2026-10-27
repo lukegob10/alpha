@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.12",
+		version: "3.2.13",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.12" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.13" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.12")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.13")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.12 improves chat controls, saved-chat navigation, and diagram previews."),
+			screen.getByText("Alpha v3.2.13 completes the Alpha naming cleanup and fixes New Chat shortcut focus."),
 		).toBeInTheDocument()
 	})
 
@@ -50,17 +50,17 @@ describe("Announcement", () => {
 		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
+		expect(screen.getByText("Open a new task directly in Alpha with the New Chat shortcut.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Browse older and newer saved chats in a stable workspace history."),
+			screen.getByText("Use Alpha-only configuration paths, credentials, saved fields, and public APIs."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Steer queued messages in order while keeping unsent text and images intact."),
+			screen.getByText("Configure a fresh profile; previous naming aliases are no longer supported."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Cycle approval modes and keep questions open until you answer by default."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Open readable Mermaid diagrams in vector previews with native editor zoom controls."),
+			screen.getByText(
+				"Keep your previous release profile and package available when returning to an earlier version.",
+			),
 		).toBeInTheDocument()
 	})
 
@@ -68,10 +68,8 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.12 improves chat controls, saved-chat navigation, and diagram previews."),
+			screen.getByText("Alpha v3.2.13 completes the Alpha naming cleanup and fixes New Chat shortcut focus."),
 		).toBeInTheDocument()
-		expect(
-			screen.getByText("Browse older and newer saved chats in a stable workspace history."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Open a new task directly in Alpha with the New Chat shortcut.")).toBeInTheDocument()
 	})
 })
