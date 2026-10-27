@@ -6,9 +6,8 @@ import { getCommand, getCommands } from "../commands"
 
 vi.mock("fs/promises", () => ({ default: { stat: vi.fn(), readdir: vi.fn(), readFile: vi.fn() } }))
 vi.mock("../../config-paths", () => ({
-	getLegacyGlobalConfigDirectory: () => path.resolve("/test", ".roo"),
+	getGlobalConfigDirectory: () => path.resolve("/test", ".alpha"),
 	getProjectConfigDirectory: (cwd: string) => path.join(cwd, ".alpha"),
-	getLegacyProjectConfigDirectory: (cwd: string) => path.join(cwd, ".roo"),
 }))
 vi.mock("../built-in-commands", () => ({
 	getBuiltInCommands: async () => [
@@ -19,7 +18,7 @@ vi.mock("../built-in-commands", () => ({
 
 describe("command source precedence", () => {
 	it("lists the same global override used by direct invocation", async () => {
-		const globalDirectory = path.resolve("/test", ".roo", "commands")
+		const globalDirectory = path.resolve("/test", ".alpha", "commands")
 		vi.mocked(fs.stat).mockImplementation(
 			async (candidate) =>
 				({

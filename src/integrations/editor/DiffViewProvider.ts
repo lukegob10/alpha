@@ -26,7 +26,6 @@ export const DIFF_VIEW_LABEL_CHANGES = "Original ↔ Alpha's Changes"
  */
 export type ExpectedFileState = { exists: false } | { exists: true; content: string }
 
-// TODO: https://github.com/cline/cline/pull/3354
 export class DiffViewProvider {
 	// Properties to store the results of saveChanges
 	newProblemsMessage?: string

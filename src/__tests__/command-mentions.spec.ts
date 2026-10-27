@@ -18,7 +18,7 @@ describe("Command Mentions", () => {
 			"/test/cwd", // cwd
 			undefined, // fileContextTracker
 			undefined, // alphaIgnoreController
-			false, // showRooIgnoredFiles
+			false, // showAlphaIgnoredFiles
 			true, // includeDiagnosticMessages
 			50, // maxDiagnosticMessages
 		)

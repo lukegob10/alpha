@@ -46,7 +46,7 @@ describe("openDiff", () => {
 		expect(command).toBe("vscode.changes")
 		expect(title).toBe("Alpha Diff")
 		expect(changes).toHaveLength(2)
-		expect(changes[0][0].value).toBe("cline-diff:/src/one.ts")
+		expect(changes[0][0].value).toBe("alpha-diff:/src/one.ts")
 		expect(changes[0][1].query).toBe(Buffer.from("one\n", "utf8").toString("base64"))
 		expect(changes[0][2].query).toBe(Buffer.from("ONE\n", "utf8").toString("base64"))
 	})
