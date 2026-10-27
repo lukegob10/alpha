@@ -382,7 +382,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		terminalZshP10k: false,
 		terminalZdotdir: false,
 		writeDelayMs: 0,
-		showRooIgnoredFiles: false,
+		showAlphaIgnoredFiles: false,
 		maxReadFileLine: -1,
 		maxImageFileSize: 5,
 		maxTotalImageSize: 20,
@@ -1793,6 +1793,55 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(mockPostMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({ type: "setTaskReasoningPreference" }),
 			)
+		},
+	)
+
+	it.each(["save", "discard"] as const)(
+		"keeps Alpha ignore visibility buffered through refresh and %s",
+		async (action) => {
+			let liveState = { ...defaultExtensionState, showAlphaIgnoredFiles: false }
+			const onDone = vi.fn()
+			vi.mocked(useExtensionState).mockImplementation(
+				() => liveState as unknown as ReturnType<typeof useExtensionState>,
+			)
+			vi.mocked(ContextManagementSettings).mockImplementation(
+				({ showAlphaIgnoredFiles, setCachedStateField }) => (
+					<button onClick={() => setCachedStateField("showAlphaIgnoredFiles", !showAlphaIgnoredFiles)}>
+						{showAlphaIgnoredFiles ? "Show ignored files" : "Hide ignored files"}
+					</button>
+				),
+			)
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={onDone} targetSection="contextManagement" />
+				</QueryClientProvider>
+			)
+			const result = render(view())
+			fireEvent.click(await screen.findByText("Hide ignored files"))
+			expect(screen.getByText("Show ignored files")).toBeInTheDocument()
+			expect(liveState.showAlphaIgnoredFiles).toBe(false)
+			expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+
+			liveState = { ...liveState, maxWorkspaceFiles: 201 }
+			result.rerender(view())
+			expect(screen.getByText("Show ignored files")).toBeInTheDocument()
+
+			if (action === "save") {
+				fireEvent.click(screen.getByTestId("save-button"))
+				expect(mockPostMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "updateSettings",
+						updatedSettings: expect.objectContaining({ showAlphaIgnoredFiles: true }),
+					}),
+				)
+			} else {
+				fireEvent.click(screen.getByText("settings:common.done"))
+				fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+				await waitFor(() => expect(onDone).toHaveBeenCalledOnce())
+				expect(screen.getByText("Hide ignored files")).toBeInTheDocument()
+				expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+			}
+			expect(liveState.showAlphaIgnoredFiles).toBe(false)
 		},
 	)
 

@@ -59,14 +59,14 @@ vi.mock("@src/utils/vscode", () => ({
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: () => ({
 		version: "1.0.0",
-		clineMessages: [],
+		alphaMessages: [],
 		taskHistory: [],
 		shouldShowAnnouncement: false,
 		language: "en",
 	}),
 	useShellState: () => ({
 		version: "1.0.0",
-		clineMessages: [],
+		alphaMessages: [],
 		taskHistory: [],
 		shouldShowAnnouncement: false,
 		language: "en",

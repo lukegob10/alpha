@@ -42,7 +42,7 @@ interface AlphaMessage {
 
 interface ExtensionState {
 	version: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskHistory: any[]
 	shouldShowAnnouncement: boolean
 	allowedCommands: string[]
@@ -188,9 +188,9 @@ vi.mock("../ChatRow", () => ({
 }))
 
 vi.mock("../FileChangesPanel", () => ({
-	default: function MockFileChangesPanel({ clineMessages = [] }: { clineMessages?: AlphaMessage[] }) {
+	default: function MockFileChangesPanel({ alphaMessages = [] }: { alphaMessages?: AlphaMessage[] }) {
 		const [expanded, setExpanded] = React.useState(false)
-		const paths = clineMessages.flatMap((message) => {
+		const paths = alphaMessages.flatMap((message) => {
 			if (!message.text) return []
 			try {
 				const tool = JSON.parse(message.text) as {
@@ -291,7 +291,7 @@ vi.mock("../QueuedMessages", () => ({
 // Mock AlphaHero component
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: function MockAlphaHero() {
-		return <div data-testid="roo-hero">Hero content</div>
+		return <div data-testid="alpha-hero">Hero content</div>
 	},
 }))
 
@@ -462,7 +462,7 @@ const mockPostMessage = (state: Partial<ExtensionState>) => {
 			type: "state",
 			state: {
 				version: "1.0.0",
-				clineMessages: [],
+				alphaMessages: [],
 				taskHistory: [],
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
@@ -503,7 +503,7 @@ describe("ChatView retired speech playback", () => {
 			const prompt: AlphaMessage = { type: "say", say: "task", ts: 1, text: "Original prompt" }
 			const response: AlphaMessage = { type: "say", say, ts: 2, text: "Completed answer", partial: true }
 			const state = { currentTaskId: "speech-retired", ttsEnabled: true, ttsSpeed: 1.5 }
-			mockPostMessage({ ...state, clineMessages: [prompt, response] })
+			mockPostMessage({ ...state, alphaMessages: [prompt, response] })
 			await view.findByText(/Completed answer/)
 			vi.mocked(vscode.postMessage).mockClear()
 
@@ -513,7 +513,7 @@ describe("ChatView retired speech playback", () => {
 						new MessageEvent("message", {
 							data: {
 								type: "state",
-								state: { ...state, clineMessages: [prompt, { ...response, partial: false }] },
+								state: { ...state, alphaMessages: [prompt, { ...response, partial: false }] },
 							},
 						}),
 					)
@@ -532,7 +532,7 @@ describe("ChatView checkpoint initialization warnings", () => {
 		const view = renderChatView()
 		mockPostMessage({
 			currentTaskId: "task-a",
-			clineMessages: [{ type: "say", say: "task", ts: 1, text: "Task A" }],
+			alphaMessages: [{ type: "say", say: "task", ts: 1, text: "Task A" }],
 		})
 		await waitFor(() => expect(view.getByText("Task A")).toBeInTheDocument())
 
@@ -551,7 +551,7 @@ describe("ChatView checkpoint initialization warnings", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-b",
-			clineMessages: [{ type: "say", say: "task", ts: 2, text: "Task B" }],
+			alphaMessages: [{ type: "say", say: "task", ts: 2, text: "Task B" }],
 		})
 		await waitFor(() => expect(view.getByText("Task B")).toBeInTheDocument())
 		expect(view.queryByText("errors.init_checkpoint_fail_long_time")).not.toBeInTheDocument()
@@ -613,7 +613,7 @@ describe("ChatView toolbar navigation", () => {
 				currentTaskId: id,
 				currentView: { type: "task", taskId: id },
 				currentTaskItem: { id, task: `Original ${id}`, displayName: `Named ${id}`, ts: 1 },
-				clineMessages: [{ type: "say", say: "task", ts: 1, text: `Original ${id}` }],
+				alphaMessages: [{ type: "say", say: "task", ts: 1, text: `Original ${id}` }],
 			})
 			mockPostMessage(taskState("a"))
 			await view.findByRole("button", { name: "history:backToHome" })
@@ -660,7 +660,7 @@ describe("ChatView toolbar navigation", () => {
 				currentTaskItem,
 				{ ...currentTaskItem, id: "sidebar-other", task: "Other chat", displayName: "Other chat" },
 			],
-			clineMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
+			alphaMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
 		})
 		await view.findByRole("button", { name: "history:backToHome" })
 		const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
@@ -700,7 +700,7 @@ describe("ChatView toolbar navigation", () => {
 				currentView: { type: "task", taskId: currentTaskItem.id },
 				currentTaskItem,
 				taskHistory: [currentTaskItem],
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: currentTaskItem.task },
 					{ type: "say", say: "api_req_started", ts: 2, text: "{}" },
 				],
@@ -735,7 +735,7 @@ describe("ChatView toolbar navigation", () => {
 				currentTaskId: undefined,
 				currentView: { type: "newTaskDraft" },
 				currentTaskItem: undefined,
-				clineMessages: [],
+				alphaMessages: [],
 				taskHistory: [currentTaskItem],
 			})
 			fireEvent.click(await view.findByTestId(`task-item-${currentTaskItem.id}`))
@@ -760,7 +760,7 @@ describe("ChatView toolbar navigation", () => {
 			currentView: { type: "task", taskId: currentTaskItem.id },
 			currentTaskItem,
 			taskHistory: [currentTaskItem],
-			clineMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
+			alphaMessages: [{ type: "say", say: "task", ts: 1, text: currentTaskItem.task }],
 		})
 		fireEvent.click(await view.findByRole("button", { name: "history:backToHome" }))
 		await view.findByTestId("alpha-home-brand")
@@ -778,7 +778,7 @@ describe("ChatView toolbar navigation", () => {
 			renderContext: "editor",
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		const toolbar = await view.findByRole("group", { name: "common:chatToolbar.label" })
 		for (const action of ["newChat", "settings", "tickets", "more"]) {
@@ -791,7 +791,7 @@ describe("ChatView toolbar navigation", () => {
 
 	it("keeps the context meter inside the new-chat composer", () => {
 		const view = renderChatView()
-		mockPostMessage({ currentTaskId: undefined, currentTaskItem: undefined, clineMessages: [] })
+		mockPostMessage({ currentTaskId: undefined, currentTaskItem: undefined, alphaMessages: [] })
 		expect(within(view.getByTestId("chat-textarea")).getByRole("progressbar")).toBeInTheDocument()
 		expect(view.getAllByRole("progressbar")).toHaveLength(1)
 	})
@@ -824,7 +824,7 @@ describe("ChatView async user input", () => {
 						totalCost: 0,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Keep the async question" },
 					{
 						type: "say",
@@ -880,7 +880,7 @@ describe("ChatView async user input", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
 				{
 					type: "say",
@@ -941,7 +941,7 @@ describe("ChatView async user input", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
 				{
 					type: "say",
@@ -978,7 +978,7 @@ describe("ChatView async user input", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Update the status indicator" },
 				{
 					type: "say",
@@ -1090,7 +1090,7 @@ describe("ChatView activity trace", () => {
 			{ ts: 800, type: "ask", ask: "command", text: "pnpm test", isAnswered: true, turn: second },
 		]
 		const publish = () =>
-			mockPostMessage({ currentTaskId: id, clineMessages: messages, liveTasksById: { [id]: runningTask(id) } })
+			mockPostMessage({ currentTaskId: id, alphaMessages: messages, liveTasksById: { [id]: runningTask(id) } })
 		const view = renderChatView()
 		publish()
 		const parent = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
@@ -1120,7 +1120,7 @@ describe("ChatView activity trace", () => {
 		const view = renderChatView()
 		mockPostMessage({
 			currentTaskId: "nested",
-			clineMessages: [
+			alphaMessages: [
 				{
 					ts: 100,
 					type: "say",
@@ -1154,7 +1154,7 @@ describe("ChatView activity trace", () => {
 		const second = turn("late-second")
 		mockPostMessage({
 			currentTaskId: "late-output",
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "say", say: "task", text: "First request", turn: { ...first, inputKind: "start" } },
 				{ ts: 200, type: "say", say: "text", text: "First progress", turn: first },
 				{
@@ -1228,7 +1228,7 @@ describe("ChatView activity trace", () => {
 		act(() => {
 			window.dispatchEvent(
 				new MessageEvent("message", {
-					data: { type: "state", state: { currentTaskId: "bounded-disclosures", clineMessages: messages } },
+					data: { type: "state", state: { currentTaskId: "bounded-disclosures", alphaMessages: messages } },
 				}),
 			)
 		})
@@ -1245,7 +1245,7 @@ describe("ChatView activity trace", () => {
 		const state = (id: string) => ({
 			currentTaskId: id,
 			currentTaskItem: { id, task: `Prompt ${id}`, ts: 100 },
-			clineMessages: [
+			alphaMessages: [
 				{
 					ts: 100,
 					type: "say" as const,
@@ -1272,7 +1272,7 @@ describe("ChatView activity trace", () => {
 			"aria-expanded",
 			"false",
 		)
-		mockPostMessage({ currentTaskId: "a", currentTaskItem: state("a").currentTaskItem, clineMessages: [] })
+		mockPostMessage({ currentTaskId: "a", currentTaskItem: state("a").currentTaskItem, alphaMessages: [] })
 		await waitFor(() => expect(view.getByText("Prompt a")).toBeVisible())
 		mockPostMessage(state("a"))
 		await waitFor(() =>
@@ -1295,7 +1295,7 @@ describe("ChatView activity trace", () => {
 		]
 		mockPostMessage({
 			currentTaskId: "keyboard",
-			clineMessages: messages,
+			alphaMessages: messages,
 			liveTasksById: { keyboard: runningTask("keyboard") },
 		})
 		const action = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
@@ -1304,7 +1304,7 @@ describe("ChatView activity trace", () => {
 		expect(action).toHaveFocus()
 		mockPostMessage({
 			currentTaskId: "keyboard",
-			clineMessages: [
+			alphaMessages: [
 				...messages,
 				{
 					ts: 350,
@@ -1332,7 +1332,7 @@ describe("ChatView activity trace", () => {
 			mockPostMessage({
 				currentTaskId: "window-focus",
 				liveTasksById: { "window-focus": runningTask("window-focus") },
-				clineMessages: [
+				alphaMessages: [
 					{ ts: 100, type: "say", say: "task", text: "Run checks" },
 					...Array.from({ length: count }, (_, index) => ({
 						ts: 1000 + index,
@@ -1371,7 +1371,7 @@ describe("ChatView activity trace", () => {
 				mockPostMessage({
 					currentTaskId: "batch-safety",
 					liveTasksById: { "batch-safety": runningTask("batch-safety") },
-					clineMessages: [
+					alphaMessages: [
 						{ ts: 100, type: "say", say: "task", text: "Inspect files" },
 						{
 							ts: 200,
@@ -1407,7 +1407,7 @@ describe("ChatView activity trace", () => {
 		const publish = (suppressed: boolean) =>
 			mockPostMessage({
 				currentTaskId: "stable-row",
-				clineMessages: [
+				alphaMessages: [
 					{ ts: 100, type: "say", say: "task", text: "Inspect the code" },
 					{
 						ts: 150,
@@ -1435,13 +1435,13 @@ describe("ChatView activity trace", () => {
 			{ ts: 100, type: "say", say: "task", text: "Run checks", turn: { ...first, inputKind: "start" } },
 			{ ts: 200, type: "ask", ask: "command", text: "pnpm test", isAnswered: true, turn: first },
 		]
-		mockPostMessage({ currentTaskId: "composer-focus", clineMessages: messages })
+		mockPostMessage({ currentTaskId: "composer-focus", alphaMessages: messages })
 		await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		const input = view.getByTestId("chat-textarea").querySelector("input")!
 		input.focus()
 		mockPostMessage({
 			currentTaskId: "composer-focus",
-			clineMessages: [
+			alphaMessages: [
 				...messages,
 				{ ts: 300, type: "say", say: "text", text: "Done", turn: { ...first, terminalStatus: "completed" } },
 			],
@@ -1471,7 +1471,7 @@ describe("ChatView activity trace", () => {
 			tokensOut: 0,
 			totalCost: 0,
 		}
-		mockPostMessage({ currentTaskId: taskId, clineMessages: messages, liveTasksById: { [taskId]: runningTask } })
+		mockPostMessage({ currentTaskId: taskId, alphaMessages: messages, liveTasksById: { [taskId]: runningTask } })
 
 		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		expect(toggle).toHaveAttribute("aria-busy", "true")
@@ -1479,7 +1479,7 @@ describe("ChatView activity trace", () => {
 
 		mockPostMessage({
 			currentTaskId: taskId,
-			clineMessages: [...messages, { ts: 300, type: "say", say: "text", text: "The command finished." }],
+			alphaMessages: [...messages, { ts: 300, type: "say", say: "text", text: "The command finished." }],
 			liveTasksById: { [taskId]: { ...runningTask, lastUpdatedAt: 300 } },
 		})
 		await waitFor(() => expect(toggle).not.toHaveClass("activity-trace-toggle--active"))
@@ -1504,7 +1504,7 @@ describe("ChatView activity trace", () => {
 		]
 		mockPostMessage({
 			currentTaskId: "live-actions",
-			clineMessages: messages,
+			alphaMessages: messages,
 			liveTasksById: {
 				"live-actions": {
 					id: "live-actions",
@@ -1534,7 +1534,7 @@ describe("ChatView activity trace", () => {
 
 		mockPostMessage({
 			currentTaskId: "live-actions",
-			clineMessages: [
+			alphaMessages: [
 				...messages,
 				{
 					ts: 800,
@@ -1558,7 +1558,7 @@ describe("ChatView activity trace", () => {
 		const view = renderChatView()
 		mockPostMessage({
 			currentTaskId: "failed-api",
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 1, type: "say", say: "task", text: "Run a check" },
 				{ ts: 2, type: "say", say: "api_req_started", text: "{}" },
 				{ ts: 3, type: "ask", ask: "api_req_failed", text: "The provider is unavailable" },
@@ -1581,7 +1581,7 @@ describe("ChatView activity trace", () => {
 			{ ts: 5000, type: "say", say: "reasoning", text: "Checking types" },
 			{ ts: 6000, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
 		]
-		const publish = (clineMessages: AlphaMessage[]) => mockPostMessage({ currentTaskId: taskId, clineMessages })
+		const publish = (alphaMessages: AlphaMessage[]) => mockPostMessage({ currentTaskId: taskId, alphaMessages })
 		const view = renderChatView()
 		publish(firstTurn)
 		const completedTrace = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
@@ -1622,14 +1622,14 @@ describe("ChatView activity trace", () => {
 			),
 			{ ts: 1000, type: "say", say: "completion_result", text: "Inspection complete." },
 		]
-		mockPostMessage({ currentTaskId: taskId, clineMessages: firstTurn })
+		mockPostMessage({ currentTaskId: taskId, alphaMessages: firstTurn })
 		fireEvent.click(await waitFor(() => view.getByTestId("chat-load-all")))
 		const completedTrace = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
 		expect(view.getAllByTestId("chat-row")).toHaveLength(2)
 
 		mockPostMessage({
 			currentTaskId: taskId,
-			clineMessages: [
+			alphaMessages: [
 				...firstTurn,
 				{ ts: 2000, type: "say", say: "user_feedback", text: "Now run the checks" },
 				{ ts: 3000, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
@@ -1690,7 +1690,7 @@ describe("ChatView activity trace", () => {
 			tokensOut: 0,
 			totalCost: 0,
 		}
-		mockPostMessage({ currentTaskId: taskId, clineMessages: messages, liveTasksById: { [taskId]: runningTask } })
+		mockPostMessage({ currentTaskId: taskId, alphaMessages: messages, liveTasksById: { [taskId]: runningTask } })
 		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		fireEvent.click(toggle)
 		expect(toggle).toHaveAttribute("aria-expanded", "true")
@@ -1698,7 +1698,7 @@ describe("ChatView activity trace", () => {
 
 		mockPostMessage({
 			currentTaskId: taskId,
-			clineMessages: messages,
+			alphaMessages: messages,
 			liveTasksById: {
 				[taskId]: {
 					...runningTask,
@@ -1726,14 +1726,14 @@ describe("ChatView activity trace", () => {
 			{ ts: 200, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
 			{ ts: 300, type: "say", say: "text", text: "Tests are done." },
 		]
-		mockPostMessage({ currentTaskId: taskId, clineMessages: messages })
+		mockPostMessage({ currentTaskId: taskId, alphaMessages: messages })
 		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		fireEvent.click(toggle)
 		expect(toggle).toHaveAttribute("aria-expanded", "true")
 
 		mockPostMessage({
 			currentTaskId: taskId,
-			clineMessages: [
+			alphaMessages: [
 				...messages,
 				{ ts: 400, type: "say", say: "completion_result", text: "Done." },
 				{ ts: 500, type: "ask", ask: "completion_result", text: "" },
@@ -1758,7 +1758,7 @@ describe("ChatView activity trace", () => {
 				text: JSON.stringify({ tool: "appliedDiff", path: "src/one.ts", diff: "+one" }),
 			},
 		]
-		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: messages })
+		mockPostMessage({ currentTaskId: "independent-actions", alphaMessages: messages })
 		const commands = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		const edits = view.getByRole("button", { name: /chat:activityTrace.editingFiles/ })
 		fireEvent.click(commands)
@@ -1769,7 +1769,7 @@ describe("ChatView activity trace", () => {
 			{ ts: 550, type: "say", say: "text", text: "Verifying the edit", partial: true },
 			{ ts: 560, type: "ask", ask: "command", text: "pnpm test", isAnswered: true },
 		]
-		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: progressing })
+		mockPostMessage({ currentTaskId: "independent-actions", alphaMessages: progressing })
 		await waitFor(() =>
 			expect(view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })).toHaveLength(2),
 		)
@@ -1785,7 +1785,7 @@ describe("ChatView activity trace", () => {
 		]
 		mockPostMessage({
 			currentTaskId: "independent-actions",
-			clineMessages: completed,
+			alphaMessages: completed,
 		})
 		await waitFor(() => expect(view.getByTestId("chat-message-6")).toBeVisible())
 		const parent = view.getByRole("button", { name: /chat:activityTrace.workedFor/ })
@@ -1809,7 +1809,7 @@ describe("ChatView activity trace", () => {
 			{ ts: 800, type: "ask", ask: "command", text: "pnpm check-types", isAnswered: true },
 			{ ts: 900, type: "say", say: "completion_result", text: "Types checked" },
 		]
-		mockPostMessage({ currentTaskId: "independent-actions", clineMessages: nextTurn })
+		mockPostMessage({ currentTaskId: "independent-actions", alphaMessages: nextTurn })
 		const untouchedTurn = await waitFor(() => {
 			const turns = view.getAllByRole("button", { name: /chat:activityTrace.workedFor/ })
 			expect(turns).toHaveLength(2)
@@ -1818,7 +1818,7 @@ describe("ChatView activity trace", () => {
 		expect(untouchedTurn).toHaveAttribute("aria-expanded", "false")
 		expect(reopenedCommands).toHaveAttribute("aria-expanded", "false")
 		expect(reopenedEdits).toHaveAttribute("aria-expanded", "true")
-		mockPostMessage({ currentTaskId: "another-actions-task", clineMessages: nextTurn })
+		mockPostMessage({ currentTaskId: "another-actions-task", alphaMessages: nextTurn })
 		await waitFor(() =>
 			expect(view.getAllByRole("button", { name: /chat:activityTrace.workedFor/ })).toHaveLength(2),
 		)
@@ -1835,7 +1835,7 @@ describe("ChatView activity trace", () => {
 			{ ts: 300, type: "ask", ask: "command", text: "pnpm test" },
 			{ ts: 400, type: "say", say: "text", text: "The command finished." },
 		]
-		mockPostMessage({ currentTaskId: "focus-actions", clineMessages: messages })
+		mockPostMessage({ currentTaskId: "focus-actions", alphaMessages: messages })
 		const toggle = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ }))
 		fireEvent.click(toggle)
 		const focusedElements: HTMLElement[] = []
@@ -1854,7 +1854,7 @@ describe("ChatView activity trace", () => {
 		const view = renderChatView({ isHidden: true })
 		mockPostMessage({
 			currentTaskId: "hidden-tab",
-			clineMessages: [
+			alphaMessages: [
 				{ ts: 100, type: "say", say: "task", text: "Run the tests" },
 				{ ts: 1000, type: "say", say: "text", text: "Working" },
 			],
@@ -1866,13 +1866,13 @@ describe("ChatView activity trace", () => {
 
 	it("keeps older transcript rows unmounted until Load older is clicked", async () => {
 		const view = renderChatView()
-		const clineMessages: AlphaMessage[] = Array.from({ length: 90 }, (_, index) => ({
+		const alphaMessages: AlphaMessage[] = Array.from({ length: 90 }, (_, index) => ({
 			ts: index + 1,
 			type: "say",
 			say: index === 0 ? "task" : "text",
 			text: `row-${index}`,
 		}))
-		mockPostMessage({ currentTaskId: "long-task", clineMessages })
+		mockPostMessage({ currentTaskId: "long-task", alphaMessages })
 		await waitFor(() => expect(view.getByTestId("chat-load-older")).toBeInTheDocument())
 		expect(view.queryByTestId("chat-message-0")).not.toBeInTheDocument()
 		fireEvent.click(view.getByTestId("chat-load-all"))
@@ -1910,7 +1910,7 @@ describe("ChatView activity trace", () => {
 			},
 		}
 		const prompt: AlphaMessage = { ts: 1, type: "say", say: "task", text: "Continue the large project" }
-		mockPostMessage({ ...state, clineMessages: [prompt] })
+		mockPostMessage({ ...state, alphaMessages: [prompt] })
 		await view.findByTestId("chat-transcript-content")
 
 		const messages: AlphaMessage[] = Array.from({ length: 2_000 }, (_, index) => ({
@@ -1920,7 +1920,7 @@ describe("ChatView activity trace", () => {
 			text: JSON.stringify({ tool: "readFile", path: `src/file-${index}.ts`, content: `src/file-${index}.ts` }),
 		}))
 		for (let count = 100; count <= messages.length; count += 100) {
-			mockPostMessage({ ...state, clineMessages: [prompt, ...messages.slice(0, count)] })
+			mockPostMessage({ ...state, alphaMessages: [prompt, ...messages.slice(0, count)] })
 			await waitFor(() =>
 				expect(view.getByTestId("chat-transcript-content")).toHaveAttribute("data-count", String(count)),
 			)
@@ -1971,7 +1971,7 @@ describe("ChatView activity trace", () => {
 						isWaitingForInput: false,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ ts: 1, type: "say", say: "task", text: "Continue the large project" },
 					...messages.slice(0, count),
 				],
@@ -2022,8 +2022,8 @@ describe("ChatView file-change summaries", () => {
 				text: JSON.stringify({ tool: "appliedDiff", path: "first.ts", diff: "+first" }),
 			},
 		]
-		const publish = (clineMessages: AlphaMessage[], taskId = "sticky-file-review") =>
-			mockPostMessage({ currentTaskId: taskId, clineMessages })
+		const publish = (alphaMessages: AlphaMessage[], taskId = "sticky-file-review") =>
+			mockPostMessage({ currentTaskId: taskId, alphaMessages })
 		publish(messages)
 		const panel = await waitFor(() => view.getByTestId("file-changes-panel"))
 		const toggle = within(panel).getByRole("button", { name: "Review changes" })
@@ -2075,7 +2075,7 @@ describe("ChatView file-change summaries", () => {
 		const view = renderChatView()
 		mockPostMessage({
 			currentTaskId: "completed-turn-trace",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Organize the ignore files" },
 				{ type: "say", say: "text", ts: 200, text: "I’ll inspect the ignore rules." },
 				{ type: "ask", ask: "command", ts: 300, text: "git status --short", isAnswered: true },
@@ -2129,7 +2129,7 @@ describe("ChatView file-change summaries", () => {
 		})
 		mockPostMessage({
 			currentTaskId: "grouped-diff-task",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Edit two files" },
 				edit(2, "bootstrap.py"),
 				edit(3, "config.py"),
@@ -2158,7 +2158,7 @@ describe("ChatView file-change summaries", () => {
 			{ type: "say", say: "completion_result", ts: 6, text: "Second response" },
 		]
 
-		mockPostMessage({ currentTaskId: "diff-task", clineMessages: messages })
+		mockPostMessage({ currentTaskId: "diff-task", alphaMessages: messages })
 
 		await waitFor(() => expect(view.getAllByTestId("file-changes-panel")).toHaveLength(2))
 		const panels = view.getAllByTestId("file-changes-panel")
@@ -2178,7 +2178,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
 		vi.mocked(vscode.postMessage).mockClear()
@@ -2201,7 +2201,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
 		fireEvent.change(input, { target: { value: "Keep this prompt visible" } })
@@ -2227,11 +2227,11 @@ describe("ChatView - Plan command", () => {
 		mockPostMessage({
 			currentTaskId: submission.taskId,
 			currentView: { type: "task", taskId: submission.taskId },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Keep this prompt visible")
 		expect(input).toHaveAttribute("data-sending-disabled", "true")
-		mockPostMessage({ clineMessages: [{ ts: 123, type: "say", say: "text", text: "Keep this prompt visible" }] })
+		mockPostMessage({ alphaMessages: [{ ts: 123, type: "say", say: "text", text: "Keep this prompt visible" }] })
 		await waitFor(() => expect(input).toHaveAttribute("data-sending-disabled", "false"))
 		expect(view.getAllByText("Keep this prompt visible")).toHaveLength(1)
 		expect(input).toHaveAttribute("data-sending-disabled", "false")
@@ -2244,7 +2244,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
 		fireEvent.change(input, { target: { value: "Recover my first prompt" } })
@@ -2255,7 +2255,7 @@ describe("ChatView - Plan command", () => {
 		mockPostMessage({
 			currentTaskId: "other-chat",
 			currentView: { type: "task", taskId: "other-chat" },
-			clineMessages: [{ ts: 50, type: "say", say: "text", text: "Other chat" }],
+			alphaMessages: [{ ts: 50, type: "say", say: "text", text: "Other chat" }],
 		})
 		await waitFor(() => expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Other chat"))
 		fireEvent.change(input, { target: { value: "Other chat draft" } })
@@ -2278,7 +2278,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		await waitFor(() => expect(input).toHaveValue("Recover my first prompt"))
 		expect(view.getByRole("alert")).toHaveTextContent("chat:taskStartup.failed")
@@ -2291,7 +2291,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: undefined,
 			currentTaskItem: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
 		fireEvent.change(input, { target: { value: "Recover after partial admission" } })
@@ -2302,7 +2302,7 @@ describe("ChatView - Plan command", () => {
 		mockPostMessage({
 			currentTaskId: submission.taskId,
 			currentView: { type: "task", taskId: submission.taskId },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 		await view.findByRole("button", { name: "history:backToHome" })
 		await act(async () => {
@@ -2331,7 +2331,7 @@ describe("ChatView - Plan command", () => {
 			mode: "code",
 			currentTaskId: undefined,
 			currentView: { type: "newTaskDraft" },
-			clineMessages: [],
+			alphaMessages: [],
 		})
 
 		const composer = await waitFor(() => getByTestId("chat-textarea"))
@@ -2357,7 +2357,7 @@ describe("ChatView - Plan command", () => {
 
 	it("sends an inline Plan command as one atomic host request", async () => {
 		const { getByTestId } = renderChatView()
-		mockPostMessage({ mode: "code", clineMessages: [] })
+		mockPostMessage({ mode: "code", alphaMessages: [] })
 
 		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
 		vi.mocked(vscode.postMessage).mockClear()
@@ -2380,7 +2380,7 @@ describe("ChatView - Plan command", () => {
 
 	it("uses the mode-only message for /plan without an inline prompt", async () => {
 		const { getByTestId } = renderChatView()
-		mockPostMessage({ mode: "code", clineMessages: [] })
+		mockPostMessage({ mode: "code", alphaMessages: [] })
 
 		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
 		vi.mocked(vscode.postMessage).mockClear()
@@ -2402,7 +2402,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: "active-task",
 			currentView: { type: "task", taskId: "active-task" },
 			currentTaskItem: { id: "active-task", task: "Current task", ts: 1 },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Current task" },
 				{ type: "ask", ask: "followup", ts: 2, text: "What should I inspect?" },
 			],
@@ -2435,7 +2435,7 @@ describe("ChatView - Plan command", () => {
 			currentTaskId: "active-task",
 			currentView: { type: "task", taskId: "active-task" },
 			currentTaskItem: { id: "active-task", task: "Current task", ts: 1 },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Current task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 			],
@@ -2487,7 +2487,7 @@ describe("ChatView - Context Condensation Requests", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [{ type: "say", say: "task", ts: 100, text: "Long-running task" }],
+			alphaMessages: [{ type: "say", say: "task", ts: 100, text: "Long-running task" }],
 		})
 
 		const input = await waitFor(() => getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
@@ -2518,7 +2518,7 @@ describe("ChatView - Follow-up suggestion copy", () => {
 			autoApprovalEnabled: true,
 			currentTaskId: "mode-choice",
 			currentView: { type: "task", taskId: "mode-choice" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Test" },
 				{ type: "ask", ask: "followup", ts: 101, text: "Choose" },
 			],
@@ -2537,7 +2537,7 @@ describe("ChatView - Follow-up suggestion copy", () => {
 		mockPostMessage({
 			currentTaskId: "task-with-followup",
 			currentView: { type: "task", taskId: "task-with-followup" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Test follow-up" },
 				{ type: "ask", ask: "followup", ts: 101, text: "Choose an answer" },
 			],
@@ -2572,7 +2572,7 @@ describe("ChatView - Follow-up suggestion copy", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Test follow-up" },
 				{ type: "ask", ask: "followup", ts: 101, text: "Choose an answer" },
 			],
@@ -2596,7 +2596,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// First hydrate state with initial task
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2612,7 +2612,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// Add completion result
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2641,7 +2641,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// First hydrate state with initial task
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2657,7 +2657,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// Add API failure
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2689,7 +2689,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// Hydrate state with a task that has a resumeTaskId (indicating it's resumed from history)
 		mockPostMessage({
 			resumeTaskId: "task-123",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2718,7 +2718,7 @@ describe("ChatView - Sound Playing Tests", () => {
 		// Hydrate state with a completed task that has a resumeTaskId
 		mockPostMessage({
 			resumeTaskId: "task-123",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2747,7 +2747,7 @@ describe("ChatView - Focus Grabbing Tests", () => {
 
 		// First hydrate state with initial task
 		mockPostMessage({
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2772,7 +2772,7 @@ describe("ChatView - Focus Grabbing Tests", () => {
 
 		// Add follow-up question
 		mockPostMessage({
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -2817,7 +2817,7 @@ describe("ChatView - Inline Chats navigation", () => {
 	it("expands View all in place and restores compact home chats on close", async () => {
 		const view = renderChatView()
 		mockPostMessage({
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: Array.from({ length: 7 }, (_, index) => ({
 				id: `recent-${index}`,
 				ts: 100 - index,
@@ -2854,7 +2854,7 @@ describe("ChatView - Inline Chats navigation", () => {
 		const view = render(tree())
 		mockPostMessage({
 			currentTaskId: "active-chat",
-			clineMessages: [{ ts: 1, type: "say", say: "text", text: "Active chat" }],
+			alphaMessages: [{ ts: 1, type: "say", say: "text", text: "Active chat" }],
 			taskHistory: [{ id: "active-chat", ts: 1, task: "Active chat" }],
 		})
 		const transcript = await view.findByTestId("chat-transcript-viewport")
@@ -2905,13 +2905,13 @@ describe("ChatView - Empty chat home", () => {
 			workspace: "/test/workspace",
 		}))
 
-		mockPostMessage({ cwd: "/test/workspace", taskHistory, clineMessages: [] })
+		mockPostMessage({ cwd: "/test/workspace", taskHistory, alphaMessages: [] })
 		if (historyCount > 0) {
 			await waitFor(() => expect(getByTestId("history-preview-list")).toBeInTheDocument())
 		}
 
 		expect(getByTestId("alpha-home-brand")).toBeInTheDocument()
-		expect(getByTestId("roo-hero")).toBeInTheDocument()
+		expect(getByTestId("alpha-hero")).toBeInTheDocument()
 		expect(queryByTestId("version-indicator")).not.toBeInTheDocument()
 		expect(queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
 		expect(queryByRole("button", { name: "common:chatToolbar.newChat" })).not.toBeInTheDocument()
@@ -2988,7 +2988,7 @@ describe("ChatView - Managed agent monitor", () => {
 				omittedNodeCount: 0,
 				omittedActivityCount: 0,
 			},
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -3070,7 +3070,7 @@ describe("ChatView - Managed agent monitor", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [],
+			alphaMessages: [],
 			managedAgentTree: {
 				version: 1,
 				rootTaskId: "root-1",
@@ -3169,7 +3169,7 @@ describe("ChatView - Managed agent monitor", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -3222,7 +3222,7 @@ describe("ChatView - Managed agent monitor", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say" as const, say: "task", ts: 1, text: "Recover the task" },
 				recoveryMessage,
 				{ type: "ask" as const, ask: "resume_task", ts: 3, text: "" },
@@ -3289,7 +3289,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: waitingTask.id,
 			currentView: { type: "task", taskId: waitingTask.id },
 			liveTasksById: { [waitingTask.id]: waitingTask },
-			clineMessages: [taskMessage, followUp],
+			alphaMessages: [taskMessage, followUp],
 			messageQueue: queuedMessages,
 		}
 
@@ -3304,7 +3304,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			}
 			mockPostMessage({
 				...waitingState,
-				clineMessages: [
+				alphaMessages: [
 					taskMessage,
 					{
 						...followUp,
@@ -3342,8 +3342,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				currentTaskId: undefined,
 				currentView: { type: "newTaskDraft" },
 				taskStateSeq: 1,
-				clineMessagesSeq: 1,
-				clineMessages: [],
+				alphaMessagesSeq: 1,
+				alphaMessages: [],
 			})
 			await waitFor(() => expect(getByTestId("chat-textarea")).toBeInTheDocument())
 			vi.mocked(vscode.postMessage).mockClear()
@@ -3376,8 +3376,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				currentTaskItem: { id: taskId, task: "Reopened task", ts: 1 },
 				liveTasksById: { [taskId]: completedTask },
 				taskStateSeq: 2,
-				clineMessagesSeq: 2,
-				clineMessages: [],
+				alphaMessagesSeq: 2,
+				alphaMessages: [],
 			})
 			await waitFor(() => expect(getByTestId("chat-textarea")).toBeInTheDocument())
 			expect(vscode.postMessage).not.toHaveBeenCalled()
@@ -3388,8 +3388,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				currentTaskItem: { id: taskId, task: "Reopened task", ts: 1 },
 				liveTasksById: { [taskId]: completedTask },
 				taskStateSeq: 2,
-				clineMessagesSeq: 3,
-				clineMessages: [
+				alphaMessagesSeq: 3,
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Reopened task" },
 					{ type: "say", say: "completion_result", ts: 2, text: "Previous answer" },
 					{ type: "ask", ask: "resume_completed_task", ts: 3, text: "", partial: false },
@@ -3424,7 +3424,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					currentTaskId: initialTaskId,
 					currentView: { type: "task", taskId: initialTaskId },
 					liveTasksById: { [initialTaskId]: { ...waitingTask, id: initialTaskId } },
-					clineMessages: [taskMessage],
+					alphaMessages: [taskMessage],
 				})
 				await waitFor(() => expect(getByTestId("queued-messages")).toBeInTheDocument())
 				await act(async () => {})
@@ -3550,7 +3550,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					currentTaskId: taskId,
 					currentView: { type: "task", taskId },
 					liveTasksById: { [taskId]: { ...waitingTask, id: taskId } },
-					clineMessages: [
+					alphaMessages: [
 						taskMessage,
 						{
 							...followUp,
@@ -3658,8 +3658,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				mockPostMessage({
 					...waitingState,
 					liveTasksById: { [waitingTask.id]: { ...waitingTask, isWaitingForInput, lastUpdatedAt: 103 } },
-					clineMessages: [
-						...waitingState.clineMessages,
+					alphaMessages: [
+						...waitingState.alphaMessages,
 						{ type: "say", say: "text", ts: 102, text: "Still awaiting your answer" },
 					],
 				})
@@ -3702,7 +3702,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			mockPostMessage({
 				...waitingState,
 				liveTasksById: { [waitingTask.id]: { ...waitingTask, isWaitingForInput } },
-				clineMessages: [waitingState.clineMessages[0], currentAsk],
+				alphaMessages: [waitingState.alphaMessages[0], currentAsk],
 			})
 			await waitFor(() => {
 				if (currentAsk.ask === "command_output") {
@@ -3747,8 +3747,8 @@ describe("ChatView - Message Queueing Tests", () => {
 				// boundary, while both the old ask and waiting metadata remain visible.
 				mockPostMessage({
 					...waitingState,
-					clineMessages: [
-						...waitingState.clineMessages,
+					alphaMessages: [
+						...waitingState.alphaMessages,
 						{ type: "say", say, ts: 102, text: "{}" },
 						{ type: "say", say: "text", ts: 103, text: "Continued after the previous question" },
 					],
@@ -3823,7 +3823,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [{ type: "say", say: "task", ts: Date.now(), text: "Preparing the request" }],
+			alphaMessages: [{ type: "say", say: "task", ts: Date.now(), text: "Preparing the request" }],
 		})
 
 		const input = (await waitFor(() => getByTestId("chat-textarea").querySelector("input"))) as HTMLInputElement
@@ -3855,7 +3855,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 			],
@@ -3872,7 +3872,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: "{not valid JSON" },
 			],
@@ -3907,7 +3907,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [{ type: "say", say: "task", ts: 1, text: "Initial task" }],
+			alphaMessages: [{ type: "say", say: "task", ts: 1, text: "Initial task" }],
 		})
 
 		await waitFor(() => expect(getByRole("status")).toHaveTextContent("chat:modelResponseDelayed"))
@@ -3948,7 +3948,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						...hostLifecycle,
 					},
 				},
-				clineMessages: [{ type: "say", say: "task", ts: 1, text: "Waiting test" }],
+				alphaMessages: [{ type: "say", say: "task", ts: 1, text: "Waiting test" }],
 				...overrides,
 			})
 		}
@@ -4126,7 +4126,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					processedEvents: [],
 				}),
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "completion_result", ts: 1, text: "Implementation verified.", partial: false },
 				{ type: "ask", ask: "completion_result", ts: 2, text: "" },
 			],
@@ -4173,7 +4173,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [],
+			alphaMessages: [],
 		})
 
 		await waitFor(() => {
@@ -4200,7 +4200,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4245,7 +4245,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				totalCost: 0,
 				workspace: "/test/workspace",
 			},
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4301,7 +4301,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: taskItem,
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4323,7 +4323,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: undefined,
 			currentView: { type: "newTaskDraft" },
 			currentTaskItem: undefined,
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [taskItem],
 		})
 
@@ -4335,7 +4335,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: taskItem,
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [taskItem],
 		})
 
@@ -4378,7 +4378,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: taskItem,
-			clineMessages: taskMessages,
+			alphaMessages: taskMessages,
 		})
 
 		await waitFor(() => {
@@ -4393,7 +4393,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: undefined,
 			currentView: { type: "newTaskDraft" },
 			currentTaskItem: undefined,
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [taskItem],
 		})
 
@@ -4405,7 +4405,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: taskItem,
-			clineMessages: taskMessages,
+			alphaMessages: taskMessages,
 			taskHistory: [taskItem],
 		})
 
@@ -4420,7 +4420,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Hydrate state with active task that should disable sending
 		mockPostMessage({
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4450,7 +4450,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Hydrate state with completed task
 		mockPostMessage({
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "ask",
 					ask: "completion_result",
@@ -4478,7 +4478,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		// First hydrate state with initial task
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4494,7 +4494,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		// Add api_req_started without cost (spinner state - API request in progress)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4584,7 +4584,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: undefined,
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -4621,7 +4621,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 			],
@@ -4711,7 +4711,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						processedEvents: [],
 					}),
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Initial task" },
 					{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 				],
@@ -4774,7 +4774,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				mockPostMessage({
 					currentTaskId: "task-1",
 					...(autoSteer === undefined ? {} : { autoSteer }),
-					clineMessages: [
+					alphaMessages: [
 						{ type: "say", say: "task", ts: 1, text: "Initial task" },
 						{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 					],
@@ -4808,7 +4808,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: "task-1",
 			autoSteer: true,
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 			],
@@ -4834,7 +4834,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			{ type: "say", say: "task", ts: 1, text: "Initial task" },
 			{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 		]
-		mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+		mockPostMessage({ currentTaskId: "task-1", alphaMessages: runningMessages })
 		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement)
 		fireEvent.change(input, { target: { value: "Retain this correction" } })
 		vi.mocked(vscode.postMessage).mockClear()
@@ -4844,7 +4844,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			.mock.calls.find(([message]) => message.type === "sendAndSteer")![0]
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: runningMessages,
+			alphaMessages: runningMessages,
 			messageQueue: [{ id: request.requestId!, text: request.text!, images: [] }],
 		})
 		act(() =>
@@ -4873,7 +4873,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "ask", ask: "followup", ts: 2, text: "Which parser?" },
 			],
@@ -4916,7 +4916,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: "task-1",
 			apiConfiguration: { apiProvider: "bedrock" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
 			],
@@ -4944,7 +4944,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					text: JSON.stringify({ apiProtocol: "openai" }),
 				},
 			]
-			mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+			mockPostMessage({ currentTaskId: "task-1", alphaMessages: runningMessages })
 			const input = await waitFor(
 				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
 			)
@@ -4954,7 +4954,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			const request = vi
 				.mocked(vscode.postMessage)
 				.mock.calls.find(([message]) => message.type === "sendAndSteer")![0]
-			mockPostMessage({ currentTaskId: "task-2", clineMessages: runningMessages })
+			mockPostMessage({ currentTaskId: "task-2", alphaMessages: runningMessages })
 			await waitFor(() => expect(input).toHaveValue(""))
 			fireEvent.change(input, { target: { value: "Other task draft" } })
 			vi.mocked(vscode.postMessage).mockClear()
@@ -4976,7 +4976,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				),
 			)
 			expect(input).toHaveValue("Other task draft")
-			mockPostMessage({ currentTaskId: "task-1", clineMessages: runningMessages })
+			mockPostMessage({ currentTaskId: "task-1", alphaMessages: runningMessages })
 			await waitFor(() => expect(input).toHaveValue(status === "accepted" ? "" : "Steering correction"))
 		},
 	)
@@ -4988,7 +4988,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			const view = renderChatView({ isHidden: true }, ref)
 			mockPostMessage({
 				currentTaskId: "task-1",
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Initial task" },
 					{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 				],
@@ -5009,7 +5009,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{
 					type: "ask",
@@ -5030,7 +5030,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
 			],
@@ -5098,7 +5098,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					processedEvents: [],
 				}),
 			},
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5137,7 +5137,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "openai" }) },
 			],
@@ -5181,7 +5181,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5237,7 +5237,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5277,7 +5277,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Choose an environment" },
 				{ ...nativeInputMessage },
 			],
@@ -5320,7 +5320,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 				{ ...nativeInputMessage },
 				{ type: "say", say: "api_req_started", ts: 3, text: JSON.stringify({ apiProtocol: "openai" }) },
@@ -5345,7 +5345,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 				{ ...nativeInputMessage },
 				{ ...nativeInputMessage, ts: 3 },
@@ -5379,7 +5379,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 				{ ...nativeInputMessage },
 				{ ...nativeInputMessage, ts: 3 },
@@ -5412,7 +5412,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: taskId,
 			currentView: { type: "task", taskId },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 				{ ...nativeInputMessage },
 			],
@@ -5452,7 +5452,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			mockPostMessage({
 				currentTaskId: taskId,
 				currentView: { type: "task", taskId },
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 					{ ...nativeInputMessage },
 				],
@@ -5499,7 +5499,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			mockPostMessage({
 				currentTaskId: taskId,
 				currentView: { type: "task", taskId },
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 					{ ...nativeInputMessage },
 				],
@@ -5540,7 +5540,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			mockPostMessage({
 				currentTaskId: taskId,
 				currentView: { type: "task", taskId },
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 1, text: "Inspect the environment" },
 					{ ...nativeInputMessage },
 				],
@@ -5574,7 +5574,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5616,7 +5616,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5715,7 +5715,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 			mockPostMessage({
 				currentTaskId: "task-1",
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -5786,7 +5786,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5823,7 +5823,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5852,7 +5852,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5901,7 +5901,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -5929,7 +5929,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		// Hydrate state with completed API request (cost present)
 		mockPostMessage({
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -6018,7 +6018,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			...taskState,
-			clineMessages: [taskMessage, requestStarted],
+			alphaMessages: [taskMessage, requestStarted],
 		})
 
 		const input = getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
@@ -6026,7 +6026,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			...taskState,
-			clineMessages: [
+			alphaMessages: [
 				taskMessage,
 				{
 					...requestStarted,
@@ -6096,7 +6096,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				},
 			},
 			agentLifecycleSnapshots: { "task-1": completedTurn },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "text", ts: 2, text: "Answer from the finished turn" },
 			],
@@ -6148,7 +6148,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					waitingReason: "idle",
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the parser" },
 				{ type: "ask", ask, ts: 2, text: "How should I continue?", partial: false },
 			],
@@ -6205,7 +6205,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					isWaitingForInput: false,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Inspect the parser" },
 				{
 					type: "ask",
@@ -6256,7 +6256,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						totalCost: 0,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -6364,7 +6364,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						totalCost: 0,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ type: "say", say: "task", ts: 100, text: "Initial task" },
 					{ type: "say", say: "error", ts: 101, text: `Task ${lifecycle}` },
 				],
@@ -6400,7 +6400,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			const { getByTestId, getByRole, queryByRole } = renderChatView()
 			mockPostMessage({
 				currentTaskId: "task-1",
-				clineMessages: [
+				alphaMessages: [
 					{ type: "ask", ask: "tool", ts: 100, text: JSON.stringify({ tool: "readFile" }), partial: false },
 				],
 			})
@@ -6423,7 +6423,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						totalCost: 0,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{ type: "ask", ask: "tool", ts: 100, text: JSON.stringify({ tool: "readFile" }), partial: false },
 					{ type: "say", say: "error", ts: 101, text: "Terminal" },
 				],
@@ -6462,7 +6462,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
 			currentTaskItem: { id: "task-1", task: "Legacy task", ts: 1 },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Legacy task" },
 				{ type: "say", say: "text", ts: 2, text: "Still running" },
 			],
@@ -6549,7 +6549,7 @@ describe("ChatView - Message Queueing Tests", () => {
 						totalCost: 0,
 					},
 				},
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -6617,7 +6617,7 @@ describe("ChatView - Message Queueing Tests", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Initial task" },
 				{
 					type: "ask",
@@ -6640,7 +6640,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		mockPostMessage({
 			currentTaskId: "task-1",
 			currentView: { type: "task", taskId: "task-1" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 100, text: "Initial task" },
 				{
 					type: "ask",
@@ -6662,7 +6662,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const completedState = {
 			currentTaskId: "task-1",
 			currentView: { type: "task" as const, taskId: "task-1" },
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say" as const, say: "task", ts: 100, text: "Initial task" },
 				{
 					type: "ask" as const,
@@ -6707,7 +6707,7 @@ describe("ChatView - Message Queueing Tests", () => {
 
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -6758,7 +6758,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		// Hydrate state with API request in progress and existing queue
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -6822,7 +6822,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		// Hydrate state with command_output ask (Proceed While Running state)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -6896,7 +6896,7 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 				currentTaskId: "small-window-task",
 				currentView: { type: "task", taskId: "small-window-task" },
 				currentTaskItem: { id: "small-window-task", task: "Fill the small window", ts: 1 },
-				clineMessages: [{ type: "say", say: "task", ts: 1, text: "Fill the small window" }],
+				alphaMessages: [{ type: "say", say: "task", ts: 1, text: "Fill the small window" }],
 			})
 			const input = await waitFor(
 				() => view.getByTestId("chat-textarea").querySelector("input") as HTMLInputElement,
@@ -6943,7 +6943,7 @@ describe("ChatView - Context Condensing Indicator Tests", () => {
 			currentTaskId: "active-task",
 			currentView: { type: "task", taskId: "active-task" },
 			currentTaskItem: { id: "active-task", task: "Initial task", ts: Date.now() - 2000 },
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -7026,7 +7026,7 @@ describe("ChatView chat-owned composer commands", () => {
 				isWaitingForInput: true,
 			},
 		},
-		clineMessages: [
+		alphaMessages: [
 			{ type: "say", say: "task", ts: 1, text: `Prompt ${id}` },
 			{ type: "ask", ask, ts: 2, text: "How should I continue?", partial: false },
 		],
@@ -7036,7 +7036,7 @@ describe("ChatView chat-owned composer commands", () => {
 		currentTaskId: id,
 		currentView: { type: "task", taskId: id },
 		currentTaskItem: { id, task: `Prompt ${id}`, ts: 1 },
-		clineMessages: [
+		alphaMessages: [
 			{ type: "say", say: "task", ts: 1, text: `Prompt ${id}` },
 			{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },
 		],
@@ -7163,7 +7163,7 @@ describe("ChatView chat-owned composer commands", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 				{ type: "say", say: "completion_result", ts: 2, text: "Finished." },
 			],
@@ -7197,8 +7197,8 @@ describe("ChatView chat-owned composer commands", () => {
 		mockPostMessage({
 			...completedState,
 			messageQueue: [queued],
-			clineMessages: [
-				...completedState.clineMessages!,
+			alphaMessages: [
+				...completedState.alphaMessages!,
 				{
 					type: "say",
 					say: "user_feedback",
@@ -7236,7 +7236,7 @@ describe("ChatView chat-owned composer commands", () => {
 					totalCost: 0,
 				},
 			},
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 				{ type: "say", say: "completion_result", ts: 2, text: "Finished." },
 			],
@@ -7267,8 +7267,8 @@ describe("ChatView chat-owned composer commands", () => {
 		const state = runningState("a", [queued])
 		mockPostMessage({
 			...state,
-			clineMessages: [
-				...state.clineMessages!,
+			alphaMessages: [
+				...state.alphaMessages!,
 				{
 					type: "say",
 					say: "user_feedback",
@@ -7326,8 +7326,8 @@ describe("ChatView chat-owned composer commands", () => {
 					},
 					{ id: "identical-other-input", text: "Review the retained input", timestamp: 4 },
 				],
-				clineMessages: [
-					...state.clineMessages!,
+				alphaMessages: [
+					...state.alphaMessages!,
 					{
 						ts: 5,
 						type: "say",
@@ -7434,7 +7434,7 @@ describe("ChatView chat-owned composer commands", () => {
 				...(boundary === "streaming"
 					? {}
 					: {
-							clineMessages: [
+							alphaMessages: [
 								{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 								{
 									type: "ask",
@@ -7472,7 +7472,7 @@ describe("ChatView chat-owned composer commands", () => {
 		const view = renderChatView()
 		const waiting: Partial<ExtensionState> = {
 			...runningState("a"),
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 				{ type: "ask", ask: "followup", ts: 2, text: "Which option?" },
 			],
@@ -7500,7 +7500,7 @@ describe("ChatView chat-owned composer commands", () => {
 		const view = renderChatView()
 		mockPostMessage({
 			...runningState("a"),
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 				{ type: "ask", ask: "completion_result", ts: 2, text: "Completed report" },
 			],
@@ -7623,7 +7623,7 @@ describe("ChatView chat-owned composer commands", () => {
 		const view = renderChatView()
 		const completed: Partial<ExtensionState> = {
 			...runningState("a"),
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Prompt a" },
 				{ type: "say", say: "completion_result", ts: 2, text: "Done" },
 			],

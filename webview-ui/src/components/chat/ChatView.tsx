@@ -313,7 +313,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 							row,
 							<FileChangesPanel
 								key={`file-changes:${transcriptTaskKey}:${fileChangeTurn.key}`}
-								clineMessages={fileChangeTurn.messages}
+								alphaMessages={fileChangeTurn.messages}
 								taskId={fileChangeTurn.key}
 								onExpandedChange={handleFileChangesExpandedChange}
 							/>,
@@ -341,7 +341,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const extensionState = useExtensionState()
 	const {
-		clineMessages: messages,
+		alphaMessages: messages,
 		currentTaskId,
 		currentView,
 		currentTaskItem,
@@ -3926,7 +3926,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						onStop={handleStopTask}
 						onEnqueueMessage={handleEnqueueCurrentMessage}
 						enqueueDisabled={Boolean(pendingQueueRequest)}
-						conversationClineMessages={conversationPromptMessages}
+						conversationAlphaMessages={conversationPromptMessages}
 						conversationTaskId={visibleCurrentTaskId}
 						isInTask={Boolean(task)}
 						isTaskDraft={isDraftView}

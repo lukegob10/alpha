@@ -350,7 +350,7 @@ describe("ChatTextArea", () => {
 				<ChatTextArea
 					{...defaultProps}
 					inputValue="Draft A"
-					conversationClineMessages={explicit ? [] : undefined}
+					conversationAlphaMessages={explicit ? [] : undefined}
 					conversationTaskId={explicit ? "task-a" : undefined}
 				/>,
 			)
@@ -360,7 +360,7 @@ describe("ChatTextArea", () => {
 				<ChatTextArea
 					{...defaultProps}
 					inputValue="Draft B"
-					conversationClineMessages={explicit ? [] : undefined}
+					conversationAlphaMessages={explicit ? [] : undefined}
 					conversationTaskId={explicit ? "task-b" : undefined}
 				/>,
 			)
@@ -797,7 +797,7 @@ describe("ChatTextArea", () => {
 					capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
 				},
 				taskHistory: [],
-				clineMessages: [],
+				alphaMessages: [],
 				cwd: "/test/workspace",
 			})
 
@@ -826,7 +826,7 @@ describe("ChatTextArea", () => {
 			render(
 				<ChatTextArea
 					{...defaultProps}
-					conversationClineMessages={[]}
+					conversationAlphaMessages={[]}
 					conversationTaskId="task-a"
 					inputValue="Keep my draft"
 					setInputValue={setInputValue}
@@ -968,7 +968,7 @@ describe("ChatTextArea", () => {
 				const view = render(
 					<ChatTextArea
 						{...defaultProps}
-						conversationClineMessages={[]}
+						conversationAlphaMessages={[]}
 						conversationTaskId="task-a"
 						inputValue="Prompt for A"
 						setInputValue={setInputValue}
@@ -980,7 +980,7 @@ describe("ChatTextArea", () => {
 				view.rerender(
 					<ChatTextArea
 						{...defaultProps}
-						conversationClineMessages={[]}
+						conversationAlphaMessages={[]}
 						conversationTaskId="task-b"
 						inputValue={otherDraft}
 						setInputValue={setInputValue}
@@ -1526,7 +1526,7 @@ describe("ChatTextArea", () => {
 				const { container, rerender } = render(
 					<ChatTextArea
 						{...defaultProps}
-						conversationClineMessages={messages}
+						conversationAlphaMessages={messages}
 						conversationTaskId="task-a"
 						isInTask
 						setInputValue={setInputValue}
@@ -1541,7 +1541,7 @@ describe("ChatTextArea", () => {
 				rerender(
 					<ChatTextArea
 						{...defaultProps}
-						conversationClineMessages={messages}
+						conversationAlphaMessages={messages}
 						conversationTaskId="task-b"
 						isInTask
 						setInputValue={setInputValue}
@@ -1567,7 +1567,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: mockAlphaMessages,
+					alphaMessages: mockAlphaMessages,
 					cwd: "/test/workspace",
 				})
 			})
@@ -1720,7 +1720,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: mixedAlphaMessages,
+					alphaMessages: mixedAlphaMessages,
 					cwd: "/test/workspace",
 				})
 
@@ -1748,7 +1748,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: [],
+					alphaMessages: [],
 					cwd: "/test/workspace",
 				})
 
@@ -1779,7 +1779,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: alphaMessagesWithEmpty,
+					alphaMessages: alphaMessagesWithEmpty,
 					cwd: "/test/workspace",
 				})
 
@@ -1813,7 +1813,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: mockTaskHistory,
-					clineMessages: [], // No conversation messages
+					alphaMessages: [], // No conversation messages
 					cwd: "/test/workspace",
 				})
 
@@ -1850,7 +1850,7 @@ describe("ChatTextArea", () => {
 						{ task: "Task 1", workspace: "/test/workspace" },
 						{ task: "Task 2", workspace: "/test/workspace" },
 					],
-					clineMessages: [],
+					alphaMessages: [],
 					cwd: "/test/workspace",
 				})
 
@@ -1877,7 +1877,7 @@ describe("ChatTextArea", () => {
 						apiProvider: "anthropic",
 					},
 					taskHistory: [],
-					clineMessages: [
+					alphaMessages: [
 						{ type: "say", say: "user_feedback", text: "Message 1", ts: 1000 },
 						{ type: "say", say: "user_feedback", text: "Message 2", ts: 2000 },
 					],

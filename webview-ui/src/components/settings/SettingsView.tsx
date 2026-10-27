@@ -267,7 +267,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		terminalInheritEnv,
 		showWorktreesInHomeScreen,
 		writeDelayMs,
-		showRooIgnoredFiles,
+		showAlphaIgnoredFiles,
 		enableSubfolderRules,
 		maxImageFileSize,
 		maxTotalImageSize,
@@ -721,7 +721,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					mcpEnabled,
 					maxOpenTabsContext: Math.min(Math.max(0, maxOpenTabsContext ?? 20), 500),
 					maxWorkspaceFiles: Math.min(Math.max(0, maxWorkspaceFiles ?? 200), 500),
-					showRooIgnoredFiles: showRooIgnoredFiles ?? true,
+					showAlphaIgnoredFiles: showAlphaIgnoredFiles ?? true,
 					enableSubfolderRules: enableSubfolderRules ?? false,
 					maxImageFileSize: maxImageFileSize ?? 5,
 					maxTotalImageSize: maxTotalImageSize ?? 20,
@@ -1179,7 +1179,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						postTurnCondenseContextPercent={postTurnCondenseContextPercent}
 						maxOpenTabsContext={maxOpenTabsContext}
 						maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
-						showRooIgnoredFiles={showRooIgnoredFiles}
+						showAlphaIgnoredFiles={showAlphaIgnoredFiles}
 						enableSubfolderRules={enableSubfolderRules}
 						maxImageFileSize={maxImageFileSize}
 						maxTotalImageSize={maxTotalImageSize}

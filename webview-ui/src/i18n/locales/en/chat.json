@@ -407,7 +407,7 @@
 	"response": "Response",
 	"arguments": "Arguments",
 	"text": {
-		"rooSaid": "Alpha said"
+		"alphaSaid": "Alpha said"
 	},
 	"feedback": {
 		"youSaid": "You said",

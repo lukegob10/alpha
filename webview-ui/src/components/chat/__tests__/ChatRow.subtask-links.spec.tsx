@@ -40,7 +40,7 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 		currentCheckpoint: null,
 		mode: "code",
 		apiConfiguration: {},
-		clineMessages: mockAlphaMessages,
+		alphaMessages: mockAlphaMessages,
 		currentTaskItem: mockCurrentTaskItem,
 	}),
 }))
@@ -52,9 +52,9 @@ vi.mock("@src/components/ui/hooks/useSelectedModel", () => ({
 
 const queryClient = new QueryClient()
 
-function renderChatRow(message: any, currentTaskItem?: Partial<HistoryItem>, clineMessages?: AlphaMessage[]) {
+function renderChatRow(message: any, currentTaskItem?: Partial<HistoryItem>, alphaMessages?: AlphaMessage[]) {
 	mockCurrentTaskItem = currentTaskItem
-	mockAlphaMessages = clineMessages || [message]
+	mockAlphaMessages = alphaMessages || [message]
 
 	return render(
 		<QueryClientProvider client={queryClient}>
@@ -193,7 +193,7 @@ describe("ChatRow - subtask links", () => {
 				text: "The subtask has been completed successfully.",
 			}
 
-			// Pass both messages in the clineMessages array
+			// Pass both messages in the alphaMessages array
 			renderChatRow(newTaskMessage, { delegatedToId: "child-task-123" }, [
 				newTaskMessage,
 				subtaskResultMessage,

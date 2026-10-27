@@ -84,7 +84,7 @@ function completedCommandEdit(
 function renderPanel(messages: AlphaMessage[] | undefined, taskId?: string, expandPanel = true) {
 	const result = render(
 		<TranslationProvider>
-			<FileChangesPanel clineMessages={messages} taskId={taskId} />
+			<FileChangesPanel alphaMessages={messages} taskId={taskId} />
 		</TranslationProvider>,
 	)
 	if (expandPanel) {
@@ -100,12 +100,12 @@ describe("FileChangesPanel", () => {
 		vi.clearAllMocks()
 	})
 
-	it("renders nothing when clineMessages is undefined", () => {
+	it("renders nothing when alphaMessages is undefined", () => {
 		const { container } = renderPanel(undefined)
 		expect(container.firstChild).toBeNull()
 	})
 
-	it("renders nothing when clineMessages is empty", () => {
+	it("renders nothing when alphaMessages is empty", () => {
 		const { container } = renderPanel([])
 		expect(container.firstChild).toBeNull()
 	})
@@ -333,7 +333,7 @@ describe("FileChangesPanel", () => {
 		rerender(
 			<TranslationProvider>
 				<FileChangesPanel
-					clineMessages={[
+					alphaMessages={[
 						edit,
 						{ type: "say", say: "text", ts: edit.ts + 1, text: "streaming", partial: true },
 					]}
@@ -345,7 +345,7 @@ describe("FileChangesPanel", () => {
 
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={[edit]} taskId="task-b" />
+				<FileChangesPanel alphaMessages={[edit]} taskId="task-b" />
 			</TranslationProvider>,
 		)
 		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
@@ -368,7 +368,7 @@ describe("FileChangesPanel", () => {
 		const panel = (messages: AlphaMessage[]) => (
 			<TranslationProvider>
 				<React.Profiler id="file-changes-streaming" onRender={recordDuration}>
-					<FileChangesPanel clineMessages={messages} taskId="streaming-task" />
+					<FileChangesPanel alphaMessages={messages} taskId="streaming-task" />
 				</React.Profiler>
 			</TranslationProvider>
 		)
@@ -422,7 +422,7 @@ describe("FileChangesPanel", () => {
 
 			rerender(
 				<TranslationProvider>
-					<FileChangesPanel clineMessages={[replacement]} taskId="task-a" />
+					<FileChangesPanel alphaMessages={[replacement]} taskId="task-a" />
 				</TranslationProvider>,
 			)
 
@@ -443,7 +443,7 @@ describe("FileChangesPanel", () => {
 
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={[renamed]} taskId="task-a" />
+				<FileChangesPanel alphaMessages={[renamed]} taskId="task-a" />
 			</TranslationProvider>,
 		)
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
@@ -455,7 +455,7 @@ describe("FileChangesPanel", () => {
 
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={[nextTask]} taskId="task-b" />
+				<FileChangesPanel alphaMessages={[nextTask]} taskId="task-b" />
 			</TranslationProvider>,
 		)
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
@@ -547,7 +547,7 @@ describe("Review disclosure", () => {
 		]
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={updated} taskId="task-a" />
+				<FileChangesPanel alphaMessages={updated} taskId="task-a" />
 			</TranslationProvider>,
 		)
 
@@ -560,7 +560,7 @@ describe("Review disclosure", () => {
 		rerender(
 			<TranslationProvider>
 				<FileChangesPanel
-					clineMessages={updated.map((message) => ({ ...message, partial: false }))}
+					alphaMessages={updated.map((message) => ({ ...message, partial: false }))}
 					taskId="task-a"
 				/>
 			</TranslationProvider>,
@@ -593,7 +593,7 @@ describe("Review disclosure", () => {
 		fireEvent.click(fileToggle("src/file-1.ts"))
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={messages} taskId="task-b" />
+				<FileChangesPanel alphaMessages={messages} taskId="task-b" />
 			</TranslationProvider>,
 		)
 		expect(screen.getByText("Files edited: 3").closest("button")).toHaveAttribute("aria-expanded", "false")
@@ -636,7 +636,7 @@ describe("Review disclosure", () => {
 		mockPostMessage.mockClear()
 		rerender(
 			<TranslationProvider>
-				<FileChangesPanel clineMessages={capturedFiles(2)} taskId="task-a" />
+				<FileChangesPanel alphaMessages={capturedFiles(2)} taskId="task-a" />
 			</TranslationProvider>,
 		)
 		clickReview()
@@ -685,7 +685,7 @@ describe("Compact file summaries", () => {
 		const onExpandedChange = vi.fn()
 		render(
 			<FileChangesPanel
-				clineMessages={[edit("one.ts"), edit("two.ts"), edit("three.ts"), edit("four.ts")]}
+				alphaMessages={[edit("one.ts"), edit("two.ts"), edit("three.ts"), edit("four.ts")]}
 				taskId="one"
 				onExpandedChange={onExpandedChange}
 			/>,
@@ -782,18 +782,18 @@ describe("Compact file summaries", () => {
 
 	it("resets disclosure state when changing tasks and excludes unapproved edits", () => {
 		const messages = [edit("one.ts"), edit("pending.ts", { isAnswered: false })]
-		const { rerender } = render(<FileChangesPanel clineMessages={messages} taskId="one" />)
+		const { rerender } = render(<FileChangesPanel alphaMessages={messages} taskId="one" />)
 		expect(screen.queryByText("pending.ts")).not.toBeInTheDocument()
 		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		fireEvent.click(screen.getByRole("button", { name: "one.ts" }))
-		rerender(<FileChangesPanel clineMessages={messages} taskId="two" />)
+		rerender(<FileChangesPanel alphaMessages={messages} taskId="two" />)
 		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		expect(screen.getByRole("button", { name: "one.ts" })).toHaveAttribute("aria-expanded", "false")
 		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
 	})
 
 	it("renders nothing when no edits have been applied", () => {
-		const { container } = render(<FileChangesPanel clineMessages={[edit("pending.ts", { isAnswered: false })]} />)
+		const { container } = render(<FileChangesPanel alphaMessages={[edit("pending.ts", { isAnswered: false })]} />)
 		expect(container).toBeEmptyDOMElement()
 	})
 })

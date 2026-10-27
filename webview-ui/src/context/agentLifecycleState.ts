@@ -440,13 +440,13 @@ export function applyLifecycleSnapshotsToExtensionState(
  * canonical terminal metadata.
  */
 export function projectLegacyLiveTaskMetadata(
-	state: Pick<ExtensionState, "activeTaskId" | "currentTaskId" | "currentTaskItem" | "clineMessages">,
+	state: Pick<ExtensionState, "activeTaskId" | "currentTaskId" | "currentTaskItem" | "alphaMessages">,
 	taskId: string,
 	existing?: LiveTaskMetadata,
 ): LiveTaskMetadata | undefined {
 	if (!existing && state.currentTaskId !== taskId) return undefined
 
-	const messages = state.currentTaskId === taskId ? state.clineMessages : []
+	const messages = state.currentTaskId === taskId ? state.alphaMessages : []
 	const latest = messages.at(-1)
 	const inputBoundary = messages.findLast(
 		(message) =>

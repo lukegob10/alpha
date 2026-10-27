@@ -26,7 +26,7 @@ describe("editor chat restore metadata", () => {
 			currentView: { type: "task", taskId: "new-task" },
 			currentTaskId: "new-task",
 			taskStateSeq: 2,
-			clineMessages: [{ ts: 1, type: "say", say: "text", text: "private transcript" }],
+			alphaMessages: [{ ts: 1, type: "say", say: "text", text: "private transcript" }],
 			apiConfiguration: { apiProvider: "openai", openAiApiKey: "private-key" },
 		})
 		expect(save).toHaveBeenLastCalledWith({

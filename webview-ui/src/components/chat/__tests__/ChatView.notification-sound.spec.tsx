@@ -26,7 +26,7 @@ interface QueuedMessage {
 
 interface ExtensionState {
 	version: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskHistory: any[]
 	shouldShowAnnouncement: boolean
 	messageQueue?: QueuedMessage[]
@@ -231,7 +231,7 @@ const mockPostMessage = (state: Partial<ExtensionState>) => {
 			type: "state",
 			state: {
 				version: "1.0.0",
-				clineMessages: [],
+				alphaMessages: [],
 				taskHistory: [],
 				shouldShowAnnouncement: false,
 				telemetrySetting: "enabled",
@@ -277,7 +277,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 					images: [],
 				},
 			],
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -300,7 +300,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 					images: [],
 				},
 			],
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -334,7 +334,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
 			messageQueue: [], // Empty queue
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -351,7 +351,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
 			messageQueue: [], // Empty queue
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -393,7 +393,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 					images: [],
 				},
 			],
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -421,7 +421,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 					images: [],
 				},
 			],
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -455,7 +455,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
 			messageQueue: [], // Empty queue
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -472,7 +472,7 @@ describe("ChatView - Notification Sound with Queued Messages", () => {
 		mockPostMessage({
 			soundEnabled: true, // Enable sound
 			messageQueue: [], // Empty queue
-			clineMessages: [
+			alphaMessages: [
 				{
 					type: "say",
 					say: "task",
@@ -513,7 +513,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [{ type: "say", say: "task", ts: now - 2000, text: "Initial task" }],
+			alphaMessages: [{ type: "say", say: "task", ts: now - 2000, text: "Initial task" }],
 		})
 
 		// Clear any setup calls
@@ -523,7 +523,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: now - 2000, text: "Initial task" },
 				{ type: "ask", ask: "completion_result", ts: now, text: "Task completed", partial: false },
 			],
@@ -540,7 +540,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: now - 2000, text: "Initial task" },
 				{ type: "ask", ask: "completion_result", ts: now + 50, text: "Task completed again", partial: false },
 			],
@@ -565,7 +565,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [{ type: "say", say: "task", ts: now - 2000, text: "Initial task" }],
+			alphaMessages: [{ type: "say", say: "task", ts: now - 2000, text: "Initial task" }],
 		})
 
 		// Clear any setup calls
@@ -575,7 +575,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: now - 2000, text: "Initial task" },
 				{ type: "ask", ask: "completion_result", ts: now, text: "Task completed", partial: false },
 			],
@@ -592,7 +592,7 @@ describe("ChatView - Sound Debounce", () => {
 		mockPostMessage({
 			soundEnabled: true,
 			messageQueue: [],
-			clineMessages: [
+			alphaMessages: [
 				{ type: "say", say: "task", ts: now - 2000, text: "Initial task" },
 				{ type: "ask", ask: "completion_result", ts: now + 101, text: "Second task completed", partial: false },
 			],

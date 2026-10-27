@@ -467,7 +467,7 @@ describe("App", () => {
 		render(<StateUpdates />)
 		expect(mockStateSubscriptionRead).toHaveBeenCalledTimes(1)
 		for (let sequence = 1; sequence <= 100; sequence++) {
-			act(() => updateTranscript?.((state) => ({ ...state, clineMessagesSeq: sequence })))
+			act(() => updateTranscript?.((state) => ({ ...state, alphaMessagesSeq: sequence })))
 		}
 		expect(mockStateSubscriptionRead).toHaveBeenCalledTimes(1)
 
