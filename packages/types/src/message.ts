@@ -151,7 +151,7 @@ export function isNonBlockingAsk(ask: AlphaAsk): ask is NonBlockingAsk {
  * - `mcp_server_response`: Response received from MCP server
  * - `subtask_result`: Result of a completed subtask
  * - `checkpoint_saved`: Indicates a checkpoint has been saved
- * - `rooignore_error`: Error related to .alphaignore file processing
+ * - `alphaignore_error`: Error related to .alphaignore file processing
  * - `diff_error`: Error occurred while applying a diff/patch
  * - `condense_context`: Context condensation/summarization has started
  * - `condense_context_error`: Error occurred during context condensation
@@ -180,7 +180,7 @@ export const alphaSays = [
 	"mcp_server_response",
 	"subtask_result",
 	"checkpoint_saved",
-	"rooignore_error",
+	"alphaignore_error",
 	"diff_error",
 	"condense_context",
 	"condense_context_error",
@@ -665,27 +665,3 @@ export const queuedMessageSchema = z.object({
 })
 
 export type QueuedMessage = z.infer<typeof queuedMessageSchema>
-
-/** @deprecated Use alphaAsks. Retained for existing API consumers. */
-export { alphaAsks as clineAsks }
-
-/** @deprecated Use alphaAskSchema. Retained for existing API consumers. */
-export { alphaAskSchema as clineAskSchema }
-
-/** @deprecated Use AlphaAsk. Retained for existing API consumers. */
-export type { AlphaAsk as ClineAsk }
-
-/** @deprecated Use alphaSays. Retained for existing API consumers. */
-export { alphaSays as clineSays }
-
-/** @deprecated Use alphaSaySchema. Retained for existing API consumers. */
-export { alphaSaySchema as clineSaySchema }
-
-/** @deprecated Use AlphaSay. Retained for existing API consumers. */
-export type { AlphaSay as ClineSay }
-
-/** @deprecated Use alphaMessageSchema. Retained for existing API consumers. */
-export { alphaMessageSchema as clineMessageSchema }
-
-/** @deprecated Use AlphaMessage. Retained for existing API consumers. */
-export type { AlphaMessage as ClineMessage }

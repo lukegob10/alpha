@@ -5,10 +5,10 @@ import { safeJsonParse } from "./safeJsonParse.js"
 export const COMMAND_OUTPUT_STRING = "Output:"
 
 /**
- * Consolidates sequences of command and command_output messages in an array of ClineMessages.
+ * Consolidates sequences of command and command_output messages in an array of AlphaMessage objects.
  * Also consolidates sequences of use_mcp_server and mcp_server_response messages.
  *
- * This function processes an array of ClineMessages objects, looking for sequences
+ * This function processes an array of AlphaMessage objects, looking for sequences
  * where a 'command' message is followed by one or more 'command_output' messages,
  * or where a 'use_mcp_server' message is followed by one or more 'mcp_server_response' messages.
  * When such a sequence is found, it consolidates them into a single message, merging
