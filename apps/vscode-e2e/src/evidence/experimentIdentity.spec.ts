@@ -31,9 +31,11 @@ const proof = () => ({
 })
 
 async function fixture(t: { after(callback: () => Promise<void>): void }) {
-	const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "native-experiment-"))
+	// macOS exposes its temporary directory through a system symlink; evidence roots must be canonical.
+	const temporaryRoot = await fs.realpath(os.tmpdir())
+	const temporary = await fs.mkdtemp(path.join(temporaryRoot, "native-experiment-"))
 	t.after(async () => {
-		assert(path.resolve(temporary).startsWith(path.resolve(os.tmpdir()) + path.sep))
+		assert(path.resolve(temporary).startsWith(temporaryRoot + path.sep))
 		await fs.rm(temporary, { recursive: true, force: true })
 	})
 	const workspace = path.join(temporary, "workspace")
