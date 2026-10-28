@@ -27,6 +27,8 @@ describe("explicit skill identity selection", () => {
 	let extension: string
 	let manager: SkillsManager
 	let disabled: string[]
+	// SkillsManager weakly references its provider; the fixture owns it through disposal.
+	let provider: AlphaProvider | undefined
 
 	async function writeSkill(root: string, name: string, modes?: string[]): Promise<string> {
 		const skillDirectory = path.join(root, name)
@@ -47,19 +49,20 @@ describe("explicit skill identity selection", () => {
 		disabled = []
 		await fs.mkdir(path.join(cwd, ".git"), { recursive: true })
 		await fs.mkdir(fixture.home)
-		const provider = {
+		provider = {
 			cwd,
 			customModesManager: { getCustomModes: vi.fn(async () => []) },
 			contextProxy: {
 				extensionUri: { fsPath: extension },
 				getValue: () => disabled,
 			},
-		}
-		manager = new SkillsManager(provider as unknown as AlphaProvider, cwd)
+		} as unknown as AlphaProvider
+		manager = new SkillsManager(provider, cwd)
 	})
 
 	afterEach(async () => {
 		await manager.dispose()
+		provider = undefined
 		fixture.home = ""
 		await fs.rm(directory, { recursive: true, force: true })
 	})

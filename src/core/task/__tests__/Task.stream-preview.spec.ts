@@ -80,6 +80,8 @@ async function harness(script: PreviewScript) {
 	const journal = await AgentLifecycleJournal.open(taskId, storage)
 	let task: Task | undefined
 	let running: Promise<void> | undefined
+	// Task weakly references its provider; the fixture owns it until termination and cleanup finish.
+	let provider: AlphaProvider | undefined
 	cleanups.push(async () => {
 		await task?.abortTask(true).catch(() => undefined)
 		await running?.catch(() => undefined)
@@ -88,6 +90,7 @@ async function harness(script: PreviewScript) {
 		expect(path.dirname(path.resolve(storage))).toBe(path.resolve(temporaryRoot))
 		expect(path.basename(storage)).toMatch(/^alpha-stream-preview-/)
 		await fs.rm(storage, { recursive: true, force: true })
+		provider = undefined
 	})
 
 	const effectUiSnapshots: AlphaMessage[][] = []
@@ -120,7 +123,7 @@ async function harness(script: PreviewScript) {
 		execution: { workspaceRoots: [cwd] },
 	})
 	const state = { mode: "code", autoApprovalEnabled: false, autoCondenseContext: false, requestDelaySeconds: 0 }
-	const provider = {
+	provider = {
 		context: { globalStorageUri: { fsPath: storage } },
 		getState: async () => state,
 		getValues: () => state,
@@ -139,7 +142,7 @@ async function harness(script: PreviewScript) {
 		prepareTaskCompletionLifecycle: vi.fn(async () => undefined),
 		rollbackTaskCompletionLifecycle: vi.fn(async () => undefined),
 		log: vi.fn(),
-	}
+	} as unknown as AlphaProvider
 	let attempts = 0
 	const createMessage = vi.fn<ApiHandler["createMessage"]>(async function* () {
 		if (!task) throw new Error("The preview fixture task has not been initialized")
@@ -162,7 +165,7 @@ async function harness(script: PreviewScript) {
 		openAiApiKey: "synthetic-preview-key",
 	}
 	task = new Task({
-		provider: provider as unknown as AlphaProvider,
+		provider,
 		apiConfiguration: configuration,
 		taskId,
 		task: "Preview the response once.",
