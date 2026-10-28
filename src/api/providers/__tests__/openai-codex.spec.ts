@@ -6,11 +6,13 @@ const mocks = vi.hoisted(() => ({ create: vi.fn(), chat: vi.fn(), construct: vi.
 vi.mock("openai", () => ({
 	default: vi.fn(function (options) {
 		mocks.construct(options)
-		return {
+		const client = {
 			apiKey: options.apiKey,
 			responses: { create: mocks.create },
 			chat: { completions: { create: mocks.chat } },
+			withOptions: vi.fn(() => client),
 		}
+		return client
 	}),
 }))
 

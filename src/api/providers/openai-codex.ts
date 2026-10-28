@@ -51,6 +51,9 @@ export class OpenAiCodexHandler extends OpenAiNativeHandler {
 			includeMaxTokens: false,
 			openAiNativeApiKey: "managed-chatgpt-oauth",
 		})
+		// ChatGPT account/workspace selection comes from OAuth, independently of
+		// API-project routing inherited from the SDK's environment defaults.
+		this.client = this.client.withOptions({ organization: null, project: null })
 	}
 
 	protected override preserveResponsesReasoningIds(): boolean {
