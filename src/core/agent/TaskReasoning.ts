@@ -34,6 +34,21 @@ export type TaskReasoningResolution = {
 
 const DEFAULT_PREFERENCE: TaskReasoningPreference = { kind: "default" }
 
+/** Only an applied setting change belongs to the next request; metadata refreshes do not. */
+export function hasPendingReasoningChange(current: TaskReasoningState | undefined, next: TaskReasoningState): boolean {
+	if (!current) return false
+	const active = current.effective
+	const selected = next.effective
+	if (active.kind !== selected.kind) return true
+	if (active.kind === "effort" && selected.kind === "effort") return active.effort !== selected.effort
+	if (active.kind === "custom" && selected.kind === "custom") return active.value !== selected.value
+	return (
+		active.kind === "on" &&
+		(current.capabilities.kind === "budget" ? current.capabilities.budgetTokens : undefined) !==
+			(next.capabilities.kind === "budget" ? next.capabilities.budgetTokens : undefined)
+	)
+}
+
 /** Increment the acknowledged next-step choice, skipping unsupported levels without wrapping. */
 export function getAdjacentReasoningPreference(
 	state: TaskReasoningState,

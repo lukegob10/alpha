@@ -400,31 +400,76 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 	)
 
 	it.each(["low", "high"] as const)(
-		"recomputes pending against the captured request when live LM capabilities resolve to %s",
+		"keeps a live Copilot task's resolved %s state instead of replacing it with an unavailable preview",
 		async (effort) => {
-			const task = fakeTask("task-a", { kind: "effort", effort: "high" })
-			task.apiConfiguration = { apiProvider: "vscode-lm" }
-			const { taskId: _taskId, ...current } = projection(task.taskId, task.reasoningPreference)
-			task.getReasoningState.mockReturnValue({
-				...current,
-				taskId: task.taskId,
-				current,
-				pending: effort === "high",
-			})
-			const { provider } = providerHarness([task])
-			const refreshed = {
-				...current,
-				effective: { kind: "effort" as const, effort },
+			const task = fakeTask("task-a", { kind: "effort", effort })
+			task.apiConfiguration = {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", id: "opaque-provider-model-id" },
 			}
-			vi.spyOn(provider, "resolveReasoningCapabilities").mockResolvedValue(refreshed)
+			const accepted = projection(task.taskId, task.reasoningPreference)
+			task.getReasoningState.mockReturnValue(accepted)
+			const { provider } = providerHarness([task])
+			const preview = vi.spyOn(provider, "resolveReasoningCapabilities").mockResolvedValue({
+				requested: task.reasoningPreference,
+				effective: { kind: "off" },
+				capabilities: { kind: "unavailable", canDisable: false },
+				fallbackReason: "unavailable",
+			})
 
 			const result = await (AlphaProvider.prototype as any).getReasoningProjection.call(provider, task)
 
-			expect(result.effective).toEqual(refreshed.effective)
-			expect(result.current).toEqual(current)
-			expect(result.pending).toBe(effort !== "high")
+			expect(result).toEqual(accepted)
+			expect(preview).not.toHaveBeenCalled()
 		},
 	)
+
+	it.each([false, true])(
+		"preserves the task-owned Copilot projection without a second capability resolution (pending: %s)",
+		async (pending) => {
+			const task = fakeTask("task-a", { kind: "effort", effort: "high" })
+			task.apiConfiguration = { apiProvider: "vscode-lm" }
+			const { taskId: _taskId, ...selected } = projection(task.taskId, task.reasoningPreference)
+			const current = {
+				...selected,
+				effective: { kind: "effort" as const, effort: pending ? ("low" as const) : ("high" as const) },
+			}
+			const accepted = {
+				...selected,
+				taskId: task.taskId,
+				current,
+				pending,
+			}
+			task.getReasoningState.mockReturnValue(accepted)
+			const { provider } = providerHarness([task])
+			const refreshed = {
+				...current,
+				effective: { kind: "effort" as const, effort: "low" as const },
+			}
+			const preview = vi.spyOn(provider, "resolveReasoningCapabilities").mockResolvedValue(refreshed)
+
+			const result = await (AlphaProvider.prototype as any).getReasoningProjection.call(provider, task)
+
+			expect(result).toEqual(accepted)
+			expect(preview).not.toHaveBeenCalled()
+		},
+	)
+
+	it("keeps a rehydrating task's identity and saved preference in its catalog projection", async () => {
+		const task = fakeTask("task-a", { kind: "effort", effort: "high" })
+		task.apiConfiguration = { apiProvider: "openai-native", apiModelId: "gpt-5.6-sol" }
+		task.getReasoningState.mockReturnValue(undefined)
+		const { provider } = providerHarness([task], { kind: "effort", effort: "low" })
+
+		const result = await (AlphaProvider.prototype as any).getReasoningProjection.call(provider, task)
+
+		expect(result).toMatchObject({
+			taskId: task.taskId,
+			requested: { kind: "effort", effort: "high" },
+			effective: { kind: "effort", effort: "high" },
+			capabilities: { kind: "effort" },
+		})
+	})
 
 	it("serializes task reasoning changes behind an in-flight provider profile write", async () => {
 		const task = fakeTask("task-a")

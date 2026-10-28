@@ -149,6 +149,75 @@ function capturedStep(task: Task) {
 }
 
 describe("Task reasoning preference runtime boundaries", () => {
+	it.each(["requested", "capabilities", "fallback", "property-order"])(
+		"does not mark an unchanged effective reasoning level pending after a %s change",
+		(change) => {
+			const { task, activeHandler } = harness("high")
+			const current = reasoningState("high")
+			if (change === "requested") current.requested = { kind: "default" }
+			if (change === "capabilities") current.capabilities.efforts = ["high", "low"]
+			if (change === "fallback") current.fallbackReason = "required"
+			if (change === "property-order") current.effective = { effort: "high", kind: "effort" }
+			Reflect.get(task, "reasoningByHandler").set(activeHandler, current)
+			Reflect.get(task, "reasoningHandlerUsers").set(activeHandler, 1)
+
+			expect(task.getReasoningState()).toMatchObject({
+				effective: { kind: "effort", effort: "high" },
+				current,
+				pending: false,
+			})
+		},
+	)
+
+	it("shows a genuine queued level change only until the captured request is released", () => {
+		const { task, activeHandler } = harness("high")
+		const current = reasoningState("high")
+		Reflect.get(task, "reasoningByHandler").set(activeHandler, current)
+		const users = Reflect.get(task, "reasoningHandlerUsers") as Map<ApiHandler, number>
+		users.set(activeHandler, 1)
+		Reflect.set(task, "reasoningState", reasoningState("low"))
+
+		expect(task.getReasoningState()).toMatchObject({
+			effective: { kind: "effort", effort: "low" },
+			current: { effective: { kind: "effort", effort: "high" } },
+			pending: true,
+		})
+		users.delete(activeHandler)
+		expect(task.getReasoningState()).toMatchObject({ pending: false })
+		expect(task.getReasoningState()).not.toHaveProperty("current")
+	})
+
+	it.each([false, true])("only queues a changed token budget when reasoning is enabled (%s)", (enabled) => {
+		const { task, activeHandler } = harness()
+		const current: TaskReasoningState = {
+			requested: { kind: enabled ? "on" : "off" },
+			effective: { kind: enabled ? "on" : "off" },
+			capabilities: { kind: "budget", canDisable: true, budgetTokens: 1024 },
+		}
+		Reflect.get(task, "reasoningByHandler").set(activeHandler, current)
+		Reflect.get(task, "reasoningHandlerUsers").set(activeHandler, 1)
+		Reflect.set(task, "reasoningState", {
+			...current,
+			capabilities: { ...current.capabilities, budgetTokens: 2048 },
+		})
+
+		expect(task.getReasoningState().pending).toBe(enabled)
+	})
+
+	it("keeps a changed custom reasoning token pending for the next request", () => {
+		const { task, activeHandler } = harness()
+		const current: TaskReasoningState = {
+			requested: { kind: "custom", value: "balanced" },
+			effective: { kind: "custom", value: "balanced" },
+			capabilities: { kind: "custom", canDisable: true },
+		}
+		Reflect.get(task, "reasoningByHandler").set(activeHandler, current)
+		Reflect.get(task, "reasoningHandlerUsers").set(activeHandler, 1)
+		Reflect.set(task, "reasoningState", { ...current, effective: { kind: "custom", value: "deliberate" } })
+
+		expect(task.getReasoningState().pending).toBe(true)
+	})
+
 	afterEach(() => {
 		vi.restoreAllMocks()
 		vi.mocked(buildNativeToolsArrayWithRestrictions).mockReset()

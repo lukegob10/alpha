@@ -196,7 +196,7 @@ import {
 	type TaskReasoningProjection,
 	taskReasoningPreferenceSchema,
 } from "@alpha-code/types"
-import { resolveTaskReasoning } from "../agent/TaskReasoning"
+import { hasPendingReasoningChange, resolveTaskReasoning } from "../agent/TaskReasoning"
 import { fallbackTaskTitle, generateTaskTitle } from "./taskTitle"
 import {
 	ApiStreamDeadlineError,
@@ -10993,7 +10993,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return {
 			...structuredClone(this.reasoningState),
 			taskId: this.taskId,
-			pending: Boolean(current && JSON.stringify(current) !== JSON.stringify(this.reasoningState)),
+			pending: hasPendingReasoningChange(current, this.reasoningState),
 			...(current ? { current: structuredClone(current) } : {}),
 		}
 	}

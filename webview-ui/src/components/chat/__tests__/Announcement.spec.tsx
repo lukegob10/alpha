@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.15",
+		version: "3.2.16",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.15" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.16" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.15")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.16")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.15 restores GPT-5.6 Sol, Terra, and Luna with their reasoning levels."),
+			screen.getByText("Alpha v3.2.16 fixes reasoning availability and incorrect next-step indicators."),
 		).toBeInTheDocument()
 	})
 
@@ -50,30 +50,26 @@ describe("Announcement", () => {
 		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
+		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Choose your model and reasoning level separately without waiting for discovery."),
+			screen.getByText("Copilot chats retain their model's resolved reasoning capabilities."),
+		).toBeInTheDocument()
+		expect(
+			screen.getByText("See next step only when the applied reasoning settings change during a request."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Choose GPT-5.6 with OpenAI, Sign in with ChatGPT, GitHub Copilot, OpenRouter, or Amazon Bedrock.",
+				"Restore each task's saved reasoning choice without replacing it with the new-chat default.",
 			),
 		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Set GPT-5.6 reasoning to None, Low, Medium, High, XHigh, or Max independently of the model.",
-			),
-		).toBeInTheDocument()
-		expect(screen.getByText("Existing model defaults and saved selections stay in place.")).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.15 restores GPT-5.6 Sol, Terra, and Luna with their reasoning levels."),
+			screen.getByText("Alpha v3.2.16 fixes reasoning availability and incorrect next-step indicators."),
 		).toBeInTheDocument()
-		expect(
-			screen.getByText("Choose your model and reasoning level separately without waiting for discovery."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
 	})
 })
