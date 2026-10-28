@@ -277,6 +277,234 @@ describe("SubagentDock", () => {
 		expect(screen.getByRole("button", { name: /Open Maple · Completed/ })).toBeVisible()
 	})
 
+	it("uses current host status and clears stale approval for the same group generation", async () => {
+		const user = userEvent.setup()
+		const stale = group({
+			status: "interrupted",
+			completedAt: 4,
+			agents: [
+				agent({
+					status: "interrupted",
+					completedAt: 4,
+					stopReason: "interrupted",
+					error: "An earlier interruption was recovered.",
+					pendingApproval: { id: "old", type: "command", operation: "old command", createdAt: 3 },
+				}),
+			],
+		})
+		render(<SubagentDock groups={[stale]} projection={projection()} parentTaskId="parent-1" />)
+		expect(screen.getByText("1 running")).toBeVisible()
+		expect(screen.queryByText("1 approval")).not.toBeInTheDocument()
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		const row = screen.getByRole("button", { name: /Open Maple · Working/ })
+		expect(row.querySelector(".lucide-loader-circle")).toBeInTheDocument()
+		expect(screen.queryByText("Interrupted")).not.toBeInTheDocument()
+		expect(screen.queryByText("An earlier interruption was recovered.")).not.toBeInTheDocument()
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+		expect(screen.queryByRole("menuitem", { name: "Review request" })).not.toBeInTheDocument()
+	})
+
+	it("closes the same-generation approval dialog when the host clears its request", async () => {
+		const user = userEvent.setup()
+		const pending = group({
+			agents: [
+				agent({ pendingApproval: { id: "approval-1", type: "command", operation: "pnpm test", createdAt: 4 } }),
+			],
+		})
+		const projected = projection()
+		projected.nodes[0].attention = { kind: "approval", label: "Waiting for command approval" }
+		const { rerender } = render(<SubagentDock groups={[pending]} projection={projected} parentTaskId="parent-1" />)
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		expect(screen.getByRole("button", { name: /Open Maple · Working · Approval required/ })).toBeVisible()
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+		await user.click(screen.getByRole("menuitem", { name: "Review request" }))
+		expect(screen.getByRole("dialog", { name: "Review Maple's request" })).toBeVisible()
+
+		rerender(<SubagentDock groups={[pending]} projection={projection()} parentTaskId="parent-1" />)
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		expect(screen.queryByText("Approval required")).not.toBeInTheDocument()
+		expect(screen.queryByText("1 approval")).not.toBeInTheDocument()
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
+	})
+
+	it("shows host approval attention without inventing a request ID or approval action", async () => {
+		const user = userEvent.setup()
+		const projected = projection()
+		projected.nodes[0].attention = { kind: "approval", label: "Waiting for command approval" }
+		render(<SubagentDock groups={[group()]} projection={projected} parentTaskId="parent-1" />)
+		expect(screen.getByText("1 approval")).toBeVisible()
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		expect(screen.getByRole("button", { name: /Open Maple · Working · Approval required/ })).toBeVisible()
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+		expect(screen.queryByRole("menuitem", { name: "Review request" })).not.toBeInTheDocument()
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
+	})
+
+	it.each([
+		["pending_review", "1 change set available"],
+		["conflicted", "1 conflict"],
+	] as const)("keeps %s distinct in the collapsed attention summary", (status, summary) => {
+		render(
+			<SubagentDock
+				groups={[
+					group({
+						agents: [
+							agent({
+								status: "interrupted",
+								changeSet: {
+									id: "change-1",
+									status,
+									changedFiles: ["src/index.ts"],
+									createdAt: 3,
+									updatedAt: 4,
+								},
+							}),
+						],
+					}),
+				]}
+				parentTaskId="parent-1"
+			/>,
+		)
+		expect(screen.getByText(summary)).toBeVisible()
+		expect(screen.queryByText("1 approval")).not.toBeInTheDocument()
+	})
+
+	it("preserves an older follow-up group's outcome, proposal, and action routing", async () => {
+		const user = userEvent.setup()
+		const reason = "The earlier run was interrupted before completion."
+		const historical = group({
+			groupId: "earlier-group",
+			status: "interrupted",
+			completedAt: 4,
+			agents: [
+				agent({
+					status: "interrupted",
+					completedAt: 4,
+					error: reason,
+					changeSet: {
+						id: "earlier-change",
+						status: "pending_review",
+						changedFiles: ["src/index.ts"],
+						createdAt: 3,
+						updatedAt: 4,
+					},
+				}),
+			],
+		})
+		render(<SubagentDock groups={[historical]} projection={projection()} parentTaskId="parent-1" />)
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		const row = screen.getByRole("button", { name: /Open Maple · Interrupted · Changes available/ })
+		expect(row).toHaveAccessibleDescription(reason)
+		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+		await user.click(screen.getByRole("menuitem", { name: "Open diff" }))
+		expect(postMessage).toHaveBeenCalledWith({
+			type: "openSubagentChangeSet",
+			taskId: "parent-1",
+			groupId: "earlier-group",
+			changeSetId: "earlier-change",
+		})
+	})
+
+	it.each(["approval", "input"] as const)(
+		"keeps historical proposals separate from the current group's %s attention for the same task",
+		async (kind) => {
+			const user = userEvent.setup()
+			const historical = group({
+				groupId: "earlier-group",
+				status: "interrupted",
+				completedAt: 4,
+				agents: [
+					agent({
+						status: "interrupted",
+						completedAt: 4,
+						error: "The earlier run was interrupted.",
+						pendingApproval: {
+							id: "obsolete",
+							type: "command",
+							operation: "earlier command",
+							createdAt: 3,
+						},
+						changeSet: {
+							id: "earlier-change",
+							status: "pending_review",
+							changedFiles: ["src/index.ts"],
+							createdAt: 3,
+							updatedAt: 4,
+						},
+					}),
+				],
+			})
+			const current = group({
+				agents: [
+					agent({
+						pendingApproval:
+							kind === "approval"
+								? { id: "current", type: "command", operation: "current command", createdAt: 4 }
+								: undefined,
+					}),
+				],
+			})
+			const projected = projection()
+			projected.nodes[0].attention = {
+				kind,
+				label: kind === "approval" ? "Approval required" : "Waiting for input",
+			}
+			render(<SubagentDock groups={[historical, current]} projection={projected} parentTaskId="parent-1" />)
+			expect(screen.getByText("1 running")).toBeVisible()
+			if (kind === "input") expect(screen.queryByText("1 approval")).not.toBeInTheDocument()
+			await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+			const earlierRow = screen.getByRole("button", { name: /Open Maple · Interrupted · Changes available/ })
+			expect(earlierRow).toHaveAccessibleDescription("The earlier run was interrupted.")
+			expect(earlierRow).not.toHaveTextContent("Approval required")
+			expect(earlierRow).not.toHaveTextContent("awaiting input")
+			const earlierGroup = earlierRow.closest("section")!
+			await user.click(within(earlierGroup).getByRole("button", { name: "Actions for Maple" }))
+			expect(screen.queryByRole("menuitem", { name: "Review request" })).not.toBeInTheDocument()
+			await user.click(screen.getByRole("menuitem", { name: "Open diff" }))
+			expect(postMessage).toHaveBeenCalledWith({
+				type: "openSubagentChangeSet",
+				taskId: "parent-1",
+				groupId: "earlier-group",
+				changeSetId: "earlier-change",
+			})
+			const currentRow = screen.getByRole("button", {
+				name:
+					kind === "approval"
+						? /Open Maple · Working · Approval required/
+						: /Open Maple · Working · 1 awaiting input/,
+			})
+			expect(currentRow).toBeVisible()
+			if (kind === "approval") {
+				await user.click(
+					within(currentRow.closest("section")!).getByRole("button", { name: "Actions for Maple" }),
+				)
+				await user.click(screen.getByRole("menuitem", { name: "Review request" }))
+				expect(screen.getByRole("dialog")).toHaveTextContent("current command")
+				await user.click(screen.getByRole("button", { name: "Approve" }))
+				expect(postMessage).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "respondToSubagentApproval",
+						groupId: "group-1",
+						approvalId: "current",
+					}),
+				)
+			}
+		},
+	)
+
+	it("does not replace a newer completed group boundary with an older host projection", async () => {
+		const user = userEvent.setup()
+		const completed = group({
+			status: "completed",
+			completedAt: 9,
+			agents: [agent({ status: "completed", completedAt: 9 })],
+		})
+		render(<SubagentDock groups={[completed]} projection={projection()} parentTaskId="parent-1" />)
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		expect(screen.getByRole("button", { name: /Open Maple · Completed/ })).toBeVisible()
+		expect(screen.getByText("0 running")).toBeVisible()
+	})
+
 	it("keeps projected descendant navigation without activity controls or hidden read effects", async () => {
 		const user = userEvent.setup()
 		const onShowTask = vi.fn()
@@ -390,7 +618,7 @@ describe("SubagentDock", () => {
 		expect(screen.getByRole("button", { name: /Open Maple · Working/ })).toBeVisible()
 	})
 
-	it("preserves approval attention over a grouped input hint", async () => {
+	it("preserves a newer approval request over an older grouped input hint", async () => {
 		const user = userEvent.setup()
 		const projected = projection()
 		projected.nodes[0].attention = { kind: "input", label: "Waiting for user input" }
@@ -404,7 +632,7 @@ describe("SubagentDock", () => {
 									id: "approval-1",
 									type: "command",
 									operation: "pnpm test",
-									createdAt: 4,
+									createdAt: 6,
 								},
 							}),
 						],

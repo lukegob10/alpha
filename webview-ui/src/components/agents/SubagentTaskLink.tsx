@@ -1,21 +1,23 @@
-import type { SubagentRunStatus } from "@alpha-code/types"
+import type { SubagentRunState, SubagentRunStatus } from "@alpha-code/types"
 import { ChevronRight, LoaderCircle } from "lucide-react"
+import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
 
 type SubagentTaskLinkStatus = SubagentRunStatus | "unknown"
 
-const statusLabels: Record<SubagentTaskLinkStatus, string> = {
-	pending: "Starting",
-	running: "Working",
-	cancelling: "Stopping",
-	completed: "Completed",
-	blocked: "Blocked",
-	failed: "Failed",
-	cancelled: "Cancelled",
-	timed_out: "Timed out",
-	interrupted: "Interrupted",
-	unknown: "Status unavailable",
+export const hasPendingSubagentApproval = (agent: SubagentRunState): boolean =>
+	Boolean(agent.pendingApproval) &&
+	(agent.status === "pending" || agent.status === "running" || agent.status === "cancelling")
+
+export const getSubagentAttentionKey = (agent: SubagentRunState) => {
+	if (hasPendingSubagentApproval(agent)) return "subagentRow.attention.approval" as const
+	if (agent.changeSet?.status === "conflicted") return "subagentRow.attention.conflict" as const
+	if (agent.parentVerification?.blocking) return "subagentRow.attention.parentAction" as const
+	if (agent.changeSet?.status === "pending_review" || agent.parentVerification?.status === "required") {
+		return "subagentRow.attention.changes" as const
+	}
+	return undefined
 }
 
 const statusDotClass = (status: SubagentTaskLinkStatus): string => {
@@ -34,6 +36,7 @@ interface SubagentTaskLinkProps {
 	status: SubagentTaskLinkStatus
 	attention?: string
 	detail?: string
+	descriptionId?: string
 	variant?: "chip" | "row" | "dock"
 	className?: string
 	disabled?: boolean
@@ -46,13 +49,20 @@ export function SubagentTaskLink({
 	status,
 	attention,
 	detail,
+	descriptionId,
 	variant = "row",
 	className,
 	disabled = false,
 	onOpen,
 }: SubagentTaskLinkProps) {
-	const statusLabel = statusLabels[status]
-	const accessibleLabel = [disabled ? `${name} task unavailable` : `Open ${name}`, statusLabel, attention, detail]
+	const { t } = useTranslation("chat")
+	const statusLabel = t(`subagentRow.status.${status}`)
+	const accessibleLabel = [
+		t(disabled ? "subagentRow.taskUnavailable" : "subagentRow.open", { name }),
+		statusLabel,
+		attention,
+		detail,
+	]
 		.filter(Boolean)
 		.join(" · ")
 	const title = [name, statusLabel, attention, detail].filter(Boolean).join(" — ")
@@ -63,6 +73,7 @@ export function SubagentTaskLink({
 		<button
 			type="button"
 			aria-label={accessibleLabel}
+			aria-describedby={descriptionId}
 			title={title}
 			disabled={disabled}
 			onClick={onOpen}
@@ -99,15 +110,13 @@ export function SubagentTaskLink({
 					aria-hidden="true"
 				/>
 			) : (
-				(!attention || isDock) && (
-					<span
-						className={cn(
-							"shrink-0 text-vscode-descriptionForeground",
-							isDock ? "text-[11px]" : "text-[10px]",
-						)}>
-						{statusLabel}
-					</span>
-				)
+				<span
+					className={cn(
+						"shrink-0 text-vscode-descriptionForeground",
+						isDock ? "text-[11px]" : "text-[10px]",
+					)}>
+					{statusLabel}
+				</span>
 			)}
 			{!isDock && (
 				<ChevronRight

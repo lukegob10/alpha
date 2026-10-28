@@ -51,7 +51,9 @@ async function reachBarrier(barrier: Promise<void>, operation: ReturnType<typeof
 	await Promise.race([
 		barrier,
 		operation.then((result) => {
-			throw new Error("Operation settled before reaching the controlled barrier", {
+			const detail =
+				result.status === "rejected" && result.error instanceof Error ? `: ${result.error.message}` : ""
+			throw new Error(`Operation ${result.status} before reaching the controlled barrier${detail}`, {
 				cause: result.status === "rejected" ? result.error : undefined,
 			})
 		}),

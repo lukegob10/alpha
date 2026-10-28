@@ -64,7 +64,7 @@ it("refuses server advice which outlives the existing retry allowance", () => {
 		"OpenAI",
 	)
 	expect(
-		new AgentRetryPolicy().decide({
+		new AgentRetryPolicy({ maxElapsedMs: 90_000 }).decide({
 			category: "rate-limit",
 			attempt: 1,
 			retryAfterMs: task["retryAfterMs"](error),

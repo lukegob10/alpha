@@ -53,7 +53,7 @@
 	"settings.useAgentRules.description": "Enable loading of AGENTS.md files for agent-specific rules (see https://agent-rules.org/)",
 	"settings.projectRootMarkers.description": "User-owned filenames or directories that mark the nearest project instruction and portable skill boundary. Defaults to .git. An empty list restricts discovery to the task folder; workspace settings cannot override it.",
 	"settings.projectDocFallbackFilenames.description": "User-owned instruction filenames to try after AGENTS.override.md and AGENTS.md, before the legacy AGENT.md fallback. Entries must be basenames; workspace settings cannot override this list.",
-	"settings.apiRequestTimeout.description": "Maximum time in seconds to wait for API responses (0 = no timeout, 1-3600s, default: 600s). Higher values are recommended for local providers like LM Studio and Ollama that may need more processing time.",
+	"settings.apiRequestTimeout.description": "Maximum seconds without provider response activity (0 disables this inactivity timeout, default: 600s). Progressing responses can continue beyond this window. Explicit caller and context deadlines still apply.",
 	"settings.newTaskRequireTodos.description": "Require todos parameter when creating new tasks with the new_task tool",
 	"settings.codeIndex.embeddingBatchSize.description": "The batch size for embedding operations during code indexing. Adjust this based on your API provider's limits. Default is 60.",
 	"settings.debug.description": "Enable debug mode to show the incident dashboard and additional buttons for viewing API conversation history and UI messages as prettified JSON in temporary files.",

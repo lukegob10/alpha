@@ -49,7 +49,7 @@ import type {
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { BaseProvider } from "./base-provider"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
-import { formatApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
+import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
@@ -868,6 +868,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			const requestControl = createLinkedAbortController({
 				signal: metadata?.signal,
 				deadline: metadata?.deadline,
+				deadlineScope: metadata?.deadlineScope,
 			})
 			const requestAbortController = requestControl.controller
 			const throwIfRequestAborted = () => {
@@ -879,11 +880,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			const awaitRequest = async <T>(operation: PromiseLike<T>, operationName: string): Promise<T> => {
 				const result = await raceApiStreamAbort(
 					withApiRequestTimeout(operation, operationName, requestTimeoutMs, () =>
-						requestAbortController.abort(
-							new ApiStreamDeadlineError(
-								formatApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0),
-							),
-						),
+						requestAbortController.abort(new ApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0)),
 					),
 					requestControl.signal,
 				)
@@ -892,13 +889,10 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			}
 			let resultIterator: AsyncIterator<GenerateContentResponse> | undefined
 			let streamIteratorCompleted = false
-			const timeoutHttpOptions: GenerateContentConfig["httpOptions"] = requestTimeoutMs
-				? { timeout: requestTimeoutMs }
-				: undefined
-			const httpOptions = this.mergeHttpOptions(
-				this.mergeHttpOptions(config.httpOptions, requestContext.httpOptions),
-				timeoutHttpOptions,
-			)
+			// @google/genai 1.47 retains httpOptions.timeout for the entire SSE body.
+			// The owned admission/read timers above and below enforce inactivity;
+			// the linked signal preserves explicit caller deadlines and Stop.
+			const httpOptions = this.mergeHttpOptions(config.httpOptions, requestContext.httpOptions)
 			const params: GenerateContentParameters = {
 				model: requestContext.model,
 				contents,
@@ -1047,11 +1041,9 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 							requestTimeoutMs,
 							() =>
 								requestAbortController.abort(
-									new ApiStreamDeadlineError(
-										formatApiRequestTimeoutError(
-											`${this.providerName} stream response for ${requestContext.model}`,
-											requestTimeoutMs ?? 0,
-										),
+									new ApiRequestTimeoutError(
+										`${this.providerName} stream response for ${requestContext.model}`,
+										requestTimeoutMs ?? 0,
 									),
 								),
 						),
@@ -1198,7 +1190,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					throw error
 				}
 
-				if (error instanceof ApiStreamDeadlineError) throw error
+				if (error instanceof ApiStreamDeadlineError || error instanceof ApiRequestTimeoutError) throw error
 
 				if (
 					!didRetryForGatewayAuth &&

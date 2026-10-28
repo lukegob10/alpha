@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
+import { memo, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from "react"
 import { useTranslation } from "react-i18next"
 import {
 	ExternalLink,
@@ -20,7 +20,11 @@ import type {
 	SubagentRunState,
 } from "@alpha-code/types"
 
-import { SubagentTaskLink } from "@/components/agents/SubagentTaskLink"
+import {
+	getSubagentAttentionKey,
+	hasPendingSubagentApproval,
+	SubagentTaskLink,
+} from "@/components/agents/SubagentTaskLink"
 import { cn } from "@src/lib/utils"
 import { vscode } from "@src/utils/vscode"
 import { ExtensionStateContext } from "@src/context/ExtensionStateContextStore"
@@ -52,13 +56,6 @@ const capabilityRefreshMessageTypes = new Set<ExtensionMessage["type"]>([
 	"taskHistoryItemUpdated",
 	"interactionRequired",
 ])
-const compactAttention = (agent: SubagentRunState): string | undefined => {
-	if (agent.pendingApproval) return "Approval"
-	if (agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)) return "Review"
-	if (agent.parentVerification?.blocking) return "Review"
-	return undefined
-}
-
 const getChangeSetActionCapability = (
 	capability: SubagentChangeSetActionCapability | undefined,
 	action: SubagentChangeSetAction,
@@ -72,6 +69,7 @@ export interface SubagentGroupCardProps {
 	group: SubagentGroupState
 	parentTaskId?: string
 	inputTaskIds?: ReadonlySet<string>
+	approvalTaskIds?: ReadonlySet<string>
 	onShowTask?: (taskId: string) => void
 	presentation?: "transcript" | "dock"
 	isVisible?: boolean
@@ -82,11 +80,13 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 		group,
 		parentTaskId,
 		inputTaskIds,
+		approvalTaskIds,
 		onShowTask,
 		presentation: cardPresentation = "transcript",
 		isVisible = true,
 	} = props
 	const { t } = useTranslation("chat")
+	const descriptionId = useId()
 	const presentation = useContext(ExtensionStateContext)
 	const managedSteeringDrafts = presentation?.managedSteeringDrafts
 	const updateManagedSteeringDraft = presentation?.updateManagedSteeringDraft
@@ -121,7 +121,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 	const actionTriggerRef = useRef<HTMLButtonElement | null>(null)
 	const steeringAgent = steeringTaskId ? group.agents.find((agent) => agent.taskId === steeringTaskId) : undefined
 	const approvalAgent = approvalTaskId
-		? group.agents.find((agent) => agent.taskId === approvalTaskId && agent.pendingApproval)
+		? group.agents.find((agent) => agent.taskId === approvalTaskId && hasPendingSubagentApproval(agent))
 		: undefined
 	const actionableChangeSetIds = useMemo(
 		() =>
@@ -417,6 +417,17 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 				<div className="flex min-w-0 items-start gap-1">
 					<div className="min-w-0 flex-1 space-y-0.5">
 						{group.agents.map((agent, agentIndex) => {
+							const attentionKey =
+								activeStatuses.has(agent.status) && approvalTaskIds?.has(agent.taskId)
+									? "subagentRow.attention.approval"
+									: getSubagentAttentionKey(agent)
+							const terminalReason = activeStatuses.has(agent.status)
+								? undefined
+								: agent.error ||
+									(agent.stopReason && agent.stopReason !== "completed"
+										? t(`subagentRow.stopReason.${agent.stopReason}`)
+										: undefined)
+							const reasonId = terminalReason ? `${descriptionId}-${agentIndex}` : undefined
 							const cancelRequested =
 								agent.status === "cancelling" || cancelRequestedTaskIds.has(agent.taskId)
 							const canMutateChangeSet =
@@ -440,7 +451,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 							const hasGroupStopAction = isActive && group.agents.length > 1 && agentIndex === 0
 							const hasOverflowActions =
 								!taskUnavailable ||
-								Boolean(agent.pendingApproval) ||
+								hasPendingSubagentApproval(agent) ||
 								agent.status === "running" ||
 								activeStatuses.has(agent.status) ||
 								Boolean(hasChangeSetActions) ||
@@ -454,12 +465,14 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 											name={agent.nickname}
 											status={agent.status}
 											attention={
-												compactAttention(agent) ??
-												(inputTaskIds?.has(agent.taskId)
-													? t("subagentDock.input", { count: 1 })
-													: undefined)
+												attentionKey
+													? t(attentionKey)
+													: inputTaskIds?.has(agent.taskId)
+														? t("subagentDock.input", { count: 1 })
+														: undefined
 											}
 											detail={taskUnavailable ? agent.error : agentDetail(agent)}
+											descriptionId={reasonId}
 											disabled={taskUnavailable}
 											onOpen={() => openTask(agent)}
 											variant={cardPresentation === "dock" ? "dock" : "row"}
@@ -500,7 +513,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 															<ExternalLink aria-hidden="true" /> Open task
 														</DropdownMenuItem>
 													)}
-													{agent.pendingApproval && (
+													{hasPendingSubagentApproval(agent) && (
 														<DropdownMenuItem
 															onSelect={() => setApprovalTaskId(agent.taskId)}>
 															<ShieldAlert aria-hidden="true" /> Review request
@@ -599,7 +612,11 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 															<DropdownMenuSeparator />
 															<DropdownMenuLabel className="whitespace-normal text-xs font-normal text-vscode-descriptionForeground">
 																<span className="font-medium text-vscode-foreground">
-																	Review changes
+																	{t(
+																		agent.parentVerification?.blocking
+																			? "subagentRow.attention.parentAction"
+																			: "subagentRow.attention.changes",
+																	)}
 																</span>
 																<br />
 																{agent.parentVerification?.message}
@@ -625,11 +642,12 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 											</DropdownMenu>
 										)}
 									</div>
-									{taskUnavailable && agent.error && (
+									{terminalReason && (
 										<p
+											id={reasonId}
 											className="px-2 pb-1 text-[11px] leading-4 text-vscode-descriptionForeground"
 											role="status">
-											{agent.error}
+											{terminalReason}
 										</p>
 									)}
 								</div>

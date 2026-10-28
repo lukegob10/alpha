@@ -2,10 +2,17 @@ import { memo, useId, useMemo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { Bot, ChevronDown, ChevronUp, ShieldAlert } from "lucide-react"
 
-import type { LiveTaskMetadata, ManagedAgentTreeProjection, SubagentGroupState } from "@alpha-code/types"
+import type {
+	LiveTaskMetadata,
+	ManagedAgentTreeNodeProjection,
+	ManagedAgentTreeProjection,
+	SubagentGroupState,
+	SubagentRunState,
+} from "@alpha-code/types"
 
 import { ManagedAgentTree } from "@/components/agents/ManagedAgentTree"
 import { buildManagedAgentTreeModel, dedupeManagedAgentGroups } from "@/components/agents/managedAgentTreeAdapter"
+import { getSubagentAttentionKey, hasPendingSubagentApproval } from "@/components/agents/SubagentTaskLink"
 
 import { SubagentGroupCard } from "./SubagentGroupCard"
 
@@ -41,13 +48,75 @@ export const SubagentDock = memo(function SubagentDock({
 		return deduped
 			.map((group) => ({
 				...group,
-				agents: group.agents.filter((agent) => latestGroupByTask.get(agent.taskId) === group.groupId),
+				agents: group.agents.filter(
+					(agent) =>
+						latestGroupByTask.get(agent.taskId) === group.groupId ||
+						Boolean(agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)) ||
+						agent.parentVerification?.blocking ||
+						agent.parentVerification?.status === "required",
+				),
 			}))
 			.filter((group) => group.agents.length > 0)
 	}, [groups])
+	const projectedNodesByTaskId = useMemo(
+		() =>
+			new Map(
+				projection?.rootTaskId === parentTaskId
+					? projection.nodes.map((node) => [node.taskId, node] as const)
+					: [],
+			),
+		[parentTaskId, projection],
+	)
+	const currentNodes = useMemo(() => {
+		const current = new Map<string, ManagedAgentTreeNodeProjection>()
+		if (projection?.rootTaskId !== parentTaskId) return current
+		for (const group of latestGroups) {
+			for (const agent of group.agents) {
+				const node = projectedNodesByTaskId.get(agent.taskId)
+				const boundary = Math.max(
+					group.createdAt,
+					group.startedAt ?? 0,
+					group.completedAt ?? 0,
+					agent.startedAt ?? 0,
+					agent.phaseStartedAt ?? 0,
+					agent.completedAt ?? 0,
+				)
+				// A task can have several follow-up groups. Only the same generation's newer
+				// host projection may refresh its row; proposals retain their original routing.
+				if (
+					node?.groupId === group.groupId &&
+					node.parentTaskId === group.parentTaskId &&
+					node.updatedAt >= boundary &&
+					projection.observedAt >= Math.max(boundary, agent.pendingApproval?.createdAt ?? 0)
+				) {
+					current.set(agent.taskId, node)
+				}
+			}
+		}
+		return current
+	}, [latestGroups, parentTaskId, projection, projectedNodesByTaskId])
+	const displayGroups = useMemo(
+		() =>
+			latestGroups.map((group) => ({
+				...group,
+				agents: group.agents.map((agent): SubagentRunState => {
+					const node = currentNodes.get(agent.taskId)
+					if (node?.groupId !== group.groupId || node.parentTaskId !== group.parentTaskId) return agent
+					return {
+						...agent,
+						status: node.status,
+						stopReason: node.stopReason ?? (node.status === agent.status ? agent.stopReason : undefined),
+						error: node.status === agent.status ? agent.error : undefined,
+						pendingApproval: node.attention?.kind === "approval" ? agent.pendingApproval : undefined,
+					}
+				}),
+			})),
+		[latestGroups, currentNodes],
+	)
 	const model = useMemo(
-		() => buildManagedAgentTreeModel({ rootTaskId: parentTaskId, groups: latestGroups, projection, liveTasksById }),
-		[parentTaskId, latestGroups, projection, liveTasksById],
+		() =>
+			buildManagedAgentTreeModel({ rootTaskId: parentTaskId, groups: displayGroups, projection, liveTasksById }),
+		[parentTaskId, displayGroups, projection, liveTasksById],
 	)
 	const groupedTaskIds = useMemo(
 		() => new Set(latestGroups.flatMap((group) => group.agents.map((agent) => agent.taskId))),
@@ -58,42 +127,69 @@ export const SubagentDock = memo(function SubagentDock({
 			new Set(
 				projection?.rootTaskId === parentTaskId
 					? projection.nodes
-							.filter((node) => node.taskId !== parentTaskId && node.attention?.kind === "input")
+							.filter(
+								(node) =>
+									node.taskId !== parentTaskId &&
+									node.attention?.kind === "input" &&
+									(!groupedTaskIds.has(node.taskId) || currentNodes.has(node.taskId)),
+							)
 							.map((node) => node.taskId)
 					: model.nodes
 							.filter((node) => liveTasksById?.[node.taskId]?.isWaitingForInput)
 							.map((node) => node.taskId),
 			),
-		[parentTaskId, projection, model.nodes, liveTasksById],
+		[parentTaskId, projection, model.nodes, liveTasksById, groupedTaskIds, currentNodes],
 	)
 	// Exclude only duplicate navigation rows; the canonical tree still owns descendant and overflow projections.
-	const agents = latestGroups.flatMap((group) => group.agents)
+	const agents = displayGroups.flatMap((group) => group.agents)
 	const ungroupedAttention =
 		projection?.rootTaskId === parentTaskId
 			? projection.nodes.filter((node) => node.taskId !== parentTaskId && !groupedTaskIds.has(node.taskId))
 			: []
-	const approvalCount =
-		agents.filter((agent) => agent.pendingApproval).length +
-		ungroupedAttention.filter((node) => node.attention?.kind === "approval").length
-	const reviewCount = agents.filter(
-		(agent) =>
-			agent.parentVerification?.blocking ||
-			(agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)),
-	).length
-	const inputCount = inputTaskIds.size
-	const statuses = new Map([
-		...agents.map((agent) => [agent.taskId, agent.status] as const),
-		...model.nodes.map((node) => [node.taskId, node.status] as const),
+	const approvalTaskIds = new Set([
+		...agents.filter(hasPendingSubagentApproval).map((agent) => agent.taskId),
+		...[...currentNodes.values(), ...ungroupedAttention]
+			.filter((node) => node.attention?.kind === "approval")
+			.map((node) => node.taskId),
 	])
+	const approvalCount = approvalTaskIds.size
+	const attentionKeys = agents.map(getSubagentAttentionKey)
+	const conflictCount = attentionKeys.filter((key) => key === "subagentRow.attention.conflict").length
+	const parentActionCount = attentionKeys.filter((key) => key === "subagentRow.attention.parentAction").length
+	const changesCount = attentionKeys.filter((key) => key === "subagentRow.attention.changes").length
+	const inputCount = inputTaskIds.size
+	const statuses = new Map([...model.nodes.map((node) => [node.taskId, node.status] as const)])
+	for (const group of displayGroups) {
+		for (const agent of group.agents) {
+			const node = projectedNodesByTaskId.get(agent.taskId)
+			if (!node || node.groupId === group.groupId) statuses.set(agent.taskId, agent.status)
+		}
+	}
 	const runningCount = [...statuses.values()].filter((status) => status === "running").length
 	const attentionSummary = approvalCount
 		? t("subagentDock.approvals", { count: approvalCount })
-		: reviewCount
-			? t("subagentDock.reviews", { count: reviewCount })
-			: inputCount
-				? t("subagentDock.input", { count: inputCount })
-				: undefined
+		: conflictCount
+			? t("subagentDock.conflicts", { count: conflictCount })
+			: parentActionCount
+				? t("subagentDock.parentActions", { count: parentActionCount })
+				: changesCount
+					? t("subagentDock.changes", { count: changesCount })
+					: inputCount
+						? t("subagentDock.input", { count: inputCount })
+						: undefined
 	const count = new Set([...model.nodes.map((node) => node.taskId), ...groupedTaskIds]).size
+	const attentionIdsForGroup = (group: SubagentGroupState, taskIds: ReadonlySet<string>) =>
+		new Set(
+			group.agents
+				.filter((agent) => {
+					const node = projectedNodesByTaskId.get(agent.taskId)
+					return (
+						taskIds.has(agent.taskId) &&
+						(!node || (node.groupId === group.groupId && node.parentTaskId === group.parentTaskId))
+					)
+				})
+				.map((agent) => agent.taskId),
+		)
 	if (count === 0) return null
 
 	return (
@@ -106,12 +202,13 @@ export const SubagentDock = memo(function SubagentDock({
 				id={rowsId}
 				hidden={!expanded}
 				className="max-h-[min(240px,32vh)] min-w-0 space-y-0.5 overflow-x-hidden overflow-y-auto pb-1">
-				{latestGroups.map((group) => (
+				{displayGroups.map((group) => (
 					<SubagentGroupCard
 						key={group.groupId}
 						group={group}
 						parentTaskId={group.parentTaskId}
-						inputTaskIds={inputTaskIds}
+						inputTaskIds={attentionIdsForGroup(group, inputTaskIds)}
+						approvalTaskIds={attentionIdsForGroup(group, approvalTaskIds)}
 						onShowTask={onShowTask}
 						presentation="dock"
 						isVisible={isVisible}

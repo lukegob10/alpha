@@ -1,7 +1,10 @@
 import type { ManagedAgentTreeProjection, SubagentGroupState, SubagentRunState } from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
+import i18next from "i18next"
+import { initReactI18next } from "react-i18next"
 import { render, screen, within } from "@testing-library/react"
 import { vscode } from "@/utils/vscode"
+import chat from "@/i18n/locales/en/chat.json"
 
 import { ManagedAgentTree } from "../ManagedAgentTree"
 vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
@@ -104,6 +107,11 @@ const hierarchyProjection = (): ManagedAgentTreeProjection => ({
 })
 
 describe("ManagedAgentTree", () => {
+	beforeAll(async () => {
+		await i18next
+			.use(initReactI18next)
+			.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
+	})
 	beforeEach(() => vi.mocked(vscode.postMessage).mockClear())
 	it.each(["pending", "failed"] as const)("does not turn advisory %s evidence into required attention", (status) => {
 		const agent = makeAgent({
@@ -220,7 +228,7 @@ describe("ManagedAgentTree", () => {
 			/>,
 		)
 
-		expect(screen.getByRole("button", { name: /Open Worker · Completed · Review/i })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Open Worker · Completed · Changes available/i })).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: /Open Approval · Working · Approval/i })).toBeInTheDocument()
 		expect(screen.queryByText("pnpm test")).not.toBeInTheDocument()
 	})
@@ -247,6 +255,19 @@ describe("ManagedAgentTree", () => {
 		const task = screen.getByRole("button", { name: /Open Maple · Working/i })
 		expect(task).not.toHaveTextContent("Approval")
 	})
+
+	it.each(["Review these changes", "Should this operation require approval?"])(
+		"preserves typed input attention when its label says %s",
+		(label) => {
+			const projection = hierarchyProjection()
+			projection.nodes[1].attention = { kind: "input", label }
+			render(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={vi.fn()} />)
+			const row = screen.getByRole("button", { name: /Open Cinder · Working · Input/ })
+			expect(row).toHaveTextContent("Input")
+			expect(row).not.toHaveTextContent("Approval required")
+			expect(row).not.toHaveTextContent("Changes available")
+		},
+	)
 
 	it("keeps loading and error state to one compact line", () => {
 		const { rerender } = render(<ManagedAgentTree rootTaskId="root-1" isLoading onShowTask={vi.fn()} />)

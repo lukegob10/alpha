@@ -24,7 +24,7 @@ import { SYSTEM_PROMPT_FRAGMENTS } from "../../prompts/system"
 import { getDesignHandoffPrompt } from "../../prompts/sections/design-handoff"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
-import { ToolRegistry } from "../../tools/ToolRegistry"
+import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { shouldCompactAfterTurn, Task } from "../Task"
@@ -213,6 +213,378 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 	}
 	return Reflect.get(task, "handleContextWindowExceededError").call(task) as Promise<void>
 }
+
+describe("forced compaction step ownership", () => {
+	afterEach(() => vi.restoreAllMocks())
+
+	async function holdFailedRequest(options: { compactionApiHandler?: ApiHandler; acceptMutation?: boolean } = {}) {
+		const fixture = harness()
+		const { task, api, provider, history } = fixture
+		const started = deferred<void>()
+		const fail = deferred<void>()
+		const fragments = [{ role: "developer" as const, origin: "captured-rule", content: "Keep captured authority" }]
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const mutation = vi.fn<ToolDescriptor["execute"]>(async ({ callbacks }) => {
+			callbacks.pushToolResult("Accepted edit was saved")
+		})
+		registry.register({
+			name: "apply_patch",
+			aliases: [],
+			schema: {
+				type: "function",
+				function: {
+					name: "apply_patch",
+					description: "Captured workspace mutation",
+					parameters: {
+						type: "object",
+						properties: { password: { type: "string", const: "literal schema" } },
+					},
+				},
+			},
+			capabilities: {
+				concurrency: "serial",
+				sideEffects: "workspace",
+				controlFlow: false,
+				requiresApproval: false,
+			},
+			execute: mutation,
+		})
+		const surface = createTaskToolSurface({ registry, applyProfile: false, approvalMode: "ask" })
+		const acceptedCall = {
+			type: "tool_call" as const,
+			id: "accepted-edit",
+			name: "apply_patch",
+			arguments: { patch: "*** Begin Patch\n*** Add File: accepted.txt\n+Saved edit\n*** End Patch" },
+		}
+		if (options.acceptMutation) {
+			history[0].content = "Original request with earlier implementation context. ".repeat(4_000)
+			history.push({
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: acceptedCall.id, name: acceptedCall.name, input: acceptedCall.arguments },
+				],
+				ts: 4,
+			})
+			Object.assign(task, {
+				agentRunId: "accepted-mutation-run",
+				assistantMessageSavedToHistory: true,
+				assertCurrentProviderTranscriptBeforeEffects: vi.fn(async () => {}),
+				enqueueCanonicalLifecycleEvent: vi.fn(async () => {}),
+				getCanonicalLifecycleSnapshot: () => ({
+					runId: task["agentRunId"],
+					turnId: task["agentTurnId"],
+					effectStartedToolCallIds: [acceptedCall.id],
+				}),
+			})
+			task["captureAgentStep"](
+				0,
+				"Prior mutation instructions",
+				history,
+				[...surface.schemas],
+				["apply_patch"],
+				{ taskId: task.taskId, mode: "code" },
+				"code",
+				api.getModel().info,
+				surface,
+			)
+			task["currentTaskToolSurface"] = surface
+			const outcome = await Reflect.apply(task["executeCanonicalToolCallsForTurn"], task, [
+				{ items: [acceptedCall], text: "", reasoning: "", toolCalls: [acceptedCall] },
+				surface,
+				"code",
+				undefined,
+			])
+			expect(outcome).toMatchObject({
+				status: "completed",
+				results: [{ callId: acceptedCall.id, status: "success", content: "Accepted edit was saved" }],
+			})
+			await task.flushPendingToolResultsToHistory()
+		}
+		vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({
+			tools: [...surface.schemas],
+			allowedFunctionNames: ["apply_patch"],
+			surface,
+		})
+		provider.getState.mockResolvedValue({ approvalMode: "ask", autoCondenseContext: false })
+		vi.mocked(task["getSystemPrompt"]).mockImplementation(async (_state, _provider, _handoff, _mode, capture) => {
+			capture?.(fragments)
+			return "Captured system instructions"
+		})
+		vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 0 } as ReturnType<Task["getTokenUsage"]>)
+		if (options.compactionApiHandler) task["previousCompactionHandler"] = options.compactionApiHandler
+		api.createMessage.mockImplementationOnce(async function* () {
+			started.resolve()
+			await fail.promise
+			yield* []
+			throw Object.assign(new Error("Request exceeds the model context window"), { retryCategory: "context" })
+		})
+		const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		const failed = stream.next().catch((error: unknown) => error)
+		await started.promise
+		const step = task["currentAgentStep"]!
+		return {
+			...fixture,
+			step,
+			surface,
+			mutation,
+			acceptedCall,
+			fragments,
+			finishFailure: async () => {
+				fail.resolve()
+				expect(await failed).toMatchObject({ retryCategory: "context" })
+				await stream.return(undefined)
+				vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 100_000 } as ReturnType<
+					Task["getTokenUsage"]
+				>)
+			},
+			recover: () =>
+				Reflect.apply(task["handleContextWindowExceededError"], task, [undefined, step]) as Promise<void>,
+		}
+	}
+
+	it("uses the failed route, instructions, and tool authority after live settings change", async () => {
+		const { task, api, provider, step, mutation, acceptedCall, fragments, finishFailure, recover } =
+			await holdFailedRequest({ acceptMutation: true })
+		const pairedHistory = structuredClone(task.apiConversationHistory)
+		const replacement: ApiHandler = {
+			getModel: () => ({
+				id: "replacement-model",
+				info: { contextWindow: 32_000, maxTokens: 1024, supportsPromptCache: false },
+			}),
+			countTokens: vi.fn(async () => 10),
+			createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {
+				yield { type: "text", text: "New logical step" }
+			}),
+		}
+		task.api = replacement
+		task.apiConfiguration = { apiProvider: "openai", apiModelId: "replacement-model" }
+		task["effectiveApiConfiguration"] = { ...task.apiConfiguration }
+		vi.mocked(task.getTaskMode).mockResolvedValue("architect")
+		vi.mocked(task["getSystemPrompt"]).mockResolvedValue("Changed live instructions")
+		provider.getState.mockResolvedValue({ approvalMode: "auto", autoCondenseContext: false })
+		task["taskApprovalModePersistence"] = Promise.resolve(true)
+		expect(task.setTaskApprovalMode("auto")).toBe(true)
+		await task["taskApprovalModePersistence"]
+		const updatedSurface = createTaskToolSurface({
+			registry: new ToolRegistry({ includeBuiltIns: false }),
+			applyProfile: false,
+			approvalMode: "auto",
+		})
+		vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({ tools: [], surface: updatedSurface })
+		const buildsBeforeRecovery = vi.mocked(buildNativeToolsArrayWithRestrictions).mock.calls.length
+		await finishFailure()
+		vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => ({
+			...compactedResult(messages),
+			prevContextTokens: 100_000,
+			targetContextTokens: 80_000,
+			status: "reduced",
+		}))
+
+		await recover()
+
+		const recovery = vi.mocked(manageContext).mock.calls[0][0]
+		expect(recovery.apiHandler).toBe(api)
+		expect(recovery.contextWindow).toBe(128_000)
+		expect(recovery.systemPrompt).toBe("Captured system instructions")
+		expect(recovery.metadata).toMatchObject({
+			mode: "code",
+			instructionFragments: fragments,
+			tools: step.getRequest().metadata.tools,
+			allowedFunctionNames: ["apply_patch"],
+		})
+		expect(buildNativeToolsArrayWithRestrictions).toHaveBeenCalledTimes(buildsBeforeRecovery)
+		expect(step.surface?.policy.approval.mode).toBe("ask")
+		expect(replacement.countTokens).not.toHaveBeenCalled()
+		expect(mutation).toHaveBeenCalledOnce()
+		expect(
+			task.apiConversationHistory
+				.filter((message) => !message.isSummary)
+				.map(({ condenseParent, ...message }) => message),
+		).toEqual(pairedHistory)
+		expect(
+			task.apiConversationHistory.flatMap((message) => (Array.isArray(message.content) ? message.content : [])),
+		).toContainEqual(
+			expect.objectContaining({ type: "tool_result", tool_use_id: acceptedCall.id, is_error: false }),
+		)
+		vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 0 } as ReturnType<Task["getTokenUsage"]>)
+		const successor = task.attemptApiRequest(1, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryCategory: "context",
+		})
+		await successor.next()
+		await successor.next()
+		expect(task["currentAgentStep"]?.snapshot.context.provider.modelId).toBe("replacement-model")
+		expect(task["currentAgentStep"]?.snapshot.context.mode.slug).toBe("architect")
+		expect(task["currentAgentStep"]?.snapshot.context.policy.approval.mode).toBe("auto")
+		expect(mutation).toHaveBeenCalledOnce()
+	})
+
+	it("retains the captured larger-window compactor until the failed step is released", async () => {
+		const compactionApiHandler = {
+			getModel: () => ({
+				id: "previous-model",
+				info: { contextWindow: 256_000, maxTokens: 4096, supportsPromptCache: false },
+			}),
+			countTokens: vi.fn(async () => 10),
+			createMessage: vi.fn<ApiHandler["createMessage"]>(async function* () {}),
+			dispose: vi.fn(),
+		} satisfies ApiHandler
+		const { task, step, finishFailure, recover } = await holdFailedRequest({ compactionApiHandler })
+		await finishFailure()
+		expect(compactionApiHandler.dispose).not.toHaveBeenCalled()
+		vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => ({
+			...compactedResult(messages),
+			prevContextTokens: 100_000,
+			targetContextTokens: 80_000,
+			status: "reduced",
+		}))
+
+		await recover()
+
+		expect(vi.mocked(manageContext).mock.calls[0][0].compactionApiHandler).toBe(compactionApiHandler)
+		expect(compactionApiHandler.dispose).not.toHaveBeenCalled()
+		step.releaseRequest()
+		step.releaseRequest()
+		expect(compactionApiHandler.dispose).toHaveBeenCalledOnce()
+		expect(task["reasoningHandlerUsers"].has(compactionApiHandler)).toBe(false)
+	})
+
+	it.each([
+		{ transition: "Stop", configuredTimeoutMs: 1_000, retryAllowanceMs: undefined, timeoutScope: undefined },
+		{
+			transition: "task disposal",
+			configuredTimeoutMs: 1_000,
+			retryAllowanceMs: undefined,
+			timeoutScope: undefined,
+		},
+		{
+			transition: "the earlier compaction deadline",
+			configuredTimeoutMs: 100,
+			retryAllowanceMs: 1_000,
+			timeoutScope: "compaction_deadline",
+		},
+		{
+			transition: "the earlier retry deadline",
+			configuredTimeoutMs: 1_000,
+			retryAllowanceMs: 100,
+			timeoutScope: "retry_deadline",
+		},
+		{
+			transition: "a tied retry deadline",
+			configuredTimeoutMs: 100,
+			retryAllowanceMs: 100,
+			timeoutScope: "retry_deadline",
+		},
+	])(
+		"does not commit a prepared summary after $transition while receipt settlement is pending",
+		async ({ transition, configuredTimeoutMs, retryAllowanceMs, timeoutScope }) => {
+			vi.useFakeTimers()
+			try {
+				vi.setSystemTime(1_000)
+				vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(configuredTimeoutMs)
+				const { task, provider, save, step, finishFailure } = await holdFailedRequest()
+				await finishFailure()
+				const historyBeforeCommit = task.apiConversationHistory
+				const beforeCommit = deferred<void>()
+				const releaseCommit = deferred<void>()
+				Object.assign(provider, {
+					settleIndependentTaskWaitReceiptsForParent: vi.fn(async () => {
+						beforeCommit.resolve()
+						await releaseCommit.promise
+					}),
+				})
+				vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => ({
+					...compactedResult(messages),
+					prevContextTokens: 100_000,
+					targetContextTokens: 80_000,
+					status: "reduced",
+				}))
+				const controller = new AbortController()
+				task["stepInterruptionController"] = controller
+				const retryDeadline = retryAllowanceMs === undefined ? undefined : 1_000 + retryAllowanceMs
+				const running = Reflect.apply(task["handleContextWindowExceededError"], task, [
+					retryDeadline,
+					step,
+				]).catch((error: unknown) => error)
+				await beforeCommit.promise
+				if (transition === "Stop") task.cancelCurrentRequest()
+				else if (transition === "task disposal") {
+					task["taskCancellationController"].abort(new Error("Owning task was disposed"))
+				} else {
+					// Let the absolute deadline expire before its timer callback has run.
+					vi.setSystemTime(1_000 + Math.min(configuredTimeoutMs, retryAllowanceMs!))
+				}
+				releaseCommit.resolve()
+				const failure = await running
+
+				expect(save).not.toHaveBeenCalled()
+				expect(task.apiConversationHistory).toBe(historyBeforeCommit)
+				expect(task["currentAgentStep"]).toBe(step)
+				expect(task["refreshEnvironmentContext"]).not.toHaveBeenCalled()
+				expect(task.say).not.toHaveBeenCalled()
+				if (timeoutScope) {
+					expect(failure).toMatchObject({ name: "ApiStreamDeadlineError", timeoutScope })
+					expect(vi.mocked(manageContext).mock.calls[0][0].metadata?.deadlineScope).toBe(timeoutScope)
+				} else {
+					expect(failure).toBe(
+						transition === "Stop"
+							? controller.signal.reason
+							: task.getTaskLifetimeCancellationSignal().reason,
+					)
+				}
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["stop", "superseded"] as const)("discards a late failed-step summary after %s", async (transition) => {
+		const { task, api, save, finishFailure, recover } = await holdFailedRequest()
+		await finishFailure()
+		const started = deferred<void>()
+		const finish = deferred<void>()
+		const oldController = new AbortController()
+		task["stepInterruptionController"] = oldController
+		vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => {
+			const result = {
+				...compactedResult(messages),
+				prevContextTokens: 100_000,
+				targetContextTokens: 80_000,
+				status: "reduced" as const,
+			}
+			started.resolve()
+			await finish.promise
+			return result
+		})
+		const running = recover().catch((error: unknown) => error)
+		await started.promise
+		if (transition === "stop") task.cancelCurrentRequest()
+		task["stepInterruptionController"] = new AbortController()
+		task.apiConversationHistory = [{ role: "user", content: "Successor input", ts: 20 }]
+		vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 0 } as ReturnType<Task["getTokenUsage"]>)
+		api.createMessage.mockImplementationOnce(async function* () {
+			yield { type: "text", text: "Successor response" }
+		})
+		const successor = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		await successor.next()
+		const successorStep = task["currentAgentStep"]
+		const successorController = task.currentRequestAbortController
+		const successorHistory = structuredClone(task.apiConversationHistory)
+		const publishedBeforeLateSummary = vi.mocked(task.say).mock.calls.length
+		finish.resolve()
+
+		expect(await running).toBeInstanceOf(Error)
+		expect(task.apiConversationHistory).toEqual(successorHistory)
+		expect(task["currentAgentStep"]).toBe(successorStep)
+		expect(task.currentRequestAbortController).toBe(successorController)
+		expect(successorController?.signal.aborted).toBe(false)
+		expect(task.say).toHaveBeenCalledTimes(publishedBeforeLateSummary)
+		expect(save).not.toHaveBeenCalled()
+		await successor.return(undefined)
+	})
+})
 
 describe("Task small Copilot context exhaustion", () => {
 	async function smallWindowFixture(automatic: boolean, irreducible = false) {
@@ -1294,7 +1666,10 @@ describe("Task context recovery admission", () => {
 			})
 
 			const running = Reflect.get(task, "handleContextWindowExceededError").call(task, 1_100) as Promise<void>
-			const rejected = expect(running).rejects.toMatchObject({ name: "ApiStreamDeadlineError" })
+			const rejected = expect(running).rejects.toMatchObject({
+				name: "ApiStreamDeadlineError",
+				timeoutScope: "retry_deadline",
+			})
 			await recoveryStarted.promise
 			await vi.advanceTimersByTimeAsync(100)
 			await rejected
@@ -1354,7 +1729,7 @@ describe("Task context recovery admission", () => {
 				await running
 
 				expect(outcomeAtDeadline).toBe("failed")
-				expect(failure).toMatchObject({ name: "ApiStreamDeadlineError" })
+				expect(failure).toMatchObject({ name: "ApiStreamDeadlineError", timeoutScope: "compaction_deadline" })
 				expect(signalAbortedAtDeadline).toBe(true)
 				expect(api.createMessage).not.toHaveBeenCalled()
 				expect(save).not.toHaveBeenCalled()
@@ -1405,7 +1780,10 @@ describe("Task context recovery admission", () => {
 				released.resolve()
 				await running
 
-				expect(failureAtDeadline).toMatchObject({ name: "ApiStreamDeadlineError" })
+				expect(failureAtDeadline).toMatchObject({
+					name: "ApiStreamDeadlineError",
+					timeoutScope: "compaction_deadline",
+				})
 				expect(signalAbortedAtDeadline).toBe(true)
 				expect(summarizeConversation).not.toHaveBeenCalled()
 				expect(save).not.toHaveBeenCalled()

@@ -14,7 +14,7 @@ export function isAgentRetryCategory(value: unknown): value is AgentRetryCategor
 export interface AgentRetryPolicyOptions {
 	/** Maximum number of provider attempts, including the initial attempt. */
 	maxAttempts?: number
-	/** Maximum elapsed time allowed for the retry sequence, in milliseconds. */
+	/** Optional maximum elapsed time allowed for the retry sequence, in milliseconds. */
 	maxElapsedMs?: number
 	/** Delay before retrying the first failed attempt. */
 	baseDelayMs?: number
@@ -41,13 +41,15 @@ export interface AgentRetryPolicyDefaults {
 
 /**
  * Conservative defaults shared by callers that do not have a provider
- * specific policy. The attempt and elapsed budgets are fixed, and full jitter
+ * specific policy. The attempt budgets are fixed, and full jitter
  * keeps synchronized callers from retrying in lockstep. Tests can inject a
  * deterministic random source.
  */
 export const DEFAULT_AGENT_RETRY_POLICY: AgentRetryPolicyDefaults = Object.freeze({
 	maxAttempts: 4,
-	maxElapsedMs: 90_000,
+	// Codex c92700d: ordinary provider recovery is attempt-bounded; its 90s
+	// review deadline belongs to Guardian approvals, not provider generation.
+	maxElapsedMs: Infinity,
 	baseDelayMs: 1_000,
 	maxDelayMs: 30_000,
 	jitter: "full" as const,
@@ -58,6 +60,19 @@ export const DEFAULT_AGENT_RETRY_POLICY: AgentRetryPolicyDefaults = Object.freez
 		"empty-response": 2,
 	}),
 })
+
+/** Keep disabled elapsed limits out of provider metadata and timer arithmetic. */
+export function getAgentRetryDeadline(
+	maxElapsedMs: number,
+	elapsedMs: number,
+	existingDeadline?: number,
+): number | undefined {
+	const elapsedDeadline = Number.isFinite(maxElapsedMs)
+		? Date.now() + Math.max(0, maxElapsedMs - elapsedMs)
+		: undefined
+	if (existingDeadline === undefined || !Number.isFinite(existingDeadline)) return elapsedDeadline
+	return elapsedDeadline === undefined ? existingDeadline : Math.min(elapsedDeadline, existingDeadline)
+}
 
 export interface AgentRetryRequest {
 	category: AgentRetryCategory

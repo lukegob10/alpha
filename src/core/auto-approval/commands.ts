@@ -81,6 +81,58 @@ export function createSubagentCommandApprovalPolicy(
 	}
 }
 
+/** Remove only ceilings whose denials are proven redundant under the newly captured command policy. */
+export function compactSubagentCommandApprovalCeilings(
+	primary: SubagentCommandApprovalPolicy,
+	ceilings: readonly SubagentCommandApprovalPolicy[],
+	knownDeniedCommands: string[],
+): SubagentCommandApprovalPolicy[] {
+	const known = createSubagentCommandApprovalPolicy([], knownDeniedCommands, primary.salt)
+	const ruleKey = (rule: SubagentCommandApprovalTokenRule) => `${rule.tokenCount}:${rule.digest}`
+	const primaryDenials =
+		primary.algorithm === "sha256-salted-argv-v2" ? new Set(primary.denied.map(ruleKey)) : undefined
+	const knownIsEnforced =
+		primary.algorithm === "sha256-salted-argv-v2" &&
+		known.algorithm === "sha256-salted-argv-v2" &&
+		primary.platform === known.platform &&
+		(!known.denyAll || primary.denyAll) &&
+		(!known.unresolvedDenyRules || primary.unresolvedDenyRules) &&
+		known.denied.every((rule) => primaryDenials!.has(ruleKey(rule)))
+	const covered = (ceiling: SubagentCommandApprovalPolicy) => {
+		if (primary.denyAll) return true
+		if (
+			ceiling.denyAll ||
+			!knownIsEnforced ||
+			primary.algorithm !== "sha256-salted-argv-v2" ||
+			ceiling.algorithm !== "sha256-salted-argv-v2" ||
+			primary.platform !== ceiling.platform ||
+			(ceiling.unresolvedDenyRules && !primary.unresolvedDenyRules)
+		)
+			return false
+		const replayed = createSubagentCommandApprovalPolicy([], knownDeniedCommands, ceiling.salt)
+		if (replayed.algorithm !== "sha256-salted-argv-v2") return false
+		const replayedDenials = new Set(replayed.denied.map(ruleKey))
+		return ceiling.denied.every((rule) => replayedDenials.has(ruleKey(rule)))
+	}
+	const unique = new Map<string, SubagentCommandApprovalPolicy>()
+	for (const ceiling of ceilings) {
+		// A primary with no allowed commands already requires review for every command.
+		// Retain the ceiling's denials, which still distinguish denial from review.
+		const normalized =
+			ceiling.allowAll || (!primary.allowAll && primary.allowed.length === 0)
+				? { ...ceiling, allowAll: true, allowed: [] }
+				: ceiling
+		if (normalized.allowAll && covered(normalized)) continue
+		const key = JSON.stringify({
+			...normalized,
+			allowed: [...normalized.allowed].sort((left, right) => left.digest.localeCompare(right.digest)),
+			denied: [...normalized.denied].sort((left, right) => left.digest.localeCompare(right.digest)),
+		})
+		unique.set(key, normalized)
+	}
+	return [...unique.values()]
+}
+
 /**
  * Detect dangerous parameter substitutions that could lead to command execution.
  * These patterns are never auto-approved and always require explicit user approval.

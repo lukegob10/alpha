@@ -14,6 +14,9 @@ import {
 	TaskLifecycleState,
 	TaskStatus,
 	subagentContextManifestSchema,
+	subagentAutoApprovalPolicySchema,
+	inferApprovalModeFromPolicy,
+	type ApprovalMode,
 	type SubagentGroupState,
 } from "@alpha-code/types"
 
@@ -24,7 +27,7 @@ import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
-import { buildInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
+import { buildInternalTaskEnvelope, isValidInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
 import {
 	captureSubagentContext,
 	isValidSubagentContextManifest,
@@ -42,6 +45,7 @@ import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 import { captureVerificationContent } from "../../agent/VerificationScope"
+import { checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -645,21 +649,101 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		},
 	)
 
-	it("narrows a Bypass task's child authority when the global setting is Ask", async () => {
-		const provider = makeProviderHarness(2, { approvalMode: "ask" })
+	it.each([
+		{ approvalMode: "ask" as const, source: "legacy" },
+		{ approvalMode: "auto" as const, source: "legacy" },
+		{ approvalMode: "ask" as const, source: "codex-v2" },
+		{ approvalMode: "auto" as const, source: "codex-v2" },
+	])("inherits a Full Access task's child authority independently of the global default: %j", async (testCase) => {
+		const provider = makeProviderHarness(2, { approvalMode: testCase.approvalMode, deniedCommands: ["git push"] })
 		const parent = { ...makeParent(), getStepApprovalMode: vi.fn(() => "bypass") }
-		const prepared = await provider.prepareSubagentGroup(parent as any, [
-			{ objective: "Respect the current narrower grant", agent_kind: "review" },
-		])
-		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		const prepared = await provider.prepareSubagentGroup(
+			parent as unknown as Task,
+			testCase.source === "legacy"
+				? [{ objective: "Inspect under the inherited task policy", agent_kind: "review" }]
+				: {
+						task_name: "inherit_task_policy",
+						agent_type: "review",
+						message: "Inspect under the inherited task policy",
+					},
+		)
+		const policy = subagentAutoApprovalPolicySchema.parse(
+			Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+				.autoApproval,
+		)
 
-		expect(prepared.requiresExplicitApproval).toBe(true)
-		expect(descriptor.contextManifest.runtimePolicy.autoApproval).toMatchObject({
-			alwaysAllowWrite: false,
-			alwaysAllowExecute: false,
-			alwaysAllowSubagents: false,
-		})
+		expect(prepared.requiresExplicitApproval).toBe(false)
+		expect(inferApprovalModeFromPolicy(policy)).toBe("bypass")
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState: policy,
+				ask: "tool",
+				text: JSON.stringify({ tool: "editedExistingFile", path: "src/value.ts", isOutsideWorkspace: false }),
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState: policy,
+				ask: "command",
+				text: "git push origin main",
+			}),
+		).resolves.toEqual({ decision: "deny" })
 	})
+
+	it("uses the current parent task dial when no invoking step is available", async () => {
+		const provider = makeProviderHarness(2, { approvalMode: "ask" })
+		const parent = { ...makeParent(), getTaskApprovalMode: vi.fn(() => "bypass") }
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+			task_name: "inherit_current_policy",
+			agent_type: "review",
+			message: "Inspect under the current task policy",
+		})
+		const policy = subagentAutoApprovalPolicySchema.parse(
+			Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+				.autoApproval,
+		)
+		expect(inferApprovalModeFromPolicy(policy)).toBe("bypass")
+	})
+
+	it.each(["ask", "auto"] as const)(
+		"keeps approved child integration on the Full Access parent when the global default becomes %s",
+		async (approvalMode) => {
+			const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+			const parent = {
+				...makeParent(),
+				getStepApprovalMode: vi.fn(() => "bypass"),
+				getTaskApprovalMode: vi.fn<() => "ask" | "bypass">(() => "bypass"),
+			}
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "retain_integration_policy",
+				agent_type: "review",
+				message: "Inspect under the inherited task policy",
+			})
+			const taskId = prepared.envelopes[0].id
+			const captured = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "subagentDescriptors").get(taskId).contextManifest.runtimePolicy.autoApproval,
+			)
+			await provider.contextProxy.setValues({ approvalMode })
+
+			expect(Reflect.get(provider, "hasCurrentWorkerIntegrationPolicy").call(provider, parent, captured)).toBe(
+				true,
+			)
+			const effective = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "getAutoApprovedWorkerChangePolicy").call(provider, taskId, parent),
+			)
+			expect(inferApprovalModeFromPolicy(effective)).toBe("bypass")
+
+			parent.getTaskApprovalMode.mockReturnValue("ask")
+			expect(Reflect.get(provider, "hasCurrentWorkerIntegrationPolicy").call(provider, parent, captured)).toBe(
+				false,
+			)
+			expect(
+				Reflect.get(provider, "getAutoApprovedWorkerChangePolicy").call(provider, taskId, parent),
+			).toBeUndefined()
+		},
+	)
 
 	it.each(["auto", "bypass"] as const)(
 		"launches a default %s sub-agent without an approval dialog",
@@ -1749,6 +1833,59 @@ If complete, use attempt_completion.
 		expect(policy.commandApprovalCeilings).toContainEqual(capturedApproval.commandApproval)
 		expect(JSON.stringify(policy)).not.toContain("git push")
 	})
+
+	it.each(["ask", "auto"] as const)(
+		"retains the invoking %s step after the current task dial changes to Full Access",
+		async (approvalMode) => {
+			const settings = { approvalMode: "bypass" as const, deniedCommands: ["git push"] }
+			const provider = makeProviderHarness(2, settings)
+			const parent = makeParent()
+			const capturedApproval = provider.snapshotSubagentAutoApprovalPolicy({ ...settings, approvalMode })
+			const instructions = await parent.captureEffectiveInheritedInstructions()
+			Object.assign(parent, {
+				getStepApprovalMode: () => approvalMode,
+				getTaskApprovalMode: () => "bypass",
+				getSubagentInvocationContext: () => ({
+					mode: "code",
+					apiConfiguration: parent.apiConfiguration,
+					apiConfigName: "Parent",
+					modelRoute: {
+						source: "parent",
+						resolution: "selected",
+						profileName: "Parent",
+						provider: "openai",
+						modelId: "alpha-model",
+					},
+					history: [],
+					finalAssistantMessageIndexes: [],
+					instructions,
+					autoApprovalPolicy: capturedApproval,
+				}),
+			})
+			settings.deniedCommands = ["git reset"]
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "retain_invoking_policy",
+				agent_type: "review",
+				message: "Inspect under the invoking step's policy",
+			})
+			const policy = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+					.autoApproval,
+			)
+			expect(inferApprovalModeFromPolicy(policy)).toBe(approvalMode)
+			expect(policy.alwaysAllowWriteProtected).toBe(false)
+			for (const command of ["git push origin main", "git reset --hard"]) {
+				await expect(
+					checkAutoApprovalWithInheritedPolicy({
+						state: { approvalMode: "bypass" },
+						inheritedState: policy,
+						ask: "command",
+						text: command,
+					}),
+				).resolves.toEqual({ decision: "deny" })
+			}
+		},
+	)
 
 	it("does not reserve or publish children when the parent persistence barrier fails", async () => {
 		const provider = makeProviderHarness()
@@ -3997,6 +4134,8 @@ If complete, use attempt_completion.
 			taskKind: "subagent",
 			subagentContextManifest: legacyManifest,
 			subagentDelegationPolicy: "proactive",
+			getStepApprovalMode: () => "bypass",
+			getTaskApprovalMode: () => "bypass",
 		}
 		const nested = await provider.prepareSubagentGroup(retainedChild as any, [
 			{ objective: "Do not inherit widened live settings", agent_kind: "explore" },
@@ -4095,6 +4234,8 @@ If complete, use attempt_completion.
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
 			subagentDelegationPolicy: "proactive",
+			getStepApprovalMode: () => "bypass",
+			getTaskApprovalMode: () => "bypass",
 		}
 		const nested = await provider.prepareSubagentGroup(child as any, [
 			{ objective: "Stay under the Auto ceiling", agent_kind: "explore" },
@@ -6592,6 +6733,44 @@ If complete, use attempt_completion.
 		expect(parent.alphaMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
+	it("keeps an interrupted result addressable without treating it as an automatic completion blocker", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const child = await store.createAgent({
+			taskId: "explicit-interrupted-result",
+			parentTaskId: parent.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Interrupted result",
+			role: "review",
+			objective: "Retain interruption evidence",
+			status: "interrupted",
+		})
+		await store.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: parent.taskId,
+			kind: "result",
+			name: "agent_interrupted",
+			payload: { taskId: child.taskId, status: "interrupted", summary: "Review interrupted." },
+		})
+		expect(provider.hasPendingAgentResultNotifications(parent as unknown as Task)).toBe(false)
+		await expect(provider.getParentCompletionDecision(parent as unknown as Task)).resolves.toMatchObject({
+			allowed: true,
+		})
+		await expect(
+			provider.waitForAgent(parent as unknown as Task, 10_000, { target: child.path, untilTerminal: true }),
+		).resolves.toMatchObject({ eventCount: 1 })
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(expect.any(String), [
+			expect.objectContaining({
+				senderTaskId: child.taskId,
+				payload: expect.objectContaining({ status: "interrupted", summary: "Review interrupted." }),
+			}),
+		])
+		expect(store.getAgent(child.taskId, root.rootTaskId)?.status).toBe("interrupted")
+	})
+
 	it("returns ordered completion, failure, and cancellation provenance and blocks completion until its native receipt", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -6698,10 +6877,12 @@ If complete, use attempt_completion.
 		])
 
 		// Returning/rendering a wait result is not a durable receipt. The completion
-		// gate releases the orphaned claim for retry but keeps all results blocking.
+		// gate releases the orphaned claim for retry. Completed/failed results block;
+		// cancellation evidence remains explicitly readable without requiring another turn.
 		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({
 			allowed: false,
-			message: expect.stringContaining("3 immediate-parent terminal results remain unconsumed"),
+			unconsumedResultCount: 2,
+			message: expect.stringContaining("2 immediate-parent terminal results remain unconsumed"),
 		})
 		const retried = (await provider.waitForAgent(parent as any, 10_000)) as any
 		expect(retried.claimId).not.toBe(firstWait.claimId)
@@ -7628,6 +7809,495 @@ If complete, use attempt_completion.
 			capturedManifest.skills.map((skill: any) => ({ id: skill.name, digest: skill.digest })),
 		)
 		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
+	})
+
+	describe("follow-up runtime approval admission", () => {
+		const setup = async (initialMode: ApprovalMode, source: "retained" | "evicted", missingGrant = false) => {
+			const settings = { approvalMode: "auto" as ApprovalMode, deniedCommands: ["git push"] }
+			let parentMode = initialMode
+			const provider = makeProviderHarness(3, settings)
+			const parent = {
+				...makeParent(),
+				getStepApprovalMode: () => parentMode,
+				getTaskApprovalMode: () => parentMode,
+			}
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "continued_review",
+				agent_type: "review",
+				message: "Inspect the retained implementation",
+			})
+			const taskId = prepared.envelopes[0].id
+			const descriptors = Reflect.get(provider, "subagentDescriptors")
+			let manifest = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+			if (missingGrant) {
+				const { digest: _digest, autoApproval: _autoApproval, ...runtimePolicy } = manifest.runtimePolicy
+				manifest = captureSubagentContext({
+					parentTaskId: parent.taskId,
+					capturedAt: manifest.capturedAt,
+					forkTurns: "none",
+					history: [],
+					instructions: await parent.captureEffectiveInheritedInstructions(),
+					skills: [],
+					cwd: parent.cwd,
+					workspaceRoots: [parent.cwd],
+					modelRoute: manifest.modelRoute,
+					runtimePolicy,
+					orchestration: manifest.orchestration,
+				}).manifest
+				descriptors.get(taskId).contextManifest = manifest
+			}
+			Reflect.get(provider, "__historyItems").set(taskId, {
+				id: taskId,
+				number: 2,
+				ts: 2,
+				task: "Retained review",
+				taskKind: "subagent",
+				mode: "code",
+				approvalMode: initialMode,
+				apiConfigName: "Parent",
+				subagentContextManifest: manifest,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+			prepared.group.status = "interrupted"
+			prepared.group.agents[0].status = "interrupted"
+			parent.alphaMessages = [{ subagentGroup: structuredClone(prepared.group) }]
+			const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+			await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+			const record = await store.createAgent({
+				taskId,
+				rootTaskId: parent.taskId,
+				parentTaskId: parent.taskId,
+				groupId: prepared.group.groupId,
+				nickname: prepared.group.agents[0].nickname,
+				role: "review",
+				objective: "Inspect the retained implementation",
+				status: "interrupted",
+				snapshot: { contextManifest: manifest },
+			})
+			if (source === "evicted") {
+				descriptors.clear()
+				Reflect.get(provider, "preparedSubagentGroups").clear()
+				Reflect.get(provider, "reservedSubagentSlots").clear()
+			}
+			const start = vi.spyOn(provider as any, "startPreparedSubagentRun").mockImplementation(async () => ({
+				taskId,
+				runId: `${taskId}:continued`,
+				groupId: prepared.group.groupId,
+				parentTaskId: parent.taskId,
+				path: record.path,
+				nickname: record.nickname,
+				role: record.role,
+				status: "pending",
+				createdAt: Date.now(),
+			}))
+			return {
+				provider,
+				parent,
+				settings,
+				prepared,
+				taskId,
+				manifest,
+				store,
+				record,
+				start,
+				setMode: (mode: ApprovalMode) => {
+					parentMode = mode
+				},
+			}
+		}
+
+		it.each([
+			{ initial: "ask" as const, next: "bypass" as const, source: "retained" as const },
+			{ initial: "ask" as const, next: "bypass" as const, source: "evicted" as const },
+			{ initial: "auto" as const, next: "bypass" as const, source: "retained" as const },
+			{ initial: "auto" as const, next: "bypass" as const, source: "evicted" as const },
+			{ initial: "bypass" as const, next: "ask" as const, source: "retained" as const },
+			{ initial: "bypass" as const, next: "ask" as const, source: "evicted" as const },
+		])("refreshes only the new follow-up's approval authority: %j", async ({ initial, next, source }) => {
+			const fixture = await setup(initial, source)
+			fixture.setMode(next)
+			fixture.settings.deniedCommands = ["git reset"]
+			await fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			const refreshed = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			const approval = subagentAutoApprovalPolicySchema.parse(refreshed.runtimePolicy.autoApproval)
+			expect(inferApprovalModeFromPolicy(approval)).toBe(next)
+			expect(isValidSubagentContextManifest(refreshed)).toBe(true)
+			const admittedPrepared = Reflect.get(fixture.provider, "preparedSubagentGroups").get(
+				fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.groupId,
+			)
+			expect(admittedPrepared.envelopes[0].scope.contextRefs).toEqual(refreshed.contextRefs)
+			expect(isValidInternalTaskEnvelope(admittedPrepared.envelopes[0])).toBe(true)
+			expect(refreshed.workspace).toEqual(fixture.manifest.workspace)
+			expect(refreshed.instructions).toEqual(fixture.manifest.instructions)
+			expect(refreshed.runtimePolicy).toEqual({
+				...fixture.manifest.runtimePolicy,
+				autoApproval: approval,
+				digest: expect.any(String),
+			})
+			expect(fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.snapshot?.contextManifest).toEqual(
+				refreshed,
+			)
+			for (const command of ["git push origin main", "git reset --hard"]) {
+				await expect(
+					checkAutoApprovalWithInheritedPolicy({
+						state: { approvalMode: next },
+						inheritedState: approval,
+						ask: "command",
+						text: command,
+					}),
+				).resolves.toEqual({ decision: "deny" })
+			}
+		})
+
+		it("keeps an invoking Ask ceiling when a later serialized admission sees Full Access", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.setMode("ask")
+			let release!: () => void
+			const predecessor = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			Reflect.get(fixture.provider, "agentFollowupAdmissions").set(fixture.taskId, predecessor)
+			const following = fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			fixture.setMode("bypass")
+			release()
+			await following
+			const manifest = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(manifest.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it("caps a captured Full Access invocation after the owner dial narrows during serialized admission", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.parent.getStepApprovalMode = () => "bypass"
+			let release!: () => void
+			const predecessor = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			Reflect.get(fixture.provider, "agentFollowupAdmissions").set(fixture.taskId, predecessor)
+			const following = fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			fixture.setMode("ask")
+			release()
+			await following
+			const manifest = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(manifest.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it("keeps repeated follow-ups bounded while preserving a distinct prior denial", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.settings.deniedCommands = ["git reset"]
+			let ceilingCount = 0
+			for (let attempt = 0; attempt < 24; attempt++) {
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const descriptor = Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId)
+				const policy = subagentAutoApprovalPolicySchema.parse(
+					descriptor.contextManifest.runtimePolicy.autoApproval,
+				)
+				ceilingCount = policy.commandApprovalCeilings?.length ?? 0
+				for (const command of ["git push origin main", "git reset --hard"]) {
+					await expect(
+						checkAutoApprovalWithInheritedPolicy({
+							state: { approvalMode: "bypass" },
+							inheritedState: policy,
+							ask: "command",
+							text: command,
+						}),
+					).resolves.toEqual({ decision: "deny" })
+				}
+				await fixture.store.updateAgentStatus(
+					fixture.taskId,
+					"running",
+					{ pendingFollowupEventId: null },
+					fixture.parent.taskId,
+				)
+				await fixture.store.updateAgentStatus(fixture.taskId, "completed", {}, fixture.parent.taskId)
+				fixture.prepared.group.status = "completed"
+				fixture.prepared.group.agents[0].status = "completed"
+			}
+			expect(ceilingCount).toBeLessThanOrEqual(2)
+		})
+
+		it("retains an admitted Ask receipt through rollback and eviction instead of inheriting a later Full Access dial", async () => {
+			const fixture = await setup("bypass", "evicted")
+			fixture.setMode("ask")
+			fixture.start.mockRejectedValueOnce(new Error("Continuation publication failed"))
+			await expect(
+				fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				),
+			).rejects.toThrow("Continuation publication failed")
+			const retained = fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)
+			expect(retained?.pendingFollowupEventId).toEqual(expect.any(String))
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(
+						retained?.snapshot?.contextManifest?.runtimePolicy.autoApproval,
+					),
+				),
+			).toBe("ask")
+			fixture.setMode("bypass")
+			Reflect.get(fixture.provider, "subagentDescriptors").clear()
+			Reflect.get(fixture.provider, "preparedSubagentGroups").clear()
+			Reflect.get(fixture.provider, "reservedSubagentSlots").clear()
+			await fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			const restored = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(restored.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it.each([false, true])(
+			"launches the replacement with its admitted mode, including legacy=%s",
+			async (missingGrant) => {
+				const fixture = await setup(missingGrant ? "bypass" : "ask", "evicted", missingGrant)
+				fixture.setMode("bypass")
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const child = Object.assign(new EventEmitter(), {
+					taskId: fixture.taskId,
+					alphaMessages: [],
+					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+					finalizeSubagentHistory: vi.fn(async () => undefined),
+					cancelCurrentRequest: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+					isCompleted: () => true,
+					resumeSubagentFollowup: async () => {
+						child.emit(AlphaCodeEventName.Message, {
+							action: "created",
+							message: { ts: 201, type: "say", say: "completion_result", text: "Current report" },
+						})
+					},
+				})
+				const create = vi.fn(async (_history: unknown) => child)
+				Reflect.set(fixture.provider, "createTaskWithHistoryItem", create)
+				const prepared = Reflect.get(fixture.provider, "preparedSubagentGroups").get(fixture.record.groupId)
+				await Reflect.get(fixture.provider, "runSubagentEnvelope").call(
+					fixture.provider,
+					prepared.envelopes[0],
+					new AbortController().signal,
+				)
+				expect(create.mock.calls[0][0]).toMatchObject({ approvalMode: missingGrant ? "ask" : "bypass" })
+			},
+		)
+
+		it.each(["retained", "evicted"] as const)(
+			"keeps a missing legacy grant conservative on %s follow-up",
+			async (source) => {
+				const fixture = await setup("ask", source, true)
+				fixture.setMode("bypass")
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const refreshed = subagentContextManifestSchema.parse(
+					Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+				)
+				expect(refreshed.runtimePolicy.autoApproval).toBeUndefined()
+				expect(refreshed.runtimePolicy).toEqual(fixture.manifest.runtimePolicy)
+			},
+		)
+
+		it("does not widen a running child's accepted step when buffering a follow-up", async () => {
+			const fixture = await setup("ask", "retained")
+			fixture.setMode("bypass")
+			await fixture.store.updateAgentStatus(fixture.taskId, "pending", {}, fixture.parent.taskId)
+			await fixture.store.updateAgentStatus(fixture.taskId, "running", {}, fixture.parent.taskId)
+			const child = {
+				taskId: fixture.taskId,
+				subagentContextManifest: fixture.manifest,
+				getStepApprovalMode: () => "ask",
+				getTaskApprovalMode: () => "ask",
+				admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
+			}
+			Reflect.get(fixture.provider, "taskSessions").getTask = (taskId: string) =>
+				taskId === child.taskId ? child : undefined
+			await expect(
+				fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect at the next input boundary",
+				),
+			).resolves.toMatchObject({ delivery: "buffered" })
+			expect(child.getStepApprovalMode()).toBe("ask")
+			expect(child.subagentContextManifest).toBe(fixture.manifest)
+			expect(fixture.start).not.toHaveBeenCalled()
+			expect(fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.snapshot?.contextManifest).toEqual(
+				fixture.manifest,
+			)
+		})
+
+		it.each(["auto", "bypass"] as const)(
+			"keeps a pending descendant retry under its current owner and frozen %s scope",
+			async (ownerApprovalMode) => {
+				const provider = makeProviderHarness(3, { approvalMode: "bypass" })
+				const root = {
+					...makeParent(),
+					getStepApprovalMode: () => "bypass",
+					getTaskApprovalMode: () => "bypass",
+				}
+				const ownerPrepared = await provider.prepareSubagentGroup(root as unknown as Task, {
+					task_name: "scoped_owner",
+					agent_type: "review",
+					message: "Inspect the scoped implementation",
+				})
+				const descriptors = Reflect.get(provider, "subagentDescriptors")
+				const originalOwnerManifest = subagentContextManifestSchema.parse(
+					descriptors.get(ownerPrepared.envelopes[0].id).contextManifest,
+				)
+				const { digest: _digest, ...ownerRuntimePolicy } = originalOwnerManifest.runtimePolicy
+				const ownerManifest = captureSubagentContext({
+					parentTaskId: root.taskId,
+					capturedAt: originalOwnerManifest.capturedAt,
+					forkTurns: "none",
+					history: [],
+					instructions: await root.captureEffectiveInheritedInstructions(),
+					skills: [],
+					cwd: root.cwd,
+					workspaceRoots: [root.cwd],
+					modelRoute: originalOwnerManifest.modelRoute,
+					orchestration: originalOwnerManifest.orchestration,
+					runtimePolicy: {
+						...ownerRuntimePolicy,
+						allowedTools: ["read_file", "spawn_agent", "send_message"],
+						writeScope: ["src/one.ts"],
+						fileWriteScope: ["src/one.ts"],
+						autoApproval: provider.snapshotSubagentAutoApprovalPolicy({ approvalMode: ownerApprovalMode }),
+					},
+				}).manifest
+				let ownerMode: ApprovalMode = "ask"
+				const owner = {
+					...makeParent(),
+					taskId: ownerPrepared.envelopes[0].id,
+					taskKind: "subagent",
+					rootTaskId: root.taskId,
+					subagentRole: "review",
+					subagentContextManifest: ownerManifest,
+					getStepApprovalMode: () => ownerMode,
+					getTaskApprovalMode: () => ownerMode,
+					getTaskAllowedToolNames: () => ownerManifest.runtimePolicy.allowedTools,
+					getSubagentFileWriteScope: () => ["src/one.ts"],
+				}
+				const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+				await Reflect.get(provider, "ensureAgentControlRoot").call(provider, root)
+				await store.createAgent({
+					taskId: owner.taskId,
+					parentTaskId: root.taskId,
+					rootTaskId: root.taskId,
+					groupId: ownerPrepared.group.groupId,
+					nickname: ownerPrepared.group.agents[0].nickname,
+					role: "review",
+					objective: "Own the scoped work",
+					status: "running",
+					snapshot: { contextManifest: ownerManifest },
+				})
+				Reflect.get(provider, "taskSessions").getTask = (taskId: string) =>
+					taskId === owner.taskId ? owner : undefined
+				const prepared = await provider.prepareSubagentGroup(owner as unknown as Task, {
+					task_name: "scoped_descendant",
+					agent_type: "review",
+					message: "Inspect the exact file",
+				})
+				const taskId = prepared.envelopes[0].id
+				const frozen = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+				prepared.group.status = "interrupted"
+				prepared.group.agents[0].status = "interrupted"
+				owner.alphaMessages = [{ subagentGroup: structuredClone(prepared.group) }]
+				Reflect.get(provider, "__historyItems").set(taskId, {
+					id: taskId,
+					approvalMode: "ask",
+					subagentContextManifest: frozen,
+				})
+				const record = await store.createAgent({
+					taskId,
+					rootTaskId: root.taskId,
+					parentTaskId: owner.taskId,
+					groupId: prepared.group.groupId,
+					nickname: prepared.group.agents[0].nickname,
+					role: "review",
+					objective: "Inspect the exact file",
+					status: "interrupted",
+					snapshot: { contextManifest: frozen },
+				})
+				ownerMode = "bypass"
+				const start = vi.spyOn(provider as any, "startPreparedSubagentRun").mockResolvedValue({
+					taskId,
+					runId: "scoped-followup",
+				})
+				start.mockRejectedValueOnce(new Error("Nested continuation publication failed"))
+				await expect(
+					provider.followupAgentTask(
+						root as unknown as Task,
+						record.path,
+						"Continue within the assigned file",
+					),
+				).rejects.toThrow("Nested continuation publication failed")
+				expect(
+					inferApprovalModeFromPolicy(
+						subagentAutoApprovalPolicySchema.parse(
+							store.getAgent(taskId, root.taskId)?.snapshot?.contextManifest?.runtimePolicy.autoApproval,
+						),
+					),
+				).toBe(ownerApprovalMode)
+				ownerMode = "ask"
+				await provider.followupAgentTask(
+					root as unknown as Task,
+					record.path,
+					"Continue within the assigned file",
+				)
+				const refreshed = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+				const approval = subagentAutoApprovalPolicySchema.parse(refreshed.runtimePolicy.autoApproval)
+				expect(inferApprovalModeFromPolicy(approval)).toBe("ask")
+				expect(refreshed.runtimePolicy.allowedTools).toEqual(frozen.runtimePolicy.allowedTools)
+				expect(refreshed.runtimePolicy.allowedTools).not.toContain("apply_patch")
+				expect(refreshed.runtimePolicy.writeScope).toEqual(["src/one.ts"])
+				expect(refreshed.runtimePolicy.fileWriteScope).toEqual(["src/one.ts"])
+				expect(refreshed.workspace).toEqual(frozen.workspace)
+			},
+		)
 	})
 
 	it("queues a follow-up for a running child without starting an overlapping run", async () => {

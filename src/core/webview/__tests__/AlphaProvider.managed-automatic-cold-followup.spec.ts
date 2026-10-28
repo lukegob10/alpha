@@ -3,11 +3,19 @@ import { createManagedPublicLifecycleHarness, deferred } from "./managedPublicLi
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 
-import { AlphaCodeEventName, subagentSpawnHandleSchema } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	inferApprovalModeFromPolicy,
+	subagentAutoApprovalPolicySchema,
+	subagentContextManifestSchema,
+	subagentSpawnHandleSchema,
+} from "@alpha-code/types"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ProviderTranscriptStore, readApiMessages, readTaskMessages, type ApiMessage } from "../../task-persistence"
 import { Task } from "../../task/Task"
+import { isValidSubagentContextManifest } from "../../agent/SubagentContextCapture"
+import { digestValue } from "../../agent/StepContext"
 
 type Harness = Awaited<ReturnType<typeof createManagedPublicLifecycleHarness>>
 type Child = Awaited<ReturnType<Harness["spawnCompletedChild"]>>
@@ -150,7 +158,7 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 		const target = await fixture.spawnCompletedChild("cold-followup-target")
 		expect(target.task).toBeInstanceOf(Task)
 		expect(target.result).toMatchObject({ status: "completed", summary: target.turn.summary, changedFiles: [] })
-		const manifest = structuredClone(target.task.subagentContextManifest)
+		const manifest = subagentContextManifestSchema.parse(target.task.subagentContextManifest)
 		expect(manifest?.orchestration?.ancestry).toMatchObject({ rootTaskId: fixture.root.taskId, depth: 1 })
 		const originalHistory = (
 			await fixture.provider.getTaskWithId(target.taskId, {
@@ -192,8 +200,8 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 			await expect(fixture.provider.getParentCompletionDecision(fixture.root)).resolves.toMatchObject({
 				allowed: false,
 			})
-			// Broaden actual live policy/limits after capture. Restore must retain the
-			// saved authority and budget, including either optional description form.
+			// Change live settings after capture. Fresh admission may refresh approval
+			// authority, while mode, callable tools, scope, instructions and budgets stay frozen.
 			// The instruction adapter is fixed; its setting change is not the oracle.
 			fixture.settings.customInstructions = "LIVE_SETTINGS_MUST_NOT_REPLACE_FROZEN_CHILD_AUTHORITY"
 			fixture.settings.alwaysAllowWrite = true
@@ -235,8 +243,43 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 			expect(handle).toMatchObject({ taskId: target.taskId, path: target.path })
 			expect(handle.runId).not.toBe(target.handle.runId)
 			expect(fixture.runs.resolveRunTaskId(handle.runId)).toBe(target.taskId)
-			expect(successor.subagentContextManifest).toEqual(manifest)
-			expect(successor.subagentContextManifest?.runtimePolicy).toEqual(manifest?.runtimePolicy)
+			const admittedManifest = subagentContextManifestSchema.parse(successor.subagentContextManifest)
+			const capturedApproval = subagentAutoApprovalPolicySchema.parse(manifest.runtimePolicy.autoApproval)
+			const admittedApproval = subagentAutoApprovalPolicySchema.parse(admittedManifest.runtimePolicy.autoApproval)
+			const {
+				commandApproval: capturedCommands,
+				commandApprovalCeilings: _capturedCeilings,
+				...capturedFlags
+			} = capturedApproval
+			const {
+				commandApproval: admittedCommands,
+				commandApprovalCeilings: admittedCeilings,
+				...admittedFlags
+			} = admittedApproval
+			expect(admittedFlags).toEqual(capturedFlags)
+			expect(admittedCommands).toEqual({ ...capturedCommands, salt: admittedCommands.salt })
+			// This fixture has no command denials; its old allow-all ceiling is redundant.
+			expect(admittedCeilings).toEqual([])
+			expect(inferApprovalModeFromPolicy(admittedApproval)).toBe(fixture.root.getStepApprovalMode())
+			expect(successor.getTaskApprovalMode()).toBe(fixture.root.getStepApprovalMode())
+			const { digest: _capturedPolicyDigest, ...capturedRuntimePolicy } = manifest.runtimePolicy
+			const expectedPolicyContents = { ...capturedRuntimePolicy, autoApproval: admittedApproval }
+			const expectedRuntimePolicy = { ...expectedPolicyContents, digest: digestValue(expectedPolicyContents) }
+			const { manifestDigest: _capturedManifestDigest, ...capturedManifestContents } = manifest
+			const expectedManifestContents = {
+				...capturedManifestContents,
+				runtimePolicy: expectedRuntimePolicy,
+				contextRefs: manifest.contextRefs.map((ref) =>
+					ref === `runtime-policy:${manifest.runtimePolicy.digest}`
+						? `runtime-policy:${expectedRuntimePolicy.digest}`
+						: ref,
+				),
+			}
+			expect(admittedManifest).toEqual({
+				...expectedManifestContents,
+				manifestDigest: digestValue(expectedManifestContents),
+			})
+			expect(isValidSubagentContextManifest(admittedManifest)).toBe(true)
 			expect(successor.subagentContextManifest?.orchestration?.limits).toEqual(manifest?.orchestration?.limits)
 			expect(successor.subagentContextManifest?.runtimePolicy).toMatchObject({ execute: false, mutate: false })
 			expect(successor.isToolAllowedForTask("exec_command")).toBe(true)
@@ -405,6 +448,8 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 			expect(history.tokensIn).toBe(4)
 			expect(history.tokensOut).toBe(6)
 			expect(history.totalCost).toBeCloseTo(0.002)
+			expect(history.subagentContextManifest).toEqual(admittedManifest)
+			expect(history.approvalMode).toBe(inferApprovalModeFromPolicy(admittedApproval))
 			expect(rootBudgetUsage(fixture).tokens).toBe(25)
 			expect(rootBudgetUsage(fixture).cost).toBeCloseTo(0.005)
 			const childMessages = await readTaskMessages({
@@ -416,7 +461,7 @@ describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 				childMessages.filter((message) => message.say === "completion_result").map((message) => message.text),
 			).toEqual([target.turn.summary, successorTurn.summary])
 			expect(fixture.root.alphaMessages.filter((message) => message.say === "completion_result")).toHaveLength(1)
-			expect(successor.subagentContextManifest).toEqual(manifest)
+			expect(successor.subagentContextManifest).toEqual(admittedManifest)
 		} finally {
 			cleanup.release.resolve()
 			releaseReceipt.resolve()

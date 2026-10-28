@@ -235,6 +235,7 @@ describe("Managed workers in folders without Git", () => {
 				expect(ownerRoot).toBe(path.join(os.homedir(), ".alpha", "worker-git", captured.id))
 				await fs.rm(ownerRoot, { recursive: true, force: true })
 				await expect(service.load(longStorage, captured.id)).resolves.toMatchObject({ status: "applied" })
+				await expect(service.apply(longStorage, captured.id)).resolves.toEqual({ status: "applied" })
 			} finally {
 				await service.deleteArtifact(longStorage, worker.artifact.id)
 			}

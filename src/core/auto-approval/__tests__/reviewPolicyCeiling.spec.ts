@@ -223,7 +223,7 @@ describe("captured tool review ceiling", () => {
 		).resolves.toEqual({ decision: "approve" })
 	})
 
-	it("does not let inherited Full Access bypass a closed invoking review ceiling", async () => {
+	it("denies child Full Access permissions outside a closed invoking review ceiling", async () => {
 		const live = state()
 		live.approvalMode = "bypass"
 		const reviewPolicy = captureToolReviewPolicy()
@@ -240,7 +240,7 @@ describe("captured tool review ceiling", () => {
 		]) {
 			await expect(
 				checkAutoApprovalWithInheritedPolicy({ ...input, state: live, inheritedState, reviewPolicy }),
-			).resolves.toEqual({ decision: "ask" })
+			).resolves.toEqual({ decision: "deny" })
 		}
 	})
 

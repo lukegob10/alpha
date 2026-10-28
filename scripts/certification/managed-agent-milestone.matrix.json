@@ -855,7 +855,12 @@
 					"assertions": [
 						{
 							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
-							"pattern": "(?:^| )blocks completion while an undelivered descendant result remains unowned$",
+							"pattern": "(?:^| )blocks completion while an undelivered completed descendant result remains unowned$",
+							"minimumMatches": 1
+						},
+						{
+							"file": "src/core/webview/__tests__/AlphaProvider.change-set-actions.spec.ts",
+							"pattern": "(?:^| )blocks completion while an undelivered failed descendant result remains unowned$",
 							"minimumMatches": 1
 						}
 					]

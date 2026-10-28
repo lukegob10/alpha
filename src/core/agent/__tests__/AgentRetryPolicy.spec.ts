@@ -3,15 +3,27 @@ import {
 	AgentRetryPolicy,
 	DEFAULT_AGENT_RETRY_POLICY,
 	delayWithAbort,
+	getAgentRetryDeadline,
 } from "../AgentRetryPolicy"
 
 describe("AgentRetryPolicy", () => {
+	it("omits disabled deadlines while retaining explicit elapsed and caller limits", () => {
+		vi.spyOn(Date, "now").mockReturnValue(1_000)
+		try {
+			expect(getAgentRetryDeadline(Infinity, 600_000)).toBeUndefined()
+			expect(getAgentRetryDeadline(Infinity, 600_000, 1_500)).toBe(1_500)
+			expect(getAgentRetryDeadline(5_000, 1_000)).toBe(5_000)
+			expect(getAgentRetryDeadline(5_000, 1_000, 9_000)).toBe(5_000)
+		} finally {
+			vi.restoreAllMocks()
+		}
+	})
 	it("uses stable bounded defaults", () => {
 		const policy = new AgentRetryPolicy()
 
 		expect(DEFAULT_AGENT_RETRY_POLICY).toEqual({
 			maxAttempts: 4,
-			maxElapsedMs: 90_000,
+			maxElapsedMs: Infinity,
 			baseDelayMs: 1_000,
 			maxDelayMs: 30_000,
 			jitter: "full",
@@ -82,7 +94,7 @@ describe("AgentRetryPolicy", () => {
 		{ elapsedMs: 0, retryAfterMs: 120_000 },
 		{ elapsedMs: 45_000, retryAfterMs: 60_000 },
 	])("exhausts rather than shortening provider advice beyond the remaining allowance: %j", (request) => {
-		const policy = new AgentRetryPolicy({ jitter: "none" })
+		const policy = new AgentRetryPolicy({ jitter: "none", maxElapsedMs: 90_000 })
 		const decision = policy.decide({ category: "rate-limit", attempt: 1, ...request })
 		expect(decision).toMatchObject({ shouldRetry: false, delayMs: 0, reason: "elapsed-budget" })
 		expect(decision).not.toHaveProperty("retryAt")
@@ -135,19 +147,22 @@ describe("AgentRetryPolicy", () => {
 		})
 	})
 
-	it("treats a long first-attempt deadline as terminal once the default logical retry allowance is exhausted", () => {
+	it("allows bounded recovery after a long initial response without an implicit elapsed ceiling", () => {
 		const policy = new AgentRetryPolicy({ jitter: "none" })
 
 		expect(policy.decide({ category: "transport", attempt: 1, elapsedMs: 600_000 })).toMatchObject({
+			shouldRetry: true,
+			exhausted: false,
+			delayMs: 1_000,
+		})
+		expect(policy.decide({ category: "transport", attempt: 4, elapsedMs: 3_600_000 })).toMatchObject({
 			shouldRetry: false,
-			exhausted: true,
-			delayMs: 0,
-			reason: "elapsed-budget",
+			reason: "attempts",
 		})
 	})
 
 	it("only schedules a safe retry when its delay still fits the remaining logical allowance", () => {
-		const policy = new AgentRetryPolicy({ jitter: "none" })
+		const policy = new AgentRetryPolicy({ jitter: "none", maxElapsedMs: 90_000 })
 
 		expect(policy.decide({ category: "transport", attempt: 1, elapsedMs: 89_000 })).toMatchObject({
 			shouldRetry: true,

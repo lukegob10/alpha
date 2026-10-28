@@ -10,6 +10,21 @@ import {
 } from "../stream"
 
 describe("API stream cancellation", () => {
+	it.each(["request_deadline", "retry_deadline", "compaction_deadline"] as const)(
+		"preserves the typed %s cause without granting retry authority",
+		(timeoutScope) => {
+			const control = createLinkedAbortController({ deadline: Date.now() - 1, deadlineScope: timeoutScope })
+			try {
+				expect(normalizeApiStreamErrorMetadata(control.signal.reason)).toMatchObject({
+					code: "ProviderTimeout",
+					timeoutScope,
+					retryable: false,
+				})
+			} finally {
+				control.dispose()
+			}
+		},
+	)
 	it.each([0, -1])("enforces an elapsed deadline synchronously (%s ms)", (offset) => {
 		vi.useFakeTimers()
 		try {

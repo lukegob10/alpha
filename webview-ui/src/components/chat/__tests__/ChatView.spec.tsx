@@ -303,23 +303,31 @@ vi.mock("../common/TelemetryBanner", () => ({
 }))
 
 // Mock i18n
-vi.mock("react-i18next", () => ({
-	useTranslation: () => ({
-		t: (key: string, options?: any) => {
-			if (key === "chat:versionIndicator.ariaLabel" && options?.version) {
-				return `Version ${options.version}`
-			}
-			return key
+vi.mock("react-i18next", async () => {
+	const { createInstance } = await import("i18next")
+	const { default: chat } = await import("@/i18n/locales/en/chat.json")
+	const subagentTranslations = createInstance()
+	await subagentTranslations.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
+	return {
+		useTranslation: () => ({
+			t: (key: string, options?: Record<string, unknown>) => {
+				// Keep existing key-based fixtures while exercising the task links' localized names and statuses.
+				if (key.startsWith("subagentRow.")) return subagentTranslations.t(key, { ...options, ns: "chat" })
+				if (key === "chat:versionIndicator.ariaLabel" && options?.version) {
+					return `Version ${options.version}`
+				}
+				return key
+			},
+		}),
+		initReactI18next: {
+			type: "3rdParty",
+			init: () => {},
 		},
-	}),
-	initReactI18next: {
-		type: "3rdParty",
-		init: () => {},
-	},
-	Trans: ({ i18nKey, children }: { i18nKey: string; children?: React.ReactNode }) => {
-		return <>{children || i18nKey}</>
-	},
-}))
+		Trans: ({ i18nKey, children }: { i18nKey: string; children?: React.ReactNode }) => {
+			return <>{children || i18nKey}</>
+		},
+	}
+})
 
 interface ChatTextAreaProps {
 	contextControl?: React.ReactNode

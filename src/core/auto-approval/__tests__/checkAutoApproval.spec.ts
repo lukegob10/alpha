@@ -155,7 +155,7 @@ describe("checkAutoApproval", () => {
 				ask: "use_mcp_server",
 				text,
 			}),
-		).resolves.toEqual({ decision: "ask" })
+		).resolves.toEqual({ decision: mode === "bypass" ? "deny" : "ask" })
 		await expect(
 			checkAutoApprovalWithInheritedPolicy({
 				state: { ...state, approvalMode: "ask", alwaysAllowMcp: false },
@@ -1165,8 +1165,8 @@ describe("checkAutoApproval", () => {
 	it.each([
 		["git status", "approve"],
 		["git push origin main", "deny"],
-		['git "$ACTION"', "ask"],
-		["git push${SUFFIX} origin main", "ask"],
+		['git "$ACTION"', "deny"],
+		["git push${SUFFIX} origin main", "deny"],
 	])("keeps Full Access children inside the invoking step's finite denial ceiling: %s", async (text, decision) => {
 		const inheritedState = {
 			...disabledSubagentAutoApprovalPolicy,

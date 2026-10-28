@@ -22,6 +22,7 @@ import { normalizeToolSchema } from "../../utils/json-schema"
 import {
 	ApiStream,
 	ApiStreamDeadlineError,
+	type ApiDeadlineScope,
 	createLinkedAbortController,
 	createApiStreamError,
 	getApiStreamErrorMessage,
@@ -40,7 +41,7 @@ import { normalizeToolHistory } from "../transform/tool-history"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 
 import { BaseProvider } from "./base-provider"
-import { getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
+import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
 import { applyCopilotToolPreferences, type ModelToolIdentity } from "./utils/router-tool-preferences"
 import type {
 	SingleCompletionHandler,
@@ -312,15 +313,16 @@ function normalizeVsCodeLmStreamError(
 class VsCodeLmRequestDeadlineError extends ApiStreamDeadlineError {
 	readonly phase: VsCodeLmRequestPhase
 
-	constructor(phase: VsCodeLmRequestPhase) {
-		super(`VS Code LM caller deadline exceeded during ${phase}.`)
+	constructor(phase: VsCodeLmRequestPhase, timeoutScope: ApiDeadlineScope) {
+		super(`VS Code LM caller deadline exceeded during ${phase}.`, timeoutScope)
 		this.phase = phase
 	}
 }
 
 function getVsCodeLmRequestAbortError(signal: AbortSignal, phase: VsCodeLmRequestPhase): Error {
+	if (signal.reason instanceof ApiRequestTimeoutError) return signal.reason
 	return signal.reason instanceof ApiStreamDeadlineError
-		? new VsCodeLmRequestDeadlineError(phase)
+		? new VsCodeLmRequestDeadlineError(phase, signal.reason.timeoutScope)
 		: new vscode.CancellationError()
 }
 

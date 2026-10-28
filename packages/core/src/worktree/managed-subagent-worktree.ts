@@ -57,6 +57,9 @@ export interface ManagedWorkerChange {
 export interface ManagedWorkerArtifact {
 	id: string
 	taskId: string
+	/** Durable launch identity; absent on legacy proposals. */
+	groupId?: string
+	runId?: string
 	status: "active" | "pending_review" | "conflicted" | "applied" | "discarded" | "scope_violation"
 	createdAt: number
 	updatedAt: number
@@ -88,7 +91,11 @@ export interface PreparedManagedWorktree {
 	workspacePath: string
 }
 
-export type ManagedWorkerCreationOptions = WorktreeProcessCancellation
+export type ManagedWorkerCreationOptions = WorktreeProcessCancellation & { groupId?: string; runId?: string }
+
+export type ManagedWorkerApplyOptions = WorktreeProcessCancellation & {
+	validateBeforeMutation?: (artifact: ManagedWorkerArtifact) => void
+}
 
 export interface ApplyManagedWorktreeResult {
 	status: "applied" | "conflicted"
@@ -144,6 +151,10 @@ class GitRepositoryNotFoundError extends Error {}
 
 type ArtifactGitContext = Pick<ManagedWorkerArtifact, "gitRoot" | "privateGitDir">
 
+type CurrentWorkerPathState =
+	| { kind: "absent" | "directory" | "other" }
+	| { kind: "file" | "symlink"; hash: string; mode: string }
+
 const artifactString = z.string().regex(/^[^\0]*$/)
 const absoluteArtifactPath = artifactString.refine((value) => path.isAbsolute(value))
 const relativeArtifactPath = artifactString.refine(
@@ -158,6 +169,8 @@ const managedWorkerArtifactSchema = z
 	.object({
 		id: artifactString.min(1),
 		taskId: artifactString.min(1),
+		groupId: artifactString.min(1).optional(),
+		runId: artifactString.min(1).optional(),
 		status: z.enum(["active", "pending_review", "conflicted", "applied", "discarded", "scope_violation"]),
 		createdAt: z.number().finite().nonnegative(),
 		updatedAt: z.number().finite().nonnegative(),
@@ -468,13 +481,37 @@ export class ManagedSubagentWorktreeService {
 		env: NodeJS.ProcessEnv,
 		buffer: boolean,
 		creation?: ManagedWorkerCreationOptions,
+		input?: Buffer,
+		validateBeforeMutation?: () => void,
 	): Promise<string | Buffer> {
+		creation?.signal.throwIfAborted()
+		validateBeforeMutation?.()
 		creation?.signal.throwIfAborted()
 		const options = { cwd, env, maxBuffer: MAX_GIT_OUTPUT, windowsHide: true }
 		const execution = buffer
 			? execFileAsync("git", args, { ...options, encoding: "buffer" })
 			: execFileAsync("git", args, { ...options, encoding: "utf8" })
-		return (await joinWorktreeProcess<Awaited<typeof execution>>(execution, execution.child, creation)).stdout
+		let inputFailure: Error | undefined
+		const stdin = execution.child.stdin
+		const onInputError = (error: Error) => {
+			inputFailure = error
+		}
+		if (input !== undefined) {
+			if (!stdin) {
+				execution.child.kill()
+				await execution.catch(() => undefined)
+				throw new Error("Git process did not expose its owned input pipe")
+			}
+			stdin.once("error", onInputError)
+			stdin.end(input)
+		}
+		try {
+			const result = await joinWorktreeProcess<Awaited<typeof execution>>(execution, execution.child, creation)
+			if (inputFailure) throw inputFailure
+			return result.stdout
+		} finally {
+			stdin?.removeListener("error", onInputError)
+		}
 	}
 
 	private async invokeGit(
@@ -483,6 +520,8 @@ export class ManagedSubagentWorktreeService {
 		env: NodeJS.ProcessEnv | undefined,
 		buffer: boolean,
 		creation?: ManagedWorkerCreationOptions,
+		input?: Buffer,
+		validateBeforeMutation?: () => void,
 	): Promise<string | Buffer> {
 		creation?.signal.throwIfAborted()
 		const invocation = await this.prepareGitPaths(cwd, args, env)
@@ -490,6 +529,8 @@ export class ManagedSubagentWorktreeService {
 			commandArgs: string[],
 			asBuffer = false,
 			cancellable = true,
+			commandInput?: Buffer,
+			validateMutation?: () => void,
 		): Promise<string | Buffer> => {
 			const command = [...GIT_PLATFORM_ARGS, ...invocation.prefix, ...commandArgs]
 			return this.executeGitCommand(
@@ -498,6 +539,8 @@ export class ManagedSubagentWorktreeService {
 				createWorktreeGitEnvironment(invocation.env),
 				asBuffer,
 				cancellable ? creation : undefined,
+				commandInput,
+				validateMutation,
 			)
 		}
 		let failure: unknown
@@ -505,7 +548,7 @@ export class ManagedSubagentWorktreeService {
 		let output: string | Buffer = ""
 		let retainPaths = false
 		try {
-			let stdout = await execute(invocation.args, buffer)
+			let stdout = await execute(invocation.args, buffer, true, input, validateBeforeMutation)
 			if (invocation.addedWorktree && invocation.commonDir) {
 				const physicalWorktree = invocation.addedWorktree
 				await this.physicalizeWorktreeRegistration(invocation)
@@ -591,8 +634,10 @@ export class ManagedSubagentWorktreeService {
 		args: string[],
 		env?: NodeJS.ProcessEnv,
 		creation?: ManagedWorkerCreationOptions,
+		input?: Buffer,
+		validateBeforeMutation?: () => void,
 	): Promise<string> {
-		return String(await this.invokeGit(cwd, args, env, false, creation))
+		return String(await this.invokeGit(cwd, args, env, false, creation, input, validateBeforeMutation))
 	}
 
 	private async gitBuffer(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<Buffer> {
@@ -699,8 +744,10 @@ export class ManagedSubagentWorktreeService {
 		env?: NodeJS.ProcessEnv,
 		cwd = artifact.gitRoot,
 		creation?: ManagedWorkerCreationOptions,
+		input?: Buffer,
+		validateBeforeMutation?: () => void,
 	): Promise<string> {
-		return this.git(cwd, args, this.artifactGitEnv(artifact, env, cwd), creation)
+		return this.git(cwd, args, this.artifactGitEnv(artifact, env, cwd), creation, input, validateBeforeMutation)
 	}
 
 	private async artifactGitBuffer(
@@ -1132,6 +1179,8 @@ export class ManagedSubagentWorktreeService {
 			artifact = {
 				id: artifactId,
 				taskId,
+				...(creation?.groupId ? { groupId: creation.groupId } : {}),
+				...(creation?.runId ? { runId: creation.runId } : {}),
 				status: "active",
 				createdAt: now,
 				updatedAt: now,
@@ -1537,51 +1586,73 @@ export class ManagedSubagentWorktreeService {
 		throw lastError
 	}
 
-	private async currentBlobHash(artifact: ArtifactGitContext, filePath: string): Promise<string | undefined> {
-		const absolute = path.join(artifact.gitRoot, filePath)
-		try {
-			const stat = await fs.lstat(absolute)
-			if (stat.isDirectory()) return undefined
-			return (await this.artifactGit(artifact, ["hash-object", `--path=${filePath}`, "--", absolute])).trim()
-		} catch {
-			return undefined
-		}
-	}
-
 	private async currentPathState(
 		artifact: ArtifactGitContext,
 		filePath: string,
-	): Promise<{ hash?: string; mode?: string }> {
+		cancellation?: WorktreeProcessCancellation,
+	): Promise<CurrentWorkerPathState> {
 		const absolute = path.join(artifact.gitRoot, filePath)
-		try {
-			const stat = await fs.lstat(absolute)
-			if (stat.isDirectory()) return {}
-			if (stat.isSymbolicLink()) {
-				const content = Buffer.from(await fs.readlink(absolute))
-				return {
-					hash: crypto.createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex"),
-					mode: "120000",
-				}
-			}
+		const stat = await fs.lstat(absolute).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined
+			throw error
+		})
+		if (!stat) return { kind: "absent" }
+		if (stat.isDirectory()) return { kind: "directory" }
+		if (stat.isSymbolicLink()) {
+			const content = Buffer.from(await fs.readlink(absolute))
 			return {
-				hash: await this.currentBlobHash(artifact, filePath),
-				mode: process.platform === "win32" || (stat.mode & 0o111) === 0 ? "100644" : "100755",
+				kind: "symlink",
+				hash: crypto.createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex"),
+				mode: "120000",
 			}
-		} catch {
-			return {}
+		}
+		if (!stat.isFile()) return { kind: "other" }
+		return {
+			kind: "file",
+			hash: (
+				await this.artifactGit(
+					artifact,
+					["hash-object", `--path=${filePath}`, "--", absolute],
+					undefined,
+					undefined,
+					cancellation,
+				)
+			).trim(),
+			mode: process.platform === "win32" || (stat.mode & 0o111) === 0 ? "100644" : "100755",
 		}
 	}
 
-	private async matchesAppliedState(artifact: ManagedWorkerArtifact, compareFileMode: boolean): Promise<boolean> {
+	private pathStateMatches(
+		current: CurrentWorkerPathState,
+		hash: string | undefined,
+		mode: string | undefined,
+		compareFileMode: boolean,
+	): boolean {
+		// An unreadable or unsupported entry never proves a file was deleted.
+		if (hash === undefined) return current.kind === "absent"
+		return (
+			(current.kind === "file" || current.kind === "symlink") &&
+			current.hash === hash &&
+			// core.filemode controls executable bits, never the regular-file/symlink distinction.
+			(mode === undefined || current.kind === (mode === "120000" ? "symlink" : "file")) &&
+			(!compareFileMode || current.mode === mode)
+		)
+	}
+
+	private async matchesAppliedState(
+		artifact: ManagedWorkerArtifact,
+		compareFileMode: boolean,
+		cancellation?: WorktreeProcessCancellation,
+	): Promise<boolean> {
 		for (const change of artifact.changes) {
-			const afterCurrent = await this.currentPathState(artifact, change.path)
-			if (afterCurrent.hash !== change.afterHash || (compareFileMode && afterCurrent.mode !== change.afterMode)) {
+			const afterCurrent = await this.currentPathState(artifact, change.path, cancellation)
+			if (!this.pathStateMatches(afterCurrent, change.afterHash, change.afterMode, compareFileMode)) {
 				return false
 			}
 			if (
 				change.previousPath &&
 				change.previousPath !== change.path &&
-				(await this.currentPathState(artifact, change.previousPath)).hash
+				(await this.currentPathState(artifact, change.previousPath, cancellation)).kind !== "absent"
 			) {
 				return false
 			}
@@ -1589,18 +1660,179 @@ export class ManagedSubagentWorktreeService {
 		return true
 	}
 
-	async apply(storagePath: string, artifactId: string): Promise<ApplyManagedWorktreeResult> {
+	private async validateCapturedPatch(
+		storagePath: string,
+		artifact: ManagedWorkerArtifact,
+		cancellation?: WorktreeProcessCancellation,
+	): Promise<{ patch: Buffer; before: Map<string, { hash: string; mode: string }> }> {
+		if (!artifact.patchFile || artifact.changes.length === 0) {
+			throw new Error("Worker proposal has no verifiable captured changes")
+		}
+		const patchPath = await this.artifactFilePath(storagePath, artifact.id, artifact.patchFile, false)
+		if ((await fs.stat(patchPath)).size > MAX_GIT_OUTPUT) throw new Error("Worker proposal patch exceeds its limit")
+		const patch = await fs.readFile(patchPath)
+		if (patch.length > MAX_GIT_OUTPUT) throw new Error("Worker proposal patch exceeds its limit")
+		// Keep native Git scratch paths short even when durable extension storage exceeds MAX_PATH.
+		const validationDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-apply-"))
+		const env = { GIT_INDEX_FILE: path.join(validationDirectory, "index"), GIT_NO_REPLACE_OBJECTS: "1" }
+		const before = new Map<string, { hash: string; mode: string }>()
+		const after = new Map<string, { hash: string; mode: string }>()
+		try {
+			cancellation?.signal.throwIfAborted()
+			const allowedPaths = new Set<string>()
+			for (const change of artifact.changes) {
+				for (const filePath of [change.previousPath, change.path]) {
+					if (!filePath) continue
+					const logicalPath = path.posix.relative(artifact.logicalWorkspaceFromRoot || ".", filePath)
+					if (
+						filePath.split(/[\\/]/).some((segment) => segment.toLowerCase() === ".git") ||
+						logicalPath === ".." ||
+						logicalPath.startsWith("../") ||
+						!this.pathInScope(filePath, artifact.gitRelativeScope, artifact.gitRelativeFileScope) ||
+						!this.pathInScope(logicalPath, artifact.writeScope, artifact.fileWriteScope)
+					)
+						throw new Error("Captured Worker path is outside its write scope")
+					allowedPaths.add(filePath)
+				}
+				for (const phase of ["before", "after"] as const) {
+					const hash = change[phase === "before" ? "beforeHash" : "afterHash"]
+					const file = change[phase === "before" ? "beforeFile" : "afterFile"]
+					let mode = change[phase === "before" ? "beforeMode" : "afterMode"]
+					if (!hash) {
+						if (file || mode) throw new Error("Captured Worker absence has inconsistent content metadata")
+						continue
+					}
+					if (!file) throw new Error("Captured Worker content is unavailable for verification")
+					const filePath = phase === "before" ? (change.previousPath ?? change.path) : change.path
+					if (!mode) {
+						const commit = phase === "before" ? artifact.baselineCommit : artifact.resultCommit
+						if (!commit || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(commit)) {
+							throw new Error("Legacy Worker file mode cannot be recovered safely")
+						}
+						const entry = await this.artifactGit(
+							artifact,
+							["ls-tree", commit, "--", filePath],
+							env,
+							undefined,
+							cancellation,
+						)
+						mode = /^(\d+)\s+\w+\s+[0-9a-f]+\t/.exec(entry)?.[1]
+					}
+					if (!mode || !["100644", "100755", "120000"].includes(mode)) {
+						throw new Error("Captured Worker file mode cannot be verified safely")
+					}
+					const blobPath = await this.artifactFilePath(storagePath, artifact.id, file, false)
+					if ((await fs.stat(blobPath)).size > MAX_GIT_OUTPUT) {
+						throw new Error("Captured Worker content exceeds its limit")
+					}
+					const actualHash = (
+						await this.artifactGit(
+							artifact,
+							["hash-object", "-w", "--no-filters", "--", blobPath],
+							env,
+							undefined,
+							cancellation,
+						)
+					).trim()
+					if (actualHash !== hash) throw new Error("Captured Worker content does not match its saved hash")
+					const entries = phase === "before" ? before : after
+					if (entries.has(filePath)) throw new Error("Captured Worker change paths are duplicated")
+					entries.set(filePath, { hash, mode })
+					if (phase === "before") change.beforeMode = mode
+					else change.afterMode = mode
+				}
+			}
+			// Git parses the untrusted payload; NUL output preserves spaces, tabs, and quoted names.
+			const stats = (
+				await this.artifactGit(artifact, ["apply", "--numstat", "-z"], env, undefined, cancellation, patch)
+			)
+				.split("\0")
+				.filter(Boolean)
+			for (let index = 0; index < stats.length; index++) {
+				const entry = /^(?:\d+|-)\t(?:\d+|-)\t([\s\S]*)$/.exec(stats[index]!)
+				if (!entry) throw new Error("Worker patch path summary is invalid")
+				const paths = entry[1] ? [entry[1]] : [stats[++index], stats[++index]]
+				if (paths.some((filePath) => !filePath || !allowedPaths.has(filePath))) {
+					throw new Error("Worker patch includes undeclared paths")
+				}
+			}
+			// An owned index proves the complete transaction without touching the parent index or files.
+			// Retained blob exports remain usable even after Git prunes the capture commits.
+			await this.artifactGit(artifact, ["read-tree", "--empty"], env, undefined, cancellation)
+			const entries = [...before].map(([filePath, entry]) => `${entry.mode} ${entry.hash}\t${filePath}\0`)
+			await this.artifactGit(
+				artifact,
+				["update-index", "-z", "--index-info"],
+				env,
+				undefined,
+				cancellation,
+				Buffer.from(entries.join("")),
+			)
+			await this.artifactGit(
+				artifact,
+				["apply", "--cached", "--binary", "--whitespace=nowarn"],
+				env,
+				undefined,
+				cancellation,
+				patch,
+			)
+			const applied = (
+				await this.artifactGit(artifact, ["ls-files", "--stage", "-z"], env, undefined, cancellation)
+			)
+				.split("\0")
+				.filter(Boolean)
+			if (applied.length !== after.size) throw new Error("Worker patch changes do not match its captured files")
+			for (const value of applied) {
+				const entry = /^(\d+) ([0-9a-f]+) 0\t([\s\S]+)$/.exec(value)
+				const expected = entry && after.get(entry[3]!)
+				if (!entry || !expected || entry[1] !== expected.mode || entry[2] !== expected.hash) {
+					throw new Error("Worker patch content or mode does not match its captured result")
+				}
+			}
+			return { patch, before }
+		} catch (error) {
+			cancellation?.signal.throwIfAborted()
+			throw new Error(
+				"Worker proposal cannot be verified against its captured contents; changes remain quarantined.",
+				{
+					cause: error,
+				},
+			)
+		} finally {
+			await fs.rm(validationDirectory, { recursive: true, force: true })
+		}
+	}
+
+	async apply(
+		storagePath: string,
+		artifactId: string,
+		options?: ManagedWorkerApplyOptions,
+	): Promise<ApplyManagedWorktreeResult> {
 		const artifact = await this.load(storagePath, artifactId)
 		if (artifact.status === "applied") return { status: "applied" }
 		if (!["pending_review", "conflicted"].includes(artifact.status) || !artifact.patchFile) {
 			throw new Error("This worker change set is not available to apply")
 		}
+		options?.signal.throwIfAborted()
+		const { patch, before } = await this.validateCapturedPatch(storagePath, artifact, options)
+		options?.signal.throwIfAborted()
 		const compareFileMode =
-			(await this.artifactGit(artifact, ["config", "--bool", "core.filemode"]).catch(() => "false")).trim() ===
-			"true"
+			(
+				await this.artifactGit(
+					artifact,
+					["config", "--bool", "core.filemode"],
+					undefined,
+					undefined,
+					options,
+				).catch(() => {
+					options?.signal.throwIfAborted()
+					return "false"
+				})
+			).trim() === "true"
 		// A prior process may have landed the patch and exited before metadata was
 		// durably replaced. Recognize the exact after-state before conflict checks.
-		if (await this.matchesAppliedState(artifact, compareFileMode)) {
+		if (await this.matchesAppliedState(artifact, compareFileMode, options)) {
+			options?.signal.throwIfAborted()
 			artifact.status = "applied"
 			delete artifact.conflictPaths
 			delete artifact.error
@@ -1610,22 +1842,24 @@ export class ManagedSubagentWorktreeService {
 		const conflicts: string[] = []
 		for (const change of artifact.changes) {
 			const beforePath = change.previousPath ?? change.path
-			const beforeCurrent = await this.currentPathState(artifact, beforePath)
-			if (
-				beforeCurrent.hash !== change.beforeHash ||
-				(compareFileMode && beforeCurrent.mode !== change.beforeMode)
-			)
+			const beforeCurrent = await this.currentPathState(artifact, beforePath, options)
+			if (!this.pathStateMatches(beforeCurrent, change.beforeHash, change.beforeMode, compareFileMode))
 				conflicts.push(beforePath)
 			if (change.previousPath && change.path !== change.previousPath) {
-				const destinationBaseline = await this.treeEntry(artifact, artifact.baselineCommit, change.path)
-				const destinationCurrent = await this.currentPathState(artifact, change.path)
+				const destinationBaseline = before.get(change.path)
+				const destinationCurrent = await this.currentPathState(artifact, change.path, options)
 				if (
-					destinationCurrent.hash !== destinationBaseline.hash ||
-					(compareFileMode && destinationCurrent.mode !== destinationBaseline.mode)
+					!this.pathStateMatches(
+						destinationCurrent,
+						destinationBaseline?.hash,
+						destinationBaseline?.mode,
+						compareFileMode,
+					)
 				)
 					conflicts.push(change.path)
 			}
 		}
+		options?.signal.throwIfAborted()
 		if (conflicts.length > 0) {
 			artifact.status = "conflicted"
 			artifact.conflictPaths = [...new Set(conflicts)]
@@ -1633,17 +1867,33 @@ export class ManagedSubagentWorktreeService {
 			return { status: "conflicted", conflictPaths: artifact.conflictPaths }
 		}
 
-		const patchPath = await this.artifactFilePath(storagePath, artifact.id, artifact.patchFile, false)
 		try {
-			await this.artifactGit(artifact, ["apply", "--check", "--binary", "--whitespace=nowarn", patchPath])
+			await this.artifactGit(
+				artifact,
+				["apply", "--check", "--binary", "--whitespace=nowarn"],
+				undefined,
+				undefined,
+				options,
+				patch,
+			)
 		} catch {
+			options?.signal.throwIfAborted()
 			artifact.status = "conflicted"
 			artifact.error = "Patch preflight failed against the current parent working tree."
 			await this.persist(storagePath, artifact)
 			return { status: "conflicted" }
 		}
-		await this.artifactGit(artifact, ["apply", "--binary", "--whitespace=nowarn", patchPath])
-		if (!(await this.matchesAppliedState(artifact, compareFileMode))) {
+		options?.signal.throwIfAborted()
+		await this.artifactGit(
+			artifact,
+			["apply", "--binary", "--whitespace=nowarn"],
+			undefined,
+			undefined,
+			options,
+			patch,
+			() => options?.validateBeforeMutation?.(artifact),
+		)
+		if (!(await this.matchesAppliedState(artifact, compareFileMode, options))) {
 			throw new Error("Applied worker change failed exact after-state verification")
 		}
 		artifact.status = "applied"
@@ -1738,18 +1988,25 @@ export class ManagedSubagentWorktreeService {
 						await this.persist(storagePath, artifact)
 						recovered.push(artifact)
 					}
-				} else if (recoverableWorktreePath || artifact.worktreePath) {
-					// Capture can finish before a transient Windows/Git lock allows the
-					// linked worktree to be removed. Legacy metadata can also omit the
-					// still-existing path. A removed path can retain pending prune work.
-					// Retry only cleanup; the quarantined commit and patch are authoritative.
-					artifact.worktreePath = recoverableWorktreePath ?? artifact.worktreePath
-					await this.cleanupWorktreeWithRetry(artifact)
-					delete artifact.worktreePath
-					if (artifact.error?.startsWith("Captured changes, but managed worktree cleanup")) {
-						delete artifact.error
+				} else {
+					try {
+						if (recoverableWorktreePath || artifact.worktreePath) {
+							// The exported proposal is authoritative; cleanup must not recapture it.
+							artifact.worktreePath = recoverableWorktreePath ?? artifact.worktreePath
+							await this.cleanupWorktreeWithRetry(artifact)
+							delete artifact.worktreePath
+							if (artifact.error?.startsWith("Captured changes, but managed worktree cleanup")) {
+								delete artifact.error
+							}
+							await this.persist(storagePath, artifact)
+						}
+					} finally {
+						// Capture and parent projection have separate durable boundaries. Return
+						// retained proposals again so a crash or failed projection can retry.
+						if (artifact.changes.length > 0 || artifact.status === "scope_violation" || artifact.error) {
+							recovered.push(artifact)
+						}
 					}
-					await this.persist(storagePath, artifact)
 				}
 			} catch {
 				// Leave unknown artifacts untouched; they may belong to a newer Alpha version.

@@ -13,6 +13,8 @@ describe("request timeout attribution", () => {
 			code: "ProviderTimeout",
 			timeoutMs: 100,
 			name: "ApiRequestTimeoutError",
+			timeoutScope: "provider_idle",
+			retryable: true,
 		})
 		await vitest.advanceTimersByTimeAsync(100)
 		await rejected

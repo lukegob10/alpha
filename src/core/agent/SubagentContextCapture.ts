@@ -1204,6 +1204,28 @@ export function isValidSubagentContextManifest(value: unknown): value is Subagen
 	return JSON.stringify(manifest.contextRefs) === JSON.stringify(expectedContextRefs(withoutContextRefsOrDigest))
 }
 
+/** Replace approval authority for a new host-authorized admission without changing frozen child context or scope. */
+export function refreshSubagentContextAutoApproval(
+	value: SubagentContextManifest,
+	autoApproval: NonNullable<SubagentContextRuntimePolicy["autoApproval"]>,
+): SubagentContextManifest {
+	if (!isValidSubagentContextManifest(value)) {
+		throw new Error("Cannot refresh approval authority on an invalid sub-agent context manifest")
+	}
+	// A dial change cannot reconstruct authority that a legacy capture never recorded.
+	if (!value.runtimePolicy.autoApproval) return structuredClone(value)
+	const { digest: _policyDigest, ...policy } = value.runtimePolicy
+	const runtimePolicy = buildRuntimePolicy({ ...policy, autoApproval })
+	const { manifestDigest: _manifestDigest, contextRefs: _contextRefs, ...base } = value
+	const withoutContextRefsOrDigest = { ...base, runtimePolicy }
+	const contextRefs = expectedContextRefs(withoutContextRefsOrDigest)
+	const withoutDigest = { ...withoutContextRefsOrDigest, contextRefs }
+	return subagentContextManifestSchema.parse({
+		...withoutDigest,
+		manifestDigest: digestValue(withoutDigest),
+	})
+}
+
 /** Finalize trusted approval provenance and rebuild every manifest integrity reference before launch. */
 export function finalizeSubagentContextManifestAuthorization(
 	value: SubagentContextManifest,

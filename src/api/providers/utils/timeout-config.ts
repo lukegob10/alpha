@@ -5,6 +5,8 @@ const DEFAULT_API_REQUEST_TIMEOUT_SECONDS = 600
 
 export class ApiRequestTimeoutError extends Error {
 	readonly code = "ProviderTimeout"
+	readonly timeoutScope = "provider_idle"
+	readonly retryable = true
 	constructor(
 		operationName: string,
 		readonly timeoutMs: number,

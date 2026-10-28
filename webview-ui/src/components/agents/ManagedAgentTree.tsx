@@ -8,7 +8,7 @@ import { vscode } from "@/utils/vscode"
 import { Button, Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../ui"
 
 import { buildManagedAgentTreeModel, type ManagedAgentNode } from "./managedAgentTreeAdapter"
-import { SubagentTaskLink } from "./SubagentTaskLink"
+import { getSubagentAttentionKey, SubagentTaskLink } from "./SubagentTaskLink"
 
 export interface ManagedAgentTreeProps {
 	rootTaskId: string
@@ -33,13 +33,7 @@ const groupAttentionByTaskId = (groups: readonly SubagentGroupState[] | undefine
 
 	for (const group of groups ?? []) {
 		for (const agent of group.agents) {
-			const attention = agent.pendingApproval
-				? "Approval"
-				: agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
-					? "Review"
-					: agent.parentVerification?.blocking
-						? "Review"
-						: undefined
+			const attention = getSubagentAttentionKey(agent)
 			const observedAt = Math.max(
 				agent.completedAt ?? 0,
 				agent.phaseStartedAt ?? 0,
@@ -67,12 +61,10 @@ const groupAttentionByTaskId = (groups: readonly SubagentGroupState[] | undefine
 	return attentionByTaskId
 }
 
-const compactAttention = (node: ManagedAgentNode, groupAttention?: string): string | undefined => {
-	if (groupAttention) return groupAttention
+const compactAttention = (node: ManagedAgentNode): string | undefined => {
 	if (!node.attention) return undefined
-	if (/approval/i.test(node.attention)) return "Approval"
-	if (/review|change/i.test(node.attention)) return "Review"
-	return "Input"
+	if (/approval/i.test(node.attention)) return "subagentRow.attention.approval"
+	return "subagentRow.attention.input"
 }
 
 /**
@@ -111,6 +103,23 @@ export function ManagedAgentTree({
 		[groups, liveTasksById, projection, rootTaskId],
 	)
 	const attentionByTaskId = useMemo(() => groupAttentionByTaskId(groups), [groups])
+	const projectedAttentionByTaskId = useMemo(
+		() =>
+			new Map(
+				projection?.rootTaskId === rootTaskId
+					? projection.nodes.map((node) => [
+							node.taskId,
+							node.attention ? `subagentRow.attention.${node.attention.kind}` : undefined,
+						])
+					: [],
+			),
+		[projection, rootTaskId],
+	)
+	const attentionForNode = (node: ManagedAgentNode) => {
+		const key =
+			attentionByTaskId.get(node.taskId) ?? projectedAttentionByTaskId.get(node.taskId) ?? compactAttention(node)
+		return key ? t(key) : undefined
+	}
 	const visibleLimit = Number.isFinite(maxVisibleAgents)
 		? Math.max(1, Math.floor(maxVisibleAgents))
 		: DEFAULT_MAX_VISIBLE_AGENTS
@@ -169,7 +178,7 @@ export function ManagedAgentTree({
 							<SubagentTaskLink
 								name={node.nickname}
 								status={node.status}
-								attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
+								attention={attentionForNode(node)}
 								detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
 								variant={presentation === "dock" ? "dock" : "chip"}
 								className={presentation === "dock" ? "w-full" : undefined}
@@ -230,7 +239,7 @@ export function ManagedAgentTree({
 								<SubagentTaskLink
 									name={node.nickname}
 									status={node.status}
-									attention={compactAttention(node, attentionByTaskId.get(node.taskId))}
+									attention={attentionForNode(node)}
 									detail={`${node.role} · ${node.path}`}
 									disabled={!onShowTask || node.stopReason === "never_launched"}
 									onOpen={() => {
