@@ -27,6 +27,7 @@ AGENTS.md
 
 # Docs
 docs/_site/
+/PUBLIC_RELEASE_AUDIT.md
 
 # Dotenv
 .env

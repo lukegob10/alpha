@@ -22,7 +22,9 @@ export type VscodeLlmModelSelectorLike = {
 
 export type VscodeLlmModelMetadata = VscodeLlmModelSelectorLike
 
-export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-5.5"
+export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-6.1-sol"
+
+const frontierCopilotFamilies = new Set(["gpt-6-astra", "gpt-6.1-sol", "claude-opus-5.5", "claude-sonnet-5.5"])
 
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
@@ -71,7 +73,7 @@ function copilotModel({
 	reasoningEffort,
 	supportsContextWindowConfiguration = false,
 	extendedContextSize,
-	deprecated,
+	deprecated = !frontierCopilotFamilies.has(family),
 }: {
 	name: string
 	family: string
@@ -108,8 +110,9 @@ function copilotModel({
 	}
 }
 
-// Capability fallback from GitHub Copilot documentation and recorded exact-host catalogs.
-// The live VS Code LM provider uses vscode.lm.selectChatModels() for availability and routing.
+// Supported Copilot choices and capabilities from documentation and recorded exact-host catalogs.
+// Setup uses these definitions immediately; request admission resolves availability and routing
+// through vscode.lm.selectChatModels() for the current VS Code window.
 // https://docs.github.com/en/copilot/reference/ai-models/supported-models
 export const vscodeLlmModels = {
 	"gpt-5-mini": copilotModel({
@@ -525,6 +528,57 @@ export function getVscodeLlmModelId(model: VscodeLlmModelSelectorLike): VscodeLl
 	return undefined
 }
 
+/**
+ * Resolve catalog identity for request routing using only exact declared evidence.
+ * The permissive metadata lookup above also recognizes decorated historical selectors;
+ * that compatibility behavior must not bind a newly configured model to another variant.
+ */
+export function getVscodeLlmExactModelId(model: VscodeLlmModelSelectorLike): VscodeLlmModelId | undefined {
+	if (model.vendor && model.vendor.trim().toLowerCase() !== "copilot") return undefined
+
+	const normalize = (value: string) => value.trim().toLowerCase().replace(/\s+/g, " ")
+	const catalog = (Object.keys(vscodeLlmModels) as VscodeLlmModelId[]).map((modelId) => ({
+		modelId,
+		identifiers: [
+			...getVscodeLlmModelIdentifiers(modelId),
+			vscodeLlmModels[modelId].name,
+			vscodeLlmModels[modelId].version,
+		].map(normalize),
+	}))
+	let matchedModelId: VscodeLlmModelId | undefined
+	let exactFamilyModelId: VscodeLlmModelId | undefined
+	for (const field of ["family", "id", "name", "version"] as const) {
+		const rawValue = model[field]
+		if (!rawValue?.trim()) continue
+		const value = normalize(rawValue)
+		const matches = catalog.filter(({ identifiers }) => identifiers.includes(value))
+		if (matches.length > 1) return undefined
+		const exactMatch = matches[0]?.modelId
+		if (exactMatch) {
+			if (matchedModelId && matchedModelId !== exactMatch) return undefined
+			matchedModelId = exactMatch
+			if (field === "family") exactFamilyModelId = exactMatch
+		} else if (
+			(field === "family" || field === "name") &&
+			catalog.some(({ identifiers }) =>
+				identifiers.some((identifier) => includesCompleteModelId(value, identifier)),
+			)
+		) {
+			const familyIdentifiers = catalog.find(({ modelId }) => modelId === exactFamilyModelId)?.identifiers
+			const hasDisplayOnlySuffix =
+				field === "name" &&
+				familyIdentifiers?.some(
+					(identifier) =>
+						value.startsWith(identifier) && /^(?:\s+\([^()]*\))+$/.test(value.slice(identifier.length)),
+				)
+			// Only an exact family can authorize parenthetical host labels after a
+			// declared name. Ordinary model suffixes still describe another variant.
+			if (!hasDisplayOnlySuffix) return undefined
+		}
+	}
+	return matchedModelId
+}
+
 export function getVscodeLlmModelInfo(model: VscodeLlmModelSelectorLike): VscodeLlmModelInfo | undefined {
 	const modelId = getVscodeLlmModelId(model)
 	return modelId ? vscodeLlmModels[modelId] : undefined
@@ -569,9 +623,11 @@ function shouldPreferVscodeLlmModel(candidate: VscodeLlmModelMetadata, current: 
 }
 
 /**
- * Returns the documented Copilot catalog as broad selectors for capability inspection.
- * These selectors must not be presented as available models: availability is scoped to
- * the current VS Code window, Copilot account, plan, and organization policy.
+ * Returns supported setup choices without requiring host discovery. These broad selectors
+ * carry no provider-owned routing ID: request admission must resolve the configured model
+ * in the current VS Code window and reject an unavailable or ambiguous result.
+ * Unlike Codex's refreshed model catalog (7ac6081623928adead75caa2882e307444edad82,
+ * reviewed 2026-10-27), Copilot setup deliberately uses the bundled supported catalog.
  */
 export function getVscodeLlmCatalogModels(): VscodeLlmModelMetadata[] {
 	return (Object.keys(vscodeLlmModels) as VscodeLlmModelId[])

@@ -320,6 +320,52 @@ async function preparedFixture(
 }
 
 describe("native host rich evidence capture", () => {
+	it("recognizes the bounded native history index without attributing its cached task IDs", async () => {
+		const data = await preparedFixture(async (initial) => {
+			const taskRoot = path.join(initial.userDataDir, "User", "globalStorage", "alpha.alpha", "tasks")
+			await fs.mkdir(taskRoot, { recursive: true })
+			await json(path.join(taskRoot, "_index.json"), {
+				version: 1,
+				updatedAt: Date.parse(startedAt),
+				entries: [{ id: "cached-id-without-a-task-directory" }],
+			})
+		})
+		expect(data.context.taskIdsBefore).toEqual([])
+		const capture = await finalizeNativeHostCapture(data.finalize)
+		expect(capture.status).toBe("captured")
+		expect(capture.sources.some((source) => source.path.startsWith(`tasks/${selectedTask}/`))).toBe(true)
+		expect(capture.sources.some((source) => source.path.includes("cached-id-without-a-task-directory"))).toBe(false)
+		await expect(
+			readNativeHostCapture({
+				captureResultPath: capture.captureResultPath,
+				sourceRoot: data.runDirectory,
+			}),
+		).resolves.toHaveProperty("bundle")
+	})
+
+	it.each(["unknown-file", "index-directory", "oversized-index", "linked-index", "hardlinked-index"] as const)(
+		"rejects %s in the native task inventory",
+		async (kind) => {
+			const data = await fixture()
+			const taskRoot = path.join(data.userDataDir, "User", "globalStorage", "alpha.alpha", "tasks")
+			await fs.mkdir(taskRoot, { recursive: true })
+			const index = path.join(taskRoot, "_index.json")
+			if (kind === "unknown-file") await json(path.join(taskRoot, "unexpected.json"), {})
+			else if (kind === "index-directory") await fs.mkdir(index)
+			else if (kind === "oversized-index") await fs.writeFile(index, Buffer.alloc(1024 * 1024 + 1))
+			else {
+				const outside = path.join(data.root, "outside-index.json")
+				await json(outside, { entries: [] })
+				if (kind === "linked-index") await fs.symlink(outside, index, "file")
+				else await fs.link(outside, index)
+			}
+			await expect(prepareNativeHostCapture(data.prepare)).rejects.toThrow()
+			await expect(fs.stat(path.join(data.runDirectory, "improvement", "context.json"))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+		},
+	)
+
 	it("captures and imports evidence through the platform's default temporary path spelling", async () => {
 		const data = await preparedFixture(undefined, false)
 		const capture = await finalizeNativeHostCapture(data.finalize)

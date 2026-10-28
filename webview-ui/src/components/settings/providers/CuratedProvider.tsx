@@ -24,12 +24,13 @@ type CuratedProviderProps = {
 	onOutputTokenLimitError?: (error: string | undefined) => void
 }
 
-const API_KEY_URLS: Record<CuratedProviderName, string> = {
+const API_KEY_URLS: Partial<Record<CuratedProviderName, string>> = {
 	"openai-native": "https://platform.openai.com/api-keys",
 	anthropic: "https://platform.claude.com/settings/keys",
 	gemini: "https://aistudio.google.com/apikey",
 	xai: "https://console.x.ai",
 	openrouter: "https://openrouter.ai/settings/keys",
+	meta: "https://dev.meta.ai",
 }
 
 /** Provider forms edit the caller's settings buffer; they never update extension state directly. */
@@ -41,6 +42,7 @@ export const CuratedProvider = ({
 }: CuratedProviderProps) => {
 	const { t } = useAppTranslation()
 	const keyField = curatedProviderApiKeyFields[provider]
+	const keyValue = keyField ? apiConfiguration[keyField] : undefined
 	const providerName = t(`settings:providers.names.${provider}`)
 	const label = t("settings:providers.providerApiKey", { provider: providerName })
 	const unsupportedFields = getUnsupportedCuratedProviderSettings(provider, apiConfiguration)
@@ -77,17 +79,19 @@ export const CuratedProvider = ({
 	}, [provider, modelId, apiConfiguration.id, apiConfiguration.modelMaxTokens])
 
 	const parsedOutputTokenLimit = outputTokenLimitInput.trim() ? Number(outputTokenLimitInput) : undefined
-	const includesOutputTokenLimit = isMaxOutputTokensIncluded(apiConfiguration)
+	const supportsOutputTokenLimit = provider !== "openai-codex"
+	const includesOutputTokenLimit = supportsOutputTokenLimit && isMaxOutputTokensIncluded(apiConfiguration)
 	let outputTokenLimitDraftError: string | undefined
 	try {
-		validateOptionalOutputTokenLimit(parsedOutputTokenLimit)
+		if (supportsOutputTokenLimit) validateOptionalOutputTokenLimit(parsedOutputTokenLimit)
 	} catch (error) {
 		if (!(error instanceof RangeError)) throw error
 		outputTokenLimitDraftError = t("settings:validation.outputTokenLimit")
 	}
-	const outputTokenLimitError =
-		(isOutputTokenLimitEdited && includesOutputTokenLimit ? outputTokenLimitDraftError : undefined) ??
-		(model ? getOutputTokenLimitValidationError(apiConfiguration, modelId, model) : undefined)
+	const outputTokenLimitError = supportsOutputTokenLimit
+		? ((isOutputTokenLimitEdited && includesOutputTokenLimit ? outputTokenLimitDraftError : undefined) ??
+			(model ? getOutputTokenLimitValidationError(apiConfiguration, modelId, model) : undefined))
+		: undefined
 	useEffect(() => {
 		onOutputTokenLimitError?.(
 			isOutputTokenLimitEdited && includesOutputTokenLimit ? outputTokenLimitDraftError : undefined,
@@ -106,58 +110,73 @@ export const CuratedProvider = ({
 					{t("settings:providers.useProviderDefaults")}
 				</Button>
 			)}
-			<VSCodeTextField
-				type="password"
-				value={apiConfiguration[keyField] ?? ""}
-				aria-label={label}
-				onInput={(event) => setApiConfigurationField(keyField, (event.target as HTMLInputElement).value)}
-				placeholder={t("settings:placeholders.apiKey")}
-				className="w-full"
-				data-testid="curated-provider-api-key">
-				<label className="block font-medium mb-1">{label}</label>
-			</VSCodeTextField>
-			<div className="text-sm text-vscode-descriptionForeground">
-				{t("settings:providers.apiKeyStorageNotice")}
-			</div>
-			<VSCodeLink href={API_KEY_URLS[provider]} target="_blank">
-				{t("settings:providers.manageApiKeys", { provider: providerName })}
-			</VSCodeLink>
-			<Checkbox
-				checked={includesOutputTokenLimit}
-				onChange={(checked: boolean) => setApiConfigurationField("includeMaxTokens", checked)}>
-				{t("settings:includeMaxOutputTokens")}
-			</Checkbox>
-			<VSCodeTextField
-				id={outputTokenLimitId}
-				type="text"
-				value={outputTokenLimitInput}
-				aria-label={t("settings:maxOutputTokensLabel")}
-				aria-invalid={outputTokenLimitError !== undefined}
-				aria-describedby={`${outputTokenLimitId}-description${outputTokenLimitError ? ` ${outputTokenLimitId}-error` : ""}`}
-				placeholder={model?.maxTokens?.toString() ?? ""}
-				onInput={(event) => {
-					const input = (event.target as HTMLInputElement).value
-					setOutputTokenLimitInput(input)
-					setIsOutputTokenLimitEdited(true)
-					const parsed = input.trim() ? Number(input) : undefined
-					// Invalid drafts remain editable and block Save without putting NaN in the settings buffer.
-					const value = parsed !== undefined && !Number.isFinite(parsed) ? 0 : parsed
-					outputSource.current = { provider, modelId, profileId: apiConfiguration.id, value }
-					setApiConfigurationField("modelMaxTokens", value)
-				}}
-				className="w-full"
-				data-testid="curated-output-token-limit">
-				<label htmlFor={outputTokenLimitId} className="block font-medium mb-1">
-					{t("settings:maxOutputTokensLabel")}
-				</label>
-			</VSCodeTextField>
-			<div id={`${outputTokenLimitId}-description`} className="text-sm text-vscode-descriptionForeground">
-				{t("settings:providers.outputTokenLimitDescription")}
-			</div>
-			{outputTokenLimitError && (
-				<div id={`${outputTokenLimitId}-error`} role="alert" className="text-sm text-vscode-errorForeground">
-					{outputTokenLimitError}
-				</div>
+			{keyField && (
+				<>
+					<VSCodeTextField
+						type="password"
+						value={typeof keyValue === "string" ? keyValue : ""}
+						aria-label={label}
+						onInput={(event) =>
+							setApiConfigurationField(keyField, (event.target as HTMLInputElement).value)
+						}
+						placeholder={t("settings:placeholders.apiKey")}
+						className="w-full"
+						data-testid="curated-provider-api-key">
+						<label className="block font-medium mb-1">{label}</label>
+					</VSCodeTextField>
+					<div className="text-sm text-vscode-descriptionForeground">
+						{t("settings:providers.apiKeyStorageNotice")}
+					</div>
+					{API_KEY_URLS[provider] && (
+						<VSCodeLink href={API_KEY_URLS[provider]} target="_blank">
+							{t("settings:providers.manageApiKeys", { provider: providerName })}
+						</VSCodeLink>
+					)}
+				</>
+			)}
+			{supportsOutputTokenLimit && (
+				<>
+					<Checkbox
+						checked={includesOutputTokenLimit}
+						onChange={(checked: boolean) => setApiConfigurationField("includeMaxTokens", checked)}>
+						{t("settings:includeMaxOutputTokens")}
+					</Checkbox>
+					<VSCodeTextField
+						id={outputTokenLimitId}
+						type="text"
+						value={outputTokenLimitInput}
+						aria-label={t("settings:maxOutputTokensLabel")}
+						aria-invalid={outputTokenLimitError !== undefined}
+						aria-describedby={`${outputTokenLimitId}-description${outputTokenLimitError ? ` ${outputTokenLimitId}-error` : ""}`}
+						placeholder={model?.maxTokens?.toString() ?? ""}
+						onInput={(event) => {
+							const input = (event.target as HTMLInputElement).value
+							setOutputTokenLimitInput(input)
+							setIsOutputTokenLimitEdited(true)
+							const parsed = input.trim() ? Number(input) : undefined
+							// Invalid drafts remain editable and block Save without putting NaN in the settings buffer.
+							const value = parsed !== undefined && !Number.isFinite(parsed) ? 0 : parsed
+							outputSource.current = { provider, modelId, profileId: apiConfiguration.id, value }
+							setApiConfigurationField("modelMaxTokens", value)
+						}}
+						className="w-full"
+						data-testid="curated-output-token-limit">
+						<label htmlFor={outputTokenLimitId} className="block font-medium mb-1">
+							{t("settings:maxOutputTokensLabel")}
+						</label>
+					</VSCodeTextField>
+					<div id={`${outputTokenLimitId}-description`} className="text-sm text-vscode-descriptionForeground">
+						{t("settings:providers.outputTokenLimitDescription")}
+					</div>
+					{outputTokenLimitError && (
+						<div
+							id={`${outputTokenLimitId}-error`}
+							role="alert"
+							className="text-sm text-vscode-errorForeground">
+							{outputTokenLimitError}
+						</div>
+					)}
+				</>
 			)}
 		</div>
 	)

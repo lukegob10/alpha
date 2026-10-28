@@ -40,10 +40,11 @@ function savedProfile(settings: ProviderSettings) {
 
 describe("curated provider profile continuity", () => {
 	it.each(curatedProviders)("preserves the explicit %s output cap through export and import", async (apiProvider) => {
+		const field = curatedProviderApiKeyFields[apiProvider]
 		const settings: ProviderSettings = {
 			apiProvider,
 			apiModelId: getProviderDefaultModelId(apiProvider),
-			[curatedProviderApiKeyFields[apiProvider]]: "saved-test-secret",
+			...(field ? { [field]: "saved-test-secret" } : {}),
 			includeMaxTokens: true,
 			modelMaxTokens: 2048,
 			modelMaxThinkingTokens: 1024,
@@ -90,7 +91,7 @@ describe("curated provider profile continuity", () => {
 			const settings: ProviderSettings = {
 				apiProvider,
 				apiModelId: getProviderDefaultModelId(apiProvider),
-				[field]: "saved-test-secret",
+				...(field ? { [field]: "saved-test-secret" } : {}),
 				reasoningEffort: "high",
 			}
 			const saved = savedProfile(settings)
@@ -113,6 +114,97 @@ describe("curated provider profile continuity", () => {
 				name: "selected",
 				...settings,
 			})
+		},
+	)
+
+	it("keeps AWS authentication modes and credentials in the saved profile secret", async () => {
+		const settings: ProviderSettings = {
+			apiProvider: "bedrock",
+			apiModelId: getProviderDefaultModelId("bedrock"),
+			awsRegion: "us-east-1",
+			awsUseProfile: true,
+			awsProfile: "alpha",
+			awsAccessKey: "saved-access-key",
+			awsSecretKey: "saved-secret-key",
+			awsSessionToken: "saved-session-token",
+			awsUseApiKey: false,
+			awsApiKey: "saved-bedrock-api-key",
+		}
+		const saved = savedProfile(settings)
+		const manager = new ProviderSettingsManager(saved.context)
+		await manager.initialize()
+		await manager.saveConfig({ id: "saved-profile-id" }, settings)
+		expect(await manager.getAvailableProfile("selected")).toEqual(settings)
+		expect(saved.read().apiConfigs.selected).toEqual({ id: "saved-profile-id", ...settings })
+		expect(saved.context.globalState.update).not.toHaveBeenCalled()
+	})
+
+	it.each(["openai-codex", "bedrock"] as const)(
+		"reads and exports %s model preferences without an account or credential lookup",
+		async (apiProvider) => {
+			const fetch = vi.spyOn(globalThis, "fetch")
+			try {
+				const settings: ProviderSettings = { apiProvider, apiModelId: getProviderDefaultModelId(apiProvider) }
+				const saved = savedProfile(settings)
+				const manager = new ProviderSettingsManager(saved.context)
+				await manager.initialize()
+				const exported = await manager.export()
+				expect(exported.apiConfigs.selected).toEqual({ id: "saved-profile-id", ...settings })
+				expect(curatedProviderApiKeyFields[apiProvider]).toBeUndefined()
+				expect(fetch).not.toHaveBeenCalled()
+			} finally {
+				fetch.mockRestore()
+			}
+		},
+	)
+
+	it("exports ChatGPT model preferences without copying runtime OAuth or other provider credentials", async () => {
+		const settings = {
+			apiProvider: "openai-codex" as const,
+			apiModelId: getProviderDefaultModelId("openai-codex"),
+			reasoningEffort: "high" as const,
+			accessToken: "service-access-token",
+			refreshToken: "service-refresh-token",
+			openAiNativeApiKey: "unrelated-api-key",
+		}
+		const saved = savedProfile(settings)
+		const manager = new ProviderSettingsManager(saved.context)
+		await manager.initialize()
+		await manager.saveConfig({ id: "saved-profile-id" }, settings)
+		const exported = await manager.export()
+		expect(exported.apiConfigs.selected).toEqual({
+			id: "saved-profile-id",
+			apiProvider: "openai-codex",
+			apiModelId: getProviderDefaultModelId("openai-codex"),
+			reasoningEffort: "high",
+		})
+		expect(JSON.stringify(exported)).not.toContain("service-access-token")
+		expect(JSON.stringify(exported)).not.toContain("service-refresh-token")
+		expect(JSON.stringify(exported)).not.toContain("unrelated-api-key")
+	})
+
+	it.each([
+		["openai-native", "gpt-5.6-sol"],
+		["openai-codex", "gpt-6-luna"],
+		["meta", "older-removed-meta-model"],
+		["bedrock", "anthropic.claude-3-sonnet-20240229-v1:0"],
+	] as const)(
+		"preserves the removed %s model %s without rewriting its saved identity",
+		async (apiProvider, apiModelId) => {
+			const field = curatedProviderApiKeyFields[apiProvider]
+			const settings: ProviderSettings = {
+				apiProvider,
+				apiModelId,
+				...(field ? { [field]: "saved-test-secret" } : {}),
+			}
+			const saved = savedProfile(settings)
+			const manager = new ProviderSettingsManager(saved.context)
+			await manager.initialize()
+			await manager.saveConfig({ id: "saved-profile-id" }, settings)
+			const restored = await manager.getProfile({ id: "saved-profile-id" })
+			expect(restored.apiModelId).toBe(apiModelId)
+			expect(saved.read().apiConfigs.selected.apiModelId).toBe(apiModelId)
+			expect(() => buildApiHandler(restored)).toThrow(/Unsupported .* model/)
 		},
 	)
 

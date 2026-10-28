@@ -20,6 +20,9 @@ import {
 	VertexOpenAiHandler,
 	OpenAiHandler,
 	OpenAiNativeHandler,
+	OpenAiCodexHandler,
+	MetaHandler,
+	buildBedrockHandler,
 	AnthropicHandler,
 	GeminiHandler,
 	XAIHandler,
@@ -183,6 +186,12 @@ export function buildApiHandler(configuration: ProviderSettings & TaskReasoningR
 			return new OpenAiHandler(options)
 		case "openai-native":
 			return new OpenAiNativeHandler(options)
+		case "openai-codex":
+			return new OpenAiCodexHandler(options)
+		case "meta":
+			return new MetaHandler(options)
+		case "bedrock":
+			return buildBedrockHandler(options)
 		case "anthropic":
 			return new AnthropicHandler(options)
 		case "gemini":

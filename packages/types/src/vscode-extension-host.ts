@@ -1,5 +1,21 @@
 import { z } from "zod"
 import { taskReasoningPreferenceSchema, type TaskReasoningState } from "./task-reasoning.js"
+import type { ChatGptAuthStatus } from "./chatgpt-auth.js"
+
+const chatGptAccountIdSchema = z.string().min(1).max(256)
+export const chatGptAuthActionSchema = z
+	.discriminatedUnion("type", [
+		z.object({ type: z.literal("chatGptAuthStatus") }),
+		z.object({
+			type: z.literal("chatGptSignIn"),
+			accountId: chatGptAccountIdSchema.optional(),
+			newAccount: z.boolean().optional(),
+		}),
+		z.object({ type: z.literal("chatGptCancelSignIn") }),
+		z.object({ type: z.literal("chatGptSignOut") }),
+		z.object({ type: z.literal("chatGptSelectAccount"), accountId: chatGptAccountIdSchema }),
+	])
+	.refine((action) => action.type !== "chatGptSignIn" || !action.newAccount || action.accountId === undefined)
 
 export const taskReasoningUpdateSchema = z.object({
 	requestId: z.string().min(1).max(128),
@@ -516,6 +532,8 @@ export interface ExtensionMessage {
 		| "apiConfigurationSaved"
 		| "taskApprovalModeUpdated"
 		| "reasoningCapabilities"
+		| "chatGptAuthStatus"
+		| "chatGptAuthError"
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
 		| "taskOpenResult"
@@ -523,6 +541,7 @@ export interface ExtensionMessage {
 	turnId?: string
 	detail?: IncidentDashboardTurnDetail
 	text?: string
+	chatGptAuthStatus?: ChatGptAuthStatus
 	taskId?: string
 	subagentChangeSetActionCapability?: SubagentChangeSetActionCapability
 	subagentChangeSetActionResult?: SubagentChangeSetActionResult
@@ -1205,6 +1224,7 @@ interface WebviewMessageBase {
 
 export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type" | "source"> & WebviewErrorMessage)
+	| (Omit<WebviewMessageBase, "type"> & z.infer<typeof chatGptAuthActionSchema>)
 	| (Omit<WebviewMessageBase, "type"> & { type: "renameTask"; taskRenameRequest: TaskRenameRequest })
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
 	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })

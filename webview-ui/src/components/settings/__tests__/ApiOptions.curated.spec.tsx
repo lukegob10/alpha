@@ -5,7 +5,7 @@ import {
 	curatedProviderApiKeyFields,
 	getProviderDefaultModelId,
 	getCuratedModelInfo,
-	type CuratedProvider,
+	getCuratedProviderModels,
 	type ProviderSettings,
 } from "@alpha-code/types"
 import type { ModelPicker } from "../ModelPicker"
@@ -90,12 +90,14 @@ vi.mock("@src/components/ui", () => ({
 		value,
 		onValueChange,
 		options,
+		"aria-label": label,
 	}: {
 		value: string
 		onValueChange: (value: string) => void
 		options: Array<{ value: string; label: string }>
+		"aria-label"?: string
 	}) => (
-		<select aria-label="Provider" value={value} onChange={(event) => onValueChange(event.target.value)}>
+		<select aria-label={label ?? "Provider"} value={value} onChange={(event) => onValueChange(event.target.value)}>
 			{options.map((option) => (
 				<option key={option.value} value={option.value}>
 					{option.label}
@@ -110,35 +112,11 @@ vi.mock("@src/components/ui", () => ({
 
 import ApiOptions from "../ApiOptions"
 
-const requestedCatalogs = [
-	{
-		provider: "openai-native",
-		modelIds: ["gpt-6.1-sol", "gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
-	},
-	{ provider: "anthropic", modelIds: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] },
-	{ provider: "gemini", modelIds: ["gemini-3.8-flash", "gemini-4-argon"] },
-	{ provider: "xai", modelIds: ["grok-4.6", "grok-4.7"] },
-	{
-		provider: "openrouter",
-		modelIds: [
-			"openai/gpt-6.1-sol",
-			"openai/gpt-6-luna",
-			"openai/gpt-5.6-sol",
-			"openai/gpt-5.6-terra",
-			"openai/gpt-5.6-luna",
-			"anthropic/claude-opus-5.5",
-			"anthropic/claude-sonnet-5.5",
-			"anthropic/claude-haiku-5.5",
-			"google/gemini-3.8-flash",
-			"x-ai/grok-4.6",
-			"x-ai/grok-4.7",
-			"moonshotai/kimi-k3.1-pro",
-			"moonshotai/kimi-k3",
-			"z-ai/glm-5.3",
-			"z-ai/glm-5.3-flash",
-		],
-	},
-] satisfies Array<{ provider: CuratedProvider; modelIds: string[] }>
+const requestedCatalogs = curatedProviders.map((provider) => ({
+	provider,
+	modelIds: Object.keys(getCuratedProviderModels(provider)),
+}))
+const apiKeyProviders = curatedProviders.filter((provider) => curatedProviderApiKeyFields[provider] !== undefined)
 
 function BufferedOptions({
 	configuration,
@@ -169,9 +147,10 @@ describe("curated provider settings", () => {
 	it.each(requestedCatalogs)(
 		"offers the requested $provider catalog and buffers each model selection",
 		({ provider, modelIds }) => {
+			const keyField = curatedProviderApiKeyFields[provider]
 			const configuration: ProviderSettings = {
 				apiProvider: provider,
-				[curatedProviderApiKeyFields[provider]]: "saved-key",
+				...(keyField ? { [keyField]: "saved-key" } : {}),
 				apiModelId: "saved-unsupported-model",
 				reasoningEffort: "high",
 				modelMaxTokens: 32,
@@ -203,12 +182,13 @@ describe("curated provider settings", () => {
 				reasoningEffort: "high",
 				modelMaxTokens: 32,
 			})
-			expect(postMessage).not.toHaveBeenCalled()
+			expect(postMessage.mock.calls).toEqual(provider === "openai-codex" ? [[{ type: "chatGptAuthStatus" }]] : [])
 		},
 	)
 
-	it.each(curatedProviders)("edits only the %s credential in the caller's buffer", (provider) => {
+	it.each(apiKeyProviders)("edits only the %s credential in the caller's buffer", (provider) => {
 		const keyField = curatedProviderApiKeyFields[provider]
+		if (!keyField) throw new Error("API-key provider requires a key field")
 		const configuration: ProviderSettings = { apiProvider: provider, [keyField]: "saved-key" }
 		render(<BufferedOptions configuration={configuration} />)
 		const key = screen.getByTestId("curated-provider-api-key")
@@ -224,6 +204,47 @@ describe("curated provider settings", () => {
 			defaultModelId: getProviderDefaultModelId(provider),
 		})
 		expect(reasoningProps.at(-1)).toMatchObject({ showReasoningEffort: false })
+	})
+
+	it.each(["bedrock", "openai-codex"] as const)("does not show an API-key field for %s", (provider) => {
+		render(<BufferedOptions configuration={{ apiProvider: provider }} />)
+		expect(screen.queryByTestId("curated-provider-api-key")).not.toBeInTheDocument()
+		expect(pickerProps.at(-1)).toMatchObject({ allowCustomModel: false, modelIdKey: "apiModelId" })
+		expect(reasoningProps.at(-1)).toMatchObject({ showReasoningEffort: false })
+	})
+
+	it("keeps ChatGPT model choices available when account model information is empty", () => {
+		render(<BufferedOptions configuration={{ apiProvider: "openai-codex" }} />)
+		const before = pickerProps.at(-1)?.models
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "chatGptAuthStatus",
+					chatGptAuthStatus: { connected: false, connecting: false, availableModelIds: [] },
+				},
+			}),
+		)
+		expect(pickerProps.at(-1)?.models).toBe(before)
+		expect(postMessage.mock.calls).toEqual([[{ type: "chatGptAuthStatus" }]])
+	})
+
+	it("does not offer or validate ignored ChatGPT output limits from a previous provider", () => {
+		const onError = vi.fn()
+		const configuration: ProviderSettings = {
+			apiProvider: "openai-codex",
+			includeMaxTokens: true,
+			modelMaxTokens: 1,
+		}
+		render(<BufferedOptions configuration={configuration} onError={onError} />)
+
+		expect(screen.queryByTestId("curated-output-token-limit")).not.toBeInTheDocument()
+		expect(screen.queryByRole("checkbox", { name: "settings:includeMaxOutputTokens" })).not.toBeInTheDocument()
+		expect(onError).toHaveBeenLastCalledWith(undefined)
+		expect(reasoningProps.at(-1)).toMatchObject({
+			modelInfo: getCuratedModelInfo("openai-codex", getProviderDefaultModelId("openai-codex")),
+			showReasoningEffort: false,
+		})
+		expect(configuration).toMatchObject({ includeMaxTokens: true, modelMaxTokens: 1 })
 	})
 
 	it("selects the new provider's default when explicitly switching to a different model catalog", () => {

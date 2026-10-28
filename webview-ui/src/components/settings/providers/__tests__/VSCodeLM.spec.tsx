@@ -1,38 +1,45 @@
-import { act, render, screen } from "@/utils/test-utils"
+import type { ComponentProps, ReactNode } from "react"
 import type { ProviderSettings } from "@alpha-code/types"
-import type { LanguageModelChatSelector } from "vscode"
+import { getVscodeLlmCatalogModels, getVscodeLlmModelId, vscodeLlmDefaultModelId } from "@alpha-code/types"
 
+import { act, render, screen } from "@/utils/test-utils"
+import type { ModelPicker } from "../../ModelPicker"
+import type { ThinkingBudget } from "../../ThinkingBudget"
 import { VSCodeLM } from "../VSCodeLM"
 import { vscode } from "@src/utils/vscode"
 
-const modelPickerProps: any[] = []
-const thinkingBudgetProps: any[] = []
-const selectProps: any[] = []
-let messageHandler: ((event: MessageEvent) => void) | undefined
+type PickerProps = ComponentProps<typeof ModelPicker>
+type ThinkingProps = ComponentProps<typeof ThinkingBudget>
+type TestSelectProps = { children: ReactNode; value?: string; onValueChange: (value: string) => void }
+
+const modelPickerProps: PickerProps[] = []
+const thinkingBudgetProps: ThinkingProps[] = []
+const selectProps: TestSelectProps[] = []
 
 vi.mock("../../ModelPicker", () => ({
-	ModelPicker: (props: any) => {
+	ModelPicker: (props: PickerProps) => {
 		modelPickerProps.push(props)
 		return <div data-testid="model-picker">Model Picker</div>
 	},
 }))
 
 vi.mock("../../ThinkingBudget", () => ({
-	ThinkingBudget: (props: any) => {
+	ThinkingBudget: (props: ThinkingProps) => {
 		thinkingBudgetProps.push(props)
 		return <div data-testid="thinking-budget">Thinking Budget</div>
 	},
 }))
 
 vi.mock("@src/components/ui", () => ({
-	Button: ({ children, variant: _variant, ...props }: any) => <button {...props}>{children}</button>,
-	Select: (props: any) => {
+	Select: (props: TestSelectProps) => {
 		selectProps.push(props)
 		return <div data-testid="context-size-select">{props.children}</div>
 	},
-	SelectContent: ({ children }: any) => <div>{children}</div>,
-	SelectItem: ({ children, value }: any) => <div data-value={value}>{children}</div>,
-	SelectTrigger: ({ children }: any) => <div>{children}</div>,
+	SelectContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+	SelectItem: ({ children, value }: { children: ReactNode; value: string }) => (
+		<div data-value={value}>{children}</div>
+	),
+	SelectTrigger: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 	SelectValue: () => null,
 }))
 
@@ -40,694 +47,266 @@ vi.mock("@src/utils/vscode", () => ({
 	vscode: { postMessage: vi.fn() },
 }))
 
-vi.mock("react-use", () => ({
-	useEvent: (_eventName: string, handler: (event: MessageEvent) => void) => {
-		messageHandler = handler
-	},
-}))
-
 vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({
-		t: (key: string) => key,
-	}),
+	useAppTranslation: () => ({ t: (key: string) => key }),
 }))
 
-describe("VSCodeLM", () => {
+function picker(): PickerProps {
+	const props = modelPickerProps.at(-1)
+	if (!props) throw new Error("Model picker was not rendered")
+	return props
+}
+
+function thinking(): ThinkingProps {
+	const props = thinkingBudgetProps.at(-1)
+	if (!props) throw new Error("Thinking settings were not rendered")
+	return props
+}
+
+describe("VSCodeLM supported model setup", () => {
 	const setApiConfigurationField = vi.fn()
 
 	beforeEach(() => {
 		modelPickerProps.length = 0
 		thinkingBudgetProps.length = 0
 		selectProps.length = 0
-		messageHandler = undefined
 		vi.clearAllMocks()
 	})
 
 	function renderProvider(apiConfiguration: ProviderSettings = { apiProvider: "vscode-lm" }) {
-		render(<VSCodeLM apiConfiguration={apiConfiguration} setApiConfigurationField={setApiConfigurationField} />)
+		return render(
+			<VSCodeLM apiConfiguration={apiConfiguration} setApiConfigurationField={setApiConfigurationField} />,
+		)
 	}
 
-	it("keeps distinct provider-returned model IDs independently selectable", () => {
+	it("renders the supported catalog immediately without waiting for discovery", () => {
 		renderProvider()
 
-		const models: LanguageModelChatSelector[] = [
-			{
-				vendor: "copilot",
-				family: "gpt-5.5",
-				version: "low",
-				id: "copilot-gpt-5.5-low",
-				name: "GPT-5.5",
-			},
-			{
-				vendor: "copilot",
-				family: "gpt-5.5",
-				version: "high",
-				id: "copilot-gpt-5.5-high",
-				name: "GPT-5.5",
-			},
-		] as any
-
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
-		})
-
-		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual(["copilot/copilot-gpt-5.5-low", "copilot/copilot-gpt-5.5-high"])
-		expect(props.labelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT 5.5")
-		expect(props.labelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT 5.5")
-		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.5-low")).toBe("GPT-5.5-Low")
-		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.5-high")).toBe("GPT-5.5-High")
-		expect(props.allowCustomModel).toBe(false)
-	})
-
-	it("stores the exact selector for a selected reasoning variant", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "gpt-5.5",
-			version: "high",
-			id: "copilot-gpt-5.5-high",
-			name: "GPT-5.5",
-		}
-
-		renderProvider()
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = modelPickerProps.at(-1)
-
-		expect(props.valueTransform("copilot/copilot-gpt-5.5-high")).toEqual({
-			vendor: selectedModel.vendor,
-			family: selectedModel.family,
-			version: selectedModel.version,
-			id: selectedModel.id,
-		})
-		expect(props.displayTransform(selectedModel)).toBe("copilot/copilot-gpt-5.5-high")
 		expect(screen.getByTestId("model-picker")).toBeInTheDocument()
+		expect(picker().models?.["gpt-6.1-sol"]).toMatchObject({
+			supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+		})
+		expect(picker().defaultModelId).toBe(vscodeLlmDefaultModelId)
+		expect(picker().allowCustomModel).toBe(false)
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(screen.queryByText("settings:providers.vscodeLmLoading")).not.toBeInTheDocument()
+		expect(screen.queryByTestId("refresh-vscode-lm-models")).not.toBeInTheDocument()
 	})
 
-	it("renders reasoning effort settings for the selected VS Code LM model", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "gpt-5-mini",
-			version: "2026-05-01",
-			id: "copilot-gpt-5-mini",
-			name: "GPT-5 mini",
-			maxInputTokens: 128_000,
-		}
+	it("offers the bundled supported models without retired catalog entries", () => {
+		renderProvider()
 
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(screen.getByTestId("thinking-budget")).toBeInTheDocument()
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				contextWindow: 128_000,
-				supportsReasoningEffort: ["low", "medium", "high"],
-			}),
-		)
+		expect(Object.keys(picker().models ?? {})).toEqual(getVscodeLlmCatalogModels().map(getVscodeLlmModelId))
+		expect(picker().models).not.toHaveProperty("claude-mythos-5")
+		expect(picker().models).not.toHaveProperty("gpt-4o")
 	})
 
-	it("renders all Copilot GPT-5.5 reasoning efforts including extra high", () => {
-		const selectedModel = {
+	it("stores a canonical family without inventing a host ID or version", () => {
+		renderProvider()
+
+		expect(picker().valueTransform?.("gpt-6.1-sol")).toEqual({
 			vendor: "copilot",
-			family: "gpt-5.5",
-			version: "2026-06-01",
-			id: "copilot-gpt-5.5",
-			name: "GPT-5.5",
-			maxInputTokens: 128_000,
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
+			family: "gpt-6.1-sol",
 		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh"],
-			}),
-		)
+		expect(picker().valueTransform?.("not-a-supported-model")).toBeUndefined()
+		expect(picker().labelTransform?.("gpt-6.1-sol")).toBe("GPT-6.1 Sol")
 	})
 
-	it("renders GPT-5.6 maximum reasoning and extended context controls", () => {
-		const selectedModel = {
+	it("retains a saved exact routing identity while displaying its known model", () => {
+		const selector = {
 			vendor: "copilot",
-			family: "gpt-5.6-terra",
-			version: "gpt-5.6-terra",
-			id: "gpt-5.6-terra",
-			name: "GPT-5.6 Terra",
-			maxInputTokens: 921_793,
+			family: "gpt-6.1-sol",
+			version: "saved-version",
+			id: "opaque-saved-id",
 		}
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selector })
 
+		expect(picker().displayTransform?.(selector)).toBe("gpt-6.1-sol")
+		expect(picker().apiConfiguration.vsCodeLmModelSelector).toBe(selector)
+		expect(picker().errorMessage).toBeUndefined()
+		expect(thinking().modelInfo?.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it("ignores old discovery messages instead of replacing the supported choices", () => {
 		renderProvider({
 			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
+			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
 		})
+		const models = picker().models
+		const info = thinking().modelInfo
+
 		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "vsCodeLmModels", vsCodeLmModels: [] } }))
 		})
 
-		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
-			}),
-		)
-		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
-		expect(screen.getByText("settings:providers.vscodeLmContextSize.default")).toBeInTheDocument()
-		expect(screen.getByText("settings:providers.vscodeLmContextSize.extended")).toBeInTheDocument()
+		expect(picker().models).toBe(models)
+		expect(thinking().modelInfo).toBe(info)
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
 
-		act(() => selectProps.at(-1).onValueChange("922000"))
-		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", 922_000)
+	it("uses a decorated saved exact ID for display metadata without replacing its opaque family", () => {
+		const selector = {
+			vendor: "copilot",
+			family: "opaque-family",
+			id: "copilot-gpt-6.1-sol-standard",
+			version: "2026",
+		}
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selector })
 
-		act(() => selectProps.at(-1).onValueChange("272000"))
-		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", 272_000)
+		expect(picker().displayTransform?.(selector)).toBe("gpt-6.1-sol")
+		expect(picker().apiConfiguration.vsCodeLmModelSelector).toBe(selector)
+		expect(picker().errorMessage).toBeUndefined()
+		expect(thinking().modelInfo?.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
 	})
 
 	it.each([
-		["gemini-3.1-pro", "Gemini 3.1 Pro (Preview)", 936_000, 200_000, 936_000],
-		["gemini-3.6-flash", "Gemini 3.6 Flash", 936_000, 200_000, 936_000],
-		["claude-opus-5", "Claude Opus 5", 936_000, 200_000, 936_000],
-		["claude-opus-5.5", "Claude Opus 5.5", 936_000, 200_000, 936_000],
-		["claude-sonnet-5.5", "Claude Sonnet 5.5", 936_000, 200_000, 936_000],
-		["claude-haiku-5.5", "Claude Haiku 5.5", 936_000, 200_000, 936_000],
-		["grok-4.6", "Grok 4.6", 425_001, 200_000, 425_001],
-		["gpt-6-astra", "GPT 6 Astra", 1_050_000, 272_000, 1_050_000],
-		["gpt-6-luna", "GPT 6 Luna", 1_050_000, 272_000, 1_050_000],
-		["gpt-6-sol", "GPT 6 Sol", 1_050_000, 272_000, 1_050_000],
+		{ vendor: "copilot", family: "unknown-saved-model", id: "saved-route" },
+		{ vendor: "copilot", family: "gpt-6.1-sol-mini", id: "saved-route" },
+		{ vendor: "copilot", family: "gpt-6.1-sol-mini", id: "copilot-gpt-6.1-sol-standard" },
+		{ vendor: "copilot", family: "gpt-5.5", id: "copilot-gpt-5.5-standard" },
+		{ vendor: "copilot", family: "gpt-4o" },
+		{ vendor: "another-provider", family: "gpt-6.1-sol", id: "saved-route" },
+	])("preserves an unsupported saved selector for explicit replacement: %j", (selector) => {
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selector })
+
+		expect(picker().displayTransform?.(selector)).toBeTruthy()
+		expect(picker().apiConfiguration.vsCodeLmModelSelector).toBe(selector)
+		expect(picker().errorMessage).toBe("settings:providers.vscodeLmUnavailable")
+		expect(thinking().modelInfo).toBeUndefined()
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		["gpt-6.1-sol", ["low", "medium", "high", "xhigh", "max"], undefined],
+		["gpt-6-astra", ["low", "medium", "high", "xhigh", "max"], undefined],
+		["claude-opus-5.5", ["low", "medium", "high", "xhigh", "max"], "medium"],
+		["claude-sonnet-5.5", ["low", "medium", "high", "xhigh", "max"], undefined],
 	] as const)(
-		"renders the live standard and extended context tiers for %s",
-		(family, name, maxInputTokens, defaultContextSize, extendedContextSize) => {
-			const selectedModel = {
-				vendor: "copilot",
-				family,
-				version: family,
-				id: family,
-				name,
-				maxInputTokens,
-			}
+		"projects %s reasoning metadata without moving effort into profile settings",
+		(family, efforts, defaultEffort) => {
+			renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: { vendor: "copilot", family } })
 
-			renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
-			act(() => {
-				messageHandler?.({
-					data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] },
-				} as MessageEvent)
-			})
-
-			expect(thinkingBudgetProps.at(-1).modelInfo.contextWindow).toBe(defaultContextSize)
-			expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
-			act(() => selectProps.at(-1).onValueChange(extendedContextSize.toString()))
-			expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", extendedContextSize)
+			expect(thinking().modelInfo?.supportsReasoningEffort).toEqual(efforts)
+			expect(thinking().modelInfo?.reasoningEffort).toBe(defaultEffort)
+			expect(thinking().showReasoningEffort).toBe(false)
+			expect(setApiConfigurationField).not.toHaveBeenCalled()
 		},
 	)
 
 	it.each([
-		["claude-opus-5", "Claude Opus 5", ["low", "medium", "high", "xhigh", "max"], "high"],
-		["claude-opus-5.5", "Claude Opus 5.5", ["low", "medium", "high", "xhigh", "max"], "medium"],
-		["grok-4.6", "Grok 4.6", ["low", "medium", "high", "xhigh"], "high"],
-	] as const)("exposes Copilot reasoning controls for %s", (family, name, efforts, defaultEffort) => {
-		const selectedModel = {
-			vendor: "copilot",
-			family,
-			version: family,
-			id: family,
-			name,
-			maxInputTokens: family === "grok-4.6" ? 425_001 : 936_000,
-		}
+		["claude-opus-5.5", 200_000, 936_000],
+		["claude-sonnet-5.5", 200_000, 936_000],
+		["gpt-6-astra", 272_000, 1_050_000],
+	] as const)("offers the defined context tiers for %s before contacting VS Code", (family, standard, extended) => {
+		const view = renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: { vendor: "copilot", family } })
 
-		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
+		expect(thinking().modelInfo?.contextWindow).toBe(standard)
+		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
+		expect(selectProps.at(-1)?.value).toBe(standard.toString())
+		act(() => selectProps.at(-1)?.onValueChange(extended.toString()))
+		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", extended)
+
+		view.rerender(
+			<VSCodeLM
+				apiConfiguration={{
+					apiProvider: "vscode-lm",
+					vsCodeLmModelSelector: { vendor: "copilot", family },
+					vsCodeLmContextSize: extended,
+				}}
+				setApiConfigurationField={setApiConfigurationField}
+			/>,
+		)
+		expect(thinking().modelInfo?.contextWindow).toBe(extended)
+		expect(selectProps.at(-1)?.value).toBe(extended.toString())
+	})
+
+	it("keeps models with one context window free of a context switch", () => {
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
+			vsCodeLmContextSize: 1_050_000,
 		})
 
-		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: efforts,
-				requiredReasoningEffort: true,
-				reasoningEffort: defaultEffort,
-			}),
-		)
-		expect(thinkingBudgetProps.at(-1).showReasoningEffort).toBe(false)
+		expect(thinking().modelInfo?.contextWindow).toBe(922_000)
+		expect(screen.queryByTestId("context-size-select")).not.toBeInTheDocument()
+	})
+
+	it("does not treat stale saved host metadata as a fresh capability lookup", () => {
+		const selector = { vendor: "copilot", family: "claude-opus-5.5", id: "saved-route", maxInputTokens: 128_000 }
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selector })
+
+		expect(thinking().modelInfo?.contextWindow).toBe(200_000)
+		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it("does not rewrite legacy profile reasoning when a saved model is retired", () => {
+		renderProvider({
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: { vendor: "copilot", family: "claude-opus-4.5", id: "saved-legacy-route" },
+			enableReasoningEffort: true,
+			reasoningEffort: "high",
+		})
+
+		expect(picker().errorMessage).toBe("settings:providers.vscodeLmUnavailable")
+		expect(thinking().apiConfiguration.reasoningEffort).toBe("high")
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
 	})
 
 	it.each([
-		["Claude Sonnet 5.5", ["low", "medium", "high", "xhigh", "max"]],
-		["Claude Haiku 5.5", ["low", "medium", "high", "xhigh", "max"]],
-		["GPT-6 Astra", ["low", "medium", "high", "xhigh", "max"]],
-		["GPT-6 Luna", ["none", "low", "medium", "high", "xhigh", "max"]],
-		["GPT-6 Sol", ["none", "low", "medium", "high", "xhigh", "max"]],
-		["GPT-6.1 Sol", ["low", "medium", "high", "xhigh", "max"]],
-	] as const)("exposes %s reasoning for live models with opaque IDs", (name, efforts) => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "opaque-family",
-			version: "2026-10-22",
-			id: "opaque-model-id",
-			name,
-		}
-		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-		expect(thinkingBudgetProps.at(-1).modelInfo.supportsReasoningEffort).toEqual(efforts)
-		expect(modelPickerProps.at(-1).valueTransform("copilot/opaque-model-id")).toMatchObject({
-			id: selectedModel.id,
-			family: selectedModel.family,
-		})
+		["claude-sonnet-5.5", "disable"],
+		["claude-opus-5.5", "none"],
+		["gpt-6.1-sol", "none"],
+	] as const)("clears unsupported %s profile effort %s only on model change", (family, effort) => {
+		renderProvider({ apiProvider: "vscode-lm", enableReasoningEffort: false, reasoningEffort: effort })
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+
+		picker().onModelChange?.(family)
+
+		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
 	})
 
-	it("uses Kimi K3's single live window without showing a context toggle", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "kimi-k3",
-			version: "kimi-k3",
-			id: "kimi-k3",
-			name: "Kimi K3",
-			maxInputTokens: 917_501,
-		}
-
-		renderProvider({ apiProvider: "vscode-lm", vsCodeLmModelSelector: selectedModel })
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		expect(thinkingBudgetProps.at(-1).modelInfo.contextWindow).toBe(917_501)
-		expect(screen.queryByTestId("context-size-select")).not.toBeInTheDocument()
-	})
-
-	it("does not offer extended context when the live selector does not advertise it", () => {
-		const catalogModel = {
-			vendor: "copilot",
-			family: "gpt-5.5",
-			name: "GPT-5.5",
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-5.5" },
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [catalogModel] } } as MessageEvent)
-		})
-
-		expect(Object.keys(modelPickerProps.at(-1).models)).toEqual(["copilot/gpt-5.5"])
-		expect(screen.queryByTestId("context-size-select")).not.toBeInTheDocument()
-	})
-
-	it("ignores a stale extended setting when the live selector only advertises its standard tier", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "gpt-5.5",
-			version: "2026-08",
-			id: "copilot-gpt-5.5",
-			name: "GPT-5.5",
-			maxInputTokens: 272_000,
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
-			vsCodeLmContextSize: 922_000,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		expect(thinkingBudgetProps.at(-1).modelInfo.contextWindow).toBe(272_000)
-		expect(screen.queryByTestId("context-size-select")).not.toBeInTheDocument()
-	})
-
-	it("renders Copilot GPT-5.3 Codex reasoning efforts including extra high", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "gpt-5.3-codex",
-			version: "2026-06-01",
-			id: "copilot-gpt-5.3-codex",
-			name: "GPT-5.3-Codex",
-			maxInputTokens: 128_000,
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
-			}),
-		)
-	})
-
-	it("renders reasoning effort settings for Copilot Claude Opus 4.7", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "claude-opus-4.7",
-			version: "2026-06-01",
-			id: "copilot-claude-opus-4.7",
-			name: "Claude Opus 4.7",
-			maxInputTokens: 1_000_000,
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				contextWindow: 200_000,
-				supportsImages: true,
-				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
-			}),
-		)
-		expect(screen.getByTestId("context-size-select")).toBeInTheDocument()
-		expect(screen.getByText("settings:providers.vscodeLmContextSize.default")).toBeInTheDocument()
-		expect(screen.getByText("settings:providers.vscodeLmContextSize.extended")).toBeInTheDocument()
-		expect(selectProps.at(-1).value).toBe("200000")
-
-		act(() => selectProps.at(-1).onValueChange("936000"))
-		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", 936_000)
-	})
-
-	it("keeps equivalent families separate when VS Code returns distinct IDs", () => {
-		const models = [
-			{
-				vendor: "copilot",
-				family: "claude-opus-4.7",
-				version: "2026-06-01",
-				id: "copilot-claude-opus-4.7",
-				name: "Claude Opus 4.7",
-			},
-			{
-				vendor: "copilot",
-				family: "claude-opus-4.7",
-				version: "2026-06-02",
-				id: "copilot-claude-opus-4.7-alt",
-				name: "Claude Opus 4.7",
-			},
-		]
-
-		renderProvider()
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
-		})
-
-		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual([
-			"copilot/copilot-claude-opus-4.7",
-			"copilot/copilot-claude-opus-4.7-alt",
-		])
-		expect(props.labelTransform(Object.keys(props.models)[0])).toBe("Claude Opus 4.7")
-		expect(props.secondaryLabelTransform(Object.keys(props.models)[1])).toBe("Claude-Opus-4.7-Alt")
-	})
-
-	it("makes every current Copilot model returned by VS Code selectable", () => {
-		const currentModels = [
-			["gpt-5.3-codex", "GPT 5.3 Codex"],
-			["gpt-5.5", "GPT 5.5"],
-			["gpt-5.6-luna", "GPT 5.6 Luna"],
-			["gpt-5.6-sol", "GPT 5.6 Sol"],
-			["gpt-5.6-terra", "GPT 5.6 Terra"],
-			["gpt-6-astra", "GPT 6 Astra"],
-			["gpt-6-luna", "GPT 6 Luna"],
-			["gpt-6-sol", "GPT 6 Sol"],
-			["claude-fable-5", "Claude Fable 5"],
-			["claude-haiku-4.5", "Claude Haiku 4.5"],
-			["claude-sonnet-4.5", "Claude Sonnet 4.5"],
-			["claude-sonnet-4.6", "Claude Sonnet 4.6"],
-			["claude-sonnet-5", "Claude Sonnet 5"],
-			["claude-opus-4.5", "Claude Opus 4.5"],
-			["claude-opus-4.6", "Claude Opus 4.6"],
-			["claude-opus-4.7", "Claude Opus 4.7"],
-			["claude-opus-4.8", "Claude Opus 4.8"],
-			["claude-opus-4.8-fast", "Claude Opus 4.8 (fast mode) (Preview)"],
-			["claude-opus-5", "Claude Opus 5"],
-			["gemini-3.1-pro", "Gemini 3.1 Pro (Preview)"],
-			["gemini-3.5-flash", "Gemini 3.5 Flash"],
-			["gemini-3.6-flash", "Gemini 3.6 Flash"],
-			["gemini-3.7-flash", "Gemini 3.7 Flash"],
-			["mai-code-1.1-flash", "MAI Code 1.1 Flash"],
-			["kimi-k3", "Kimi K3"],
-			["grok-4.5", "Grok 4.5"],
-			["grok-4.6", "Grok 4.6"],
-		] as const
-		const models = currentModels.map(([family, name]) => ({
-			vendor: "copilot",
-			family,
-			version: "2026-08",
-			id: `copilot-${family}`,
-			name,
-		}))
-
-		renderProvider()
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
-		})
-
-		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toHaveLength(currentModels.length)
-
-		for (const [family, name] of currentModels) {
-			const selector = `copilot/copilot-${family}`
-			expect(Object.keys(props.models)).toContain(selector)
-			expect(props.labelTransform(selector)).toBe(name)
-		}
-
-		expect(props.secondaryLabelTransform("copilot/copilot-gpt-5.6-luna")).toBe("GPT-5.6-Luna")
-	})
-
-	it("maps an already configured selector to its exact live identity", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "claude-opus-4.7",
-			version: "2026-06-02",
-			id: "copilot-claude-opus-4.7-alt",
-			name: "Claude Opus 4.7",
-		}
-		const models = [
-			{
-				vendor: "copilot",
-				family: "claude-opus-4.7",
-				version: "2026-06-01",
-				id: "copilot-claude-opus-4.7",
-				name: "Claude Opus 4.7",
-			},
-			selectedModel,
-		]
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
-		})
-
-		const props = modelPickerProps.at(-1)
-		expect(Object.keys(props.models)).toEqual([
-			"copilot/copilot-claude-opus-4.7",
-			"copilot/copilot-claude-opus-4.7-alt",
-		])
-		expect(props.displayTransform(selectedModel)).toBe("copilot/copilot-claude-opus-4.7-alt")
-		expect(thinkingBudgetProps.at(-1).modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
-			}),
-		)
-	})
-
-	it("clears stale reasoning settings when switching to a non-reasoning model", () => {
-		const models = [
-			{
-				vendor: "copilot",
-				family: "claude-opus-4.5",
-				version: "2026-06-01",
-				id: "copilot-claude-opus-4.5",
-				name: "Claude Opus 4.5",
-			},
-		]
-
+	it("preserves a compatible profile effort and context size when changing models", () => {
 		renderProvider({
 			apiProvider: "vscode-lm",
 			enableReasoningEffort: true,
 			reasoningEffort: "high",
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
+			vsCodeLmContextSize: 936_000,
 		})
 
-		const props = modelPickerProps.at(-1)
-		props.onModelChange("copilot/claude-opus-4.5")
+		picker().onModelChange?.("claude-opus-5.5")
 
-		expect(setApiConfigurationField).toHaveBeenCalledWith("enableReasoningEffort", false)
-		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
 	})
 
-	it.each([
-		["claude-opus-5", "disable"],
-		["claude-opus-5.5", "disable"],
-		["claude-opus-5.5", "none"],
-		["gpt-6.1-sol", "none"],
-	] as const)("clears stale %s effort %s when switching models", (family, effort) => {
-		const model = {
-			vendor: "copilot",
-			family,
-			version: family,
-			id: `copilot-${family}`,
-		}
+	it("clears a context size unsupported by the explicitly selected model", () => {
+		renderProvider({ apiProvider: "vscode-lm", vsCodeLmContextSize: 936_000 })
 
-		renderProvider({
-			apiProvider: "vscode-lm",
-			enableReasoningEffort: false,
-			reasoningEffort: effort,
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [model] } } as MessageEvent)
-		})
+		picker().onModelChange?.("gpt-6.1-sol")
 
-		modelPickerProps.at(-1).onModelChange(`copilot/${model.id}`)
-
-		expect(setApiConfigurationField).toHaveBeenCalledWith("reasoningEffort", undefined)
+		expect(setApiConfigurationField).toHaveBeenCalledWith("vsCodeLmContextSize", undefined)
 	})
 
-	it("matches exact static model ids before prefix matches", () => {
-		const selectedModel = {
-			vendor: "copilot",
-			family: "gpt-5.4-mini",
-			version: "2026-05-01",
-			id: "copilot-gpt-5.4-mini",
-			name: "GPT-5.4 mini",
-			maxInputTokens: 128_000,
-		}
-
-		renderProvider({
+	it("updates model metadata when the settings edit buffer changes", () => {
+		const view = renderProvider({
 			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: selectedModel,
+			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
 		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [selectedModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo.description).toBeUndefined()
-		expect(props.modelInfo.name).toBe("GPT-5.4 mini")
-		expect(props.modelInfo.family).toBe("gpt-5.4-mini")
-	})
-
-	it("uses live model capabilities for legacy vendor/family selectors when there is one match", () => {
-		const liveModel = {
-			vendor: "copilot",
-			family: "gpt-5-mini",
-			version: "2026-05-01",
-			id: "copilot-gpt-5-mini",
-			name: "GPT-5 mini",
-			maxInputTokens: 128_000,
-		}
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: {
-				vendor: "copilot",
-				family: "gpt-5-mini",
-			},
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [liveModel] } } as MessageEvent)
-		})
-
-		const props = thinkingBudgetProps.at(-1)
-		expect(props.modelInfo).toEqual(
-			expect.objectContaining({
-				supportsReasoningEffort: ["low", "medium", "high"],
-			}),
+		view.rerender(
+			<VSCodeLM
+				apiConfiguration={{
+					apiProvider: "vscode-lm",
+					vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6-astra" },
+				}}
+				setApiConfigurationField={setApiConfigurationField}
+			/>,
 		)
-		expect(setApiConfigurationField).not.toHaveBeenCalledWith("vsCodeLmModelSelector", expect.anything())
-	})
 
-	it("rejects an ambiguous legacy selector instead of choosing a live variant", () => {
-		const models = [
-			{
-				vendor: "copilot",
-				family: "gpt-5.5",
-				version: "low",
-				id: "copilot-gpt-5.5-low",
-				name: "GPT-5.5",
-			},
-			{
-				vendor: "copilot",
-				family: "gpt-5.5",
-				version: "high",
-				id: "copilot-gpt-5.5-high",
-				name: "GPT-5.5",
-			},
-		]
-
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: {
-				vendor: "copilot",
-				family: "gpt-5.5",
-			},
-		})
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: models } } as MessageEvent)
-		})
-
-		expect(thinkingBudgetProps.at(-1).modelInfo).toBeUndefined()
-		expect(modelPickerProps.at(-1).errorMessage).toBe("settings:providers.vscodeLmUnavailable")
-	})
-
-	it("shows an unavailable error for a persisted selector that VS Code did not return", () => {
-		renderProvider({
-			apiProvider: "vscode-lm",
-			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-5.6-sol" },
-		})
-		act(() => {
-			messageHandler?.({
-				data: {
-					type: "vsCodeLmModels",
-					vsCodeLmModels: [
-						{
-							vendor: "copilot",
-							family: "gpt-5.6-luna",
-							id: "gpt-5.6-luna",
-							name: "GPT-5.6 Luna",
-						},
-					],
-				},
-			} as MessageEvent)
-		})
-
-		expect(modelPickerProps.at(-1).errorMessage).toBe("settings:providers.vscodeLmUnavailable")
-	})
-
-	it("explains an empty live model list and lets the user refresh", () => {
-		renderProvider()
-		act(() => {
-			messageHandler?.({ data: { type: "vsCodeLmModels", vsCodeLmModels: [] } } as MessageEvent)
-		})
-
-		expect(screen.getByText("settings:providers.vscodeLmNoModels")).toBeInTheDocument()
-		act(() => screen.getByTestId("refresh-vscode-lm-models").click())
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestVsCodeLmModels" })
+		expect(thinking().modelInfo).toMatchObject({ name: "GPT 6 Astra", contextWindow: 272_000 })
+		expect(thinking().modelInfo?.supportsReasoningEffort).toEqual(["low", "medium", "high", "xhigh", "max"])
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
 	})
 })

@@ -56,18 +56,18 @@ describe("ApiOptions model discovery", () => {
 		vi.useRealTimers()
 	})
 
-	it("requests Copilot models on mount without a typing delay or a duplicate delayed request", async () => {
-		const requestedAt: number[] = []
-		vi.mocked(vscode.postMessage).mockImplementation(() => {
-			requestedAt.push(Date.now())
-		})
+	it("uses the bundled Copilot catalog without discovery on mount or configuration edits", async () => {
 		const view = render(options({ apiProvider: "vscode-lm" }))
-		expect(requestedAt).toEqual([0])
-		view.rerender(options({ apiProvider: "vscode-lm", openAiBaseUrl: "https://unused.example.com/v1" }))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		view.rerender(
+			options({
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
+				openAiBaseUrl: "https://unused.example.com/v1",
+			}),
+		)
 		await act(() => vi.advanceTimersByTimeAsync(250))
-		expect(requestedAt).toEqual([0])
-		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestVsCodeLmModels" })
+		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
 	it("debounces OpenAI connection edits for 250 ms and sends the latest values", async () => {
@@ -100,14 +100,33 @@ describe("ApiOptions model discovery", () => {
 		})
 	})
 
-	it("requests Copilot models immediately when switching away from pending OpenAI discovery", async () => {
+	it("cancels pending OpenAI discovery when switching to the bundled Copilot catalog", async () => {
 		const view = render(options({ apiProvider: "openai", openAiBaseUrl: "https://first.example.com/v1" }))
 		await act(() => vi.advanceTimersByTimeAsync(100))
 		view.rerender(options({ apiProvider: "vscode-lm" }))
-		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
-		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestVsCodeLmModels" })
+		expect(vscode.postMessage).not.toHaveBeenCalled()
 		await act(() => vi.advanceTimersByTimeAsync(250))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it("starts compatible endpoint discovery when switching from Copilot to OpenAI", async () => {
+		const view = render(options({ apiProvider: "vscode-lm" }))
+		await act(() => vi.advanceTimersByTimeAsync(250))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		view.rerender(options({ apiProvider: "openai", openAiBaseUrl: "https://custom.example.com/v1" }))
+		await act(() => vi.advanceTimersByTimeAsync(249))
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		await act(() => vi.advanceTimersByTimeAsync(1))
 		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "requestOpenAiModels",
+			values: {
+				baseUrl: "https://custom.example.com/v1",
+				apiKey: undefined,
+				customHeaders: {},
+				openAiHeaders: {},
+			},
+		})
 	})
 
 	it("cancels pending OpenAI discovery when the settings editor unmounts", async () => {

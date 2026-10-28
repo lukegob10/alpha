@@ -290,8 +290,8 @@ vi.mock("../QueuedMessages", () => ({
 
 // Mock AlphaHero component
 vi.mock("@src/components/welcome/AlphaHero", () => ({
-	default: function MockAlphaHero() {
-		return <div data-testid="roo-hero">Hero content</div>
+	default: function MockAlphaHero({ variant = "compact" }: { variant?: string }) {
+		return <div data-testid={`alpha-hero-${variant}`}>Hero content</div>
 	},
 }))
 
@@ -2896,7 +2896,7 @@ describe("ChatView - Inline Chats navigation", () => {
 describe("ChatView - Empty chat home", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it.each([0, 3, 7])("shows only the centered Alpha mark when there are %i recent chats", async (historyCount) => {
+	it.each([0, 3, 7])("keeps the watermark below the native ribbon with %i chats", async (historyCount) => {
 		const { getByTestId, getByRole, queryByTestId, queryByRole } = renderChatView()
 		const taskHistory = Array.from({ length: historyCount }, (_, index) => ({
 			id: `task-${index + 1}`,
@@ -2911,7 +2911,7 @@ describe("ChatView - Empty chat home", () => {
 		}
 
 		expect(getByTestId("alpha-home-brand")).toBeInTheDocument()
-		expect(getByTestId("roo-hero")).toBeInTheDocument()
+		expect(within(getByTestId("alpha-home-brand")).getByTestId("alpha-hero-watermark")).toBeInTheDocument()
 		expect(queryByTestId("version-indicator")).not.toBeInTheDocument()
 		expect(queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
 		expect(queryByRole("button", { name: "common:chatToolbar.newChat" })).not.toBeInTheDocument()
@@ -4915,7 +4915,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const view = renderChatView({}, ref)
 		mockPostMessage({
 			currentTaskId: "task-1",
-			apiConfiguration: { apiProvider: "bedrock" },
+			apiConfiguration: { apiProvider: "ollama" },
 			clineMessages: [
 				{ type: "say", say: "task", ts: 1, text: "Initial task" },
 				{ type: "say", say: "api_req_started", ts: 2, text: JSON.stringify({ apiProtocol: "anthropic" }) },

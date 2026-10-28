@@ -363,8 +363,10 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	private problemSolving = false
 	private readonly onCompleted = (id: string) => this.completions.set(id, (this.completions.get(id) ?? 0) + 1)
 	private readonly onCreated = (task: HostTask) => {
-		if (this.scripted || this.guardedTasks.has(task)) return
-		this.cleanup.push(guardTaskApi(task, this.budget))
+		if (this.guardedTasks.has(task)) return
+		const restore = this.experimentObserver?.onTaskCreated?.(task)
+		if (restore) this.cleanup.push(restore)
+		if (!this.scripted) this.cleanup.push(guardTaskApi(task, this.budget))
 		this.guardedTasks.add(task)
 	}
 
@@ -375,6 +377,11 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		readonly budget: WorkflowRequestBudget,
 		timeoutMs: number,
 		terminalProvider: "execa" | "vscode" = "execa",
+		private readonly experimentObserver?: {
+			onTaskCreated?(task: unknown): (() => void) | undefined
+			onTaskPrompt?(text: string): void
+			onConfiguration?(configuration: unknown, approvalDigest: string | null): void
+		},
 	) {
 		const provider = (api as unknown as { sidebarProvider?: HostProvider }).sidebarProvider
 		if (!provider || typeof provider.on !== "function")
@@ -465,6 +472,8 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 		this.configuration.alwaysAllowExecute = true
 		this.configuration.commandExecutionTimeout = 60
 		await this.applyConfiguration()
+		this.experimentObserver?.onConfiguration?.(this.configuration, this.e2eApprovalPolicySha256())
+		this.experimentObserver?.onTaskPrompt?.(text)
 		const id = await this.api.startNewTask({ configuration: this.configuration, text })
 		await this.provider.focusTask?.(id)
 		this.currentId = id
@@ -804,6 +813,19 @@ export class ExtensionWorkflowHost implements WorkflowHost {
 	async readProblemUsage(taskId: string): Promise<ReturnType<typeof usageFromHistoryItem>> {
 		const { historyItem } = await this.provider.getTaskWithId(taskId)
 		return usageFromHistoryItem(historyItem)
+	}
+
+	/** Opt-in evaluator access at the existing owned durability boundary, before disposal. */
+	async readExperimentHistory(taskId: string, settle = true): Promise<unknown> {
+		if (settle) {
+			const task = this.requireTask(taskId)
+			await task.waitForTermination()
+			await task.flushApiConversationHistoryPersistence()
+		}
+		const { taskDirPath } = await this.provider.getTaskWithId(taskId)
+		if (!path.isAbsolute(taskDirPath) || path.basename(taskDirPath) !== taskId)
+			throw new WorkflowFailure("persistence", "invalid_task_storage_path")
+		return readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
 	}
 
 	/** Capture only fixture lifecycle state; never export profile configuration or credentials. */

@@ -7,8 +7,26 @@ import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 
 const { create, responsesCreate } = vi.hoisted(() => ({ create: vi.fn(), responsesCreate: vi.fn() }))
 
-const reasoningFamilyModelIds = [
-	"moonshotai/kimi-k3.1-pro",
+const reasoningFamilyModelIds = ["moonshotai/kimi-k3.1-pro"] as const
+const modelDefaults = [
+	["openai/gpt-6-astra", "medium"],
+	["openai/gpt-6.1-sol", "medium"],
+	["anthropic/claude-opus-5.5", "high"],
+	["anthropic/claude-sonnet-5.5", "high"],
+	["anthropic/claude-fable-5.1", "high"],
+	["google/gemini-4-argon", "medium"],
+	["x-ai/grok-4.7", "high"],
+	["meta/muse-wonder", "high"],
+	["moonshotai/kimi-k3.1-pro", "max"],
+] as const
+const retiredModelIds = [
+	"openai/gpt-6-luna",
+	"openai/gpt-5.6-sol",
+	"openai/gpt-5.6-terra",
+	"openai/gpt-5.6-luna",
+	"anthropic/claude-haiku-5.5",
+	"x-ai/grok-4.6",
+	"google/gemini-3.8-flash",
 	"moonshotai/kimi-k3",
 	"z-ai/glm-5.3",
 	"z-ai/glm-5.3-flash",
@@ -80,23 +98,7 @@ describe("curated OpenRouter provider", () => {
 		expect(responsesCreate).not.toHaveBeenCalled()
 	})
 
-	it.each([
-		["openai/gpt-6.1-sol", "medium"],
-		["anthropic/claude-sonnet-5.5", "high"],
-		["google/gemini-3.8-flash", "medium"],
-		["openai/gpt-6-luna", "medium"],
-		["openai/gpt-5.6-sol", "medium"],
-		["openai/gpt-5.6-terra", "medium"],
-		["openai/gpt-5.6-luna", "medium"],
-		["x-ai/grok-4.6", "high"],
-		["x-ai/grok-4.7", "high"],
-		["anthropic/claude-opus-5.5", "high"],
-		["anthropic/claude-haiku-5.5", "medium"],
-		["moonshotai/kimi-k3.1-pro", "max"],
-		["moonshotai/kimi-k3", "max"],
-		["z-ai/glm-5.3", "max"],
-		["z-ai/glm-5.3-flash", "max"],
-	])("uses verified reasoning defaults for %s", async (apiModelId, effort) => {
+	it.each(modelDefaults)("uses verified reasoning defaults for %s", async (apiModelId, effort) => {
 		const provider = makeHandler({ apiModelId })
 		await collect(provider.createMessage("instructions", [], { taskId: "default" }))
 		const request = create.mock.calls[0][0]
@@ -109,39 +111,25 @@ describe("curated OpenRouter provider", () => {
 		expect(request).not.toHaveProperty("parallel_tool_calls")
 	})
 
-	it.each([
-		"openai/gpt-6-luna",
-		"openai/gpt-5.6-sol",
-		"openai/gpt-5.6-terra",
-		"openai/gpt-5.6-luna",
-		"anthropic/claude-haiku-5.5",
-	])("sends an explicit reasoning Off value for %s in task and auxiliary requests", async (apiModelId) => {
-		for (const settings of [
-			{ enableReasoningEffort: false, reasoningEffort: "max" as const },
-			{ reasoningEffort: "disable" as const },
-			{ reasoningEffort: "none" as const },
-		]) {
-			for (const openRouterStreamingEnabled of [true, false]) {
-				await collect(
-					makeHandler({ apiModelId, ...settings, openRouterStreamingEnabled }).createMessage(
-						"instructions",
-						[],
-						{
-							taskId: "optional-off",
-						},
-					),
-				)
-				expect(create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort: "none" } })
-				expect(create.mock.lastCall?.[0]).not.toHaveProperty("reasoning_effort")
+	it.each(retiredModelIds)(
+		"rejects retired model %s before SDK admission even with saved Off settings",
+		(apiModelId) => {
+			for (const settings of [
+				{ enableReasoningEffort: false, reasoningEffort: "max" as const },
+				{ reasoningEffort: "disable" as const },
+				{ reasoningEffort: "none" as const },
+			]) {
+				expect(() => makeHandler({ apiModelId, ...settings })).toThrow("Unsupported OpenRouter model")
 			}
-			await makeHandler({ apiModelId, ...settings }).completePrompt("Improve this prompt")
-			expect(create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort: "none" } })
-		}
-	})
+			expect(OpenAI).not.toHaveBeenCalled()
+			expect(create).not.toHaveBeenCalled()
+			expect(responsesCreate).not.toHaveBeenCalled()
+		},
+	)
 
-	it.each(["x-ai/grok-4.6", "x-ai/grok-4.7", "anthropic/claude-opus-5.5"])(
+	it.each(modelDefaults)(
 		"keeps required reasoning active for %s when a saved Off setting is carried over",
-		async (apiModelId) => {
+		async (apiModelId, effort) => {
 			await collect(
 				makeHandler({ apiModelId, enableReasoningEffort: false, reasoningEffort: "none" }).createMessage(
 					"instructions",
@@ -149,7 +137,11 @@ describe("curated OpenRouter provider", () => {
 					{ taskId: "mandatory-reasoning" },
 				),
 			)
-			expect(create.mock.calls[0][0]).toHaveProperty("reasoning", { effort: "high" })
+			expect(create.mock.calls[0][0]).toHaveProperty("reasoning", { effort })
+			await makeHandler({ apiModelId, enableReasoningEffort: false, reasoningEffort: "none" }).completePrompt(
+				"Improve this prompt",
+			)
+			expect(create.mock.lastCall?.[0]).toHaveProperty("reasoning", { effort })
 		},
 	)
 
@@ -207,25 +199,22 @@ describe("curated OpenRouter provider", () => {
 		},
 	)
 
-	it.each([
-		"x-ai/grok-4.6",
-		"x-ai/grok-4.7",
-		"openai/gpt-6-luna",
-		"anthropic/claude-haiku-5.5",
-		...reasoningFamilyModelIds,
-	])("encodes explicit output limits using the router parameter accepted by %s", async (apiModelId) => {
-		await collect(
-			makeHandler({ apiModelId, includeMaxTokens: true, modelMaxTokens: 4096 }).createMessage(
-				"instructions",
-				[],
-				{
-					taskId: "output-limit",
-				},
-			),
-		)
-		expect(create.mock.calls[0][0]).toHaveProperty("max_tokens", 4096)
-		expect(create.mock.calls[0][0]).not.toHaveProperty("max_completion_tokens")
-	})
+	it.each(modelDefaults.map(([modelId]) => modelId))(
+		"encodes explicit output limits using the router parameter accepted by %s",
+		async (apiModelId) => {
+			await collect(
+				makeHandler({ apiModelId, includeMaxTokens: true, modelMaxTokens: 4096 }).createMessage(
+					"instructions",
+					[],
+					{
+						taskId: "output-limit",
+					},
+				),
+			)
+			expect(create.mock.calls[0][0]).toHaveProperty("max_tokens", 4096)
+			expect(create.mock.calls[0][0]).not.toHaveProperty("max_completion_tokens")
+		},
+	)
 
 	it.each([true, false])("maps task-only effort to the router API (stream=%s)", async (streaming) => {
 		const provider = makeHandler({ reasoningEffort: "max", openRouterStreamingEnabled: streaming })
@@ -243,7 +232,7 @@ describe("curated OpenRouter provider", () => {
 		{ enableReasoningEffort: false },
 	])("resolves unsupported or disabled reasoning to the required model default (%j)", async (options) => {
 		await collect(
-			makeHandler({ apiModelId: "google/gemini-3.8-flash", ...options }).createMessage("instructions", [], {
+			makeHandler({ apiModelId: "google/gemini-4-argon", ...options }).createMessage("instructions", [], {
 				taskId: "required-reasoning",
 			}),
 		)
@@ -251,15 +240,22 @@ describe("curated OpenRouter provider", () => {
 	})
 
 	it("preserves the legacy model field only when the canonical model field is absent", () => {
-		expect(makeHandler({ openRouterModelId: "google/gemini-3.8-flash" }).getModel().id).toBe(
-			"google/gemini-3.8-flash",
-		)
+		expect(makeHandler({ openRouterModelId: "google/gemini-4-argon" }).getModel().id).toBe("google/gemini-4-argon")
 		expect(
-			makeHandler({ apiModelId: "openai/gpt-6.1-sol", openRouterModelId: "google/gemini-3.8-flash" }).getModel()
-				.id,
+			makeHandler({ apiModelId: "openai/gpt-6.1-sol", openRouterModelId: "google/gemini-4-argon" }).getModel().id,
 		).toBe("openai/gpt-6.1-sol")
-		expect(() => makeHandler({ apiModelId: "", openRouterModelId: "google/gemini-3.8-flash" })).toThrow(
+		expect(() => makeHandler({ apiModelId: "", openRouterModelId: "google/gemini-4-argon" })).toThrow(
 			"Unsupported OpenRouter model",
+		)
+	})
+
+	it.each(retiredModelIds)("rejects retired legacy model field %s without remapping it", (openRouterModelId) => {
+		expect(() => makeHandler({ openRouterModelId })).toThrow("Unsupported OpenRouter model")
+		expect(OpenAI).not.toHaveBeenCalled()
+		expect(create).not.toHaveBeenCalled()
+		expect(responsesCreate).not.toHaveBeenCalled()
+		expect(makeHandler({ apiModelId: "openai/gpt-6.1-sol", openRouterModelId }).getModel().id).toBe(
+			"openai/gpt-6.1-sol",
 		)
 	})
 
@@ -288,7 +284,7 @@ describe("curated OpenRouter provider", () => {
 		expect(create.mock.calls[0][0]).toHaveProperty("verbosity", "low")
 		await collect(
 			makeHandler({
-				apiModelId: "google/gemini-3.8-flash",
+				apiModelId: "google/gemini-4-argon",
 				modelTemperature: 0.7,
 				verbosity: "high",
 			}).createMessage("instructions", [], { taskId: "gemini" }),
@@ -304,11 +300,7 @@ describe("curated OpenRouter provider", () => {
 			await collect(provider.createMessage("instructions", [], { taskId: "model-sampling" }))
 			await provider.completePrompt("Improve this prompt")
 			for (const [request] of create.mock.calls) {
-				if (apiModelId === "moonshotai/kimi-k3.1-pro") {
-					expect(request).not.toHaveProperty("temperature")
-				} else {
-					expect(request).toHaveProperty("temperature", 0.7)
-				}
+				expect(request).not.toHaveProperty("temperature")
 				expect(request).not.toHaveProperty("verbosity")
 			}
 		},

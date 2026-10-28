@@ -9,7 +9,6 @@ import {
 	ProviderSettingsEntry,
 	DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 	getModelId,
-	type ProviderName,
 	persistedProviderSettingsWithIdSchema,
 	isProviderName,
 	isRetiredProvider,
@@ -23,13 +22,6 @@ import { Mode, modes } from "../../shared/modes"
 import { buildApiHandler } from "../../api"
 import { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
 export { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
-
-// Type-safe model migrations mapping
-type ModelMigrations = {
-	[K in ProviderName]?: Record<string, string>
-}
-
-const MODEL_MIGRATIONS: ModelMigrations = {} as const satisfies ModelMigrations
 
 const retainedProviderConfigSchema = z.object({ id: z.string().min(1), value: z.unknown() })
 export type RetainedProviderConfig = { id: string; value: unknown }
@@ -305,11 +297,6 @@ export class ProviderSettingsManager {
 					}
 				}
 
-				// Apply model migrations for all providers
-				if (this.applyModelMigrations(providerProfiles)) {
-					isDirty = true
-				}
-
 				// Ensure migrations field exists
 				if (!providerProfiles.migrations) {
 					providerProfiles.migrations = {
@@ -447,44 +434,6 @@ export class ProviderSettingsManager {
 		} catch (error) {
 			console.error(`[MigrateTodoListEnabled] Failed to migrate todo list enabled setting:`, error)
 		}
-	}
-
-	/**
-	 * Apply model migrations for all providers
-	 * Returns true if any migrations were applied
-	 */
-	private applyModelMigrations(providerProfiles: ProviderProfiles): boolean {
-		let migrated = false
-
-		try {
-			for (const [_name, apiConfig] of Object.entries(providerProfiles.apiConfigs)) {
-				// Skip configs without provider or model ID
-				if (!apiConfig.apiProvider || !apiConfig.apiModelId) {
-					continue
-				}
-
-				// Check if this provider has migrations (with type safety)
-				const provider = apiConfig.apiProvider as ProviderName
-				const providerMigrations = MODEL_MIGRATIONS[provider]
-				if (!providerMigrations) {
-					continue
-				}
-
-				// Check if the current model ID needs migration
-				const newModelId = providerMigrations[apiConfig.apiModelId]
-				if (newModelId && newModelId !== apiConfig.apiModelId) {
-					console.log(
-						`[ModelMigration] Migrating ${apiConfig.apiProvider} model from ${apiConfig.apiModelId} to ${newModelId}`,
-					)
-					apiConfig.apiModelId = newModelId
-					migrated = true
-				}
-			}
-		} catch (error) {
-			console.error(`[ModelMigration] Failed to apply model migrations:`, error)
-		}
-
-		return migrated
 	}
 
 	/**

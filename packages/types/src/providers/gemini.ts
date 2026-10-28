@@ -84,7 +84,6 @@ export function snapshotGeminiResponse(value: unknown): GeminiResponse | undefin
 
 // Verified 2026-10-25 against Google's native model and thinking contracts:
 // https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
-// https://aistudio.google.com/docs/models/gemini-3.8-flash
 // https://ai.google.dev/gemini-api/docs/generate-content/thinking
 // Keep synchronous output bounded; Argon's long-decode continuation protocol is a separate capability.
 export const geminiModels = {
@@ -101,20 +100,6 @@ export const geminiModels = {
 		reasoningEffort: "medium",
 		preserveReasoning: true,
 		description: "Gemini 4 Argon: Google's flagship model for coding and multi-step reasoning",
-	},
-	"gemini-3.8-flash": {
-		contextWindow: 1_048_576,
-		contextWindowIncludesOutput: false,
-		maxTokens: 65_536,
-		supportsImages: true,
-		supportsPromptCache: true,
-		supportsStreaming: true,
-		supportsTemperature: false,
-		supportsReasoningEffort: ["low", "medium", "high"],
-		requiredReasoningEffort: true,
-		reasoningEffort: "medium",
-		preserveReasoning: true,
-		description: "Gemini 3.8 Flash: Google's fast model for coding and agent workflows",
 	},
 } as const satisfies Record<string, ModelInfo>
 

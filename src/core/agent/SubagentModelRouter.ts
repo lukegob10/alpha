@@ -1,5 +1,7 @@
 import {
 	getModelId,
+	getVscodeLlmCatalogModels,
+	getVscodeLlmModelId,
 	type ProviderSettings,
 	type ProviderSettingsWithId,
 	type ReasoningEffortExtended,
@@ -71,8 +73,7 @@ const settingsFromProfile = (profile: StoredProviderProfile): ProviderSettings =
 }
 
 /** VS Code LM stores its model identity in the selector rather than a generic model-id field. */
-export const getSubagentRouteModelId = (settings: ProviderSettings): string | undefined =>
-	settings.apiProvider === "vscode-lm" ? settings.vsCodeLmModelSelector?.id : getModelId(settings)
+export const getSubagentRouteModelId = (settings: ProviderSettings): string | undefined => getModelId(settings)
 
 async function resolveParentRoute(
 	options: ResolveSubagentModelRouteOptions,
@@ -182,14 +183,40 @@ export function applySubagentSpawnOverrides(
 				break
 			case "vertex":
 			case "stellar":
+			case "openai-native":
+			case "openai-codex":
+			case "bedrock":
+			case "meta":
+			case "anthropic":
+			case "gemini":
+			case "xai":
+			case "openrouter":
 				apiConfiguration.openAiModelId = undefined
 				apiConfiguration.apiModelId = requestedModelId
 				break
-			case "vscode-lm":
+			case "vscode-lm": {
+				const selector = apiConfiguration.vsCodeLmModelSelector
+				const catalog = getVscodeLlmCatalogModels()
+				const usesCatalogFamily =
+					selector?.vendor === "copilot" &&
+					selector.id === undefined &&
+					selector.version === undefined &&
+					catalog.some((model) => model.family === selector.family)
+				const catalogModel = usesCatalogFamily
+					? catalog.find(
+							(model) =>
+								model.family === requestedModelId || getVscodeLlmModelId(model) === requestedModelId,
+						)
+					: undefined
 				apiConfiguration.apiModelId = undefined
 				apiConfiguration.openAiModelId = undefined
-				apiConfiguration.vsCodeLmModelSelector = { id: requestedModelId }
+				// Catalog choices bind to a host model only at admission. Exact saved
+				// selectors and unknown override IDs retain their existing ID semantics.
+				apiConfiguration.vsCodeLmModelSelector = catalogModel
+					? { vendor: "copilot", family: catalogModel.family }
+					: { id: requestedModelId }
 				break
+			}
 			default:
 				throw new Error(
 					`Provider ${apiConfiguration.apiProvider ?? "unconfigured"} cannot select a spawn model`,

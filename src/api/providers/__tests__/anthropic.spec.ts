@@ -106,7 +106,7 @@ describe("native Anthropic adapter", () => {
 	it.each([
 		{ apiModelId: "claude-opus-5-5", effort: "medium" },
 		{ apiModelId: "claude-sonnet-5-5", effort: "high" },
-		{ apiModelId: "claude-haiku-5-5", effort: "medium" },
+		{ apiModelId: "claude-fable-5-1", effort: "high" },
 	] as const)(
 		"uses the verified $apiModelId default and adaptive replay controls",
 		async ({ apiModelId, effort }) => {
@@ -132,17 +132,19 @@ describe("native Anthropic adapter", () => {
 		{ enableReasoningEffort: false, reasoningEffort: "xhigh" },
 		{ enableReasoningEffort: false, reasoningEffort: "max" },
 		{ enableReasoningEffort: true, reasoningEffort: "disable" },
-	] as const)("maps Haiku Off to disabled thinking with a valid server default (%j)", async (settings) => {
-		await collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-haiku-5-5", ...settings }))
+	] as const)("keeps Fable reasoning active when a saved profile requests Off (%j)", async (settings) => {
+		await collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-fable-5-1", ...settings }))
 		const [body, requestOptions] = mocks.create.mock.calls[0]
-		expect(body.thinking).toEqual({ type: "disabled" })
-		expect(body).not.toHaveProperty("output_config")
+		expect(body.thinking).toMatchObject({ type: "adaptive" })
+		expect(body.output_config).toEqual({
+			effort: settings.reasoningEffort === "disable" ? "high" : settings.reasoningEffort,
+		})
 		expect(body).not.toHaveProperty("temperature")
-		expect(requestOptions.headers).toBeUndefined()
+		expect(requestOptions.headers).toEqual({ "anthropic-beta": "thinking-binding-controls-2026-08-01" })
 	})
 
-	it.each(["xhigh", "max"] as const)("keeps Haiku %s in adaptive mode", async (reasoningEffort) => {
-		await collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-haiku-5-5", reasoningEffort }))
+	it.each(["xhigh", "max"] as const)("keeps Fable %s in adaptive mode", async (reasoningEffort) => {
+		await collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-fable-5-1", reasoningEffort }))
 		expect(mocks.create.mock.calls[0][0]).toMatchObject({
 			thinking: { type: "adaptive" },
 			output_config: { effort: reasoningEffort },
@@ -160,17 +162,16 @@ describe("native Anthropic adapter", () => {
 	})
 
 	it.each(["required", { type: "function", function: { name: "read_file" } }] as const)(
-		"allows Haiku forced tool choice %j while preserving the shared tool schema",
+		"rejects Fable forced tool choice %j before dispatch",
 		async (tool_choice) => {
-			await collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-haiku-5-5" }), {
-				taskId: "task",
-				tools,
-				tool_choice,
-			})
-			expect(mocks.create.mock.calls[0][0]).toMatchObject({
-				tools: [{ name: "read_file", input_schema: { type: "object", properties: {} } }],
-				tool_choice: tool_choice === "required" ? { type: "any" } : { type: "tool", name: "read_file" },
-			})
+			await expect(
+				collect(new AnthropicHandler({ apiKey: "key", apiModelId: "claude-fable-5-1" }), {
+					taskId: "task",
+					tools,
+					tool_choice,
+				}),
+			).rejects.toThrow("forced tool use")
+			expect(mocks.create).not.toHaveBeenCalled()
 		},
 	)
 
@@ -186,7 +187,7 @@ describe("native Anthropic adapter", () => {
 	})
 
 	it("rejects unknown and prototype model IDs before SDK dispatch", async () => {
-		for (const apiModelId of ["unsupported-model", "toString", "__proto__", "", " "]) {
+		for (const apiModelId of ["unsupported-model", "toString", "__proto__", "", " ", "claude-haiku-5-5"]) {
 			await expect(collect(new AnthropicHandler({ apiKey: "key", apiModelId }))).rejects.toThrow(
 				"Unsupported Anthropic model",
 			)
@@ -216,28 +217,31 @@ describe("native Anthropic adapter", () => {
 		expect(mocks.create).not.toHaveBeenCalled()
 	})
 
-	it("preserves signed thinking and redacted blocks unchanged through a tool continuation", async () => {
-		const thinking = { type: "thinking" as const, thinking: "A summary", signature: "opaque-signature" }
-		const redacted = { type: "redacted_thinking" as const, data: "opaque-redacted" }
-		const history: Anthropic.Messages.MessageParam[] = [
-			...messages,
-			{
-				role: "assistant",
-				content: [thinking, redacted, { type: "tool_use", id: "call", name: "read_file", input: {} }],
-			},
-			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "file result" }] },
-		]
-		const handler = new AnthropicHandler({ apiKey: "key" })
-		for await (const _chunk of handler.createMessage("system", history, { taskId: "task", tools })) {
-			/* consume */
-		}
-		expect(mocks.create.mock.calls[0][0].messages[1]).toEqual(history[1])
-		expect(history[1].content).toEqual([
-			thinking,
-			redacted,
-			{ type: "tool_use", id: "call", name: "read_file", input: {} },
-		])
-	})
+	it.each(["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"])(
+		"preserves %s signed thinking and redacted blocks through a tool continuation",
+		async (apiModelId) => {
+			const thinking = { type: "thinking" as const, thinking: "A summary", signature: "opaque-signature" }
+			const redacted = { type: "redacted_thinking" as const, data: "opaque-redacted" }
+			const history: Anthropic.Messages.MessageParam[] = [
+				...messages,
+				{
+					role: "assistant",
+					content: [thinking, redacted, { type: "tool_use", id: "call", name: "read_file", input: {} }],
+				},
+				{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "file result" }] },
+			]
+			const handler = new AnthropicHandler({ apiKey: "key", apiModelId })
+			for await (const _chunk of handler.createMessage("system", history, { taskId: "task", tools })) {
+				/* consume */
+			}
+			expect(mocks.create.mock.calls[0][0].messages[1]).toEqual(history[1])
+			expect(history[1].content).toEqual([
+				thinking,
+				redacted,
+				{ type: "tool_use", id: "call", name: "read_file", input: {} },
+			])
+		},
+	)
 
 	it("keeps reasoning, text, and tool block order and seals each signature", async () => {
 		mocks.create.mockResolvedValue(

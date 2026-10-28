@@ -3,6 +3,7 @@ import type { ProviderSettings } from "./provider-settings.js"
 import { getNativeOpenAiModelCapabilities } from "./providers/openai.js"
 import { resolveVertexGatewayRoute } from "./providers/vertex.js"
 import { getCuratedModelInfo, isCuratedProvider } from "./provider-settings.js"
+import { getBedrockModelRoute } from "./providers/bedrock.js"
 
 type OpenAiRouteSettings = Pick<ProviderSettings, "openAiBaseUrl" | "openAiUseAzure" | "openAiR1FormatEnabled">
 
@@ -25,6 +26,7 @@ export function usesOpenAiReasoningFamilyChat(modelId: string): boolean {
 export type ModelParameterRoute =
 	| "openai-responses"
 	| "xai-responses"
+	| "meta-responses"
 	| "openai-chat-completions"
 	| "vertex-anthropic"
 	| "vertex-gemini"
@@ -73,9 +75,14 @@ export function resolveModelParameterApplicability({
 	let route: ModelParameterRoute = "unsupported"
 	let requestModelId = modelId
 	let hasNativeOpenAiRoute = false
-	if (selectedProvider === "openai-native" || selectedProvider === "xai") {
-		hasNativeOpenAiRoute = selectedProvider === "openai-native"
+	if (selectedProvider === "openai-native" || selectedProvider === "openai-codex" || selectedProvider === "xai") {
+		hasNativeOpenAiRoute = selectedProvider !== "xai"
 		route = selectedProvider === "xai" ? "xai-responses" : "openai-responses"
+	} else if (selectedProvider === "meta") {
+		route = "meta-responses"
+	} else if (selectedProvider === "bedrock") {
+		route = getBedrockModelRoute(modelId) ?? "unsupported"
+		hasNativeOpenAiRoute = route === "openai-responses"
 	} else if (selectedProvider === "anthropic") {
 		route = "anthropic-messages"
 	} else if (selectedProvider === "gemini") {
@@ -183,7 +190,11 @@ export function resolveOptionalOutputTokenLimit({
 	) {
 		throw new RangeError("Output token limit exceeds the model maximum.")
 	}
-	if (limit !== undefined && route === "openai-responses" && limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS) {
+	if (
+		limit !== undefined &&
+		(route === "openai-responses" || route === "meta-responses") &&
+		limit < MIN_OPENAI_RESPONSES_OUTPUT_TOKENS
+	) {
 		throw new RangeError(
 			`Native Responses output token limit must be at least ${MIN_OPENAI_RESPONSES_OUTPUT_TOKENS} or -1 for the server default.`,
 		)

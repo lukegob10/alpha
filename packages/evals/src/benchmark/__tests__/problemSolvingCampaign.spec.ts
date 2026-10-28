@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { ExecaHarnessProcessRunner } from "../../orchestration/index"
+import { sealProblemSolvingExperimentAssignment } from "../../experiments/problemSolvingCampaign"
+import { loadProblemSolvingSet } from "../problemSolving"
 
 import {
 	existingExtensionRunnerArguments,
@@ -30,6 +32,86 @@ function host(overrides: Partial<ProblemSolvingHostResult> = {}): ProblemSolving
 }
 
 describe("problem-solving extension campaign", () => {
+	it("does not promote a passing task projection over an outer native runner failure", () => {
+		expect(
+			problemSolvingHostFromReceipts({
+				buildIdentity: "synthetic",
+				tracePath: null,
+				workflow: { status: "passed" },
+				runnerFailure: "native-runner-failed",
+			}),
+		).toMatchObject({ status: "failed", failureClass: "infrastructure", failureCode: "runner_failure" })
+	})
+	it("captures predeclared labels and measured attempt timing separately from independent grading", async () => {
+		const parent = await fs.realpath(os.tmpdir())
+		const root = await fs.mkdtemp(path.join(parent, "alpha-grader-model-identity-timing-"))
+		try {
+			const source = (await loadProblemSolvingSet(evalRoot)).tasks.find(
+				(task) => task.id === "repo-cache-invalidation",
+			)!
+			const digest = "sha256:" + "a".repeat(64)
+			const assignment = sealProblemSolvingExperimentAssignment({
+				schemaVersion: 1,
+				runId: "synthetic-control",
+				declaredAt: "2026-01-01T00:00:00.000Z",
+				decisionPlanDigest: digest,
+				taskSet: {
+					schemaVersion: 1,
+					id: "synthetic-frame",
+					version: 1,
+					tasks: [{ id: source.id, version: source.version, digest }],
+				},
+				pair: {
+					taskId: source.id,
+					taskVersion: source.version,
+					seed: 0,
+					repetition: 0,
+					resourceProfileDigest: digest,
+					permissionDigest: digest,
+					networkMode: "disabled",
+					retryPolicyDigest: digest,
+					timeWindow: "block",
+				},
+				task: {
+					definitionDigest: digest,
+					fixtureDigest: source.digest,
+					family: "synthetic-repair",
+					risk: "medium",
+					difficulty: "challenging",
+					capabilities: ["repair"],
+				},
+			})
+			const result = await runProblemSolvingAttempt({
+				evalRoot,
+				repositoryRoot,
+				taskId: source.id,
+				attemptRoot: root,
+				attemptId: "timed-attempt",
+				hostVersion: "1.138.0",
+				provider: "live-copilot",
+				modelId: "gpt-test",
+				effort: "medium",
+				experimentAssignment: assignment,
+				runExtension: async (request) => {
+					expect(request.experimentEvidence).toBe(true)
+					expect(request.experimentAssignmentDigest).toBe(assignment.digest)
+					return host({ experimentIdentity: null, experimentIdentityFailure: "unavailable" })
+				},
+			})
+			expect(result.experimentAssignment).toEqual(assignment)
+			expect(result.experimentIdentity).toBeNull()
+			expect(result.experimentIdentityFailure).toBe("unavailable")
+			expect(Date.parse(result.completedAt!)).toBeGreaterThanOrEqual(Date.parse(result.startedAt!))
+			expect(result.elapsedMs).toBeGreaterThanOrEqual(0)
+			expect(
+				Math.abs(result.elapsedMs! - (Date.parse(result.completedAt!) - Date.parse(result.startedAt!))),
+			).toBeLessThan(10)
+			expect(result.gradingMs).toBeGreaterThanOrEqual(0)
+		} finally {
+			await removeIdentityFixture(root, parent)
+		}
+	})
+
 	it.each([
 		{ modelId: null, effort: "medium" },
 		{ modelId: "different-model", effort: "medium" },

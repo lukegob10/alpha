@@ -22,4 +22,7 @@ export const PROVIDERS = [
 	{ value: "gemini", label: "Google Gemini", proxy: false },
 	{ value: "xai", label: "xAI", proxy: false },
 	{ value: "openrouter", label: "OpenRouter", proxy: true },
+	{ value: "bedrock", label: "Amazon Bedrock", proxy: false },
+	{ value: "openai-codex", label: "Sign in with ChatGPT", proxy: false },
+	{ value: "meta", label: "Meta", proxy: false },
 ].sort((a, b) => a.label.localeCompare(b.label))

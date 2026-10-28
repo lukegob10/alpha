@@ -144,8 +144,18 @@ function LayoutProbe({ epoch, onLayout }: { epoch: number; onLayout: (snapshot: 
 describe("scheduled task reasoning selector integration", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		state.scheduledTasks = []
 		profiles[0].modelId = "gemini-2.5-pro"
 		vi.mocked(useExtensionState).mockImplementation(() => state)
+	})
+
+	it("does not show loading before a profile is selected", () => {
+		render(<ScheduledTasksView onDone={() => {}} />)
+
+		expect(reasoningMessages()).toHaveLength(0)
+		expect(screen.getByTestId("reasoning-trigger")).toBeDisabled()
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAccessibleName("Reasoning: Unavailable")
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAttribute("aria-busy", "false")
 	})
 
 	it("renders the real selector and scopes capability state to the selected profile", async () => {

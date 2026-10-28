@@ -9,18 +9,13 @@ on:
 
 permissions:
     contents: read
-    actions: read
 
 concurrency:
     group: release-vsix-${{ github.ref }}
     cancel-in-progress: false
 
 jobs:
-    evaluator-contracts:
-        uses: ./.github/workflows/evaluation-contracts.yml
-
     release-vsix:
-        needs: evaluator-contracts
         runs-on: windows-latest
         timeout-minutes: 120
 
@@ -84,37 +79,8 @@ jobs:
             - name: Verify bounded lifecycle cancellation and managed budgets
               run: pnpm harness run stress
 
-            # Enable after an owned signed-in runner or reviewed local run can supply this commit's retained campaign.
-            # Materialize before outcomes captures the compiled harness; later build changes invalidate its evidence.
-            - name: Materialize the fixed sidecar manifest for build comparison
-              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
-              run: node -e "require('./apps/vscode-e2e/out/liveHostProtocol.js').prepareLiveSidecar().catch(() => process.exit(1))"
-
             - name: Verify independent scripted task outcomes
               run: pnpm harness run outcomes
-
-            - name: Download explicitly required live Copilot evidence
-              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
-              uses: actions/download-artifact@v7
-              with:
-                  name: alpha-live-copilot-evidence
-                  path: ${{ runner.temp }}/alpha-live-import
-                  run-id: ${{ vars.ALPHA_LIVE_EVIDENCE_RUN_ID }}
-                  github-token: ${{ github.token }}
-
-            - name: Admit fresh source and build bound live Copilot evidence
-              if: always() && vars.ALPHA_REQUIRE_LIVE_EVIDENCE == 'true'
-              env:
-                  ALPHA_LIVE_EVIDENCE_DIR: ${{ runner.temp }}/alpha-live-import
-                  ALPHA_LIVE_EVAL_MODEL_ID: ${{ vars.ALPHA_LIVE_EVAL_MODEL_ID }}
-                  ALPHA_LIVE_EVAL_EFFORT: ${{ vars.ALPHA_LIVE_EVAL_EFFORT }}
-              run: node scripts/ci-live-evidence-policy.mjs
-
-            - name: Record the live evidence operational prerequisite
-              if: vars.ALPHA_REQUIRE_LIVE_EVIDENCE != 'true'
-              shell: pwsh
-              run: |
-                  Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value 'Live Copilot acceptance was not requested. An owned authenticated acquisition path and fresh retained source/build-compatible campaign are required before enabling ALPHA_REQUIRE_LIVE_EVIDENCE. Deterministic release gates remain required.'
 
             - name: Require current release evidence
               if: always()
@@ -150,8 +116,34 @@ jobs:
 
     package-vsix:
         needs: release-vsix
-        runs-on: windows-latest
+        runs-on: ${{ matrix.os }}
         timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            max-parallel: 3
+            matrix:
+                # Runner architectures verified on 2026-10-27:
+                # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
+                include:
+                    - os: windows-latest
+                      target: win32-x64
+                      native_index: true
+                    - os: windows-11-arm
+                      target: win32-arm64
+                      native_index: true
+                    - os: macos-14
+                      target: darwin-arm64
+                      native_index: true
+                    # LanceDB 0.27.2 has no Intel macOS native package; core features remain supported.
+                    - os: macos-15-intel
+                      target: darwin-x64
+                      native_index: false
+                    - os: ubuntu-latest
+                      target: linux-x64
+                      native_index: true
+                    - os: ubuntu-24.04-arm
+                      target: linux-arm64
+                      native_index: true
         steps:
             - name: Checkout code
               uses: actions/checkout@v5
@@ -159,13 +151,14 @@ jobs:
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
 
-            - name: Package Windows x64
+            - name: Package the native host target
               run: pnpm vsix
 
             - name: Verify platform inventory and optional backend isolation
               run: pnpm --dir src test __tests__/lancedb-native.spec.mjs services/code-index/vector-store/__tests__/lancedb-loading.spec.ts
 
             - name: Verify local native indexing
+              if: matrix.native_index
               run: pnpm --dir src test services/code-index/vector-store/__tests__/lancedb-native.spec.ts
 
             - name: Locate and verify target artifact
@@ -173,15 +166,15 @@ jobs:
               shell: pwsh
               run: |
                   $version = node -p "require('./src/package.json').version"
-                  $vsix = Get-Item -LiteralPath "bin/alpha-$version-win32-x64.vsix" -ErrorAction Stop
-                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --target "win32-x64"
+                  $vsix = Get-Item -LiteralPath "bin/alpha-$version-${{ matrix.target }}.vsix" -ErrorAction Stop
+                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --target "${{ matrix.target }}"
                   if ($LASTEXITCODE -ne 0) { throw "VSIX target verification failed." }
                   "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
 
             - name: Retain verified target artifact
               uses: actions/upload-artifact@v6
               with:
-                  name: alpha-vsix-win32-x64
+                  name: alpha-vsix-${{ matrix.target }}
                   path: ${{ steps.artifact.outputs.path }}
                   if-no-files-found: error
 
@@ -195,11 +188,31 @@ jobs:
             - name: Checkout release metadata
               uses: actions/checkout@v5
 
-            - name: Download verified Windows x64 artifact
+            - name: Verify release tag source
+              env:
+                  ALPHA_RELEASE_SHA: ${{ github.sha }}
+              shell: pwsh
+              run: |
+                  $expected = $env:ALPHA_RELEASE_SHA
+                  if ($expected -notmatch '^[a-f0-9]{40}$') { throw "Release tag source must be a full commit SHA." }
+                  $version = (Get-Content -LiteralPath src/package.json -Raw | ConvertFrom-Json).version
+                  $tag = "vsix-v$version-$($expected.Substring(0, 7))"
+                  git ls-remote --exit-code --refs --tags origin "refs/tags/$tag" > $null
+                  if ($LASTEXITCODE -eq 2) { exit 0 }
+                  if ($LASTEXITCODE -ne 0) { throw "Could not verify the remote release tag." }
+                  git fetch --no-tags --quiet origin "refs/tags/$tag"
+                  if ($LASTEXITCODE -ne 0) { throw "Could not fetch the remote release tag." }
+                  $actual = git rev-parse --verify 'FETCH_HEAD^{commit}'
+                  if ($LASTEXITCODE -ne 0 -or $actual -ne $expected) {
+                    throw "Release tag $tag does not identify the source commit $expected."
+                  }
+
+            - name: Download verified target artifacts
               uses: actions/download-artifact@v7
               with:
-                  name: alpha-vsix-win32-x64
+                  pattern: alpha-vsix-*
                   path: bin
+                  merge-multiple: true
 
             - name: Create GitHub release
               env:
@@ -209,12 +222,12 @@ jobs:
                   $version = (Get-Content -LiteralPath src/package.json -Raw | ConvertFrom-Json).version
                   $shortSha = "${{ github.sha }}".Substring(0, 7)
                   $tag = "vsix-v$version-$shortSha"
-                  $targets = @("win32-x64")
+                  $targets = @("win32-x64", "win32-arm64", "darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64")
                   $vsixPaths = @($targets | ForEach-Object {
                     (Get-Item -LiteralPath "bin/alpha-$version-$_.vsix" -ErrorAction Stop).FullName
                   })
                   if (@(Get-ChildItem -LiteralPath bin -Filter *.vsix).Count -ne $targets.Count) {
-                    throw "Release must contain exactly one Windows x64 VSIX."
+                    throw "Release artifacts differ from the supported platform matrix."
                   }
                   $releaseTitle = "Alpha VSIX v$version ($shortSha)"
                   $changelog = Get-Content -LiteralPath CHANGELOG.md -Raw
@@ -229,14 +242,13 @@ jobs:
 
                   Commit: ${{ github.sha }}
 
-                  Download the Windows x64 VSIX for Intel/AMD PCs. Install it with: code --install-extension alpha-$version.vsix
+                  Download the VSIX for your operating system and architecture. Install it with: code --install-extension <downloaded-file.vsix>
+                  Intel macOS supports core features; select Qdrant for code indexing because this LanceDB version has no Intel macOS binding.
                   "@
 
                   gh release view "$tag" --json tagName 2>$null
                   if ($LASTEXITCODE -eq 0) {
                     throw "Release $tag already exists; refusing to overwrite its published artifacts."
                   }
-                  $releaseAsset = Join-Path -Path (Resolve-Path -LiteralPath bin).Path -ChildPath "alpha-$version.vsix"
-                  Move-Item -LiteralPath $vsixPaths[0] -Destination $releaseAsset -ErrorAction Stop
-                  gh release create "$tag" "$releaseAsset" --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
+                  gh release create "$tag" @vsixPaths --title "$releaseTitle" --notes "$notes" --target "${{ github.sha }}"
                   if ($LASTEXITCODE -ne 0) { throw "Release creation failed." }

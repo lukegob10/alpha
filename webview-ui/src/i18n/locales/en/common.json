@@ -1,4 +1,7 @@
 {
+	"brand": {
+		"name": "alpha"
+	},
 	"chatToolbar": {
 		"label": "Chat controls",
 		"newChat": "New chat",

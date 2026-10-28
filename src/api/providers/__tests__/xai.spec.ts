@@ -54,7 +54,7 @@ function mockResponse(output: unknown[] = [textItem()], reportedUsage: unknown =
 }
 
 const createHandler = (options: ApiHandlerOptions = {}) => new XAIHandler({ xaiApiKey: "xai-fixture-key", ...options })
-const modelIds = ["grok-4.7", "grok-4.6"] as const
+const modelIds = ["grok-4.7"] as const
 const usageRoutes = modelIds.flatMap((modelId) => [true, false].map((streaming) => ({ modelId, streaming })))
 
 /** Exercise the shared buffered Responses path without adding a native-provider setting. */
@@ -88,6 +88,19 @@ describe("native xAI Responses provider", () => {
 	})
 
 	afterEach(() => vi.restoreAllMocks())
+
+	it("uses Grok 4.7's verified limits and required reasoning capabilities", () => {
+		expect(createHandler().getModel()).toMatchObject({
+			id: "grok-4.7",
+			info: {
+				contextWindow: 500_000,
+				maxTokens: 128_000,
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh"],
+				requiredReasoningEffort: true,
+				reasoningEffort: "high",
+			},
+		})
+	})
 
 	it("isolates the native endpoint and credential from saved compatible-provider settings", async () => {
 		mockResponse()
@@ -274,7 +287,7 @@ describe("native xAI Responses provider", () => {
 		"omits malformed billed ticks %j without changing token counts",
 		async (ticks) => {
 			mockResponse([textItem()], { ...usage, cost_in_usd_ticks: ticks })
-			const chunks = await consume(createHandler({ apiModelId: "grok-4.6" }))
+			const chunks = await consume(createHandler({ apiModelId: "grok-4.7" }))
 			const reported = chunks.find((chunk) => chunk.type === "usage")
 			expect(reported).toMatchObject({
 				inputTokens: 80,
@@ -414,6 +427,13 @@ describe("native xAI Responses provider", () => {
 			expect(responsesCreate).not.toHaveBeenCalled()
 		},
 	)
+
+	it("rejects the retired Grok 4.6 model before SDK admission", () => {
+		expect(() => createHandler({ apiModelId: "grok-4.6" })).toThrow("Unsupported xAI model: grok-4.6")
+		expect(OpenAI).not.toHaveBeenCalled()
+		expect(responsesCreate).not.toHaveBeenCalled()
+		expect(chatCreate).not.toHaveBeenCalled()
+	})
 
 	it("rejects missing native credentials before SDK admission", () => {
 		expect(() => new XAIHandler({ openAiApiKey: "another-service-key" })).toThrow("An xAI API key is required")

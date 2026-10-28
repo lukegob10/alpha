@@ -135,7 +135,6 @@ describe("Claude Copilot routing identity", () => {
 		expect(selectChatModels.mock.calls.map(([selection]) => selection)).toEqual([
 			selector(selected),
 			selector(selected),
-			{},
 		])
 		expect(selected.sendRequest).not.toHaveBeenCalled()
 		expect(otherClaude.sendRequest).not.toHaveBeenCalled()

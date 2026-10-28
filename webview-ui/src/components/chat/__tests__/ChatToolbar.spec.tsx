@@ -18,15 +18,15 @@ const createProps = (overrides: Partial<ChatToolbarProps> = {}): ChatToolbarProp
 const openMenu = () => fireEvent.keyDown(screen.getByRole("button", { name: "More actions" }), { key: "Enter" })
 
 describe("ChatToolbar", () => {
-	it("omits the entire empty sidebar toolbar so history starts at the top", () => {
+	it("omits the empty sidebar toolbar so the native ribbon remains the sole header", () => {
 		const { container } = render(<ChatToolbar {...createProps({ renderContext: "sidebar" })} />)
-		expect(screen.queryByRole("group", { name: "Chat actions" })).not.toBeInTheDocument()
 		expect(container).toBeEmptyDOMElement()
 	})
 
 	it("keeps sidebar navigation without duplicating native host actions", () => {
 		render(<ChatToolbar {...createProps({ renderContext: "sidebar", navigation: <button>Switch chat</button> })} />)
 		expect(screen.getByRole("button", { name: "Switch chat" })).toBeInTheDocument()
+		expect(screen.queryByTestId("alpha-wolf-icon")).not.toBeInTheDocument()
 		expect(screen.getAllByRole("button")).toHaveLength(1)
 		for (const label of ["New chat", "Settings", "Alpha Tickets", "More actions"]) {
 			expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument()
@@ -46,6 +46,8 @@ describe("ChatToolbar", () => {
 		const props = createProps({ navigation: <button>Switch chat</button> })
 		render(<ChatToolbar {...props} />)
 
+		expect(screen.getByText("alpha")).toBeInTheDocument()
+		expect(screen.getByTestId("alpha-wolf-icon")).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "Switch chat" })).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("button", { name: "New chat" }))
 		fireEvent.click(screen.getByRole("button", { name: "Settings" }))

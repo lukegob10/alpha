@@ -1,4 +1,4 @@
-import type { ProviderSettings, OrganizationAllowList } from "@alpha-code/types"
+import { getModelId, type ProviderSettings, type OrganizationAllowList } from "@alpha-code/types"
 
 export class ProfileValidator {
 	public static isProfileAllowed(profile: ProviderSettings, allowList: OrganizationAllowList): boolean {
@@ -50,17 +50,6 @@ export class ProfileValidator {
 	}
 
 	private static getModelIdFromProfile(profile: ProviderSettings): string | undefined {
-		switch (profile.apiProvider) {
-			case "openai":
-				return profile.openAiModelId
-			case "vertex":
-			case "stellar":
-				return profile.apiModelId
-			case "vscode-lm":
-				return profile.vsCodeLmModelSelector?.id
-			case "fake-ai":
-			default:
-				return undefined
-		}
+		return getModelId(profile)
 	}
 }

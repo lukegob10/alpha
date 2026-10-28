@@ -452,6 +452,10 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	describe("createClient", () => {
+		beforeEach(() => {
+			vi.mocked(vscode.lm.selectChatModels).mockReset()
+		})
+
 		it("should create client with selector", async () => {
 			const mockModel = { ...mockLanguageModelChat }
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([mockModel])
@@ -496,6 +500,112 @@ describe("VsCodeLmHandler", () => {
 			expect(client).toBe(selectedModel)
 		})
 
+		it("binds a catalog family to its unique Copilot route when the host uses opaque identifiers", async () => {
+			const model = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "opaque-family",
+				id: "opaque-route",
+				name: "GPT-6.1 Sol",
+			}
+			vi.mocked(vscode.lm.selectChatModels)
+				.mockReset()
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce([
+					{ ...model, vendor: "other-provider", id: "unrelated-route" },
+					{ ...model, id: "other-model", name: "Claude Opus 5.5" },
+					model,
+				])
+
+			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
+			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(1, {
+				vendor: "copilot",
+				family: "gpt-6.1-sol",
+			})
+			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+			expect(model.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it("binds an exact catalog family with a decorated host name without listing other models", async () => {
+			const model = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "gpt-6.1-sol",
+				id: "opaque-route",
+				name: "GPT-6.1 Sol (Preview)",
+			}
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([model])
+
+			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({
+				vendor: "copilot",
+				family: "gpt-6.1-sol",
+			})
+		})
+
+		it("rejects ambiguous Copilot routes for a catalog family instead of choosing a variant", async () => {
+			vi.mocked(vscode.lm.selectChatModels)
+				.mockReset()
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce([
+					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "standard-route" },
+					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "extended-route" },
+				])
+
+			await expect(handler.createClient({ vendor: "copilot", family: "gpt-5.5" })).rejects.toThrow(
+				/is ambiguous and matched 2 models/,
+			)
+		})
+
+		it("does not bind an unsupported near-name model to a catalog choice", async () => {
+			const model = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "gpt-6.1-sol-mini",
+				id: "copilot-gpt-6.1-sol-mini",
+				name: "GPT-6.1 Sol Experimental",
+			}
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValueOnce([]).mockResolvedValueOnce([model])
+
+			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).rejects.toThrow(
+				"The selected VS Code language model is not available in this window",
+			)
+			expect(model.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it.each([
+			{ id: "gpt-6-luna", name: "GPT-6 Luna" },
+			{ id: "gpt-6.1-sol-mini", name: "GPT-6.1 Sol Mini" },
+		])("does not bind a conflicting model %j even when its family matches", async (identity) => {
+			const model = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "gpt-6.1-sol",
+				...identity,
+			}
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([model])
+
+			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).rejects.toThrow(
+				"The selected VS Code language model is not available in this window",
+			)
+			expect(model.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it.each([{ id: "retired-route" }, { version: "retired-version" }])(
+			"does not replace an exact saved Copilot selection containing %j with a catalog-family match",
+			async (identity) => {
+				vi.mocked(vscode.lm.selectChatModels)
+					.mockReset()
+					.mockResolvedValueOnce([])
+					.mockResolvedValueOnce([mockCopilotGpt55LanguageModelChat])
+
+				await expect(
+					handler.createClient({ vendor: "copilot", family: "gpt-5.5", ...identity }),
+				).rejects.toThrow("The selected VS Code language model is not available in this window")
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
+			},
+		)
+
 		it("should throw a clear error when no models are available", async () => {
 			;(vscode.lm.selectChatModels as Mock).mockResolvedValueOnce([])
 
@@ -504,15 +614,13 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
-		it("should distinguish an unavailable selection from an unavailable provider", async () => {
-			;(vscode.lm.selectChatModels as Mock)
-				.mockResolvedValueOnce([])
-				.mockResolvedValueOnce([mockLanguageModelChat])
+		it("reports an unavailable exact selection without probing other providers", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockReset().mockResolvedValueOnce([])
 
-			await expect(handler["createClient"]({ vendor: "copilot", family: "gpt-5.6-sol" })).rejects.toThrow(
+			await expect(handler.createClient({ vendor: "copilot", id: "unavailable-route" })).rejects.toThrow(
 				"The selected VS Code language model is not available in this window",
 			)
-			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, {})
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(1)
 		})
 
 		it("should explain the VS Code minimum when an unavailable GPT-5.6 selector is stale", async () => {
@@ -3041,6 +3149,74 @@ describe("VsCodeLmHandler", () => {
 			vi.mocked(vscode.lm.selectChatModels).mockReset()
 			await expect(handler.prepareModel({ deadline: Date.now() - 1 })).rejects.toThrow()
 			expect(vscode.lm.selectChatModels).not.toHaveBeenCalled()
+		})
+
+		it("cancels catalog-family binding and ignores its late route before a healthy follow-up", async () => {
+			handler.dispose()
+			handler = new VsCodeLmHandler({
+				vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
+			})
+			let bind!: (models: vscode.LanguageModelChat[]) => void
+			let markBindingStarted!: () => void
+			const bindingStarted = new Promise<void>((resolve) => {
+				markBindingStarted = resolve
+			})
+			vi.mocked(vscode.lm.selectChatModels)
+				.mockReset()
+				.mockResolvedValueOnce([])
+				.mockImplementationOnce(() => {
+					markBindingStarted()
+					return new Promise((resolve) => {
+						bind = resolve
+					})
+				})
+			const lateModel = {
+				...mockLanguageModelChat,
+				vendor: "copilot",
+				family: "opaque",
+				id: "late-route",
+				name: "GPT-6.1 Sol",
+			}
+			const controller = new AbortController()
+			const preparing = handler.prepareModel({ signal: controller.signal })
+			await bindingStarted
+			controller.abort()
+			await expect(preparing).rejects.toThrow()
+			bind([lateModel])
+			await Promise.resolve()
+			expect(handler["client"]).toBeNull()
+			expect(lateModel.sendRequest).not.toHaveBeenCalled()
+
+			const currentModel = { ...lateModel, family: "gpt-6.1-sol", id: "current-route" }
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValueOnce([currentModel])
+			await handler.prepareModel()
+			expect(handler.getModel().id).toBe(currentModel.id)
+		})
+
+		it("applies the preparation deadline across catalog-family binding and releases its timer", async () => {
+			vi.useFakeTimers()
+			try {
+				handler.dispose()
+				handler = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6.1-sol" },
+				})
+				mockGetApiRequestTimeoutSetting.mockReturnValue(0)
+				vi.mocked(vscode.lm.selectChatModels)
+					.mockReset()
+					.mockResolvedValueOnce([])
+					.mockImplementationOnce(() => new Promise(() => undefined))
+				const rejected = expect(handler.prepareModel({ deadline: Date.now() + 100 })).rejects.toMatchObject({
+					name: "ApiStreamDeadlineError",
+				})
+				await vi.advanceTimersByTimeAsync(100)
+				await rejected
+				expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+				expect(handler["client"]).toBeNull()
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
 		})
 
 		it.each([

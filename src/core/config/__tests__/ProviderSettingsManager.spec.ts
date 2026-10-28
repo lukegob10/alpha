@@ -315,6 +315,34 @@ describe("ProviderSettingsManager", () => {
 	})
 
 	describe("ListConfig", () => {
+		it.each([
+			{ selector: { vendor: "copilot", family: "gpt-6-luna" }, modelId: "gpt-6-luna" },
+			{
+				selector: { vendor: "copilot", family: "gpt-6-luna", id: "opaque-copilot-route" },
+				modelId: "opaque-copilot-route",
+			},
+		])("lists the configured Copilot model $modelId without looking it up", async ({ selector, modelId }) => {
+			mockSecrets.get.mockResolvedValue(
+				JSON.stringify({
+					currentApiConfigName: "Copilot",
+					apiConfigs: {
+						Copilot: {
+							id: "copilot-profile-id",
+							apiProvider: "vscode-lm",
+							apiModelId: "stale-generic-model",
+							vsCodeLmModelSelector: selector,
+						},
+					},
+					modeApiConfigs: {},
+				}),
+			)
+
+			await expect(providerSettingsManager.listConfig()).resolves.toEqual([
+				{ name: "Copilot", id: "copilot-profile-id", apiProvider: "vscode-lm", modelId },
+			])
+			expect(mockSecrets.store).not.toHaveBeenCalled()
+		})
+
 		it("should list all available configs", async () => {
 			const existingConfig: ProviderProfiles = {
 				currentApiConfigName: "default",

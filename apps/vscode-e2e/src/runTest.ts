@@ -55,6 +55,8 @@ import {
 	type ImprovementCaptureInvoker,
 } from "./evidence/improvementCapture"
 import { observeHostCaptureClosure, type HostCaptureClosure } from "./evidence/hostCaptureClosure"
+import { validateProblemPromptPath } from "./scenarios/problemPrompt"
+import { verifyObservedExperimentBuild } from "./evidence/experimentIdentity"
 
 export type ProviderMode = "live" | "scripted" | "vscode-lm-fixture" | "live-copilot"
 
@@ -94,6 +96,9 @@ export interface ExtensionTestRunOptions {
 	/** Explicit private rich capture of one public problem-solving attempt; never inherited from the environment. */
 	improvementEvidence?: boolean
 	improvementTaskId?: string
+	/** Explicit private measurement of executed experiment identity; never enabled by inherited environment. */
+	experimentEvidence?: boolean
+	problemSolvingPrompt?: string
 	/** Campaign phases remain protected until their controller has written its terminal report. */
 	retainEvidenceForCampaign?: boolean
 	evidenceRetention?: Pick<EvidenceRetentionOptions, "maxRuns" | "maxBytes" | "maxAgeMs">
@@ -169,6 +174,7 @@ const flags = new Set([
 	"--retain-evidence-for-campaign",
 	"--require-all-tests",
 	"--improvement-evidence",
+	"--experiment-evidence",
 ])
 const valueOptions = new Set([
 	"--provider",
@@ -192,6 +198,7 @@ const valueOptions = new Set([
 	"--scenario-result-path",
 	"--request-limit",
 	"--improvement-task-id",
+	"--problem-solving-prompt",
 ])
 
 export function readRunOptions(
@@ -259,6 +266,10 @@ export function readRunOptions(
 		requestLimit: limit ? Number(limit) : undefined,
 		improvementEvidence: parsed.has("--improvement-evidence"),
 		improvementTaskId: parsed.get("--improvement-task-id"),
+		experimentEvidence: parsed.has("--experiment-evidence"),
+		problemSolvingPrompt: parsed.has("--problem-solving-prompt")
+			? validateProblemPromptPath(parsed.get("--problem-solving-prompt"))
+			: undefined,
 		retainEvidenceForCampaign: parsed.has("--retain-evidence-for-campaign"),
 	}
 }
@@ -414,6 +425,23 @@ export async function runExtensionTests(
 	validateLiveSetupTimeout(options.setupTimeoutMs, options.setup === true)
 	validateLiveExecutionTimeout(options.executionTimeoutMs, options.setup === true)
 	validateImprovementCaptureOptions(options)
+	if (
+		options.experimentEvidence &&
+		(options.setup ||
+			options.scenarioId !== "problem-solving-attempt" ||
+			(options.scenarioPhase !== undefined && options.scenarioPhase !== "run") ||
+			(options.testFile !== undefined && options.testFile !== "workflow.test") ||
+			!["live-copilot", "scripted"].includes(options.providerMode) ||
+			options.vscodeVersion !== "1.138.0" ||
+			!options.workspace ||
+			!options.artifactsDir ||
+			!options.profileDir)
+	)
+		throw new TestRunError(
+			"invalid-options",
+			"Experiment evidence requires one owned VS Code 1.138.0 problem-solving attempt",
+		)
+	if (options.problemSolvingPrompt !== undefined) validateProblemPromptPath(options.problemSolvingPrompt)
 	if (options.executionTimeoutMs !== undefined && launchKind !== "development-sidecar")
 		throw new TestRunError("invalid-options", "Execution timeout requires an automatic development sidecar")
 	if (options.retainEvidenceForCampaign !== undefined && typeof options.retainEvidenceForCampaign !== "boolean") {
@@ -536,6 +564,9 @@ export async function runExtensionTests(
 			},
 			dependencies.improvementCaptureInvoker,
 		)
+		const experimentBuild = options.experimentEvidence
+			? await verifyObservedExperimentBuild(extensionDevelopmentPath)
+			: undefined
 		repositoryBefore = await captureRepositoryEvidence(profile.workspace)
 		await fs.writeFile(
 			path.join(artifactsDir, "launch.json"),
@@ -625,6 +656,15 @@ export async function runExtensionTests(
 				ALPHA_E2E_REQUEST_LIMIT: options.requestLimit?.toString(),
 				ALPHA_E2E_IMPROVEMENT_EVIDENCE: options.improvementEvidence ? "1" : undefined,
 				ALPHA_E2E_IMPROVEMENT_TASK_ID: options.improvementTaskId,
+				ALPHA_E2E_EXPERIMENT_EVIDENCE: options.experimentEvidence ? "1" : undefined,
+				ALPHA_E2E_EXPERIMENT_BUILD_MANIFEST_DIGEST:
+					experimentBuild?.status === "verified" && experimentBuild.manifestDigest
+						? `sha256:${experimentBuild.manifestDigest}`
+						: undefined,
+				ALPHA_E2E_EXPERIMENT_EXECUTION_TIMEOUT_MS: options.experimentEvidence
+					? options.executionTimeoutMs?.toString()
+					: undefined,
+				ALPHA_E2E_PROBLEM_SOLVING_PROMPT: options.problemSolvingPrompt,
 				ALPHA_E2E_REQUIRE_ALL_TESTS: options.requireAllTests ? "1" : "0",
 				TEST_FILE: options.testFile ?? (options.scenarioId ? "workflow.test" : undefined),
 				TEST_GREP: options.testGrep,

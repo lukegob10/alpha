@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto"
+import { execFile } from "node:child_process"
+import { createRequire } from "node:module"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
+import { promisify } from "node:util"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -25,6 +28,43 @@ import {
 const evalRoot = path.resolve(process.cwd(), "../../evals")
 const repositoryRoot = path.resolve(process.cwd(), "../..")
 const roots: string[] = []
+const requireNativeFixture = createRequire(import.meta.url)
+const executeNode = promisify(execFile)
+
+async function nativeRunnerRepository(delayedCleanup = false, cleanupVerified = true) {
+	const directory = await root()
+	const file = path.join(directory, "apps", "vscode-e2e", "out", "runTest.js")
+	await fs.mkdir(path.dirname(file), { recursive: true })
+	await fs.writeFile(
+		file,
+		[
+			"exports.readRunOptions = (args, env) => ({args, env})",
+			"exports.started = new Promise(resolve => { exports.startedResolve = resolve })",
+			`exports.runExtensionTests = (options, dependencies) => { exports.options = options; exports.dependencies = dependencies; exports.startedResolve();
+		 ${
+				delayedCleanup
+					? "return new Promise(resolve => { exports.completeCleanup = () => resolve({execution:'extension-host',hostCleanupVerified:true}); options.signal.addEventListener('abort',()=>{exports.abortObserved=true}); })"
+					: `return Promise.resolve({execution:'extension-host',hostCleanupVerified:${cleanupVerified}})`
+			} }`,
+		].join("\n"),
+	)
+	return {
+		directory,
+		native: requireNativeFixture(file) as {
+			started: Promise<void>
+			abortObserved?: boolean
+			completeCleanup?: () => void
+			dependencies?: { launchKind: "development-sidecar" }
+			options?: {
+				args: string[]
+				env: NodeJS.ProcessEnv
+				signal: AbortSignal
+				executionTimeoutMs: number
+				extensionTestsEnv: Record<string, string>
+			}
+		},
+	}
+}
 
 beforeEach(() => {
 	git.revision.mockReturnValue("a".repeat(40))
@@ -116,6 +156,60 @@ afterEach(async () => {
 })
 
 describe("live problem-solving runner configuration", () => {
+	it("loads the compiled native CommonJS boundary through the real namespaced tsImport adapter", async () => {
+		const directory = await root()
+		const compiled = path.join(directory, "apps", "vscode-e2e", "out")
+		await fs.mkdir(compiled, { recursive: true })
+		await fs.writeFile(
+			path.join(compiled, "dependency.cjs"),
+			["const path = require('path')", "exports.marker = path.basename('native-relative-cjs-dependency')"].join(
+				"\n",
+			),
+		)
+		await fs.writeFile(
+			path.join(compiled, "runTest.js"),
+			[
+				"const path = require('node:path')",
+				"const fs = require('node:fs')",
+				"const dependency = require('./dependency.cjs')",
+				"exports.readRunOptions = args => ({ args })",
+				"exports.runExtensionTests = async (options, dependencies) => {",
+				" const workspace = options.args[options.args.indexOf('--workspace') + 1]",
+				" fs.writeFileSync(path.join(workspace, 'native-stub.json'), JSON.stringify({marker:dependency.marker,signal:!!options.signal,launchKind:dependencies?.launchKind}))",
+				" return {execution:'test-seam',hostCleanupVerified:true}",
+				"}",
+			].join("\n"),
+		)
+		const workspace = path.join(directory, "workspace")
+		await fs.mkdir(workspace)
+		const program = path.join(directory, "invoke.mjs")
+		await fs.writeFile(
+			program,
+			[
+				"import { createRequire } from 'node:module'",
+				"import path from 'node:path'",
+				"import { pathToFileURL } from 'node:url'",
+				"const [publicRoot,nativeRoot,workspace] = process.argv.slice(2)",
+				"const require = createRequire(path.join(publicRoot,'package.json'))",
+				"const { tsImport } = await import(pathToFileURL(require.resolve('tsx/esm/api')).href)",
+				"const [,producer] = await Promise.all(['experiments/problemSolvingCampaign.ts','benchmark/problemSolvingLive.ts'].map(relative => tsImport(pathToFileURL(path.join(publicRoot,'packages/evals/src',relative)).href,{parentURL:import.meta.url,tsconfig:false})))",
+				"const result = await producer.launchExtension({workspace,profileDir:path.join(nativeRoot,'profile'),artifactsDir:path.join(nativeRoot,'artifacts'),runId:'namespaced-cjs-control',requestLimit:1,provider:'scripted',modelId:'synthetic-model',effort:'high',hostVersion:'1.138.0',taskId:'synthetic-source',promptPath:path.join(workspace,'prompt.md'),experimentEvidence:true},nativeRoot,'synthetic-build',{timeoutMs:5000})",
+				"console.log(JSON.stringify(result))",
+			].join("\n"),
+		)
+		const observed = await executeNode(process.execPath, [program, repositoryRoot, directory, workspace], {
+			cwd: directory,
+			env: process.env,
+			timeout: 30_000,
+			windowsHide: true,
+		})
+		expect(JSON.parse(observed.stdout)).toMatchObject({ status: "failed", failureClass: "infrastructure" })
+		expect(JSON.parse(await fs.readFile(path.join(workspace, "native-stub.json"), "utf8"))).toEqual({
+			marker: "native-relative-cjs-dependency",
+			signal: true,
+			launchKind: "development-sidecar",
+		})
+	}, 40_000)
 	it("uses only explicitly configured profile and output roots", () => {
 		const attemptRoot = path.resolve(os.tmpdir(), "alpha-live-output")
 		const profileDir = path.resolve(os.tmpdir(), "alpha-live-profile")
@@ -292,6 +386,144 @@ describe("live problem-solving runner configuration", () => {
 		expect(host.failureCode).toBe("unexpected_resume_task")
 		expect(host.providerFailureCode).toBe("request_timeout")
 	})
+
+	it.each(["live-copilot", "scripted"] as const)(
+		"uses bounded shared native launch deadlines for %s and labels unavailable capture",
+		async (provider) => {
+			const directory = await root()
+			const fixture = await nativeRunnerRepository()
+			const request = {
+				workspace: directory,
+				profileDir: path.join(directory, "profile"),
+				artifactsDir: path.join(directory, "artifacts"),
+				runId: "bounded-capture",
+				requestLimit: 2,
+				provider,
+				modelId: "model",
+				effort: "high",
+				hostVersion: "1.138.0",
+				taskId: "fixture",
+				promptPath: path.join(directory, "prompt.md"),
+				experimentEvidence: true,
+				experimentAssignmentDigest: "sha256:" + "a".repeat(64),
+			}
+			const execute = vi.spyOn(ExecaHarnessProcessRunner.prototype, "run")
+			const result = await launchExtension(request, fixture.directory, "frozen-build", {
+				timeoutMs: 1200,
+				scenarioTimeoutMs: 1000,
+			})
+			expect(execute).not.toHaveBeenCalled()
+			expect(fixture.native.dependencies).toEqual({ launchKind: "development-sidecar" })
+			expect(fixture.native.options?.executionTimeoutMs).toBe(1200)
+			expect(fixture.native.options?.extensionTestsEnv.ALPHA_E2E_SCENARIO_TIMEOUT_MS).toBe("1000")
+			expect(fixture.native.options?.extensionTestsEnv.ALPHA_E2E_EXPERIMENT_ASSIGNMENT_DIGEST).toBe(
+				request.experimentAssignmentDigest,
+			)
+			expect(fixture.native.options?.args).toContain("--experiment-evidence")
+			expect(result.experimentIdentity).toBeNull()
+			expect(result.experimentIdentityFailure).toBe("unavailable")
+		},
+	)
+
+	it("passes cancellation into the owning native runner and waits for its cleanup before returning", async () => {
+		const directory = await root()
+		const fixture = await nativeRunnerRepository(true)
+		const controller = new AbortController()
+		let settled = false
+		const pending = launchExtension(
+			{
+				workspace: directory,
+				profileDir: path.join(directory, "profile"),
+				artifactsDir: path.join(directory, "artifacts"),
+				runId: "cancelled-capture",
+				requestLimit: 2,
+				provider: "scripted",
+				modelId: "model",
+				effort: "high",
+				hostVersion: "1.138.0",
+				taskId: "fixture",
+				promptPath: path.join(directory, "prompt.md"),
+				experimentEvidence: true,
+			},
+			fixture.directory,
+			"frozen-build",
+			{ timeoutMs: 2000, signal: controller.signal },
+		).then((result) => {
+			settled = true
+			return result
+		})
+		await fixture.native.started
+		controller.abort(new Error("controlled cancellation"))
+		expect(fixture.native.abortObserved).toBe(true)
+		await Promise.resolve()
+		expect(settled).toBe(false)
+		fixture.native.completeCleanup!()
+		expect(await pending).toMatchObject({ status: "cancelled", failureClass: "cancellation" })
+		expect(settled).toBe(true)
+	})
+
+	it("withholds a passing workflow result when native host cleanup is unverified", async () => {
+		const directory = await root()
+		const fixture = await nativeRunnerRepository(false, false)
+		const artifactsDir = path.join(directory, "artifacts")
+		await fs.mkdir(path.join(artifactsDir, "uncertain-cleanup"), { recursive: true })
+		await fs.writeFile(
+			path.join(artifactsDir, "uncertain-cleanup", "workflow-result.json"),
+			JSON.stringify({ status: "passed" }),
+		)
+		const result = await launchExtension(
+			{
+				workspace: directory,
+				profileDir: path.join(directory, "profile"),
+				artifactsDir,
+				runId: "uncertain-cleanup",
+				requestLimit: 2,
+				provider: "scripted",
+				modelId: "model",
+				effort: "high",
+				hostVersion: "1.138.0",
+				taskId: "fixture",
+				promptPath: path.join(directory, "prompt.md"),
+				experimentEvidence: true,
+			},
+			fixture.directory,
+			"frozen-build",
+			{ timeoutMs: 2000 },
+		)
+		expect(result).toMatchObject({ status: "failed", failureClass: "infrastructure" })
+	})
+
+	it.each([0, -1, NaN, Infinity, 1_100_001])(
+		"rejects invalid native launch bounds before staging marker: %s",
+		async (timeoutMs) => {
+			const directory = await root()
+			const execute = vi.spyOn(ExecaHarnessProcessRunner.prototype, "run")
+			await expect(
+				launchExtension(
+					{
+						workspace: directory,
+						profileDir: path.join(directory, "profile"),
+						artifactsDir: path.join(directory, "artifacts"),
+						runId: "invalid-bounds",
+						requestLimit: 2,
+						provider: "live-copilot",
+						modelId: "model",
+						effort: "high",
+						hostVersion: "1.138.0",
+						taskId: "fixture",
+						promptPath: path.join(directory, "prompt.md"),
+					},
+					repositoryRoot,
+					"frozen-build",
+					{ timeoutMs },
+				),
+			).rejects.toThrow("bounded positive")
+			expect(execute).not.toHaveBeenCalled()
+			await expect(fs.stat(path.join(directory, ".alpha-e2e-owned.json"))).rejects.toMatchObject({
+				code: "ENOENT",
+			})
+		},
+	)
 
 	it("balances prompt-arm order across repetitions", () => {
 		expect(orderProblemSolvingPromptVariants(["baseline", "single-command"], 1)).toEqual([

@@ -19,6 +19,8 @@ import {
 import SettingsView from "../SettingsView"
 import { vscode } from "@src/utils/vscode"
 
+const apiKeyProviders = curatedProviders.filter((provider) => curatedProviderApiKeyFields[provider] !== undefined)
+
 // Mock vscode API
 const mockPostMessage = vi.fn()
 const mockVscode = {
@@ -624,10 +626,11 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		)
 	})
 
-	it.each(curatedProviders)(
+	it.each(apiKeyProviders)(
 		"buffers %s credentials across host refreshes and saves the edited key",
 		async (provider) => {
 			const keyField = curatedProviderApiKeyFields[provider]
+			if (!keyField) throw new Error("API-key provider requires a key field")
 			const savedConfiguration: ProviderSettings = {
 				apiProvider: provider,
 				apiModelId: getProviderDefaultModelId(provider),
@@ -641,7 +644,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				<input
 					aria-label="Provider key"
 					type="password"
-					value={apiConfiguration[keyField] ?? ""}
+					value={String(apiConfiguration[keyField] ?? "")}
 					onChange={(event) => setApiConfigurationField(keyField, event.target.value)}
 				/>
 			))
@@ -670,8 +673,9 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		},
 	)
 
-	it.each(curatedProviders)("keeps %s key edits on Cancel and discards them without saving", async (provider) => {
+	it.each(apiKeyProviders)("keeps %s key edits on Cancel and discards them without saving", async (provider) => {
 		const keyField = curatedProviderApiKeyFields[provider]
+		if (!keyField) throw new Error("API-key provider requires a key field")
 		const savedConfiguration: ProviderSettings = {
 			apiProvider: provider,
 			apiModelId: getProviderDefaultModelId(provider),
@@ -685,7 +689,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			<input
 				aria-label="Provider key"
 				type="password"
-				value={apiConfiguration[keyField] ?? ""}
+				value={String(apiConfiguration[keyField] ?? "")}
 				onChange={(event) => setApiConfigurationField(keyField, event.target.value)}
 			/>
 		))
@@ -708,6 +712,54 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(savedConfiguration[keyField]).toBe("saved-key")
 		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
 	})
+
+	it.each([
+		{ provider: "bedrock", field: "awsProfile", saved: "saved-profile", edited: "edited-profile" },
+		{ provider: "openai-codex", field: "apiModelId", saved: "gpt-6.1-sol", edited: "gpt-6-astra" },
+	] as const)(
+		"keeps $provider edits buffered across account or host state updates",
+		async ({ provider, field, saved, edited }) => {
+			const savedConfiguration: ProviderSettings = {
+				apiProvider: provider,
+				apiModelId: getProviderDefaultModelId(provider),
+				...(provider === "bedrock" ? { awsUseProfile: true } : {}),
+				[field]: saved,
+			}
+			let liveState = { ...defaultExtensionState, apiConfiguration: savedConfiguration }
+			vi.mocked(useExtensionState).mockImplementation(
+				() => liveState as unknown as ReturnType<typeof useExtensionState>,
+			)
+			vi.mocked(ApiOptions).mockImplementation(({ apiConfiguration, setApiConfigurationField }) => (
+				<input
+					aria-label="Buffered provider field"
+					value={apiConfiguration[field] ?? ""}
+					onChange={(event) => setApiConfigurationField(field, event.target.value)}
+				/>
+			))
+			const view = () => (
+				<QueryClientProvider client={queryClient}>
+					<SettingsView onDone={vi.fn()} />
+				</QueryClientProvider>
+			)
+			const result = render(view())
+			const input = await screen.findByLabelText("Buffered provider field")
+			mockPostMessage.mockClear()
+			fireEvent.change(input, { target: { value: edited } })
+			liveState = { ...liveState, apiConfiguration: { ...savedConfiguration, [field]: "host-refresh" } }
+			result.rerender(view())
+
+			expect(input).toHaveValue(edited)
+			expect(savedConfiguration[field]).toBe(saved)
+			expect(mockPostMessage).not.toHaveBeenCalled()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "upsertApiConfiguration",
+					apiConfiguration: expect.objectContaining({ apiProvider: provider, [field]: edited }),
+				}),
+			)
+		},
+	)
 
 	it("renames only the persisted profile identity while provider edits stay buffered", async () => {
 		const liveState = {

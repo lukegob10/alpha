@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto"
+import { performance } from "node:perf_hooks"
 import fs from "node:fs/promises"
 import * as path from "node:path"
 
 import { parse } from "yaml"
+import type { ExecutedExperimentCapture } from "@alpha-code/types"
 
 import {
 	aggregateGraderResults,
@@ -15,6 +17,10 @@ import { ExecaHarnessProcessRunner, systemClock, type HarnessProcessRunner } fro
 import { captureNodeTestAssertions } from "../grading/nodeTestCompletion"
 import { benchmarkSuiteManifestSchema, type BenchmarkTaskManifest } from "./contracts"
 import { assertProblemSolvingFixture, loadProblemSolvingSet, type ProblemSolvingTask } from "./problemSolving"
+import {
+	parseProblemSolvingExperimentAssignment,
+	type ProblemSolvingExperimentAssignment,
+} from "../experiments/problemSolvingCampaign"
 
 export const problemSolvingFailureClasses = [
 	"provider",
@@ -79,6 +85,8 @@ export type ProblemSolvingHostResult = {
 	effort?: string | null
 	e2eApprovalPolicySha256?: string | null
 	tracePath?: string | null
+	experimentIdentity?: ExecutedExperimentCapture | null
+	experimentIdentityFailure?: "unavailable" | "invalid"
 	buildIdentity: string
 	usage: {
 		cost: number | null
@@ -107,6 +115,11 @@ export type ProblemSolvingExtensionRequest = {
 	hostVersion: string
 	taskId: string
 	promptPath: string
+	experimentEvidence?: boolean
+	experimentAssignmentDigest?: string
+	experimentTask?: { id: string; version: number; digest: string }
+	experimentWorkspaceDigest?: string
+	experimentContext?: Record<string, unknown>
 }
 
 export type ProblemSolvingAttemptReport = {
@@ -136,6 +149,13 @@ export type ProblemSolvingAttemptReport = {
 	failureCode?: ProblemSolvingDiagnosticFailureCode | null
 	providerFailureCode?: "request_timeout" | null
 	status: "passed" | "failed" | "blocked" | "cancelled"
+	startedAt?: string
+	completedAt?: string
+	elapsedMs?: number
+	gradingMs?: number
+	experimentAssignment?: ProblemSolvingExperimentAssignment | null
+	experimentIdentity?: ExecutedExperimentCapture | null
+	experimentIdentityFailure?: "unavailable" | "invalid"
 }
 
 const EXTENSION_RUNNER = path.join("apps", "vscode-e2e", "out", "runTest.js")
@@ -144,7 +164,10 @@ export function existingExtensionRunnerArguments(
 	request: ProblemSolvingExtensionRequest,
 	runnerPath: string,
 ): string[] {
-	if (request.provider !== "live-copilot")
+	if (
+		request.provider !== "live-copilot" &&
+		!(request.provider === "scripted" && request.experimentEvidence === true)
+	)
 		throw new Error("Problem-solving extension runs use the live Copilot provider")
 	if (!request.modelId || !request.effort)
 		throw new Error("Problem-solving extension runs require a model id and effort")
@@ -160,10 +183,45 @@ export function existingExtensionRunnerArguments(
 	if (!Number.isSafeInteger(request.requestLimit) || request.requestLimit < 1 || request.requestLimit > 200) {
 		throw new Error("Problem-solving extension runs require a request limit from 1 to 200")
 	}
+	if (
+		request.experimentAssignmentDigest &&
+		(!request.experimentEvidence || !/^sha256:[a-f0-9]{64}$/.test(request.experimentAssignmentDigest))
+	)
+		throw new Error("Experiment assignment labels require opted-in evidence and a valid digest")
+	if (
+		request.experimentTask &&
+		(!request.experimentEvidence ||
+			!/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(request.experimentTask.id) ||
+			!Number.isSafeInteger(request.experimentTask.version) ||
+			request.experimentTask.version < 1 ||
+			!/^sha256:[a-f0-9]{64}$/.test(request.experimentTask.digest))
+	)
+		throw new Error("Experiment task labels require opted-in evidence and a valid source-task identity")
+	if (
+		request.experimentWorkspaceDigest &&
+		(!request.experimentEvidence || !/^sha256:[a-f0-9]{64}$/.test(request.experimentWorkspaceDigest))
+	)
+		throw new Error("Experiment workspace measurement requires opted-in evidence and a valid digest")
+	if (
+		request.experimentContext &&
+		(!request.experimentEvidence || Buffer.byteLength(JSON.stringify(request.experimentContext)) > 32 * 1024)
+	)
+		throw new Error("Experiment context requires opted-in evidence and bounded public protocol data")
+	const prompt = path.relative(path.resolve(request.workspace), path.resolve(request.promptPath))
+	if (
+		!prompt ||
+		path.isAbsolute(prompt) ||
+		prompt === ".." ||
+		prompt.startsWith(".." + path.sep) ||
+		prompt.includes("\0")
+	)
+		throw new Error("Problem-solving prompt must be a file inside the workspace")
 	return [
 		runnerPath,
 		"--provider",
-		"live-copilot",
+		request.provider,
+		...(request.experimentEvidence ? ["--experiment-evidence"] : []),
+		...(prompt === "prompt.md" ? [] : ["--problem-solving-prompt", prompt.split(path.sep).join("/")]),
 		"--vscode-version",
 		request.hostVersion,
 		"--workspace",
@@ -204,6 +262,8 @@ export function problemSolvingHostFromReceipts(input: {
 		e2eApprovalPolicySha256?: string
 	} | null
 	runnerFailure?: string | null
+	experimentIdentity?: ExecutedExperimentCapture | null
+	experimentIdentityFailure?: "unavailable" | "invalid"
 }): ProblemSolvingHostResult {
 	const requests = input.workflow?.requestsUsed
 	const reported = input.workflow?.usage
@@ -240,8 +300,10 @@ export function problemSolvingHostFromReceipts(input: {
 		e2eApprovalPolicySha256,
 		tracePath: input.tracePath,
 		usage,
+		...(input.experimentIdentity !== undefined ? { experimentIdentity: input.experimentIdentity } : {}),
+		...(input.experimentIdentityFailure ? { experimentIdentityFailure: input.experimentIdentityFailure } : {}),
 	}
-	if (input.workflow?.status === "passed") return { ...base, status: "passed" }
+	if (input.workflow?.status === "passed" && !input.runnerFailure) return { ...base, status: "passed" }
 	const failureClass = classifyReceipt(input.workflow, input.runnerFailure)
 	const failureCategory =
 		safeDiagnosticCategory(input.workflow?.failure?.category) ?? safeRunnerFailureCategory(input.runnerFailure)
@@ -297,6 +359,7 @@ function classifyReceipt(
 	runnerFailure?: string | null,
 ): ProblemSolvingFailureClass {
 	const code = workflow?.failure?.code ?? runnerFailure ?? ""
+	if (runnerFailure === "host-cleanup-unverified" || runnerFailure === "non-native-execution") return "infrastructure"
 	if (code.includes("authentication") || code === "setup-incomplete") return "authentication"
 	if (code === "profile-busy") return "profile_busy"
 	if (
@@ -310,6 +373,7 @@ function classifyReceipt(
 	if (workflow?.failure?.category === "timeout" || code.includes("timeout") || code.includes("budget"))
 		return "budget"
 	if (code.includes("cancel")) return "cancellation"
+	if (runnerFailure && !workflow?.failure) return "infrastructure"
 	if (workflow) return "task"
 	return "infrastructure"
 }
@@ -323,6 +387,8 @@ export async function runProblemSolvingAttempt(options: {
 	repetition?: number
 	promptVariant?: ProblemSolvingPromptVariant
 	promptVariantInstruction?: string
+	experimentAssignment?: ProblemSolvingExperimentAssignment
+	experimentEvidence?: boolean
 	hostVersion: string
 	provider: "live-copilot" | "scripted"
 	modelId?: string
@@ -332,9 +398,22 @@ export async function runProblemSolvingAttempt(options: {
 	runExtension: (request: ProblemSolvingExtensionRequest) => Promise<ProblemSolvingHostResult>
 	processRunner?: HarnessProcessRunner
 }): Promise<ProblemSolvingAttemptReport> {
+	const startedAt = new Date().toISOString()
+	const started = performance.now()
+	const experimentAssignment = options.experimentAssignment
+		? parseProblemSolvingExperimentAssignment(options.experimentAssignment)
+		: undefined
 	const manifest = await loadProblemSolvingSet(options.evalRoot)
 	const task = manifest.tasks.find(({ id }) => id === options.taskId)
 	if (!task) throw new Error(`Problem-solving set is missing ${options.taskId}`)
+	if (
+		experimentAssignment &&
+		(experimentAssignment.pair.taskId !== task.id ||
+			experimentAssignment.pair.taskVersion !== task.version ||
+			experimentAssignment.task.fixtureDigest !== task.digest ||
+			Date.parse(experimentAssignment.declaredAt) > Date.parse(startedAt))
+	)
+		throw new Error("Predeclared experiment assignment does not match the source task or execution time")
 	const fixture = await resolveFixture(options.evalRoot, task)
 	const workspace = path.join(options.attemptRoot, options.attemptId, "workspace")
 	const profileDir = options.profileDir ?? path.join(options.attemptRoot, options.attemptId, "profile")
@@ -377,8 +456,15 @@ export async function runProblemSolvingAttempt(options: {
 		hostVersion: options.hostVersion,
 		taskId: task.id,
 		promptPath,
+		...(options.experimentEvidence || experimentAssignment ? { experimentEvidence: true } : {}),
+		...(experimentAssignment ? { experimentAssignmentDigest: experimentAssignment.digest } : {}),
+		...(options.experimentEvidence || experimentAssignment
+			? { experimentTask: { id: task.id, version: task.version, digest: task.digest } }
+			: {}),
 	}
 	const observed = await options.runExtension(request)
+	const completedAt = new Date().toISOString()
+	const elapsedMs = performance.now() - started
 	const identityMismatch =
 		options.provider === "live-copilot" &&
 		observed.phase === "sample" &&
@@ -404,7 +490,9 @@ export async function runProblemSolvingAttempt(options: {
 		host.failureClass === "cancellation" ||
 		host.failureClass === "authentication" ||
 		host.failureClass === "profile_busy"
+	const gradingStarted = performance.now()
 	const grader = skipGrader ? null : await gradeWorkspace(workspace, task.id, preparedGrader, options.processRunner)
+	const gradingMs = performance.now() - gradingStarted
 	const failureClass = classify(host, grader)
 	const solved = !diagnostic && host.status === "passed" && grader?.decision === "passed" && failureClass === null
 	return {
@@ -433,6 +521,13 @@ export async function runProblemSolvingAttempt(options: {
 		failureCategory: host.failureCategory ?? null,
 		failureCode: host.failureCode ?? null,
 		providerFailureCode: host.providerFailureCode ?? null,
+		startedAt,
+		completedAt,
+		elapsedMs,
+		gradingMs,
+		...(experimentAssignment ? { experimentAssignment } : {}),
+		...(host.experimentIdentity !== undefined ? { experimentIdentity: host.experimentIdentity } : {}),
+		...(host.experimentIdentityFailure ? { experimentIdentityFailure: host.experimentIdentityFailure } : {}),
 		status: solved
 			? "passed"
 			: host.status === "cancelled" || failureClass === "cancellation"

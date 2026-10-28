@@ -75,7 +75,16 @@ describe("default PDF runtime bundling", () => {
 			return { parse: require(outfile), bytes: (await fs.stat(outfile)).size, versions }
 		}
 		const before = await build("before", [])
-		const after = await build("after", [defaultPdfRuntimePlugin()])
+		const capturedInputs = new Map()
+		const after = await build("after", [
+			defaultPdfRuntimePlugin(undefined, (file, bytes) => {
+				capturedInputs.set(file, Buffer.from(bytes))
+			}),
+		])
+		const parserPath = require.resolve("pdf-parse/lib/pdf-parse")
+		const parserManifest = path.resolve(path.dirname(parserPath), "../package.json")
+		expect(capturedInputs.get(parserPath)).toEqual(await fs.readFile(parserPath))
+		expect(capturedInputs.get(parserManifest)).toEqual(await fs.readFile(parserManifest))
 		expect(before.versions).toEqual(["v1.10.100", "v1.10.88", "v1.9.426", "v2.0.550"])
 		expect(after.versions).toEqual(["v1.10.100"])
 		expect(after.bytes).toBeLessThan(before.bytes / 2)

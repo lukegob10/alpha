@@ -4,9 +4,8 @@ export const xaiDefaultModelId = "grok-4.7" as const
 
 export type XAIModelId = keyof typeof xaiModels
 
-// Verified 2026-10-25 against https://docs.x.ai/developers/models/grok-4.6,
-// https://docs.x.ai/developers/models/grok-4.7, and /model-capabilities/text/reasoning
-// plus /model-capabilities/text/best-practices. Both models share these native API capabilities.
+// Verified 2026-10-28 against https://docs.x.ai/developers/models/grok-4.7,
+// /model-capabilities/text/reasoning, and /model-capabilities/text/best-practices.
 // maxTokens is the documented default visible-output cap, not a reasoning budget.
 const grokReasoningModel = {
 	maxTokens: 128_000,
@@ -27,10 +26,6 @@ export const xaiModels = {
 	[xaiDefaultModelId]: {
 		...grokReasoningModel,
 		description: "Grok 4.7: xAI's frontier model for coding and agentic tasks.",
-	},
-	"grok-4.6": {
-		...grokReasoningModel,
-		description: "Grok 4.6: xAI's reasoning model for coding and agentic tasks.",
 	},
 } as const satisfies Record<string, ModelInfo>
 

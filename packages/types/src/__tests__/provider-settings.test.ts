@@ -50,16 +50,22 @@ describe("supported provider settings", () => {
 			"stellar",
 			"openai",
 			"openai-native",
+			"openai-codex",
 			"anthropic",
 			"gemini",
 			"xai",
 			"openrouter",
+			"bedrock",
+			"meta",
 		])
 		expect(Object.keys(MODELS_BY_PROVIDER)).toEqual([
 			"vertex",
 			"stellar",
 			"vscode-lm",
 			"openai-native",
+			"openai-codex",
+			"meta",
+			"bedrock",
 			"anthropic",
 			"gemini",
 			"xai",
@@ -67,7 +73,7 @@ describe("supported provider settings", () => {
 		])
 	})
 
-	it.each(["bedrock", "unknown-future-provider"])(
+	it.each(["ollama", "unknown-future-provider"])(
 		"rejects %s in executable profiles while preserving saved data",
 		(apiProvider) => {
 			const saved = { apiProvider, legacyModelId: "saved-model" }
@@ -82,6 +88,7 @@ describe("supported provider settings", () => {
 		["gemini", "geminiApiKey"],
 		["xai", "xaiApiKey"],
 		["openrouter", "openRouterApiKey"],
+		["meta", "metaApiKey"],
 	])("keeps %s credentials in SecretStorage and filters other provider fields", (apiProvider, credential) => {
 		const parsed = providerSettingsSchemaDiscriminated.parse({
 			apiProvider,
@@ -105,11 +112,12 @@ describe("supported provider settings", () => {
 		expect(getCuratedModelInfo(provider, "__proto__")).toBeUndefined()
 		expect(getCuratedModelInfo(provider, "constructor")).toBeUndefined()
 		expect(isCuratedProvider(provider)).toBe(true)
-		expect(SECRET_STATE_KEYS).toContain(curatedProviderApiKeyFields[provider])
+		const apiKeyField = curatedProviderApiKeyFields[provider]
+		if (apiKeyField) expect(SECRET_STATE_KEYS).toContain(apiKeyField)
 	})
 
 	it("does not apply curated model capabilities to compatible, retired, or unknown providers", () => {
-		for (const provider of ["openai", "vertex", "bedrock", "unknown-provider", undefined]) {
+		for (const provider of ["openai", "vertex", "ollama", "unknown-provider", undefined]) {
 			expect(isCuratedProvider(provider)).toBe(false)
 		}
 	})
@@ -180,6 +188,21 @@ describe("supported provider settings", () => {
 })
 
 describe("getApiProtocol", () => {
+	it("uses Anthropic usage semantics for Bedrock's omitted model default", () => {
+		expect(getApiProtocol("bedrock")).toBe("anthropic")
+	})
+
+	it.each([
+		["global.anthropic.claude-opus-5-5", "anthropic"],
+		["global.anthropic.claude-sonnet-5-5", "anthropic"],
+		["global.anthropic.claude-fable-5-1", "anthropic"],
+		["global.openai.gpt-6.1-sol", "openai"],
+		["global.openai.gpt-6-astra", "openai"],
+	] as const)("uses the verified Bedrock route for %s", (modelId, protocol) => {
+		expect(getApiProtocol("bedrock", modelId)).toBe(protocol)
+		expect(getApiProtocol("bedrock", ` ${modelId} `)).toBe(protocol)
+	})
+
 	it("uses Anthropic wire semantics for direct Anthropic and Vertex Claude models", () => {
 		expect(getApiProtocol("anthropic", "claude-sonnet-5")).toBe("anthropic")
 		expect(getApiProtocol("vertex", "claude-3-opus")).toBe("anthropic")

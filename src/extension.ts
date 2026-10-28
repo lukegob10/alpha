@@ -11,6 +11,7 @@ import { customToolRegistry } from "@alpha-code/core"
 
 import "./utils/path" // Necessary to have access to String.prototype.toPosix.
 import { initializeNetworkProxy } from "./utils/networkProxy"
+import { ChatGptAuthService } from "./services/chatgpt/ChatGptAuthService"
 import { createLifecycleSafeOutputChannel } from "./utils/outputChannelLogger"
 import { loadExtensionEnvironment } from "./utils/loadEnvironment"
 
@@ -135,6 +136,18 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	// When proxyUrl is configured, all HTTP/HTTPS traffic will be routed through it.
 	// Only applied in debug mode (F5).
 	await initializeNetworkProxy(context, outputChannel)
+	const chatGptAuth = ChatGptAuthService.initialize({
+		secrets: context.secrets,
+		globalState: context.globalState,
+		storagePath: path.join(context.globalStorageUri.fsPath, "chatgpt-auth.lock"),
+		openExternal: (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
+	})
+	context.subscriptions.push(
+		chatGptAuth,
+		chatGptAuth.onDidChangeStatus((status) => {
+			void AlphaProvider.publishChatGptAuthStatus(status)
+		}),
+	)
 
 	// Set extension path for custom tool registry to find bundled esbuild
 	customToolRegistry.setExtensionPath(context.extensionPath)
@@ -330,6 +343,8 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 
 // This method is called when your extension is deactivated.
 export async function deactivate() {
+	// Stop browser authorization before joining view operations during shutdown.
+	ChatGptAuthService.tryGetInstance()?.cancelSignIn()
 	const log = (message: string) => {
 		try {
 			outputChannel.appendLine(message)
@@ -338,12 +353,16 @@ export async function deactivate() {
 		}
 	}
 	log(`${Package.name} extension deactivated`)
+	const chatGptAuthStopped = ChatGptAuthService.tryGetInstance()
+		?.dispose()
+		.catch(() => log("Failed to close ChatGPT authentication services"))
 
 	try {
 		await AlphaProvider.disposeAll()
 	} catch {
 		log("Failed to dispose task providers")
 	}
+	await chatGptAuthStopped
 
 	try {
 		await AgentControlStore.shutdownGlobalStores()

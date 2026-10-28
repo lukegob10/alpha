@@ -6,6 +6,9 @@ vi.mock("../providers", () => ({
 	VertexOpenAiHandler: vi.fn(),
 	OpenAiHandler: vi.fn(),
 	OpenAiNativeHandler: vi.fn(),
+	OpenAiCodexHandler: vi.fn(),
+	MetaHandler: vi.fn(),
+	buildBedrockHandler: vi.fn(),
 	AnthropicHandler: vi.fn(),
 	GeminiHandler: vi.fn(),
 	XAIHandler: vi.fn(),
@@ -21,6 +24,9 @@ import {
 	VertexOpenAiHandler,
 	OpenAiHandler,
 	OpenAiNativeHandler,
+	OpenAiCodexHandler,
+	MetaHandler,
+	buildBedrockHandler,
 	AnthropicHandler,
 	GeminiHandler,
 	XAIHandler,
@@ -42,6 +48,8 @@ describe("public provider factory", () => {
 		[{ apiProvider: "vertex", apiModelId: "partner-model" }, VertexOpenAiHandler],
 		[{ apiProvider: "openai" }, OpenAiHandler],
 		[{ apiProvider: "openai-native" }, OpenAiNativeHandler],
+		[{ apiProvider: "openai-codex" }, OpenAiCodexHandler],
+		[{ apiProvider: "meta" }, MetaHandler],
 		[{ apiProvider: "anthropic" }, AnthropicHandler],
 		[{ apiProvider: "gemini" }, GeminiHandler],
 		[{ apiProvider: "xai" }, XAIHandler],
@@ -50,6 +58,13 @@ describe("public provider factory", () => {
 		[{ apiProvider: "stellar" }, StellarHandler],
 	] as const)("routes the supported configuration %j", (configuration, Handler) => {
 		expect(buildApiHandler(configuration)).toBeInstanceOf(Handler)
+	})
+
+	it("dispatches Bedrock using its selected native model protocol", () => {
+		const expected = { getModel: vi.fn() } as unknown as ReturnType<typeof buildBedrockHandler>
+		vi.mocked(buildBedrockHandler).mockReturnValueOnce(expected)
+		expect(buildApiHandler({ apiProvider: "bedrock", awsRegion: "us-east-1" })).toBe(expected)
+		expect(buildBedrockHandler).toHaveBeenCalledWith({ awsRegion: "us-east-1" })
 	})
 
 	it("defaults only an absent provider to Vertex", () => {
