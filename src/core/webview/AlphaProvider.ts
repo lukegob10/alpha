@@ -1027,8 +1027,10 @@ export class AlphaProvider
 
 	private async getReasoningProjection(task?: Task): Promise<TaskReasoningProjection> {
 		const accepted = task?.getReasoningState?.()
-		if (accepted && task?.apiConfiguration.apiProvider !== "vscode-lm") return accepted
-		const preference = accepted?.requested ??
+		// The task owns resolved capabilities and captured request state for every
+		// provider. A fresh selector-only preview can lose Copilot's live metadata.
+		if (accepted) return accepted
+		const preference = task?.reasoningPreference ??
 			this.contextProxy.getValue("newTaskReasoningPreference") ?? { kind: "default" }
 		const configuration = task?.apiConfiguration ?? this.getProviderSettingsSnapshot()
 		const key = crypto
@@ -1048,10 +1050,8 @@ export class AlphaProvider
 		}
 		const resolved = await this.draftReasoningCache.state
 		return {
-			...accepted,
 			...resolved,
-			// Live capability refresh affects the next admission, never the captured request.
-			pending: Boolean(accepted?.current && JSON.stringify(accepted.current) !== JSON.stringify(resolved)),
+			...(task ? { taskId: task.taskId } : {}),
 		}
 	}
 
@@ -1131,7 +1131,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.15-restore-gpt-5.6"
+	public readonly latestAnnouncementId = "october-2026-v3.2.16-reasoning-state"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

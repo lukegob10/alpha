@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.16
+
+### Patch Changes
+
+- Keep active chats' resolved reasoning state instead of replacing it with a fresh Copilot preview that can incorrectly report Unavailable.
+- Show the next-step indicator only when the applied reasoning level, custom token, or enabled token budget actually changes; metadata refreshes and equivalent settings no longer create a false pending change.
+- Preserve the task's saved reasoning choice and identity while its runtime state is being restored.
+- Update the extension and in-app announcement together for Alpha 3.2.16.
+
 ## 3.2.15
 
 ### Patch Changes
