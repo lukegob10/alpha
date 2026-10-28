@@ -180,6 +180,9 @@ describe("VSCodeLM supported model setup", () => {
 	})
 
 	it.each([
+		["gpt-5.6-sol", ["none", "low", "medium", "high", "xhigh", "max"], undefined],
+		["gpt-5.6-terra", ["none", "low", "medium", "high", "xhigh", "max"], undefined],
+		["gpt-5.6-luna", ["none", "low", "medium", "high", "xhigh", "max"], undefined],
 		["gpt-6.1-sol", ["low", "medium", "high", "xhigh", "max"], undefined],
 		["gpt-6-astra", ["low", "medium", "high", "xhigh", "max"], undefined],
 		["claude-opus-5.5", ["low", "medium", "high", "xhigh", "max"], "medium"],
@@ -193,6 +196,9 @@ describe("VSCodeLM supported model setup", () => {
 			expect(thinking().modelInfo?.reasoningEffort).toBe(defaultEffort)
 			expect(thinking().showReasoningEffort).toBe(false)
 			expect(setApiConfigurationField).not.toHaveBeenCalled()
+			expect(picker().models).toHaveProperty(family)
+			expect(picker().errorMessage).toBeFalsy()
+			expect(vscode.postMessage).not.toHaveBeenCalled()
 		},
 	)
 

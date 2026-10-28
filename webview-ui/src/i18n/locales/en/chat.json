@@ -511,11 +511,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} adds frontier providers, instant model setup, and refreshed branding.",
+			"welcome": "Alpha v{{version}} restores GPT-5.6 Sol, Terra, and Luna with their reasoning levels.",
 			"taskContinuity": "Choose your model and reasoning level separately without waiting for discovery.",
-			"toolsAndProviders": "Connect Amazon Bedrock, Sign in with ChatGPT, and Meta alongside the existing providers.",
-			"delegation": "Keep selected models consistent across chats and delegated work, with clear errors for retired models.",
-			"workspaceExperience": "Find the refreshed Alpha wolf branding throughout the extension."
+			"toolsAndProviders": "Choose GPT-5.6 with OpenAI, Sign in with ChatGPT, GitHub Copilot, OpenRouter, or Amazon Bedrock.",
+			"delegation": "Set GPT-5.6 reasoning to None, Low, Medium, High, XHigh, or Max independently of the model.",
+			"workspaceExperience": "Existing model defaults and saved selections stay in place."
 		}
 	},
 	"crossTasks": {

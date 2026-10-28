@@ -68,6 +68,33 @@ beforeEach(() => {
 })
 
 describe("Sign in with ChatGPT provider", () => {
+	it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
+		"exposes %s without authentication and sends all supported reasoning efforts",
+		async (apiModelId) => {
+			const handler = new OpenAiCodexHandler({ apiModelId })
+			expect(handler.getModel().id).toBe(apiModelId)
+			expect(mocks.authorize).not.toHaveBeenCalled()
+			for (const reasoningEffort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
+				handler.setReasoningOptions({ enableReasoningEffort: true, reasoningEffort })
+				await collect(handler.createMessage("", []))
+				expect(mocks.create.mock.lastCall?.[0]).toMatchObject({
+					model: apiModelId,
+					reasoning: { effort: reasoningEffort },
+				})
+				await expect(handler.completePrompt("Enhance")).resolves.toBe("answer")
+				expect(mocks.create.mock.lastCall?.[0]).toMatchObject({
+					model: apiModelId,
+					reasoning: { effort: reasoningEffort },
+				})
+			}
+			handler.setReasoningOptions({ enableReasoningEffort: false, reasoningEffort: "disable" })
+			await collect(handler.createMessage("", []))
+			expect(mocks.create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort: "none" } })
+			await expect(handler.completePrompt("Enhance")).resolves.toBe("answer")
+			expect(mocks.create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort: "none" } })
+		},
+	)
+
 	it("uses the same static frontier catalog without authentication or account discovery", () => {
 		const model = new OpenAiCodexHandler({ apiModelId: "gpt-6-astra" }).getModel()
 		expect(model).toMatchObject({

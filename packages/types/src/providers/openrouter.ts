@@ -1,7 +1,7 @@
 import type { ModelInfo } from "../model.js"
 
 // Route metadata verified against https://openrouter.ai/api/v1/models and each
-// model's /endpoints response on 2026-10-28. The selectable catalog stays frontier-only.
+// model's /endpoints response on 2026-10-28, including the retained GPT-5.6 family.
 // Keep this curated catalog independent of native-provider defaults: router limits,
 // pricing, and accepted reasoning settings can differ for the same model family.
 const openAiCapabilities = {
@@ -23,6 +23,12 @@ const openAiCapabilities = {
 		cacheReadsPriceMultiplier: 2,
 		cacheWritesPriceMultiplier: 2,
 	},
+} satisfies ModelInfo
+
+const gpt56Capabilities = {
+	...openAiCapabilities,
+	supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+	requiredReasoningEffort: false,
 } satisfies ModelInfo
 
 const anthropicCapabilities = {
@@ -117,6 +123,27 @@ export const openRouterModels = {
 		outputPrice: 50,
 		cacheReadsPrice: 1,
 		cacheWritesPrice: 12.5,
+	},
+	"openai/gpt-5.6-sol": {
+		...gpt56Capabilities,
+		inputPrice: 4,
+		outputPrice: 20,
+		cacheReadsPrice: 0.4,
+		cacheWritesPrice: 5,
+	},
+	"openai/gpt-5.6-terra": {
+		...gpt56Capabilities,
+		inputPrice: 2,
+		outputPrice: 12,
+		cacheReadsPrice: 0.2,
+		cacheWritesPrice: 2.5,
+	},
+	"openai/gpt-5.6-luna": {
+		...gpt56Capabilities,
+		inputPrice: 0.2,
+		outputPrice: 1.2,
+		cacheReadsPrice: 0.02,
+		cacheWritesPrice: 0.25,
 	},
 	"x-ai/grok-4.7": { ...grokCapabilities, defaultTemperature: 0.7 },
 	"anthropic/claude-opus-5.5": {

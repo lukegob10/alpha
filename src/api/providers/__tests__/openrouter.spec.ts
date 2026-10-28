@@ -21,9 +21,6 @@ const modelDefaults = [
 ] as const
 const retiredModelIds = [
 	"openai/gpt-6-luna",
-	"openai/gpt-5.6-sol",
-	"openai/gpt-5.6-terra",
-	"openai/gpt-5.6-luna",
 	"anthropic/claude-haiku-5.5",
 	"x-ai/grok-4.6",
 	"google/gemini-3.8-flash",
@@ -73,6 +70,25 @@ describe("curated OpenRouter provider", () => {
 		)
 		responsesCreate.mockReset()
 	})
+
+	it.each(["openai/gpt-5.6-sol", "openai/gpt-5.6-terra", "openai/gpt-5.6-luna"])(
+		"sends %s's default, every reasoning effort, and explicit Off on both request paths",
+		async (apiModelId) => {
+			for (const [settings, effort] of [
+				[{}, "medium"],
+				...(["none", "low", "medium", "high", "xhigh", "max"] as const).map(
+					(reasoningEffort) => [{ reasoningEffort, enableReasoningEffort: true }, reasoningEffort] as const,
+				),
+				[{ enableReasoningEffort: false, reasoningEffort: "disable" }, "none"],
+			] as const) {
+				const provider = makeHandler({ apiModelId, ...settings })
+				await collect(provider.createMessage("", []))
+				expect(create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort } })
+				await provider.completePrompt("Enhance")
+				expect(create.mock.lastCall?.[0]).toMatchObject({ model: apiModelId, reasoning: { effort } })
+			}
+		},
+	)
 
 	it("isolates credentials, endpoint and transport settings from other provider fields", async () => {
 		const provider = makeHandler({

@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.15
+
+### Patch Changes
+
+- Restore GPT-5.6 Sol, Terra, and Luna in OpenAI, Sign in with ChatGPT, GitHub Copilot, OpenRouter, and Amazon Bedrock.
+- List None, Low, Medium, High, XHigh, and Max reasoning separately from model selection without waiting for discovery. Preserve provider-specific limits, pricing, and defaults, and send explicit zero reasoning when Off is selected.
+- Update the extension and in-app announcement together for Alpha 3.2.15.
+
 ## 3.2.14
 
 ### Patch Changes

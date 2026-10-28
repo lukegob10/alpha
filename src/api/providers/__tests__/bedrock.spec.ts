@@ -105,6 +105,33 @@ afterEach(() => {
 })
 
 describe("curated Amazon Bedrock adapter", () => {
+	it.each(["global.openai.gpt-5.6-sol", "global.openai.gpt-5.6-terra", "global.openai.gpt-5.6-luna"])(
+		"sends %s's default, reasoning efforts, and explicit Off through the Responses route",
+		async (apiModelId) => {
+			for (const [settings, effort] of [
+				[{}, "medium"],
+				...(["none", "low", "medium", "high", "xhigh", "max"] as const).map(
+					(reasoningEffort) => [{ reasoningEffort, enableReasoningEffort: true }, reasoningEffort] as const,
+				),
+				[{ enableReasoningEffort: false, reasoningEffort: "disable" }, "none"],
+			] as const) {
+				const handler = buildBedrockHandler({
+					apiModelId,
+					awsUseApiKey: true,
+					awsApiKey: "bedrock-key",
+					...settings,
+				})
+				await collect(handler.createMessage("", messages))
+				expect(requests.at(-1)).toMatchObject({
+					url: "https://bedrock-runtime.us-east-1.amazonaws.com/openai/v1/responses",
+					body: { model: apiModelId, reasoning: { effort } },
+				})
+				await expect(handler.completePrompt("Enhance")).resolves.toBe("Done")
+				expect(requests.at(-1)?.body).toMatchObject({ model: apiModelId, reasoning: { effort } })
+			}
+		},
+	)
+
 	it.each([
 		{ apiModelId: claude, prices: [4, 20, 5, 0.2], expected: 0.0196 },
 		{ apiModelId: "global.anthropic.claude-sonnet-5-5", prices: [2, 10, 2.5, 0.1], expected: 0.0098 },
