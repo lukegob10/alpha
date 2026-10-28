@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.2.14
+
+### Patch Changes
+
+- Restore Amazon Bedrock and Sign in with ChatGPT, add native Meta, and keep curated provider catalogs focused on frontier and very near-frontier models.
+- Choose models and reasoning separately without setup discovery delays; preserve exact saved selections and report retired models explicitly.
+- Keep model selections consistent across delegated work and account for Bedrock's default Claude route and cache usage correctly.
+- Join canceled ChatGPT sign-in workers during logout, account reset, and shutdown; prevent Meta requests from inheriting OpenAI organization metadata.
+- Refresh Alpha's wolf branding and preserve buffered settings while removing unused context setters and obsolete model-migration scaffolding.
+- Package verified downloads for Windows, macOS, and Linux on x64 and ARM64, retain third-party notices, and reject release tags that point to another commit.
+- Preserve explicit evaluator execution identity and opt-in capture, and update the query serializer for GHSA-6pq8-jhm2-2vcw.
+- Update the extension and in-app announcement together for Alpha 3.2.14. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
 ## 3.2.13
 
 ### Patch Changes

@@ -511,11 +511,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} completes the Alpha naming cleanup and fixes New Chat shortcut focus.",
-			"taskContinuity": "Open a new task directly in Alpha with the New Chat shortcut.",
-			"toolsAndProviders": "Use Alpha-only configuration paths, credentials, saved fields, and public APIs.",
-			"delegation": "Configure a fresh profile; previous naming aliases are no longer supported.",
-			"workspaceExperience": "Keep your previous release profile and package available when returning to an earlier version."
+			"welcome": "Alpha v{{version}} adds frontier providers, instant model setup, and refreshed branding.",
+			"taskContinuity": "Choose your model and reasoning level separately without waiting for discovery.",
+			"toolsAndProviders": "Connect Amazon Bedrock, Sign in with ChatGPT, and Meta alongside the existing providers.",
+			"delegation": "Keep selected models consistent across chats and delegated work, with clear errors for retired models.",
+			"workspaceExperience": "Find the refreshed Alpha wolf branding throughout the extension."
 		}
 	},
 	"crossTasks": {
