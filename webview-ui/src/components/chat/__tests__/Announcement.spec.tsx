@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.14",
+		version: "3.2.15",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.14" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.15" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.14")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.15")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.14 adds frontier providers, instant model setup, and refreshed branding."),
+			screen.getByText("Alpha v3.2.15 restores GPT-5.6 Sol, Terra, and Luna with their reasoning levels."),
 		).toBeInTheDocument()
 	})
 
@@ -55,22 +55,22 @@ describe("Announcement", () => {
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Connect Amazon Bedrock, Sign in with ChatGPT, and Meta alongside the existing providers.",
+				"Choose GPT-5.6 with OpenAI, Sign in with ChatGPT, GitHub Copilot, OpenRouter, or Amazon Bedrock.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Keep selected models consistent across chats and delegated work, with clear errors for retired models.",
+				"Set GPT-5.6 reasoning to None, Low, Medium, High, XHigh, or Max independently of the model.",
 			),
 		).toBeInTheDocument()
-		expect(screen.getByText("Find the refreshed Alpha wolf branding throughout the extension.")).toBeInTheDocument()
+		expect(screen.getByText("Existing model defaults and saved selections stay in place.")).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.14 adds frontier providers, instant model setup, and refreshed branding."),
+			screen.getByText("Alpha v3.2.15 restores GPT-5.6 Sol, Terra, and Luna with their reasoning levels."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText("Choose your model and reasoning level separately without waiting for discovery."),

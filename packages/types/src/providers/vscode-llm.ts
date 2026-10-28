@@ -24,7 +24,15 @@ export type VscodeLlmModelMetadata = VscodeLlmModelSelectorLike
 
 export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-6.1-sol"
 
-const frontierCopilotFamilies = new Set(["gpt-6-astra", "gpt-6.1-sol", "claude-opus-5.5", "claude-sonnet-5.5"])
+const selectableCopilotFamilies = new Set([
+	"gpt-6-astra",
+	"gpt-6.1-sol",
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+	"claude-opus-5.5",
+	"claude-sonnet-5.5",
+])
 
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
 const COPILOT_GPT_5_CONTEXT_WINDOW = 272_000
@@ -73,7 +81,7 @@ function copilotModel({
 	reasoningEffort,
 	supportsContextWindowConfiguration = false,
 	extendedContextSize,
-	deprecated = !frontierCopilotFamilies.has(family),
+	deprecated = !selectableCopilotFamilies.has(family),
 }: {
 	name: string
 	family: string

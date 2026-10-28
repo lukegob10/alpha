@@ -4,6 +4,7 @@ import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
 
 const frontierReasoningModels = ["gpt-6.1-sol", "gpt-6-astra"] as const
+const gpt56Models = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const
 
 const mocks = vi.hoisted(() => ({
 	create: vi.fn(),
@@ -102,7 +103,7 @@ describe("native OpenAI provider", () => {
 		})
 	})
 
-	it.each(frontierReasoningModels)(
+	it.each([...frontierReasoningModels, ...gpt56Models])(
 		"uses Responses and the medium default for %s task and auxiliary requests",
 		async (id) => {
 			const handler = new OpenAiNativeHandler({ openAiNativeApiKey: "key", apiModelId: id })
@@ -115,6 +116,34 @@ describe("native OpenAI provider", () => {
 			expect(mocks.chat).not.toHaveBeenCalled()
 		},
 	)
+
+	it.each(gpt56Models)("sends every supported %s effort on task and auxiliary requests", async (id) => {
+		for (const effort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
+			const configuration = { apiProvider: "openai-native" as const, openAiNativeApiKey: "key", apiModelId: id }
+			const handler = new OpenAiNativeHandler(configuration)
+			const resolved = resolveTaskReasoning(configuration, { kind: "effort", effort }, handler.getModel())
+			expect(resolved.state.effective).toEqual({ kind: "effort", effort })
+			handler.setReasoningOptions(resolved.configuration)
+			await collect(handler.createMessage("", []))
+			expect(mocks.create.mock.lastCall?.[0]).toMatchObject({ model: id, reasoning: { effort } })
+			await handler.completePrompt("Enhance")
+			expect(mocks.create.mock.lastCall?.[0]).toMatchObject({ model: id, reasoning: { effort } })
+		}
+	})
+
+	it.each(gpt56Models)("sends explicit none for %s task Off instead of restoring the service default", async (id) => {
+		const configuration = { apiProvider: "openai-native" as const, openAiNativeApiKey: "key", apiModelId: id }
+		const handler = new OpenAiNativeHandler(configuration)
+		const resolved = resolveTaskReasoning(configuration, { kind: "off" }, handler.getModel())
+		expect(resolved.state.effective).toEqual({ kind: "off" })
+		handler.setReasoningOptions(resolved.configuration)
+		await collect(handler.createMessage("", []))
+		await handler.completePrompt("Enhance")
+		for (const [request] of mocks.create.mock.calls) {
+			expect(request).toMatchObject({ model: id, reasoning: { effort: "none" } })
+		}
+		expect(configuration).not.toHaveProperty("reasoningEffort")
+	})
 
 	it.each(frontierReasoningModels)("retains required reasoning for %s when saved effort is none", async (id) => {
 		const handler = new OpenAiNativeHandler({
@@ -159,22 +188,15 @@ describe("native OpenAI provider", () => {
 		},
 	)
 
-	it.each([
-		"",
-		" ",
-		"__proto__",
-		"gpt-6.1-sol-preview",
-		"unknown-model",
-		"gpt-6-luna",
-		"gpt-5.6-sol",
-		"gpt-5.6-terra",
-		"gpt-5.6-luna",
-	])("rejects unsupported model %s before constructing a transport", (apiModelId) => {
-		expect(() => new OpenAiNativeHandler({ apiModelId, openAiNativeApiKey: "key" })).toThrow(
-			"Unsupported OpenAI model",
-		)
-		expect(mocks.construct).not.toHaveBeenCalled()
-	})
+	it.each(["", " ", "__proto__", "gpt-6.1-sol-preview", "unknown-model", "gpt-6-luna"])(
+		"rejects unsupported model %s before constructing a transport",
+		(apiModelId) => {
+			expect(() => new OpenAiNativeHandler({ apiModelId, openAiNativeApiKey: "key" })).toThrow(
+				"Unsupported OpenAI model",
+			)
+			expect(mocks.construct).not.toHaveBeenCalled()
+		},
+	)
 
 	it("rejects missing native credentials instead of borrowing the compatible key", () => {
 		expect(() => new OpenAiNativeHandler({ openAiApiKey: "compatible-key" })).toThrow("OpenAI API key is required")

@@ -701,15 +701,15 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.14 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.14-frontier-providers-and-branding"
+	test("shows the v3.2.15 announcement once per installation", async () => {
+		const announcementId = "october-2026-v3.2.15-restore-gpt-5.6"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
 		await provider.contextProxy.setValue(
 			"lastShownAnnouncementId",
-			"october-2026-v3.2.13-alpha-cleanup-and-new-chat",
+			"october-2026-v3.2.14-frontier-providers-and-branding",
 		)
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 

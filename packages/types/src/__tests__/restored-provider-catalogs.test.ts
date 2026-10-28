@@ -19,12 +19,42 @@ import {
 	metaModels,
 	openAiCodexModels,
 	openAiNativeModels,
+	getVscodeLlmCatalogModels,
+	getVscodeLlmModelInfo,
 } from "../providers/index.js"
 
 describe("restored and frontier provider contracts", () => {
-	it("shares the exact two frontier OpenAI choices across API-key and ChatGPT access", () => {
+	it.each(["sol", "terra", "luna"])("makes GPT-5.6 %s and its reasoning available without discovery", (variant) => {
+		const modelId = `gpt-5.6-${variant}`
+		for (const [provider, id] of [
+			["openai-native", modelId],
+			["openai-codex", modelId],
+			["openrouter", `openai/${modelId}`],
+			["bedrock", `global.openai.${modelId}`],
+		] as const) {
+			expect(getCuratedModelInfo(provider, id), `${provider}: ${id}`).toMatchObject({
+				supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+				requiredReasoningEffort: false,
+				reasoningEffort: "medium",
+			})
+		}
+		const copilot = getVscodeLlmCatalogModels().find((model) => model.family === modelId)
+		expect(copilot).toMatchObject({ vendor: "copilot", family: modelId })
+		expect(getVscodeLlmModelInfo({ vendor: "copilot", family: modelId })).toMatchObject({
+			supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+			requiredReasoningEffort: false,
+		})
+	})
+
+	it("shares the exact OpenAI choices across API-key and ChatGPT access", () => {
 		expect(openAiCodexModels).toBe(openAiNativeModels)
-		expect(Object.keys(openAiCodexModels)).toEqual(["gpt-6.1-sol", "gpt-6-astra"])
+		expect(Object.keys(openAiCodexModels)).toEqual([
+			"gpt-6.1-sol",
+			"gpt-6-astra",
+			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
+		])
 		expect(getProviderDefaultModelId("openai-codex")).toBe(getProviderDefaultModelId("openai-native"))
 		expect(curatedProviderApiKeyFields["openai-codex"]).toBeUndefined()
 		expect(retiredProviderNames).not.toContain("openai-codex")
@@ -105,6 +135,9 @@ describe("restored and frontier provider contracts", () => {
 			"global.anthropic.claude-fable-5-1",
 			"global.openai.gpt-6.1-sol",
 			"global.openai.gpt-6-astra",
+			"global.openai.gpt-5.6-sol",
+			"global.openai.gpt-5.6-terra",
+			"global.openai.gpt-5.6-luna",
 		])
 		for (const modelId of Object.keys(bedrockModels)) {
 			const route = modelId.startsWith("global.anthropic.") ? "anthropic-messages" : "openai-responses"
@@ -130,6 +163,9 @@ describe("restored and frontier provider contracts", () => {
 		["global.anthropic.claude-fable-5-1", 10, 50, 12.5, 0.25],
 		["global.openai.gpt-6.1-sol", 2, 10, 2.5, 0.1],
 		["global.openai.gpt-6-astra", 10, 50, 12.5, 1],
+		["global.openai.gpt-5.6-sol", 4, 20, 5, 0.4],
+		["global.openai.gpt-5.6-terra", 2, 12, 2.5, 0.2],
+		["global.openai.gpt-5.6-luna", 0.2, 1.2, 0.25, 0.02],
 	] as const)(
 		"accounts for the verified Global Standard token prices of %s",
 		(modelId, inputPrice, outputPrice, cacheWritesPrice, cacheReadsPrice) => {
@@ -142,7 +178,13 @@ describe("restored and frontier provider contracts", () => {
 	)
 
 	it("applies long-context rate changes only to the Bedrock GPT models", () => {
-		for (const modelId of ["global.openai.gpt-6.1-sol", "global.openai.gpt-6-astra"] as const) {
+		for (const modelId of [
+			"global.openai.gpt-6.1-sol",
+			"global.openai.gpt-6-astra",
+			"global.openai.gpt-5.6-sol",
+			"global.openai.gpt-5.6-terra",
+			"global.openai.gpt-5.6-luna",
+		] as const) {
 			expect(bedrockModels[modelId]).toMatchObject({
 				longContextPricing: {
 					thresholdTokens: 272_000,
@@ -163,7 +205,7 @@ describe("restored and frontier provider contracts", () => {
 	})
 
 	it.each([
-		["openai-native", "gpt-5.6-sol"],
+		["openai-native", "gpt-5.5"],
 		["openai-codex", "gpt-6-luna"],
 		["anthropic", "claude-haiku-5-5"],
 		["gemini", "gemini-3.8-flash"],

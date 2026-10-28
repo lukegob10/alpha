@@ -5,6 +5,7 @@ export const bedrockRegionPattern = /^[a-z]{2}(?:-[a-z]+)+-\d+$/
 
 // Verified 2026-10-28 against AWS Bedrock model-card-anthropic-claude-{opus-5-5,
 // sonnet-5-5,fable-5-1}.html and model-card-openai-gpt-6-1-sol.html.
+// GPT-5.6: https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-56-{sol,terra,luna}.html
 // Global inference profile IDs are explicit routes, not native-provider aliases.
 const claudeCapabilities = {
 	contextWindow: 1_000_000,
@@ -27,6 +28,22 @@ const openAiLongContextPricing = {
 	cacheReadsPriceMultiplier: 2,
 	cacheWritesPriceMultiplier: 2,
 }
+
+const gpt56Capabilities = {
+	contextWindow: 1_050_000,
+	contextWindowIncludesOutput: true,
+	maxTokens: 128_000,
+	supportsImages: true,
+	supportsPromptCache: true,
+	supportsStreaming: true,
+	supportsTemperature: false,
+	supportsVerbosity: false,
+	supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"],
+	requiredReasoningEffort: false,
+	reasoningEffort: "medium",
+	preserveReasoning: true,
+	longContextPricing: openAiLongContextPricing,
+} satisfies ModelInfo
 
 // USD per million tokens, Global Standard inference; Claude writes use the
 // request's default five-minute TTL. Geo routing premiums belong to the adapter.
@@ -98,6 +115,30 @@ export const bedrockModels = {
 		cacheWritesPrice: 12.5,
 		cacheReadsPrice: 1,
 		longContextPricing: openAiLongContextPricing,
+	},
+	"global.openai.gpt-5.6-sol": {
+		...gpt56Capabilities,
+		description: "GPT-5.6 Sol on Amazon Bedrock",
+		inputPrice: 4,
+		outputPrice: 20,
+		cacheWritesPrice: 5,
+		cacheReadsPrice: 0.4,
+	},
+	"global.openai.gpt-5.6-terra": {
+		...gpt56Capabilities,
+		description: "GPT-5.6 Terra on Amazon Bedrock",
+		inputPrice: 2,
+		outputPrice: 12,
+		cacheWritesPrice: 2.5,
+		cacheReadsPrice: 0.2,
+	},
+	"global.openai.gpt-5.6-luna": {
+		...gpt56Capabilities,
+		description: "GPT-5.6 Luna on Amazon Bedrock",
+		inputPrice: 0.2,
+		outputPrice: 1.2,
+		cacheWritesPrice: 0.25,
+		cacheReadsPrice: 0.02,
 	},
 } as const satisfies Record<string, ModelInfo>
 

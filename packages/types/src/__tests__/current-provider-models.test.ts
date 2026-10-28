@@ -215,7 +215,15 @@ describe("supported provider model catalogs", () => {
 			const catalog = getVscodeLlmCatalogModels()
 			const catalogIds = catalog.map(getVscodeLlmModelId)
 
-			expect(catalogIds).toEqual(["gpt-6-astra", "gpt-6.1-sol", "claude-sonnet-5.5", "claude-opus-5.5"])
+			expect(catalogIds).toEqual([
+				"gpt-5.6-luna",
+				"gpt-5.6-sol",
+				"gpt-5.6-terra",
+				"gpt-6-astra",
+				"gpt-6.1-sol",
+				"claude-sonnet-5.5",
+				"claude-opus-5.5",
+			])
 			expect(new Set(catalogIds).size).toBe(catalog.length)
 			expect(catalogIds).toContain(vscodeLlmDefaultModelId)
 			for (const selector of catalog) {

@@ -183,8 +183,46 @@ describe("curated provider profile continuity", () => {
 		expect(JSON.stringify(exported)).not.toContain("unrelated-api-key")
 	})
 
+	it.each(
+		["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].flatMap((id) => [
+			{ apiProvider: "openai-native" as const, apiModelId: id },
+			{ apiProvider: "openai-codex" as const, apiModelId: id },
+			{ apiProvider: "openrouter" as const, apiModelId: `openai/${id}` },
+			{ apiProvider: "bedrock" as const, apiModelId: `global.openai.${id}` },
+		]),
+	)("reopens saved $apiProvider model $apiModelId with its reasoning intact", async ({ apiProvider, apiModelId }) => {
+		const field = curatedProviderApiKeyFields[apiProvider]
+		const settings: ProviderSettings = {
+			apiProvider,
+			apiModelId,
+			...(field ? { [field]: "saved-test-secret" } : {}),
+			enableReasoningEffort: true,
+			reasoningEffort: "max",
+		}
+		const saved = savedProfile(settings)
+		const manager = new ProviderSettingsManager(saved.context)
+		await manager.initialize()
+		await manager.saveConfig({ id: "saved-profile-id" }, settings)
+		const destination = savedProfile({})
+		const reopened = new ProviderSettingsManager(destination.context)
+		await reopened.initialize()
+		await reopened.import(await manager.export())
+		const restored = await reopened.getProfile({ id: "saved-profile-id" })
+		expect(restored).toMatchObject(settings)
+		expect(destination.read().apiConfigs.selected).toEqual({ id: "saved-profile-id", ...settings })
+		const handler = buildApiHandler(restored)
+		try {
+			expect(handler.getModel()).toMatchObject({
+				id: apiModelId,
+				info: { supportsReasoningEffort: ["none", "low", "medium", "high", "xhigh", "max"] },
+			})
+		} finally {
+			handler.dispose?.()
+		}
+	})
+
 	it.each([
-		["openai-native", "gpt-5.6-sol"],
+		["openai-native", "gpt-5.5"],
 		["openai-codex", "gpt-6-luna"],
 		["meta", "older-removed-meta-model"],
 		["bedrock", "anthropic.claude-3-sonnet-20240229-v1:0"],
