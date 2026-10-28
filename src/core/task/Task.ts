@@ -389,7 +389,12 @@ import {
 	type TokenCountContext,
 } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
-import { AutoApprovalHandler, captureToolReviewPolicy, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
+import {
+	AutoApprovalHandler,
+	captureToolReviewPolicy,
+	checkAutoApprovalWithInheritedPolicy,
+	getFollowupAutoApprovalTimeoutMs,
+} from "../auto-approval"
 import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
 import { clearTaskSessionApprovalGrants } from "../auto-approval/taskSessionApprovalGrants"
 import { collectArtifactExecutionIds, MessageManager } from "../message-manager"
@@ -1301,10 +1306,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private askResponse?: AlphaAskResponse
 	private askResponseText?: string
 	private askResponseImages?: string[]
-	private activeAsk?: { type: AlphaAsk; ts: number; toolCallId?: string; queuedMessageIds?: string[] }
+	private activeAsk?: {
+		type: AlphaAsk
+		ts: number
+		toolCallId?: string
+		queuedMessageIds?: string[]
+		signal?: AbortSignal
+		published?: boolean
+	}
 	private askResponseQueuedMessageIds?: string[]
 	public lastMessageTs?: number
 	private autoApprovalTimeoutRef?: NodeJS.Timeout
+	private autoApprovalTimeoutRevision = 0
 
 	// Tool Use
 	consecutiveMistakeCount: number = 0
@@ -7338,6 +7351,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCommandApproved?: (commandExecutionId: string) => void,
 		signal?: AbortSignal,
 	): Promise<{ response: AlphaAskResponse; text?: string; images?: string[]; queuedMessageIds?: string[] }> {
+		const capturedAutoApprovalTimeoutRevision = this.autoApprovalTimeoutRevision ?? 0
 		const capturedTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
 		const addMessage = (message: AlphaMessage) =>
 			this.addToAlphaMessages(message, undefined, undefined, capturedTurn)
@@ -7406,23 +7420,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			partial === true || requiresExplicitApproval
 				? undefined
 				: this.getOffscreenAutoAskResponse(type, text, isProtected)
+		const autoApprovalInput = {
+			state: taskApprovalState,
+			commandPolicy,
+			reviewPolicy,
+			inheritedState:
+				this.taskKind === "subagent"
+					? (this.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy)
+					: undefined,
+			ask: type,
+			text: type === "command" ? commandForApproval : text,
+			isProtected,
+			requiresExplicitApproval,
+		}
 		const pendingApproval =
 			partial === true || offscreenAutoResponse
 				? undefined
-				: checkAutoApprovalWithInheritedPolicy({
-						state: taskApprovalState,
-						commandPolicy,
-						reviewPolicy,
-						inheritedState:
-							this.taskKind === "subagent"
-								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
-									disabledSubagentAutoApprovalPolicy)
-								: undefined,
-						ask: type,
-						text: type === "command" ? commandForApproval : text,
-						isProtected,
-						requiresExplicitApproval,
-					})
+				: checkAutoApprovalWithInheritedPolicy(autoApprovalInput)
 		const approval = pendingApproval
 			? signal
 				? await this.waitForRequestControl(pendingApproval, signal)
@@ -7438,7 +7452,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let askTs: number
 		let installedAsk: Task["activeAsk"]
 		const installActiveAsk = (ts: number) => {
-			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId }
+			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId, signal }
 			this.activeAsk = installedAsk
 		}
 
@@ -7552,6 +7566,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 		}
 
+		if (installedAsk) installedAsk.published = true
 		let timeouts: NodeJS.Timeout[] = []
 
 		const onAbort = () => {
@@ -7582,14 +7597,67 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.approveAsk()
 			} else if (!signal?.aborted && approval.decision === "deny") {
 				this.denyAsk()
-			} else if (!signal?.aborted && approval.decision === "timeout") {
+			} else if (
+				!signal?.aborted &&
+				approval.decision === "timeout" &&
+				(this.autoApprovalTimeoutRevision ?? 0) === capturedAutoApprovalTimeoutRevision
+			) {
 				// Store the auto-approval timeout so it can be cancelled if user interacts
-				this.autoApprovalTimeoutRef = setTimeout(() => {
-					const { askResponse, text, images } = approval.fn()
-					this.handleWebviewAskResponse(askResponse, text, images)
-					this.autoApprovalTimeoutRef = undefined
+				const timeout = setTimeout(() => {
+					const ownsAutomaticAnswer = () =>
+						!this.abort &&
+						!this.abandoned &&
+						!signal?.aborted &&
+						(this.autoApprovalTimeoutRevision ?? 0) === capturedAutoApprovalTimeoutRevision &&
+						this.autoApprovalTimeoutRef === timeout &&
+						this.activeAsk === installedAsk &&
+						this.activeAsk?.ts === askTs &&
+						this.lastMessageTs === askTs &&
+						this.askResponse === undefined &&
+						!this.deferredAskResponse
+					void (async () => {
+						try {
+							if (!provider || !ownsAutomaticAnswer()) return
+							const pendingCurrentState = provider.getState()
+							const currentState = signal
+								? await this.waitForRequestControl(pendingCurrentState, signal)
+								: await pendingCurrentState
+							if (!ownsAutomaticAnswer()) return
+							// Settings may revoke a timed answer while preserving the admitted step's authority.
+							const pendingCurrentApproval = checkAutoApprovalWithInheritedPolicy({
+								...autoApprovalInput,
+								state: this.approvalStateForAsk(currentState, taskApprovalMode),
+							})
+							const currentApproval = signal
+								? await this.waitForRequestControl(pendingCurrentApproval, signal)
+								: await pendingCurrentApproval
+							if (!ownsAutomaticAnswer()) return
+							// Imports/API writes may revoke the preference after getState captured it.
+							// Read it synchronously at the effect boundary, after the last await.
+							if (
+								currentApproval.decision !== "timeout" ||
+								currentApproval.timeout !== approval.timeout ||
+								provider.contextProxy.getValue("followupAutoApproveTimeoutMs") !== approval.timeout
+							) {
+								this.markActiveFollowupQuestionWaiting(askTs)
+								return
+							}
+							const { askResponse, text, images } = approval.fn()
+							this.handleWebviewAskResponse(askResponse, text, images, undefined, askTs)
+						} catch {
+							if (ownsAutomaticAnswer()) {
+								provider?.log(
+									"Skipping automatic question answer because settings could not be revalidated.",
+								)
+								this.markActiveFollowupQuestionWaiting(askTs)
+							}
+						} finally {
+							if (this.autoApprovalTimeoutRef === timeout) this.autoApprovalTimeoutRef = undefined
+						}
+					})()
 				}, approval.timeout)
-				timeouts.push(this.autoApprovalTimeoutRef)
+				this.autoApprovalTimeoutRef = timeout
+				timeouts.push(timeout)
 			}
 
 			// The state is mutable if the message is complete and the task will
@@ -7606,7 +7674,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!signal?.aborted &&
 				isBlocking &&
 				(!shouldDrainQueuedMessageForAsk() || !isMessageQueued) &&
-				approval.decision === "ask"
+				(approval.decision === "ask" ||
+					(approval.decision === "timeout" &&
+						(this.autoApprovalTimeoutRevision ?? 0) !== capturedAutoApprovalTimeoutRevision))
 			if (
 				isStatusMutable &&
 				this.taskKind === "subagent" &&
@@ -7631,6 +7701,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (isInteractiveAsk(type)) {
 					timeouts.push(
 						setTimeout(() => {
+							if (type === "followup") {
+								this.markActiveFollowupQuestionWaiting(askTs)
+								return
+							}
 							const message = this.findMessageByTimestamp(askTs)
 
 							if (message) {
@@ -8127,11 +8201,47 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Cancel any pending auto-approval timeout.
 	 * Called when user interacts (types, clicks buttons, etc.) to prevent the timeout from firing.
 	 */
-	public cancelAutoApprovalTimeout(): void {
+	public cancelAutoApprovalTimeout(notifyQuestionWaiting = false): void {
+		// Revocation also covers an ask still admitting settings before its timer is installed.
+		this.autoApprovalTimeoutRevision = (this.autoApprovalTimeoutRevision ?? 0) + 1
 		if (this.autoApprovalTimeoutRef) {
 			clearTimeout(this.autoApprovalTimeoutRef)
 			this.autoApprovalTimeoutRef = undefined
 		}
+		if (notifyQuestionWaiting) this.markActiveFollowupQuestionWaiting()
+	}
+
+	private markActiveFollowupQuestionWaiting(expectedAskTs?: number): void {
+		const ask = this.activeAsk
+		if (
+			!ask ||
+			ask.type !== "followup" ||
+			!ask.published ||
+			ask.signal?.aborted ||
+			this.abort ||
+			this.abandoned ||
+			this.didComplete ||
+			(expectedAskTs !== undefined && ask.ts !== expectedAskTs) ||
+			this.lastMessageTs !== ask.ts ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse
+		) {
+			return
+		}
+		const message = this.findMessageByTimestamp(ask.ts)
+		if (
+			!message ||
+			message.type !== "ask" ||
+			message.ask !== "followup" ||
+			message.partial ||
+			message.isAnswered ||
+			this.interactiveAsk?.ts === ask.ts
+		) {
+			return
+		}
+		this.interactiveAsk = message
+		this.emit(AlphaCodeEventName.TaskInteractive, this.taskId)
+		this.providerRef.deref()?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
 	}
 
 	public approveAsk({ text, images }: { text?: string; images?: string[] } = {}) {
@@ -12045,6 +12155,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: this.getDisabledToolsForStep(state),
+					waitForQuestionAnswers:
+						getFollowupAutoApprovalTimeoutMs(
+							this.approvalStateForAsk(state, this.captureTaskApprovalMode(state)),
+						) === 0,
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -19052,6 +19166,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							experiments: state?.experiments,
 							apiConfiguration,
 							disabledTools: this.getDisabledToolsForStep(state),
+							waitForQuestionAnswers:
+								getFollowupAutoApprovalTimeoutMs(
+									this.approvalStateForAsk(state, this.captureTaskApprovalMode(state)),
+								) === 0,
 							execution: capturedExecution,
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -19464,6 +19582,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.captureToolExecutionPolicy(state)
 		const capturedApprovalMode =
 			retainedStep?.snapshot.context.policy.approval.mode ?? this.captureTaskApprovalMode(state)
+		const waitForQuestionAnswers =
+			getFollowupAutoApprovalTimeoutMs(this.approvalStateForAsk(state, capturedApprovalMode)) === 0
 		const capturedReviewPolicy = retainedStep
 			? (retainedStep.snapshot.context.policy.approval.reviewPolicy ?? CLOSED_TOOL_REVIEW_POLICY)
 			: captureToolReviewPolicy(this.approvalStateForAsk(state, capturedApprovalMode))
@@ -19667,6 +19787,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									experiments: state?.experiments,
 									apiConfiguration,
 									disabledTools: this.getDisabledToolsForStep(state),
+									waitForQuestionAnswers,
 									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -20025,6 +20146,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: this.getDisabledToolsForStep(state),
+					waitForQuestionAnswers,
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),

@@ -94,6 +94,23 @@ export function captureToolReviewPolicy(
 	})
 }
 
+/** Shared by question timers and the captured choice of blocking question tools. */
+export function getFollowupAutoApprovalTimeoutMs(
+	state?: Pick<ExtensionState, AutoApprovalState | AutoApprovalStateOptions>,
+): number {
+	if (!state) return 0
+	const flags = flagsFromState(state, resolveApprovalMode(state))
+	const timeout = state.followupAutoApproveTimeoutMs
+	return flags.autoApprovalEnabled &&
+		flags.alwaysAllowFollowupQuestions &&
+		typeof timeout === "number" &&
+		Number.isFinite(timeout) &&
+		timeout > 0 &&
+		timeout <= 2_147_483_647
+		? timeout
+		: 0
+}
+
 export type CheckAutoApprovalResult =
 	| { decision: "approve" }
 	| { decision: "deny" }
@@ -175,13 +192,7 @@ export async function checkAutoApproval({
 				const suggestion = (JSON.parse(text || "{}") as FollowUpData).suggest?.[0]
 				// Zero keeps answers user-owned even in Full Access. Timed defaults are Alpha's
 				// explicit alternative to Codex Plan's blocking request_user_input (retrieved 2026-10-26).
-				const timeout =
-					typeof state.followupAutoApproveTimeoutMs === "number" &&
-					Number.isFinite(state.followupAutoApproveTimeoutMs) &&
-					state.followupAutoApproveTimeoutMs > 0 &&
-					state.followupAutoApproveTimeoutMs <= 2_147_483_647
-						? state.followupAutoApproveTimeoutMs
-						: 0
+				const timeout = getFollowupAutoApprovalTimeoutMs(state)
 
 				if (suggestion && timeout > 0) {
 					return {

@@ -79,6 +79,8 @@ export interface BuildToolsOptions {
 	execution?: ToolPolicyInput["execution"]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
+	/** Captured effective question policy; omitted values keep answers user-owned. */
+	waitForQuestionAnswers?: boolean
 	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	readGrant?: TaskReadGrant
 	/** Task-owned cache, used only at a real new step boundary (never during a transport retry). */
@@ -143,7 +145,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 17
+const TOOL_CATALOG_SCHEMA_VERSION = 18
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -379,8 +381,22 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 					),
 				}
 			: modelInfo
+	const supportsAsyncQuestions = taskKind === "primary" && supportsAsyncUserInput(catalogModelInfo)
+	const historicalAsyncQuestions =
+		taskKind === "primary" &&
+		includeAllToolsWithRestrictions &&
+		historyContainsToolName(options.discoveryHistory, "request_user_input_async")
+	// Codex c92700d (2026-10-28) keeps async questions nonblocking. Alpha's
+	// indefinite-answer policy selects the existing blocking tool instead.
+	const allowAsyncQuestions = supportsAsyncQuestions && options.waitForQuestionAnswers === false
 	const disabledTools = orderedNames(
-		expandLegacyThreadToolDisables([...(requestedDisabledTools ?? []), ...(options.policy?.disabledTools ?? [])]),
+		expandLegacyThreadToolDisables([
+			...(requestedDisabledTools ?? []),
+			...(options.policy?.disabledTools ?? []),
+			...((supportsAsyncQuestions || historicalAsyncQuestions) && !allowAsyncQuestions
+				? ["request_user_input_async"]
+				: []),
+		]),
 	)!
 	const allowIndependentTaskCreation =
 		!diagnosticSession &&
@@ -535,7 +551,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			agentKinds: mode === planModeSlug ? ["explore", "review"] : undefined,
 			namedAgentTypes,
 			planMode: mode === planModeSlug,
-			includeRequestUserInputAsync: taskKind === "primary" && supportsAsyncUserInput(catalogModelInfo),
+			includeRequestUserInputAsync: allowAsyncQuestions || historicalAsyncQuestions,
 		})
 		// Restricted provider supersets retain discovery definitions only when saved history requires them.
 		const legacyDiscoveryInHistory = historyContainsToolName(options.discoveryHistory, "discover_tools")

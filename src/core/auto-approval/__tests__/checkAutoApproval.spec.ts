@@ -6,7 +6,7 @@ import {
 	subagentAutoApprovalPolicySchema,
 } from "@alpha-code/types"
 
-import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy } from "../index"
+import { checkAutoApproval, checkAutoApprovalWithInheritedPolicy, getFollowupAutoApprovalTimeoutMs } from "../index"
 import { createSubagentCommandApprovalPolicy } from "../commands"
 
 const ticketCreate = JSON.stringify({
@@ -41,6 +41,7 @@ describe("checkAutoApproval", () => {
 	it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
 		"waits for a human answer in Full Access with question timeout %s",
 		async (followupAutoApproveTimeoutMs) => {
+			expect(getFollowupAutoApprovalTimeoutMs({ approvalMode: "bypass", followupAutoApproveTimeoutMs })).toBe(0)
 			await expect(
 				checkAutoApproval({
 					state: { approvalMode: "bypass", followupAutoApproveTimeoutMs },
@@ -54,6 +55,7 @@ describe("checkAutoApproval", () => {
 	it.each(["ask", "auto"] as const)(
 		"keeps %s question answers manual even with a saved delay",
 		async (approvalMode) => {
+			expect(getFollowupAutoApprovalTimeoutMs({ approvalMode, followupAutoApproveTimeoutMs: 60_000 })).toBe(0)
 			await expect(
 				checkAutoApproval({
 					state: { approvalMode, followupAutoApproveTimeoutMs: 60_000 },
@@ -65,6 +67,9 @@ describe("checkAutoApproval", () => {
 	)
 
 	it("preserves a configured finite question timeout in Full Access", async () => {
+		expect(getFollowupAutoApprovalTimeoutMs({ approvalMode: "bypass", followupAutoApproveTimeoutMs: 60_000 })).toBe(
+			60_000,
+		)
 		const result = await checkAutoApproval({
 			state: { approvalMode: "bypass", followupAutoApproveTimeoutMs: 60_000 },
 			ask: "followup",

@@ -1021,8 +1021,24 @@ export const webviewMessageHandler = async (
 
 		case "updateSettings":
 			if (message.updatedSettings) {
+				const questionTimeoutChanged =
+					Object.hasOwn(message.updatedSettings, "followupAutoApproveTimeoutMs") &&
+					message.updatedSettings.followupAutoApproveTimeoutMs !==
+						getGlobalState("followupAutoApproveTimeoutMs")
+				if (questionTimeoutChanged) {
+					// Revoke timers and publish the new cache value before another setting can stall the save.
+					for (const taskId of provider.getLiveTaskIds()) {
+						provider.getLiveTask(taskId)?.cancelAutoApprovalTimeout(true)
+					}
+					await provider.contextProxy.setValue(
+						"followupAutoApproveTimeoutMs",
+						message.updatedSettings.followupAutoApproveTimeoutMs,
+					)
+				}
+
 				for (const [key, value] of Object.entries(message.updatedSettings)) {
 					if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) continue
+					if (questionTimeoutChanged && key === "followupAutoApproveTimeoutMs") continue
 					let newValue = value
 
 					if (key === "memorySettings") {

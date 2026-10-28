@@ -323,7 +323,7 @@
 			"description": "Automatically select the first suggested answer for follow-up questions after the configured timeout",
 			"timeoutLabel": "Automatic answer delay (seconds)",
 			"waitLabel": "Wait indefinitely for question answers",
-			"waitDescription": "Keep follow-up questions open until you answer, including in Full Access. Turn this off to let Full Access select the first suggested answer for each question after the delay below. Ask and Auto always wait for your answers."
+			"waitDescription": "Require an answer before the agent continues, including in Full Access. Turn this off to allow Full Access to ask optional questions while continuing, or select suggested answers after the delay below. Ask and Auto always wait for your answers."
 		},
 		"execute": {
 			"label": "Command rules",

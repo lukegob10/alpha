@@ -50,7 +50,9 @@ describe("AutoApproveSettings session dial", () => {
 				name: settingsLocale.autoApprove.followupQuestions.waitLabel,
 			})
 			expect(checkbox).not.toBeChecked()
-			expect(checkbox).toHaveAccessibleDescription(/until you answer, including in Full Access/)
+			expect(checkbox).toHaveAccessibleDescription(
+				/Require an answer before the agent continues, including in Full Access/,
+			)
 			fireEvent.click(checkbox)
 			expect(setCachedStateField).toHaveBeenCalledTimes(1)
 			expect(setCachedStateField).toHaveBeenCalledWith("followupAutoApproveTimeoutMs", 0)
