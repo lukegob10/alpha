@@ -135,11 +135,73 @@ vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))
 import type * as vscode from "vscode"
 import { commands, window } from "vscode"
 import { activate, deactivate } from "../../extension"
+import { ChatGptAuthService } from "../../services/chatgpt/ChatGptAuthService"
+
+function createSecretStorage() {
+	const values = new Map<string, string>()
+	const listeners = new Set<(event: vscode.SecretStorageChangeEvent) => unknown>()
+	const emit = (key: string) => {
+		for (const listener of listeners) listener({ key })
+	}
+	return {
+		keys: vi.fn(async () => [...values.keys()]),
+		get: vi.fn(async (key: string) => values.get(key)),
+		store: vi.fn(async (key: string, value: string) => {
+			if (values.get(key) === value) return
+			values.set(key, value)
+			emit(key)
+		}),
+		delete: vi.fn(async (key: string) => {
+			if (values.delete(key)) emit(key)
+		}),
+		onDidChange: vi.fn(
+			(
+				listener: (event: vscode.SecretStorageChangeEvent) => unknown,
+				thisArgs?: unknown,
+				disposables?: vscode.Disposable[],
+			) => {
+				const boundListener = listener.bind(thisArgs)
+				listeners.add(boundListener)
+				const subscription = { dispose: vi.fn(() => listeners.delete(boundListener)) }
+				disposables?.push(subscription)
+				return subscription
+			},
+		),
+	} satisfies vscode.SecretStorage
+}
 
 describe("extension lifecycle", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		mocks.workspaceFolders = undefined
+	})
+
+	afterEach(async () => {
+		await ChatGptAuthService.tryGetInstance()?.dispose()
+		vi.useRealTimers()
+	})
+
+	it("owns the ChatGPT secret listener and releases the auth singleton on deactivation", async () => {
+		const secrets = createSecretStorage()
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			secrets,
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext
+		await activate(context)
+		const auth = ChatGptAuthService.tryGetInstance()
+		expect(auth).toBeDefined()
+		expect(context.subscriptions).toContain(auth)
+		expect(secrets.onDidChange).toHaveBeenCalledOnce()
+		const secretListener = secrets.onDidChange.mock.results[0].value
+		expect(secretListener.dispose).not.toHaveBeenCalled()
+		await expect(auth?.getStatus()).resolves.toMatchObject({ connected: false, connecting: false, accounts: [] })
+		await deactivate()
+		expect(secretListener.dispose).toHaveBeenCalledOnce()
+		expect(ChatGptAuthService.tryGetInstance()).toBeUndefined()
 	})
 
 	it.each(["success", "failure"])(
@@ -174,6 +236,7 @@ describe("extension lifecycle", () => {
 				extensionPath: "/extension",
 				extensionUri: {},
 				globalStorageUri: { fsPath: "/storage" },
+				secrets: createSecretStorage(),
 				globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
 				subscriptions: [],
 			} as unknown as vscode.ExtensionContext
@@ -215,6 +278,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
@@ -240,6 +304,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
 				update: vi.fn().mockResolvedValue(undefined),
@@ -271,6 +336,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
 				update: vi.fn().mockResolvedValue(undefined),
@@ -299,6 +365,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
@@ -321,6 +388,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn(),
 				update: vi.fn(() => new Promise<void>((resolve) => (finishGlobalStateUpdate = resolve))),
@@ -343,6 +411,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn((key: string) => (key === "allowedCommands" ? [] : undefined)),
 				update: vi.fn().mockResolvedValue(undefined),
@@ -363,6 +432,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn(),
 				update: vi.fn().mockResolvedValue(undefined),
@@ -411,6 +481,7 @@ describe("extension lifecycle", () => {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
 			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext

@@ -320,6 +320,42 @@ async function preparedFixture(
 }
 
 describe("native host rich evidence capture", () => {
+	it("keeps the private Git baseline settled before copying it into the agent workspace", async () => {
+		const data = await fixture()
+		const runner = new ExecaHarnessProcessRunner()
+		const tracePath = path.join(data.root, "git-trace.jsonl")
+		const prepared = await prepareNativeHostCapture(data.prepare, {
+			processRunner: {
+				run: (spec) => runner.run({ ...spec, env: { ...spec.env, GIT_TRACE2_EVENT: tracePath } }),
+			},
+		})
+		const events = (await fs.readFile(tracePath, "utf8"))
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line))
+		const automaticMaintenance = events.filter(
+			(event) =>
+				event.event === "child_start" &&
+				Array.isArray(event.argv) &&
+				event.argv.includes("--auto") &&
+				(event.argv.includes("maintenance") || event.argv.includes("gc")),
+		)
+		expect(automaticMaintenance).toEqual([])
+		const context = JSON.parse(await fs.readFile(prepared.contextPath, "utf8")) as NativeHostCaptureContext
+		for (const directory of [context.baselineGitDirectory, path.join(data.workspace, ".git")]) {
+			const identity = await runner.run({
+				command: context.gitExecutable,
+				args: ["--git-dir", directory, "rev-parse", "HEAD", "HEAD^{tree}"],
+				cwd: data.workspace,
+				timeoutMs: 10_000,
+				maxOutputBytes: 4096,
+			})
+			expect(identity.exitCode, identity.stderr).toBe(0)
+			expect(identity.stdout.trim().split(/\r?\n/)).toEqual([context.baselineCommit, context.baselineGitTree])
+			expect(sha256(await fs.readFile(path.join(directory, "config")))).toBe(context.baselineConfigDigest)
+		}
+	})
+
 	it("recognizes the bounded native history index without attributing its cached task IDs", async () => {
 		const data = await preparedFixture(async (initial) => {
 			const taskRoot = path.join(initial.userDataDir, "User", "globalStorage", "alpha.alpha", "tasks")

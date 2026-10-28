@@ -961,6 +961,12 @@ function captureRunner(
 					workspace,
 					"-c",
 					"core.fsmonitor=false",
+					// The baseline is copied immediately after commit; detached housekeeping
+					// must not keep creating or removing files after a Git command settles.
+					"-c",
+					"maintenance.auto=false",
+					"-c",
+					"gc.auto=0",
 					"-c",
 					"core.longpaths=true",
 					"-c",

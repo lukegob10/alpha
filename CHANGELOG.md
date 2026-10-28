@@ -10,7 +10,7 @@
 - Join canceled ChatGPT sign-in workers during logout, account reset, and shutdown; prevent Meta and ChatGPT requests from inheriting API-project routing metadata.
 - Refresh Alpha's wolf branding and preserve buffered settings while removing unused context setters and obsolete model-migration scaffolding.
 - Package verified downloads for Windows, macOS, and Linux on x64 and ARM64, retain third-party notices, and reject release tags that point to another commit.
-- Preserve explicit evaluator execution identity and opt-in capture, and update the query serializer for GHSA-6pq8-jhm2-2vcw.
+- Preserve explicit evaluator execution identity and opt-in capture, prevent private baseline copies from racing Git maintenance, and update the query serializer for GHSA-6pq8-jhm2-2vcw.
 - Update the extension and in-app announcement together for Alpha 3.2.14. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
 
 ## 3.2.13
