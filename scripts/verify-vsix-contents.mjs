@@ -38,6 +38,18 @@ if (!existsSync(archivePath)) {
 	process.exit(1)
 }
 
+const thirdPartyNotices = [
+	["webview-ui/node_modules/@vscode/codicons", "vscode-codicons", ["LICENSE", "LICENSE-CODE", "README.md"]],
+	["src/node_modules/vscode-material-icons", "vscode-material-icons", ["LICENSE"]],
+	["src/node_modules/web-tree-sitter", "web-tree-sitter", ["LICENSE"]],
+	["src/node_modules/esbuild-wasm", "esbuild-wasm", ["LICENSE.md"]],
+	["src/node_modules/@aws/bedrock-token-generator", "aws-bedrock-token-generator", ["LICENSE", "NOTICE"]],
+	["src/node_modules/@aws-sdk/credential-providers", "aws-sdk-credential-providers", ["LICENSE"]],
+]
+const noticeEntries = thirdPartyNotices.flatMap(([, name, files]) =>
+	files.map((file) => `extension/dist/third-party/${name}/${file}`),
+)
+
 const sourceAssets = new Map()
 if (checkSource) {
 	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -53,6 +65,9 @@ if (checkSource) {
 	}
 	collect("artifact-kit/v1")
 	collect("html-document")
+	for (const [source, name, files] of thirdPartyNotices)
+		for (const file of files)
+			sourceAssets.set(`extension/dist/third-party/${name}/${file}`, readFileSync(join(repository, source, file)))
 }
 
 const entries = new Set()
@@ -116,6 +131,7 @@ const requiredEntries = [
 	"extension/webview-ui/build/assets/index.js",
 	"extension/assets/codicons/codicon.ttf",
 	"extension/assets/vscode-material-icons/icons/3d.svg",
+	...noticeEntries,
 ]
 
 let target
@@ -223,5 +239,5 @@ if (checkSource) {
 			process.exit(1)
 		}
 	}
-	console.log(`Verified ${sourceAssets.size} document assets match current source bytes.`)
+	console.log(`Verified ${sourceAssets.size} document assets and third-party notices match current source bytes.`)
 }

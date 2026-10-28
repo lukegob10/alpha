@@ -4,8 +4,8 @@ Alpha is a VS Code extension for planning, coding, debugging, and reviewing work
 
 ## Install
 
-Download the Windows x64 `.vsix` for Intel/AMD PCs from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest),
-then run **Extensions: Install from VSIX...** in VS Code **1.125.0** or newer.
+Download Alpha from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest). Choose the `.vsix` matching your
+operating system and architecture, then run **Extensions: Install from VSIX...** in VS Code **1.125.0** or newer.
 The exact development and release reference host is VS Code **1.138.0**; it does not raise the installation minimum.
 
 ## Work in Alpha
@@ -60,10 +60,17 @@ Mermaid diagrams keep readable text in chat; scroll large diagrams to see the re
 full editor SVG preview. Use **Zoom Out** and **Zoom In** in the editor toolbar. To fit the entire diagram again, select
 the zoom percentage in the status bar, then **Whole Image**. **Save Image** exports a PNG.
 
-Supported chat providers are native OpenAI, Anthropic, Gemini, xAI, OpenRouter, GCP Vertex AI, VS Code LM API, Stellar,
-and OpenAI Compatible. Native providers and OpenRouter offer a curated frontier-model catalog. Select the provider and
-model in Settings, enter that provider's API key, and click **Save**. Choose reasoning separately in the task composer;
-available levels follow the selected model. Existing OpenAI Compatible profiles keep their custom endpoints and models.
+Supported chat providers are native OpenAI, Sign in with ChatGPT, Anthropic, Gemini, xAI, Meta, Amazon Bedrock, OpenRouter,
+GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible. Select the provider and model in Settings and click
+**Save**. API-key providers use their own credentials. Bedrock supports the default AWS credential chain, a named AWS
+profile, explicit AWS credentials, or a Bedrock API key. **Continue with ChatGPT** opens the browser for eligible ChatGPT
+plan access; its account credentials remain in VS Code SecretStorage and are not exported with provider profiles.
+
+Native providers and OpenRouter use a bundled catalog of frontier and very near-frontier models. ChatGPT and native
+OpenAI share the same model shortlist. Extension updates can retire older choices; saved profiles keep their original
+model IDs and report unsupported models without silently switching to a replacement. Choose reasoning separately in
+the task composer; levels follow the selected model without a discovery request. OpenAI Compatible remains available
+for explicitly configured custom endpoints and models.
 Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
 
 Enable optional local memory in **Settings → Context → Memories**, then **Save**. Use and generation have separate
@@ -222,11 +229,20 @@ For an automated build and installation, run `pnpm install:vsix`. It installs fr
 output, builds the VSIX, and asks before installing with `--force`. Use `--editor=code`, `--editor=code-insiders`, or
 `--editor=cursor` to select an editor command; `-y` skips prompts. Restart the editor after installation.
 
-The [release workflow](.github/workflows/release-vsix.yml) publishes a verified Windows x64 package as
-`alpha-<version>.vsix` to GitHub Releases after its validation gates. Local and retained CI packages keep their target
-suffix; the published download keeps the historical release filename. The workflow runs automatically for
-`src/package.json` changes on `main` and supports manual dispatch on a selected release branch. It does not publish to
-the VS Code Marketplace. See [CHANGELOG.md](CHANGELOG.md) for release notes.
+The [release workflow](.github/workflows/release-vsix.yml) builds each target on a matching host and publishes all six
+verified packages to GitHub Releases after its validation gates. Published downloads retain their target suffix:
+`alpha-<version>-<target>.vsix`.
+
+| Operating system | x64 target   | ARM64 target   |
+| ---------------- | ------------ | -------------- |
+| Windows          | `win32-x64`  | `win32-arm64`  |
+| macOS            | `darwin-x64` | `darwin-arm64` |
+| Linux            | `linux-x64`  | `linux-arm64`  |
+
+Intel macOS supports core features and Qdrant code indexing; this LanceDB version has no Intel macOS native binding for
+local indexing. Publication requires every target to pass packaging and verification. The workflow runs automatically
+for `src/package.json` changes on `main` and supports manual dispatch on a selected release branch. It does not publish
+to the VS Code Marketplace. See [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Resources and contributions
 

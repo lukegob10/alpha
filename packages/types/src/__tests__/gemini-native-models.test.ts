@@ -8,7 +8,7 @@ import {
 describe("native Gemini model capabilities", () => {
 	it("uses a small explicit native model catalog", () => {
 		expect(geminiDefaultModelId).toBe("gemini-4-argon")
-		expect(Object.keys(geminiModels)).toEqual(["gemini-4-argon", "gemini-3.8-flash"])
+		expect(Object.keys(geminiModels)).toEqual(["gemini-4-argon"])
 	})
 
 	it.each(Object.entries(geminiModels))("declares only verified reasoning choices for %s", (_id, info) => {
@@ -20,9 +20,8 @@ describe("native Gemini model capabilities", () => {
 		expect(info.contextWindow).toBe(1_048_576)
 	})
 
-	it("distinguishes Argon's unified context from Flash's separate input limit", () => {
+	it("keeps Argon's unified input and output context explicit", () => {
 		expect(geminiModels["gemini-4-argon"].contextWindowIncludesOutput).toBe(true)
-		expect(geminiModels["gemini-3.8-flash"].contextWindowIncludesOutput).toBe(false)
 	})
 })
 

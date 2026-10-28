@@ -1,4 +1,10 @@
 {
+	"chatGptAuth": {
+		"invalidAction": "The ChatGPT account action is invalid. Reopen settings and try again.",
+		"unavailable": "ChatGPT sign-in is unavailable. Reload the extension and try again.",
+		"failed": "The ChatGPT account action failed. Check your connection and sign in again.",
+		"revocationUnconfirmed": "Signed out of Alpha Code. Remote sign-out could not be confirmed. Disconnect Alpha Code in ChatGPT Settings to end the remote session."
+	},
 	"diagnostics": {
 		"noTask": "Open an Alpha chat before exporting its diagnostics."
 	},

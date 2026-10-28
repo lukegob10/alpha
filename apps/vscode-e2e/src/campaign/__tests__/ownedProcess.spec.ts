@@ -6,7 +6,7 @@ import { afterEach, test, type TestContext } from "node:test"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { runOwnedProcess, type OwnedProcessCommand } from "../ownedProcess"
+import { runOwnedProcess, terminateOwnedProcess, type OwnedProcessCommand } from "../ownedProcess"
 
 const temporaryRoots: string[] = []
 const disposableChildren: ChildProcessHandle[] = []
@@ -43,14 +43,14 @@ function mockPosixProcesses(context: TestContext, platform = "linux") {
 	const childKill = context.mock.method(child, "kill", () => true)
 	let group: "live" | "gone" | "denied" = "live"
 	const signals: (NodeJS.Signals | number | undefined)[] = []
-	context.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
+	const groupKill = context.mock.method(process, "kill", (pid: number, signal?: NodeJS.Signals | number) => {
 		assert.equal(pid, -12345, "only the originally owned process group may be signalled")
 		if (signal !== 0) signals.push(signal)
 		if (group === "gone") throw Object.assign(new Error("gone"), { code: "ESRCH" })
 		if (group === "denied") throw Object.assign(new Error("denied"), { code: "EPERM" })
 		return true
 	})
-	return { child, childKill, signals, setGroup: (state: typeof group) => (group = state) }
+	return { child, childKill, groupKill, signals, setGroup: (state: typeof group) => (group = state) }
 }
 
 async function settleContinuations(): Promise<void> {
@@ -79,6 +79,36 @@ test("POSIX cancellation joins and escalates a live group after its root closes"
 	context.mock.timers.tick(10)
 	assert.equal((await running).cleanupVerified, true)
 	assert.equal(childKill.mock.callCount(), 0, "a closed root handle must never be killed again")
+})
+
+test("Darwin stopped-group evidence preserves generic signal failures", async (context) => {
+	const { child, childKill, groupKill } = mockPosixProcesses(context, "darwin")
+	groupKill.mock.mockImplementation((pid: number, signal?: NodeJS.Signals | number) => {
+		assert.equal(pid, -12345)
+		if (signal === 0) throw Object.assign(new Error("zombie-only group"), { code: "EPERM" })
+		throw new Error("group termination failed")
+	})
+	const inspected = context.mock.method(
+		childProcess,
+		"execFile",
+		(
+			file: string,
+			args: readonly string[],
+			_options: { timeout?: number },
+			callback: (error: Error | null, stdout: string, stderr: string) => void,
+		) => {
+			assert.equal(file, "ps")
+			assert.deepEqual(args, ["-eo", "pgid=,stat="])
+			queueMicrotask(() => callback(null, "12345 Z\n999 S\n", ""))
+			return new ChildProcess()
+		},
+	)
+
+	const outcome = await terminateOwnedProcess(child, 12345, () => true, 1_000)
+
+	assert.equal(outcome.cleanupVerified, false)
+	assert.equal(inspected.mock.callCount(), 1)
+	assert.equal(childKill.mock.callCount(), 0)
 })
 
 test("POSIX cancellation awaits a transient descendant exit without unnecessary escalation", async (context) => {
@@ -416,7 +446,8 @@ test(
 		const controller = new AbortController()
 		const originalKill = process.kill
 		process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
-			if (pid < 0 && signal !== 0) throw Object.assign(new Error("group termination denied"), { code: "EPERM" })
+			// EPERM has a separately tested Darwin zombie-only exception; this fixture exercises a generic failure.
+			if (pid < 0 && signal !== 0) throw new Error("group termination failed")
 			return originalKill.call(process, pid, signal)
 		}) as typeof process.kill
 

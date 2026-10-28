@@ -7,6 +7,7 @@ import {
 	type ModelRequestPhase,
 	type ProviderSettings,
 	openAiModelInfoSaneDefaults,
+	getVscodeLlmExactModelId,
 	getVscodeLlmModelInfo,
 	getVscodeLlmExtendedContextSize,
 	getVscodeLlmContextWindow,
@@ -834,7 +835,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	 * Creates a language model chat client based on the provided selector.
 	 *
 	 * @param selector - Selector criteria to filter language model chat instances
-	 * @returns Promise resolving to the first matching language model chat instance
+	 * @returns Promise resolving to a unique matching language model chat instance
 	 * @throws Error when no matching models are found with the given selector
 	 *
 	 * @example
@@ -863,17 +864,42 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				(entry): entry is [keyof vscode.LanguageModelChatSelector, string] =>
 					typeof entry[1] === "string" && entry[1].length > 0,
 			)
-			const exactMatches = (models ?? []).filter((model) =>
-				selectorEntries.every(([key, value]) => model[key] === value),
+			// Catalog choices contain a family, while VS Code may expose opaque host
+			// families. Resolve only this Copilot model; saved IDs and versions remain
+			// exact bindings and must never be replaced by another route.
+			const catalogModelId =
+				selector.vendor === "copilot" && selector.family && !selector.id && !selector.version
+					? getVscodeLlmExactModelId(selector)
+					: undefined
+			let matches = (models ?? []).filter(
+				(model) =>
+					selectorEntries.every(([key, value]) => model[key] === value) &&
+					(!catalogModelId || getVscodeLlmExactModelId(model) === catalogModelId),
 			)
-
-			if (exactMatches.length === 1) {
-				return exactMatches[0]
+			if (matches.length === 0 && catalogModelId) {
+				const catalogSelection = vscode.lm.selectChatModels({ vendor: "copilot" })
+				const catalog = applyConfiguredTimeout
+					? await withApiRequestTimeout(
+							catalogSelection,
+							"VS Code LM model selection",
+							getApiRequestTimeout(),
+						)
+					: await catalogSelection
+				matches = (catalog ?? []).filter(
+					(model) => model.vendor === "copilot" && getVscodeLlmExactModelId(model) === catalogModelId,
+				)
 			}
 
-			if (exactMatches.length > 1) {
+			if (matches.length === 1) {
+				return matches[0]
+			}
+
+			if (matches.length > 1) {
+				const action = catalogModelId
+					? "Enable only one matching model with 'Chat: Manage Language Models', or choose another model in Alpha settings."
+					: "Choose a model with a unique id."
 				throw new Error(
-					`The VS Code language model selector '${stringifyVsCodeLmModelSelector(selector) || "<all models>"}' is ambiguous and matched ${exactMatches.length} models. Choose a model with a unique id.`,
+					`The VS Code language model selector '${stringifyVsCodeLmModelSelector(selector) || "<all models>"}' is ambiguous and matched ${matches.length} models. ${action}`,
 				)
 			}
 
@@ -883,22 +909,14 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				)
 			}
 
-			const hasSpecificSelector = selectorEntries.length > 0
-			const availability = hasSpecificSelector ? vscode.lm.selectChatModels({}) : undefined
-			const availableModels = availability
-				? applyConfiguredTimeout
-					? await withApiRequestTimeout(availability, "VS Code LM availability check", getApiRequestTimeout())
-					: await availability
-				: models
-
-			if (!availableModels?.length) {
+			if (selectorEntries.length === 0) {
 				throw new Error(
 					"No VS Code language models are available in this window. Sign in to GitHub Copilot in this window and enable a model with 'Chat: Manage Language Models'.",
 				)
 			}
 
 			throw new Error(
-				"The selected VS Code language model is not available in this window. Choose one of the models returned in Alpha settings or enable it with 'Chat: Manage Language Models'.",
+				"The selected VS Code language model is not available in this window. Sign in to GitHub Copilot and enable the selected model with 'Chat: Manage Language Models', or choose another model in Alpha settings.",
 			)
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"

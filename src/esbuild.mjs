@@ -9,6 +9,11 @@ import * as console from "node:console"
 import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-code/build"
 import { resolveLanceDbNativeDependencies } from "./lancedb-native.mjs"
 import { defaultPdfRuntimePlugin } from "./pdf-default-runtime.mjs"
+import {
+	captureExtensionBuildSource,
+	completeExtensionBuildProvenance,
+	createExtensionBuildInputCapture,
+} from "../scripts/extension-build-provenance.mjs"
 import treeSitterGrammars from "./services/tree-sitter/grammars.json" with { type: "json" }
 
 const __filename = fileURLToPath(import.meta.url)
@@ -86,6 +91,25 @@ function copyBundledRipgrepDependencies(distDir) {
 			},
 		})
 		console.log(`[copyBundledRipgrepDependencies] Copied ${packageName} to ${targetDir}`)
+	}
+}
+
+function copyThirdPartyNotices(srcDir, distDir) {
+	const repository = path.resolve(srcDir, "..")
+	// Raw assets and bundled packages do not bring package-root legal files into a --no-dependencies VSIX.
+	// Keep Codicons' content and code licenses together with its upstream explanation of their scopes.
+	const packages = [
+		["webview-ui/node_modules/@vscode/codicons", "vscode-codicons", ["LICENSE", "LICENSE-CODE", "README.md"]],
+		["src/node_modules/vscode-material-icons", "vscode-material-icons", ["LICENSE"]],
+		["src/node_modules/web-tree-sitter", "web-tree-sitter", ["LICENSE"]],
+		["src/node_modules/esbuild-wasm", "esbuild-wasm", ["LICENSE.md"]],
+		["src/node_modules/@aws/bedrock-token-generator", "aws-bedrock-token-generator", ["LICENSE", "NOTICE"]],
+		["src/node_modules/@aws-sdk/credential-providers", "aws-sdk-credential-providers", ["LICENSE"]],
+	]
+	for (const [source, name, files] of packages) {
+		const destination = path.join(distDir, "third-party", name)
+		fs.mkdirSync(destination, { recursive: true })
+		for (const file of files) fs.copyFileSync(path.join(repository, source, file), path.join(destination, file))
 	}
 }
 
@@ -178,6 +202,17 @@ async function main() {
 	const srcDir = __dirname
 	const buildDir = __dirname
 	const distDir = path.join(buildDir, "dist")
+	const repositoryRoot = path.resolve(srcDir, "..")
+	// A watch rebuild has no shared extension/worker settlement boundary, so it cannot emit this receipt.
+	let provenanceSource = null
+	if (!watch) {
+		try {
+			provenanceSource = await captureExtensionBuildSource(repositoryRoot)
+		} catch {
+			console.warn("[extension] Build provenance unavailable: source input capture is incomplete")
+		}
+	}
+	const provenanceInputs = provenanceSource ? createExtensionBuildInputCapture(repositoryRoot) : null
 	// Resolve before cleaning outputs. Externalization and copied runtime bindings must share one inventory.
 	const lanceDbNative = resolveLanceDbNativeDependencies(undefined, process.env.ALPHA_VSIX_TARGET)
 
@@ -190,7 +225,8 @@ async function main() {
 	 * @type {import('esbuild').Plugin[]}
 	 */
 	const plugins = [
-		defaultPdfRuntimePlugin(),
+		defaultPdfRuntimePlugin(undefined, provenanceInputs?.captureInput),
+		...(provenanceInputs ? [provenanceInputs.plugin] : []),
 		{
 			name: "copyFiles",
 			setup(build) {
@@ -206,6 +242,7 @@ async function main() {
 						srcDir,
 						buildDir,
 					)
+					copyThirdPartyNotices(srcDir, distDir)
 				})
 			},
 		},
@@ -255,6 +292,7 @@ async function main() {
 	 */
 	const extensionConfig = {
 		...buildOptions,
+		metafile: !!provenanceInputs,
 		plugins,
 		entryPoints: ["extension.ts"],
 		outfile: "dist/extension.js",
@@ -269,6 +307,8 @@ async function main() {
 	 */
 	const workerConfig = {
 		...buildOptions,
+		metafile: !!provenanceInputs,
+		plugins: provenanceInputs ? [provenanceInputs.plugin] : [],
 		entryPoints: [
 			"workers/countTokens.ts",
 			"workers/sanitizeDocument.ts",
@@ -288,8 +328,29 @@ async function main() {
 		copyLocales(srcDir, distDir)
 		setupLocaleWatcher(srcDir, distDir)
 	} else {
-		await Promise.all([extensionCtx.rebuild(), workerCtx.rebuild()])
+		const results = await Promise.all([extensionCtx.rebuild(), workerCtx.rebuild()])
 		await Promise.all([extensionCtx.dispose(), workerCtx.dispose()])
+		if (provenanceSource && provenanceInputs) {
+			try {
+				await completeExtensionBuildProvenance({
+					repositoryRoot,
+					before: provenanceSource,
+					compilerInputs: await provenanceInputs.finish(results),
+					build: {
+						nodeVersion: process.version,
+						platform: process.platform,
+						arch: process.arch,
+						esbuildVersion: esbuild.version,
+						production,
+						vsixTarget: process.env.ALPHA_VSIX_TARGET ?? null,
+					},
+				})
+			} catch {
+				console.warn(
+					"[extension] Build provenance unavailable: source, compiler inputs or artifact closure did not verify",
+				)
+			}
+		}
 	}
 }
 

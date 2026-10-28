@@ -5,6 +5,7 @@ import type {
 	TaskReasoningPreference,
 	TaskReasoningProjection,
 } from "@alpha-code/types"
+import { openAiModelInfoSaneDefaults } from "@alpha-code/types"
 
 import { buildApiHandler } from "../../../api"
 import { AlphaProvider } from "../AlphaProvider"
@@ -200,7 +201,7 @@ function providerHarness(tasks: FakeTask[] = [], composer: TaskReasoningPreferen
 		context: { secrets: {}, workspaceState: { get: vi.fn(() => undefined) } },
 		getLiveTask: vi.fn((taskId: string) => taskMap.get(taskId)),
 		getCurrentTask: vi.fn(() => tasks[0]),
-		getProviderSettingsSnapshot: vi.fn(() => ({ ...baseConfiguration })),
+		getProviderSettingsSnapshot: vi.fn(() => ({ ...state.apiConfiguration })),
 		getReasoningProjection: vi.fn(async (task?: FakeTask) =>
 			task ? task.getReasoningState() : projection("composer", state.newTaskReasoningPreference),
 		),
@@ -313,6 +314,90 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 			canDisable: true,
 		})
 	})
+
+	it.each([
+		{ provider: "openai-native", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+		{ provider: "openai-codex", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+		{ provider: "bedrock", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+		{ provider: "meta", efforts: ["minimal", "low", "medium", "high", "xhigh", "max"], defaultEffort: "high" },
+		{ provider: "anthropic", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+		{ provider: "gemini", efforts: ["low", "medium", "high"], defaultEffort: "medium" },
+		{ provider: "xai", efforts: ["low", "medium", "high", "xhigh"], defaultEffort: "high" },
+		{ provider: "openrouter", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },
+	] as const)(
+		"projects bundled $provider reasoning without constructing a provider",
+		async ({ provider: apiProvider, efforts, defaultEffort }) => {
+			const { provider, state, contextProxy } = providerHarness()
+			state.apiConfiguration = { apiProvider }
+			vi.mocked(buildApiHandler).mockClear()
+
+			const result = await provider.getReasoningCapabilities()
+
+			expect(result).toMatchObject({
+				requested: { kind: "default" },
+				effective: { kind: "effort", effort: defaultEffort },
+				capabilities: { kind: "effort", efforts, canDisable: false },
+			})
+			expect(buildApiHandler).not.toHaveBeenCalled()
+			expect(contextProxy.setValue).not.toHaveBeenCalled()
+		},
+	)
+
+	it("uses the configured native model instead of another provider's custom capabilities", async () => {
+		const { provider, state, contextProxy } = providerHarness()
+		const configuration: ProviderSettings = {
+			apiProvider: "anthropic",
+			apiModelId: "claude-fable-5-1",
+			openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, supportsReasoningEffort: ["low"] },
+		}
+		state.apiConfiguration = configuration
+
+		const result = await provider.getReasoningCapabilities(undefined, { kind: "effort", effort: "max" })
+
+		expect(result).toMatchObject({
+			requested: { kind: "effort", effort: "max" },
+			effective: { kind: "effort", effort: "max" },
+			capabilities: { kind: "effort", efforts: ["low", "medium", "high", "xhigh", "max"], canDisable: false },
+		})
+		expect(configuration.reasoningEffort).toBeUndefined()
+		expect(contextProxy.setValue).not.toHaveBeenCalled()
+	})
+
+	it("retains the legacy OpenRouter model selection when previewing reasoning", async () => {
+		const { provider, state } = providerHarness()
+		state.apiConfiguration = {
+			apiProvider: "openrouter",
+			openRouterModelId: "google/gemini-4-argon",
+		}
+
+		const result = await provider.getReasoningCapabilities(undefined, { kind: "effort", effort: "high" })
+
+		expect(result).toMatchObject({
+			effective: { kind: "effort", effort: "high" },
+			capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: false },
+		})
+	})
+
+	it.each(["removed-model", "__proto__", "constructor"])(
+		"does not assign default or stale custom capabilities to unknown curated model %s",
+		async (apiModelId) => {
+			const { provider, state } = providerHarness()
+			state.apiConfiguration = {
+				apiProvider: "openai-native",
+				apiModelId,
+				openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, supportsReasoningEffort: ["low", "high"] },
+			}
+
+			const result = await provider.getReasoningCapabilities(undefined, { kind: "effort", effort: "high" })
+
+			expect(result).toMatchObject({
+				requested: { kind: "effort", effort: "high" },
+				effective: { kind: "off" },
+				capabilities: { kind: "unavailable" },
+				fallbackReason: "unavailable",
+			})
+		},
+	)
 
 	it.each(["low", "high"] as const)(
 		"recomputes pending against the captured request when live LM capabilities resolve to %s",

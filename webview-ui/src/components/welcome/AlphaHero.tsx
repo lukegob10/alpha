@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils"
+import { useAppTranslation } from "@/i18n/TranslationContext"
 
 type AlphaHeroProps = {
 	variant?: "compact" | "welcome" | "watermark"
@@ -24,7 +25,8 @@ const AlphaWolfIcon = ({ className }: AlphaWolfIconProps) => {
 	return (
 		<img
 			src={logoSrc}
-			alt="Alpha wolf logo"
+			alt=""
+			aria-hidden="true"
 			className={cn("block object-contain object-left", className)}
 			data-testid="alpha-wolf-icon"
 			draggable={false}
@@ -33,14 +35,7 @@ const AlphaWolfIcon = ({ className }: AlphaWolfIconProps) => {
 }
 
 const AlphaHero = ({ variant = "compact", className }: AlphaHeroProps) => {
-	if (variant === "welcome") {
-		return (
-			<div
-				className={cn("relative forced-color-adjust-none flex w-full items-start overflow-visible", className)}>
-				<AlphaWolfIcon className="brand-mark h-28 w-36 origin-left scale-125" />
-			</div>
-		)
-	}
+	const { t } = useAppTranslation()
 
 	if (variant === "watermark") {
 		return (
@@ -52,9 +47,23 @@ const AlphaHero = ({ variant = "compact", className }: AlphaHeroProps) => {
 		)
 	}
 
+	const isWelcome = variant === "welcome"
+
 	return (
-		<div className={cn("relative mb-1 flex w-30 flex-col items-center pt-2 forced-color-adjust-none", className)}>
-			<AlphaWolfIcon className="brand-mark z-5 mr-auto h-8 w-12 origin-left scale-125" />
+		<div className={cn("flex min-w-0 shrink-0 items-center", isWelcome ? "gap-3" : "gap-1.5", className)}>
+			<AlphaWolfIcon
+				className={cn(
+					"brand-mark shrink-0",
+					isWelcome ? "h-14 w-16 min-[400px]:h-20 min-[400px]:w-24" : "h-5 w-6",
+				)}
+			/>
+			<span
+				className={cn(
+					"brand-title origin-left scale-x-105 font-semibold leading-none",
+					isWelcome ? "text-[32px] min-[400px]:text-[42px]" : "text-[13px]",
+				)}>
+				{t("common:brand.name")}
+			</span>
 		</div>
 	)
 }

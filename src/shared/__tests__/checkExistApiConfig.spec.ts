@@ -14,6 +14,10 @@ describe("checkExistKey", () => {
 		{ apiProvider: "openrouter", openRouterApiKey: "test-key" },
 		{ apiProvider: "vertex", vertexProjectId: "test-project" },
 		{ apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "test-model" } },
+		{ apiProvider: "openai-codex", apiModelId: "gpt-6.1-sol" },
+		{ apiProvider: "bedrock", awsRegion: "us-east-1" },
+		{ apiProvider: "bedrock" },
+		{ apiProvider: "meta", metaApiKey: "meta-key" },
 		{
 			apiProvider: "stellar",
 			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
@@ -27,7 +31,7 @@ describe("checkExistKey", () => {
 		expect(checkExistKey({ apiProvider: "fake-ai" })).toBe(true)
 	})
 
-	it.each(["openai-codex", "qwen-code"] as const)(
+	it.each(["gemini-cli", "qwen-code"] as const)(
 		"rejects retired %s even with unrelated credentials",
 		(apiProvider) => {
 			expect(checkExistKey({ apiProvider, openAiApiKey: "test-key" })).toBe(false)

@@ -116,14 +116,16 @@ export function ReasoningSelector({
 	const sliderOptions: TaskReasoningPreference[] = effortValues.map(
 		(effort): TaskReasoningPreference => ({ kind: "effort", effort }),
 	)
-	const selectedIndex = sliderOptions.findIndex((option) => JSON.stringify(option) === JSON.stringify(selected))
+	const selectedIndex = sliderOptions.findIndex(
+		(option) => JSON.stringify(option) === JSON.stringify(state?.effective),
+	)
 	const displayEffortIndex = Math.max(0, selectedIndex)
 	const displayedEffortPreference = sliderOptions[sliderIndex] ?? sliderOptions[displayEffortIndex]
 	useEffect(() => {
 		setSliderIndex(displayEffortIndex)
 	}, [scopeKey, capabilitiesKey, displayEffortIndex, open])
 	const value = !ready
-		? t(error ? "chat:reasoning.unavailable" : "chat:reasoning.loading")
+		? t(loading && !error ? "chat:reasoning.loading" : "chat:reasoning.unavailable")
 		: capabilities?.kind === "unavailable"
 			? t("chat:reasoning.unavailable")
 			: label(state.effective)
@@ -153,7 +155,7 @@ export function ReasoningSelector({
 						type="button"
 						data-testid="reasoning-trigger"
 						aria-label={title}
-						aria-busy={saving || (!error && !ready)}
+						aria-busy={saving || (!error && loading)}
 						disabled={!ready}
 						title={title}
 						className="composer-control composer-selector">
@@ -223,21 +225,20 @@ export function ReasoningSelector({
 								</div>
 							)}
 						</div>
-					) : (
-						<div role="group" aria-label={t("chat:reasoning.title")} className="flex flex-wrap gap-1">
-							{options.map((option) => (
-								<button
-									key={JSON.stringify(option)}
-									type="button"
-									data-testid={`reasoning-choice-${option.kind}`}
-									aria-pressed={JSON.stringify(selected) === JSON.stringify(option)}
-									onClick={() => choose(option)}
-									className="rounded-md border border-[var(--border-subtle)] px-2.5 py-1.5 text-sm text-vscode-foreground hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder aria-pressed:border-[var(--border-accent)] aria-pressed:bg-[var(--alpha-accent-soft)]">
-									{label(option)}
-								</button>
-							))}
-						</div>
-					)}
+					) : null}
+					<div role="group" aria-label={t("chat:reasoning.title")} className="flex flex-wrap gap-1">
+						{options.map((option) => (
+							<button
+								key={JSON.stringify(option)}
+								type="button"
+								data-testid={`reasoning-choice-${option.kind}`}
+								aria-pressed={JSON.stringify(selected) === JSON.stringify(option)}
+								onClick={() => choose(option)}
+								className="rounded-md border border-[var(--border-subtle)] px-2.5 py-1.5 text-sm text-vscode-foreground hover:border-[var(--border-accent)] hover:bg-[var(--alpha-accent-soft)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder aria-pressed:border-[var(--border-accent)] aria-pressed:bg-[var(--alpha-accent-soft)]">
+								{label(option)}
+							</button>
+						))}
+					</div>
 					{capabilities?.kind === "unavailable" ? (
 						<p className="m-0 text-xs text-vscode-descriptionForeground">
 							{t("chat:reasoning.unavailableHelp")}

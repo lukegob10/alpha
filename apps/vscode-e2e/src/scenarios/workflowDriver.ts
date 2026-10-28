@@ -1,6 +1,3 @@
-import * as fs from "node:fs/promises"
-import * as path from "node:path"
-
 import {
 	WorkflowFailure,
 	isWorkflowCheck,
@@ -23,6 +20,7 @@ import type { WorkflowTrace } from "./workflowTrace"
 import { isRecoveryPhase } from "./recoveryTrace"
 import type { LifecycleInspectionErrorCode, ToolTransactionErrorCode } from "./transactionAssertions"
 import { isReliabilityScenario, type ReliabilityScenarioId } from "./reliabilityCatalog"
+import { readProblemPrompt } from "./problemPrompt"
 
 export interface WorkflowEvidence {
 	trace?: WorkflowTrace
@@ -183,12 +181,9 @@ export async function runWorkflowScenario(
 		if (options.scenarioId === "problem-solving-attempt") {
 			if (options.phase !== "run") throw new WorkflowFailure("configuration", "invalid_phase", true)
 			if (!host.startProblem) throw new WorkflowFailure("configuration", "problem_prompt_unavailable", true)
-			const promptPath = path.join(options.workspace, "prompt.md")
-			const stat = await fs.stat(promptPath)
-			if (!stat.isFile() || stat.size === 0 || stat.size > 100_000) {
-				throw new WorkflowFailure("configuration", "invalid_problem_prompt", true)
-			}
-			const taskId = await host.startProblem(await fs.readFile(promptPath, "utf8"))
+			const taskId = await host.startProblem(
+				await readProblemPrompt(options.workspace, process.env.ALPHA_E2E_PROBLEM_SOLVING_PROMPT ?? "prompt.md"),
+			)
 			result.taskIds.push(taskId)
 			await host.complete(taskId)
 			await host.assertUiTask(taskId)

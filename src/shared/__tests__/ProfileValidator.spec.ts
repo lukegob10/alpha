@@ -152,7 +152,18 @@ describe("ProfileValidator", () => {
 		})
 
 		// Test specific providers that use apiModelId
-		const apiModelProviders = ["vertex", "stellar"] as const
+		const apiModelProviders = [
+			"vertex",
+			"stellar",
+			"openai-native",
+			"openai-codex",
+			"anthropic",
+			"gemini",
+			"xai",
+			"openrouter",
+			"bedrock",
+			"meta",
+		] as const
 
 		apiModelProviders.forEach((provider) => {
 			it(`should extract apiModelId for ${provider} provider`, () => {
@@ -184,6 +195,39 @@ describe("ProfileValidator", () => {
 			}
 
 			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(true)
+		})
+
+		it.each([
+			{ family: "gpt-6-luna", allowed: true },
+			{ family: "gpt-6-sol", allowed: false },
+		])("applies model permissions to the configured Copilot family $family", ({ family, allowed }) => {
+			const allowList: OrganizationAllowList = {
+				allowAll: false,
+				providers: { "vscode-lm": { allowAll: false, models: ["gpt-6-luna"] } },
+			}
+			const profile: ProviderSettings = {
+				apiProvider: "vscode-lm",
+				apiModelId: "gpt-6-luna",
+				vsCodeLmModelSelector: { vendor: "copilot", family },
+			}
+
+			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(allowed)
+		})
+
+		it.each([
+			{ models: ["gpt-6-luna"], allowed: false },
+			{ models: ["opaque-copilot-route"], allowed: true },
+		])("keeps exact Copilot route permissions when its family is also known", ({ models, allowed }) => {
+			const allowList: OrganizationAllowList = {
+				allowAll: false,
+				providers: { "vscode-lm": { allowAll: false, models } },
+			}
+			const profile: ProviderSettings = {
+				apiProvider: "vscode-lm",
+				vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6-luna", id: "opaque-copilot-route" },
+			}
+
+			expect(ProfileValidator.isProfileAllowed(profile, allowList)).toBe(allowed)
 		})
 
 		it("should handle providers with undefined models list gracefully", () => {

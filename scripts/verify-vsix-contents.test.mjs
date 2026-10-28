@@ -1,11 +1,12 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 import { fileURLToPath } from "node:url"
+import vm from "node:vm"
 import { zipSync } from "fflate"
 
 import { hostVsixTarget, lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
@@ -13,6 +14,26 @@ import { hostVsixTarget, lanceDbBindingForTarget } from "../src/lancedb-native.m
 const repository = fileURLToPath(new URL("../", import.meta.url))
 const verifier = path.join(repository, "scripts/verify-vsix-contents.mjs")
 const hostTarget = hostVsixTarget()
+const thirdPartyNotices = [
+	["webview-ui/node_modules/@vscode/codicons", "vscode-codicons", ["LICENSE", "LICENSE-CODE", "README.md"]],
+	["src/node_modules/vscode-material-icons", "vscode-material-icons", ["LICENSE"]],
+	["src/node_modules/web-tree-sitter", "web-tree-sitter", ["LICENSE"]],
+	["src/node_modules/esbuild-wasm", "esbuild-wasm", ["LICENSE.md"]],
+	["src/node_modules/@aws/bedrock-token-generator", "aws-bedrock-token-generator", ["LICENSE", "NOTICE"]],
+	["src/node_modules/@aws-sdk/credential-providers", "aws-sdk-credential-providers", ["LICENSE"]],
+]
+const noticeEntries = thirdPartyNotices.flatMap(([, name, files]) =>
+	files.map((file) => `extension/dist/third-party/${name}/${file}`),
+)
+// Exercise the build's copy step without executing an extension bundle or importing its build dependencies.
+const copyNoticesSource = readFileSync(path.join(repository, "src/esbuild.mjs"), "utf8").match(
+	/function copyThirdPartyNotices\(srcDir, distDir\) \{[\s\S]*?(?=\nasync function removeDirWithRetries)/u,
+)
+assert.ok(copyNoticesSource, "extension bundling must copy dependency notices")
+const copyThirdPartyNotices = vm.runInNewContext(`${copyNoticesSource[0]}; copyThirdPartyNotices`, {
+	fs: { mkdirSync: (directory, options) => mkdirSync(directory, options), copyFileSync },
+	path,
+})
 const required = [
 	"extension.vsixmanifest",
 	"extension/package.json",
@@ -45,6 +66,7 @@ const required = [
 	"extension/webview-ui/build/html-document/viewer.js",
 	"extension/webview-ui/build/html-document/purify.min.js",
 	"extension/webview-ui/build/html-document/viewer.css",
+	...noticeEntries,
 ]
 if (lanceDbBindingForTarget(hostTarget)) required.push(`extension/dist/${lanceDbBindingForTarget(hostTarget)}`)
 if (/^(?:win32|darwin)-/u.test(hostTarget))
@@ -319,6 +341,7 @@ for (const entry of [
 	"extension/assets/skills/review-agent/agents/openai.yaml",
 	"extension/webview-ui/build/html-document/viewer.js",
 	"extension/webview-ui/build/html-document/purify.min.js",
+	...noticeEntries,
 ])
 	test(`VSIX content verification refuses a missing ${entry}`, async () => {
 		await withArchive(
@@ -359,6 +382,36 @@ for (const entry of [
 		})
 	})
 
+test("VSIX source verification accepts exact dependency notices and refuses missing or changed attributions", async () => {
+	await withArchive(required, async ({ archive, content, pack }) => {
+		for (const directory of ["artifact-kit/v1", "html-document"])
+			await cp(
+				path.join(repository, "webview-ui/public", directory),
+				path.join(content, "extension/webview-ui/build", directory),
+				{ recursive: true },
+			)
+		copyThirdPartyNotices(path.join(repository, "src"), path.join(content, "extension/dist"))
+		for (const [source, name, files] of thirdPartyNotices)
+			for (const file of files)
+				assert.deepEqual(
+					readFileSync(path.join(content, "extension/dist/third-party", name, file)),
+					readFileSync(path.join(repository, source, file)),
+				)
+		pack()
+		const current = runVerifier([archive, "--check-source"])
+		assert.equal(current.status, 0, current.stderr)
+		const attribution = "extension/dist/third-party/aws-bedrock-token-generator/NOTICE"
+		const changed = readFileSync(path.join(content, attribution))
+		changed[0] ^= 1
+		await writeFile(path.join(content, attribution), changed)
+		pack()
+		const stale = runVerifier([archive, "--check-source"])
+		assert.equal(stale.status, 1)
+		assert.match(stale.stderr, /Packaged asset differs from current source/u)
+		assert.ok(stale.stderr.includes(attribution))
+	})
+})
+
 test("VSIX source verification accepts fresh document assets and refuses stale copied bytes", async () => {
 	await withArchive(required, async ({ archive, content, pack }) => {
 		for (const directory of ["artifact-kit/v1", "html-document"])
@@ -367,10 +420,11 @@ test("VSIX source verification accepts fresh document assets and refuses stale c
 				path.join(content, "extension/webview-ui/build", directory),
 				{ recursive: true },
 			)
+		copyThirdPartyNotices(path.join(repository, "src"), path.join(content, "extension/dist"))
 		pack()
 		const current = runVerifier([archive, "--check-source"])
 		assert.equal(current.status, 0, current.stderr)
-		assert.match(current.stdout, /document assets match current source bytes/)
+		assert.match(current.stdout, /document assets and third-party notices match current source bytes/)
 		await writeFile(path.join(content, "extension/webview-ui/build/html-document/viewer.js"), "stale viewer")
 		pack()
 		const stale = runVerifier([archive, "--check-source"])

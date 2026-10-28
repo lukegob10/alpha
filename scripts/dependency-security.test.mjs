@@ -8,6 +8,18 @@ const braces = createRequire(lintRequire.resolve("micromatch"))("braces")
 const extensionRequire = createRequire(new URL("../src/package.json", import.meta.url))
 const loggerRequire = createRequire(extensionRequire.resolve("global-agent"))
 const sprintf = createRequire(loggerRequire.resolve("roarr"))("sprintf-js").sprintf
+const sdkRequire = createRequire(extensionRequire.resolve("@modelcontextprotocol/sdk/server/index.js"))
+const qs = createRequire(sdkRequire.resolve("express"))("qs")
+
+// GHSA-6pq8-jhm2-2vcw: exercise the dependency used by the installed MCP transport.
+test("query serialization handles hostile comma-array elements without throwing", () => {
+	for (const input of [{ a: [{ toString: "x" }] }, qs.parse("a[0][toString]=x", { allowPrototypes: true })]) {
+		for (const encodeValuesOnly of [false, true]) {
+			assert.doesNotThrow(() => qs.stringify(input, { arrayFormat: "comma", encodeValuesOnly }))
+		}
+	}
+	assert.equal(qs.stringify({ a: ["one", "two"] }, { arrayFormat: "comma" }), "a=one%2Ctwo")
+})
 
 test("patched braces rejects deeply nested patterns before recursive processing", () => {
 	for (const [open, close] of [

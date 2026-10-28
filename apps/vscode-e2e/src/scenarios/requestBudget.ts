@@ -12,6 +12,9 @@ export class WorkflowRequestBudget {
 	responseProbe?: LiveResponseProbe
 	/** Optional evidence assertion at the existing dispatch fence; follows handler replacement and prepared clients. */
 	onTaskRequest?: (client: Record<string, unknown>, messages: unknown, options: unknown) => void
+	/** Read-only diagnostic observation after budget admission. Failures never change provider dispatch. */
+	onTaskDispatch?: (client: Record<string, unknown>, messages: unknown, options: unknown) => void
+	dispatchObservationFailures = 0
 
 	constructor(
 		readonly limit: number,
@@ -114,6 +117,17 @@ export function guardVsCodeLmHandler(
 								)
 							}
 							budget.consume(purpose)
+							if (purpose === "task" && budget.onTaskDispatch) {
+								try {
+									budget.onTaskDispatch(
+										client as Record<string, unknown>,
+										requestArgs[0],
+										requestArgs[1],
+									)
+								} catch {
+									budget.dispatchObservationFailures++
+								}
+							}
 							const request = budget.used
 							const probe = purpose === "task" ? budget.responseProbe : undefined
 							const transform = purpose === "task" ? budget.transformResponse : undefined

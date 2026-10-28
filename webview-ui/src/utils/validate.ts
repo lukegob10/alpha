@@ -19,6 +19,8 @@ import {
 	resolveOptionalOutputTokenLimit,
 	resolveModelParameterApplicability,
 	MIN_OPENAI_RESPONSES_OUTPUT_TOKENS,
+	bedrockRegionPattern,
+	bedrockDefaultRegion,
 } from "@alpha-code/types"
 
 const VERTEX_GATEWAY_REQUIRED_FIELDS = ["gatewayBaseUrl", "pemCaBundlePath", "helixCommand"] as const
@@ -55,8 +57,14 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 				fields: unsupportedFields.join(", "),
 			})
 		}
-		const key = apiConfiguration[curatedProviderApiKeyFields[apiConfiguration.apiProvider]]
-		if (typeof key !== "string" || !key.trim()) return i18next.t("settings:validation.apiKey")
+		if (apiConfiguration.apiProvider === "bedrock") {
+			const error = validateBedrockConfiguration(apiConfiguration)
+			if (error) return error
+		}
+		const keyField = curatedProviderApiKeyFields[apiConfiguration.apiProvider]
+		const key = keyField ? apiConfiguration[keyField] : undefined
+		if (keyField && (typeof key !== "string" || !key.trim())) return i18next.t("settings:validation.apiKey")
+		if (apiConfiguration.apiProvider === "openai-codex") return undefined
 		const modelId = getModelId(apiConfiguration) ?? getProviderDefaultModelId(apiConfiguration.apiProvider)
 		const model = getCuratedModelInfo(apiConfiguration.apiProvider, modelId)
 		return model ? getOutputTokenLimitValidationError(apiConfiguration, modelId, model) : undefined
@@ -105,12 +113,33 @@ function validateModelsAndKeysProvided(apiConfiguration: ProviderSettings): stri
 	return undefined
 }
 
+function validateBedrockConfiguration(settings: ProviderSettings): string | undefined {
+	if (settings.awsUseApiKey && settings.awsUseProfile) return i18next.t("settings:validation.bedrockAuthMethod")
+	if (!bedrockRegionPattern.test((settings.awsRegion ?? bedrockDefaultRegion).trim())) {
+		return i18next.t("settings:validation.bedrockRegion")
+	}
+	if (settings.awsUseApiKey) {
+		return settings.awsApiKey?.trim() ? undefined : i18next.t("settings:validation.bedrockApiKey")
+	}
+	if (settings.awsUseProfile) {
+		return settings.awsProfile?.trim() ? undefined : i18next.t("settings:validation.bedrockProfile")
+	}
+	const hasAccessKey = Boolean(settings.awsAccessKey?.trim())
+	const hasSecretKey = Boolean(settings.awsSecretKey?.trim())
+	if (hasAccessKey !== hasSecretKey || (settings.awsSessionToken?.trim() && !hasAccessKey)) {
+		return i18next.t("settings:validation.bedrockCredentials")
+	}
+	return undefined
+}
+
 /** Validate the same captured model and route that the provider uses when dispatching a request. */
 export function getOutputTokenLimitValidationError(
 	apiConfiguration: ProviderSettings,
 	modelId: string,
 	model: ModelInfo,
 ): string | undefined {
+	// Sign in with ChatGPT rejects output caps; inherited profile values are inert.
+	if (apiConfiguration.apiProvider === "openai-codex") return undefined
 	const { route } = resolveModelParameterApplicability({
 		provider: apiConfiguration.apiProvider,
 		modelId,
@@ -128,7 +157,7 @@ export function getOutputTokenLimitValidationError(
 		if (!(error instanceof RangeError)) throw error
 		const limit = apiConfiguration.modelMaxTokens ?? model.maxTokens
 		if (
-			route === "openai-responses" &&
+			(route === "openai-responses" || route === "meta-responses") &&
 			typeof limit === "number" &&
 			Number.isSafeInteger(limit) &&
 			limit > 0 &&
@@ -142,6 +171,7 @@ export function getOutputTokenLimitValidationError(
 			typeof limit === "number" &&
 			Number.isSafeInteger(limit) &&
 			typeof model.maxTokens === "number" &&
+			model.maxTokens > 0 &&
 			limit > model.maxTokens
 		) {
 			return i18next.t("settings:validation.modelOutputTokenLimit", { maximum: model.maxTokens })
@@ -281,7 +311,7 @@ function getModelIdForProvider(apiConfiguration: ProviderSettings, provider: Pro
 		return getModelId(apiConfiguration) ?? getProviderDefaultModelId(provider)
 	}
 	if (provider === "vscode-lm") {
-		return apiConfiguration.vsCodeLmModelSelector?.id
+		return getModelId(apiConfiguration)
 	}
 
 	if (isCustomProvider(provider)) {

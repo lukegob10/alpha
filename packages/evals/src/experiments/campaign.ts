@@ -13,6 +13,23 @@ import {
 	type ExperimentDecisionPlan,
 } from "./types"
 
+/** Local native measurements cannot assert an OS boundary or private-asset isolation through a receipt label. */
+export const campaignAgentIsolationSchema = z
+	.object({
+		boundary: z.literal("trusted-local-native-host"),
+		privateAssetIsolation: z.literal("unestablished"),
+		osSandbox: z.literal(false),
+	})
+	.strict()
+
+/**
+ * native-host-protocol-v1 denotes the native host's externally enforced budget and observed machine,
+ * provider transport/controller retries, Alpha runtime retries as treatment, and an observed resource envelope
+ * without an OS CPU/memory boundary. Its exact native receipt fields are NATIVE_EXPERIMENT_CONDITION_SCOPES.
+ * It does not assert that the product harness's scheduler or retry behavior stayed unchanged.
+ */
+export const campaignConditionIdentityScopeSchema = z.literal("native-host-protocol-v1")
+
 /** Portable producer receipt. Incomplete runs stay readable but cannot silently enter a paired report. */
 export const campaignExportSchema = z.object({
 	schemaVersion: z.literal(1),
@@ -20,6 +37,8 @@ export const campaignExportSchema = z.object({
 	executionFidelity: z.enum(["unit", "integrated", "actual-host"]),
 	decisionSource: z.enum(["scripted", "live"]),
 	identityScope: z.enum(["component", "conservative-whole-source"]).optional(),
+	agentIsolation: campaignAgentIsolationSchema.optional(),
+	conditionIdentityScope: campaignConditionIdentityScopeSchema.optional(),
 	accounting: z
 		.object({
 			totalAttempts: z.number().int().nonnegative(),
@@ -91,6 +110,8 @@ export function reportCampaignPair(controlValue: unknown, candidateValue: unknow
 	const manifest = experimentManifestSchema.parse(manifestValue)
 	if (control.incomplete.length || candidate.incomplete.length || !control.variant || !candidate.variant)
 		throw new Error("Campaign evidence is incomplete; repair the producer evidence before pairing")
+	if (control.conditionIdentityScope !== candidate.conditionIdentityScope)
+		throw new Error("Campaign fixed-condition identity domains differ")
 	if (
 		control.executionFidelity !== candidate.executionFidelity ||
 		control.decisionSource !== candidate.decisionSource ||
@@ -114,7 +135,16 @@ export function reportCampaignPair(controlValue: unknown, candidateValue: unknow
 			executionFidelity: control.executionFidelity,
 			decisionSource: control.decisionSource,
 			identityScope: control.identityScope ?? "component",
+			...(control.conditionIdentityScope ? { conditionIdentityScope: control.conditionIdentityScope } : {}),
 			accounting: { control: control.accounting ?? null, candidate: candidate.accounting ?? null },
+			...(control.agentIsolation || candidate.agentIsolation
+				? {
+						agentIsolation: {
+							control: control.agentIsolation ?? null,
+							candidate: candidate.agentIsolation ?? null,
+						},
+					}
+				: {}),
 		},
 	}
 	return { ...body, digest: sha256(canonicalJson(body)) }

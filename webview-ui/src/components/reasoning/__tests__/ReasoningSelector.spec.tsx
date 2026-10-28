@@ -93,8 +93,8 @@ describe("ReasoningSelector", () => {
 		expect(screen.queryAllByRole("radio")).toHaveLength(0)
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuenow", "1")
 		expect(screen.getByTestId("reasoning-effort-slider-panel").textContent).toBe("Medium")
-		expect(screen.queryByRole("button", { name: "Default" })).not.toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument()
 
 		fireEvent.keyDown(screen.getByRole("slider", { name: "Reasoning" }), { key: "End" })
 
@@ -113,8 +113,31 @@ describe("ReasoningSelector", () => {
 
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toBeInTheDocument()
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuemax", "1")
-		expect(screen.queryByRole("button", { name: "Default" })).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
 		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+	})
+
+	it("can return from an explicit effort to the model default or turn optional reasoning off", () => {
+		const onChange = vi.fn()
+		renderSelector(effortState(), { onChange })
+
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "Default" }))
+		expect(onChange).toHaveBeenLastCalledWith({ kind: "default" })
+
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "Off" }))
+		expect(onChange).toHaveBeenLastCalledWith({ kind: "off" })
+	})
+
+	it("shows the effective model default on the effort slider while Default remains selected", () => {
+		renderSelector(effortState({ requested: { kind: "default" }, effective: { kind: "effort", effort: "high" } }))
+
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+
+		expect(screen.getByRole("button", { name: "Default" })).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuenow", "2")
+		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "High")
 	})
 
 	it("keeps long provider effort lists on the slider without listing every level", () => {
@@ -207,8 +230,8 @@ describe("ReasoningSelector", () => {
 		fireEvent.click(screen.getByTestId("reasoning-trigger"))
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuenow", "0")
 		expect(screen.getByTestId("reasoning-effort-slider-panel").textContent).toBe("None")
-		expect(screen.queryByRole("button", { name: "Default" })).not.toBeInTheDocument()
-		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument()
 
 		fireEvent.keyDown(screen.getByRole("slider", { name: "Reasoning" }), { key: "ArrowRight" })
 		expect(onChange).toHaveBeenLastCalledWith({ kind: "effort", effort: "low" })
@@ -382,6 +405,15 @@ describe("ReasoningSelector", () => {
 
 		expect(screen.getByTestId("reasoning-trigger")).toBeDisabled()
 		expect(screen.getByTestId("reasoning-trigger")).toHaveAccessibleName("Reasoning: Loading")
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAttribute("aria-busy", "true")
+	})
+
+	it("does not claim to be loading when no capability state or request exists", () => {
+		renderSelector(undefined)
+
+		expect(screen.getByTestId("reasoning-trigger")).toBeDisabled()
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAccessibleName("Reasoning: Unavailable")
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAttribute("aria-busy", "false")
 	})
 
 	it("supports keyboard open, selection, Escape, and focus restoration", async () => {

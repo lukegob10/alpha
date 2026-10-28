@@ -17,6 +17,11 @@ import {
 	geminiModels,
 	xaiModels,
 	openRouterModels,
+	bedrockModels,
+	bedrockDefaultModelId,
+	getBedrockModelRoute,
+	openAiCodexModels,
+	metaModels,
 } from "./providers/index.js"
 
 /**
@@ -50,7 +55,16 @@ export type FauxProvider = (typeof fauxProviders)[number]
 export const isFauxProvider = (key: string): key is FauxProvider => fauxProviders.includes(key as FauxProvider)
 
 /** Curated native and router paths share explicit model capabilities. */
-export const curatedProviders = ["openai-native", "anthropic", "gemini", "xai", "openrouter"] as const
+export const curatedProviders = [
+	"openai-native",
+	"openai-codex",
+	"anthropic",
+	"gemini",
+	"xai",
+	"openrouter",
+	"bedrock",
+	"meta",
+] as const
 export type CuratedProvider = (typeof curatedProviders)[number]
 export const isCuratedProvider = (value: unknown): value is CuratedProvider =>
 	typeof value === "string" && curatedProviders.includes(value as CuratedProvider)
@@ -69,11 +83,9 @@ export type OrganizationAllowList = {
 
 /** Provider IDs that are retained only for deterministic compatibility errors. */
 export const retiredProviderNames = [
-	"bedrock",
 	"ollama",
 	"lmstudio",
 	"gemini-cli",
-	"openai-codex",
 	"deepseek",
 	"qwen-code",
 	"moonshot",
@@ -213,6 +225,25 @@ const openAiNativeSchema = apiModelIdProviderModelSchema.extend({
 	openAiNativeServiceTier: serviceTierSchema.optional(),
 })
 
+// OAuth tokens belong to the sign-in service's SecretStorage, never a provider profile.
+const openAiCodexSchema = apiModelIdProviderModelSchema
+
+const metaSchema = apiModelIdProviderModelSchema.extend({
+	metaApiKey: z.string().optional(),
+})
+
+const bedrockSchema = apiModelIdProviderModelSchema.extend({
+	awsAccessKey: z.string().optional(),
+	awsSecretKey: z.string().optional(),
+	awsSessionToken: z.string().optional(),
+	awsRegion: z.string().optional(),
+	awsProfile: z.string().optional(),
+	awsUseProfile: z.boolean().optional(),
+	awsApiKey: z.string().optional(),
+	awsUseApiKey: z.boolean().optional(),
+	awsCustomArn: z.string().optional(),
+})
+
 const anthropicSchema = apiModelIdProviderModelSchema.extend({
 	apiKey: z.string().optional(),
 	anthropicBaseUrl: z.string().optional(),
@@ -259,6 +290,9 @@ export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProv
 	stellarSchema.merge(z.object({ apiProvider: z.literal("stellar") })),
 	openAiSchema.merge(z.object({ apiProvider: z.literal("openai") })),
 	openAiNativeSchema.merge(z.object({ apiProvider: z.literal("openai-native") })),
+	openAiCodexSchema.merge(z.object({ apiProvider: z.literal("openai-codex") })),
+	metaSchema.merge(z.object({ apiProvider: z.literal("meta") })),
+	bedrockSchema.merge(z.object({ apiProvider: z.literal("bedrock") })),
 	anthropicSchema.merge(z.object({ apiProvider: z.literal("anthropic") })),
 	geminiSchema.merge(z.object({ apiProvider: z.literal("gemini") })),
 	xaiSchema.merge(z.object({ apiProvider: z.literal("xai") })),
@@ -274,6 +308,9 @@ export const providerSettingsSchema = z.object({
 	...stellarSchema.shape,
 	...openAiSchema.shape,
 	...openAiNativeSchema.shape,
+	...openAiCodexSchema.shape,
+	...metaSchema.shape,
+	...bedrockSchema.shape,
 	...anthropicSchema.shape,
 	...geminiSchema.shape,
 	...xaiSchema.shape,
@@ -285,13 +322,14 @@ export const providerSettingsSchema = z.object({
 
 export type ProviderSettings = z.infer<typeof providerSettingsSchema>
 
-export const curatedProviderApiKeyFields = {
+export const curatedProviderApiKeyFields: Partial<Record<CuratedProvider, keyof ProviderSettings>> = {
 	"openai-native": "openAiNativeApiKey",
 	anthropic: "apiKey",
 	gemini: "geminiApiKey",
 	xai: "xaiApiKey",
 	openrouter: "openRouterApiKey",
-} as const satisfies Record<CuratedProvider, keyof ProviderSettings>
+	meta: "metaApiKey",
+}
 
 function isUnsupportedCuratedEndpoint(value: string | undefined, origin: string, paths: readonly string[]): boolean {
 	if (value === undefined || value.trim() === "") return false
@@ -349,6 +387,9 @@ export function getUnsupportedCuratedProviderSettings(
 			if (settings.openRouterSpecificProvider?.trim()) unsupported.push("openRouterSpecificProvider")
 			break
 		case "xai":
+		case "meta":
+		case "bedrock":
+		case "openai-codex":
 			break
 	}
 	return unsupported
@@ -380,6 +421,9 @@ export type ModelIdKey = (typeof modelIdKeys)[number]
 export const getModelId = (settings: ProviderSettings): string | undefined => {
 	if (settings.apiProvider === "openrouter") return settings.apiModelId ?? settings.openRouterModelId
 	if (settings.apiProvider === "openai") return settings.openAiModelId
+	if (settings.apiProvider === "vscode-lm") {
+		return settings.vsCodeLmModelSelector?.id ?? settings.vsCodeLmModelSelector?.family
+	}
 	if (isProviderName(settings.apiProvider)) return settings.apiModelId
 	// Unknown saved profiles retain the historical diagnostic reader without gaining execution authority.
 	const modelIdKey = modelIdKeys.find((key) => settings[key])
@@ -394,6 +438,9 @@ export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 	vertex: "apiModelId",
 	stellar: "apiModelId",
 	"openai-native": "apiModelId",
+	"openai-codex": "apiModelId",
+	meta: "apiModelId",
+	bedrock: "apiModelId",
 	anthropic: "apiModelId",
 	gemini: "apiModelId",
 	xai: "apiModelId",
@@ -404,6 +451,12 @@ export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 export const ANTHROPIC_STYLE_PROVIDERS: ProviderName[] = ["anthropic"]
 
 export const getApiProtocol = (provider: ProviderName | undefined, modelId?: string): "anthropic" | "openai" => {
+	if (provider === "bedrock") {
+		// Saved profiles may leave the model unset. Match the adapter's catalog
+		// default so Anthropic cache counters retain their exclusive semantics.
+		const route = getBedrockModelRoute(modelId === undefined ? bedrockDefaultModelId : modelId.trim())
+		return route === "anthropic-messages" ? "anthropic" : "openai"
+	}
 	if (provider === "anthropic" || (provider === "vertex" && modelId && modelId.toLowerCase().includes("claude"))) {
 		return "anthropic"
 	}
@@ -431,6 +484,9 @@ export const MODELS_BY_PROVIDER: Record<
 		models: Object.keys(vscodeLlmModels),
 	},
 	"openai-native": { id: "openai-native", label: "OpenAI", models: Object.keys(openAiNativeModels) },
+	"openai-codex": { id: "openai-codex", label: "Sign in with ChatGPT", models: Object.keys(openAiCodexModels) },
+	meta: { id: "meta", label: "Meta", models: Object.keys(metaModels) },
+	bedrock: { id: "bedrock", label: "Amazon Bedrock", models: Object.keys(bedrockModels) },
 	anthropic: { id: "anthropic", label: "Anthropic", models: Object.keys(anthropicModels) },
 	gemini: { id: "gemini", label: "Google Gemini", models: Object.keys(geminiModels) },
 	xai: { id: "xai", label: "xAI", models: Object.keys(xaiModels) },
@@ -439,6 +495,9 @@ export const MODELS_BY_PROVIDER: Record<
 
 export const CURATED_MODELS_BY_PROVIDER: Record<CuratedProvider, Record<string, ModelInfo>> = {
 	"openai-native": openAiNativeModels,
+	"openai-codex": openAiCodexModels,
+	meta: metaModels,
+	bedrock: bedrockModels,
 	anthropic: anthropicModels,
 	gemini: geminiModels,
 	xai: xaiModels,

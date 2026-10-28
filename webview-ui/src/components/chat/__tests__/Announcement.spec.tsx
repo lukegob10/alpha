@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.13",
+		version: "3.2.14",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.13" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.14" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.13")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.14")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.13 completes the Alpha naming cleanup and fixes New Chat shortcut focus."),
+			screen.getByText("Alpha v3.2.14 adds frontier providers, instant model setup, and refreshed branding."),
 		).toBeInTheDocument()
 	})
 
@@ -50,26 +50,30 @@ describe("Announcement", () => {
 		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
-		expect(screen.getByText("Open a new task directly in Alpha with the New Chat shortcut.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Use Alpha-only configuration paths, credentials, saved fields, and public APIs."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Configure a fresh profile; previous naming aliases are no longer supported."),
+			screen.getByText("Choose your model and reasoning level separately without waiting for discovery."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Keep your previous release profile and package available when returning to an earlier version.",
+				"Connect Amazon Bedrock, Sign in with ChatGPT, and Meta alongside the existing providers.",
 			),
 		).toBeInTheDocument()
+		expect(
+			screen.getByText(
+				"Keep selected models consistent across chats and delegated work, with clear errors for retired models.",
+			),
+		).toBeInTheDocument()
+		expect(screen.getByText("Find the refreshed Alpha wolf branding throughout the extension.")).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.13 completes the Alpha naming cleanup and fixes New Chat shortcut focus."),
+			screen.getByText("Alpha v3.2.14 adds frontier providers, instant model setup, and refreshed branding."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Open a new task directly in Alpha with the New Chat shortcut.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Choose your model and reasoning level separately without waiting for discovery."),
+		).toBeInTheDocument()
 	})
 })

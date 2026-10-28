@@ -30,6 +30,8 @@ import { SearchableSelect, Collapsible, CollapsibleTrigger, CollapsibleContent }
 
 import { OpenAICompatible, Stellar, Vertex, VSCodeLM } from "./providers"
 import { CuratedProvider } from "./providers/CuratedProvider"
+import { Bedrock } from "./providers/Bedrock"
+import { ChatGptAuth } from "./providers/ChatGptAuth"
 
 import { MODELS_BY_PROVIDER, PROVIDERS } from "./constants"
 import { inputEventTransform, noTransform } from "./transforms"
@@ -113,13 +115,6 @@ const ApiOptions = ({
 			setApiConfigurationField("apiModelId", selectedModelId, false)
 		}
 	}, [selectedModelId, setApiConfigurationField, apiConfiguration.apiModelId, isUnsupportedSelectedProvider])
-
-	// Copilot discovery has no typed connection fields to debounce.
-	useEffect(() => {
-		if (selectedProvider === "vscode-lm") {
-			vscode.postMessage({ type: "requestVsCodeLmModels" })
-		}
-	}, [selectedProvider])
 
 	// Debounce OpenAI connection edits until the user stops typing.
 	useDebounce(
@@ -318,6 +313,13 @@ const ApiOptions = ({
 				</div>
 			) : (
 				<>
+					{selectedProvider === "bedrock" && (
+						<Bedrock
+							apiConfiguration={apiConfiguration}
+							setApiConfigurationField={setApiConfigurationField}
+						/>
+					)}
+					{selectedProvider === "openai-codex" && <ChatGptAuth />}
 					{isCuratedProvider(selectedProvider) && (
 						<CuratedProvider
 							key={`${profileIdentity ?? ""}:${selectedProvider}`}
@@ -373,7 +375,12 @@ const ApiOptions = ({
 								modelIdKey="apiModelId"
 								allowCustomModel={!isCuratedProvider(activeSelectedProvider)}
 								serviceName={getProviderServiceConfig(activeSelectedProvider).serviceName}
-								serviceUrl={getProviderServiceConfig(activeSelectedProvider).serviceUrl}
+								serviceUrl={
+									isCuratedProvider(activeSelectedProvider)
+										? ""
+										: getProviderServiceConfig(activeSelectedProvider).serviceUrl
+								}
+								hidePricing={activeSelectedProvider === "openai-codex"}
 								organizationAllowList={organizationAllowList}
 								errorMessage={modelValidationError}
 								simplifySettings={fromWelcomeView}

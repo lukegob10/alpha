@@ -56,8 +56,8 @@ interface ModelPickerProps {
 	secondaryLabelTransform?: (modelId: string, modelInfo?: ModelInfo) => string | undefined
 	/** Callback when model changes - useful for side effects like clearing related fields */
 	onModelChange?: (modelId: string) => void
-	/** Prefer live provider metadata for the selected model over static registry metadata. */
-	selectedModelInfoOverride?: ModelInfo
+	/** Override selected metadata; null explicitly suppresses catalog and configured-model fallbacks. */
+	selectedModelInfoOverride?: ModelInfo | null
 	/** Whether users may enter a model identifier that is not in the supplied model list. */
 	allowCustomModel?: boolean
 }
@@ -104,7 +104,11 @@ export const ModelPicker = ({
 		return selectedModelId
 	}, [displayTransform, apiConfiguration, modelIdKey, selectedModelId])
 	const selectedModelInfo =
-		selectedModelInfoOverride ?? (displayValue ? models?.[displayValue] : undefined) ?? configuredSelectedModelInfo
+		selectedModelInfoOverride === null
+			? undefined
+			: (selectedModelInfoOverride ??
+				(displayValue ? models?.[displayValue] : undefined) ??
+				configuredSelectedModelInfo)
 
 	const displayLabel = useMemo(() => {
 		return displayValue ? (labelTransform?.(displayValue, selectedModelInfo) ?? displayValue) : undefined

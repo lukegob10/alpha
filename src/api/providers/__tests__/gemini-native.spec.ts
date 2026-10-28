@@ -79,6 +79,15 @@ describe("native Gemini provider", () => {
 		},
 	)
 
+	it("rejects the retired Gemini 3.8 Flash model before constructing a client", () => {
+		expect(() => new GeminiHandler({ geminiApiKey: "key", apiModelId: "gemini-3.8-flash" })).toThrow(
+			"Unsupported Gemini model: gemini-3.8-flash",
+		)
+		expect(constructor).not.toHaveBeenCalled()
+		expect(generateContent).not.toHaveBeenCalled()
+		expect(generateContentStream).not.toHaveBeenCalled()
+	})
+
 	it("rejects a retained nondefault endpoint", () => {
 		expect(
 			() => new GeminiHandler({ geminiApiKey: "key", googleGeminiBaseUrl: "https://unrelated.example" }),
@@ -91,13 +100,16 @@ describe("native Gemini provider", () => {
 		expect(model.id).toBe("gemini-4-argon")
 		expect(model.reasoning).toEqual({ thinkingLevel: ThinkingLevel.MEDIUM, includeThoughts: true })
 		expect(model.info.supportsReasoningEffort).toEqual(["low", "medium", "high"])
+		expect(model.info.contextWindow).toBe(1_048_576)
+		expect(model.info.maxTokens).toBe(65_536)
+		expect(model.info.requiredReasoningEffort).toBe(true)
 		expect(model.info.contextWindowIncludesOutput).toBe(true)
 	})
 
 	it("translates the shared reasoning choice and ignores stale budget/sampling settings", async () => {
 		const handler = new GeminiHandler({
 			geminiApiKey: "key",
-			apiModelId: "gemini-3.8-flash",
+			apiModelId: "gemini-4-argon",
 			reasoningEffort: "high",
 			modelTemperature: 0.5,
 			modelMaxThinkingTokens: 1024,
@@ -107,7 +119,7 @@ describe("native Gemini provider", () => {
 		await collect(handler.createMessage("System", messages, metadata))
 		const request: GenerateContentParameters = generateContentStream.mock.calls[0]![0]
 		expect(request).toMatchObject({
-			model: "gemini-3.8-flash",
+			model: "gemini-4-argon",
 			config: {
 				thinkingConfig: { thinkingLevel: ThinkingLevel.HIGH, includeThoughts: true },
 				maxOutputTokens: 8192,

@@ -50,6 +50,34 @@ function fixture(
 }
 
 describe("saved provider profile retention", () => {
+	it.each([
+		{ apiProvider: "constructor", apiModelId: "name" },
+		{ apiProvider: "__proto__", apiModelId: "toString" },
+		{ apiProvider: "toString", apiModelId: "name" },
+		{ apiProvider: "future-provider", apiModelId: "constructor" },
+		{ apiProvider: "openai-native", apiModelId: "constructor" },
+		{ apiProvider: "openai-native", apiModelId: "gpt-5" },
+	])(
+		"preserves saved provider $apiProvider and model $apiModelId through initialization and reopen",
+		async (settings) => {
+			const profile = { id: "selected-id", ...settings }
+			const profiles = {
+				currentApiConfigName: "selected",
+				apiConfigs: { selected: profile },
+				modeApiConfigs: { code: profile.id, architect: profile.id },
+				migrations,
+			}
+			const saved = fixture(profiles)
+
+			for (let open = 0; open < 2; open++) {
+				const manager = new ProviderSettingsManager(saved.context)
+				await manager.initialize()
+				expect(saved.read()).toEqual(profiles)
+				await expect(manager.getProfile({ id: profile.id })).resolves.toMatchObject(profile)
+			}
+		},
+	)
+
 	it("preserves raw invalid profiles through unrelated saves, migration and reopen", async () => {
 		const saved = fixture()
 		const manager = new ProviderSettingsManager(saved.context)

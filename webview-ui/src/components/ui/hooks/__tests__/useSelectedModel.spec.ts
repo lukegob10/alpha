@@ -21,7 +21,7 @@ describe("selected model metadata", () => {
 		})
 	})
 
-	it.each(["bedrock", "ollama", "future-provider", "fake-ai"])(
+	it.each(["deepseek", "ollama", "future-provider", "fake-ai"])(
 		"preserves %s without showing metadata from a supported public provider",
 		(provider) => {
 			expect(

@@ -18,10 +18,49 @@ import {
 	getModelValidationError,
 	validateApiConfiguration,
 	validateApiConfigurationExcludingModelErrors,
+	getOutputTokenLimitValidationError,
 } from "../validate"
+
+const apiKeyProviders = curatedProviders.filter((provider) => curatedProviderApiKeyFields[provider] !== undefined)
+const outputLimitProviders = curatedProviders.filter((provider) => provider !== "openai-codex")
 
 describe("provider configuration validation", () => {
 	const allowAll: OrganizationAllowList = { allowAll: true, providers: {} }
+
+	it.each([
+		{ family: "gpt-6-luna", expected: undefined },
+		{ family: "gpt-6-sol", expected: "settings:validation.modelNotAllowed" },
+	])("checks the configured Copilot family $family against organization permissions", ({ family, expected }) => {
+		const allowList: OrganizationAllowList = {
+			allowAll: false,
+			providers: { "vscode-lm": { allowAll: false, models: ["gpt-6-luna"] } },
+		}
+		const configuration: ProviderSettings = {
+			apiProvider: "vscode-lm",
+			apiModelId: "gpt-6-luna",
+			vsCodeLmModelSelector: { vendor: "copilot", family },
+		}
+
+		expect(validateApiConfiguration(configuration, undefined, allowList)).toBe(expected)
+		expect(getModelValidationError(configuration, undefined, allowList)).toBe(expected)
+	})
+
+	it.each([
+		{ models: ["gpt-6-luna"], expected: "settings:validation.modelNotAllowed" },
+		{ models: ["opaque-copilot-route"], expected: undefined },
+	])("checks exact Copilot route permissions before the known family", ({ models, expected }) => {
+		const allowList: OrganizationAllowList = {
+			allowAll: false,
+			providers: { "vscode-lm": { allowAll: false, models } },
+		}
+		const configuration: ProviderSettings = {
+			apiProvider: "vscode-lm",
+			vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6-luna", id: "opaque-copilot-route" },
+		}
+
+		expect(validateApiConfiguration(configuration, undefined, allowList)).toBe(expected)
+		expect(getModelValidationError(configuration, undefined, allowList)).toBe(expected)
+	})
 
 	it("accepts a complete OpenAI Compatible configuration", () => {
 		const configuration: ProviderSettings = {
@@ -166,7 +205,7 @@ describe("provider configuration validation", () => {
 
 	it("reports an explicit unsupported-provider error without rewriting the saved ID", () => {
 		const configuration = {
-			apiProvider: "bedrock",
+			apiProvider: "deepseek",
 			openRouterModelId: "legacy-model",
 		} as unknown as ProviderSettings
 		expect(validateApiConfigurationExcludingModelErrors(configuration, undefined, allowAll)).toBe(
@@ -174,8 +213,9 @@ describe("provider configuration validation", () => {
 		)
 	})
 
-	it.each(curatedProviders)("requires the %s key and accepts its curated default model", (provider) => {
+	it.each(apiKeyProviders)("requires the %s key and accepts its curated default model", (provider) => {
 		const keyField = curatedProviderApiKeyFields[provider]
+		if (!keyField) throw new Error("API-key provider requires a key field")
 		const configuration: ProviderSettings = { apiProvider: provider, [keyField]: "test-key" }
 		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBeUndefined()
 		expect(validateApiConfiguration({ ...configuration, [keyField]: "  " })).toBe("settings:validation.apiKey")
@@ -185,9 +225,10 @@ describe("provider configuration validation", () => {
 	})
 
 	it.each(curatedProviders)("rejects an unavailable %s model without changing the saved ID", (provider) => {
+		const keyField = curatedProviderApiKeyFields[provider]
 		const configuration: ProviderSettings = {
 			apiProvider: provider,
-			[curatedProviderApiKeyFields[provider]]: "test-key",
+			...(keyField ? { [keyField]: "test-key" } : {}),
 			apiModelId: "unavailable-model",
 		}
 		expect(validateApiConfiguration(configuration, undefined, allowAll)).toBe(
@@ -224,10 +265,14 @@ describe("provider configuration validation", () => {
 		["openai-native", 8, "settings:validation.responsesOutputTokenLimit"],
 		["openai-native", 16, undefined],
 		["xai", 8, undefined],
+		["meta", 8, "settings:validation.responsesOutputTokenLimit"],
+		["meta", 16, undefined],
 	] as const)("validates the %s output cap %s against its exact protocol", (provider, modelMaxTokens, expected) => {
+		const keyField = curatedProviderApiKeyFields[provider]
+		if (!keyField) throw new Error("API-key provider requires a key field")
 		const configuration: ProviderSettings = {
 			apiProvider: provider,
-			[curatedProviderApiKeyFields[provider]]: "test-key",
+			[keyField]: "test-key",
 			includeMaxTokens: true,
 			modelMaxTokens,
 		}
@@ -235,12 +280,13 @@ describe("provider configuration validation", () => {
 		expect(validateApiConfigurationExcludingModelErrors(configuration)).toBe(expected)
 	})
 
-	it.each(curatedProviders)("validates only emitted %s caps and checks its catalog maximum", (provider) => {
+	it.each(outputLimitProviders)("validates only emitted %s caps and checks its catalog maximum", (provider) => {
+		const keyField = curatedProviderApiKeyFields[provider]
 		const model = getCuratedModelInfo(provider, getProviderDefaultModelId(provider))
 		if (typeof model?.maxTokens !== "number") throw new Error("Curated test model must declare an output limit")
 		const configuration: ProviderSettings = {
 			apiProvider: provider,
-			[curatedProviderApiKeyFields[provider]]: "test-key",
+			...(keyField ? { [keyField]: "test-key" } : {}),
 			includeMaxTokens: true,
 		}
 		for (const modelMaxTokens of [0, 1.5, -2]) {
@@ -249,11 +295,58 @@ describe("provider configuration validation", () => {
 			)
 		}
 		expect(validateApiConfiguration({ ...configuration, modelMaxTokens: -1 })).toBeUndefined()
-		expect(validateApiConfiguration({ ...configuration, modelMaxTokens: model.maxTokens + 1 })).toBe(
-			"settings:validation.modelOutputTokenLimit",
-		)
+		if (model.maxTokens > 0) {
+			expect(validateApiConfiguration({ ...configuration, modelMaxTokens: model.maxTokens + 1 })).toBe(
+				"settings:validation.modelOutputTokenLimit",
+			)
+		}
 		expect(
 			validateApiConfiguration({ ...configuration, includeMaxTokens: false, modelMaxTokens: 0 }),
 		).toBeUndefined()
 	})
+
+	it("accepts ChatGPT profiles without exposing or requiring an account token", () => {
+		expect(validateApiConfiguration({ apiProvider: "openai-codex" })).toBeUndefined()
+	})
+
+	it.each([0, 1, 1.5, -2, Number.MAX_SAFE_INTEGER])(
+		"ignores an inherited ChatGPT output limit %s",
+		(modelMaxTokens) => {
+			const configuration: ProviderSettings = {
+				apiProvider: "openai-codex",
+				includeMaxTokens: true,
+				modelMaxTokens,
+			}
+			const modelId = getProviderDefaultModelId("openai-codex")
+			const model = getCuratedModelInfo("openai-codex", modelId)
+			if (!model) throw new Error("ChatGPT default model must have metadata")
+
+			expect(validateApiConfiguration(configuration)).toBeUndefined()
+			expect(validateApiConfigurationExcludingModelErrors(configuration)).toBeUndefined()
+			expect(getOutputTokenLimitValidationError(configuration, modelId, model)).toBeUndefined()
+			expect(configuration.modelMaxTokens).toBe(modelMaxTokens)
+		},
+	)
+
+	it.each([
+		[{ apiProvider: "bedrock" }, undefined],
+		[{ apiProvider: "bedrock", awsRegion: "" }, "settings:validation.bedrockRegion"],
+		[{ apiProvider: "bedrock", awsRegion: "not a region" }, "settings:validation.bedrockRegion"],
+		[{ apiProvider: "bedrock", awsUseApiKey: true, awsUseProfile: true }, "settings:validation.bedrockAuthMethod"],
+		[{ apiProvider: "bedrock", awsUseApiKey: true }, "settings:validation.bedrockApiKey"],
+		[{ apiProvider: "bedrock", awsUseApiKey: true, awsApiKey: "example-key" }, undefined],
+		[{ apiProvider: "bedrock", awsUseProfile: true }, "settings:validation.bedrockProfile"],
+		[{ apiProvider: "bedrock", awsUseProfile: true, awsProfile: "team" }, undefined],
+		[{ apiProvider: "bedrock", awsAccessKey: "key" }, "settings:validation.bedrockCredentials"],
+		[{ apiProvider: "bedrock", awsSecretKey: "secret" }, "settings:validation.bedrockCredentials"],
+		[{ apiProvider: "bedrock", awsSessionToken: "token" }, "settings:validation.bedrockCredentials"],
+		[{ apiProvider: "bedrock", awsAccessKey: "key", awsSecretKey: "secret", awsSessionToken: "token" }, undefined],
+		[{ apiProvider: "bedrock", awsUseProfile: true, awsProfile: "team", awsAccessKey: "inert" }, undefined],
+	] satisfies Array<[ProviderSettings, string | undefined]>)(
+		"validates Bedrock authentication %j",
+		(configuration, expected) => {
+			expect(validateApiConfiguration(configuration)).toBe(expected)
+			expect(validateApiConfigurationExcludingModelErrors(configuration)).toBe(expected)
+		},
+	)
 })

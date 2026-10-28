@@ -58,10 +58,7 @@ export class AnthropicHandler extends AnthropicMessageHandler {
 	protected override getToolChoiceForRequest(
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiHandlerCreateMessageMetadata["tool_choice"] {
-		if (
-			this.getModel().id !== "claude-haiku-5-5" &&
-			(metadata?.tool_choice === "required" || typeof metadata?.tool_choice === "object")
-		) {
+		if (metadata?.tool_choice === "required" || typeof metadata?.tool_choice === "object") {
 			throw new Error(
 				"This Anthropic model supports automatic or disabled tool selection; forced tool use is unsupported.",
 			)
@@ -121,8 +118,6 @@ export class AnthropicHandler extends AnthropicMessageHandler {
 						block_binding: { prefix_mismatch_behavior: "drop_block" },
 					},
 			betas: thinkingDisabled ? undefined : ["thinking-binding-controls-2026-08-01"],
-			// Haiku Off omits effort: the API default is medium, which permits disabled
-			// thinking. Never carry a stale xhigh/max effort into that request.
 			outputConfig: params.reasoningEffort ? { effort: params.reasoningEffort } : undefined,
 		} satisfies AnthropicMessageModel
 	}

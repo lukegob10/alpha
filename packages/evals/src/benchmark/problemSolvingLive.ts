@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto"
 import { execFileSync, execSync } from "node:child_process"
+import { createRequire } from "node:module"
 import * as fsSync from "node:fs"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
+import type { ExecutedExperimentCapture } from "@alpha-code/types"
 
 import { ExecaHarnessProcessRunner } from "../orchestration/index"
+import { parseExecutedExperimentCapture } from "../evidence/executedExperimentCapture"
 import { loadProblemSolvingSet, selectLiveMeasurementTasks } from "./problemSolving"
 import {
 	defaultExtensionRunnerPath,
@@ -23,6 +26,23 @@ const DEFAULT_EFFORT = "high"
 const DEFAULT_REQUEST_LIMIT = 40
 const ATTEMPT_TIMEOUT_MS = 1_100_000
 const SCENARIO_TIMEOUT_MS = 900_000
+
+type NativeRunner = {
+	readRunOptions(args: string[], environment: NodeJS.ProcessEnv): Record<string, unknown>
+	runExtensionTests(
+		options: Record<string, unknown>,
+		dependencies: { launchKind: "development-sidecar" },
+	): Promise<{ failure?: string; hostCleanupVerified?: boolean; execution?: string }>
+}
+
+function loadNativeRunner(file: string): NativeRunner {
+	// A namespaced tsImport URL can leak its hooks into compiled CJS, including bare Node builtins.
+	const nativePath = path.resolve(file)
+	const value = createRequire(nativePath)(nativePath) as Partial<NativeRunner> | null
+	if (!value || typeof value.readRunOptions !== "function" || typeof value.runExtensionTests !== "function")
+		throw new Error("The compiled native runner does not expose its supported programmatic API")
+	return value as NativeRunner
+}
 
 const workspaceMarker = {
 	schemaVersion: 1,
@@ -152,30 +172,107 @@ export async function launchExtension(
 	request: ProblemSolvingExtensionRequest,
 	repositoryRoot: string,
 	buildIdentity: string,
+	limits: { timeoutMs?: number; scenarioTimeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<ReturnType<typeof problemSolvingHostFromReceipts>> {
+	limits.signal?.throwIfAborted()
+	const timeoutMs = limits.timeoutMs ?? ATTEMPT_TIMEOUT_MS
+	const scenarioTimeoutMs = limits.scenarioTimeoutMs ?? Math.min(SCENARIO_TIMEOUT_MS, timeoutMs)
+	if (
+		!Number.isSafeInteger(timeoutMs) ||
+		timeoutMs < 1 ||
+		timeoutMs > ATTEMPT_TIMEOUT_MS ||
+		!Number.isSafeInteger(scenarioTimeoutMs) ||
+		scenarioTimeoutMs < 1 ||
+		scenarioTimeoutMs > SCENARIO_TIMEOUT_MS ||
+		scenarioTimeoutMs > timeoutMs
+	)
+		throw new Error("Native experiment launch requires bounded positive attempt and scenario deadlines")
+	const runnerPath = defaultExtensionRunnerPath(repositoryRoot)
+	const args = existingExtensionRunnerArguments(request, runnerPath)
+	if (limits.timeoutMs !== undefined) args.push("--execution-timeout-ms", String(timeoutMs))
 	await fs.writeFile(
 		path.join(request.workspace, ".alpha-e2e-owned.json"),
 		JSON.stringify(workspaceMarker, null, 2) + "\n",
 		{ flag: "wx" },
 	)
-	const runnerPath = defaultExtensionRunnerPath(repositoryRoot)
-	const args = existingExtensionRunnerArguments(request, runnerPath)
-	const result = await new ExecaHarnessProcessRunner().run({
-		command: process.execPath,
-		args,
-		cwd: repositoryRoot,
-		env: {
-			...Object.fromEntries(
-				Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-			),
-			ALPHA_E2E_SCENARIO_TIMEOUT_MS: String(SCENARIO_TIMEOUT_MS),
-		},
-		timeoutMs: ATTEMPT_TIMEOUT_MS,
-		maxOutputBytes: 256_000,
-	})
+	const experimentEnvironment = {
+		ALPHA_E2E_SCENARIO_TIMEOUT_MS: String(scenarioTimeoutMs),
+		...(request.experimentAssignmentDigest
+			? { ALPHA_E2E_EXPERIMENT_ASSIGNMENT_DIGEST: request.experimentAssignmentDigest }
+			: {}),
+		...(request.experimentTask ? { ALPHA_E2E_EXPERIMENT_TASK_JSON: JSON.stringify(request.experimentTask) } : {}),
+		...(request.experimentWorkspaceDigest
+			? { ALPHA_E2E_EXPERIMENT_WORKSPACE_DIGEST: request.experimentWorkspaceDigest }
+			: {}),
+		...(request.experimentContext
+			? { ALPHA_E2E_EXPERIMENT_CONTEXT_JSON: JSON.stringify(request.experimentContext) }
+			: {}),
+	}
+	let runnerFailureFromApi: string | undefined
+	let cancelled = false
+	let timedOut = false
+	if (request.experimentEvidence || limits.signal) {
+		const native = loadNativeRunner(runnerPath)
+		const deadline = AbortSignal.timeout(timeoutMs)
+		const signal = limits.signal ? AbortSignal.any([limits.signal, deadline]) : deadline
+		const options = native.readRunOptions(args.slice(1), { ...process.env, ...experimentEnvironment })
+		// Await the owning runner's cancellation/cleanup path; killing its outer CLI can leave a detached host alive.
+		const result = await native.runExtensionTests(
+			{
+				...options,
+				signal,
+				executionTimeoutMs: timeoutMs,
+				extensionTestsEnv: experimentEnvironment,
+			},
+			{ launchKind: "development-sidecar" },
+		)
+		runnerFailureFromApi =
+			result.hostCleanupVerified === false
+				? "host-cleanup-unverified"
+				: result.execution === "test-seam"
+					? "non-native-execution"
+					: result.failure
+		cancelled = signal.aborted && !deadline.aborted
+		timedOut = deadline.aborted
+	} else {
+		const result = await new ExecaHarnessProcessRunner().run({
+			command: process.execPath,
+			args,
+			cwd: repositoryRoot,
+			env: {
+				...Object.fromEntries(
+					Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+				),
+				...experimentEnvironment,
+			},
+			timeoutMs,
+			maxOutputBytes: 256_000,
+		})
+		timedOut = result.timedOut
+	}
 	const receiptDir = path.join(request.artifactsDir, request.runId)
 	const workflow = await readRecord(path.join(receiptDir, "workflow-result.json"))
 	const runner = await readRecord(path.join(receiptDir, "run-result.json"))
+	let experimentIdentity: ExecutedExperimentCapture | null | undefined
+	let experimentIdentityFailure: "unavailable" | "invalid" | undefined
+	if (request.experimentEvidence) {
+		const capture = await readRecord(path.join(receiptDir, "experiment-capture.json"))
+		experimentIdentity = null
+		if (!capture) experimentIdentityFailure = "unavailable"
+		else {
+			try {
+				experimentIdentity = parseExecutedExperimentCapture(capture)
+				if (
+					experimentIdentity.attemptId !== request.runId ||
+					experimentIdentity.assignmentDigest !== request.experimentAssignmentDigest
+				)
+					throw new Error("Experiment capture does not match the dispatched attempt")
+			} catch {
+				experimentIdentity = null
+				experimentIdentityFailure = "invalid"
+			}
+		}
+	}
 	const failure = workflow?.failure
 	const purposes = workflow?.requestsByPurpose
 	const taskRequests = purposes && typeof purposes === "object" && "task" in purposes ? purposes.task : undefined
@@ -183,9 +280,11 @@ export async function launchExtension(
 		purposes && typeof purposes === "object" && "reasoning-summary" in purposes
 			? purposes["reasoning-summary"]
 			: undefined
-	return problemSolvingHostFromReceipts({
+	const observed = problemSolvingHostFromReceipts({
 		buildIdentity,
 		tracePath: workflow ? path.join(receiptDir, "workflow-result.json") : null,
+		...(experimentIdentity !== undefined ? { experimentIdentity } : {}),
+		...(experimentIdentityFailure ? { experimentIdentityFailure } : {}),
 		workflow: workflow
 			? {
 					status: typeof workflow.status === "string" ? workflow.status : undefined,
@@ -249,8 +348,26 @@ export async function launchExtension(
 				}
 			: null,
 		runnerFailure:
-			typeof runner?.failure === "string" ? runner.failure : result.timedOut ? "scenario_deadline" : null,
+			runnerFailureFromApi ??
+			(typeof runner?.failure === "string" ? runner.failure : timedOut ? "scenario_deadline" : null),
 	})
+	return cancelled || limits.signal?.aborted
+		? {
+				...observed,
+				status: "cancelled",
+				failureClass: "cancellation",
+				failureCategory: "lifecycle",
+				failureCode: "other",
+			}
+		: timedOut
+			? {
+					...observed,
+					status: "failed",
+					failureClass: "budget",
+					failureCategory: "timeout",
+					failureCode: "scenario_deadline",
+				}
+			: observed
 }
 
 export async function runLiveProblemSolvingCore(options: {
@@ -266,6 +383,7 @@ export async function runLiveProblemSolvingCore(options: {
 	taskIds?: string[]
 	repetitions?: number
 	promptVariants?: ProblemSolvingPromptVariant[]
+	experimentEvidence?: boolean
 }): Promise<{
 	runId: string
 	hostVersion: string
@@ -363,6 +481,7 @@ export async function runLiveProblemSolvingCore(options: {
 					attemptId: `ps-${task.id}-r${repetition}-${promptVariant}`,
 					repetition,
 					promptVariant,
+					experimentEvidence: options.experimentEvidence,
 					promptVariantInstruction:
 						promptVariant === "single-command" && promptVariantInstruction !== null
 							? promptVariantInstruction
@@ -467,6 +586,7 @@ if (isDirectRun) {
 		taskIds,
 		repetitions,
 		promptVariants,
+		experimentEvidence: process.env.PROBLEM_SOLVING_EXPERIMENT_EVIDENCE === "1",
 	})
 	console.log(
 		JSON.stringify(

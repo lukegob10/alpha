@@ -78,30 +78,16 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowSubagents: (value: boolean) => void
 	setAlwaysAllowTickets: (value: boolean) => void
 	setShowAlphaIgnoredFiles: (value: boolean) => void
-	setEnableSubfolderRules: (value: boolean) => void
 	setShowAnnouncement: (value: boolean) => void
 	setAllowedCommands: (value: string[]) => void
 	setDeniedCommands: (value: string[]) => void
-	setAllowedMaxRequests: (value: number | undefined) => void
-	setAllowedMaxCost: (value: number | undefined) => void
-	setSoundEnabled: (value: boolean) => void
-	setSoundVolume: (value: number) => void
 	terminalShellIntegrationTimeout?: number
-	setTerminalShellIntegrationTimeout: (value: number) => void
 	terminalShellIntegrationDisabled?: boolean
-	setTerminalShellIntegrationDisabled: (value: boolean) => void
 	terminalZdotdir?: boolean
 	setTerminalZdotdir: (value: boolean) => void
-	setEnableCheckpoints: (value: boolean) => void
 	checkpointTimeout: number
-	setCheckpointTimeout: (value: number) => void
-	setWriteDelayMs: (value: number) => void
 	terminalOutputPreviewSize?: "small" | "medium" | "large"
-	setTerminalOutputPreviewSize: (value: "small" | "medium" | "large") => void
 	mcpEnabled: boolean
-	setMcpEnabled: (value: boolean) => void
-	setCurrentApiConfigName: (value: string) => void
-	setListApiConfigMeta: (value: ProviderSettingsEntry[]) => void
 	mode: Mode
 	setMode: (value: Mode) => void
 	setCustomModePrompts: (value: CustomModePrompts) => void
@@ -113,45 +99,27 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setApprovalMode: (value: ApprovalMode) => void
 	setApprovalModeBypassAcknowledged: (value: boolean) => void
 	customModes: ModeConfig[]
-	setCustomModes: (value: ModeConfig[]) => void
-	setMaxOpenTabsContext: (value: number) => void
 	maxWorkspaceFiles: number
-	setMaxWorkspaceFiles: (value: number) => void
 	setTelemetrySetting: (value: TelemetrySetting) => void
 	awsUsePromptCache?: boolean
-	setAwsUsePromptCache: (value: boolean) => void
 	maxImageFileSize: number
-	setMaxImageFileSize: (value: number) => void
 	maxTotalImageSize: number
-	setMaxTotalImageSize: (value: number) => void
 	machineId?: string
 	pinnedApiConfigs?: Record<string, boolean>
-	setPinnedApiConfigs: (value: Record<string, boolean>) => void
 	togglePinnedApiConfig: (configName: string) => void
 	setHistoryPreviewCollapsed: (value: boolean) => void
-	setReasoningBlockCollapsed: (value: boolean) => void
 	enterBehavior?: "send" | "newline"
-	setEnterBehavior: (value: "send" | "newline") => void
 	autoCondenseContext: boolean
-	setAutoCondenseContext: (value: boolean) => void
 	autoCondenseContextPercent: number
-	setAutoCondenseContextPercent: (value: number) => void
 	autoCondenseContextScope: NonNullable<ExtensionState["autoCondenseContextScope"]>
 	postTurnCondenseContextPercent: number
-	setAutoCondenseContextScope: (value: NonNullable<ExtensionState["autoCondenseContextScope"]>) => void
-	setPostTurnCondenseContextPercent: (value: number) => void
 	includeDiagnosticMessages?: boolean
-	setIncludeDiagnosticMessages: (value: boolean) => void
 	maxDiagnosticMessages?: number
-	setMaxDiagnosticMessages: (value: number) => void
 	includeTaskHistoryInEnhance?: boolean
 	setIncludeTaskHistoryInEnhance: (value: boolean) => void
 	includeCurrentTime?: boolean
-	setIncludeCurrentTime: (value: boolean) => void
 	includeCurrentCost?: boolean
-	setIncludeCurrentCost: (value: boolean) => void
 	showWorktreesInHomeScreen: boolean
-	setShowWorktreesInHomeScreen: (value: boolean) => void
 	getCachedTranscriptRevision: (taskId: string) => number | undefined
 	skills?: SkillMetadata[]
 }
@@ -1133,23 +1101,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setShowAnnouncement: (value) => setState((prevState) => ({ ...prevState, shouldShowAnnouncement: value })),
 		setAllowedCommands: (value) => setState((prevState) => ({ ...prevState, allowedCommands: value })),
 		setDeniedCommands: (value) => setState((prevState) => ({ ...prevState, deniedCommands: value })),
-		setAllowedMaxRequests: (value) => setState((prevState) => ({ ...prevState, allowedMaxRequests: value })),
-		setAllowedMaxCost: (value) => setState((prevState) => ({ ...prevState, allowedMaxCost: value })),
-		setSoundEnabled: (value) => setState((prevState) => ({ ...prevState, soundEnabled: value })),
-		setSoundVolume: (value) => setState((prevState) => ({ ...prevState, soundVolume: value })),
-		setEnableCheckpoints: (value) => setState((prevState) => ({ ...prevState, enableCheckpoints: value })),
-		setCheckpointTimeout: (value) => setState((prevState) => ({ ...prevState, checkpointTimeout: value })),
-		setWriteDelayMs: (value) => setState((prevState) => ({ ...prevState, writeDelayMs: value })),
-		setTerminalOutputPreviewSize: (value) =>
-			setState((prevState) => ({ ...prevState, terminalOutputPreviewSize: value })),
-		setTerminalShellIntegrationTimeout: (value) =>
-			setState((prevState) => ({ ...prevState, terminalShellIntegrationTimeout: value })),
-		setTerminalShellIntegrationDisabled: (value) =>
-			setState((prevState) => ({ ...prevState, terminalShellIntegrationDisabled: value })),
 		setTerminalZdotdir: (value) => setState((prevState) => ({ ...prevState, terminalZdotdir: value })),
-		setMcpEnabled: (value) => setState((prevState) => ({ ...prevState, mcpEnabled: value })),
-		setCurrentApiConfigName: (value) => setState((prevState) => ({ ...prevState, currentApiConfigName: value })),
-		setListApiConfigMeta,
 		setMode: (value: Mode) => setState((prevState) => ({ ...prevState, mode: value })),
 		setCustomModePrompts: (value) => setState((prevState) => ({ ...prevState, customModePrompts: value })),
 		setCustomSupportPrompts: (value) => setState((prevState) => ({ ...prevState, customSupportPrompts: value })),
@@ -1159,16 +1111,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setApprovalMode: (value) => setState((prevState) => ({ ...prevState, approvalMode: value })),
 		setApprovalModeBypassAcknowledged: (value) =>
 			setState((prevState) => ({ ...prevState, approvalModeBypassAcknowledged: value })),
-		setCustomModes: (value) => setState((prevState) => ({ ...prevState, customModes: value })),
-		setMaxOpenTabsContext: (value) => setState((prevState) => ({ ...prevState, maxOpenTabsContext: value })),
-		setMaxWorkspaceFiles: (value) => setState((prevState) => ({ ...prevState, maxWorkspaceFiles: value })),
 		setTelemetrySetting: (value) => setState((prevState) => ({ ...prevState, telemetrySetting: value })),
 		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showAlphaIgnoredFiles: value })),
-		setEnableSubfolderRules: (value) => setState((prevState) => ({ ...prevState, enableSubfolderRules: value })),
-		setAwsUsePromptCache: (value) => setState((prevState) => ({ ...prevState, awsUsePromptCache: value })),
-		setMaxImageFileSize: (value) => setState((prevState) => ({ ...prevState, maxImageFileSize: value })),
-		setMaxTotalImageSize: (value) => setState((prevState) => ({ ...prevState, maxTotalImageSize: value })),
-		setPinnedApiConfigs: (value) => setState((prevState) => ({ ...prevState, pinnedApiConfigs: value })),
 		togglePinnedApiConfig: (configId) =>
 			setState((prevState) => {
 				const currentPinned = prevState.pinnedApiConfigs || {}
@@ -1186,38 +1130,18 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 			}),
 		setHistoryPreviewCollapsed: (value) =>
 			setState((prevState) => ({ ...prevState, historyPreviewCollapsed: value })),
-		setReasoningBlockCollapsed: (value) =>
-			setState((prevState) => ({ ...prevState, reasoningBlockCollapsed: value })),
 		enterBehavior: state.enterBehavior ?? "send",
 		autoSteer: state.autoSteer === true,
-		setEnterBehavior: (value) => setState((prevState) => ({ ...prevState, enterBehavior: value })),
 		setHasOpenedModeSelector: (value) => setState((prevState) => ({ ...prevState, hasOpenedModeSelector: value })),
-		setAutoCondenseContext: (value) => setState((prevState) => ({ ...prevState, autoCondenseContext: value })),
-		setAutoCondenseContextPercent: (value) =>
-			setState((prevState) => ({ ...prevState, autoCondenseContextPercent: value })),
-		setAutoCondenseContextScope: (value) =>
-			setState((prevState) => ({ ...prevState, autoCondenseContextScope: value })),
-		setPostTurnCondenseContextPercent: (value) =>
-			setState((prevState) => ({ ...prevState, postTurnCondenseContextPercent: value })),
 		setProfileThresholds: (value) => setState((prevState) => ({ ...prevState, profileThresholds: value })),
 		includeDiagnosticMessages: state.includeDiagnosticMessages,
-		setIncludeDiagnosticMessages: (value) => {
-			setState((prevState) => ({ ...prevState, includeDiagnosticMessages: value }))
-		},
 		maxDiagnosticMessages: state.maxDiagnosticMessages,
-		setMaxDiagnosticMessages: (value) => {
-			setState((prevState) => ({ ...prevState, maxDiagnosticMessages: value }))
-		},
 		includeTaskHistoryInEnhance,
 		setIncludeTaskHistoryInEnhance,
 		includeCurrentTime,
-		setIncludeCurrentTime,
 		includeCurrentCost,
-		setIncludeCurrentCost,
 		skills,
 		showWorktreesInHomeScreen: state.showWorktreesInHomeScreen ?? true,
-		setShowWorktreesInHomeScreen: (value) =>
-			setState((prevState) => ({ ...prevState, showWorktreesInHomeScreen: value })),
 		getCachedTranscriptRevision,
 	}
 

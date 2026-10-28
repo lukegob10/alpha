@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest"
 
 import { resolveModelParameterApplicability, resolveOptionalOutputTokenLimit } from "../model-parameters.js"
-import { getCuratedProviderModels, type CuratedProvider } from "../provider-settings.js"
+import { curatedProviders, getCuratedProviderModels } from "../provider-settings.js"
 
 describe("curated provider request controls", () => {
-	it.each(["openai-native", "anthropic", "gemini", "xai", "openrouter"] satisfies CuratedProvider[])(
+	it.each(curatedProviders)(
 		"validates verified %s output ceilings without changing compatible endpoint behavior",
 		(provider) => {
 			for (const model of Object.values(getCuratedProviderModels(provider))) {
 				const maximum = model.maxTokens!
+				if (maximum <= 0) continue
 				const settings = { includeMaxTokens: true, modelMaxTokens: maximum + 1 }
 				expect(() => resolveOptionalOutputTokenLimit({ model, settings, enforceModelMaximum: true })).toThrow(
 					/model maximum/,
@@ -19,6 +20,8 @@ describe("curated provider request controls", () => {
 	)
 	it.each([
 		["openai-native", "openai-responses"],
+		["openai-codex", "openai-responses"],
+		["meta", "meta-responses"],
 		["anthropic", "anthropic-messages"],
 		["gemini", "gemini"],
 		["xai", "xai-responses"],
@@ -36,27 +39,25 @@ describe("curated provider request controls", () => {
 				expect(result.route).toBe(route)
 				expect(result.supportsTemperature).toBe(model.supportsTemperature === true)
 				expect(result.supportsVerbosity).toBe(
-					(provider === "openai-native" || provider === "openrouter") && model.supportsVerbosity === true,
+					(provider === "openai-native" || provider === "openai-codex" || provider === "openrouter") &&
+						model.supportsVerbosity === true,
 				)
 			}
 		}
 	})
 
-	it.each(["openai-native", "anthropic", "gemini", "xai", "openrouter"] satisfies CuratedProvider[])(
-		"does not grant controls from imported metadata for unknown %s models",
-		(provider) => {
-			expect(
-				resolveModelParameterApplicability({
-					provider,
-					modelId: "unknown-model",
-					model: {
-						contextWindow: 1,
-						supportsPromptCache: true,
-						supportsTemperature: true,
-						supportsVerbosity: true,
-					},
-				}),
-			).toEqual({ route: "unsupported", supportsTemperature: false, supportsVerbosity: false })
-		},
-	)
+	it.each(curatedProviders)("does not grant controls from imported metadata for unknown %s models", (provider) => {
+		expect(
+			resolveModelParameterApplicability({
+				provider,
+				modelId: "unknown-model",
+				model: {
+					contextWindow: 1,
+					supportsPromptCache: true,
+					supportsTemperature: true,
+					supportsVerbosity: true,
+				},
+			}),
+		).toEqual({ route: "unsupported", supportsTemperature: false, supportsVerbosity: false })
+	})
 })

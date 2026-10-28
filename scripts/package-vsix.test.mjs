@@ -20,13 +20,27 @@ import { packageVsix } from "./package-vsix.mjs"
 
 const { parse } = createRequire(new URL("../packages/evals/package.json", import.meta.url))("yaml")
 const releaseSha = "0123456789abcdef0123456789abcdef01234567"
+const releasePlatforms = [
+	{ os: "windows-latest", target: "win32-x64", native_index: true },
+	{ os: "windows-11-arm", target: "win32-arm64", native_index: true },
+	{ os: "macos-14", target: "darwin-arm64", native_index: true },
+	{ os: "macos-15-intel", target: "darwin-x64", native_index: false },
+	{ os: "ubuntu-latest", target: "linux-x64", native_index: true },
+	{ os: "ubuntu-24.04-arm", target: "linux-arm64", native_index: true },
+]
 
-function runRelease(root, { extraVsix = false } = {}) {
+function runRelease(root, { extraVsix = false, missingTarget, existingRelease = false } = {}) {
 	writeFileSync(path.join(root, "src", "package.json"), JSON.stringify({ version: "3.2.10" }))
 	writeFileSync(path.join(root, "CHANGELOG.md"), "# Changelog\n\n## 3.2.10\n\n- Release fixture.\n")
 	mkdirSync(path.join(root, "bin"))
-	const verifiedBytes = Buffer.from("verified Windows x64 package fixture")
-	writeFileSync(path.join(root, "bin", "alpha-3.2.10-win32-x64.vsix"), verifiedBytes)
+	const verifiedBytes = new Map()
+	for (const { target } of releasePlatforms) {
+		if (target === missingTarget) continue
+		const filename = `alpha-3.2.10-${target}.vsix`
+		const bytes = Buffer.from(`verified ${target} package fixture`)
+		verifiedBytes.set(filename, bytes)
+		writeFileSync(path.join(root, "bin", filename), bytes)
+	}
 	if (extraVsix) writeFileSync(path.join(root, "bin", "unexpected.vsix"), "unexpected package")
 	const workflow = parse(readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
 	const publication = workflow.jobs["publish-release"].steps.find((step) => step.name === "Create GitHub release")
@@ -34,7 +48,7 @@ function runRelease(root, { extraVsix = false } = {}) {
 $ErrorActionPreference = "Stop"
 function gh {
 	if ($args[0] -eq "release" -and $args[1] -eq "view") {
-		$global:LASTEXITCODE = 1
+		$global:LASTEXITCODE = ${existingRelease ? 0 : 1}
 		return
 	}
 	if ($args[0] -ne "release" -or $args[1] -ne "create") { throw "Unexpected GitHub invocation" }
@@ -146,61 +160,99 @@ test("the Docker evaluator installs the package produced for its host target", (
 	}
 })
 
-test("release publication waits for the verified Windows x64 package only", () => {
+test("release publication waits for all six verified native host packages", () => {
 	const manifest = JSON.parse(readFileSync(new URL("../src/package.json", import.meta.url), "utf8"))
 	assert.equal(manifest.scripts.vsix, "node ../scripts/package-vsix.mjs")
 	assert.equal(manifest.scripts["publish:marketplace"], undefined)
-	const workflow = readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
-	const packaging = workflow.split("    package-vsix:")[1]?.split("    publish-release:")[0]
-	assert.ok(packaging)
-	assert.match(packaging, /needs: release-vsix/u)
-	assert.match(packaging, /runs-on: windows-latest/u)
-	assert.doesNotMatch(packaging, /matrix:|matrix\./u)
-	assert.match(packaging, /run: pnpm vsix\s/u)
-	assert.match(
-		packaging,
-		/run: pnpm --dir src test services\/code-index\/vector-store\/__tests__\/lancedb-native\.spec\.ts/u,
+	const workflow = parse(readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
+	const packaging = workflow.jobs["package-vsix"]
+	assert.equal(packaging.needs, "release-vsix")
+	assert.equal(packaging["runs-on"], "${{ matrix.os }}")
+	assert.deepEqual(packaging.strategy, {
+		"fail-fast": false,
+		"max-parallel": 3,
+		matrix: { include: releasePlatforms },
+	})
+	assert.ok(packaging.steps.some((step) => step.run === "pnpm vsix"))
+	const nativeIndex = packaging.steps.find(
+		(step) => step.run === "pnpm --dir src test services/code-index/vector-store/__tests__/lancedb-native.spec.ts",
 	)
-	assert.ok(packaging.includes('--check-source --target "win32-x64"'))
-	assert.match(packaging, /name: alpha-vsix-win32-x64/u)
-	assert.doesNotMatch(packaging, /gh release create/u)
-	const publication = workflow.split("    publish-release:")[1]
-	assert.match(publication, /needs: package-vsix/u)
-	assert.match(publication, /name: alpha-vsix-win32-x64/u)
-	assert.ok(publication.includes('$targets = @("win32-x64")'))
-	assert.ok(publication.includes(".Count -ne $targets.Count"))
-	assert.match(publication, /Download the Windows x64 VSIX/u)
-	assert.doesNotMatch(workflow, /darwin-|linux-|win32-arm64|Intel macOS/u)
+	assert.equal(nativeIndex.if, "matrix.native_index")
+	const verification = packaging.steps.find((step) => step.id === "artifact")
+	assert.ok(verification.run.includes("bin/alpha-$version-${{ matrix.target }}.vsix"))
+	assert.ok(verification.run.includes('--check-source --target "${{ matrix.target }}"'))
+	const upload = packaging.steps.find((step) => step.uses === "actions/upload-artifact@v6")
+	assert.equal(upload.with.name, "alpha-vsix-${{ matrix.target }}")
+	assert.equal(upload.with.path, "${{ steps.artifact.outputs.path }}")
+	assert.equal(upload.with["if-no-files-found"], "error")
+	assert.ok(packaging.steps.indexOf(verification) < packaging.steps.indexOf(upload))
+	assert.ok(packaging.steps.every((step) => step["continue-on-error"] !== true))
+	assert.doesNotMatch(JSON.stringify(packaging), /gh release create/u)
+	const publication = workflow.jobs["publish-release"]
+	assert.equal(publication.needs, "package-vsix")
+	const download = publication.steps.find((step) => step.uses === "actions/download-artifact@v7")
+	assert.deepEqual(download.with, { pattern: "alpha-vsix-*", path: "bin", "merge-multiple": true })
 })
 
-test("publication keeps the historical title and filename while preserving the verified Windows package", () => {
+test("publication preserves every verified platform package and the historical release title", () => {
 	fixture(({ root }) => {
 		const { result, verifiedBytes } = runRelease(root)
 		assert.equal(result.status, 0, result.stderr || String(result.error))
 		const args = JSON.parse(readFileSync(path.join(root, "release-args.json"), "utf8").replace(/^\uFEFF/u, ""))
 		assert.deepEqual(args.slice(0, 3), ["release", "create", "vsix-v3.2.10-0123456"])
-		assert.equal(path.basename(args[3]), "alpha-3.2.10.vsix")
-		assert.deepEqual(args.slice(4, 6), ["--title", "Alpha VSIX v3.2.10 (0123456)"])
-		assert.equal(args[6], "--notes")
-		assert.match(args[7], /code --install-extension alpha-3\.2\.10\.vsix/u)
-		assert.deepEqual(args.slice(8), ["--target", releaseSha])
-		assert.deepEqual(readdirSync(path.join(root, "bin")), ["alpha-3.2.10.vsix"])
-		assert.deepEqual(readFileSync(args[3]), verifiedBytes)
+		const assets = args.slice(3, 3 + releasePlatforms.length)
+		assert.deepEqual(
+			assets.map((asset) => path.basename(asset)),
+			[...verifiedBytes.keys()],
+		)
+		const metadata = args.slice(3 + releasePlatforms.length)
+		assert.deepEqual(metadata.slice(0, 3), ["--title", "Alpha VSIX v3.2.10 (0123456)", "--notes"])
+		assert.match(metadata[3], /code --install-extension <downloaded-file\.vsix>/u)
+		assert.match(metadata[3], /Intel macOS.*Qdrant/u)
+		assert.deepEqual(metadata.slice(4), ["--target", releaseSha])
+		assert.deepEqual(readdirSync(path.join(root, "bin")).sort(), [...verifiedBytes.keys()].sort())
+		for (const asset of assets) assert.deepEqual(readFileSync(asset), verifiedBytes.get(path.basename(asset)))
 	})
 })
 
-test("publication refuses unexpected extra packages before publishing or renaming", () => {
+test("publication refuses unexpected extra packages before publishing", () => {
 	fixture(({ root }) => {
-		const { result } = runRelease(root, { extraVsix: true })
+		const { result, verifiedBytes } = runRelease(root, { extraVsix: true })
 		assert.notEqual(result.status, 0)
-		assert.match(result.stderr, /Release must contain exactly one Windows x64 VSIX/u)
+		assert.match(result.stderr, /Release artifacts differ from the supported platform matrix/u)
 		assert.equal(existsSync(path.join(root, "release-args.json")), false)
-		assert.deepEqual(readdirSync(path.join(root, "bin")).sort(), ["alpha-3.2.10-win32-x64.vsix", "unexpected.vsix"])
+		assert.deepEqual(
+			readdirSync(path.join(root, "bin")).sort(),
+			[...verifiedBytes.keys(), "unexpected.vsix"].sort(),
+		)
+	})
+})
+
+for (const { target } of releasePlatforms) {
+	test(`publication refuses a release missing its ${target} package`, () => {
+		fixture(({ root }) => {
+			const { result } = runRelease(root, { missingTarget: target })
+			assert.notEqual(result.status, 0)
+			assert.match(result.stderr, new RegExp(`alpha-3\\.2\\.10-${target}\\.vsix`, "u"))
+			assert.equal(existsSync(path.join(root, "release-args.json")), false)
+		})
+	})
+}
+
+test("publication refuses to overwrite an existing release", () => {
+	fixture(({ root }) => {
+		const { result, verifiedBytes } = runRelease(root, { existingRelease: true })
+		assert.notEqual(result.status, 0)
+		assert.match(result.stderr, /already exists; refusing to overwrite/u)
+		assert.equal(existsSync(path.join(root, "release-args.json")), false)
+		for (const [filename, bytes] of verifiedBytes) {
+			assert.deepEqual(readFileSync(path.join(root, "bin", filename)), bytes)
+		}
 	})
 })
 
 test("only release publication receives a repository write token", () => {
-	for (const file of ["code-qa.yml", "evals.yml", "release-vsix.yml"]) {
+	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), "utf8")
 		assert.match(workflow, /^permissions:\r?\n {4}contents: read$/mu, file)
 		if (file !== "release-vsix.yml") assert.doesNotMatch(workflow, /contents: write/u, file)

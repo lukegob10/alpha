@@ -6,6 +6,7 @@ import {
 	getVscodeLlmModelId,
 	getVscodeLlmModelInfo,
 	mergeVscodeLlmModels,
+	vscodeLlmDefaultModelId,
 	vscodeLlmModels,
 } from "../providers/vscode-llm.js"
 
@@ -201,14 +202,36 @@ describe("supported provider model catalogs", () => {
 			expect(liveModels).toEqual(original)
 		})
 
-		it("keeps the Sol 6.1 capability catalog selector canonical without creating availability", () => {
+		it("keeps the Sol 6.1 setup selector canonical without inventing a live routing identity", () => {
 			expect(getVscodeLlmCatalogModels()).toContainEqual({
 				vendor: "copilot",
 				family: "gpt-6.1-sol",
 				name: "GPT-6.1 Sol",
 			})
-			expect(mergeVscodeLlmModels([])).toEqual([])
 			expect(getVscodeLlmModelInfo({ vendor: "other", family: "gpt-6.1-sol" })).toBeUndefined()
+		})
+
+		it("provides every supported setup choice and its capabilities without host discovery", () => {
+			const catalog = getVscodeLlmCatalogModels()
+			const catalogIds = catalog.map(getVscodeLlmModelId)
+
+			expect(catalogIds).toEqual(["gpt-6-astra", "gpt-6.1-sol", "claude-sonnet-5.5", "claude-opus-5.5"])
+			expect(new Set(catalogIds).size).toBe(catalog.length)
+			expect(catalogIds).toContain(vscodeLlmDefaultModelId)
+			for (const selector of catalog) {
+				const info = getVscodeLlmModelInfo(selector)
+				expect(info).toBeDefined()
+				expect(info?.deprecated).not.toBe(true)
+				expect(selector).toEqual({ vendor: "copilot", family: expect.any(String), name: info?.name })
+			}
+			expect(getVscodeLlmModelInfo(catalog.find((model) => model.family === "gpt-6.1-sol")!)).toMatchObject({
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+			})
+			expect(getVscodeLlmModelInfo(catalog.find((model) => model.family === "claude-opus-5.5")!)).toMatchObject({
+				supportsReasoningEffort: ["low", "medium", "high", "xhigh", "max"],
+				requiredReasoningEffort: true,
+				reasoningEffort: "medium",
+			})
 		})
 
 		it("preserves distinct live model IDs and filters retired models", () => {
@@ -227,7 +250,7 @@ describe("supported provider model catalogs", () => {
 			expect(models.some((model) => JSON.stringify(model).includes("mythos"))).toBe(false)
 		})
 
-		it("does not make static catalog entries selectable without live models", () => {
+		it("does not inject configured setup choices into host discovery results", () => {
 			expect(mergeVscodeLlmModels([])).toEqual([])
 		})
 
@@ -242,22 +265,14 @@ describe("supported provider model catalogs", () => {
 			).toBe(922_000)
 		})
 
-		it("provides a current catalog fallback without retired models", () => {
+		it("provides supported setup choices without retired models", () => {
 			const catalogFamilies = getVscodeLlmCatalogModels().map((model) => model.family)
 			expect(catalogFamilies).toEqual(
-				expect.arrayContaining([
-					"gpt-5.3-codex",
-					"gpt-5.5",
-					"gpt-5.6-luna",
-					"gpt-5.6-sol",
-					"gpt-5.6-terra",
-					"claude-opus-4.6",
-					"claude-opus-4.7",
-					"claude-opus-4.8",
-					"claude-sonnet-4.6",
-				]),
+				expect.arrayContaining(["gpt-6-astra", "gpt-6.1-sol", "claude-opus-5.5", "claude-sonnet-5.5"]),
 			)
 			expect(catalogFamilies).not.toContain("gpt-5.4-nano")
+			expect(catalogFamilies).not.toContain("gpt-5.5")
+			expect(getVscodeLlmModelInfo({ vendor: "copilot", id: "copilot-gpt-5.5-standard" })?.deprecated).toBe(true)
 			expect(catalogFamilies).not.toContain("claude-mythos-5")
 		})
 	})

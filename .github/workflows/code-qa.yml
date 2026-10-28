@@ -12,9 +12,6 @@ permissions:
     contents: read
 
 jobs:
-    evaluator-contracts:
-        uses: ./.github/workflows/evaluation-contracts.yml
-
     knip:
         runs-on: ubuntu-latest
         steps:

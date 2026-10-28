@@ -39,6 +39,65 @@ const loader = {
 const parentApiConfiguration = profiles[0]
 
 describe("resolveSubagentModelRoute", () => {
+	it.each(["openai-native", "openai-codex", "anthropic", "gemini", "xai", "openrouter", "bedrock", "meta"] as const)(
+		"captures curated %s model overrides without changing credentials or the parent",
+		async (apiProvider) => {
+			const parent = { apiProvider, apiModelId: "parent-model", apiKey: "profile-secret" }
+			const result = await resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration: parent,
+				profileLoader: loader,
+				requestedModelId: "selected-child-model",
+			})
+			expect(result.apiConfiguration).toMatchObject({
+				apiProvider,
+				apiModelId: "selected-child-model",
+				apiKey: "profile-secret",
+			})
+			expect(result.route.modelId).toBe("selected-child-model")
+			expect(parent.apiModelId).toBe("parent-model")
+		},
+	)
+	it.each([
+		{ selector: { vendor: "copilot", family: "gpt-6-luna" }, modelId: "gpt-6-luna" },
+		{
+			selector: { vendor: "copilot", family: "gpt-6-luna", id: "opaque-copilot-route" },
+			modelId: "opaque-copilot-route",
+		},
+	])(
+		"preserves Copilot model identity $modelId in inherited and saved child routes",
+		async ({ selector, modelId }) => {
+			const profile = {
+				id: "copilot-profile-id",
+				name: "Copilot",
+				apiProvider: "vscode-lm" as const,
+				apiModelId: "stale-generic-model",
+				vsCodeLmModelSelector: selector,
+			}
+			const profileLoader = { getProfile: vi.fn(async () => structuredClone(profile)) }
+			const inherited = await resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration: profile,
+				parentApiConfigName: profile.name,
+				parentReasoningPreference: { kind: "effort", effort: "high" },
+				profileLoader,
+			})
+			const saved = await resolveSubagentModelRoute({
+				role: "review",
+				parentApiConfiguration,
+				defaultProfileId: profile.id,
+				profileLoader,
+			})
+
+			expect(inherited.route).toMatchObject({ source: "parent", modelId })
+			expect(saved.route).toMatchObject({ source: "default", profileId: profile.id, modelId })
+			expect(inherited.apiConfiguration.vsCodeLmModelSelector).toEqual(selector)
+			expect(saved.apiConfiguration.vsCodeLmModelSelector).toEqual(selector)
+			expect(inherited.reasoningPreference).toEqual({ kind: "effort", effort: "high" })
+			expect(saved.reasoningPreference).toEqual({ kind: "default" })
+		},
+	)
+
 	it("captures the invoking task preference before an awaited profile lookup", async () => {
 		const preference: TaskReasoningPreference = { kind: "effort", effort: "high" }
 		let release!: (profile: (typeof profiles)[number]) => void
@@ -419,6 +478,73 @@ describe("resolveSubagentModelRoute", () => {
 		expect(result.apiConfiguration.vsCodeLmModelSelector).toEqual({ id: "copilot-gpt-new" })
 		expect(result.apiConfiguration.enableReasoningEffort).toBe(false)
 		expect(result.route.modelId).toBe("copilot-gpt-new")
+	})
+
+	describe("catalog Copilot model overrides", () => {
+		const modelOverrideFields = ["requestedModelId", "defaultModelId", "agentModelId"] as const
+
+		describe.each(["gpt-6.1-sol", "gpt-6-astra", "claude-opus-5.5"])("selecting %s", (modelId) => {
+			it.each(modelOverrideFields)("retains catalog binding for %s", async (field) => {
+				const selector = { vendor: "copilot", family: "gpt-6.1-sol" }
+				const parent = {
+					apiProvider: "vscode-lm" as const,
+					vsCodeLmModelSelector: selector,
+					enableReasoningEffort: true,
+					reasoningEffort: "medium" as const,
+				}
+				const result = await resolveSubagentModelRoute({
+					role: "worker",
+					parentApiConfiguration: parent,
+					parentReasoningPreference: { kind: "effort", effort: "high" },
+					profileLoader: loader,
+					[field]: modelId,
+				})
+				const family = modelId
+
+				expect(result.apiConfiguration.vsCodeLmModelSelector).toEqual({ vendor: "copilot", family })
+				expect(result.route).toMatchObject({ source: "spawn", modelId: family, requestedModelId: modelId })
+				expect(result.reasoningPreference).toEqual(
+					field === "agentModelId" ? { kind: "effort", effort: "high" } : { kind: "default" },
+				)
+				expect(result.apiConfiguration.reasoningEffort).toBe(field === "agentModelId" ? "medium" : undefined)
+				expect(parent.vsCodeLmModelSelector).toEqual(selector)
+				expect(parent.reasoningEffort).toBe("medium")
+			})
+		})
+
+		it.each(modelOverrideFields)("keeps unknown model IDs exact for %s", async (field) => {
+			const result = await resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration: {
+					apiProvider: "vscode-lm",
+					vsCodeLmModelSelector: { vendor: "copilot", family: "gpt-6-luna" },
+				},
+				profileLoader: loader,
+				[field]: "opaque-copilot-route",
+			})
+
+			expect(result.apiConfiguration.vsCodeLmModelSelector).toEqual({ id: "opaque-copilot-route" })
+			expect(result.route.modelId).toBe("opaque-copilot-route")
+		})
+
+		describe.each([
+			{ label: "pinned ID", selector: { vendor: "copilot", family: "gpt-6-luna", id: "opaque-route" } },
+			{ label: "pinned version", selector: { vendor: "copilot", family: "gpt-6-luna", version: "1.0" } },
+			{ label: "legacy family", selector: { vendor: "copilot", family: "legacy-family" } },
+			{ label: "other vendor", selector: { vendor: "other", family: "gpt-6-luna" } },
+		])("a $label profile", ({ selector }) => {
+			it.each(modelOverrideFields)("preserves exact override semantics for %s", async (field) => {
+				const result = await resolveSubagentModelRoute({
+					role: "worker",
+					parentApiConfiguration: { apiProvider: "vscode-lm", vsCodeLmModelSelector: selector },
+					profileLoader: loader,
+					[field]: "gpt-6-sol",
+				})
+
+				expect(result.apiConfiguration.vsCodeLmModelSelector).toEqual({ id: "gpt-6-sol" })
+				expect(result.route.modelId).toBe("gpt-6-sol")
+			})
+		})
 	})
 
 	it("rejects a model override when the provider has no model selection", async () => {

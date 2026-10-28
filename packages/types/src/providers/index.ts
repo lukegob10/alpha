@@ -1,5 +1,8 @@
 export * from "./openai.js"
 export * from "./openai-native.js"
+export * from "./openai-codex.js"
+export * from "./meta.js"
+export * from "./bedrock.js"
 export * from "./anthropic.js"
 export * from "./gemini.js"
 export * from "./xai.js"
@@ -10,6 +13,9 @@ export * from "./vscode-llm.js"
 
 import { stellarDefaultModelId } from "./stellar.js"
 import { openAiNativeDefaultModelId } from "./openai-native.js"
+import { openAiCodexDefaultModelId } from "./openai-codex.js"
+import { metaDefaultModelId } from "./meta.js"
+import { bedrockDefaultModelId } from "./bedrock.js"
 import { anthropicDefaultModelId } from "./anthropic.js"
 import { geminiDefaultModelId } from "./gemini.js"
 import { xaiDefaultModelId } from "./xai.js"
@@ -35,6 +41,12 @@ export function getProviderDefaultModelId(provider: ProviderName): string {
 			return ""
 		case "openai-native":
 			return openAiNativeDefaultModelId
+		case "openai-codex":
+			return openAiCodexDefaultModelId
+		case "meta":
+			return metaDefaultModelId
+		case "bedrock":
+			return bedrockDefaultModelId
 		case "anthropic":
 			return anthropicDefaultModelId
 		case "gemini":

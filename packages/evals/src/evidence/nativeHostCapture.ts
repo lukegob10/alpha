@@ -852,16 +852,24 @@ async function verifyProfile(userDataDir: string): Promise<void> {
 }
 async function listTaskIds(storage: string): Promise<string[]> {
 	try {
-		await realDirectory(path.join(storage, "tasks"))
-		const entries = await fs.readdir(path.join(storage, "tasks"), { withFileTypes: true })
-		if (
-			entries.length > 2000 ||
-			entries.some(
-				(entry) => entry.isSymbolicLink() || !entry.isDirectory() || !taskId.safeParse(entry.name).success,
-			)
-		)
-			throw new Error("Native task inventory is not bounded and owned")
-		return entries.map(({ name }) => name).sort()
+		const directory = path.join(storage, "tasks")
+		await realDirectory(directory)
+		const entries = await fs.readdir(directory, { withFileTypes: true })
+		if (entries.length > 2000) throw new Error("Native task inventory is not bounded and owned")
+		const ids: string[] = []
+		for (const entry of entries) {
+			if (entry.name === "_index.json" && entry.isFile() && !entry.isSymbolicLink()) {
+				// TaskHistoryStore's derived cache is metadata, never an authority for captured task IDs.
+				const file = path.join(directory, entry.name)
+				if ((await fs.lstat(file)).nlink !== 1) throw new Error("Native task index must not be linked")
+				await readBoundedFile(file, 1024 * 1024)
+				continue
+			}
+			if (entry.isSymbolicLink() || !entry.isDirectory() || !taskId.safeParse(entry.name).success)
+				throw new Error("Native task inventory is not bounded and owned")
+			ids.push(entry.name)
+		}
+		return ids.sort()
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return []
 		throw error
@@ -953,6 +961,12 @@ function captureRunner(
 					workspace,
 					"-c",
 					"core.fsmonitor=false",
+					// The baseline is copied immediately after commit; detached housekeeping
+					// must not keep creating or removing files after a Git command settles.
+					"-c",
+					"maintenance.auto=false",
+					"-c",
+					"gc.auto=0",
 					"-c",
 					"core.longpaths=true",
 					"-c",

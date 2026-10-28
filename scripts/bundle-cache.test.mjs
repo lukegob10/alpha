@@ -112,6 +112,7 @@ test("bundle cache restores every owned asset and tracks external copy inputs", 
 		await write("webview-ui/src/index.ts", "export const view = 'fixture'\n")
 		for (const name of ["README.md", "CHANGELOG.md", "LICENSE"]) await write(name, `${name} source`)
 		await write("webview-ui/audio/notification.wav", "source audio")
+		await write("scripts/extension-build-provenance.mjs", "fixture provenance builder")
 		await write(
 			"src/bundle.mjs",
 			`import { copyFile, mkdir, writeFile } from "node:fs/promises"
@@ -175,7 +176,13 @@ await writeFile("../src/webview-ui/build/assets/index.js", "fixture webview")
 		assert.equal(await read("src/dist/extension.js"), "fixture extension")
 
 		let previousHash = (await bundleTask()).hash
-		for (const relative of ["README.md", "CHANGELOG.md", "LICENSE", "webview-ui/audio/notification.wav"]) {
+		for (const relative of [
+			"README.md",
+			"CHANGELOG.md",
+			"LICENSE",
+			"webview-ui/audio/notification.wav",
+			"scripts/extension-build-provenance.mjs",
+		]) {
 			await write(relative, `${relative} changed`)
 			const nextHash = (await bundleTask()).hash
 			assert.notEqual(nextHash, previousHash, `${relative} must invalidate copied bundle assets`)

@@ -12,6 +12,12 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: vi.fn(),
 }))
 
+vi.mock("../ModelInfoView", () => ({
+	ModelInfoView: ({ modelInfo }: { modelInfo?: ModelInfo }) => (
+		<div data-testid="selected-model-info">{modelInfo?.contextWindow}</div>
+	),
+}))
+
 Element.prototype.scrollIntoView = vi.fn()
 
 describe("ModelPicker", () => {
@@ -54,6 +60,31 @@ describe("ModelPicker", () => {
 			</QueryClientProvider>,
 		)
 	}
+
+	it("uses catalog metadata when the selected-model override is undefined", () => {
+		render(
+			<ModelPicker
+				{...defaultProps}
+				apiConfiguration={{ apiProvider: "openai", openAiModelId: "model1" }}
+				selectedModelInfoOverride={undefined}
+			/>,
+		)
+
+		expect(screen.getByTestId("selected-model-info")).toHaveTextContent("200000")
+	})
+
+	it("suppresses catalog and configured-model metadata when the override is explicitly null", () => {
+		render(
+			<ModelPicker
+				{...defaultProps}
+				apiConfiguration={{ apiProvider: "openai", openAiModelId: "model1" }}
+				selectedModelInfoOverride={null}
+			/>,
+		)
+
+		expect(screen.queryByTestId("selected-model-info")).not.toBeInTheDocument()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+	})
 
 	beforeEach(() => {
 		vi.clearAllMocks()

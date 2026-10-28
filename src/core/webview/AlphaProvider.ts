@@ -5,6 +5,7 @@ import {
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
 import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../agent/TaskReasoning"
+import { ChatGptAuthService } from "../../services/chatgpt/ChatGptAuthService"
 import { TaskHistoryNavigator } from "./TaskHistoryNavigator"
 import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { extractUserRequestText } from "../agent/requestWorkClass"
@@ -74,6 +75,7 @@ import {
 	type TokenUsage,
 	type ToolUsage,
 	type ExtensionMessage,
+	type ChatGptAuthStatus,
 	type ExtensionState,
 	type QueuedMessage,
 	type SubagentGroupState,
@@ -118,6 +120,9 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
+	getProviderDefaultModelId,
+	getCuratedModelInfo,
+	isCuratedProvider,
 	PROVIDER_SETTINGS_KEYS,
 	vertexModels,
 	vertexDefaultModelId,
@@ -985,6 +990,13 @@ export class AlphaProvider
 	): Promise<TaskReasoningProjection> {
 		const requested = taskReasoningPreferenceSchema.parse(preference)
 		const provider = configuration.apiProvider ?? "vertex"
+		if (isCuratedProvider(provider)) {
+			const id = getModelId(configuration) ?? getProviderDefaultModelId(provider)
+			// Preview the same route-specific catalog used at admission. Stale custom
+			// metadata must not lend capabilities to another provider or a removed model.
+			const info = getCuratedModelInfo(provider, id) ?? openAiModelInfoSaneDefaults
+			return resolveTaskReasoning(configuration, requested, { id, info }).state
+		}
 		if (provider !== "vscode-lm") {
 			const id =
 				provider === "openai"
@@ -1119,7 +1131,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.13-alpha-cleanup-and-new-chat"
+	public readonly latestAnnouncementId = "october-2026-v3.2.14-frontier-providers-and-branding"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1620,6 +1632,17 @@ export class AlphaProvider
 			outcome.status === "rejected" ? [outcome.reason] : [],
 		)
 		if (failures.length) throw new AggregateError(failures, "Task provider cleanup failed")
+	}
+
+	/** Account credentials are host-owned; every open settings surface receives the same public status. */
+	static async publishChatGptAuthStatus(status: ChatGptAuthStatus): Promise<void> {
+		await Promise.allSettled(
+			[...this.activeInstances]
+				.filter((provider) => !provider._disposed)
+				.map((provider) =>
+					provider.postMessageToWebview({ type: "chatGptAuthStatus", chatGptAuthStatus: status }),
+				),
+		)
 	}
 
 	dispose(): Promise<void> {
@@ -2482,6 +2505,11 @@ export class AlphaProvider
 			"implementPlan",
 		])
 		const immediateControlTypes = new Set<WebviewMessage["type"]>([
+			"chatGptAuthStatus",
+			"chatGptSignIn",
+			"chatGptCancelSignIn",
+			"chatGptSignOut",
+			"chatGptSelectAccount",
 			// A recreated webview needs its initial state even while an older request is still running.
 			"webviewDidLaunch",
 			"enhancePrompt",
@@ -2504,7 +2532,7 @@ export class AlphaProvider
 			)
 		}
 		const run = (message: WebviewMessage) =>
-			message.type === "webviewDidLaunch"
+			message.type === "webviewDidLaunch" || message.type.startsWith("chatGpt")
 				? webviewMessageHandler(this, message, this.marketplaceManager, { isCurrentWebview })
 				: webviewMessageHandler(this, message, this.marketplaceManager)
 		const failTicketSearch = (requestId: string) =>
@@ -5853,6 +5881,7 @@ export class AlphaProvider
 			return
 		}
 
+		await ChatGptAuthService.tryGetInstance()?.resetAccounts()
 		await this.contextProxy.resetAllState()
 		await this.refreshMemorySettings()
 		await this.providerSettingsManager.resetAllConfigs()

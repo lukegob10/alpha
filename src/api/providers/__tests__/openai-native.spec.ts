@@ -3,7 +3,7 @@ import { buildOpenAiResponsesInput } from "../openai-responses"
 import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
 
-const optionalReasoningModels = ["gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] as const
+const frontierReasoningModels = ["gpt-6.1-sol", "gpt-6-astra"] as const
 
 const mocks = vi.hoisted(() => ({
 	create: vi.fn(),
@@ -102,7 +102,7 @@ describe("native OpenAI provider", () => {
 		})
 	})
 
-	it.each(optionalReasoningModels)(
+	it.each(frontierReasoningModels)(
 		"uses Responses and the medium default for %s task and auxiliary requests",
 		async (id) => {
 			const handler = new OpenAiNativeHandler({ openAiNativeApiKey: "key", apiModelId: id })
@@ -116,7 +116,7 @@ describe("native OpenAI provider", () => {
 		},
 	)
 
-	it.each(optionalReasoningModels)("sends an explicit none effort for %s without changing the model", async (id) => {
+	it.each(frontierReasoningModels)("retains required reasoning for %s when saved effort is none", async (id) => {
 		const handler = new OpenAiNativeHandler({
 			openAiNativeApiKey: "key",
 			apiModelId: id,
@@ -125,11 +125,11 @@ describe("native OpenAI provider", () => {
 		await collect(handler.createMessage("", []))
 		await handler.completePrompt("Enhance")
 		for (const [request] of mocks.create.mock.calls) {
-			expect(request).toMatchObject({ model: id, reasoning: { effort: "none" } })
+			expect(request).toMatchObject({ model: id, reasoning: { effort: "medium" } })
 		}
 	})
 
-	it.each(optionalReasoningModels)("translates %s task Off into an explicit none wire value", async (id) => {
+	it.each(frontierReasoningModels)("retains %s required reasoning after task Off is requested", async (id) => {
 		const configuration = { apiProvider: "openai-native" as const, openAiNativeApiKey: "key", apiModelId: id }
 		const handler = new OpenAiNativeHandler(configuration)
 		const resolved = resolveTaskReasoning(configuration, { kind: "off" }, handler.getModel())
@@ -138,12 +138,12 @@ describe("native OpenAI provider", () => {
 		await handler.completePrompt("Enhance")
 		expect(configuration).not.toHaveProperty("reasoningEffort")
 		for (const [request] of mocks.create.mock.calls) {
-			expect(request).toMatchObject({ model: id, reasoning: { effort: "none" } })
+			expect(request).toMatchObject({ model: id, reasoning: { effort: "medium" } })
 		}
 	})
 
-	it.each(optionalReasoningModels)(
-		"preserves a disabled %s saved profile as none for both request kinds",
+	it.each(frontierReasoningModels)(
+		"uses the %s required default for a saved disabled profile on both request kinds",
 		async (id) => {
 			const handler = new OpenAiNativeHandler({
 				openAiNativeApiKey: "key",
@@ -154,20 +154,27 @@ describe("native OpenAI provider", () => {
 			await collect(handler.createMessage("", []))
 			await handler.completePrompt("Enhance")
 			for (const [request] of mocks.create.mock.calls) {
-				expect(request).toMatchObject({ model: id, reasoning: { effort: "none" } })
+				expect(request).toMatchObject({ model: id, reasoning: { effort: "medium" } })
 			}
 		},
 	)
 
-	it.each(["", " ", "__proto__", "gpt-6.1-sol-preview", "unknown-model"])(
-		"rejects unsupported model %s before constructing a transport",
-		(apiModelId) => {
-			expect(() => new OpenAiNativeHandler({ apiModelId, openAiNativeApiKey: "key" })).toThrow(
-				"Unsupported OpenAI model",
-			)
-			expect(mocks.construct).not.toHaveBeenCalled()
-		},
-	)
+	it.each([
+		"",
+		" ",
+		"__proto__",
+		"gpt-6.1-sol-preview",
+		"unknown-model",
+		"gpt-6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-5.6-luna",
+	])("rejects unsupported model %s before constructing a transport", (apiModelId) => {
+		expect(() => new OpenAiNativeHandler({ apiModelId, openAiNativeApiKey: "key" })).toThrow(
+			"Unsupported OpenAI model",
+		)
+		expect(mocks.construct).not.toHaveBeenCalled()
+	})
 
 	it("rejects missing native credentials instead of borrowing the compatible key", () => {
 		expect(() => new OpenAiNativeHandler({ openAiApiKey: "compatible-key" })).toThrow("OpenAI API key is required")

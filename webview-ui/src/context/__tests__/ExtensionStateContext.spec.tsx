@@ -433,7 +433,7 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
 
 		act(() => {
-			dispatchExtensionState({ apiConfiguration: { apiProvider: "openai-codex" } })
+			dispatchExtensionState({ apiConfiguration: { apiProvider: "ollama" } })
 		})
 		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
 
@@ -445,6 +445,27 @@ describe("ExtensionStateContext", () => {
 
 		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
 	})
+
+	it.each(["openai-codex", "bedrock"] as const)(
+		"keeps a configured %s draft out of initial provider setup",
+		(apiProvider) => {
+			render(
+				<ExtensionStateContextProvider>
+					<WelcomeStateTestComponent />
+				</ExtensionStateContextProvider>,
+			)
+
+			act(() => {
+				dispatchExtensionState({
+					apiConfiguration: { apiProvider },
+					currentView: { type: "newTaskDraft" },
+					taskStateSeq: 1,
+				})
+			})
+
+			expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+		},
+	)
 
 	it("never infers missing provider setup from an initial queue fast-path", () => {
 		render(

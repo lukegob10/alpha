@@ -11,6 +11,7 @@ import {
 	StandardTooltip,
 } from "@/components/ui"
 import { useAppTranslation } from "@/i18n/TranslationContext"
+import AlphaHero from "@/components/welcome/AlphaHero"
 
 export interface ChatToolbarProps {
 	navigation?: ReactNode
@@ -40,6 +41,7 @@ const ChatToolbar = ({
 }: ChatToolbarProps) => {
 	const { t } = useAppTranslation()
 	const hasNativeActions = renderContext === "sidebar"
+	// VS Code 1.125.0/1.138.0 render the native sidebar title as plain text; avoid a second branding row.
 	if (hasNativeActions && !navigation) return null
 	const actions = [
 		{ label: t("common:chatToolbar.newChat"), Icon: SquarePen, onClick: onNewChat },
@@ -52,7 +54,10 @@ const ChatToolbar = ({
 			role="group"
 			aria-label={t("common:chatToolbar.label")}
 			className="chat-toolbar flex h-7 min-w-0 shrink-0 items-center gap-px px-2 py-px">
-			<div className="flex min-w-0 flex-1 items-center gap-1">{navigation}</div>
+			<div className="flex min-w-0 flex-1 items-center gap-2">
+				{!hasNativeActions && <AlphaHero />}
+				{navigation}
+			</div>
 			{!hasNativeActions &&
 				actions.map(({ label, Icon, onClick }) => (
 					<StandardTooltip key={label} content={label} side="bottom">

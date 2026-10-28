@@ -67,6 +67,7 @@ import { getProviderProfileUnavailableMessage } from "./providerProfileErrors"
 import type { Task } from "../task/Task"
 import { handleCheckpointRestoreOperation, restartTaskFromMessage } from "./checkpointRestoreHandler"
 import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
+import { handleChatGptAuthMessage } from "./chatGptAuthMessageHandler"
 import { generateErrorDiagnostics } from "./diagnosticsHandler"
 import {
 	handleRequestSkills,
@@ -609,6 +610,13 @@ export const webviewMessageHandler = async (
 	}
 
 	switch (message.type) {
+		case "chatGptAuthStatus":
+		case "chatGptSignIn":
+		case "chatGptCancelSignIn":
+		case "chatGptSignOut":
+		case "chatGptSelectAccount":
+			await handleChatGptAuthMessage(provider, message, options?.isCurrentWebview)
+			break
 		case "webviewUiReady":
 			if (
 				process.env.ALPHA_TASK_OBSERVABILITY === "1" &&

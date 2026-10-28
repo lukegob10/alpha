@@ -13,6 +13,10 @@ export function checkExistKey(config: ProviderSettings | undefined) {
 	if (!config.apiProvider || !isProviderName(config.apiProvider)) {
 		return false
 	}
+	// Authentication is host-owned for ChatGPT; AWS can use its credential chain.
+	// Neither route stores an API key in the provider profile.
+	if (config.apiProvider === "openai-codex") return true
+	if (config.apiProvider === "bedrock") return config.awsRegion === undefined || Boolean(config.awsRegion.trim())
 
 	// Check all secret keys from the centralized SECRET_STATE_KEYS array.
 	const providerSecretKeys = SECRET_STATE_KEYS
