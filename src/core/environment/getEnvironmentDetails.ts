@@ -92,7 +92,7 @@ export async function captureEnvironmentDetails(
 		workspaceRoots,
 		maxFiles,
 		maxTabs,
-		state?.showRooIgnoredFiles,
+		state?.showAlphaIgnoredFiles,
 		alphaTask.alphaIgnoreController?.alphaIgnoreContent,
 	])
 	const full = context.requiresFullSnapshot(identity)
@@ -148,7 +148,7 @@ export async function captureEnvironmentDetails(
 		)
 	}
 	if (state?.includeCurrentCost ?? true) {
-		const { totalCost } = getApiMetrics(alphaTask.clineMessages)
+		const { totalCost } = getApiMetrics(alphaTask.alphaMessages)
 		add("Current Cost", totalCost !== null ? `$${totalCost.toFixed(2)}` : "(Not available)")
 	}
 	if (state?.apiConfiguration?.todoListEnabled ?? true) {
@@ -203,7 +203,7 @@ export async function captureEnvironmentDetails(
 				files.filter((file) => !isPrivate(file)),
 				hitLimit,
 				alphaTask.alphaIgnoreController,
-				state?.showRooIgnoredFiles ?? false,
+				state?.showAlphaIgnoredFiles ?? false,
 			)
 		}
 	}

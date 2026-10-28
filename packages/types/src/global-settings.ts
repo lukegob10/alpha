@@ -220,7 +220,7 @@ export const globalSettingsSchema = z.object({
 
 	maxOpenTabsContext: z.number().optional(),
 	maxWorkspaceFiles: z.number().optional(),
-	showRooIgnoredFiles: z.boolean().optional(),
+	showAlphaIgnoredFiles: z.boolean().optional(),
 	enableSubfolderRules: z.boolean().optional(),
 	maxImageFileSize: z.number().optional(),
 	maxTotalImageSize: z.number().optional(),
@@ -401,7 +401,7 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 	maxOpenTabsContext: 20,
 	maxWorkspaceFiles: 200,
 	maxGitStatusFiles: 20,
-	showRooIgnoredFiles: true,
+	showAlphaIgnoredFiles: true,
 
 	includeDiagnosticMessages: true,
 	maxDiagnosticMessages: 50,
@@ -417,9 +417,3 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 }
 
 export const EVALS_TIMEOUT = 5 * 60 * 1_000
-
-/** @deprecated Use alphaCodeSettingsSchema. Retained for existing API consumers. */
-export { alphaCodeSettingsSchema as rooCodeSettingsSchema }
-
-/** @deprecated Use AlphaCodeSettings. Retained for existing API consumers. */
-export type { AlphaCodeSettings as RooCodeSettings }

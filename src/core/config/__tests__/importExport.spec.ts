@@ -146,7 +146,7 @@ describe("importExport", () => {
 			"preserves a concurrent profile %s while reading an unrelated settings import",
 			async (mutation) => {
 				await mockExtensionContext.secrets.store(
-					"roo_cline_config_api_config",
+					"alpha_config_api_config",
 					JSON.stringify({
 						currentApiConfigName: "kept",
 						apiConfigs: {
@@ -218,7 +218,7 @@ describe("importExport", () => {
 				}
 				const result = await importing
 				expect(result.success).toBe(true)
-				const saved = JSON.parse((await mockExtensionContext.secrets.get("roo_cline_config_api_config"))!)
+				const saved = JSON.parse((await mockExtensionContext.secrets.get("alpha_config_api_config"))!)
 				switch (mutation) {
 					case "save":
 						expect(saved.apiConfigs.kept.openAiModelId).toBe("after")
@@ -252,7 +252,7 @@ describe("importExport", () => {
 					claudeCodeLegacySettingsMigrated: true,
 				}
 				await mockExtensionContext.secrets.store(
-					"roo_cline_config_api_config",
+					"alpha_config_api_config",
 					JSON.stringify({
 						currentApiConfigName: "kept",
 						apiConfigs: {},
@@ -317,7 +317,7 @@ describe("importExport", () => {
 				claudeCodeLegacySettingsMigrated: true,
 			}
 			await mockExtensionContext.secrets.store(
-				"roo_cline_config_api_config",
+				"alpha_config_api_config",
 				JSON.stringify({
 					currentApiConfigName: "first",
 					apiConfigs: {},
@@ -331,7 +331,7 @@ describe("importExport", () => {
 			)
 			const manager = new ProviderSettingsManager(mockExtensionContext)
 			await manager.initialize()
-			const before = await mockExtensionContext.secrets.get("roo_cline_config_api_config")
+			const before = await mockExtensionContext.secrets.get("alpha_config_api_config")
 			;(fs.readFile as Mock).mockResolvedValue(
 				JSON.stringify({
 					providerProfiles: {
@@ -354,7 +354,7 @@ describe("importExport", () => {
 			})
 			expect(result.success).toBe(false)
 			expect(result.error).toContain("Ambiguous imported profile identity")
-			expect(await mockExtensionContext.secrets.get("roo_cline_config_api_config")).toBe(before)
+			expect(await mockExtensionContext.secrets.get("alpha_config_api_config")).toBe(before)
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()
 			expect(mockCustomModesManager.updateCustomMode).not.toHaveBeenCalled()
 		})
@@ -973,7 +973,7 @@ describe("importExport", () => {
 			it("rejects an import whose selected profile is absent instead of substituting another profile", async () => {
 				const manager = new ProviderSettingsManager(mockExtensionContext)
 				await manager.initialize()
-				const before = await mockExtensionContext.secrets.get("roo_cline_config_api_config")
+				const before = await mockExtensionContext.secrets.get("alpha_config_api_config")
 				;(vscode.window.showOpenDialog as Mock).mockResolvedValue([{ fsPath: "/mock/path/settings.json" }])
 
 				const mockFileContent = JSON.stringify({
@@ -1011,7 +1011,7 @@ describe("importExport", () => {
 				expect(result.error).toContain('Selected profile "invalid-profile" was not found')
 				expect(result.error).toContain("No provider was substituted")
 
-				expect(await mockExtensionContext.secrets.get("roo_cline_config_api_config")).toBe(before)
+				expect(await mockExtensionContext.secrets.get("alpha_config_api_config")).toBe(before)
 				expect(mockCustomModesManager.updateCustomMode).not.toHaveBeenCalled()
 			})
 

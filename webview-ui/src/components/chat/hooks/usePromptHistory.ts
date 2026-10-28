@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 
 interface UsePromptHistoryProps {
 	taskId?: string
-	clineMessages: AlphaMessage[] | undefined
+	alphaMessages: AlphaMessage[] | undefined
 	taskHistory: HistoryItem[] | undefined
 	cwd: string | undefined
 	inputValue: string
@@ -28,7 +28,7 @@ export interface UsePromptHistoryReturn {
 
 export const usePromptHistory = ({
 	taskId,
-	clineMessages,
+	alphaMessages,
 	taskHistory,
 	cwd,
 	inputValue,
@@ -44,8 +44,8 @@ export const usePromptHistory = ({
 
 	// Initialize prompt history with hybrid approach: conversation messages if in task, otherwise task history
 	const filteredPromptHistory = useMemo(() => {
-		// First try to get conversation messages (user_feedback from clineMessages)
-		const conversationPrompts = clineMessages
+		// First try to get conversation messages (user_feedback from alphaMessages)
+		const conversationPrompts = alphaMessages
 			?.filter((message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim())
 			.map((message) => message.text!)
 
@@ -56,7 +56,7 @@ export const usePromptHistory = ({
 
 		// If we have an active task (including one with no user_feedback yet), don't
 		// fall back to earlier task titles as "prompt history".
-		if (isInTask === true || (isInTask !== false && clineMessages?.length)) {
+		if (isInTask === true || (isInTask !== false && alphaMessages?.length)) {
 			return []
 		}
 
@@ -70,7 +70,7 @@ export const usePromptHistory = ({
 			.filter((item) => item.task?.trim() && (!item.workspace || item.workspace === cwd))
 			.map((item) => item.task)
 			.slice(0, MAX_PROMPT_HISTORY_SIZE)
-	}, [clineMessages, isInTask, taskHistory, cwd])
+	}, [alphaMessages, isInTask, taskHistory, cwd])
 	const filteredPromptHistoryKey = JSON.stringify(filteredPromptHistory)
 
 	// Reset navigation only when the actual prompts change, not on unrelated streamed messages.

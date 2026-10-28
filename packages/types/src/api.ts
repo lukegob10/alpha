@@ -174,12 +174,3 @@ export interface AlphaCodeIpcServer extends EventEmitter<IpcServerEvents> {
 	get socketPath(): string
 	get isListening(): boolean
 }
-
-/** @deprecated Use AlphaCodeAPIEvents. Retained for existing API consumers. */
-export type { AlphaCodeAPIEvents as RooCodeAPIEvents }
-
-/** @deprecated Use AlphaCodeAPI. Retained for existing API consumers. */
-export type { AlphaCodeAPI as RooCodeAPI }
-
-/** @deprecated Use AlphaCodeIpcServer. Retained for existing API consumers. */
-export type { AlphaCodeIpcServer as RooCodeIpcServer }

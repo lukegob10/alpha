@@ -53,7 +53,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		"resends the opening prompt in the addressed task with images (checkpoint: %s)",
 		async (restoreCheckpoint) => {
 			const images = ["data:image/png;base64,aGVsbG8="]
-			mockCurrentTask.clineMessages = [
+			mockCurrentTask.alphaMessages = [
 				{ ts: 1000, type: "say", say: "text", text: "Original prompt" },
 				{ ts: 1001, type: "say", say: "checkpoint_saved", text: "original-checkpoint" },
 				{ ts: 2000, type: "say", say: "completion_result", text: "Original answer" },
@@ -63,12 +63,12 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 			]
 			mockCurrentTask.submitUserMessage = vi.fn()
 			mockCurrentTask.overwriteAlphaMessages.mockImplementation(async (messages: AlphaMessage[]) => {
-				mockCurrentTask.clineMessages = messages
+				mockCurrentTask.alphaMessages = messages
 				return true
 			})
 			mockAlphaProvider.postStateToWebview = vi.fn()
 			mockAlphaProvider.getLiveTask = vi.fn().mockReturnValue(mockCurrentTask)
-			const otherTask = { taskId: "different-task", clineMessages: [], apiConversationHistory: [] }
+			const otherTask = { taskId: "different-task", alphaMessages: [], apiConversationHistory: [] }
 			;(mockAlphaProvider.getCurrentTask as Mock).mockReturnValue(otherTask)
 			await webviewMessageHandler(mockAlphaProvider, {
 				type: "submitEditedMessage",
@@ -110,7 +110,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 				const resumed = await vi.mocked(mockAlphaProvider.createTaskWithHistoryItem).mock.results[0].value
 				expect(resumed.resumeWithEditedMessage).toHaveBeenCalledWith("", images)
 			}
-			expect(otherTask.clineMessages).toEqual([])
+			expect(otherTask.alphaMessages).toEqual([])
 		},
 	)
 
@@ -132,7 +132,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		// Create a mock task with messages
 		mockCurrentTask = {
 			taskId: "test-task-id",
-			clineMessages: [] as AlphaMessage[],
+			alphaMessages: [] as AlphaMessage[],
 			apiConversationHistory: [] as ApiMessage[],
 			overwriteAlphaMessages: vi.fn().mockResolvedValue(true),
 			overwriteApiConversationHistory: vi.fn().mockResolvedValue(true),
@@ -175,8 +175,8 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		const assistantMessageTs = 2000
 		const completionMessageTs = 3000
 
-		// UI messages (clineMessages)
-		mockCurrentTask.clineMessages = [
+		// UI messages (alphaMessages)
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: userMessageTs,
 				type: "say",
@@ -242,7 +242,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		const assistantMessageTs = 2000
 
 		// UI messages
-		mockCurrentTask.clineMessages = [
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: earlierMessageTs,
 				type: "say",
@@ -309,7 +309,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		const assistantMessageTs = 2000
 
 		// Both UI and API have the message at the same timestamp
-		mockCurrentTask.clineMessages = [
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: userMessageTs,
 				type: "say",
@@ -352,7 +352,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 	it("should handle case where no API messages match timestamp criteria", async () => {
 		const userMessageTs = 3000
 
-		mockCurrentTask.clineMessages = [
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: userMessageTs,
 				type: "say",
@@ -398,7 +398,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 	it("should handle empty API conversation history gracefully", async () => {
 		const userMessageTs = 1000
 
-		mockCurrentTask.clineMessages = [
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: userMessageTs,
 				type: "say",
@@ -429,7 +429,7 @@ describe("webviewMessageHandler - Edit Message with Timestamp Fallback", () => {
 		const completionTs = 2000
 		const feedbackTs = 3000
 
-		mockCurrentTask.clineMessages = [
+		mockCurrentTask.alphaMessages = [
 			{
 				ts: userMessageTs,
 				type: "say",

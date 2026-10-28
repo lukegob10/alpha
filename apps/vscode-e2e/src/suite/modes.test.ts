@@ -106,7 +106,7 @@ interface ModeHostProvider {
 				api: unknown
 				apiConfiguration: AlphaCodeSettings
 				abort?: boolean
-				clineMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
+				alphaMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 				didComplete?: boolean
 				designHandoff?: { digest: string }
 				isInitialized?: boolean
@@ -143,7 +143,7 @@ const getTaskStartupDiagnostics = async (provider: ModeHostProvider, taskId: str
 		didComplete: task?.didComplete,
 		abort: task?.abort,
 		askAsk: task?.taskAsk?.ask,
-		transcriptTail: task?.clineMessages?.slice(-5).map(({ ask, say, text, partial }) => ({
+		transcriptTail: task?.alphaMessages?.slice(-5).map(({ ask, say, text, partial }) => ({
 			askMessage: ask ?? say,
 			partial,
 			text: text?.slice(0, 500),

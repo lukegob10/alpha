@@ -145,7 +145,7 @@ vi.mock("../../task/Task", () => ({
 			api: undefined,
 			abortTask: vi.fn(),
 			handleWebviewAskResponse: vi.fn(),
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),

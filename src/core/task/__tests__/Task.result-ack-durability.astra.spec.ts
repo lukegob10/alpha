@@ -65,7 +65,7 @@ async function harness(failDeletion = true) {
 		pendingWaitAgentNotificationBlocks: new Set(),
 		pendingWaitAgentResultClaims: new Map(),
 		userMessageContent: [result],
-		clineMessages: [],
+		alphaMessages: [],
 		apiConfiguration: { apiProvider: "openai" },
 		apiConversationHistory: [
 			{

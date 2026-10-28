@@ -103,7 +103,7 @@ function makeTask(taskId: string, cwd: string, options: { workerWorkspace?: stri
 		subagentRole: options.workerWorkspace ? "worker" : undefined,
 		cwd,
 		historyWorkspacePath: options.workerWorkspace ?? cwd,
-		clineMessages: [],
+		alphaMessages: [],
 		abortTask: vi.fn(async () => undefined),
 	}) as unknown as Task
 }

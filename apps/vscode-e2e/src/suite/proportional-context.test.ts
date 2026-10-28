@@ -163,7 +163,7 @@ interface ContextHostProvider {
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				waitForTermination(): Promise<void>
-				clineMessages?: Array<{ say?: string; text?: string; partial?: boolean }>
+				alphaMessages?: Array<{ say?: string; text?: string; partial?: boolean }>
 		  }
 		| undefined
 }
@@ -255,7 +255,7 @@ suite("Alpha proportional context request measurements", function () {
 						assert.ok(
 							provider
 								.getLiveTask(taskId)
-								?.clineMessages?.some(
+								?.alphaMessages?.some(
 									(message) =>
 										(message.say === "text" || message.say === "completion_result") &&
 										!message.partial &&

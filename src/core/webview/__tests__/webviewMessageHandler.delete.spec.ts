@@ -59,7 +59,7 @@ describe("webviewMessageHandler delete functionality", () => {
 
 		// Create mock task
 		getCurrentTaskMock = {
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			overwriteAlphaMessages: vi.fn(async () => {}),
 			overwriteApiConversationHistory: vi.fn(async () => {}),
@@ -70,7 +70,7 @@ describe("webviewMessageHandler delete functionality", () => {
 		getCurrentTaskMock.abortTask = vi.fn().mockResolvedValue(undefined)
 		getCurrentTaskMock.waitForTermination = vi.fn().mockResolvedValue(undefined)
 		getCurrentTaskMock.commitConversationRewind = vi.fn(
-			async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+			async (uiMessages: Task["alphaMessages"], apiHistory: Task["apiConversationHistory"]) => {
 				await getCurrentTaskMock.overwriteAlphaMessages(uiMessages)
 				await getCurrentTaskMock.overwriteApiConversationHistory(apiHistory)
 				return true
@@ -99,7 +99,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			const userMessageTs = 1000
 			const assistantMessageTs = 1001
 
-			getCurrentTaskMock.clineMessages = [
+			getCurrentTaskMock.alphaMessages = [
 				{ ts: userMessageTs, say: "user", text: "Hello" },
 				{ ts: assistantMessageTs, say: "assistant", text: "Hi there" },
 			]
@@ -122,7 +122,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				messageTs: userMessageTs,
 			})
 
-			// Verify that clineMessages was truncated at the correct index
+			// Verify that alphaMessages was truncated at the correct index
 			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 			// When message is not found in API history (index is -1),
@@ -134,7 +134,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			// Setup test data where message exists in both arrays
 			const messageTs = 1000
 
-			getCurrentTaskMock.clineMessages = [
+			getCurrentTaskMock.alphaMessages = [
 				{ ts: 900, say: "user", text: "Previous message" },
 				{ ts: messageTs, say: "user", text: "Delete this" },
 				{ ts: 1100, say: "assistant", text: "Response" },
@@ -162,8 +162,8 @@ describe("webviewMessageHandler delete functionality", () => {
 			])
 		})
 
-		it("should handle deletion when message not found in clineMessages", async () => {
-			getCurrentTaskMock.clineMessages = [{ ts: 1000, say: "user", text: "Some message" }]
+		it("should handle deletion when message not found in alphaMessages", async () => {
+			getCurrentTaskMock.alphaMessages = [{ ts: 1000, say: "user", text: "Some message" }]
 
 			getCurrentTaskMock.apiConversationHistory = []
 
@@ -186,7 +186,7 @@ describe("webviewMessageHandler delete functionality", () => {
 			const userMessageTs = 1000
 			const attemptCompletionTs = 1001
 
-			getCurrentTaskMock.clineMessages = [
+			getCurrentTaskMock.alphaMessages = [
 				{ ts: userMessageTs, say: "user", text: "Fix the bug" },
 				{ ts: attemptCompletionTs, say: "assistant", text: "I've fixed the bug" },
 			]
@@ -215,7 +215,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				messageTs: userMessageTs,
 			})
 
-			// Verify that clineMessages was truncated
+			// Verify that alphaMessages was truncated
 			expect(getCurrentTaskMock.overwriteAlphaMessages).toHaveBeenCalledWith([])
 
 			// API history should be truncated from first message at/after deleted timestamp (fallback)
@@ -225,7 +225,7 @@ describe("webviewMessageHandler delete functionality", () => {
 		it("should preserve messages before the deleted one", async () => {
 			const messageTs = 2000
 
-			getCurrentTaskMock.clineMessages = [
+			getCurrentTaskMock.alphaMessages = [
 				{ ts: 1000, say: "user", text: "First message" },
 				{ ts: 1500, say: "assistant", text: "First response" },
 				{ ts: messageTs, say: "user", text: "Delete this" },
@@ -263,7 +263,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				// Only summaries removed by truncation have their associated condenseParent tags cleared.
 				const condenseId = "summary-abc"
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 100, say: "user", text: "First message" },
 					{ ts: 200, say: "assistant", text: "Response 1" },
 					{ ts: 300, say: "user", text: "Second message" },
@@ -312,7 +312,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				// The orphaned condenseParent tags should be cleared
 				const condenseId = "summary-xyz"
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 100, say: "user", text: "Task start" },
 					{ ts: 200, say: "assistant", text: "Response 1" },
 					{ ts: 300, say: "user", text: "Message 2" },
@@ -351,7 +351,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				const condenseId1 = "summary-first"
 				const condenseId2 = "summary-second"
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 100, say: "user", text: "First message" },
 					{ ts: 799, say: "assistant", text: "Summary1" },
 					{ ts: 1799, say: "assistant", text: "Summary2" },
@@ -409,7 +409,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				// index-based truncation which would preserve earlier array indices.
 				const sharedTs = 1000
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 900, say: "user", text: "Previous message" },
 					{ ts: sharedTs, say: "user", text: "First kept message" },
 					{ ts: 1100, say: "assistant", text: "Response" },
@@ -439,13 +439,13 @@ describe("webviewMessageHandler delete functionality", () => {
 				expect(result[0].content).toBe("Previous message")
 			})
 
-			it("should remove Summary when its condense_context clineMessage is deleted", async () => {
+			it("should remove Summary when its condense_context alphaMessage is deleted", async () => {
 				// Scenario: Summary has timestamp BEFORE the deletion point (so it survives truncation),
 				// BUT the condense_context UI message has timestamp AFTER the deletion point (so it gets removed).
 				// The fix links them via condenseId so the Summary is explicitly removed.
 				const condenseId = "summary-sync-test"
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 100, say: "user", text: "Task start" },
 					{ ts: 200, say: "assistant", text: "Response 1" },
 					{ ts: 300, say: "user", text: "Message to delete this and after" },
@@ -491,7 +491,7 @@ describe("webviewMessageHandler delete functionality", () => {
 				const condenseId1 = "summary-first"
 				const condenseId2 = "summary-second"
 
-				getCurrentTaskMock.clineMessages = [
+				getCurrentTaskMock.alphaMessages = [
 					{ ts: 100, say: "user", text: "First message" },
 					{ ts: 200, say: "assistant", text: "Response 1" },
 					// First condense_context created after first condense

@@ -40,7 +40,7 @@ project generic
 "
 `;
 
-exports[`custom instruction assembly discovery > preserves legacy fallback and disabled agent rules 1`] = `
+exports[`custom instruction assembly discovery > omits absent rule sources and disabled agent rules 1`] = `
 "
 ====
 
@@ -53,36 +53,6 @@ global guidance
 
 Mode-specific Instructions:
 mode guidance
-
-Rules:
-
-# Rules from legacy rules-code directories:
-
-# Rules from ../home/.roo/rules-code/rule.md:
-global legacy mode
-
-# Rules from .roo/rules-code/rule.md:
-project legacy mode
-
-# Rules from a/.roo/rules-code/rule.md:
-a legacy mode
-
-# Rules from z/.roo/rules-code/rule.md:
-z legacy mode
-
-# Rules from legacy .roo directories:
-
-# Rules from ../home/.roo/rules/rule.md:
-global legacy generic
-
-# Rules from .roo/rules/rule.md:
-project legacy generic
-
-# Rules from a/.roo/rules/rule.md:
-a legacy generic
-
-# Rules from z/.roo/rules/rule.md:
-z legacy generic
 "
 `;
 

@@ -755,7 +755,7 @@ it("binds local paid execution to a fresh owned profile and the current developm
 	expect(spawnOptions.env.ELECTRON_RUN_AS_NODE).toBeUndefined()
 	expect(spawnOptions.env.VSCODE_IPC_HOOK_CLI).toBeUndefined()
 	expect(spawnOptions.env.VSCODE_PORTABLE).toBeUndefined()
-	expect(spawnOptions.env.ROO_CODE_IPC_SOCKET_PATH).toMatch(/evals-1-2-[a-f0-9]{16}\.sock$/)
+	expect(spawnOptions.env.ALPHA_CODE_IPC_SOCKET_PATH).toMatch(/evals-1-2-[a-f0-9]{16}\.sock$/)
 	expect(mocks.prepareProfile).toHaveBeenCalledExactlyOnceWith({ vscodeVersion: "1.138.0" })
 	expect(mocks.assertAncestry).toHaveBeenCalledExactlyOnceWith(process.pid, 100)
 	expect(mocks.assertAncestry.mock.invocationCallOrder[0]).toBeLessThan(mocks.send.mock.invocationCallOrder[0]!)
@@ -775,7 +775,7 @@ it("isolates IPC even when separate owned databases reuse the same run and task 
 		const rejection = expect(pending).rejects.toThrow("Client disconnected before task completion")
 		await vi.advanceTimersByTimeAsync(3000)
 		await rejection
-		return mocks.spawn.mock.calls.at(-1)![2].env.ROO_CODE_IPC_SOCKET_PATH
+		return mocks.spawn.mock.calls.at(-1)![2].env.ALPHA_CODE_IPC_SOCKET_PATH
 	}
 	const first = await launchOnce()
 	const second = await launchOnce()

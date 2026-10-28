@@ -78,7 +78,7 @@ interface ChatTextAreaProps {
 	onStop?: () => void
 	onEnqueueMessage?: () => void
 	enqueueDisabled?: boolean
-	conversationClineMessages?: AlphaMessage[]
+	conversationAlphaMessages?: AlphaMessage[]
 	conversationTaskId?: string
 	isInTask?: boolean
 	isTaskDraft?: boolean
@@ -112,7 +112,7 @@ export const ChatTextArea = memo(
 				onStop,
 				onEnqueueMessage,
 				enqueueDisabled = false,
-				conversationClineMessages,
+				conversationAlphaMessages,
 				conversationTaskId,
 				isInTask,
 				isTaskDraft = false,
@@ -135,14 +135,14 @@ export const ChatTextArea = memo(
 				pinnedApiConfigs,
 				togglePinnedApiConfig,
 				taskHistory,
-				clineMessages,
+				alphaMessages,
 				commands,
 				enterBehavior,
 				autoSteer = false,
 				taskReasoning,
 				currentTaskId,
 			} = useShellState()
-			const composerTaskId = conversationClineMessages !== undefined ? conversationTaskId : currentTaskId
+			const composerTaskId = conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId
 			const draftActionsScope = isTaskDraft || isNewTask ? "newTaskDraft" : `task:${composerTaskId ?? ""}`
 			const [reasoningProfileLoading, setReasoningProfileLoading] = useState(false)
 			useEffect(() => setReasoningProfileLoading(false), [taskReasoning, currentTaskId, currentApiConfigName])
@@ -287,7 +287,7 @@ export const ChatTextArea = memo(
 						(selectedType === null && /^[a-z]{2,4}$/i.test(searchQuery))),
 				searchQuery,
 				cwd ?? "",
-				conversationClineMessages !== undefined ? conversationTaskId : currentTaskId,
+				conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId,
 			)
 			const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
 			const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
@@ -297,13 +297,13 @@ export const ChatTextArea = memo(
 
 			// Use custom hook for prompt history navigation
 			const { handleHistoryNavigation, resetHistoryNavigation, resetOnInputChange } = usePromptHistory({
-				taskId: conversationClineMessages !== undefined ? conversationTaskId : currentTaskId,
-				clineMessages: conversationClineMessages ?? clineMessages,
+				taskId: conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId,
+				alphaMessages: conversationAlphaMessages ?? alphaMessages,
 				taskHistory,
 				cwd,
 				inputValue,
 				setInputValue,
-				isInTask: conversationClineMessages !== undefined ? isInTask : undefined,
+				isInTask: conversationAlphaMessages !== undefined ? isInTask : undefined,
 			})
 
 			// Fetch git commits when Git is selected or when typing a hash.

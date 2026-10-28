@@ -21,7 +21,7 @@ function harness() {
 		didComplete: false,
 		isInitialized: true,
 		isTaskLoopActive: true,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		messageQueueService: queue,
 		providerRef: { deref: () => ({ getState: async () => ({}), isTaskOnScreen: () => true }) },
@@ -163,7 +163,7 @@ it("correlates steering feedback with its durable receipt and reuses that row un
 	const saved = deferred()
 	Object.assign(task, {
 		addToAlphaMessages: vi.fn(async (feedback: AlphaMessage) => {
-			task.clineMessages.push(structuredClone(feedback))
+			task.alphaMessages.push(structuredClone(feedback))
 		}),
 		enqueueAlphaMessagesSave: async (createSnapshot: () => AlphaMessage[], onPersisted?: () => void) => {
 			createSnapshot()
@@ -175,30 +175,30 @@ it("correlates steering feedback with its durable receipt and reuses that row un
 	})
 	const steering = { text: message!.text, images: [], queuedMessageIds: [message!.id] }
 	await task["presentSteeringInput"](steering)
-	expect(task.clineMessages).toMatchObject([
+	expect(task.alphaMessages).toMatchObject([
 		{ say: "user_feedback", text: steering.text, queuedMessageIds: ["steering-input"] },
 	])
-	const firstTimestamp = task.clineMessages[0].ts
+	const firstTimestamp = task.alphaMessages[0].ts
 	const retry = task["presentSteeringInput"](steering)
 	try {
 		await saving.promise
-		expect(task.clineMessages).toHaveLength(1)
+		expect(task.alphaMessages).toHaveLength(1)
 		expect(queue.visibleMessages).toMatchObject([{ id: "steering-input", deliveryState: "delivering" }])
 	} finally {
 		saved.resolve()
 		await retry
 	}
-	expect(task.clineMessages).toHaveLength(1)
-	expect(task.clineMessages[0].ts).toBe(firstTimestamp)
+	expect(task.alphaMessages).toHaveLength(1)
+	expect(task.alphaMessages[0].ts).toBe(firstTimestamp)
 	await task["presentSteeringInput"]({ ...steering, queuedMessageIds: ["different-input"] })
-	expect(task.clineMessages).toHaveLength(2)
+	expect(task.alphaMessages).toHaveLength(2)
 	task.apiConversationHistory.push({
 		role: "user",
 		content: steering.text,
 		queued_message_ids: ["steering-input"],
 	})
 	await task["presentSteeringInput"](steering)
-	expect(task.clineMessages).toHaveLength(2)
+	expect(task.alphaMessages).toHaveLength(2)
 	queue.dispose()
 })
 

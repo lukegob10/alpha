@@ -91,7 +91,7 @@ function harness(servers: Parameters<typeof createNor28Provider>[0]) {
 		reasoningHandlerUsers,
 		providerRef: { deref: () => provider },
 		apiConversationHistory: structuredClone(history),
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, jitter: "none", baseDelayMs: 0 }),

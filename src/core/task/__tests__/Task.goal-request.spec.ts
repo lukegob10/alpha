@@ -86,7 +86,7 @@ async function harness() {
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => ({ getState: async () => ({ autoCondenseContext: false }) }) },
 		apiConversationHistory: [{ role: "user", content: "Goal request" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		getTaskMode: vi.fn(async () => "code"),

@@ -3,7 +3,7 @@
  *
  * These tests cover:
  * - Input validation (missing path parameter)
- * - RooIgnore blocking
+ * - AlphaIgnore blocking
  * - Directory read error handling
  * - Binary file handling (images, PDF, DOCX, unsupported)
  * - Image memory limits

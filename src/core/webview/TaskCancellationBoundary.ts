@@ -31,8 +31,8 @@ const persistenceMethodNames = [
 	"waitForPersistedState",
 	"flushPersistence",
 	"flushApiConversationHistoryPersistence",
-	"flushClineMessages",
-	"waitForClineMessagesSaved",
+	"flushAlphaMessages",
+	"waitForAlphaMessagesSaved",
 	"whenPersisted",
 ] as const
 

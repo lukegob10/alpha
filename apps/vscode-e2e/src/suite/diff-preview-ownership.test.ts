@@ -293,7 +293,7 @@ suite("Diff preview ownership in the Extension Host", function () {
 					.find(
 						(tab) =>
 							tab.input instanceof vscode.TabInputTextDiff &&
-							tab.input.original.scheme === "cline-diff" &&
+							tab.input.original.scheme === "alpha-diff" &&
 							path.basename(tab.input.modified.fsPath) === relativePath,
 					)
 			await waitFor(() => !!findPreviewTab(), { description: "the owned diff tab", interval: 25 })

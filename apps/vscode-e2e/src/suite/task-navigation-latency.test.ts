@@ -13,7 +13,7 @@ interface NavigationTask {
 	abort: boolean
 	didComplete: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	waitForTermination(): Promise<void>
 }
 
@@ -100,7 +100,7 @@ suite("Task navigation latency on a completed multi-step task", function () {
 			assert.ok(task)
 			assert.equal(task.abort, false)
 			assert.equal(scripted.requests, 13)
-			const messageCount = task.clineMessages.length
+			const messageCount = task.alphaMessages.length
 
 			const beganNewChat = performance.now()
 			await vscode.commands.executeCommand("alpha.plusButtonClicked")
@@ -117,7 +117,7 @@ suite("Task navigation latency on a completed multi-step task", function () {
 				() =>
 					host
 						.getLiveTask(taskId)
-						?.clineMessages.some(
+						?.alphaMessages.some(
 							(message) => message.type === "say" && message.say === "completion_result",
 						) === true,
 				{ description: "completed transcript after cold reopen", timeout: 10_000, interval: 10 },
@@ -135,7 +135,7 @@ suite("Task navigation latency on a completed multi-step task", function () {
 				() =>
 					host
 						.getLiveTask(taskId)
-						?.clineMessages.some(
+						?.alphaMessages.some(
 							(message) => message.type === "say" && message.say === "completion_result",
 						) === true,
 				{ description: "completed transcript after warm reopen", timeout: 10_000, interval: 10 },

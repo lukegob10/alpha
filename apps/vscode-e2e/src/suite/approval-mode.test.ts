@@ -12,7 +12,7 @@ interface ApprovalTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	approveAsk(): void
 	denyAsk(): void
 	handleWebviewAskResponse(response: "messageResponse", text: string): void
@@ -177,7 +177,7 @@ async function runScriptedApproval(options: {
 		await waitFor(
 			async () => {
 				const task = observation.task
-				const error = task?.clineMessages.find((message) => message.say === "error")
+				const error = task?.alphaMessages.find((message) => message.say === "error")
 				assert.equal(error, undefined, error?.text)
 				const ask = task?.taskAsk
 				if (ask && !ask.partial && !handled.has(ask.ts)) {
@@ -192,7 +192,7 @@ async function runScriptedApproval(options: {
 		)
 		await observation.task!.waitForTermination()
 		commandEvidence = observation.task!.getCommandExecutionEvidence()
-		messages = [...observation.task!.clineMessages]
+		messages = [...observation.task!.alphaMessages]
 	}, [
 		() => globalThis.api.clearCurrentTask(),
 		() => scripted.removeFromCache?.(),
@@ -538,7 +538,7 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 						payload.requestUserInput.questions.map((question: { id: string }) => question.id),
 						["approach", "validation"],
 					)
-					pendingGroupedRequests = task.clineMessages.filter(
+					pendingGroupedRequests = task.alphaMessages.filter(
 						(message) => message.type === "ask" && message.ask === "followup" && !message.isAnswered,
 					).length
 					task.handleWebviewAskResponse(

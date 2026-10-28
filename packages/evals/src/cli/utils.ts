@@ -178,7 +178,7 @@ export async function copyConversationHistory({
 	exercise,
 	iteration,
 	logger,
-	storageRoot = "/roo/.vscode/User/globalStorage/alphainc.alpha",
+	storageRoot = "/alpha/.vscode/User/globalStorage/alphainc.alpha",
 }: {
 	alphaTaskId: string
 	logDir: string

@@ -20,7 +20,7 @@ interface AlphaMessage {
 
 interface ExtensionState {
 	version: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskHistory: any[]
 	shouldShowAnnouncement: boolean
 	allowedCommands: string[]
@@ -196,7 +196,7 @@ const mockPostMessage = (state: Partial<ExtensionState>) => {
 			type: "state",
 			state: {
 				version: "1.0.0",
-				clineMessages: [],
+				alphaMessages: [],
 				taskHistory: [],
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
@@ -236,7 +236,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 		// Hydrate state with an active task
 		await act(async () => {
 			mockPostMessage({
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -275,7 +275,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 		// Now simulate an api_req_started message (which happens during chat activity)
 		await act(async () => {
 			mockPostMessage({
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -307,7 +307,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 		// Hydrate state with an active task
 		await act(async () => {
 			mockPostMessage({
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",
@@ -345,7 +345,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 		for (let i = 0; i < 3; i++) {
 			await act(async () => {
 				mockPostMessage({
-					clineMessages: [
+					alphaMessages: [
 						{
 							type: "say",
 							say: "task",
@@ -379,7 +379,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 		// Hydrate with an active task that has a followup ask (so sending is enabled)
 		await act(async () => {
 			mockPostMessage({
-				clineMessages: [
+				alphaMessages: [
 					{
 						type: "say",
 						say: "task",

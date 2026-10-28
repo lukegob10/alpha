@@ -187,7 +187,7 @@ async function harness(
 		},
 	})
 	vi.spyOn(task, "say").mockImplementation(async (say, text, _images, partial) => {
-		task.clineMessages.push({ ts: task.clineMessages.length + 1, type: "say", say, text, partial })
+		task.alphaMessages.push({ ts: task.alphaMessages.length + 1, type: "say", say, text, partial })
 	})
 	vi.spyOn(hooks, "updateAlphaMessage").mockResolvedValue(undefined)
 	vi.spyOn(hooks, "saveAlphaMessages").mockResolvedValue(true)
@@ -664,7 +664,7 @@ describe("Task cancellation after accepted output reaches EOF", () => {
 				)
 			const usageEvents = fixture.events.mock.calls.filter(([event]) => event.type === "request_usage")
 			expect(usageEvents).toHaveLength(1)
-			const requestCard = fixture.task.clineMessages.find((message) => message.say === "api_req_started")
+			const requestCard = fixture.task.alphaMessages.find((message) => message.say === "api_req_started")
 			expect
 				.soft(JSON.parse(requestCard?.text ?? "{}"))
 				.toMatchObject({ tokensIn: 7, tokensOut: 3, cacheReads: 2, cancelReason: "user_cancelled" })

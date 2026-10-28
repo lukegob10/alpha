@@ -32,20 +32,20 @@ const ApprovalModeTestComponent = () => {
 }
 
 const TestComponent = () => {
-	const { allowedCommands, setAllowedCommands, soundEnabled, showRooIgnoredFiles, setShowAlphaIgnoredFiles } =
+	const { allowedCommands, setAllowedCommands, soundEnabled, showAlphaIgnoredFiles, setShowAlphaIgnoredFiles } =
 		useExtensionState()
 
 	return (
 		<div>
 			<div data-testid="allowed-commands">{JSON.stringify(allowedCommands)}</div>
 			<div data-testid="sound-enabled">{JSON.stringify(soundEnabled)}</div>
-			<div data-testid="show-rooignored-files">{JSON.stringify(showRooIgnoredFiles)}</div>
+			<div data-testid="show-alphaignored-files">{JSON.stringify(showAlphaIgnoredFiles)}</div>
 			<button data-testid="update-button" onClick={() => setAllowedCommands(["npm install", "git status"])}>
 				Update Commands
 			</button>
 			<button
 				data-testid="toggle-alphaignore-button"
-				onClick={() => setShowAlphaIgnoredFiles(!showRooIgnoredFiles)}>
+				onClick={() => setShowAlphaIgnoredFiles(!showAlphaIgnoredFiles)}>
 				Update Commands
 			</button>
 		</div>
@@ -81,20 +81,20 @@ const ApiConfigTestComponent = () => {
 }
 
 const MessagesTestComponent = () => {
-	const { clineMessages } = useExtensionState()
+	const { alphaMessages } = useExtensionState()
 	return (
 		<>
-			<div data-testid="latest-message">{clineMessages.at(-1)?.text ?? ""}</div>
-			<div data-testid="all-messages">{clineMessages.map((message) => message.text).join("|")}</div>
+			<div data-testid="latest-message">{alphaMessages.at(-1)?.text ?? ""}</div>
+			<div data-testid="all-messages">{alphaMessages.map((message) => message.text).join("|")}</div>
 		</>
 	)
 }
 
 const BackgroundActivityTestComponent = () => {
-	const { clineMessages, liveTasksById } = useExtensionState()
+	const { alphaMessages, liveTasksById } = useExtensionState()
 	return (
 		<>
-			<div data-testid="foreground-message-count">{clineMessages.length}</div>
+			<div data-testid="foreground-message-count">{alphaMessages.length}</div>
 			<div data-testid="background-activity">{liveTasksById?.["task-2"]?.lastUpdatedAt ?? 0}</div>
 			<div data-testid="background-context">{liveTasksById?.["task-2"]?.model?.info.contextWindow ?? 0}</div>
 		</>
@@ -258,17 +258,17 @@ describe("ExtensionStateContext", () => {
 		expect(JSON.parse(screen.getByTestId("sound-enabled").textContent!)).toBe(false)
 	})
 
-	it("initializes with showRooIgnoredFiles set to true", () => {
+	it("initializes with showAlphaIgnoredFiles set to true", () => {
 		render(
 			<ExtensionStateContextProvider>
 				<TestComponent />
 			</ExtensionStateContextProvider>,
 		)
 
-		expect(JSON.parse(screen.getByTestId("show-rooignored-files").textContent!)).toBe(true)
+		expect(JSON.parse(screen.getByTestId("show-alphaignored-files").textContent!)).toBe(true)
 	})
 
-	it("updates showRooIgnoredFiles through setShowAlphaIgnoredFiles", () => {
+	it("updates showAlphaIgnoredFiles through setShowAlphaIgnoredFiles", () => {
 		render(
 			<ExtensionStateContextProvider>
 				<TestComponent />
@@ -279,7 +279,7 @@ describe("ExtensionStateContext", () => {
 			screen.getByTestId("toggle-alphaignore-button").click()
 		})
 
-		expect(JSON.parse(screen.getByTestId("show-rooignored-files").textContent!)).toBe(false)
+		expect(JSON.parse(screen.getByTestId("show-alphaignored-files").textContent!)).toBe(false)
 	})
 
 	it("updates allowedCommands through setAllowedCommands", () => {
@@ -553,7 +553,7 @@ describe("ExtensionStateContext", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: { currentTaskId: "task-1", clineMessages: [baseMessage] },
+						state: { currentTaskId: "task-1", alphaMessages: [baseMessage] },
 					},
 				}),
 			)
@@ -566,7 +566,7 @@ describe("ExtensionStateContext", () => {
 						data: {
 							type: "messageUpdated",
 							taskId: "task-1",
-							clineMessage: { ...baseMessage, text },
+							alphaMessage: { ...baseMessage, text },
 						},
 					}),
 				)
@@ -585,7 +585,7 @@ describe("ExtensionStateContext", () => {
 					data: {
 						type: "messageUpdated",
 						taskId: "task-1",
-						clineMessage: { ...baseMessage, text: "queued" },
+						alphaMessage: { ...baseMessage, text: "queued" },
 					},
 				}),
 			)
@@ -594,7 +594,7 @@ describe("ExtensionStateContext", () => {
 					data: {
 						type: "messageUpdated",
 						taskId: "task-1",
-						clineMessage: { ...baseMessage, text: "complete", partial: false },
+						alphaMessage: { ...baseMessage, text: "complete", partial: false },
 					},
 				}),
 			)
@@ -629,14 +629,14 @@ describe("ExtensionStateContext", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: { currentTaskId: "task-1", clineMessages: [first, second], clineMessagesSeq: 1 },
+						state: { currentTaskId: "task-1", alphaMessages: [first, second], alphaMessagesSeq: 1 },
 					},
 				}),
 			)
 			for (const data of [
-				{ clineMessage: { ...first, text: "first-1" }, clineMessagesSeq: 2 },
-				{ clineMessage: { ...second, text: "second-1" }, clineMessagesSeq: 3 },
-				{ clineMessage: { ...first, text: "first-2" }, clineMessagesSeq: 4 },
+				{ alphaMessage: { ...first, text: "first-1" }, alphaMessagesSeq: 2 },
+				{ alphaMessage: { ...second, text: "second-1" }, alphaMessagesSeq: 3 },
+				{ alphaMessage: { ...first, text: "first-2" }, alphaMessagesSeq: 4 },
 			]) {
 				window.dispatchEvent(
 					new MessageEvent("message", {
@@ -668,8 +668,8 @@ describe("ExtensionStateContext", () => {
 		)
 
 		act(() => {
-			dispatchExtensionState({ currentTaskId: "task-1", clineMessages: [message], clineMessagesSeq: 1 })
-			for (const [clineMessagesSeq, text] of [
+			dispatchExtensionState({ currentTaskId: "task-1", alphaMessages: [message], alphaMessagesSeq: 1 })
+			for (const [alphaMessagesSeq, text] of [
 				[3, "newest"],
 				[2, "older"],
 			] as const) {
@@ -678,8 +678,8 @@ describe("ExtensionStateContext", () => {
 						data: {
 							type: "messageUpdated",
 							taskId: "task-1",
-							clineMessagesSeq,
-							clineMessage: { ...message, text },
+							alphaMessagesSeq,
+							alphaMessage: { ...message, text },
 						},
 					}),
 				)
@@ -716,8 +716,8 @@ describe("ExtensionStateContext", () => {
 			act(() => {
 				dispatchExtensionState({
 					currentTaskId: "lifecycle-task",
-					clineMessages: [message],
-					clineMessagesSeq: 10,
+					alphaMessages: [message],
+					alphaMessagesSeq: 10,
 					liveTasksById: { "lifecycle-task": completed },
 				})
 				window.dispatchEvent(
@@ -725,8 +725,8 @@ describe("ExtensionStateContext", () => {
 						data: {
 							type,
 							taskId: "lifecycle-task",
-							clineMessagesSeq: 9,
-							clineMessage: { ...message, text: "older" },
+							alphaMessagesSeq: 9,
+							alphaMessage: { ...message, text: "older" },
 							liveTask: {
 								...completed,
 								status: TaskStatus.Running,
@@ -762,14 +762,14 @@ describe("ExtensionStateContext", () => {
 			tokensOut: 0,
 			totalCost: 0,
 		}
-		const publishIncremental = (transcriptRevision: number, clineMessagesSeq: number) => {
+		const publishIncremental = (transcriptRevision: number, alphaMessagesSeq: number) => {
 			window.dispatchEvent(
 				new MessageEvent("message", {
 					data: {
 						type,
 						taskId: "lifecycle-task",
-						clineMessagesSeq,
-						clineMessage: { ts: 2, type: "say", say: "text", text: "background" },
+						alphaMessagesSeq,
+						alphaMessage: { ts: 2, type: "say", say: "text", text: "background" },
 						liveTask: {
 							...completed,
 							transcriptRevision,
@@ -791,8 +791,8 @@ describe("ExtensionStateContext", () => {
 		act(() => {
 			dispatchExtensionState({
 				currentTaskId: "foreground-task",
-				clineMessages: [{ ts: 1, type: "say", say: "text", text: "foreground" }],
-				clineMessagesSeq: 100,
+				alphaMessages: [{ ts: 1, type: "say", say: "text", text: "foreground" }],
+				alphaMessagesSeq: 100,
 				liveTasksById: { "lifecycle-task": completed },
 			})
 			publishIncremental(staleRevision, 99)
@@ -819,7 +819,7 @@ describe("ExtensionStateContext", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 1 },
+						state: { currentTaskId: "task-1", alphaMessages: [baseMessage], alphaMessagesSeq: 1 },
 					},
 				}),
 			)
@@ -828,8 +828,8 @@ describe("ExtensionStateContext", () => {
 					data: {
 						type: "messageCreated",
 						taskId: "task-1",
-						clineMessage: createdMessage,
-						clineMessagesSeq: 3,
+						alphaMessage: createdMessage,
+						alphaMessagesSeq: 3,
 					},
 				}),
 			)
@@ -839,7 +839,7 @@ describe("ExtensionStateContext", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 2 },
+						state: { currentTaskId: "task-1", alphaMessages: [baseMessage], alphaMessagesSeq: 2 },
 					},
 				}),
 			)
@@ -859,14 +859,14 @@ describe("ExtensionStateContext", () => {
 		act(() => {
 			dispatchExtensionState({
 				currentTaskId: "task-1",
-				clineMessages: [foregroundMessage],
+				alphaMessages: [foregroundMessage],
 			})
 			window.dispatchEvent(
 				new MessageEvent("message", {
 					data: {
 						type: "messageCreated",
 						taskId: "task-2",
-						clineMessage: { ts: 2, type: "say", say: "text", text: "background" },
+						alphaMessage: { ts: 2, type: "say", say: "text", text: "background" },
 						liveTask: {
 							id: "task-2",
 							model: {
@@ -914,7 +914,7 @@ describe("ExtensionStateContext", () => {
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: { currentTaskId: "task-1", clineMessages: [baseMessage], clineMessagesSeq: 5 },
+						state: { currentTaskId: "task-1", alphaMessages: [baseMessage], alphaMessagesSeq: 5 },
 					},
 				}),
 			)
@@ -923,8 +923,8 @@ describe("ExtensionStateContext", () => {
 					data: {
 						type: "messageCreated",
 						taskId: "task-1",
-						clineMessage: { ...baseMessage, text: "stale" },
-						clineMessagesSeq: 4,
+						alphaMessage: { ...baseMessage, text: "stale" },
+						alphaMessagesSeq: 4,
 					},
 				}),
 			)
@@ -933,8 +933,8 @@ describe("ExtensionStateContext", () => {
 					data: {
 						type: "messageCreated",
 						taskId: "task-1",
-						clineMessage: { ...baseMessage, text: "replacement" },
-						clineMessagesSeq: 6,
+						alphaMessage: { ...baseMessage, text: "replacement" },
+						alphaMessagesSeq: 6,
 					},
 				}),
 			)
@@ -949,7 +949,7 @@ describe("mergeExtensionState", () => {
 		const baseState: ExtensionState = {
 			version: "",
 			mcpEnabled: false,
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [],
 			shouldShowAnnouncement: false,
 			enableCheckpoints: true,
@@ -962,7 +962,7 @@ describe("mergeExtensionState", () => {
 			maxWorkspaceFiles: 100,
 			apiConfiguration: { apiProvider: "openai" } as ProviderSettings,
 			telemetrySetting: "unset",
-			showRooIgnoredFiles: true,
+			showAlphaIgnoredFiles: true,
 			enableSubfolderRules: false,
 			renderContext: "sidebar",
 			autoCondenseContext: true,
@@ -1013,7 +1013,7 @@ describe("mergeExtensionState", () => {
 		const baseState: ExtensionState = {
 			version: "",
 			mcpEnabled: false,
-			clineMessages: [],
+			alphaMessages: [],
 			taskHistory: [],
 			shouldShowAnnouncement: false,
 			enableCheckpoints: true,
@@ -1026,7 +1026,7 @@ describe("mergeExtensionState", () => {
 			maxWorkspaceFiles: 100,
 			apiConfiguration: {},
 			telemetrySetting: "unset",
-			showRooIgnoredFiles: true,
+			showAlphaIgnoredFiles: true,
 			enableSubfolderRules: false,
 			renderContext: "sidebar",
 			autoCondenseContext: true,
@@ -1050,8 +1050,8 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "parent",
 				currentView: { type: "task", taskId: "parent" },
-				clineMessages: parentMessages,
-				clineMessagesSeq: 1,
+				alphaMessages: parentMessages,
+				alphaMessagesSeq: 1,
 				taskStateSeq: 1,
 				liveTasksById: { parent: { id: "parent", transcriptRevision: 10 } as any },
 			}
@@ -1060,8 +1060,8 @@ describe("mergeExtensionState", () => {
 				{
 					currentTaskId: "child",
 					currentView: { type: "task", taskId: "child" },
-					clineMessages: [],
-					clineMessagesSeq: 2,
+					alphaMessages: [],
+					alphaMessagesSeq: 2,
 					taskStateSeq: 2,
 					liveTasksById: {
 						parent: { id: "parent", transcriptRevision: 10 },
@@ -1075,8 +1075,8 @@ describe("mergeExtensionState", () => {
 				{
 					currentTaskId: "child",
 					currentView: { type: "task", taskId: "child" },
-					clineMessages: childMessages,
-					clineMessagesSeq: 3,
+					alphaMessages: childMessages,
+					alphaMessagesSeq: 3,
 					taskStateSeq: 2,
 				},
 				transcriptCache,
@@ -1087,8 +1087,8 @@ describe("mergeExtensionState", () => {
 				{
 					currentTaskId: "parent",
 					currentView: { type: "task", taskId: "parent" },
-					clineMessages: [],
-					clineMessagesSeq: 4,
+					alphaMessages: [],
+					alphaMessagesSeq: 4,
 					taskStateSeq: 3,
 					liveTasksById: {
 						parent: { id: "parent", transcriptRevision: 10 },
@@ -1097,15 +1097,15 @@ describe("mergeExtensionState", () => {
 				},
 				transcriptCache,
 			)
-			expect(parentIdentity.clineMessages).toBe(parentMessages)
+			expect(parentIdentity.alphaMessages).toBe(parentMessages)
 
 			const staleParentIdentity = mergeExtensionState(
 				childState,
 				{
 					currentTaskId: "parent",
 					currentView: { type: "task", taskId: "parent" },
-					clineMessages: [],
-					clineMessagesSeq: 5,
+					alphaMessages: [],
+					alphaMessagesSeq: 5,
 					taskStateSeq: 4,
 					liveTasksById: {
 						parent: { id: "parent", transcriptRevision: 11 },
@@ -1114,43 +1114,43 @@ describe("mergeExtensionState", () => {
 				},
 				transcriptCache,
 			)
-			expect(staleParentIdentity.clineMessages).toEqual([])
+			expect(staleParentIdentity.alphaMessages).toEqual([])
 		})
 
-		it("rejects stale clineMessages when seq is not newer", () => {
+		it("rejects stale alphaMessages when seq is not newer", () => {
 			const newerMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 			const staleMessages = [makeMessage(1, "hello")]
 
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: newerMessages,
-				clineMessagesSeq: 5,
+				alphaMessages: newerMessages,
+				alphaMessagesSeq: 5,
 			}
 
 			const result = mergeExtensionState(prevState, {
-				clineMessages: staleMessages,
-				clineMessagesSeq: 3, // stale seq
+				alphaMessages: staleMessages,
+				alphaMessagesSeq: 3, // stale seq
 			})
 
 			// Should keep the newer messages
-			expect(result.clineMessages).toBe(newerMessages)
-			expect(result.clineMessagesSeq).toBe(5)
+			expect(result.alphaMessages).toBe(newerMessages)
+			expect(result.alphaMessagesSeq).toBe(5)
 		})
 
 		it("does not reopen a completed task when its stale view snapshot arrives after a new-task draft", () => {
 			const draftMessages: AlphaMessage[] = []
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: draftMessages,
-				clineMessagesSeq: 5,
+				alphaMessages: draftMessages,
+				alphaMessagesSeq: 5,
 				currentTaskId: undefined,
 				currentView: { type: "newTaskDraft" },
 				currentTaskItem: undefined,
 			}
 
 			const result = mergeExtensionState(prevState, {
-				clineMessages: [makeMessage(1, "completed task")],
-				clineMessagesSeq: 4,
+				alphaMessages: [makeMessage(1, "completed task")],
+				alphaMessagesSeq: 4,
 				currentTaskId: "completed-task",
 				currentView: { type: "task", taskId: "completed-task" },
 				currentTaskItem: {
@@ -1167,8 +1167,8 @@ describe("mergeExtensionState", () => {
 			expect(result.currentView).toEqual({ type: "newTaskDraft" })
 			expect(result.currentTaskId).toBeUndefined()
 			expect(result.currentTaskItem).toBeUndefined()
-			expect(result.clineMessages).toBe(draftMessages)
-			expect(result.clineMessagesSeq).toBe(5)
+			expect(result.alphaMessages).toBe(draftMessages)
+			expect(result.alphaMessagesSeq).toBe(5)
 		})
 
 		it.each([{ taskStateSeq: 4 }, { taskStateSeq: 5 }, { messageQueueSeq: 6 }])(
@@ -1262,7 +1262,7 @@ describe("mergeExtensionState", () => {
 				currentView: { type: "newTaskDraft" as const },
 				currentTaskId: undefined,
 				currentTaskItem: undefined,
-				clineMessages: [],
+				alphaMessages: [],
 				taskReasoning: {
 					requested: { kind: "effort" as const, effort: "medium" as const },
 					effective: { kind: "effort" as const, effort: "medium" as const },
@@ -1305,23 +1305,23 @@ describe("mergeExtensionState", () => {
 			expect(result.taskReasoning).toBeUndefined()
 		})
 
-		it("rejects clineMessages when seq equals current (not strictly greater)", () => {
+		it("rejects alphaMessages when seq equals current (not strictly greater)", () => {
 			const currentMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 			const sameSeqMessages = [makeMessage(1, "hello")]
 
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: currentMessages,
-				clineMessagesSeq: 5,
+				alphaMessages: currentMessages,
+				alphaMessagesSeq: 5,
 			}
 
 			const result = mergeExtensionState(prevState, {
-				clineMessages: sameSeqMessages,
-				clineMessagesSeq: 5, // same seq, not strictly greater
+				alphaMessages: sameSeqMessages,
+				alphaMessagesSeq: 5, // same seq, not strictly greater
 			})
 
-			expect(result.clineMessages).toBe(currentMessages)
-			expect(result.clineMessagesSeq).toBe(5)
+			expect(result.alphaMessages).toBe(currentMessages)
+			expect(result.alphaMessagesSeq).toBe(5)
 		})
 
 		it("drops a transcript from an older navigation even when its message sequence is newer", () => {
@@ -1330,20 +1330,20 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "new-task",
 				taskStateSeq: 6,
-				clineMessages: currentMessages,
-				clineMessagesSeq: 8,
+				alphaMessages: currentMessages,
+				alphaMessagesSeq: 8,
 			}
 
 			const result = mergeExtensionState(previous, {
 				currentTaskId: "old-task",
 				taskStateSeq: 5,
-				clineMessages: [makeMessage(1, "old transcript")],
-				clineMessagesSeq: 9,
+				alphaMessages: [makeMessage(1, "old transcript")],
+				alphaMessagesSeq: 9,
 			})
 
 			expect(result.currentTaskId).toBe("new-task")
-			expect(result.clineMessages).toBe(currentMessages)
-			expect(result.clineMessagesSeq).toBe(8)
+			expect(result.alphaMessages).toBe(currentMessages)
+			expect(result.alphaMessagesSeq).toBe(8)
 		})
 		it("rejects another chat's consumed queue projection without a navigation sequence", () => {
 			const messages = [makeMessage(2, "current chat")]
@@ -1352,8 +1352,8 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "current-chat",
 				taskStateSeq: 6,
-				clineMessages: messages,
-				clineMessagesSeq: 8,
+				alphaMessages: messages,
+				alphaMessagesSeq: 8,
 				messageQueue: queue,
 				messageQueueSeq: 8,
 			}
@@ -1361,21 +1361,21 @@ describe("mergeExtensionState", () => {
 				currentTaskId: "background-chat",
 				messageQueue: [],
 				messageQueueSeq: 9,
-				clineMessages: [makeMessage(1, "consumed background input")],
-				clineMessagesSeq: 9,
+				alphaMessages: [makeMessage(1, "consumed background input")],
+				alphaMessagesSeq: 9,
 			})
 			expect(result.currentTaskId).toBe("current-chat")
 			expect(result.messageQueue).toBe(queue)
-			expect(result.clineMessages).toBe(messages)
-			expect(result.clineMessagesSeq).toBe(8)
+			expect(result.alphaMessages).toBe(messages)
+			expect(result.alphaMessagesSeq).toBe(8)
 		})
 		it("accepts the visible chat's consumed queue projection without a navigation sequence", () => {
 			const previous: ExtensionState = {
 				...baseState,
 				currentTaskId: "current-chat",
 				taskStateSeq: 6,
-				clineMessages: [],
-				clineMessagesSeq: 8,
+				alphaMessages: [],
+				alphaMessagesSeq: 8,
 				messageQueue: [{ id: "input", text: "waiting", timestamp: 2 }],
 				messageQueueSeq: 8,
 			}
@@ -1384,13 +1384,13 @@ describe("mergeExtensionState", () => {
 				currentTaskId: "current-chat",
 				messageQueue: [],
 				messageQueueSeq: 9,
-				clineMessages: messages,
-				clineMessagesSeq: 9,
+				alphaMessages: messages,
+				alphaMessagesSeq: 9,
 			})
 			expect(result.currentTaskId).toBe("current-chat")
 			expect(result.messageQueue).toEqual([])
-			expect(result.clineMessages).toBe(messages)
-			expect(result.clineMessagesSeq).toBe(9)
+			expect(result.alphaMessages).toBe(messages)
+			expect(result.alphaMessagesSeq).toBe(9)
 		})
 
 		it("accepts the transcript that belongs to the navigation already on screen", () => {
@@ -1399,21 +1399,21 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "task-1",
 				taskStateSeq: 6,
-				clineMessages: [],
-				clineMessagesSeq: 8,
+				alphaMessages: [],
+				alphaMessagesSeq: 8,
 			}
 
 			const result = mergeExtensionState(previous, {
 				currentTaskId: "task-1",
 				currentView: { type: "task", taskId: "task-1" },
 				taskStateSeq: 6,
-				clineMessages: transcript,
-				clineMessagesSeq: 9,
+				alphaMessages: transcript,
+				alphaMessagesSeq: 9,
 			})
 
 			expect(result.currentTaskId).toBe("task-1")
-			expect(result.clineMessages).toBe(transcript)
-			expect(result.clineMessagesSeq).toBe(9)
+			expect(result.alphaMessages).toBe(transcript)
+			expect(result.alphaMessagesSeq).toBe(9)
 		})
 
 		it("keeps the visible transcript when a background session patch arrives", () => {
@@ -1422,8 +1422,8 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "parent",
 				taskStateSeq: 4,
-				clineMessages: messages,
-				clineMessagesSeq: 4,
+				alphaMessages: messages,
+				alphaMessagesSeq: 4,
 			}
 
 			const result = mergeExtensionState(previous, {
@@ -1433,75 +1433,75 @@ describe("mergeExtensionState", () => {
 			})
 
 			expect(result.currentTaskId).toBe("parent")
-			expect(result.clineMessages).toBe(messages)
+			expect(result.alphaMessages).toBe(messages)
 			expect(result.taskStateSeq).toBe(5)
 		})
 
-		it("accepts clineMessages when seq is strictly greater", () => {
+		it("accepts alphaMessages when seq is strictly greater", () => {
 			const oldMessages = [makeMessage(1, "hello")]
 			const newMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: oldMessages,
-				clineMessagesSeq: 3,
+				alphaMessages: oldMessages,
+				alphaMessagesSeq: 3,
 			}
 
 			const result = mergeExtensionState(prevState, {
-				clineMessages: newMessages,
-				clineMessagesSeq: 4, // newer seq
+				alphaMessages: newMessages,
+				alphaMessagesSeq: 4, // newer seq
 			})
 
-			expect(result.clineMessages).toBe(newMessages)
-			expect(result.clineMessagesSeq).toBe(4)
+			expect(result.alphaMessages).toBe(newMessages)
+			expect(result.alphaMessagesSeq).toBe(4)
 		})
 
-		it("preserves clineMessages when newState does not include them (cloud event path)", () => {
+		it("preserves alphaMessages when newState does not include them (cloud event path)", () => {
 			const existingMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: existingMessages,
-				clineMessagesSeq: 5,
+				alphaMessages: existingMessages,
+				alphaMessagesSeq: 5,
 			}
 
-			// Simulate a cloud event push that omits clineMessages and clineMessagesSeq
+			// Simulate a cloud event push that omits alphaMessages and alphaMessagesSeq
 			const result = mergeExtensionState(prevState, {})
 
-			expect(result.clineMessages).toBe(existingMessages)
-			expect(result.clineMessagesSeq).toBe(5)
+			expect(result.alphaMessages).toBe(existingMessages)
+			expect(result.alphaMessagesSeq).toBe(5)
 		})
 
-		it("applies clineMessages normally when neither state has seq (backward compat)", () => {
+		it("applies alphaMessages normally when neither state has seq (backward compat)", () => {
 			const oldMessages = [makeMessage(1, "hello")]
 			const newMessages = [makeMessage(1, "hello"), makeMessage(2, "world")]
 
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: oldMessages,
+				alphaMessages: oldMessages,
 			}
 
 			const result = mergeExtensionState(prevState, {
-				clineMessages: newMessages,
+				alphaMessages: newMessages,
 			})
 
-			expect(result.clineMessages).toBe(newMessages)
+			expect(result.alphaMessages).toBe(newMessages)
 		})
 
-		it("applies clineMessages when prevState has no seq but newState does (first push)", () => {
+		it("applies alphaMessages when prevState has no seq but newState does (first push)", () => {
 			const prevState: ExtensionState = {
 				...baseState,
-				clineMessages: [],
+				alphaMessages: [],
 			}
 
 			const newMessages = [makeMessage(1, "hello")]
 			const result = mergeExtensionState(prevState, {
-				clineMessages: newMessages,
-				clineMessagesSeq: 1,
+				alphaMessages: newMessages,
+				alphaMessagesSeq: 1,
 			})
 
-			expect(result.clineMessages).toBe(newMessages)
-			expect(result.clineMessagesSeq).toBe(1)
+			expect(result.alphaMessages).toBe(newMessages)
+			expect(result.alphaMessagesSeq).toBe(1)
 		})
 
 		it("applies lifecycle and queue updates by independent sequence domains", () => {
@@ -1510,8 +1510,8 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "task-1",
 				currentView: { type: "task", taskId: "task-1" },
-				clineMessages: currentMessages,
-				clineMessagesSeq: 10,
+				alphaMessages: currentMessages,
+				alphaMessagesSeq: 10,
 				taskStateSeq: 4,
 				messageQueue: [{ id: "old", text: "old queue", images: [], timestamp: 1 }],
 				messageQueueSeq: 2,
@@ -1551,13 +1551,13 @@ describe("mergeExtensionState", () => {
 						waitingReason: "completion",
 					},
 				},
-				clineMessages: [makeMessage(1, "stale transcript")],
-				clineMessagesSeq: 9,
+				alphaMessages: [makeMessage(1, "stale transcript")],
+				alphaMessagesSeq: 9,
 				messageQueue: [{ id: "stale", text: "stale queue", images: [], timestamp: 3 }],
 				messageQueueSeq: 7,
 			})
 
-			expect(afterLifecycle.clineMessages).toBe(currentMessages)
+			expect(afterLifecycle.alphaMessages).toBe(currentMessages)
 			expect(afterLifecycle.messageQueue?.map((message) => message.text)).toEqual(["new queue"])
 			expect(afterLifecycle.liveTasksById?.["task-1"]).toMatchObject({
 				lifecycle: "waiting",
@@ -1692,7 +1692,7 @@ describe("mergeExtensionState", () => {
 				...baseState,
 				currentTaskId: "task-1",
 				currentView: { type: "task", taskId: "task-1" },
-				clineMessagesSeq: 20,
+				alphaMessagesSeq: 20,
 				messageQueue: [],
 			}
 
@@ -1704,7 +1704,7 @@ describe("mergeExtensionState", () => {
 
 			expect(result.messageQueue?.map((message) => message.text)).toEqual(["first dedicated queue"])
 			expect(result.messageQueueSeq).toBe(1)
-			expect(result.clineMessagesSeq).toBe(20)
+			expect(result.alphaMessagesSeq).toBe(20)
 		})
 	})
 
@@ -1809,7 +1809,7 @@ describe("mergeExtensionState", () => {
 			dispatchExtensionState({
 				currentTaskId: "lifecycle-task",
 				currentView: { type: "task", taskId: "lifecycle-task" },
-				clineMessages: [{ ts: 1, type: "say", say: "text", text: "legacy work" } as AlphaMessage],
+				alphaMessages: [{ ts: 1, type: "say", say: "text", text: "legacy work" } as AlphaMessage],
 				liveTaskIds: ["lifecycle-task"],
 				liveTasksById: {
 					"lifecycle-task": {
@@ -1912,8 +1912,8 @@ describe("shell state isolation", () => {
 			return <div data-testid="shell-renders">{shellRenderCount}</div>
 		}
 		const TranscriptProbe = () => {
-			const { clineMessages } = useExtensionState()
-			return <div data-testid="transcript-count">{clineMessages.length}</div>
+			const { alphaMessages } = useExtensionState()
+			return <div data-testid="transcript-count">{alphaMessages.length}</div>
 		}
 
 		render(
@@ -1931,8 +1931,8 @@ describe("shell state isolation", () => {
 						state: {
 							mode: "code",
 							currentTaskId: "task-1",
-							clineMessages: [{ ts: 1, type: "say", say: "text", text: "hello" }],
-							clineMessagesSeq: 1,
+							alphaMessages: [{ ts: 1, type: "say", say: "text", text: "hello" }],
+							alphaMessagesSeq: 1,
 						},
 					},
 				}),
@@ -1948,11 +1948,11 @@ describe("shell state isolation", () => {
 					data: {
 						type: "state",
 						state: {
-							clineMessages: [
+							alphaMessages: [
 								{ ts: 1, type: "say", say: "text", text: "hello" },
 								{ ts: 2, type: "say", say: "text", text: "stream" },
 							],
-							clineMessagesSeq: 2,
+							alphaMessagesSeq: 2,
 						},
 					},
 				}),

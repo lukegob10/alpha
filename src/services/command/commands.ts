@@ -2,11 +2,7 @@ import fs from "fs/promises"
 import * as path from "path"
 import { Dirent } from "fs"
 import matter from "gray-matter"
-import {
-	getLegacyGlobalConfigDirectory,
-	getProjectConfigDirectory,
-	getLegacyProjectConfigDirectory,
-} from "../config-paths"
+import { getGlobalConfigDirectory, getProjectConfigDirectory } from "../config-paths"
 import { getBuiltInCommands, getBuiltInCommand } from "./built-in-commands"
 
 /**
@@ -138,13 +134,12 @@ export async function getCommands(cwd: string): Promise<Command[]> {
 	}
 
 	// Scan global commands (override built-in)
-	const globalDir = path.join(getLegacyGlobalConfigDirectory(), "commands")
+	const globalDir = path.join(getGlobalConfigDirectory(), "commands")
 	await scanCommandDirectory(globalDir, "global", commands)
 
 	// Scan project commands (highest priority - override both global and built-in)
-	for (const projectRoot of [getLegacyProjectConfigDirectory(cwd), getProjectConfigDirectory(cwd)]) {
-		await scanCommandDirectory(path.join(projectRoot, "commands"), "project", commands)
-	}
+	const projectDir = path.join(getProjectConfigDirectory(cwd), "commands")
+	await scanCommandDirectory(projectDir, "project", commands)
 
 	return Array.from(commands.values())
 }
@@ -162,18 +157,12 @@ export async function getCommand(cwd: string, name: string): Promise<Command | u
 
 	// Try to find the command directly without scanning all commands
 	const projectDir = path.join(getProjectConfigDirectory(cwd), "commands")
-	const globalDir = path.join(getLegacyGlobalConfigDirectory(), "commands")
+	const globalDir = path.join(getGlobalConfigDirectory(), "commands")
 
 	// Check project directory first (highest priority)
 	const projectCommand = await tryLoadCommand(projectDir, name, "project")
 	if (projectCommand) {
 		return projectCommand
-	}
-
-	const legacyProjectDir = path.join(getLegacyProjectConfigDirectory(cwd), "commands")
-	const legacyProjectCommand = await tryLoadCommand(legacyProjectDir, name, "project")
-	if (legacyProjectCommand) {
-		return legacyProjectCommand
 	}
 
 	// Check global directory if not found in project

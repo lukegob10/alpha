@@ -22,7 +22,7 @@ export class AlphaProtectedController {
 		".alpha/**",
 		".vscode/**",
 		"*.code-workspace",
-		".rooprotected", // For future use
+		".alphaprotected", // For future use
 		"AGENTS.md",
 		"AGENT.md",
 	]

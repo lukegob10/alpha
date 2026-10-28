@@ -11,8 +11,8 @@ vi.mock("../messageEnhancer", () => ({
 
 describe("webviewMessageHandler enhancePrompt", () => {
 	const state = { apiConfiguration: {}, includeTaskHistoryInEnhance: true }
-	const taskA = { taskId: "task-a", clineMessages: [{ type: "say", say: "task", text: "A", ts: 1 }] }
-	const taskB = { taskId: "task-b", clineMessages: [{ type: "say", say: "task", text: "B", ts: 2 }] }
+	const taskA = { taskId: "task-a", alphaMessages: [{ type: "say", say: "task", text: "A", ts: 1 }] }
+	const taskB = { taskId: "task-b", alphaMessages: [{ type: "say", say: "task", text: "B", ts: 2 }] }
 	const createProvider = () => ({
 		getState: vi.fn().mockResolvedValue(state),
 		getCurrentTask: vi.fn<() => typeof taskA | undefined>().mockReturnValue(taskA),
@@ -62,7 +62,7 @@ describe("webviewMessageHandler enhancePrompt", () => {
 		resolveState(state)
 		await pending
 		expect(MessageEnhancer.enhanceMessage).toHaveBeenCalledWith(
-			expect.objectContaining({ currentAlphaMessages: taskA.clineMessages }),
+			expect.objectContaining({ currentAlphaMessages: taskA.alphaMessages }),
 		)
 	})
 

@@ -131,7 +131,7 @@ describe("view_image registry adapter", () => {
 			callbacks: toolCallbacks,
 		})
 
-		expect(execution.say).toHaveBeenCalledWith("rooignore_error", "private.png")
+		expect(execution.say).toHaveBeenCalledWith("alphaignore_error", "private.png")
 		expect(toolCallbacks.askApprovalResponse).not.toHaveBeenCalled()
 		expect(execution.trackFileContext).not.toHaveBeenCalled()
 		expect(toolCallbacks.pushToolResult).toHaveBeenCalledOnce()

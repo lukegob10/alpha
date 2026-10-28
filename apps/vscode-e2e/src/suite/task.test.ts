@@ -47,7 +47,7 @@ type TaskHostProvider = {
 		| {
 				didComplete: boolean
 				taskAsk?: AlphaMessage
-				clineMessages: AlphaMessage[]
+				alphaMessages: AlphaMessage[]
 				messageQueueService: { hasUnconsumedInput(): boolean }
 				waitForTermination(): Promise<void>
 		  }
@@ -113,7 +113,7 @@ suite("Alpha Task", function () {
 			assert.equal(completionPromptTasks.has(taskId), false)
 			assert.equal(task.taskAsk?.ask, undefined)
 			assert.equal(task.messageQueueService.hasUnconsumedInput(), false)
-			const completionRows = task.clineMessages.filter(
+			const completionRows = task.alphaMessages.filter(
 				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
 			)
 			assert.equal(completionRows.length, 1, "The task must retain one canonical final answer")

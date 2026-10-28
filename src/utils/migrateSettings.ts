@@ -9,9 +9,7 @@ import * as yaml from "yaml"
 const deprecatedCustomModesJSONFilename = "custom_modes.json"
 
 /**
- * Migrates old settings files to new file names and removes commands from old defaults
- *
- * TODO: Remove this migration code in September 2025 (6 months after implementation)
+ * Converts Alpha custom-mode settings to YAML and removes unsafe former command defaults.
  */
 export async function migrateSettings(
 	context: vscode.ExtensionContext,
@@ -21,12 +19,6 @@ export async function migrateSettings(
 	await migrateDefaultCommands(context, outputChannel)
 	// Auto now prompts for shell commands unless a user explicitly allows a prefix.
 	await migrateAutoApprovalCommandDefaults(context, outputChannel)
-	// Legacy file names that need to be migrated to the new names in GlobalFileNames
-	const fileMigrations = [
-		// custom_modes.json to custom_modes.yaml is handled separately below
-		{ oldName: "cline_custom_modes.json", newName: deprecatedCustomModesJSONFilename },
-		{ oldName: "cline_mcp_settings.json", newName: GlobalFileNames.mcpSettings },
-	]
 
 	try {
 		const settingsDir = await getSettingsDirectoryPath(context.globalStorageUri.fsPath)
@@ -37,27 +29,7 @@ export async function migrateSettings(
 			return
 		}
 
-		// Process each file migration
 		try {
-			for (const migration of fileMigrations) {
-				const oldPath = path.join(settingsDir, migration.oldName)
-				const newPath = path.join(settingsDir, migration.newName)
-
-				// Only migrate if old file exists and new file doesn't exist yet
-				// This ensures we don't overwrite any existing new files
-				const oldFileExists = await fileExistsAtPath(oldPath)
-				const newFileExists = await fileExistsAtPath(newPath)
-
-				if (oldFileExists && !newFileExists) {
-					await fs.rename(oldPath, newPath)
-					outputChannel.appendLine(`Renamed ${migration.oldName} to ${migration.newName}`)
-				} else {
-					outputChannel.appendLine(
-						`Skipping migration of ${migration.oldName} to ${migration.newName}: ${oldFileExists ? "new file already exists" : "old file not found"}`,
-					)
-				}
-			}
-
 			// Special migration for custom_modes.json to custom_modes.yaml with content transformation
 			await migrateCustomModesToYaml(settingsDir, outputChannel)
 		} catch (error) {

@@ -20,7 +20,7 @@ for (const events of [100, 500, 1_000]) {
 		taskStatus: TaskStatus.Running,
 		isStreaming: false,
 		isTurnActive: () => true,
-		clineMessages: [],
+		alphaMessages: [],
 	} as unknown as Task)
 	const snapshot = agentLifecycleSnapshotSchema.parse({
 		version: 1,

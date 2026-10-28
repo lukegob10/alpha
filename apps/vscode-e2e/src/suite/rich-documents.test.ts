@@ -13,7 +13,7 @@ import { waitFor } from "./utils"
 
 interface DocumentTask {
 	taskId: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	taskAsk?: AlphaMessage
 	didComplete: boolean
 	approveAsk(): void
@@ -265,7 +265,7 @@ suite("Rich document authoring through captured task tools", function () {
 					"The exec_command output must include the referenced resource content",
 				)
 				assert.ok(
-					provider.getLiveTask(taskId)!.clineMessages.some((message) => message.text?.includes(state.link)),
+					provider.getLiveTask(taskId)!.alphaMessages.some((message) => message.text?.includes(state.link)),
 				)
 				assert.ok((await vscode.commands.getCommands(true)).includes("alpha.previewHtmlDocument"))
 				await waitForRevision(1)

@@ -279,7 +279,7 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
 
 	// Implements the `AlphaCodeAPI` interface.
-	const socketPath = process.env.ROO_CODE_IPC_SOCKET_PATH
+	const socketPath = process.env.ALPHA_CODE_IPC_SOCKET_PATH
 	const enableLogging = typeof socketPath === "string"
 
 	// Watch the core files and automatically reload the extension host.

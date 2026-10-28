@@ -98,14 +98,14 @@ describe("Checkpoint functionality", () => {
 			providerRef: {
 				deref: () => mockProvider,
 			},
-			clineMessages: [],
+			alphaMessages: [],
 			apiConversationHistory: [],
 			pendingUserMessageCheckpoint: undefined,
 			say: vi.fn().mockResolvedValue(undefined),
 			overwriteAlphaMessages: vi.fn(),
 			overwriteApiConversationHistory: vi.fn(),
 			commitConversationRewind: vi.fn(
-				async (uiMessages: Task["clineMessages"], apiHistory: Task["apiConversationHistory"]) => {
+				async (uiMessages: Task["alphaMessages"], apiHistory: Task["apiConversationHistory"]) => {
 					await mockTask.overwriteAlphaMessages(uiMessages)
 					await mockTask.overwriteApiConversationHistory(apiHistory)
 					return true
@@ -197,7 +197,7 @@ describe("Checkpoint functionality", () => {
 			expect(mockTask.pendingUserMessageCheckpoint.hash).toBe("test-commit-hash")
 
 			// Simulate message deletion and reinitialization
-			mockTask.clineMessages = []
+			mockTask.alphaMessages = []
 			mockTask.checkpointService = mockCheckpointService // Keep service available
 			mockTask.checkpointServiceInitializing = false
 
@@ -276,18 +276,18 @@ describe("Checkpoint functionality", () => {
 				if (mockTask.abort) throw new Error("Task aborted")
 			})
 			mockTask.overwriteAlphaMessages.mockImplementation(async (messages: unknown[]) => {
-				mockTask.clineMessages = messages
+				mockTask.alphaMessages = messages
 			})
 			await checkpointRestore(mockTask, { ts: 2, commitHash: "abc123", mode: "restore", operation: "edit" })
 			expect(mockTask.say).not.toHaveBeenCalled()
-			expect(mockTask.clineMessages.at(-1)).toEqual(
+			expect(mockTask.alphaMessages.at(-1)).toEqual(
 				expect.objectContaining({ type: "say", say: "api_req_deleted" }),
 			)
 			expect(mockTask.enableCheckpoints).toBe(true)
 		})
 
 		beforeEach(() => {
-			mockTask.clineMessages = [
+			mockTask.alphaMessages = [
 				{ ts: 1, say: "user", text: "Message 1" },
 				{ ts: 2, say: "assistant", text: "Message 2" },
 				{ ts: 3, say: "user", text: "Message 3" },
@@ -421,7 +421,7 @@ describe("Checkpoint functionality", () => {
 
 	describe("checkpointDiff", () => {
 		beforeEach(() => {
-			mockTask.clineMessages = [
+			mockTask.alphaMessages = [
 				{ ts: 1, say: "user", text: "Message 1" },
 				{ ts: 2, say: "checkpoint_saved", text: "commit1" },
 				{ ts: 3, say: "user", text: "Message 2" },

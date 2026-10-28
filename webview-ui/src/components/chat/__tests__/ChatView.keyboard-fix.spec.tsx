@@ -40,10 +40,6 @@ vi.mock("@src/components/modals/Announcement", () => ({
 	default: () => null,
 }))
 
-vi.mock("@src/components/welcome/RooCloudCTA", () => ({
-	default: () => null,
-}))
-
 vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: () => null,
 }))
@@ -94,7 +90,7 @@ const mockPostMessage = (state: any) => {
 			type: "state",
 			state: {
 				version: "1.0.0",
-				clineMessages: [],
+				alphaMessages: [],
 				taskHistory: [],
 				shouldShowAnnouncement: false,
 				allowedCommands: [],

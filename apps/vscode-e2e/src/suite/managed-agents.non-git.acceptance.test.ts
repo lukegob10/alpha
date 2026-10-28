@@ -31,7 +31,7 @@ interface LiveTask {
 	cwd: string
 	abort: boolean
 	metadata: { task: string }
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	didComplete: boolean
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -311,7 +311,7 @@ suite("Managed agents in a plain folder", function () {
 			assert.equal(state.liveTasksById?.[rootId]?.lifecycle, TaskLifecycleState.Completed)
 			assert.equal(state.liveTasksById?.[rootId]?.isTurnActive, false)
 			assert.equal(root.didComplete, true)
-			assert.ok(root.clineMessages.some((message) => !message.partial && message.text === RESULT))
+			assert.ok(root.alphaMessages.some((message) => !message.partial && message.text === RESULT))
 			assert.deepEqual(transactions.errors, [])
 			assert.equal(transactions.callCount, CHILD_COUNT + observation.waitCalls)
 			assert.equal(transactions.resultCount, CHILD_COUNT + observation.waitCalls)

@@ -35,7 +35,7 @@ vi.mock("vscode", () => {
 	}
 })
 
-describe("RooIgnore Response Formatting", () => {
+describe("AlphaIgnore Response Formatting", () => {
 	const TEST_CWD = "/test/path"
 	let mockLstat: Mock<typeof fs.lstat>
 	let mockReadFile: Mock<typeof fs.readFile>
@@ -130,9 +130,9 @@ describe("RooIgnore Response Formatting", () => {
 		})
 
 		/**
-		 * Tests formatFilesList when showRooIgnoredFiles is set to false
+		 * Tests formatFilesList when showAlphaIgnoredFiles is set to false
 		 */
-		it("should hide ignored files when showRooIgnoredFiles is false", async () => {
+		it("should hide ignored files when showAlphaIgnoredFiles is false", async () => {
 			// Create controller
 			const controller = new AlphaIgnoreController(TEST_CWD)
 			await controller.initialize()
@@ -156,13 +156,13 @@ describe("RooIgnore Response Formatting", () => {
 				"secrets/keys.json", // ignored
 			]
 
-			// Format with controller and showRooIgnoredFiles = false
+			// Format with controller and showAlphaIgnoredFiles = false
 			const result = formatResponse.formatFilesList(
 				TEST_CWD,
 				files,
 				false,
 				controller as any,
-				false, // showRooIgnoredFiles = false
+				false, // showAlphaIgnoredFiles = false
 			)
 
 			// Should contain allowed files

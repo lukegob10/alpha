@@ -21,7 +21,7 @@ interface SmallTask {
 	didComplete: boolean
 	abort: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
 }
@@ -158,7 +158,7 @@ class CommandReadAI {
 			assert.ok(accepted >= 0 && started > accepted, "Durable acceptance must precede the read effect")
 		}
 		assert.ok(
-			!task.clineMessages.some((message) => message.say === "command_output"),
+			!task.alphaMessages.some((message) => message.say === "command_output"),
 			"Read presentation must await the durable assistant transcript",
 		)
 		yield { type: "outcome" as const, status: "completed" as const, terminal: true, semanticOutputObserved: true }
@@ -260,7 +260,7 @@ suite("Workspace read streaming", function () {
 			assert.deepEqual(lifecycle.errors, [])
 			assert.equal(lifecycle.completedTurns, 1)
 			assert.ok(
-				task.clineMessages.some(
+				task.alphaMessages.some(
 					(message) =>
 						message.say === "command_output" &&
 						message.text?.includes("sentinel.txt:1:ALPHA_EARLY_READ_SENTINEL"),
@@ -362,7 +362,7 @@ suite("Core loop proportional completion", function () {
 				assert.equal(completions, 1)
 				assert.equal(task.didComplete, true)
 				assert.equal(task.abort, false)
-				assert.ok(!task.clineMessages.some((message) => message.ask === "completion_result"))
+				assert.ok(!task.alphaMessages.some((message) => message.ask === "completion_result"))
 				assert.equal(state.currentTaskId, task.taskId)
 				assert.ok(projected)
 				assert.equal(projected.lifecycle, TaskLifecycleState.Completed)
@@ -383,9 +383,9 @@ suite("Core loop proportional completion", function () {
 				assert.equal(lifecycle.completedTurns, 1)
 				assert.equal(lifecycle.failedTurns, 0)
 				assert.equal(lifecycle.cancelledTurns, 0)
-				assert.ok(task.clineMessages.some((message) => !message.partial && message.text === ANSWER))
+				assert.ok(task.alphaMessages.some((message) => !message.partial && message.text === ANSWER))
 				assert.ok(
-					!task.clineMessages.some(
+					!task.alphaMessages.some(
 						(message) => message.ask === "resume_task" || message.ask === "api_req_failed",
 					),
 				)

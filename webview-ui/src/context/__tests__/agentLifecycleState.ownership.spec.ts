@@ -55,7 +55,7 @@ const state = (): ExtensionState => ({
 	version: "",
 	mcpEnabled: false,
 	experiments: experimentDefault,
-	clineMessages: [],
+	alphaMessages: [],
 	taskHistory: [],
 	shouldShowAnnouncement: false,
 	enableCheckpoints: true,
@@ -67,7 +67,7 @@ const state = (): ExtensionState => ({
 	maxWorkspaceFiles: 100,
 	apiConfiguration: {},
 	telemetrySetting: "unset",
-	showRooIgnoredFiles: true,
+	showAlphaIgnoredFiles: true,
 	enableSubfolderRules: false,
 	renderContext: "sidebar",
 	autoCondenseContext: true,
@@ -153,7 +153,7 @@ describe("lifecycle task ownership", () => {
 			taskStateSeq: 1,
 			liveTaskIds: ["current"],
 			liveTasksById: { current: compact },
-			clineMessages: [{ ts: 2, type: "ask", ask: "completion_result" }],
+			alphaMessages: [{ ts: 2, type: "ask", ask: "completion_result" }],
 		}
 		const degraded = applyLifecycleDegradedToExtensionState(initial, {
 			version: 1,

@@ -590,9 +590,9 @@ export interface ExtensionMessage {
 		isActive: boolean
 		path?: string
 	}>
-	clineMessage?: AlphaMessage
+	alphaMessage?: AlphaMessage
 	/** Transcript sequence shared with transcript snapshots for ordered incremental delivery. */
-	clineMessagesSeq?: number
+	alphaMessagesSeq?: number
 	openAiModels?: string[]
 	vsCodeLmModels?: {
 		vendor?: string
@@ -778,7 +778,7 @@ export type ExtensionState = Pick<
 > & {
 	lockApiConfigAcrossModes?: boolean
 	version: string
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	currentTaskId?: string
 	currentTaskItem?: HistoryItem
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
@@ -808,7 +808,7 @@ export type ExtensionState = Pick<
 	checkpointTimeout: number // Timeout for checkpoint initialization in seconds (default: 15)
 	maxOpenTabsContext: number // Maximum number of VSCode open tabs to include in context (0-500)
 	maxWorkspaceFiles: number // Maximum number of files to include in current working directory details (0-500)
-	showRooIgnoredFiles: boolean // Whether to show .alphaignore'd files in listings
+	showAlphaIgnoredFiles: boolean // Whether to show .alphaignore'd files in listings
 	enableSubfolderRules: boolean // Whether to load rules from subdirectories
 	maxReadFileLine?: number // Maximum line limit for read_file tool (-1 for default)
 	maxImageFileSize: number // Maximum size of image files to process in MB
@@ -852,9 +852,8 @@ export type ExtensionState = Pick<
 	/**
 	 * Monotonically increasing sequence number for transcript snapshots and
 	 * incremental message pushes.
-	 * The legacy field name is retained for wire compatibility.
 	 */
-	clineMessagesSeq?: number
+	alphaMessagesSeq?: number
 	/** Sequence for task identity and lifecycle projections. */
 	taskStateSeq?: number
 	/** Sequence for the visible task's queued messages. */
@@ -1525,18 +1524,3 @@ export interface AlphaApiReqInfo {
 }
 
 export type AlphaApiReqCancelReason = "streaming_failed" | "user_cancelled"
-
-/** @deprecated Use AlphaAskResponse. Retained for existing API consumers. */
-export type { AlphaAskResponse as ClineAskResponse }
-
-/** @deprecated Use AlphaSayTool. Retained for existing API consumers. */
-export type { AlphaSayTool as ClineSayTool }
-
-/** @deprecated Use AlphaAskUseMcpServer. Retained for existing API consumers. */
-export type { AlphaAskUseMcpServer as ClineAskUseMcpServer }
-
-/** @deprecated Use AlphaApiReqInfo. Retained for existing API consumers. */
-export type { AlphaApiReqInfo as ClineApiReqInfo }
-
-/** @deprecated Use AlphaApiReqCancelReason. Retained for existing API consumers. */
-export type { AlphaApiReqCancelReason as ClineApiReqCancelReason }

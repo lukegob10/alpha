@@ -1,7 +1,7 @@
 import { AlphaMessage } from "@alpha-code/types"
 
-export function getLatestTodo(clineMessages: AlphaMessage[]) {
-	const todos = clineMessages
+export function getLatestTodo(alphaMessages: AlphaMessage[]) {
+	const todos = alphaMessages
 		.filter(
 			(msg) =>
 				(msg.type === "ask" && msg.ask === "tool") || (msg.type === "say" && msg.say === "user_edit_todos"),

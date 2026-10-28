@@ -683,7 +683,7 @@ describe("editFileTool", () => {
 		it("tracks file context after successful edit", async () => {
 			await executeEditFileTool()
 
-			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
+			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "alpha_edited")
 		})
 	})
 

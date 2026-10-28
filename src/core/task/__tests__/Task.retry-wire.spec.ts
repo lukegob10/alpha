@@ -108,7 +108,7 @@ function harness() {
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: history,
-		clineMessages: [],
+		alphaMessages: [],
 		agentTurnStep: 0,
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, jitter: "none", baseDelayMs: 0 }),
@@ -1057,7 +1057,7 @@ describe("Task retained retry wire inputs", () => {
 		const oldMessage = { ts: 1, type: "say", say: "api_req_started", text: "{}" } as const
 		const replacementMessage = { ...oldMessage }
 		Object.assign(task, {
-			clineMessages: [oldMessage],
+			alphaMessages: [oldMessage],
 			backgroundUsageDrainEpoch: 0,
 			backgroundUsageDrainAbortController: undefined,
 			abandoned: false,
@@ -1066,7 +1066,7 @@ describe("Task retained retry wire inputs", () => {
 
 		expect((task as any).isBackgroundUsageDrainCurrent(owner)).toBe(true)
 		task.currentRequestAbortController = followUpController
-		task.clineMessages = [replacementMessage]
+		task.alphaMessages = [replacementMessage]
 		expect((task as any).isBackgroundUsageDrainCurrent(owner)).toBe(false)
 		;(task as any).invalidateBackgroundUsageDrain("replacement request")
 		expect(owner.controller.signal.aborted).toBe(true)

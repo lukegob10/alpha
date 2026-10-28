@@ -14,7 +14,7 @@ const barrier = () => {
 }
 
 const createTask = (taskId: string): Task =>
-	({ taskId, taskKind: "primary", clineMessages: [], emit: vi.fn() }) as unknown as Task
+	({ taskId, taskKind: "primary", alphaMessages: [], emit: vi.fn() }) as unknown as Task
 
 const createProvider = () => {
 	const taskSessions = new TaskSessionRegistry()
@@ -92,7 +92,7 @@ describe("blank-task navigation generations", () => {
 		const lookupEntered = barrier()
 		const historyReady = barrier()
 		const oldTask = createTask("old-task")
-		oldTask.clineMessages = Array.from({ length: 200 }, (_, index) => ({
+		oldTask.alphaMessages = Array.from({ length: 200 }, (_, index) => ({
 			ts: index + 1,
 			type: "say" as const,
 			say: "text" as const,
@@ -100,7 +100,7 @@ describe("blank-task navigation generations", () => {
 		}))
 		let obsoleteTranscriptBytes = 0
 		publishTranscript.mockImplementation(() => {
-			obsoleteTranscriptBytes += Buffer.byteLength(JSON.stringify(oldTask.clineMessages))
+			obsoleteTranscriptBytes += Buffer.byteLength(JSON.stringify(oldTask.alphaMessages))
 		})
 		const historyItem: HistoryItem = {
 			id: oldTask.taskId,

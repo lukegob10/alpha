@@ -308,7 +308,7 @@ async function fixture(
 		getTaskLifetimeCancellationSignal: () => currentLifetime.signal,
 		providerRef: { deref: () => provider },
 		lastMessageTs: 1_000,
-		clineMessages: [],
+		alphaMessages: [],
 		consecutiveMistakeCount: 0,
 		commandExecutionEvidence: new Map<string, CommandExecutionEvidence>(),
 		pendingCommandVerification: Promise.resolve(),
@@ -334,7 +334,7 @@ async function fixture(
 		observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
 		addToAlphaMessages: async (message: AlphaMessage) => {
 			task["observeUiMessageTimestamps"]([message])
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		},
 		prepareCommandEvidenceSlot: Task.prototype["prepareCommandEvidenceSlot"],
 		enqueueCommandEvidence: Task.prototype["enqueueCommandEvidence"],
@@ -355,7 +355,7 @@ async function fixture(
 		askApproval: vi.fn(async (type: AlphaAsk, command?: string) => {
 			expect(type).toBe("command")
 			task.lastMessageTs = (task.lastMessageTs ?? 0) + 1
-			task.clineMessages.push({ ts: task.lastMessageTs, type: "ask", ask: "command", text: command })
+			task.alphaMessages.push({ ts: task.lastMessageTs, type: "ask", ask: "command", text: command })
 			return { response: "yesButtonClicked" as const, commandExecutionId: task.lastMessageTs.toString() }
 		}),
 		pushToolResultToUserContent(result) {

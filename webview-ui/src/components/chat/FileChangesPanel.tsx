@@ -16,7 +16,7 @@ import {
 import DiffView from "../common/DiffView"
 
 interface FileChangesPanelProps {
-	clineMessages: AlphaMessage[] | undefined
+	alphaMessages: AlphaMessage[] | undefined
 	taskId?: string
 	className?: string
 	onExpandedChange?: () => void
@@ -53,7 +53,7 @@ const CapturedDiffView = memo(function CapturedDiffView({
 	)
 })
 
-const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedChange }: FileChangesPanelProps) => {
+const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedChange }: FileChangesPanelProps) => {
 	const { t } = useTranslation()
 	const [panelExpanded, setPanelExpanded] = useState(false)
 	const [showAllFiles, setShowAllFiles] = useState(false)
@@ -75,7 +75,7 @@ const FileChangesPanel = memo(({ clineMessages, taskId, className, onExpandedCha
 		netStatsCacheRef.current.clear()
 	}, [taskId])
 
-	const fileChanges = useMemo(() => fileChangesFromMessages(clineMessages), [clineMessages])
+	const fileChanges = useMemo(() => fileChangesFromMessages(alphaMessages), [alphaMessages])
 
 	// Group by path so we show one row per file (multiple edits to same file combined for display)
 	const byPath = useMemo(() => {

@@ -30,7 +30,7 @@ function harness() {
 		// Object.create bypasses Task's field initializers, including lifetime cancellation ownership.
 		taskCancellationController: new AbortController(),
 		didComplete: false,
-		clineMessages: [],
+		alphaMessages: [],
 		apiConversationHistory: [],
 		isTaskLoopActive: false,
 		requestPacingWaitCount: 0,

@@ -94,7 +94,7 @@ Alpha is a VS Code extension. The standalone application in `apps/cli/` and its 
 `packages/vscode-shim/` were retired; do not recreate a parallel agent runtime. Development and evaluation command-line
 tools remain supported and execute the real extension through VS Code. Preserve historical task and evaluation data
 with its original execution identity. Reject unsupported CLI evaluation execution before creating a run or launching an
-agent or container; do not relabel historical records. A retained `ROO_CLI_RUNTIME` variable cannot bypass extension
+agent or container; do not relabel historical records. A retained `ALPHA_CLI_RUNTIME` variable cannot bypass extension
 timeouts, approvals, or saved-provider restoration.
 
 ## VS Code minimum and reference hosts

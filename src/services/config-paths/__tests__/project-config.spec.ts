@@ -1,7 +1,6 @@
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
-import { constants } from "fs"
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
@@ -28,59 +27,27 @@ describe("Alpha project configuration", () => {
 		await fs.rm(cwd, { recursive: true, force: true })
 	})
 
-	async function writeConfig(root: ".alpha" | ".roo", content: string): Promise<string> {
-		const configPath = path.join(cwd, root, "mcp.json")
-		await fs.mkdir(path.dirname(configPath), { recursive: true })
-		await fs.writeFile(configPath, content)
-		return configPath
-	}
-
-	it("keeps canonical project configuration last in precedence order", () => {
+	it("orders global and project configuration without duplicate project probes", () => {
 		expect(getProjectConfigDirectory(cwd)).toBe(path.join(cwd, ".alpha"))
-		expect(getConfigDirectoriesForCwd(cwd)).toEqual([
-			path.join(os.homedir(), ".roo"),
-			path.join(cwd, ".roo"),
-			path.join(cwd, ".alpha"),
-		])
+		expect(getConfigDirectoriesForCwd(cwd)).toEqual([path.join(os.homedir(), ".alpha"), path.join(cwd, ".alpha")])
 	})
 
-	it("returns the Alpha MCP path without creating an empty file during discovery", async () => {
+	it("returns the Alpha MCP path without creating configuration during discovery", async () => {
 		const canonicalPath = await getProjectMcpConfigPath(cwd)
 		expect(canonicalPath).toBe(path.join(cwd, ".alpha", "mcp.json"))
 		await expect(fs.access(path.dirname(canonicalPath))).rejects.toMatchObject({ code: "ENOENT" })
+		expect(fs.copyFile).not.toHaveBeenCalled()
 	})
 
-	it("preserves legacy MCP content verbatim and makes repeated discovery idempotent", async () => {
+	it("preserves existing MCP content verbatim across repeated discovery", async () => {
+		const canonicalPath = path.join(cwd, ".alpha", "mcp.json")
 		const content = '{\n "mcpServers": {"project-tool": {"command": "node"}}, "future": true\n}\n'
-		const legacyPath = await writeConfig(".roo", content)
-		const canonicalPath = await getProjectMcpConfigPath(cwd)
-		expect(await fs.readFile(canonicalPath, "utf-8")).toBe(content)
-		expect(await fs.readFile(legacyPath, "utf-8")).toBe(content)
-
-		await fs.writeFile(canonicalPath, '{"mcpServers": {}}')
-		await getProjectMcpConfigPath(cwd)
-		expect(await fs.readFile(canonicalPath, "utf-8")).toBe('{"mcpServers": {}}')
-	})
-
-	it("never merges legacy configuration over an existing Alpha configuration", async () => {
-		await writeConfig(".roo", '{"mcpServers": {"old": {"command": "node"}}}')
-		const canonicalPath = await writeConfig(".alpha", '{"mcpServers": {}}')
+		await fs.mkdir(path.dirname(canonicalPath), { recursive: true })
+		await fs.writeFile(canonicalPath, content)
 		expect(await getProjectMcpConfigPath(cwd)).toBe(canonicalPath)
-		expect(await fs.readFile(canonicalPath, "utf-8")).toBe('{"mcpServers": {}}')
-	})
-
-	it("uses an exclusive copy when another writer creates the Alpha configuration", async () => {
-		await writeConfig(".roo", '{"mcpServers": {"old": {"command": "node"}}}')
-		const copyFile = await vi
-			.importActual<typeof import("fs/promises")>("fs/promises")
-			.then((module) => module.copyFile)
-		const copy = vi.mocked(fs.copyFile).mockImplementationOnce(async (source, destination, flags) => {
-			await fs.writeFile(destination, "concurrent edit")
-			await copyFile(source, destination, flags)
-		})
-		const canonicalPath = await getProjectMcpConfigPath(cwd)
-		expect(copy).toHaveBeenCalledWith(path.join(cwd, ".roo", "mcp.json"), canonicalPath, constants.COPYFILE_EXCL)
-		expect(await fs.readFile(canonicalPath, "utf-8")).toBe("concurrent edit")
+		expect(await getProjectMcpConfigPath(cwd)).toBe(canonicalPath)
+		expect(await fs.readFile(canonicalPath, "utf-8")).toBe(content)
+		expect(fs.copyFile).not.toHaveBeenCalled()
 	})
 
 	it("propagates I/O failures instead of replacing a protected configuration", async () => {
@@ -89,12 +56,11 @@ describe("Alpha project configuration", () => {
 		await expect(getProjectMcpConfigPath(cwd)).rejects.toBe(failure)
 	})
 
-	it("reads Alpha mode rules first and falls back to legacy rules without writes", async () => {
-		const legacyRules = path.join(cwd, ".roo", "rules-code")
-		await fs.mkdir(legacyRules, { recursive: true })
-		expect(await getProjectConfigPathForRead(cwd, "rules-code")).toBe(legacyRules)
+	it("resolves absent and existing mode-rule paths without writes", async () => {
 		const canonicalRules = path.join(cwd, ".alpha", "rules-code")
+		expect(await getProjectConfigPathForRead(cwd, "rules-code")).toBe(canonicalRules)
 		await fs.mkdir(canonicalRules, { recursive: true })
 		expect(await getProjectConfigPathForRead(cwd, "rules-code")).toBe(canonicalRules)
+		expect(fs.copyFile).not.toHaveBeenCalled()
 	})
 })

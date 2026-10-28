@@ -136,7 +136,7 @@ suite("Live Claude through GitHub Copilot", function () {
 						requestsBeforeFollowup = observations.length
 						assert.ok(requestsBeforeFollowup > 0, "Live labels require actual selected-model requests")
 						const feedback = `Run exec_command with exactly ${JSON.stringify(verify)} once to verify the existing file again. Make no further edits. Use the previous conversation's receipts and finish with CLAUDE_FOLLOWUP_VERIFIED.`
-						const previousTimestamp = task.clineMessages.at(-1)?.ts ?? 0
+						const previousTimestamp = task.alphaMessages.at(-1)?.ts ?? 0
 						let admitted = false
 						let followupCompleted = 0
 						const onFeedback = (event: { taskId: string; action: string; message: AlphaMessage }) => {

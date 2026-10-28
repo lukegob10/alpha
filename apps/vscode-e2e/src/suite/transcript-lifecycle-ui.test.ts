@@ -10,7 +10,7 @@ import { waitFor } from "./utils"
 
 interface TranscriptTask {
 	didComplete: boolean
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	apiConversationHistory: unknown[]
 	overwriteApiConversationHistory(messages: unknown[]): Promise<boolean>
 	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
@@ -127,7 +127,7 @@ suite("Transcript lifecycle renderer", function () {
 			assert.ok(task)
 			let row = 0
 			const appendRows = async (count: number) => {
-				const timestamp = Math.max(Date.now(), ...task.clineMessages.map((message) => message.ts)) + 1
+				const timestamp = Math.max(Date.now(), ...task.alphaMessages.map((message) => message.ts)) + 1
 				const rows: AlphaMessage[] = Array.from({ length: count }, (_, index) => ({
 					type: "say",
 					say: "text",
@@ -135,7 +135,7 @@ suite("Transcript lifecycle renderer", function () {
 					text: `Lifecycle fixture row ${++row}.\n\n\`\`\`typescript\nconst fixtureAnswer = 42\n\`\`\`\n\n${"Preserve the completed project evidence. ".repeat(8)}`,
 					partial: false,
 				}))
-				await task.overwriteAlphaMessages([...task.clineMessages, ...rows])
+				await task.overwriteAlphaMessages([...task.alphaMessages, ...rows])
 				await host.postStateToWebview()
 			}
 			await appendRows(1_200)
@@ -170,11 +170,11 @@ suite("Transcript lifecycle renderer", function () {
 				if (cycle === "three") {
 					// Restored completed tasks expose this input boundary before manual compaction.
 					await task.overwriteAlphaMessages([
-						...task.clineMessages,
+						...task.alphaMessages,
 						{
 							type: "ask",
 							ask: "resume_completed_task",
-							ts: Math.max(Date.now(), ...task.clineMessages.map((message) => message.ts)) + 1,
+							ts: Math.max(Date.now(), ...task.alphaMessages.map((message) => message.ts)) + 1,
 							text: "Continue the completed fixture when ready.",
 							partial: false,
 						},
@@ -206,7 +206,7 @@ suite("Transcript lifecycle renderer", function () {
 				await compacting
 				await waitFor(
 					() =>
-						task.clineMessages.filter((message) => message.contextCondense?.condenseId).length ===
+						task.alphaMessages.filter((message) => message.contextCondense?.condenseId).length ===
 						index + 1,
 					{ timeout: 30_000, description: "a real compaction receipt" },
 				)
@@ -240,7 +240,7 @@ suite("Transcript lifecycle renderer", function () {
 					// Following output evicts the selected oldest mounted row through the real transcript hook.
 					await appendRows(4)
 				} else {
-					const messages = [...task.clineMessages]
+					const messages = [...task.alphaMessages]
 					const last = messages.at(-1)!
 					const partial = round % 4 === 1
 					const fence = "```"
@@ -257,7 +257,7 @@ suite("Transcript lifecycle renderer", function () {
 			// Native trace completion is asynchronous; keep the owned host alive until the driver collects it.
 			await uiFixtureBarrier("selection-layout-finished", { version: vscode.version, taskId })
 			const turn = { runId: `rendered-${process.env.ALPHA_UI_ACCEPTANCE_NONCE}`, turnId: "folded-turn" }
-			const timestamp = Math.max(Date.now(), ...task.clineMessages.map((message) => message.ts)) + 1
+			const timestamp = Math.max(Date.now(), ...task.alphaMessages.map((message) => message.ts)) + 1
 			await task.overwriteAlphaMessages([
 				{
 					ts: timestamp,

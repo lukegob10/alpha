@@ -73,7 +73,7 @@ function harness() {
 		reasoningHandlerUsers: new Map(),
 		providerRef: { deref: () => provider },
 		apiConversationHistory: [{ role: "user", content: "Inspect the fixture" }],
-		clineMessages: [],
+		alphaMessages: [],
 		agentRunId: "fixture-agent-run",
 		agentTurnId: "fixture-turn",
 		agentTurnStep: 0,

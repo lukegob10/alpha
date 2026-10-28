@@ -90,7 +90,7 @@ describe("Task metadata mode ownership", () => {
 			_taskApiConfigName: "default",
 			alphaMessagesSaveQueue: Promise.resolve(),
 			alphaMessagesHydrated: true,
-			clineMessages: [],
+			alphaMessages: [],
 			providerRef: { deref: () => provider },
 			invalidateBackgroundUsageDrain: vi.fn(),
 			debouncedEmitTokenUsage: vi.fn(),

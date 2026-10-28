@@ -643,7 +643,7 @@ interface ManagedAgentHostProvider {
 				activeAsk?: { type: string; ts: number }
 				askResponse?: string
 				messageQueueService?: { isEmpty(): boolean; hasUnconsumedInput(): boolean }
-				clineMessages?: AlphaMessage[]
+				alphaMessages?: AlphaMessage[]
 				approveAsk(): void
 				waitForTermination(): Promise<void>
 				getCommandExecutionEvidence(): Array<{
@@ -691,7 +691,7 @@ const getTaskDiagnostics = (provider: ManagedAgentHostProvider, taskId: string) 
 		activeAsk: task?.activeAsk,
 		askResponse: task?.askResponse,
 		queueEmpty: task?.messageQueueService?.isEmpty(),
-		transcriptTail: task?.clineMessages?.slice(-6).map(({ ask, say, text, partial }) => ({
+		transcriptTail: task?.alphaMessages?.slice(-6).map(({ ask, say, text, partial }) => ({
 			message: ask ?? say,
 			partial,
 			text: text?.slice(0, 500),
@@ -1191,7 +1191,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 			)
 			assert.equal(rootTask.taskAsk?.ask, undefined, "The completed root must not retain an active ask")
 			assert.equal(rootTask.messageQueueService?.hasUnconsumedInput(), false)
-			const rootCompletionRows = rootTask.clineMessages?.filter(
+			const rootCompletionRows = rootTask.alphaMessages?.filter(
 				(message) => message.type === "say" && message.say === "completion_result" && !message.partial,
 			)
 			assert.equal(rootCompletionRows?.length, 1, "The root must retain one canonical final answer")

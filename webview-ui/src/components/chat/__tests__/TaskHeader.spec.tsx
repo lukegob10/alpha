@@ -52,7 +52,7 @@ const mockExtensionState: {
 		subagentModelRoute?: SubagentModelRouteState
 		subagentChangeSet?: SubagentChangeSetState
 	} | null
-	clineMessages: any[]
+	alphaMessages: any[]
 } = {
 	apiConfiguration: {
 		apiProvider: "anthropic",
@@ -60,7 +60,7 @@ const mockExtensionState: {
 		apiModelId: "claude-3-opus-20240229",
 	} as ProviderSettings,
 	currentTaskItem: { id: "test-task-id" },
-	clineMessages: [],
+	alphaMessages: [],
 }
 
 // Mock the ExtensionStateContext

@@ -24,7 +24,7 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 		currentCheckpoint: null,
 		mode: "code",
 		apiConfiguration: {},
-		clineMessages: [],
+		alphaMessages: [],
 		currentTaskItem: undefined,
 	}),
 }))

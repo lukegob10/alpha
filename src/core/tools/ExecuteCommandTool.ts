@@ -811,7 +811,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				])
 				callbacks.setResultMetadata?.({ status: "denied" })
 				task.failCommandExecution?.(commandEvidenceId, "denied")
-				await task.say("rooignore_error", ignoredFileAttemptedToAccess)
+				await task.say("alphaignore_error", ignoredFileAttemptedToAccess)
 				pushToolResult(formatResponse.alphaIgnoreError(ignoredFileAttemptedToAccess))
 				return
 			}
@@ -1180,9 +1180,9 @@ export async function executeCommandInTerminal(
 	const commandExecutionTimeoutSeconds = commandExecutionTimeout / 1000
 	let workingDir: string
 	const physicalExecutionId = `${executionId}:${randomUUID()}`
-	let fileChangeTurnKey = task.clineMessages?.[0]?.ts ?? 0
-	for (let index = (task.clineMessages?.length ?? 0) - 1; index >= 0; index--) {
-		const message = task.clineMessages[index]
+	let fileChangeTurnKey = task.alphaMessages?.[0]?.ts ?? 0
+	for (let index = (task.alphaMessages?.length ?? 0) - 1; index >= 0; index--) {
+		const message = task.alphaMessages[index]
 		if (message.type === "say" && message.say === "user_feedback") {
 			fileChangeTurnKey = message.ts
 			break

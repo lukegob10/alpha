@@ -25,12 +25,12 @@ describe("task opening transcript cache", () => {
 				<Probe />
 			</ExtensionStateContextProvider>,
 		)
-		publishState({ currentTaskId: "streaming-task", clineMessages: [], clineMessagesSeq: 1 })
+		publishState({ currentTaskId: "streaming-task", alphaMessages: [], alphaMessagesSeq: 1 })
 		const initialRenders = renders
 		for (let index = 0; index < 120; index++) {
 			publishState({
-				clineMessages: [{ ts: 1, type: "say", say: "text", text: `Partial ${index}`, partial: true }],
-				clineMessagesSeq: index + 2,
+				alphaMessages: [{ ts: 1, type: "say", say: "text", text: `Partial ${index}`, partial: true }],
+				alphaMessagesSeq: index + 2,
 			})
 		}
 		expect(renders).toBe(initialRenders)
@@ -46,12 +46,12 @@ describe("task opening transcript cache", () => {
 				<Probe />
 			</ExtensionStateContextProvider>,
 		)
-		publishState({ currentTaskId: "cached-task", clineMessages: [], clineMessagesSeq: 1 })
+		publishState({ currentTaskId: "cached-task", alphaMessages: [], alphaMessagesSeq: 1 })
 		const messages: AlphaMessage[] = [{ ts: 1, type: "say", say: "text", text: "Restored transcript" }]
 		publishState({
 			currentTaskId: "cached-task",
-			clineMessages: messages,
-			clineMessagesSeq: 2,
+			alphaMessages: messages,
+			alphaMessagesSeq: 2,
 			liveTasksById: {
 				"cached-task": {
 					id: "cached-task",

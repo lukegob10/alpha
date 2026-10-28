@@ -26,7 +26,7 @@ const inactiveStatuses = [
 ] as const
 
 const asTask = (taskId: string, rootTaskId = "root", taskKind: Task["taskKind"] = "primary"): Task =>
-	({ taskId, rootTaskId, taskKind, clineMessages: [], apiConversationHistory: [] }) as unknown as Task
+	({ taskId, rootTaskId, taskKind, alphaMessages: [], apiConversationHistory: [] }) as unknown as Task
 
 const createHarness = async () => {
 	let tick = 1_000
@@ -228,7 +228,7 @@ const createResidencyHarness = async () => {
 				},
 				"root",
 			)
-			root.clineMessages.push({
+			root.alphaMessages.push({
 				ts: sequence,
 				type: "say",
 				say: "subagent_group",
@@ -552,7 +552,7 @@ describe("production provider runtime pruning", () => {
 			),
 		).toBe(320)
 		expect(store.getUnacknowledgedMailboxEntries("root", { kinds: ["result"] })).toHaveLength(64)
-		expect(root.clineMessages).toHaveLength(64)
+		expect(root.alphaMessages).toHaveLength(64)
 		expect(sessions.getTask("child-0")).toBeUndefined()
 		await expect(
 			provider.sendMessageToAgent(root, "/root/child-0", "Retain this follow-up evidence"),
@@ -749,7 +749,7 @@ describe("production provider runtime pruning", () => {
 			}
 			prepared.set(groupId, { group, envelopes: [residencyEnvelope(taskId)] })
 			descriptors.set(taskId, { groupId, parent: root })
-			root.clineMessages.push({
+			root.alphaMessages.push({
 				ts: index + 1,
 				type: "say",
 				say: "subagent_group",
@@ -762,7 +762,7 @@ describe("production provider runtime pruning", () => {
 		expect(prepared.size).toBeLessThanOrEqual(3)
 		expect(descriptors.size).toBeLessThanOrEqual(3)
 		expect(store.getSnapshot()).toEqual(durable)
-		expect(root.clineMessages).toHaveLength(16)
+		expect(root.alphaMessages).toHaveLength(16)
 	})
 
 	it("sweeps orphaned original batch cache after a child's continuation changes its group", async () => {
@@ -783,7 +783,7 @@ describe("production provider runtime pruning", () => {
 			envelopes: [residencyEnvelope("first"), residencyEnvelope("second")],
 		})
 		descriptors.set(second.child.taskId, { groupId: original.groupId, parent: root })
-		root.clineMessages.push({ ts: 1, type: "say", say: "subagent_group", subagentGroup: structuredClone(original) })
+		root.alphaMessages.push({ ts: 1, type: "say", say: "subagent_group", subagentGroup: structuredClone(original) })
 		await unload({ taskId: second.child.taskId, task: second.child, runId: second.runId })
 		await unload({ taskId: first.child.taskId, task: first.child, runId: first.runId })
 		const durable = store.getSnapshot()
@@ -791,6 +791,6 @@ describe("production provider runtime pruning", () => {
 
 		expect(prepared.has(original.groupId)).toBe(false)
 		expect(store.getSnapshot()).toEqual(durable)
-		expect(root.clineMessages.some((message) => message.subagentGroup?.groupId === original.groupId)).toBe(true)
+		expect(root.alphaMessages.some((message) => message.subagentGroup?.groupId === original.groupId)).toBe(true)
 	})
 })

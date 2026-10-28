@@ -132,7 +132,7 @@ async function createHarness() {
 			pendingWaitAgentResultClaims: new Map<string, string>(),
 			userMessageContent: [],
 			userMessageContentReady: false,
-			clineMessages: [],
+			alphaMessages: [],
 			toolUsage: {},
 			toolRepetitionDetector: new ToolRepetitionDetector(3),
 			commandExecutionEvidence: new Map(),

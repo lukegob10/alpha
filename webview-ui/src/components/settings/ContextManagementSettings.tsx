@@ -31,7 +31,7 @@ type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	postTurnCondenseContextPercent?: number
 	maxOpenTabsContext: number
 	maxWorkspaceFiles: number
-	showRooIgnoredFiles?: boolean
+	showAlphaIgnoredFiles?: boolean
 	enableSubfolderRules?: boolean
 	maxImageFileSize?: number
 	maxTotalImageSize?: number
@@ -50,7 +50,7 @@ type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 		| "postTurnCondenseContextPercent"
 		| "maxOpenTabsContext"
 		| "maxWorkspaceFiles"
-		| "showRooIgnoredFiles"
+		| "showAlphaIgnoredFiles"
 		| "enableSubfolderRules"
 		| "maxImageFileSize"
 		| "maxTotalImageSize"
@@ -70,7 +70,7 @@ export const ContextManagementSettings = ({
 	postTurnCondenseContextPercent = DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 	maxOpenTabsContext,
 	maxWorkspaceFiles,
-	showRooIgnoredFiles,
+	showAlphaIgnoredFiles,
 	enableSubfolderRules,
 	setCachedStateField,
 	maxImageFileSize,
@@ -186,13 +186,13 @@ export const ContextManagementSettings = ({
 				</SearchableSetting>
 
 				<SearchableSetting
-					settingId="context-show-rooignored-files"
+					settingId="context-show-alphaignored-files"
 					section="contextManagement"
 					label={t("settings:contextManagement.alphaignore.label")}>
 					<VSCodeCheckbox
-						checked={showRooIgnoredFiles}
-						onChange={(e: any) => setCachedStateField("showRooIgnoredFiles", e.target.checked)}
-						data-testid="show-rooignored-files-checkbox">
+						checked={showAlphaIgnoredFiles}
+						onChange={(e: any) => setCachedStateField("showAlphaIgnoredFiles", e.target.checked)}
+						data-testid="show-alphaignored-files-checkbox">
 						<label className="block font-medium mb-1">
 							{t("settings:contextManagement.alphaignore.label")}
 						</label>

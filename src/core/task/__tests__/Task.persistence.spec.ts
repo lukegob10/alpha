@@ -474,7 +474,7 @@ describe("Task persistence", () => {
 		})
 		const resume = (task as any).resumeTaskFromHistory()
 		await readStarted
-		expect(task.clineMessages).toEqual([])
+		expect(task.alphaMessages).toEqual([])
 
 		await task.abortTask()
 		releaseRead()
@@ -1121,7 +1121,7 @@ describe("Task persistence", () => {
 				{ role: "assistant", content: "investigation", ts: 2 },
 				{ role: "user", content: baseline.details, ts: 3 },
 			]
-			task.clineMessages = [
+			task.alphaMessages = [
 				{ type: "say", say: "text", text: "original task", ts: 1 },
 				{ type: "say", say: "user_feedback", text: "edit this turn", ts: 3 },
 			]
@@ -2611,7 +2611,7 @@ describe("Task persistence", () => {
 				startTask: false,
 			})
 
-			task.clineMessages.push({
+			task.alphaMessages.push({
 				type: "say",
 				say: "text",
 				text: "snapshot test",
@@ -2624,9 +2624,9 @@ describe("Task persistence", () => {
 
 			const callArgs = mockSaveTaskMessages.mock.calls[0][0]
 			// The messages passed should be a COPY, not the live reference
-			expect(callArgs.messages).not.toBe(task.clineMessages)
+			expect(callArgs.messages).not.toBe(task.alphaMessages)
 			// But the content should be the same
-			expect(callArgs.messages).toEqual(task.clineMessages)
+			expect(callArgs.messages).toEqual(task.alphaMessages)
 		})
 
 		it("serializes concurrent writes so a terminal transcript cannot be overwritten by a stale save", async () => {
@@ -2654,12 +2654,12 @@ describe("Task persistence", () => {
 				task: "test task",
 				startTask: false,
 			})
-			task.clineMessages.push({ type: "say", say: "text", text: "working", ts: 1 })
+			task.alphaMessages.push({ type: "say", say: "text", text: "working", ts: 1 })
 
 			const staleSave = (task as Record<string, any>).saveAlphaMessages()
 			await vi.waitFor(() => expect(mockSaveTaskMessages).toHaveBeenCalledTimes(1))
 
-			task.clineMessages.push({
+			task.alphaMessages.push({
 				type: "say",
 				say: "completion_result",
 				text: "terminal report",
@@ -2673,7 +2673,7 @@ describe("Task persistence", () => {
 
 			expect(peakWrites).toBe(1)
 			expect(mockSaveTaskMessages).toHaveBeenCalledTimes(2)
-			expect(mockSaveTaskMessages.mock.calls[1][0].messages).toEqual(task.clineMessages)
+			expect(mockSaveTaskMessages.mock.calls[1][0].messages).toEqual(task.alphaMessages)
 		})
 	})
 

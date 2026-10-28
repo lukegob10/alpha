@@ -8,11 +8,11 @@ const {
 	mockReaddir,
 	mockLstat,
 	mockRealpath,
-	mockGetLegacyConfigDirectoriesForCwd,
-	mockGetAllLegacyConfigDirectoriesForCwd,
+	mockGetConfigDirectoriesForCwd,
+	mockGetAllConfigDirectoriesForCwd,
 	mockGetAgentsDirectoriesForCwd,
 	mockGetProjectInstructionDirectoriesForCwd,
-	mockGetLegacyGlobalConfigDirectory,
+	mockGetGlobalConfigDirectory,
 } = vi.hoisted(() => ({
 	mockHomedir: vi.fn(),
 	mockStat: vi.fn(),
@@ -20,11 +20,11 @@ const {
 	mockReaddir: vi.fn(),
 	mockLstat: vi.fn(),
 	mockRealpath: vi.fn(),
-	mockGetLegacyConfigDirectoriesForCwd: vi.fn(),
-	mockGetAllLegacyConfigDirectoriesForCwd: vi.fn(),
+	mockGetConfigDirectoriesForCwd: vi.fn(),
+	mockGetAllConfigDirectoriesForCwd: vi.fn(),
 	mockGetAgentsDirectoriesForCwd: vi.fn(),
 	mockGetProjectInstructionDirectoriesForCwd: vi.fn(),
-	mockGetLegacyGlobalConfigDirectory: vi.fn(),
+	mockGetGlobalConfigDirectory: vi.fn(),
 }))
 
 // Mock os module
@@ -46,33 +46,33 @@ vi.mock("fs/promises", () => ({
 	},
 }))
 
-// Mock the roo-config service
+// Mock the alpha-config service
 vi.mock("../../../../services/config-paths", () => ({
-	getLegacyConfigDirectoriesForCwd: mockGetLegacyConfigDirectoriesForCwd,
-	getAllLegacyConfigDirectoriesForCwd: mockGetAllLegacyConfigDirectoriesForCwd,
+	getConfigDirectoriesForCwd: mockGetConfigDirectoriesForCwd,
+	getAllConfigDirectoriesForCwd: mockGetAllConfigDirectoriesForCwd,
 	getAgentsDirectoriesForCwd: mockGetAgentsDirectoriesForCwd,
 	getProjectInstructionDirectoriesForCwd: mockGetProjectInstructionDirectoriesForCwd,
-	getLegacyGlobalConfigDirectory: mockGetLegacyGlobalConfigDirectory,
+	getGlobalConfigDirectory: mockGetGlobalConfigDirectory,
 }))
 
 import { loadRuleFiles, addCustomInstructions } from "../custom-instructions"
 
-describe("custom-instructions global .roo support", () => {
+describe("custom-instructions global .alpha support", () => {
 	const mockCwd = "/mock/project"
 	const mockHomeDir = "/mock/home"
-	const legacyGlobalConfigDir = path.join(mockHomeDir, ".roo")
-	const legacyProjectConfigDir = path.join(mockCwd, ".roo")
+	const globalConfigDir = path.join(mockHomeDir, ".alpha")
+	const projectConfigDir = path.join(mockCwd, ".alpha")
 
 	beforeEach(() => {
 		vi.resetAllMocks()
 		mockHomedir.mockReturnValue(mockHomeDir)
-		mockGetLegacyConfigDirectoriesForCwd.mockReturnValue([legacyGlobalConfigDir, legacyProjectConfigDir])
-		// getAllLegacyConfigDirectoriesForCwd is now async and returns the same directories by default
-		mockGetAllLegacyConfigDirectoriesForCwd.mockResolvedValue([legacyGlobalConfigDir, legacyProjectConfigDir])
-		// getAgentsDirectoriesForCwd returns parent directories (without .roo)
+		mockGetConfigDirectoriesForCwd.mockReturnValue([globalConfigDir, projectConfigDir])
+		// getAllConfigDirectoriesForCwd is now async and returns the same directories by default
+		mockGetAllConfigDirectoriesForCwd.mockResolvedValue([globalConfigDir, projectConfigDir])
+		// getAgentsDirectoriesForCwd returns parent directories (without .alpha)
 		mockGetAgentsDirectoriesForCwd.mockResolvedValue([mockCwd])
 		mockGetProjectInstructionDirectoriesForCwd.mockResolvedValue({ root: mockCwd, directories: [mockCwd] })
-		mockGetLegacyGlobalConfigDirectory.mockReturnValue(legacyGlobalConfigDir)
+		mockGetGlobalConfigDirectory.mockReturnValue(globalConfigDir)
 		// Default lstat to reject (file not found)
 		mockLstat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))
 		mockStat.mockRejectedValue(Object.assign(new Error("ENOENT"), { code: "ENOENT" }))

@@ -349,7 +349,7 @@ describe("writeToFileTool", () => {
 			expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(testContent, true)
 			expect(mockAskApproval).toHaveBeenCalled()
 			expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
-			expect(mockAlphaTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "roo_edited")
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).toHaveBeenCalledWith(testFilePath, "alpha_edited")
 			expect(mockAlphaTask.didEditFile).toBe(true)
 		})
 

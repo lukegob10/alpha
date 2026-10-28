@@ -17,7 +17,7 @@ async function passTask(taskId: number): Promise<void> {
 
 describe("finishRun", () => {
 	it("aggregates task metrics, including tool usage", async () => {
-		const run = await createRun({ model: "gpt-4.1-mini", socketPath: "/tmp/roo.sock" })
+		const run = await createRun({ model: "gpt-4.1-mini", socketPath: "/tmp/alpha.sock" })
 
 		const first = await createTask({
 			runId: run.id,

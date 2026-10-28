@@ -24,7 +24,7 @@ interface ReasoningTask {
 	getReasoningState(): TaskReasoningProjection
 	updateApiConfiguration(configuration: ProviderSettings): void
 	messageQueueService: { messages: Array<{ text: string }> }
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
 }
 interface ReasoningHost {
@@ -349,10 +349,10 @@ suite("Rendered reasoning controls", function () {
 			)
 			createdTaskIds.push(activity.taskId)
 			await waitFor(() => !!heldResponse, { description: "held activity request" })
-			const activityTimestamp = Math.max(Date.now(), ...activity.clineMessages.map((message) => message.ts)) + 1
+			const activityTimestamp = Math.max(Date.now(), ...activity.alphaMessages.map((message) => message.ts)) + 1
 			// Reasoning stays outside the fold; a trailing read keeps the live action group active.
 			await activity.overwriteAlphaMessages([
-				...activity.clineMessages,
+				...activity.alphaMessages,
 				{
 					type: "say",
 					say: "reasoning",

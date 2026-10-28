@@ -11,7 +11,7 @@ describe("Task.ask queued message drain", () => {
 		;(task as any).abort = false
 		Object.assign(task, { taskCancellationController: new AbortController() })
 		;(task as any).taskId = "task-1"
-		;(task as any).clineMessages = []
+		;(task as any).alphaMessages = []
 		;(task as any).askResponse = undefined
 		;(task as any).askResponseText = undefined
 		;(task as any).askResponseImages = undefined
@@ -78,7 +78,7 @@ describe("Task.ask queued message drain", () => {
 		const task = await createAskOnlyTask()
 		;(task as any).taskKind = "primary"
 		;(task as any).addToAlphaMessages = vi.fn(async (message: AlphaMessage) => {
-			task.clineMessages.push(message)
+			task.alphaMessages.push(message)
 		})
 
 		const pending = task.ask(
@@ -91,8 +91,8 @@ describe("Task.ask queued message drain", () => {
 		task.handleWebviewAskResponse("noButtonClicked")
 		await expect(pending).resolves.toMatchObject({ response: "noButtonClicked" })
 
-		expect(task.clineMessages).toHaveLength(1)
-		expect(task.clineMessages[0]).toMatchObject({ type: "ask", ask: "followup", isAnswered: true })
+		expect(task.alphaMessages).toHaveLength(1)
+		expect(task.alphaMessages[0]).toMatchObject({ type: "ask", ask: "followup", isAnswered: true })
 		expect(task["saveAlphaMessages"]).toHaveBeenCalledOnce()
 	})
 
@@ -333,7 +333,7 @@ describe("Task.ask queued message drain", () => {
 		const task = await createAskOnlyTask()
 		const postMessageToWebview = vi.fn()
 		Object.assign(task, {
-			addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.clineMessages.push(message)),
+			addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.alphaMessages.push(message)),
 			providerRef: {
 				deref: () => ({ getState: async () => ({}), isTaskOnScreen: () => true, postMessageToWebview }),
 			},

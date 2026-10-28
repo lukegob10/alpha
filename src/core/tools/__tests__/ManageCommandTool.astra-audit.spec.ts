@@ -122,7 +122,7 @@ function commandFixture(
 		consecutiveMistakeCount: 0,
 		commandExecutionEvidence: evidence,
 		completionRuntimeRevision: 0,
-		clineMessages: [] as AlphaMessage[],
+		alphaMessages: [] as AlphaMessage[],
 		presentApprovedCommand: Task.prototype.presentApprovedCommand,
 		reserveUiMessageTimestamp: Task.prototype["reserveUiMessageTimestamp"],
 		observeUiMessageTimestamps: Task.prototype["observeUiMessageTimestamps"],
@@ -131,7 +131,7 @@ function commandFixture(
 			publishedMessages.push(structuredClone(message))
 		}),
 		saveAlphaMessages: vi.fn(async () => {
-			persistedMessages.push(structuredClone(task.clineMessages))
+			persistedMessages.push(structuredClone(task.alphaMessages))
 			return true
 		}),
 		providerRef: { deref: () => provider },

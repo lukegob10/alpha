@@ -41,7 +41,7 @@ describe("OpenAI custom-header secure mirror", () => {
 	it("saves custom headers securely without changing provider reads, saved profiles, or global exports", async () => {
 		const storage = createStorage()
 		const savedProfiles = JSON.stringify({ apiConfigs: { saved: { openAiHeaders: legacyHeaders } } })
-		storage.secrets.set("roo_cline_config_api_config", savedProfiles)
+		storage.secrets.set("alpha_config_api_config", savedProfiles)
 		const proxy = new ContextProxy(storage.context)
 		await proxy.initialize()
 		await proxy.setProviderSettings({ apiProvider: "openai", openAiHeaders: editedHeaders })
@@ -52,7 +52,7 @@ describe("OpenAI custom-header secure mirror", () => {
 		expect(proxy.getValue(headerKey)).toEqual(editedHeaders)
 		expect(proxy.getProviderSettings().openAiHeaders).toEqual(editedHeaders)
 		expect(await proxy.export()).not.toHaveProperty(headerKey)
-		expect(storage.secrets.get("roo_cline_config_api_config")).toBe(savedProfiles)
+		expect(storage.secrets.get("alpha_config_api_config")).toBe(savedProfiles)
 		const reloaded = new ContextProxy(storage.context)
 		await reloaded.initialize()
 		expect(reloaded.getProviderSettings().openAiHeaders).toEqual(editedHeaders)

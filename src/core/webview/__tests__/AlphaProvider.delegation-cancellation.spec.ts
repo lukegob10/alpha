@@ -16,7 +16,7 @@ function fixture() {
 	const parent = {
 		taskId: "parent",
 		apiConfiguration: { apiProvider: "openai" },
-		clineMessages: [],
+		alphaMessages: [],
 		getTaskApiConfigName: vi.fn(async () => "Parent profile"),
 		flushPendingToolResultsToHistory: vi.fn(async () => true),
 	} as unknown as Task

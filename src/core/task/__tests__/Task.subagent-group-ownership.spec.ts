@@ -211,9 +211,9 @@ async function fixture(operation: Operation) {
 		return { controller, saving }
 	}
 	const assertReplacement = async () => {
-		expect(task.clineMessages).toBe(replacementMessages)
-		expect(task.clineMessages[0]).toBe(replacementRow)
-		expect(task.clineMessages).toEqual(expectedReplacement)
+		expect(task.alphaMessages).toBe(replacementMessages)
+		expect(task.alphaMessages[0]).toBe(replacementRow)
+		expect(task.alphaMessages).toEqual(expectedReplacement)
 		expect(
 			await readTaskMessages({ taskId: task.taskId, globalStoragePath: storage, requireExisting: true }),
 		).toEqual(expectedReplacement)
@@ -255,7 +255,7 @@ describe("Task guarded terminal sub-agent group publication", () => {
 				await release.promise
 				return []
 			})
-			const blocker = f.track(f.task.overwriteAlphaMessages(structuredClone(f.task.clineMessages)))
+			const blocker = f.track(f.task.overwriteAlphaMessages(structuredClone(f.task.alphaMessages)))
 			await reached(entered.promise, blocker)
 			const publishing = f.publish()
 			const replacement = f.installReplacement()
@@ -330,7 +330,7 @@ describe("Task guarded terminal sub-agent group publication", () => {
 				globalStoragePath: f.storage,
 				requireExisting: true,
 			})
-			expect(messages).toEqual(f.task.clineMessages)
+			expect(messages).toEqual(f.task.alphaMessages)
 			expect(
 				messages.find((message) => message.subagentGroup?.groupId === f.cancelled.groupId)?.subagentGroup,
 			).toEqual(f.cancelled)
@@ -350,7 +350,7 @@ describe("Task guarded terminal sub-agent group publication", () => {
 			await release.promise
 			return []
 		})
-		const blocker = f.track(f.task.overwriteAlphaMessages(structuredClone(f.task.clineMessages)))
+		const blocker = f.track(f.task.overwriteAlphaMessages(structuredClone(f.task.alphaMessages)))
 		await reached(entered.promise, blocker)
 		Reflect.set(f.task, "providerRef", { deref: () => undefined })
 		const publishing = f.publish()
@@ -381,7 +381,7 @@ describe("Task guarded terminal sub-agent group publication", () => {
 		}
 		expect(f.originalProvider.updateTaskHistory).toHaveBeenCalledTimes(3)
 		expect(f.guard()).toBe(true)
-		expect(f.task.clineMessages).toEqual(f.baseline)
+		expect(f.task.alphaMessages).toEqual(f.baseline)
 		expect(f.originalProvider.postTaskMessageToWebview).not.toHaveBeenCalled()
 		expect(f.messageEvents).not.toHaveBeenCalled()
 	})

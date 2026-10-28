@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.2.13
+
+### Patch Changes
+
+- Complete the Alpha naming cleanup across configuration paths, credentials, runtime state, shared contracts, public exports, prompts, developer tools, and UI.
+- Open and focus the Alpha composer when New Chat is invoked from a keyboard shortcut or command, including while editor search is open.
+- Isolate automated editor homes from the build toolchain and keep release maintenance separate from cleanup development.
+- Update the extension and in-app announcement together for Alpha 3.2.13. Windows x64 packaging, the VS Code 1.125.0 minimum, and exact 1.138.0 reference host remain unchanged.
+
+### Compatibility Notes
+
+- This release uses Alpha-only configuration paths, credential keys, serialized fields, and public exports. Previous naming aliases are no longer read automatically.
+- Configure a fresh editor profile and provider credentials. Keep the previous release profile and VSIX available for existing saved data; reverting source does not restore editor data.
+
 ## 3.2.12
 
 ### Patch Changes

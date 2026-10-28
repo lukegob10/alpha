@@ -181,16 +181,16 @@ export class FileContextTracker {
 					continue
 				}
 
-				latestRead = latestTimestamp(latestRead, entry.roo_read_date)
-				latestEdit = latestTimestamp(latestEdit, entry.roo_edit_date)
+				latestRead = latestTimestamp(latestRead, entry.alpha_read_date)
+				latestEdit = latestTimestamp(latestEdit, entry.alpha_edit_date)
 				latestUserEdit = latestTimestamp(latestUserEdit, entry.user_edit_date)
 				const key = metadataSourceKey(entry)
 				const previous = entriesBySource.get(key)
 				entriesBySource.set(key, {
 					...entry,
 					record_state: "stale",
-					roo_read_date: latestTimestamp(previous?.roo_read_date, entry.roo_read_date),
-					roo_edit_date: latestTimestamp(previous?.roo_edit_date, entry.roo_edit_date),
+					alpha_read_date: latestTimestamp(previous?.alpha_read_date, entry.alpha_read_date),
+					alpha_edit_date: latestTimestamp(previous?.alpha_edit_date, entry.alpha_edit_date),
 					user_edit_date: latestTimestamp(previous?.user_edit_date, entry.user_edit_date),
 				})
 			}
@@ -199,8 +199,8 @@ export class FileContextTracker {
 				path: filePath,
 				record_state: "active",
 				record_source: source,
-				roo_read_date: latestRead,
-				roo_edit_date: latestEdit,
+				alpha_read_date: latestRead,
+				alpha_edit_date: latestEdit,
 				user_edit_date: latestUserEdit,
 			}
 
@@ -210,17 +210,17 @@ export class FileContextTracker {
 					newEntry.user_edit_date = now
 					break
 
-				// roo_edited: Alpha has edited the file
-				case "roo_edited":
-					newEntry.roo_read_date = now
-					newEntry.roo_edit_date = now
+				// alpha_edited: Alpha has edited the file
+				case "alpha_edited":
+					newEntry.alpha_read_date = now
+					newEntry.alpha_edit_date = now
 					this.checkpointPossibleFiles.add(filePath)
 					break
 
 				// read_tool/file_mentioned: Alpha has read the file via a tool or file mention
 				case "read_tool":
 				case "file_mentioned":
-					newEntry.roo_read_date = now
+					newEntry.alpha_read_date = now
 					break
 			}
 
@@ -233,8 +233,8 @@ export class FileContextTracker {
 			entriesBySource.set(key, {
 				...previous,
 				...newEntry,
-				roo_read_date: latestTimestamp(previous?.roo_read_date, newEntry.roo_read_date),
-				roo_edit_date: latestTimestamp(previous?.roo_edit_date, newEntry.roo_edit_date),
+				alpha_read_date: latestTimestamp(previous?.alpha_read_date, newEntry.alpha_read_date),
+				alpha_edit_date: latestTimestamp(previous?.alpha_edit_date, newEntry.alpha_edit_date),
 				user_edit_date: latestTimestamp(previous?.user_edit_date, newEntry.user_edit_date),
 			})
 			metadata.files_in_context = [...otherEntries, ...entriesBySource.values()]
@@ -319,18 +319,18 @@ export class FileContextTracker {
 				}
 
 				// If sinceTimestamp is provided, only include files read after that time
-				if (sinceTimestamp && entry.roo_read_date) {
-					return entry.roo_read_date >= sinceTimestamp
+				if (sinceTimestamp && entry.alpha_read_date) {
+					return entry.alpha_read_date >= sinceTimestamp
 				}
 
 				return true
 			})
 
-			// Sort by roo_read_date descending (most recent first)
+			// Sort by alpha_read_date descending (most recent first)
 			// Entries without a date go to the end
 			readEntries.sort((a, b) => {
-				const dateA = a.roo_read_date ?? 0
-				const dateB = b.roo_read_date ?? 0
+				const dateA = a.alpha_read_date ?? 0
+				const dateB = b.alpha_read_date ?? 0
 				return dateB - dateA
 			})
 
@@ -377,7 +377,7 @@ function latestTimestamp(first: number | null | undefined, second: number | null
 
 function metadataSourceKey(entry: FileMetadataEntry): string {
 	const isRead = entry.record_source === "read_tool" || entry.record_source === "file_mentioned"
-	return isRead && !entry.roo_read_date ? `${entry.record_source}:undated` : entry.record_source
+	return isRead && !entry.alpha_read_date ? `${entry.record_source}:undated` : entry.record_source
 }
 
 function normalizeCaptureLimit(limit: number): number {

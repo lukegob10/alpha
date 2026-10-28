@@ -36,7 +36,7 @@ const createTask = (taskId: string): Task =>
 		taskApiConfigName: taskId,
 		emit: vi.fn(),
 		apiConfiguration: { apiProvider: "anthropic", apiModelId: taskId },
-		clineMessages: [{ ts: 1, type: "say", say: "text", text: taskId }],
+		alphaMessages: [{ ts: 1, type: "say", say: "text", text: taskId }],
 		getTaskMode: vi.fn(async () => "code"),
 		getTaskApiConfigName: vi.fn(async () => taskId),
 	}) as unknown as Task
@@ -47,7 +47,7 @@ const createProvider = () => {
 	const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
 		taskSessions,
 		taskNavigationGeneration: 0,
-		clineMessagesSeq: 0,
+		alphaMessagesSeq: 0,
 		taskStateSeq: 0,
 		messageQueueSeq: 0,
 		currentTaskTodosSeq: 0,
@@ -108,7 +108,7 @@ describe("task state navigation ownership", () => {
 		expect(post).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "state",
-				state: expect.objectContaining({ currentTaskId: next.taskId, clineMessages: next.clineMessages }),
+				state: expect.objectContaining({ currentTaskId: next.taskId, alphaMessages: next.alphaMessages }),
 			}),
 		)
 		expect(post).toHaveBeenCalledWith({ type: "taskOpenResult", taskId: next.taskId, success: true })
@@ -131,7 +131,7 @@ describe("task state navigation ownership", () => {
 			expect(post).toHaveBeenCalledWith(
 				expect.objectContaining({
 					type: "state",
-					state: expect.objectContaining({ currentTaskId: task.taskId, clineMessages: task.clineMessages }),
+					state: expect.objectContaining({ currentTaskId: task.taskId, alphaMessages: task.alphaMessages }),
 				}),
 			)
 		},
@@ -205,7 +205,7 @@ describe("task state navigation ownership", () => {
 			const publishing = provider[method]()
 			await entered.promise
 			const latestMessage: AlphaMessage = { ts: 2, type: "say", say: "text", text: "New output" }
-			Object.assign(task, { clineMessages: [latestMessage] })
+			Object.assign(task, { alphaMessages: [latestMessage] })
 			await provider.postTaskMessageToWebview("messageUpdated", task.taskId, latestMessage)
 			await provider.postTaskQueueToWebview(task.taskId, [
 				{ id: "queued", text: "Continue", images: [], timestamp: 2 },
@@ -227,7 +227,7 @@ describe("task state navigation ownership", () => {
 			expect(full.state?.taskStateSeq).toBeLessThan(compact.state?.taskStateSeq ?? 0)
 			expect(full.state?.messageQueueSeq).toBe(1)
 			expect(full.state?.currentTaskTodosSeq).toBe(1)
-			expect(full.state?.clineMessagesSeq).toBe(
+			expect(full.state?.alphaMessagesSeq).toBe(
 				method === "postStateToWebviewWithoutAlphaMessages" ? undefined : 1,
 			)
 			expect(repair.state?.taskStateSeq).toBeGreaterThan(compact.state?.taskStateSeq ?? 0)
@@ -236,7 +236,7 @@ describe("task state navigation ownership", () => {
 				turnId: "turn",
 			})
 			expect(repair.state?.managedAgentTree).toEqual(freshTree)
-			for (const key of ["clineMessages", "messageQueue", "currentTaskTodos", "mode", "taskReasoning"] as const) {
+			for (const key of ["alphaMessages", "messageQueue", "currentTaskTodos", "mode", "taskReasoning"] as const) {
 				expect(repair.state).not.toHaveProperty(key)
 			}
 		},
@@ -287,7 +287,7 @@ describe("task state navigation ownership", () => {
 		expect(snapshot.currentView).toEqual({ type: "task", taskId: "first" })
 		expect(snapshot.activeTaskId).toBe("first")
 		expect(snapshot.currentApiConfigName).toBe("first")
-		expect(snapshot.clineMessages[0].text).toBe("first")
+		expect(snapshot.alphaMessages[0].text).toBe("first")
 	})
 
 	it.each([

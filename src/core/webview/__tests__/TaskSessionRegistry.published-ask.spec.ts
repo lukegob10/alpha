@@ -22,11 +22,11 @@ function createRecoveryTask(registry: TaskSessionRegistry) {
 		isAgentTurnEngineActive: false,
 		isWaitingForFirstChunk: false,
 		isStreaming: false,
-		clineMessages: [{ ts: 100, type: "say", say: "error", text: "The turn failed." }] as AlphaMessage[],
+		alphaMessages: [{ ts: 100, type: "say", say: "error", text: "The turn failed." }] as AlphaMessage[],
 		apiConversationHistory: [],
 		messageQueueService: new MessageQueueService(),
 		providerRef: { deref: () => undefined },
-		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.clineMessages.push(message)),
+		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.alphaMessages.push(message)),
 		saveAlphaMessages: vi.fn(async () => undefined),
 		updateAlphaMessage: vi.fn(async () => undefined),
 		cancelAutoApprovalTimeout: vi.fn(),
@@ -75,8 +75,8 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 			const pending = task.ask("resume_task", "Resume with new guidance", false)
 			void pending.catch(() => undefined)
 			try {
-				await vi.waitFor(() => expect(task.clineMessages.at(-1)?.ask).toBe("resume_task"))
-				expect(task.getActiveAskTimestamp()).toBe(task.clineMessages.at(-1)?.ts)
+				await vi.waitFor(() => expect(task.alphaMessages.at(-1)?.ask).toBe("resume_task"))
+				expect(task.getActiveAskTimestamp()).toBe(task.alphaMessages.at(-1)?.ts)
 				expect(task.taskAsk).toBeUndefined()
 				expect(task.emit).not.toHaveBeenCalledWith(AlphaCodeEventName.TaskResumable, task.taskId)
 				expect(registry.getLifecycleSnapshot(task.taskId)?.status).toBe(status)
@@ -113,11 +113,11 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 		const pending = task.ask("followup", "Which repair should continue?", false)
 		void pending.catch(() => undefined)
 		try {
-			await vi.waitFor(() => expect(task.clineMessages.at(-1)?.ask).toBe("followup"))
+			await vi.waitFor(() => expect(task.alphaMessages.at(-1)?.ask).toBe("followup"))
 			const askTs = task.getActiveAskTimestamp()
 			expect(registry.getMetadata()[task.taskId].isWaitingForInput).toBe(true)
 			expect(task.handleWebviewAskResponse("yesButtonClicked", undefined, undefined, undefined, askTs)).toBe(true)
-			expect(task.clineMessages.at(-1)?.isAnswered).toBe(true)
+			expect(task.alphaMessages.at(-1)?.isAnswered).toBe(true)
 			expect(task.getActiveAskTimestamp()).toBe(askTs)
 			expect(registry.getMetadata()[task.taskId]).toMatchObject({
 				lifecycle: TaskLifecycleState.Running,
@@ -146,7 +146,7 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 		const pending = task.ask("resume_task", "Old recovery question", false)
 		void pending.catch(() => undefined)
 		try {
-			await vi.waitFor(() => expect(task.clineMessages.at(-1)?.ask).toBe("resume_task"))
+			await vi.waitFor(() => expect(task.alphaMessages.at(-1)?.ask).toBe("resume_task"))
 			const askTs = task.getActiveAskTimestamp()
 			task.supersedePendingAsk()
 			expect(task.getActiveAskTimestamp()).toBe(askTs)
@@ -178,7 +178,7 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 		const pending = task.ask("resume_task", "Resume the failed turn", false)
 		void pending.catch(() => undefined)
 		try {
-			await vi.waitFor(() => expect(task.clineMessages.at(-1)?.ask).toBe("resume_task"))
+			await vi.waitFor(() => expect(task.alphaMessages.at(-1)?.ask).toBe("resume_task"))
 			await vi.advanceTimersByTimeAsync(2_000)
 			expect(task.taskAsk?.ask).toBe("resume_task")
 			expect(task.handleWebviewAskResponse("yesButtonClicked")).toBe(true)
@@ -186,7 +186,7 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 			await expect(pending).resolves.toMatchObject({ response: "yesButtonClicked" })
 			expect(task.taskAsk).toBeUndefined()
 			expect(task.getActiveAskTimestamp()).toBeUndefined()
-			expect(task.clineMessages.at(-1)?.ask).toBe("resume_task")
+			expect(task.alphaMessages.at(-1)?.ask).toBe("resume_task")
 			expect(registry.getLifecycleSnapshot(task.taskId)?.status).toBe("failed")
 			expect(registry.getMetadata()[task.taskId]).toMatchObject({
 				lifecycle: TaskLifecycleState.Running,
@@ -240,7 +240,7 @@ describe("TaskSessionRegistry published recovery ownership", () => {
 			const pending = task.ask("resume_task", "A pending recovery question", false)
 			void pending.catch(() => undefined)
 			try {
-				await vi.waitFor(() => expect(task.clineMessages.at(-1)?.ask).toBe("resume_task"))
+				await vi.waitFor(() => expect(task.alphaMessages.at(-1)?.ask).toBe("resume_task"))
 				await vi.advanceTimersByTimeAsync(2_000)
 				expect(task.taskAsk?.ask).toBe("resume_task")
 				registry.markLifecycle(task.taskId, lifecycle)

@@ -330,7 +330,7 @@ describe("SettingsView - Change Detection Fix", () => {
 		terminalZshP10k: false,
 		terminalZdotdir: false,
 		writeDelayMs: 0,
-		showRooIgnoredFiles: false,
+		showAlphaIgnoredFiles: false,
 		maxReadFileLine: -1,
 		maxImageFileSize: 5,
 		maxTotalImageSize: 20,

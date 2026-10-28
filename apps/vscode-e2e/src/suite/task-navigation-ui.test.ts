@@ -11,7 +11,7 @@ interface NavigationTask {
 	abort: boolean
 	didComplete: boolean
 	taskAsk?: AlphaMessage
-	clineMessages: AlphaMessage[]
+	alphaMessages: AlphaMessage[]
 	waitForTermination(): Promise<void>
 	overwriteAlphaMessages(messages: AlphaMessage[]): Promise<void>
 }
@@ -119,7 +119,7 @@ suite("Task navigation renderer latency", function () {
 							: `Persisted navigation row ${String(index).padStart(4, "0")}. This message is part of the bounded renderer workload.`,
 					partial: false,
 				}))
-				await task.overwriteAlphaMessages([...task.clineMessages, ...syntheticMessages])
+				await task.overwriteAlphaMessages([...task.alphaMessages, ...syntheticMessages])
 				await host.postStateToWebview()
 
 				const commandStartedAt = performance.now()
@@ -141,7 +141,7 @@ suite("Task navigation renderer latency", function () {
 					version: vscode.version,
 					taskId,
 					requestCount: scripted.requests,
-					persistedMessageCount: task.clineMessages.length,
+					persistedMessageCount: task.alphaMessages.length,
 					syntheticMessageCount: TRANSCRIPT_MESSAGES,
 					sentinel: TRANSCRIPT_SENTINEL,
 					newChatCommandReturnMs,
@@ -206,12 +206,12 @@ suite("Task navigation renderer latency", function () {
 			assert.ok(reopenedTask, "Cold UI open must rehydrate a Task")
 			assert.equal(host.getActiveTaskId(), taskId)
 			assert.ok(
-				reopenedTask.clineMessages.filter((message) => message.type === "say" && message.say === "text")
+				reopenedTask.alphaMessages.filter((message) => message.type === "say" && message.say === "text")
 					.length >= TRANSCRIPT_MESSAGES,
 				"Cold reopen must recover the synthetic transcript rows",
 			)
 			assert.ok(
-				reopenedTask.clineMessages.some(
+				reopenedTask.alphaMessages.some(
 					(message) => message.type === "say" && message.text === TRANSCRIPT_SENTINEL,
 				),
 				"Cold reopen must recover the last persisted sentinel",
