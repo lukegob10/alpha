@@ -211,7 +211,7 @@ export const SubagentDock = memo(function SubagentDock({
 						approvalTaskIds={attentionIdsForGroup(group, approvalTaskIds)}
 						onShowTask={onShowTask}
 						presentation="dock"
-						isVisible={isVisible}
+						isVisible={isVisible && expanded}
 					/>
 				))}
 				{projection?.rootTaskId === parentTaskId && (

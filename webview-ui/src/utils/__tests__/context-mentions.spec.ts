@@ -253,6 +253,72 @@ describe("getContextMenuOptions", () => {
 		{ path: "/Users/test/project/assets/", type: "folder", label: "assets/" },
 	]
 
+	it("does not build unused static file or folder search strings while typing a mention", () => {
+		let staticValueReads = 0
+		const staticItems: ContextMenuQueryItem[] = Array.from({ length: 10_000 }, (_, index) => ({
+			type: index % 10 ? ContextMenuOptionType.File : ContextMenuOptionType.Folder,
+			get value() {
+				staticValueReads++
+				return `/test/path-${index}.ts`
+			},
+		}))
+		const localItems: ContextMenuQueryItem[] = [
+			...Array.from({ length: 20 }, (_, index) => ({
+				type: ContextMenuOptionType.OpenedFile,
+				value: `/test/opened-${index}.ts`,
+			})),
+			...Array.from({ length: 5 }, (_, index) => ({
+				type: ContextMenuOptionType.Git,
+				value: `commit-${index}`,
+				label: `test change ${index}`,
+			})),
+		]
+		const dynamicResults: SearchResult[] = [{ path: "test/dynamic.ts", type: "file" }]
+
+		for (const query of ["t", "te", "tes", "test"]) {
+			expect(getContextMenuOptions(query, null, [...staticItems, ...localItems], dynamicResults)).toEqual(
+				getContextMenuOptions(query, null, localItems, dynamicResults),
+			)
+		}
+
+		expect(staticValueReads).toBe(0)
+	})
+
+	it.each([null, ContextMenuOptionType.File, ContextMenuOptionType.Folder, ContextMenuOptionType.Git])(
+		"preserves tied local ranking and dynamic deduplication for selected type %s",
+		(selectedType) => {
+			const firstOpenedFile = { type: ContextMenuOptionType.OpenedFile, value: "/test/one.ts" }
+			const secondOpenedFile = { type: ContextMenuOptionType.OpenedFile, value: "/test/two.ts" }
+			const firstCommit = { type: ContextMenuOptionType.Git, value: "revision-one", label: "test change" }
+			const secondCommit = { type: ContextMenuOptionType.Git, value: "revision-two", label: "test change" }
+			const items = [
+				{ type: ContextMenuOptionType.File, value: "/test/static.ts" },
+				firstOpenedFile,
+				firstCommit,
+				{ type: ContextMenuOptionType.Folder, value: "/test/" },
+				secondOpenedFile,
+				secondCommit,
+			]
+			const dynamicResults: SearchResult[] = [
+				{ path: "test/one.ts", type: "file" },
+				{ path: "test/result.ts", type: "file", label: "Result" },
+			]
+
+			expect(getContextMenuOptions("test", selectedType, items, dynamicResults)).toEqual([
+				firstOpenedFile,
+				secondOpenedFile,
+				{
+					type: ContextMenuOptionType.File,
+					value: "/test/result.ts",
+					label: "Result",
+					description: "/test/result.ts",
+				},
+				firstCommit,
+				secondCommit,
+			])
+		},
+	)
+
 	it("should return all option types for empty query", () => {
 		const result = getContextMenuOptions("", null, [])
 		expect(result).toHaveLength(7)

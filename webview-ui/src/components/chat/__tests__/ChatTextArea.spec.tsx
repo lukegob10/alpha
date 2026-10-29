@@ -780,6 +780,42 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("reasoning control integration", () => {
+		it.each([{ isTaskDraft: true }, { appearance: "newTask" as const }])(
+			"uses taskless draft reasoning while the host still identifies the previous chat (%j)",
+			(draftProps) => {
+				mockUseExtensionState.mockReturnValue({
+					filePaths: [],
+					openedTabs: [],
+					apiConfiguration: { apiProvider: "openai", apiModelId: "gpt-5" },
+					currentApiConfigName: "default",
+					currentTaskId: "previous-task",
+					currentView: { type: "task", taskId: "previous-task" },
+					taskReasoning: {
+						requested: { kind: "effort", effort: "medium" },
+						effective: { kind: "effort", effort: "medium" },
+						capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
+					},
+					taskHistory: [],
+					alphaMessages: [],
+					cwd: "/test/workspace",
+				})
+				render(<ChatTextArea {...defaultProps} {...draftProps} />)
+
+				const trigger = screen.getByTestId("reasoning-trigger")
+				expect(trigger).toBeEnabled()
+				fireEvent.click(trigger)
+				fireEvent.click(screen.getByTestId("reasoning-choice-default"))
+				expect(mockPostMessage).toHaveBeenCalledWith({
+					type: "setTaskReasoningPreference",
+					taskReasoningUpdate: {
+						requestId: expect.any(String),
+						taskId: undefined,
+						preference: { kind: "default" },
+					},
+				})
+			},
+		)
+
 		it("preserves a draft, mentions, image attachments, and keyboard send behavior", () => {
 			const onSend = vi.fn()
 			const draft = "Review @/src/feature.ts before sending"

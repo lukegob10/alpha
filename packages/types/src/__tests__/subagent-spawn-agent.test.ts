@@ -1,5 +1,6 @@
 import {
 	legacySubagentSpawnAgentArgsSchema,
+	strictSubagentModelRouteStateSchema,
 	subagentAgentTypesSchema,
 	subagentModelRouteStateSchema,
 	subagentSpawnAgentArgsSchema,
@@ -43,12 +44,16 @@ describe("spawn_agent request contracts", () => {
 				message: "Trace the task lifecycle.",
 				agent_type: "explorer",
 				fork_turns: "3",
+				provider: "openai-native",
+				profile: "Saved OpenAI",
 				model: "gpt-6-sol",
 				reasoning_effort: "high",
 			}),
 		).toMatchObject({
 			agent_type: "explorer",
 			fork_turns: "3",
+			provider: "openai-native",
+			profile: "Saved OpenAI",
 			model: "gpt-6-sol",
 			reasoning_effort: "high",
 		})
@@ -65,6 +70,9 @@ describe("spawn_agent request contracts", () => {
 	})
 
 	it.each([
+		{ provider: "OpenAI" },
+		{ provider: "fake-ai" },
+		{ profile: " " },
 		{ model: " " },
 		{ model: "m".repeat(257) },
 		{ reasoning_effort: "disable" },
@@ -74,6 +82,8 @@ describe("spawn_agent request contracts", () => {
 		{ agent_type: "Invalid Name" },
 		{ write_scope: ["src"] },
 		{ fork_context: true },
+		{ apiKey: "secret" },
+		{ unboundProfile: true },
 	])("rejects invalid V2 overrides or legacy authority fields: %j", (overrides) => {
 		expect(
 			subagentSpawnAgentV2ArgsSchema.safeParse({
@@ -166,5 +176,78 @@ describe("spawn_agent request contracts", () => {
 				requestedReasoningEffort: "unsupported",
 			}).success,
 		).toBe(false)
+	})
+
+	it.each([
+		{},
+		{ enableReasoningEffort: true, reasoningEffort: "high" },
+		{ enableReasoningEffort: false, reasoningEffort: "disable" },
+	])(
+		"round-trips captured reasoning configuration independently of requested effort: %j",
+		(reasoningConfiguration) => {
+			const route = {
+				source: "parent",
+				resolution: "selected",
+				profileName: "Parent",
+				reasoningConfiguration,
+			}
+			expect(subagentModelRouteStateSchema.parse(JSON.parse(JSON.stringify(route)))).toEqual(route)
+			expect(subagentModelRouteStateSchema.parse(route)).not.toHaveProperty("requestedReasoningEffort")
+		},
+	)
+
+	it.each([
+		{ enableReasoningEffort: "false" },
+		{ reasoningEffort: "unsupported" },
+		{ apiKey: "secret" },
+		{ endpoint: "https://example.com" },
+	])("rejects malformed or credential-bearing reasoning configuration: %j", (reasoningConfiguration) => {
+		expect(
+			subagentModelRouteStateSchema.safeParse({
+				source: "parent",
+				resolution: "selected",
+				profileName: "Parent",
+				reasoningConfiguration,
+			}).success,
+		).toBe(false)
+	})
+
+	it("round-trips a route with no truthful saved profile binding", () => {
+		const route = {
+			source: "parent",
+			resolution: "selected",
+			profileName: "Injected configuration",
+			unboundProfile: true,
+		}
+		expect(subagentModelRouteStateSchema.parse(JSON.parse(JSON.stringify(route)))).toEqual(route)
+	})
+
+	it.each([
+		{ unboundProfile: false },
+		{ unboundProfile: true, profileId: "saved-profile" },
+		{ unboundProfile: true, profileId: "" },
+	])("rejects malformed or contradictory profile bindings: %j", (binding) => {
+		for (const schema of [subagentModelRouteStateSchema, strictSubagentModelRouteStateSchema]) {
+			expect(
+				schema.safeParse({
+					source: "parent",
+					resolution: "selected",
+					profileName: "Injected configuration",
+					...binding,
+				}).success,
+			).toBe(false)
+		}
+	})
+
+	it("keeps compatibility readers credential-free and context routes strict", () => {
+		const routeWithSecret = {
+			source: "parent",
+			resolution: "selected",
+			profileName: "Injected configuration",
+			unboundProfile: true,
+			apiKey: "secret",
+		}
+		expect(subagentModelRouteStateSchema.parse(routeWithSecret)).not.toHaveProperty("apiKey")
+		expect(strictSubagentModelRouteStateSchema.safeParse(routeWithSecret).success).toBe(false)
 	})
 })

@@ -16,7 +16,9 @@ import {
 	subagentContextManifestSchema,
 	subagentAutoApprovalPolicySchema,
 	inferApprovalModeFromPolicy,
+	getCuratedModelInfo,
 	type ApprovalMode,
+	type ProviderSettings,
 	type SubagentGroupState,
 } from "@alpha-code/types"
 
@@ -46,6 +48,8 @@ import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBind
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 import { captureVerificationContent } from "../../agent/VerificationScope"
 import { checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
+import { resolveTaskReasoning } from "../../agent/TaskReasoning"
+import * as api from "../../../api"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -95,6 +99,9 @@ const makeProviderHarness = (
 	} = {},
 	profiles: Array<Record<string, any>> = [],
 ) => {
+	const storedProfiles = profiles.some((profile) => profile.name === "Parent")
+		? profiles
+		: [...profiles, { id: "parent-profile", name: "Parent", apiProvider: "openai", openAiModelId: "alpha-model" }]
 	const agentControlStore = new AgentControlStore(new InMemoryAgentControlPersistence())
 	const agentControlStoreReady = agentControlStore.initialize()
 	const taskSessions = new TaskSessionRegistry(3)
@@ -125,8 +132,13 @@ const makeProviderHarness = (
 			setValues: vi.fn(async (values: Record<string, unknown>) => Object.assign(routingSettings, values)),
 		},
 		providerSettingsManager: {
+			listConfig: vi.fn(async () =>
+				storedProfiles.map(({ id, name, apiProvider }) => ({ id, name, apiProvider })),
+			),
 			getProfile: vi.fn(async (query: { id?: string; name?: string }) => {
-				const profile = profiles.find((candidate) => candidate.id === query.id || candidate.name === query.name)
+				const profile = storedProfiles.find(
+					(candidate) => candidate.id === query.id || candidate.name === query.name,
+				)
 				if (!profile) throw new Error("Profile not found")
 				return structuredClone(profile)
 			}),
@@ -187,7 +199,7 @@ const makeProviderHarness = (
 	return provider
 }
 
-const makeParent = () => ({
+const makeParent = (apiConfiguration: ProviderSettings = { apiProvider: "openai", openAiModelId: "alpha-model" }) => ({
 	admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
 	taskId: "parent-1",
 	taskKind: "primary",
@@ -196,7 +208,7 @@ const makeParent = () => ({
 	apiConversationHistory: [] as any[],
 	cwd: "F:/workspace",
 	historyWorkspacePath: "F:/workspace",
-	apiConfiguration: { apiProvider: "openai", openAiModelId: "alpha-model" },
+	apiConfiguration: structuredClone(apiConfiguration),
 	getTaskMode: vi.fn(async () => "code"),
 	getTaskApiConfigName: vi.fn(async () => "Parent"),
 	captureEffectiveInheritedInstructions: vi.fn(async () => ({
@@ -789,7 +801,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		expect(descriptor.modelRoute.apiConfiguration.enableReasoningEffort).toBeUndefined()
 	})
 
-	it("applies a named agent type after spawn defaults while inheriting the parent provider", async () => {
+	it("applies a named agent type's saved profile and model after spawn defaults", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -800,7 +812,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 						description: "Investigates code paths",
 						role: "explore",
 						apiConfigId: "research-profile",
-						model: "configured-model",
+						model: "gpt-5.6-sol",
 						reasoningEffort: "medium",
 						developerInstructions: "Cite the inspected source paths.",
 					},
@@ -810,8 +822,9 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 				{
 					id: "research-profile",
 					name: "Research profile",
-					apiProvider: "openai",
-					openAiModelId: "original-model",
+					apiProvider: "openai-native",
+					apiModelId: "gpt-5.6-terra",
+					openAiNativeApiKey: "research-secret",
 				},
 			],
 		)
@@ -820,21 +833,24 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			task_name: "research_agent",
 			message: "Inspect the agent loop",
 			agent_type: "researcher",
-			model: "spawn-model",
+			model: "gpt-5.6-luna",
 			reasoning_effort: "high",
 		})
 		expect(prepared.group.agents[0]).toMatchObject({
 			role: "explore",
 			modelRoute: {
 				source: "spawn",
-				profileName: "Parent",
-				modelId: "configured-model",
-				requestedModelId: "configured-model",
+				profileName: "Research profile",
+				provider: "openai-native",
+				modelId: "gpt-5.6-sol",
+				requestedModelId: "gpt-5.6-sol",
 				requestedReasoningEffort: "medium",
 			},
 		})
-		expect(prepared.group.agents[0].modelRoute?.profileId).toBeUndefined()
+		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("research-profile")
 		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		expect(descriptor.modelRoute.apiConfiguration.openAiNativeApiKey).toBe("research-secret")
+		expect(JSON.stringify(prepared.group)).not.toContain("research-secret")
 		expect(descriptor.inheritedInstructions).toContain("Cite the inspected source paths.")
 		expect(descriptor.contextManifest.instructions.sources).toEqual(
 			expect.arrayContaining([expect.objectContaining({ kind: "agent-type" })]),
@@ -855,7 +871,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 							description: "Reviews independent evidence",
 							role: "review",
 							apiConfigId: "type-profile",
-							model: "configured-type-model",
+							model: "gemini-3.7-flash",
 							reasoningEffort: "medium",
 						},
 					},
@@ -867,7 +883,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 						id: "type-profile",
 						name: "Auditor",
 						apiProvider: "vertex",
-						apiModelId: "profile-model",
+						apiModelId: "gemini-3.7-flash",
 						vertexJsonCredentials: "type-secret",
 					},
 				],
@@ -881,16 +897,17 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			})
 			const route = prepared.group.agents[0].modelRoute
 			expect(route).toMatchObject({
-				profileId: undefined,
-				profileName: "Parent",
-				provider: "openai",
-				modelId: "configured-type-model",
+				profileId: "type-profile",
+				profileName: "Auditor",
+				provider: "vertex",
+				modelId: "gemini-3.7-flash",
 				requestedReasoningEffort: "medium",
 			})
 			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
 			expect(descriptor.modelRoute.apiConfiguration).toMatchObject({
-				apiProvider: "openai",
-				openAiModelId: "configured-type-model",
+				apiProvider: "vertex",
+				apiModelId: "gemini-3.7-flash",
+				vertexJsonCredentials: "type-secret",
 				reasoningEffort: "medium",
 			})
 			expect(prepared.inheritsParentPermissions).toBe(true)
@@ -906,20 +923,21 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 	)
 
 	it.each([
-		["model", "spawn-model", "medium"],
-		["effort", "configured-model", "high"],
+		["model", "gpt-5.6-sol", "medium"],
+		["effort", "gpt-5.6-terra", "high"],
 	] as const)("applies the custom agent after a spawn %s choice", async (override, model, effort) => {
 		const provider = makeProviderHarness(2, {
 			subagentAgentTypes: {
 				researcher: {
 					description: "Inspects code",
 					role: "review",
-					model: "configured-model",
+					model: "gpt-5.6-terra",
 					reasoningEffort: "medium",
 				},
 			},
 		})
-		const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+		const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
 			task_name: "typed_override",
 			message: "Inspect the effective model settings",
 			agent_type: "researcher",
@@ -927,8 +945,8 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			...(override === "model" ? { model } : { reasoning_effort: effort }),
 		})
 		expect(prepared.group.agents[0].modelRoute).toMatchObject({
-			provider: "openai",
-			modelId: "configured-model",
+			provider: "openai-native",
+			modelId: "gpt-5.6-terra",
 			requestedReasoningEffort: "medium",
 		})
 	})
@@ -948,7 +966,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 
 	it("turns a Codex default spawn into an approved editing worker with inherited provider overrides", async () => {
 		const provider = makeProviderHarness()
-		const parent = makeParent()
+		const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
 		const validateScope = vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
 			gitRoot: parent.cwd,
 			logicalWorkspace: parent.cwd,
@@ -962,7 +980,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		const prepared = await provider.prepareSubagentGroup(parent as any, {
 			task_name: "implement_change",
 			message: "Implement the requested change",
-			model: "gpt-6-sol",
+			model: "gpt-6.1-sol",
 			reasoning_effort: "high",
 		})
 
@@ -972,8 +990,8 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			writeScope: ["."],
 			modelRoute: {
 				source: "spawn",
-				provider: "openai",
-				modelId: "gpt-6-sol",
+				provider: "openai-native",
+				modelId: "gpt-6.1-sol",
 				requestedReasoningEffort: "high",
 			},
 		})
@@ -1646,7 +1664,9 @@ If complete, use attempt_completion.
 				inspector: { description: "Inspects code", role: "review", reasoningEffort: testCase.agentEffort },
 			},
 		})
-		const parent = Object.assign(makeParent(), { reasoningPreference: { kind: "effort", effort: "high" } })
+		const parent = Object.assign(makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" }), {
+			reasoningPreference: { kind: "effort", effort: "high" },
+		})
 		const instructions = await parent.captureEffectiveInheritedInstructions()
 		Object.assign(parent, {
 			getSubagentInvocationContext: () => ({
@@ -1657,8 +1677,8 @@ If complete, use attempt_completion.
 				modelRoute: {
 					source: "parent",
 					resolution: "selected",
-					provider: "openai",
-					modelId: "alpha-model",
+					provider: "openai-native",
+					modelId: "gpt-5.6-luna",
 					profileName: "Parent",
 				},
 				history: [],
@@ -2926,12 +2946,12 @@ If complete, use attempt_completion.
 			]
 			const settings = { subagentApiConfigByRole: { review: "captured-id" } }
 			const provider = makeProviderHarness(2, settings, profiles)
-			const parent = makeParent()
+			const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
 			const prepared = await provider.prepareSubagentGroup(parent as any, {
 				task_name: "captured_route",
 				message: "Inspect captured settings",
 				agent_type: "review",
-				model: "captured-model",
+				model: "gpt-5.6-terra",
 				reasoning_effort: "high",
 			})
 			const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
@@ -2973,10 +2993,261 @@ If complete, use attempt_completion.
 		},
 	)
 
+	it.each([false, true])(
+		"preserves legacy profile flags unless the stored model was explicitly requested: %s",
+		async (explicitModel) => {
+			const profile = {
+				id: "legacy-flags-profile",
+				name: "Legacy flags",
+				apiProvider: "openai",
+				openAiModelId: "edited-default-model",
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const capturedRoute = {
+				source: "parent",
+				resolution: "selected",
+				profileId: profile.id,
+				profileName: profile.name,
+				provider: "openai",
+				modelId: "captured-model",
+				...(explicitModel ? { requestedModelId: "captured-model" } : {}),
+			}
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{ id: "legacy-flags-child", subagentModelRoute: capturedRoute },
+				undefined,
+			)
+			expect(restored.apiConfiguration.openAiModelId).toBe("captured-model")
+			expect(restored.apiConfiguration.enableReasoningEffort).toBe(explicitModel ? undefined : true)
+			expect(restored.apiConfiguration.reasoningEffort).toBe(explicitModel ? undefined : "high")
+		},
+	)
+
+	it("restores a bound FakeAI registry locator after the saved profile selects another runtime", async () => {
+		const dispose = vi.fn()
+		const factory = vi.spyOn(api, "buildApiHandler").mockReturnValue({
+			createMessage: async function* () {},
+			getModel: () => ({ id: "reported-model", info: { contextWindow: 8_000, supportsPromptCache: false } }),
+			countTokens: async () => 0,
+			dispose,
+		})
+		const profile = {
+			id: "scripted-profile",
+			name: "Scripted child",
+			apiProvider: "fake-ai",
+			fakeAi: { id: "edited-saved-runtime" },
+			apiModelId: "reported-model",
+			enableReasoningEffort: true,
+			reasoningEffort: "low",
+		}
+		const provider = makeProviderHarness(2, {}, [profile])
+		const capturedRoute = {
+			source: "parent",
+			resolution: "selected",
+			profileId: profile.id,
+			profileName: profile.name,
+			provider: "fake-ai",
+			modelId: "captured-runtime",
+			reasoningConfiguration: {},
+		}
+		const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+			provider,
+			makeParent(),
+			"review",
+			{ id: "scripted-child", subagentModelRoute: capturedRoute },
+			undefined,
+		)
+		expect(restored.apiConfiguration.fakeAi).toEqual({ id: "captured-runtime" })
+		expect(restored.apiConfiguration.apiModelId).toBe("reported-model")
+		expect(restored.apiConfiguration.enableReasoningEffort).toBeUndefined()
+		expect(restored.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(factory).toHaveBeenCalledExactlyOnceWith(restored.apiConfiguration)
+		expect(dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each([undefined, "legacy-reported-model"])(
+		"retains the saved FakeAI runtime for a legacy diagnostic model %s",
+		async (modelId) => {
+			const dispose = vi.fn()
+			const factory = vi.spyOn(api, "buildApiHandler").mockReturnValue({
+				createMessage: async function* () {},
+				getModel: () => ({
+					id: "legacy-reported-model",
+					info: { contextWindow: 8_000, supportsPromptCache: false },
+				}),
+				countTokens: async () => 0,
+				dispose,
+			})
+			const profile = {
+				id: "legacy-scripted-profile",
+				name: "Legacy scripted child",
+				apiProvider: "fake-ai",
+				fakeAi: { id: "saved-runtime-id" },
+				apiModelId: "legacy-reported-model",
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const capturedRoute = {
+				source: "parent",
+				resolution: "selected",
+				profileId: profile.id,
+				profileName: profile.name,
+				provider: "fake-ai",
+				...(modelId ? { modelId } : {}),
+			}
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{ id: "legacy-scripted-child", subagentModelRoute: capturedRoute },
+				undefined,
+			)
+			expect(restored.apiConfiguration.fakeAi).toEqual({ id: "saved-runtime-id" })
+			expect(restored.apiConfiguration.apiModelId).toBe("legacy-reported-model")
+			expect(factory).toHaveBeenCalledExactlyOnceWith(restored.apiConfiguration)
+			expect(dispose).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("rejects changed legacy FakeAI diagnostic models before opening a cached runtime", async () => {
+		const factory = vi.spyOn(api, "buildApiHandler")
+		const profile = {
+			id: "legacy-scripted-profile",
+			name: "Legacy scripted child",
+			apiProvider: "fake-ai",
+			fakeAi: { id: "saved-runtime-id" },
+			apiModelId: "changed-reported-model",
+		}
+		const provider = makeProviderHarness(2, {}, [profile])
+		await expect(
+			Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{
+					id: "legacy-scripted-child",
+					subagentModelRoute: {
+						source: "parent",
+						resolution: "selected",
+						profileId: profile.id,
+						profileName: profile.name,
+						provider: "fake-ai",
+						modelId: "captured-reported-model",
+					},
+				},
+				undefined,
+			),
+		).rejects.toThrow("Cannot resume child: captured model")
+		expect(factory).not.toHaveBeenCalled()
+	})
+
+	const profileOnlyCases: Array<{
+		label: string
+		model: string
+		reasoning: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">
+		changedModel: string
+		changedReasoning: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">
+		expected: "high" | "off" | "default"
+	}> = [
+		{
+			label: "profile effort",
+			model: "gpt-5.6-luna",
+			reasoning: { enableReasoningEffort: true, reasoningEffort: "high" },
+			changedModel: "gpt-5.6-luna",
+			changedReasoning: { enableReasoningEffort: true, reasoningEffort: "low" },
+			expected: "high",
+		},
+		{
+			label: "omitted flags on a required-reasoning model",
+			model: "gpt-6.1-sol",
+			reasoning: {},
+			changedModel: "gpt-5.6-luna",
+			changedReasoning: { enableReasoningEffort: false, reasoningEffort: "none" },
+			expected: "default",
+		},
+		{
+			label: "disabled profile reasoning",
+			model: "gpt-5.6-luna",
+			reasoning: { enableReasoningEffort: false, reasoningEffort: "none" },
+			changedModel: "gpt-5.6-terra",
+			changedReasoning: { enableReasoningEffort: true, reasoningEffort: "high" },
+			expected: "off",
+		},
+	]
+	it.each(profileOnlyCases.flatMap((testCase) => ["manifest", "history"].map((source) => ({ ...testCase, source }))))(
+		"restores profile-only $label from $source after saved defaults change",
+		async (testCase) => {
+			const profile = {
+				id: "profile-only-child",
+				name: "Selected child",
+				apiProvider: "openai-native",
+				apiModelId: testCase.model,
+				openAiNativeApiKey: "selected-child-secret",
+				...testCase.reasoning,
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "profile_only_capture",
+				message: "Inspect the selected profile",
+				agent_type: "review",
+				profile: profile.id,
+			})
+			const manifest = structuredClone(
+				Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest,
+			)
+			expect(manifest.modelRoute).toMatchObject({
+				profileId: profile.id,
+				modelId: testCase.model,
+				reasoningConfiguration: testCase.reasoning,
+			})
+			expect(manifest.modelRoute.requestedModelId).toBeUndefined()
+			expect(manifest.modelRoute.requestedReasoningEffort).toBeUndefined()
+			Object.assign(profile, {
+				name: "Renamed child",
+				apiModelId: testCase.changedModel,
+				...testCase.changedReasoning,
+			})
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				parent,
+				"review",
+				{
+					id: prepared.envelopes[0].id,
+					apiConfigName: "Selected child",
+					reasoningPreference: { kind: "default" },
+					...(testCase.source === "history" ? { subagentModelRoute: manifest.modelRoute } : {}),
+				},
+				testCase.source === "manifest" ? manifest : undefined,
+			)
+			expect(restored.apiConfigName).toBe("Renamed child")
+			expect(restored.apiConfiguration.apiModelId).toBe(testCase.model)
+			expect(restored.apiConfiguration.enableReasoningEffort).toBe(testCase.reasoning.enableReasoningEffort)
+			expect(restored.apiConfiguration.reasoningEffort).toBe(testCase.reasoning.reasoningEffort)
+			expect(restored.apiConfiguration.openAiNativeApiKey).toBe("selected-child-secret")
+			const info = getCuratedModelInfo("openai-native", testCase.model)
+			if (!info) throw new Error("Fixture model is missing from the current native catalog")
+			const state = resolveTaskReasoning(
+				restored.apiConfiguration,
+				{ kind: "default" },
+				{ id: testCase.model, info },
+			).state
+			if (testCase.expected === "high") expect(state.effective).toEqual({ kind: "effort", effort: "high" })
+			else if (testCase.expected === "off") expect(state.effective.kind).toBe("off")
+			else {
+				expect(state.capabilities.canDisable).toBe(false)
+				expect(state.effective.kind).toBe("effort")
+			}
+		},
+	)
+
 	it.each([
 		{ apiProvider: "openai", openAiModelId: "other-model" },
 		{ apiProvider: "vertex", apiModelId: "captured-model" },
-	])("rejects captured profile drift on reload: %j", async (changedConfiguration) => {
+	])("pins the captured model and rejects a changed provider on reload: %j", async (changedConfiguration) => {
 		const profiles: Array<Record<string, unknown>> = [
 			{ id: "captured-id", name: "Captured child", apiProvider: "openai", openAiModelId: "captured-model" },
 		]
@@ -2995,14 +3266,20 @@ If complete, use attempt_completion.
 			modelId: "captured-model",
 		}
 		Object.assign(profiles[0], changedConfiguration)
-		await expect(
-			(provider as any).restoreCapturedSubagentModelRoute(
-				parent,
-				"review",
-				{ id: prepared.envelopes[0].id },
-				manifest,
-			),
-		).rejects.toThrow("Cannot resume child: captured")
+		const restoring = (provider as any).restoreCapturedSubagentModelRoute(
+			parent,
+			"review",
+			{ id: prepared.envelopes[0].id },
+			manifest,
+		)
+		if (changedConfiguration.apiProvider !== "openai") {
+			await expect(restoring).rejects.toThrow("Cannot resume child: captured")
+		} else {
+			expect((await restoring).apiConfiguration).toMatchObject({
+				apiProvider: "openai",
+				openAiModelId: "captured-model",
+			})
+		}
 	})
 
 	it("captures configured Worker routing before an awaited workspace-scope check", async () => {

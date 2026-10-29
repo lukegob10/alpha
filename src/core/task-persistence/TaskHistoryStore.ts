@@ -105,6 +105,9 @@ export class TaskHistoryStore {
 	/** Bound startup reconciliation reads so large histories do not serialize every file read. */
 	private static readonly RECONCILE_READ_CONCURRENCY = 32
 
+	/** Bound temporary workspace matching independently of the number of saved projects. */
+	private static readonly WORKSPACE_MATCH_CACHE_MAX_ENTRIES = 64
+
 	constructor(globalStoragePath: string, options?: TaskHistoryStoreOptions) {
 		this.globalStoragePath = globalStoragePath
 		this.onWrite = options?.onWrite
@@ -200,8 +203,20 @@ export class TaskHistoryStore {
 	getByWorkspace(workspace: string): HistoryItem[] {
 		if (!workspace) return []
 		const currentWorkspace = workspaceKey(workspace)
+		// A single read can contain thousands of records from the same few projects.
+		// Discard these bounded matches after the read so refreshed metadata remains visible.
+		const workspaceMatches = new Map<string, boolean>()
 		return Array.from(this.cache.values())
-			.filter((item) => item.workspace && workspaceKey(item.workspace) === currentWorkspace)
+			.filter((item) => {
+				if (!item.workspace) return false
+				const known = workspaceMatches.get(item.workspace)
+				if (known !== undefined) return known
+				const matches = workspaceKey(item.workspace) === currentWorkspace
+				if (workspaceMatches.size < TaskHistoryStore.WORKSPACE_MATCH_CACHE_MAX_ENTRIES) {
+					workspaceMatches.set(item.workspace, matches)
+				}
+				return matches
+			})
 			.sort((a, b) => b.ts - a.ts)
 	}
 
@@ -243,6 +258,60 @@ export class TaskHistoryStore {
 			}
 
 			return all
+		})
+	}
+
+	/** Compensate only an unchanged provisional inference selection, preserving newer task metadata. */
+	async restoreModelRoute(
+		taskId: string,
+		expected: HistoryItem,
+		previous: HistoryItem,
+		guard: () => boolean = () => true,
+	): Promise<boolean> {
+		return this.withLock(async () => {
+			if (!guard()) return false
+			const taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
+			const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+			const selection = (item: HistoryItem) => ({
+				apiConfigName: item.apiConfigName,
+				threadModelOverride: item.threadModelOverride,
+				threadModelRoute: item.threadModelRoute,
+				reasoningPreference: item.reasoningPreference,
+				reasoningState: item.reasoningState,
+			})
+			let updated: HistoryItem | undefined
+			let expectedContent: string | undefined
+			let changed = false
+			await safeWriteJson(filePath, null, {
+				atomicReplace: true,
+				prepareData: async () => {
+					if (!guard()) throw new Error("Task model route recovery no longer owns the task")
+					const current = await this.readHistoryForMutation(filePath, taskId)
+					if (!current) throw new Error("Task history disappeared during model route recovery")
+					expectedContent = current.content
+					updated = current.item
+					if (!deepEqual(selection(current.item), selection(expected))) return updated
+					changed = true
+					updated = {
+						...current.item,
+						...selection(previous),
+						...(current.item.status === "interrupted" && expected.status === "interrupted"
+							? { status: previous.status }
+							: {}),
+					}
+					return updated
+				},
+				commitTempFile: (temporaryPath, destinationPath) => {
+					if (!guard()) throw new Error("Task model route recovery no longer owns the task")
+					this.commitTaskFile(temporaryPath, destinationPath, expectedContent)
+				},
+			})
+			if (!updated) return false
+			this.cache.set(taskId, updated)
+			if (!changed) return false
+			this.scheduleIndexWrite()
+			await this.onWrite?.(this.getAll())
+			return true
 		})
 	}
 
@@ -371,7 +440,13 @@ export class TaskHistoryStore {
 						this.cache.set(taskId, current)
 						continue
 					}
-					const renamed = { ...current, apiConfigName: newName }
+					const renamed = {
+						...current,
+						apiConfigName: newName,
+						...(current.threadModelRoute?.profileName === oldName
+							? { threadModelRoute: { ...current.threadModelRoute, profileName: newName } }
+							: {}),
+					}
 					await safeWriteJson(filePath, renamed, {
 						prettyPrint: true,
 						atomicReplace: true,

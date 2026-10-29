@@ -27,7 +27,7 @@ import {
 } from "@/components/agents/SubagentTaskLink"
 import { cn } from "@src/lib/utils"
 import { vscode } from "@src/utils/vscode"
-import { ExtensionStateContext } from "@src/context/ExtensionStateContextStore"
+import { ShellStateContext } from "@src/context/ExtensionStateContextStore"
 
 import {
 	Button,
@@ -87,7 +87,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 	} = props
 	const { t } = useTranslation("chat")
 	const descriptionId = useId()
-	const presentation = useContext(ExtensionStateContext)
+	const presentation = useContext(ShellStateContext)
 	const managedSteeringDrafts = presentation?.managedSteeringDrafts
 	const updateManagedSteeringDraft = presentation?.updateManagedSteeringDraft
 	const resolvedParentTaskId = parentTaskId ?? group.parentTaskId
@@ -123,15 +123,17 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 	const approvalAgent = approvalTaskId
 		? group.agents.find((agent) => agent.taskId === approvalTaskId && hasPendingSubagentApproval(agent))
 		: undefined
-	const actionableChangeSetIds = useMemo(
+	const actionableChangeSetIdsKey = useMemo(
 		() =>
-			group.agents
-				.flatMap((agent) =>
-					agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
-						? [agent.changeSet.id]
-						: [],
-				)
-				.sort(),
+			JSON.stringify(
+				group.agents
+					.flatMap((agent) =>
+						agent.changeSet && ["pending_review", "conflicted"].includes(agent.changeSet.status)
+							? [agent.changeSet.id]
+							: [],
+					)
+					.sort(),
+			),
 		[group.agents],
 	)
 
@@ -215,7 +217,9 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 	)
 
 	useEffect(() => {
-		if (!resolvedParentTaskId || actionableChangeSetIds.length === 0) return
+		// Snapshot refreshes may replace every agent without changing this subscription's artifacts.
+		const actionableChangeSetIds = new Set<string>(JSON.parse(actionableChangeSetIdsKey))
+		if (!resolvedParentTaskId || actionableChangeSetIds.size === 0) return
 
 		const requestAll = () => actionableChangeSetIds.forEach(requestChangeSetCapability)
 		if (isVisible) requestAll()
@@ -228,7 +232,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 				if (
 					capability?.taskId === resolvedParentTaskId &&
 					capability.groupId === group.groupId &&
-					actionableChangeSetIds.includes(capability.changeSetId)
+					actionableChangeSetIds.has(capability.changeSetId)
 				) {
 					setChangeSetCapabilities((current) => ({
 						...current,
@@ -243,7 +247,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 				if (
 					result?.taskId !== resolvedParentTaskId ||
 					result.groupId !== group.groupId ||
-					!actionableChangeSetIds.includes(result.changeSetId)
+					!actionableChangeSetIds.has(result.changeSetId)
 				) {
 					return
 				}
@@ -264,9 +268,12 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 				return
 			}
 
-			if (isVisible && capabilityRefreshMessageTypes.has(message.type)) {
-				if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
-				refreshTimer = window.setTimeout(requestAll, 75)
+			if (isVisible && capabilityRefreshMessageTypes.has(message.type) && refreshTimer === undefined) {
+				// Streaming broadcasts must not postpone a capability refresh indefinitely.
+				refreshTimer = window.setTimeout(() => {
+					refreshTimer = undefined
+					requestAll()
+				}, 75)
 			}
 		}
 
@@ -275,7 +282,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 			window.removeEventListener("message", handleMessage)
 			if (refreshTimer !== undefined) window.clearTimeout(refreshTimer)
 		}
-	}, [actionableChangeSetIds, group.groupId, requestChangeSetCapability, resolvedParentTaskId, isVisible])
+	}, [actionableChangeSetIdsKey, group.groupId, requestChangeSetCapability, resolvedParentTaskId, isVisible])
 
 	const openTask = (agent: SubagentRunState) => {
 		if (onShowTask) onShowTask(agent.taskId)

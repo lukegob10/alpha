@@ -1157,6 +1157,39 @@ describe("sub-agent context capture", () => {
 		})
 	})
 
+	it.each([{}, { enableReasoningEffort: false, reasoningEffort: "disable" as const }])(
+		"preserves unbound profiles and captured reasoning configuration across context reload: %j",
+		(reasoningConfiguration) => {
+			const unboundRoute = {
+				...route,
+				profileId: undefined,
+				unboundProfile: true as const,
+				reasoningConfiguration,
+				apiKey: "capture-secret-never-persist",
+			}
+			const { manifest } = capture("none", unboundRoute)
+			const serialized = serializeSubagentContextManifest(manifest)
+			const restored = subagentContextManifestSchema.parse(JSON.parse(serialized))
+
+			expect(restored.modelRoute).toMatchObject({ unboundProfile: true, reasoningConfiguration })
+			expect(restored.modelRoute).not.toHaveProperty("profileId")
+			expect(serialized).not.toContain("capture-secret-never-persist")
+			expect(serialized).not.toContain("apiKey")
+			expect(isValidSubagentContextManifest(restored)).toBe(true)
+			expect(
+				isValidSubagentContextManifest({
+					...restored,
+					modelRoute: { ...restored.modelRoute, unboundProfile: undefined },
+				}),
+			).toBe(false)
+		},
+	)
+
+	it("rejects contradictory unbound profile identity before capturing context", () => {
+		const contradictoryRoute = { ...route, unboundProfile: true as const }
+		expect(() => capture("none", contradictoryRoute)).toThrow()
+	})
+
 	it("groups history into user-led turns and excludes protocol-only user records", () => {
 		const turns = captureUserLedTurns("parent-task", history)
 

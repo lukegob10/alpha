@@ -245,7 +245,11 @@ class BedrockAnthropicHandler extends AnthropicMessageHandler {
 	}
 
 	setReasoningOptions(settings: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">): void {
-		this.options = { ...this.options, ...settings }
+		this.options = {
+			...this.options,
+			enableReasoningEffort: settings.enableReasoningEffort,
+			reasoningEffort: settings.reasoningEffort,
+		}
 	}
 
 	override async *createMessage(
@@ -338,6 +342,10 @@ class BedrockResponsesHandler extends OpenAiHandler {
 	}
 
 	setReasoningOptions(settings: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">): void {
-		this.options = { ...this.options, ...settings }
+		this.options = {
+			...this.options,
+			enableReasoningEffort: settings.enableReasoningEffort,
+			reasoningEffort: settings.reasoningEffort,
+		}
 	}
 }

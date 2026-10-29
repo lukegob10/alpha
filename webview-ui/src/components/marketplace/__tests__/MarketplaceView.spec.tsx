@@ -1,11 +1,11 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 
 import { ExtensionStateContext } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 
 import { MarketplaceView } from "../MarketplaceView"
 import { MarketplaceViewStateManager } from "../MarketplaceViewStateManager"
-import { DEFAULT_CHECKPOINT_TIMEOUT_SECONDS } from "@alpha-code/types"
+import { DEFAULT_CHECKPOINT_TIMEOUT_SECONDS, type MarketplaceItem } from "@alpha-code/types"
 
 vi.mock("@/utils/vscode", () => ({
 	vscode: {
@@ -49,6 +49,119 @@ describe("MarketplaceView", () => {
 			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			// ... other required context properties
 		}
+	})
+
+	it("owns one subscription and ingests each window message once across remounts", () => {
+		const handleMessage = vi.spyOn(stateManager, "handleMessage")
+		const subscribe = vi.spyOn(stateManager, "onStateChange")
+		const cleanup = vi.spyOn(stateManager, "cleanup")
+		const view = (
+			<ExtensionStateContext.Provider value={mockExtensionState}>
+				<MarketplaceView stateManager={stateManager} />
+			</ExtensionStateContext.Provider>
+		)
+		const firstMount = render(view)
+		expect(subscribe).toHaveBeenCalledTimes(1)
+
+		act(() => {
+			for (let version = 0; version < 100; version++) {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "state", state: { organizationSettingsVersion: version } },
+					}),
+				)
+			}
+		})
+		expect(handleMessage).toHaveBeenCalledTimes(100)
+
+		firstMount.unmount()
+		window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state: {} } }))
+		expect(handleMessage).toHaveBeenCalledTimes(100)
+		expect(cleanup).not.toHaveBeenCalled()
+
+		render(view)
+		expect(subscribe).toHaveBeenCalledTimes(2)
+		act(() => {
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state: {} } }))
+		})
+		expect(handleMessage).toHaveBeenCalledTimes(101)
+	})
+
+	it("projects incoming catalogs and preserves installed metadata and filters on reentry", () => {
+		const items: MarketplaceItem[] = [
+			{
+				id: "test-mcp",
+				name: "Test MCP",
+				description: "The installed MCP server matching the search filter",
+				type: "mcp",
+				content: "Test content",
+				url: "https://example.com/test",
+				tags: ["test"],
+			},
+			{
+				id: "other-mcp",
+				name: "Other MCP",
+				description: "An uninstalled MCP server excluded by the search filter",
+				type: "mcp",
+				content: "Other content",
+				url: "https://example.com/other",
+			},
+		]
+		const installedMetadata = { project: {}, global: { "test-mcp": { type: "mcp" } } }
+		mockExtensionState.marketplaceInstalledMetadata = installedMetadata
+		const view = (
+			<ExtensionStateContext.Provider value={mockExtensionState}>
+				<MarketplaceView stateManager={stateManager} />
+			</ExtensionStateContext.Provider>
+		)
+		const firstMount = render(view)
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "marketplaceData",
+						marketplaceItems: items,
+						marketplaceInstalledMetadata: installedMetadata,
+					},
+				}),
+			)
+		})
+		expect(screen.getByText("Test MCP")).toBeInTheDocument()
+		expect(screen.getByText("Other MCP")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "marketplace:items.card.remove" })).toBeInTheDocument()
+
+		fireEvent.change(screen.getByPlaceholderText("marketplace:filters.search.placeholderMcp"), {
+			target: { value: "Test" },
+		})
+		expect(screen.queryByText("Other MCP")).not.toBeInTheDocument()
+		expect(stateManager.getState().filters.search).toBe("Test")
+		expect(stateManager.getState().installedMetadata).toEqual(installedMetadata)
+
+		firstMount.unmount()
+		vi.mocked(vscode.postMessage).mockClear()
+		render(view)
+		expect(screen.getByPlaceholderText("marketplace:filters.search.placeholderMcp")).toHaveValue("Test")
+		expect(screen.getByText("Test MCP")).toBeInTheDocument()
+		expect(screen.queryByText("Other MCP")).not.toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "fetchMarketplaceData" })
+	})
+
+	it("settles an empty catalog without refetching on unrelated state updates", () => {
+		render(
+			<ExtensionStateContext.Provider value={mockExtensionState}>
+				<MarketplaceView stateManager={stateManager} />
+			</ExtensionStateContext.Provider>,
+		)
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "marketplaceData", marketplaceItems: [] } }),
+			)
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state: {} } }))
+		})
+		expect(screen.getByText("marketplace:items.empty.noItems")).toBeInTheDocument()
+		expect(screen.queryByText("marketplace:items.refresh.refreshing")).not.toBeInTheDocument()
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "fetchMarketplaceData" })
 	})
 
 	it("should trigger fetchMarketplaceData on initial mount when no marketplace data is loaded", async () => {

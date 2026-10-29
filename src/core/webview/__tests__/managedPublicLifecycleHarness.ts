@@ -198,7 +198,9 @@ export interface PublicChild {
 	result?: InternalTaskResult
 }
 
-export async function createManagedPublicLifecycleHarness(options = { maxLiveTasks: 3 }) {
+export async function createManagedPublicLifecycleHarness(
+	options: { maxLiveTasks?: number; rootObjective?: string } = {},
+) {
 	const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ws08-public-"))
 	const workspacePath = path.join(storagePath, "workspace")
 	await fs.mkdir(workspacePath)
@@ -222,7 +224,7 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		apiProvider: "openai",
 		openAiModelId: "ws08-scripted",
 		currentApiConfigName: "Scripted",
-		maxConcurrentTasks: options.maxLiveTasks,
+		maxConcurrentTasks: options.maxLiveTasks ?? 3,
 		maxConcurrentSubagents: 2,
 		subagentMaxDepth: 1,
 		subagentDelegationPolicy: "proactive",
@@ -389,12 +391,17 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		Reflect.get(provider, "taskHistoryStoreReady"),
 		Reflect.get(provider, "mcpHubInitialization"),
 	])
-	const root = await provider.createTask("Integrate and verify the short child reports.", undefined, undefined, {
-		startTask: false,
-		taskMode: "code",
-		workspacePath,
-		enableCheckpoints: false,
-	})
+	const root = await provider.createTask(
+		options.rootObjective ?? "Integrate and verify the short child reports.",
+		undefined,
+		undefined,
+		{
+			startTask: false,
+			taskMode: "code",
+			workspacePath,
+			enableCheckpoints: false,
+		},
+	)
 	const taskSessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
 	const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
 	const runs = Reflect.get(provider, "asyncSubagentRunManager") as AsyncSubagentRunManager

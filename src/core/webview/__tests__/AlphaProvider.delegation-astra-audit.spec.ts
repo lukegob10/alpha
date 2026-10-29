@@ -1,4 +1,4 @@
-import type { AgentControlState, HistoryItem, SubagentGroupState } from "@alpha-code/types"
+import type { AgentControlState, HistoryItem, ProviderSettings, SubagentGroupState } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
@@ -37,8 +37,35 @@ const makeHarness = (
 	const store = new AgentControlStore(persistence)
 	const ready = store.initialize()
 	const sessions = new TaskSessionRegistry(3)
+	const parentConfiguration: ProviderSettings = {
+		apiProvider: "openai",
+		openAiModelId: "alpha-model",
+		openAiApiKey: "astra-audit-fixture-key",
+		openAiBaseUrl: "https://astra-audit.example.invalid/v1",
+	}
+	const parentProfile = { id: "astra-parent-profile", name: "Parent", ...parentConfiguration }
 	const history = new Map<string, HistoryItem>([
-		["parent-1", { id: "parent-1", number: 1, ts: 1, task: "parent", tokensIn: 0, tokensOut: 0, totalCost: 0 }],
+		[
+			"parent-1",
+			{
+				id: "parent-1",
+				number: 1,
+				ts: 1,
+				task: "parent",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+				apiConfigName: parentProfile.name,
+				threadModelRoute: {
+					source: "parent",
+					resolution: "selected",
+					profileId: parentProfile.id,
+					profileName: parentProfile.name,
+					provider: parentConfiguration.apiProvider,
+					modelId: parentConfiguration.openAiModelId,
+				},
+			},
+		],
 	])
 	const parentAbort = new AbortController()
 	const parent = {
@@ -49,7 +76,7 @@ const makeHarness = (
 		apiConversationHistory: [],
 		cwd: "F:/workspace",
 		historyWorkspacePath: "F:/workspace",
-		apiConfiguration: { apiProvider: "openai", openAiModelId: "alpha-model" },
+		apiConfiguration: structuredClone(parentConfiguration),
 		getTaskMode: vi.fn(async () => "code"),
 		getTaskApiConfigName: vi.fn(async () => "Parent"),
 		captureEffectiveInheritedInstructions: vi.fn(async () => ({
@@ -84,9 +111,13 @@ const makeHarness = (
 		agentControlStoreLoadedAt: Date.now(),
 		contextProxy: { getValues: () => settings },
 		providerSettingsManager: {
-			getProfile: vi.fn(async () => {
-				throw new Error("Profile not found")
+			getProfile: vi.fn(async (selection: { id: string } | { name: string }) => {
+				const matches =
+					"id" in selection ? selection.id === parentProfile.id : selection.name === parentProfile.name
+				if (!matches) throw new Error("Profile not found")
+				return structuredClone(parentProfile)
 			}),
+			listConfig: vi.fn(async () => [{ id: parentProfile.id, name: parentProfile.name, apiProvider: "openai" }]),
 		},
 		taskSessions: sessions,
 		getSkillsManager: vi.fn(async () => undefined),
@@ -140,7 +171,15 @@ const makeHarness = (
 		)
 		await runs.waitForResult(handle.taskId)
 		await ownedFinalization(Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId))
-		expect(store.getAgent(handle.taskId, parent.taskId)?.status).toBe("completed")
+		const record = store.getAgent(handle.taskId, parent.taskId)
+		expect(record?.status).toBe("completed")
+		expect(record?.snapshot?.contextManifest?.modelRoute).toMatchObject({
+			profileId: parentProfile.id,
+			profileName: parentProfile.name,
+			provider: "openai",
+			modelId: "alpha-model",
+		})
+		expect(record?.snapshot?.contextManifest?.modelRoute?.unboundProfile).toBeUndefined()
 		return { prepared, handle }
 	}
 	return { provider, persistence, store, sessions, history, parent, parentAbort, runner, runs, launch, ready }

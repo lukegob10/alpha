@@ -1,8 +1,35 @@
 import { renderHook, act } from "@/utils/test-utils"
 
 import type { HistoryItem } from "@alpha-code/types"
+import type { FzfOptions } from "fzf"
 
 import { useTaskSearch } from "../useTaskSearch"
+
+const fzfOperations = vi.hoisted(() => ({ indexes: 0, indexedItems: 0, searches: 0 }))
+
+vi.mock("fzf", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("fzf")>()
+	return {
+		...actual,
+		Fzf: class extends actual.Fzf<HistoryItem[]> {
+			constructor(items: HistoryItem[], options: FzfOptions<HistoryItem>) {
+				super(items, {
+					...options,
+					selector: (item) => {
+						fzfOperations.indexedItems++
+						return options.selector(item)
+					},
+				})
+				fzfOperations.indexes++
+				const find = this.find
+				this.find = (query) => {
+					fzfOperations.searches++
+					return find(query)
+				}
+			}
+		},
+	}
+})
 
 vi.mock("@/context/ExtensionStateContext", () => ({
 	useExtensionState: vi.fn(),
@@ -13,6 +40,7 @@ vi.mock("@/utils/highlight", () => ({
 }))
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
+import { highlightFzfMatch } from "@/utils/highlight"
 
 const mockUseExtensionState = useExtensionState as import("vitest").Mock
 
@@ -54,10 +82,111 @@ const mockTaskHistory: HistoryItem[] = [
 describe("useTaskSearch", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+		fzfOperations.indexes = 0
+		fzfOperations.indexedItems = 0
+		fzfOperations.searches = 0
 		mockUseExtensionState.mockReturnValue({
 			taskHistory: mockTaskHistory,
 			cwd: "/workspace/project1",
 		} as any)
+	})
+
+	it("defers indexing a large changing history until search and reuses its index between queries", () => {
+		let history = Array.from({ length: 10_000 }, (_, index) => ({
+			...mockTaskHistory[0],
+			id: `task-${index}`,
+			ts: mockTaskHistory[0].ts - index,
+		}))
+		mockUseExtensionState.mockReturnValue({ taskHistory: history })
+		const { result, rerender } = renderHook(() => useTaskSearch())
+
+		for (let update = 0; update < 20; update++) {
+			history = history.map((item, index) => (index === 0 ? { ...item, tokensOut: update } : item))
+			mockUseExtensionState.mockReturnValue({ taskHistory: history })
+			rerender()
+		}
+
+		expect(result.current.tasks).toHaveLength(10_000)
+		expect(fzfOperations).toEqual({ indexes: 0, indexedItems: 0, searches: 0 })
+
+		act(() => result.current.setSearchQuery("React"))
+		expect(result.current.tasks).toHaveLength(10_000)
+		expect(fzfOperations).toEqual({ indexes: 1, indexedItems: 10_000, searches: 1 })
+
+		act(() => result.current.setSearchQuery("component"))
+		expect(result.current.tasks).toHaveLength(10_000)
+		expect(fzfOperations).toEqual({ indexes: 1, indexedItems: 10_000, searches: 2 })
+	})
+
+	it("sorts cached search matches without repeating fuzzy scans or highlights", () => {
+		const history = Object.freeze(
+			mockTaskHistory.map((item) => Object.freeze({ ...item, task: `Shared topic ${item.id}` })),
+		)
+		mockUseExtensionState.mockReturnValue({ taskHistory: history })
+		const { result } = renderHook(() => useTaskSearch())
+		act(() => {
+			result.current.setSearchQuery("Shared")
+			result.current.setSortOption("mostRelevant")
+		})
+		const relevanceResults = result.current.tasks
+		const relevanceOrder = relevanceResults.map((item) => item.id)
+		expect(fzfOperations.searches).toBe(1)
+		expect(highlightFzfMatch).toHaveBeenCalledTimes(history.length)
+
+		for (const [sort, expected] of [
+			["oldest", ["task-3", "task-1", "task-2"]],
+			["mostTokens", ["task-2", "task-3", "task-1"]],
+			["mostExpensive", ["task-3", "task-2", "task-1"]],
+			["newest", ["task-2", "task-1", "task-3"]],
+			["mostRelevant", relevanceOrder],
+		] as const) {
+			act(() => result.current.setSortOption(sort))
+			expect(result.current.tasks.map((item) => item.id)).toEqual(expected)
+			expect(relevanceResults.map((item) => item.id)).toEqual(relevanceOrder)
+		}
+
+		expect(fzfOperations).toEqual({ indexes: 1, indexedItems: history.length, searches: 1 })
+		expect(highlightFzfMatch).toHaveBeenCalledTimes(history.length)
+		expect(history.map((item) => item.id)).toEqual(["task-1", "task-2", "task-3"])
+	})
+
+	it("refreshes active search matches and metadata when titles or projected records change", () => {
+		mockUseExtensionState.mockReturnValue({
+			taskHistory: [{ ...mockTaskHistory[0], generatedTitle: "Navigation cleanup" }],
+		})
+		const { result, rerender } = renderHook(() => useTaskSearch())
+		act(() => result.current.setSearchQuery("Navigation"))
+		expect(result.current.tasks.map((item) => item.id)).toEqual(["task-1"])
+
+		mockUseExtensionState.mockReturnValue({
+			taskHistory: [
+				{ ...mockTaskHistory[0], generatedTitle: "Storage cleanup", tokensOut: 999 },
+				{ ...mockTaskHistory[1], id: "new-task", task: "Navigation audit", archived: true },
+			],
+		})
+		rerender()
+		expect(result.current.tasks).toMatchObject([{ id: "new-task", archived: true }])
+
+		act(() => result.current.setSearchQuery("Storage"))
+		expect(result.current.tasks).toMatchObject([
+			{ id: "task-1", generatedTitle: "Storage cleanup", tokensOut: 999 },
+		])
+		expect(fzfOperations).toEqual({ indexes: 2, indexedItems: 3, searches: 3 })
+	})
+
+	it("indexes the latest history when search resumes after a closed-history update", () => {
+		const { result, rerender } = renderHook(() => useTaskSearch())
+		act(() => result.current.setSearchQuery("React"))
+		act(() => result.current.setSearchQuery(""))
+		mockUseExtensionState.mockReturnValue({
+			taskHistory: [{ ...mockTaskHistory[1], id: "latest-task", task: "Latest conversation" }],
+		})
+		rerender()
+		expect(fzfOperations.indexes).toBe(1)
+
+		act(() => result.current.setSearchQuery("Latest"))
+		expect(result.current.tasks.map((item) => item.id)).toEqual(["latest-task"])
+		expect(fzfOperations).toEqual({ indexes: 2, indexedItems: 4, searches: 2 })
 	})
 
 	it("returns the projected project tasks by default", () => {

@@ -137,29 +137,51 @@ describe("native thread orchestration tools", () => {
 		expect(results).toHaveLength(3)
 	})
 
-	it("creates and messages with native camelCase contracts and forwards requested model overrides", async () => {
+	it("forwards provider, saved profile, model, and effort independently for creation, forks, and messages", async () => {
 		const { task, provider, callbacks, results } = fixture()
-		await createThreadTool.execute(
-			{ prompt: "Review parser", title: "Review", model: "selected-model" },
-			task,
-			callbacks,
-		)
-		await sendMessageToThreadTool.execute(
-			{ threadId: "peer", prompt: "Summarize", model: "selected-model" },
-			task,
-			callbacks,
-		)
+		const selection = {
+			provider: "openai-native" as const,
+			profile: "Saved OpenAI",
+			model: "selected-model",
+			reasoning_effort: "high" as const,
+		}
+		const internalSelection = {
+			provider: "openai-native",
+			profile: "Saved OpenAI",
+			model: "selected-model",
+			reasoningEffort: "high",
+		}
+		await createThreadTool.execute({ prompt: "Review parser", title: "Review", ...selection }, task, callbacks)
+		await forkThreadTool.execute({ threadId: "source", ...selection }, task, callbacks)
+		await sendMessageToThreadTool.execute({ threadId: "peer", prompt: "Summarize", ...selection }, task, callbacks)
 		expect(provider.createIndependentTask).toHaveBeenCalledWith(task, "Review parser", "shared", undefined, {
 			title: "Review",
-			model: "selected-model",
+			...internalSelection,
 			notifyOnCompletion: false,
 		})
+		expect(provider.forkIndependentTask).toHaveBeenCalledWith(task, "source", undefined, internalSelection)
 		expect(provider.sendIndependentTaskMessage).toHaveBeenCalledWith(task, "peer", "Summarize", {
-			model: "selected-model",
+			...internalSelection,
 			signal: undefined,
 		})
-		expect(results).toEqual([{ threadId: "new-thread" }, { threadId: "peer" }])
-		expect(callbacks.askApproval).toHaveBeenCalledTimes(2)
+		expect(results).toMatchObject([{ threadId: "new-thread" }, { threadId: "new-thread" }, { threadId: "peer" }])
+		expect(callbacks.askApproval).toHaveBeenCalledTimes(3)
+	})
+
+	it("forwards a reasoning-only follow-up without requiring a different model or provider", async () => {
+		const { task, provider, callbacks } = fixture()
+		await sendMessageToThreadTool.execute(
+			{ threadId: "peer", prompt: "Summarize", reasoning_effort: "low" },
+			task,
+			callbacks,
+		)
+		expect(provider.sendIndependentTaskMessage).toHaveBeenCalledWith(task, "peer", "Summarize", {
+			provider: undefined,
+			profile: undefined,
+			model: undefined,
+			reasoningEffort: "low",
+			signal: undefined,
+		})
 	})
 
 	it("approval-gates idle forks, titles, and archive changes without granting mode authority", async () => {
@@ -167,7 +189,12 @@ describe("native thread orchestration tools", () => {
 		await forkThreadTool.execute({}, task, callbacks)
 		await setThreadTitleTool.execute({ title: "  Renamed  " }, task, callbacks)
 		await setThreadArchivedTool.execute({ threadId: "peer", archived: true }, task, callbacks)
-		expect(provider.forkIndependentTask).toHaveBeenCalledWith(task, undefined, undefined)
+		expect(provider.forkIndependentTask).toHaveBeenCalledWith(task, undefined, undefined, {
+			provider: undefined,
+			profile: undefined,
+			model: undefined,
+			reasoningEffort: undefined,
+		})
 		expect(provider.setIndependentTaskTitle).toHaveBeenCalledWith(task, undefined, "Renamed", undefined)
 		expect(provider.setIndependentTaskArchived).toHaveBeenCalledWith(task, "peer", true, undefined)
 		expect(results[0]).toMatchObject({

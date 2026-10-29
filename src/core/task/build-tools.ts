@@ -142,10 +142,10 @@ function historyContainsToolName(history: readonly ApiMessage[] | undefined, nam
 
 const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_message", "followup_task", "interrupt_agent"])
 
-const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", ...AGENT_LIFECYCLE_TOOLS])
+const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", "list_provider_profiles", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 18
+const TOOL_CATALOG_SCHEMA_VERSION = 20
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 

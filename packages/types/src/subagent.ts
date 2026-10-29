@@ -1,6 +1,7 @@
 import { z } from "zod"
 
-import { reasoningEffortExtendedSchema } from "./model.js"
+import { reasoningEffortExtendedSchema, reasoningEffortSettingSchema } from "./model.js"
+import { modelSelectionParamsSchema } from "./model-selection.js"
 
 const SUBAGENT_TASK_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/
 const SUBAGENT_FORK_TURNS_PATTERN = /^[1-9]\d*$/
@@ -40,7 +41,6 @@ export const subagentAgentTypesSchema = z
 	.refine((types) => Object.keys(types).length <= 24, "At most 24 named agent types are supported")
 
 const nonEmptySubagentTextSchema = z.string().trim().min(1)
-const subagentModelOverrideSchema = nonEmptySubagentTextSchema.max(256)
 const subagentExpectedOutputSchema = z.array(nonEmptySubagentTextSchema).max(12)
 const subagentWriteScopeSchema = z.array(nonEmptySubagentTextSchema).min(1).max(12)
 
@@ -54,8 +54,7 @@ export const subagentSpawnAgentV2ArgsSchema = z
 		message: nonEmptySubagentTextSchema,
 		agent_type: subagentSpawnAgentTypeSchema.optional(),
 		fork_turns: subagentSpawnForkTurnsSchema.optional(),
-		model: subagentModelOverrideSchema.optional(),
-		reasoning_effort: reasoningEffortExtendedSchema.optional(),
+		...modelSelectionParamsSchema.shape,
 	})
 	.strict()
 export type SubagentSpawnAgentV2Args = z.infer<typeof subagentSpawnAgentV2ArgsSchema>
@@ -97,19 +96,46 @@ export const subagentSpawnAgentArgsSchema = z.union([
 ])
 export type SubagentSpawnAgentArgs = z.infer<typeof subagentSpawnAgentArgsSchema>
 
-/** Persisted, credential-free snapshot of the model route selected for a sub-agent. */
-export const subagentModelRouteStateSchema = z.object({
+const subagentModelRouteStateObjectSchema = z.object({
 	source: z.enum(["parent", "default", "role", "spawn"]),
 	resolution: z.enum(["selected", "fallback"]),
 	profileId: z.string().optional(),
 	profileName: z.string(),
+	/** The captured configuration has no truthful saved profile binding. */
+	unboundProfile: z.literal(true).optional(),
 	provider: z.string().optional(),
 	modelId: z.string().optional(),
+	/** An empty captured object clears saved profile flags without claiming an explicit effort request. */
+	reasoningConfiguration: z
+		.object({
+			enableReasoningEffort: z.boolean().optional(),
+			reasoningEffort: reasoningEffortSettingSchema.optional(),
+		})
+		.strict()
+		.optional(),
 	requestedModelId: z.string().min(1).optional(),
 	requestedReasoningEffort: reasoningEffortExtendedSchema.optional(),
 	requestedProfileId: z.string().optional(),
 	fallbackReason: z.enum(["missing", "unconfigured"]).optional(),
 })
+
+const hasConsistentProfileBinding = (route: z.infer<typeof subagentModelRouteStateObjectSchema>) =>
+	route.unboundProfile !== true || route.profileId === undefined
+const profileBindingValidation = {
+	message: "An unbound profile route cannot include a saved profile ID",
+	path: ["profileId"],
+}
+
+/** Persisted, credential-free snapshot of the model route selected for a sub-agent. */
+export const subagentModelRouteStateSchema = subagentModelRouteStateObjectSchema.refine(
+	hasConsistentProfileBinding,
+	profileBindingValidation,
+)
+
+/** Context manifests reject unknown fields as well as contradictory saved profile bindings. */
+export const strictSubagentModelRouteStateSchema = subagentModelRouteStateObjectSchema
+	.strict()
+	.refine(hasConsistentProfileBinding, profileBindingValidation)
 
 export type SubagentModelRouteState = z.infer<typeof subagentModelRouteStateSchema>
 

@@ -1,5 +1,5 @@
 import React from "react"
-import { createTwoFilesPatch } from "diff"
+import { createTwoFilesPatch, diffLines } from "diff"
 import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
 import { openDiffPayloadSchema, type AlphaMessage } from "@alpha-code/types"
 import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
@@ -9,7 +9,7 @@ const mockPostMessage = vi.fn()
 
 vi.mock("diff", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("diff")>()
-	return { ...actual, createTwoFilesPatch: vi.fn(actual.createTwoFilesPatch) }
+	return { ...actual, createTwoFilesPatch: vi.fn(actual.createTwoFilesPatch), diffLines: vi.fn(actual.diffLines) }
 })
 
 vi.mock("@src/utils/vscode", () => ({
@@ -466,6 +466,125 @@ describe("FileChangesPanel", () => {
 		expect(createTwoFilesPatch).toHaveBeenCalledWith("src/new.ts", "src/new.ts", "other before\n", "other after\n")
 		expect(screen.getByTestId("file-diff").textContent).toContain("-other before")
 		expect(screen.getByTestId("file-diff").textContent).toContain("+other after")
+	})
+})
+
+describe("Net stats caching", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	const capturedFiles = (count: number) =>
+		Array.from({ length: count }, (_, index) =>
+			completedCommandEdit(`src/file-${index}.ts`, `before-${index}\n`, `after-${index}\n`, `edit-${index}`),
+		)
+	const panel = (messages: AlphaMessage[], taskId = "stats-task") => (
+		<TranslationProvider>
+			<FileChangesPanel alphaMessages={messages} taskId={taskId} />
+		</TranslationProvider>
+	)
+	const stream = (messages: AlphaMessage[], delta: number): AlphaMessage[] => [
+		...messages,
+		{ type: "say", say: "text", ts: 10_000, text: `Checking ${delta}`, partial: true },
+	]
+
+	it("keeps the bounded active-path cache warm above its 128-file limit during text streaming", () => {
+		const edits = capturedFiles(129)
+		const view = render(panel(edits))
+		// Warm after the task disclosure reset effect, before measuring independent stream deltas.
+		view.rerender(panel(stream(edits, 0)))
+		vi.mocked(diffLines).mockClear()
+
+		for (let delta = 1; delta <= 20; delta++) {
+			view.rerender(panel(stream(edits, delta)))
+		}
+
+		expect(diffLines).toHaveBeenCalledTimes(20)
+		expect(vi.mocked(diffLines).mock.calls.every(([original]) => original === "before-128\n")).toBe(true)
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+129")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-129")
+		expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+	})
+
+	it.each([
+		{
+			endpoint: "original",
+			originalContent: "before-0\nextra\n",
+			finalContent: "after-0\n",
+			added: 129,
+			removed: 130,
+		},
+		{
+			endpoint: "final",
+			originalContent: "before-0\n",
+			finalContent: "after-0\nextra\n",
+			added: 130,
+			removed: 129,
+		},
+	])("refreshes cached $endpoint endpoints while preserving every file's net stats", (replacement) => {
+		const edits = capturedFiles(129)
+		const view = render(panel(edits))
+		view.rerender(panel(stream(edits, 0)))
+		const updated = [
+			completedCommandEdit("src/file-0.ts", replacement.originalContent, replacement.finalContent, "replacement"),
+			...edits.slice(1),
+		]
+		vi.mocked(diffLines).mockClear()
+
+		view.rerender(panel(updated))
+
+		expect(diffLines).toHaveBeenCalledTimes(2)
+		expect(diffLines).toHaveBeenCalledWith(replacement.originalContent, replacement.finalContent)
+		expect(screen.getByTestId("total-added")).toHaveTextContent(`+${replacement.added}`)
+		expect(screen.getByTestId("total-removed")).toHaveTextContent(`-${replacement.removed}`)
+		vi.mocked(diffLines).mockClear()
+		view.rerender(panel(stream(updated, 1)))
+		expect(diffLines).toHaveBeenCalledTimes(1)
+	})
+
+	it("releases removed paths so remaining and replacement snapshots can fill the bounded cache", () => {
+		const edits = capturedFiles(129)
+		const view = render(panel(edits))
+		view.rerender(panel(stream(edits, 0)))
+		const remaining = edits.slice(1)
+		vi.mocked(diffLines).mockClear()
+
+		view.rerender(panel(remaining))
+
+		expect(diffLines).toHaveBeenCalledTimes(1)
+		expect(diffLines).toHaveBeenCalledWith("before-128\n", "after-128\n")
+		vi.mocked(diffLines).mockClear()
+		view.rerender(panel(stream(remaining, 1)))
+		expect(diffLines).not.toHaveBeenCalled()
+
+		const replacement = [
+			...remaining.slice(1),
+			completedCommandEdit("src/replacement.ts", "", "one\ntwo\n", "new-path"),
+		]
+		view.rerender(panel(replacement))
+		expect(diffLines).toHaveBeenCalledTimes(1)
+		expect(diffLines).toHaveBeenCalledWith("", "one\ntwo\n")
+		expect(screen.getByText("Files edited: 128")).toBeInTheDocument()
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+129")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-127")
+		vi.mocked(diffLines).mockClear()
+		view.rerender(panel(stream(replacement, 2)))
+		expect(diffLines).not.toHaveBeenCalled()
+	})
+
+	it("clears prior-task snapshots before caching the next task's updates", () => {
+		const edits = capturedFiles(1)
+		const view = render(panel(edits, "task-a"))
+		view.rerender(panel(stream(edits, 0), "task-a"))
+		view.rerender(panel(edits, "task-b"))
+		vi.mocked(diffLines).mockClear()
+
+		view.rerender(panel(stream(edits, 1), "task-b"))
+
+		expect(diffLines).toHaveBeenCalledTimes(1)
+		const updated = [completedCommandEdit("src/file-0.ts", "old\n", "new\nextra\n", "next-task-edit")]
+		view.rerender(panel(updated, "task-b"))
+		expect(diffLines).toHaveBeenCalledWith("old\n", "new\nextra\n")
+		expect(screen.getByTestId("total-added")).toHaveTextContent("+2")
+		expect(screen.getByTestId("total-removed")).toHaveTextContent("-1")
 	})
 })
 

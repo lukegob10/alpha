@@ -1,7 +1,8 @@
 import userEvent from "@testing-library/user-event"
 import type { HistoryItem } from "@alpha-code/types"
-import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
+import { act, fireEvent, render, screen, waitFor, within } from "@/utils/test-utils"
 import { ExtensionStateContext, type ExtensionStateContextType } from "@/context/ExtensionStateContext"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 import { vscode } from "@/utils/vscode"
 import ChatHistorySwitcher from "../ChatHistorySwitcher"
 
@@ -77,6 +78,51 @@ describe("ChatHistorySwitcher", () => {
 		expect(onOpenTask).toHaveBeenCalledWith("task-2")
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		expect(screen.queryByTestId("history-preview-list")).not.toBeInTheDocument()
+	})
+
+	it("focuses the first row and preserves wrapping, Home, and End keyboard navigation", async () => {
+		const restoreFocus = installNativeTestFocus()
+		try {
+			const user = userEvent.setup()
+			render(view())
+			await user.click(screen.getByRole("button", { name: "Switch chat" }))
+			const rows = screen.getAllByTestId(/^task-item-task-/)
+			await waitFor(() => expect(rows[0]).toHaveFocus())
+			fireEvent.keyDown(rows[0], { key: "ArrowUp" })
+			expect(rows[3]).toHaveFocus()
+			fireEvent.keyDown(rows[3], { key: "ArrowDown" })
+			expect(rows[0]).toHaveFocus()
+			fireEvent.keyDown(rows[0], { key: "End" })
+			expect(rows[3]).toHaveFocus()
+			fireEvent.keyDown(rows[3], { key: "Home" })
+			expect(rows[0]).toHaveFocus()
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+		} finally {
+			restoreFocus()
+		}
+	})
+
+	it("does not rescan history rows for unrelated keyboard input", async () => {
+		const onOpenTask = vi.fn()
+		const user = userEvent.setup()
+		render(view(onOpenTask))
+		await user.click(screen.getByRole("button", { name: "Switch chat" }))
+		const dialog = screen.getByRole("dialog", { name: "Switch chat" })
+		const row = screen.getByTestId("task-item-task-0")
+		const queryRows = vi.spyOn(dialog, "querySelectorAll")
+		try {
+			for (let index = 0; index < 20; index++) {
+				fireEvent.keyDown(row, { key: ["Tab", "Shift", "a", "F10"][index % 4] })
+			}
+			expect(
+				queryRows.mock.calls.filter(([selector]) => selector === '[data-testid^="task-item-"]'),
+			).toHaveLength(0)
+			expect(dialog).toBeInTheDocument()
+			expect(onOpenTask).not.toHaveBeenCalled()
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+		} finally {
+			queryRows.mockRestore()
+		}
 	})
 
 	it("closes the popover and opens the existing full history surface", async () => {

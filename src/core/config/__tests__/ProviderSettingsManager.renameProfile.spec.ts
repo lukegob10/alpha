@@ -26,6 +26,7 @@ function profileFixture(name = "saved") {
 			consecutiveMistakeLimitMigrated: true,
 			todoListEnabledMigrated: true,
 			claudeCodeLegacySettingsMigrated: true,
+			legacyStorageMigrated: true,
 		},
 	}
 }

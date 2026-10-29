@@ -1,6 +1,6 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
 
-import { ExtensionStateContext, ShellStateContext } from "./ExtensionStateContextStore"
+import { ExtensionStateContext, ShellStateContext, retainUnchangedExtensionState } from "./ExtensionStateContextStore"
 
 import {
 	type ProviderSettings,
@@ -400,7 +400,10 @@ export const mergeExtensionState = (
 		}
 	}
 
-	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
+	return retainUnchangedExtensionState(
+		prevState,
+		applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots),
+	)
 }
 
 const TRANSCRIPT_STATE_KEYS = [
@@ -643,7 +646,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
 				if (liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)) {
-					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
+					// Share one copy across the frame while checking each task's latest revision.
+					if (!liveTasksById || liveTasksById === prevState.liveTasksById) {
+						liveTasksById = { ...(liveTasksById ?? {}) }
+					}
+					liveTasksById[liveTask.id] = liveTask
 				}
 				if (!isVisibleTask) continue
 

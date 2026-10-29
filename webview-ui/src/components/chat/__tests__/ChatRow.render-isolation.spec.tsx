@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { render, screen } from "@/utils/test-utils"
+import { fireEvent, render, screen } from "@/utils/test-utils"
 import type { AlphaMessage } from "@alpha-code/types"
 
 import ChatRow, { type ChatRowEnvironment } from "../ChatRow"
@@ -12,6 +12,15 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: () => mockUseExtensionState(),
 }))
 
+vi.mock("../ChatTextArea", () => ({
+	ChatTextArea: ({ selectedImages, onCancel }: { selectedImages: string[]; onCancel?: () => void }) => (
+		<>
+			<output aria-label="Edit attachments">{selectedImages.join("\n")}</output>
+			<button onClick={onCancel}>Cancel edit</button>
+		</>
+	),
+}))
+
 vi.mock("react-i18next", () => ({
 	useTranslation: () => ({
 		t: (key: string) => key,
@@ -22,6 +31,112 @@ vi.mock("react-i18next", () => ({
 }))
 
 describe("ChatRow render isolation", () => {
+	afterEach(() => vi.restoreAllMocks())
+
+	it("keeps inactive rows off the streamed message event path", () => {
+		const messages: AlphaMessage[] = Array.from({ length: 100 }, (_, ts) => ({
+			ts,
+			type: "say",
+			say: "text",
+			text: `Completed response ${ts}`,
+			partial: false,
+		}))
+		const environment: ChatRowEnvironment = {
+			mcpServers: [],
+			alwaysAllowMcp: false,
+			mode: "code",
+			reasoningBlockCollapsed: true,
+			getAlphaMessages: () => messages,
+		}
+		const addListener = vi.spyOn(window, "addEventListener")
+		const readEventType = vi.fn(() => "partialMessage")
+		const { unmount } = render(
+			<>
+				{messages.map((message) => (
+					<ChatRow
+						key={message.ts}
+						message={message}
+						environment={environment}
+						isExpanded={false}
+						isLast={false}
+						isStreaming={false}
+						onToggleExpand={() => {}}
+					/>
+				))}
+			</>,
+		)
+
+		expect(screen.getByText("Completed response 99")).toBeInTheDocument()
+		expect(addListener.mock.calls.filter(([type]) => type === "message")).toHaveLength(0)
+		for (let update = 0; update < 20; update++) {
+			fireEvent(
+				window,
+				new MessageEvent("message", {
+					data: {
+						get type() {
+							return readEventType()
+						},
+					},
+				}),
+			)
+		}
+		expect(readEventType).not.toHaveBeenCalled()
+		unmount()
+	})
+
+	it("receives matching edit images and releases the listener on cancel and unmount", () => {
+		const message: AlphaMessage = { ts: 42, type: "say", say: "user_feedback", text: "Edit this prompt" }
+		const environment: ChatRowEnvironment = {
+			mcpServers: [],
+			alwaysAllowMcp: false,
+			mode: "code",
+			currentTaskId: "edited-task",
+			reasoningBlockCollapsed: true,
+			getAlphaMessages: () => [message],
+		}
+		const addListener = vi.spyOn(window, "addEventListener")
+		const removeListener = vi.spyOn(window, "removeEventListener")
+		const messageListeners = () => addListener.mock.calls.filter(([type]) => type === "message")
+		const { unmount } = render(
+			<ChatRow
+				message={message}
+				environment={environment}
+				isExpanded={false}
+				isLast={false}
+				isStreaming={false}
+				onToggleExpand={() => {}}
+			/>,
+		)
+		const selectImages = (context: string, messageTs: number) =>
+			fireEvent(
+				window,
+				new MessageEvent("message", {
+					data: { type: "selectedImages", context, messageTs, images: ["data:image/png;base64,YQ=="] },
+				}),
+			)
+
+		expect(messageListeners()).toHaveLength(0)
+		fireEvent.click(screen.getByRole("button", { name: "chat:messageActions.edit" }))
+		expect(messageListeners()).toHaveLength(1)
+		const firstListener = messageListeners()[0][1]
+		selectImages("composer", message.ts)
+		selectImages("edit", message.ts + 1)
+		expect(screen.getByLabelText("Edit attachments")).toBeEmptyDOMElement()
+		selectImages("edit", message.ts)
+		expect(screen.getByLabelText("Edit attachments")).toHaveTextContent("data:image/png;base64,YQ==")
+
+		fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }))
+		expect(removeListener).toHaveBeenCalledWith("message", firstListener)
+		expect(messageListeners()).toHaveLength(1)
+		selectImages("edit", message.ts)
+		fireEvent.click(screen.getByRole("button", { name: "chat:messageActions.edit" }))
+		expect(screen.getByLabelText("Edit attachments")).toBeEmptyDOMElement()
+		expect(messageListeners()).toHaveLength(2)
+		const secondListener = messageListeners()[1][1]
+		unmount()
+		expect(removeListener).toHaveBeenCalledWith("message", secondListener)
+	})
+
 	it.each(["completed", "interrupted", "failed", undefined] as const)(
 		"keeps the report's %s terminal attribution when the current task status changes",
 		(terminalStatus) => {

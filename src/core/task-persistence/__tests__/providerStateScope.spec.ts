@@ -6,6 +6,8 @@ import type { ApiMessage } from "../apiMessages"
 import { invalidPersistedApiMessages } from "../validatePersistedApiMessages"
 import { buildOpenAiResponsesInput } from "../../../api/providers/openai-responses"
 import { transformMessagesForCondensing } from "../../condense"
+import { invalidateOpaqueProviderStateReplay } from "../providerStateScope"
+import { serializeProviderTranscript } from "../ProviderTranscriptStore"
 
 const text = { type: "text" as const, text: "Checking the file." }
 const tool = { type: "tool_use" as const, id: "call-1", name: "read_file", input: { path: "a.ts" } }
@@ -62,6 +64,120 @@ function savedAssistant(provider: string, modelId: string, content: unknown[] = 
 }
 
 describe("provider reasoning replay scope", () => {
+	it.each([true, false])(
+		"durably disables same-provider/model opaque state across a profile switch (scoped=%s)",
+		(scoped) => {
+			const assistant = savedAssistant("openai-native", "gpt-6.1-sol")
+			if (!scoped) delete assistant.provider_state_scope
+			const original = [assistant, result]
+			const saved = JSON.parse(
+				serializeProviderTranscript(invalidateOpaqueProviderStateReplay(original)),
+			) as ApiMessage[]
+			const before = structuredClone(saved)
+			const task = bridge("openai-native", "gpt-6.1-sol")
+			for (let attempt = 0; attempt < 2; attempt++) {
+				expect(task.buildCleanConversationHistory(saved)).toEqual([
+					{ role: "assistant", content: [text, tool] },
+					result,
+				])
+			}
+			expect(saved).toEqual(before)
+			expect(original[0]).not.toHaveProperty("provider_state_replay_disabled")
+		},
+	)
+
+	it.each([
+		{
+			provider: "anthropic",
+			modelId: "claude-opus-5-5",
+			block: { type: "thinking", thinking: "Summary", signature: "signed-state" },
+		},
+		{
+			provider: "anthropic",
+			modelId: "claude-opus-5-5",
+			block: { type: "redacted_thinking", data: "redacted-state" },
+		},
+		{
+			provider: "gemini",
+			modelId: "gemini-4-argon",
+			block: { type: "thoughtSignature", thoughtSignature: "legacy-signed-state" },
+		},
+		{
+			provider: "gemini",
+			modelId: "gemini-4-argon",
+			block: {
+				type: "gemini_response",
+				geminiResponse: {
+					modelId: "gemini-4-argon",
+					parts: [{ text: "Reply", thoughtSignature: "signed-state" }],
+				},
+			},
+		},
+		{
+			provider: "vscode-lm",
+			modelId: "opaque-copilot-model",
+			block: { type: "vscode_lm_thinking", value: "Summary", metadata: { opaque: "host-state" } },
+		},
+	])(
+		"revokes $block.type after a same-model profile switch without dropping the tool transaction",
+		({ provider, modelId, block }) => {
+			const original = [savedAssistant(provider, modelId, [block, text, tool]), result]
+			const invalidated = invalidateOpaqueProviderStateReplay(original)
+			expect(bridge(provider, modelId).buildCleanConversationHistory(invalidated)).toEqual([
+				{ role: "assistant", content: [text, tool] },
+				result,
+			])
+			expect(invalidated[0].content).toEqual(original[0].content)
+		},
+	)
+
+	it("revokes standalone legacy reasoning and router/host state while retaining new-route continuation", () => {
+		const legacyReasoning = { ...encrypted, id: "legacy-reasoning" } as unknown as ApiMessage
+		const history: ApiMessage[] = [
+			legacyReasoning,
+			{
+				...savedAssistant("openrouter", "openai/gpt-6.1-sol", [text, tool]),
+				reasoning_details: [{ type: "reasoning.encrypted", data: "router-opaque" }],
+			},
+			result,
+			{ role: "assistant", content: "Host reply", vscodeLmStatefulMarker: "host-state" } as ApiMessage,
+		]
+		const before = structuredClone(history)
+		const invalidated = invalidateOpaqueProviderStateReplay(history)
+		expect(invalidated.map((message) => message.provider_state_replay_disabled)).toEqual([
+			true,
+			true,
+			undefined,
+			true,
+		])
+		expect(invalidateOpaqueProviderStateReplay(invalidated)).toEqual(invalidated)
+		expect(history).toEqual(before)
+		const fresh = savedAssistant("openrouter", "openai/gpt-6.1-sol", [encrypted, text])
+		const projected = bridge("openrouter", "openai/gpt-6.1-sol").buildCleanConversationHistory([
+			...invalidated,
+			fresh,
+		])
+		expect(JSON.stringify(projected)).not.toContain("router-opaque")
+		expect(JSON.stringify(projected)).not.toContain("host-state")
+		expect(projected.filter((message) => "type" in message && message.type === "reasoning")).toEqual([encrypted])
+	})
+
+	it.each([false, "true", null, 1, {}])(
+		"rejects malformed replay revocation (%j)",
+		(provider_state_replay_disabled) => {
+			expect(
+				invalidPersistedApiMessages([{ role: "assistant", content: "Text", provider_state_replay_disabled }]),
+			).toContain("invalid provider state replay policy")
+		},
+	)
+
+	it("allows revoked standalone reasoning while rejecting a user-authored replay policy", () => {
+		expect(invalidPersistedApiMessages([{ ...encrypted, provider_state_replay_disabled: true }])).toBeUndefined()
+		expect(
+			invalidPersistedApiMessages([{ role: "user", content: "Text", provider_state_replay_disabled: true }]),
+		).toContain("invalid provider state replay policy")
+	})
+
 	it.each([
 		["openai-native", "gpt-6.1-sol", "xai", "grok-4.7"],
 		["xai", "grok-4.7", "openai-native", "gpt-6.1-sol"],

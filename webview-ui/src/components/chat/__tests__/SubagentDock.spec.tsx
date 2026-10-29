@@ -103,6 +103,67 @@ describe("SubagentDock", () => {
 	})
 	beforeEach(() => postMessage.mockReset())
 
+	it("defers collapsed review capability requests and keeps artifact subscriptions through projection refreshes", async () => {
+		const user = userEvent.setup()
+		const groups = Array.from({ length: 30 }, (_, index) =>
+			group({
+				groupId: `group-${index}`,
+				status: "completed",
+				completedAt: 4,
+				agents: [
+					agent({
+						taskId: `child-${index}`,
+						nickname: `Worker ${index}`,
+						status: "completed",
+						completedAt: 4,
+						changeSet: {
+							id: `change-${index}`,
+							status: "pending_review",
+							changedFiles: [],
+							createdAt: 3,
+							updatedAt: 4,
+						},
+					}),
+				],
+			}),
+		)
+		const projected = projection()
+		projected.nodes = groups.map((group) => ({
+			...projected.nodes[0],
+			taskId: group.agents[0].taskId,
+			nickname: group.agents[0].nickname,
+			groupId: group.groupId,
+			status: "completed",
+		}))
+		const { rerender } = render(<SubagentDock groups={groups} parentTaskId="parent-1" projection={projected} />)
+		const capabilityRequests = () =>
+			postMessage.mock.calls.filter(([message]) => message.type === "requestSubagentChangeSetActionCapability")
+		const refreshProjection = (tick: number) =>
+			rerender(
+				<SubagentDock
+					groups={groups}
+					parentTaskId="parent-1"
+					projection={{
+						...projected,
+						observedAt: 6 + tick,
+						nodes: projected.nodes.map((node) => ({ ...node, updatedAt: 6 + tick })),
+					}}
+				/>,
+			)
+
+		for (let tick = 0; tick < 20; tick++) refreshProjection(tick)
+		expect(capabilityRequests()).toHaveLength(0)
+		expect(screen.getByText("30 sub-agents")).toBeVisible()
+		expect(screen.getByText("30 change sets available")).toBeVisible()
+		expect(screen.getByText("0 running")).toBeVisible()
+
+		await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+		expect(capabilityRequests()).toHaveLength(30)
+		for (let tick = 20; tick < 40; tick++) refreshProjection(tick)
+		expect(capabilityRequests()).toHaveLength(30)
+		expect(screen.getByRole("button", { name: /Open Worker 29 · Completed/ })).toBeVisible()
+	})
+
 	it("expands rows above the fixed toggle with the requested caret direction", async () => {
 		const user = userEvent.setup()
 		render(<SubagentDock groups={[group()]} parentTaskId="parent-1" />)

@@ -9,7 +9,7 @@ import {
 	getSubagentSkillDescriptionsByteLength,
 	subagentForkTurnsSchema,
 	subagentManifestOrchestrationSchema,
-	subagentModelRouteStateSchema,
+	strictSubagentModelRouteStateSchema,
 	subagentAutoApprovalPolicySchema,
 	finalizeSubagentDelegationPolicy,
 	normalizeAssistantMessageMetadata,
@@ -979,13 +979,15 @@ export function renderInheritedTurnContext(turns: readonly CapturedSubagentTurn[
 
 function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteState {
 	const input = route as SubagentModelRouteState & Record<string, unknown>
-	return subagentModelRouteStateSchema.strict().parse({
+	return strictSubagentModelRouteStateSchema.parse({
 		source: input.source,
 		resolution: input.resolution,
 		profileId: input.profileId,
 		profileName: input.profileName,
+		unboundProfile: input.unboundProfile,
 		provider: input.provider,
 		modelId: input.modelId,
+		reasoningConfiguration: input.reasoningConfiguration,
 		requestedModelId: input.requestedModelId,
 		requestedReasoningEffort: input.requestedReasoningEffort,
 		requestedProfileId: input.requestedProfileId,

@@ -171,6 +171,7 @@ describe("native tool-surface refactor contract", () => {
 				"update_plan",
 				"run_slash_command",
 				"skill",
+				"list_provider_profiles",
 				"spawn_agent",
 				"wait_agent",
 				"send_message",
@@ -209,6 +210,7 @@ describe("native tool-surface refactor contract", () => {
 					"request_user_input",
 					"exec_command",
 					"write_stdin",
+					"list_provider_profiles",
 					"spawn_agent",
 					"list_agents",
 					"wait_agent",
@@ -541,6 +543,7 @@ describe("native tool-surface refactor contract", () => {
 			])
 			expect(TOOL_GROUPS.edit.customTools).toEqual(["apply_patch"])
 			expect(TOOL_GROUPS.agents.tools).toEqual([
+				"list_provider_profiles",
 				"spawn_agent",
 				"wait_agent",
 				"send_message",

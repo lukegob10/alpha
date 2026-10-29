@@ -1,4 +1,5 @@
 import { z } from "zod"
+import type { ApiMessage } from "./apiMessages"
 
 /** Host provenance for opaque state; it never becomes a provider request field. */
 export const providerStateScopeSchema = z
@@ -13,6 +14,31 @@ export function canReplayProviderState(scope: unknown, destination: ProviderStat
 	return (
 		parsed.success && parsed.data.provider === destination.provider && parsed.data.modelId === destination.modelId
 	)
+}
+
+/** An explicit route boundary revokes replay even when legacy provenance is unknown. */
+export function canReplayMessageProviderState(
+	message: { provider_state_scope?: unknown; provider_state_replay_disabled?: unknown },
+	destination: ProviderStateScope,
+): boolean {
+	return (
+		message.provider_state_replay_disabled === undefined &&
+		canReplayProviderState(message.provider_state_scope, destination)
+	)
+}
+
+/** Keep canonical evidence intact while durably preventing continuation through another account or endpoint. */
+export function invalidateOpaqueProviderStateReplay(messages: readonly ApiMessage[]): ApiMessage[] {
+	return messages.map((message) => {
+		if (
+			(message.role !== "assistant" && !(message.role === undefined && message.type === "reasoning")) ||
+			!hasOpaqueProviderState(message) ||
+			message.provider_state_replay_disabled === true
+		) {
+			return message
+		}
+		return { ...message, provider_state_replay_disabled: true }
+	})
 }
 
 export function isOpaqueProviderContentBlock(value: unknown): boolean {

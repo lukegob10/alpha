@@ -120,6 +120,7 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
+	getVscodeLlmExactModelId,
 	getProviderDefaultModelId,
 	getCuratedModelInfo,
 	isCuratedProvider,
@@ -296,6 +297,13 @@ import { readTaskMessages } from "../task-persistence/taskMessages"
 import { resolveWorkerArtifactRecoveryTarget } from "../task-persistence/workerArtifactRecovery"
 import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
+import { invalidateOpaqueProviderStateReplay } from "../task-persistence/providerStateScope"
+import {
+	assertIndependentTaskModelSelectionRequest,
+	hasIndependentTaskModelSelection,
+	resolveIndependentTaskModelSelection,
+	restoreIndependentTaskModelSelection,
+} from "./IndependentTaskModelRouting"
 import { memorySettingsSchema, type MemorySettings } from "@alpha-code/types"
 import { MemoryStore } from "../../services/memory/MemoryStore"
 import { MemoryModel } from "../../services/memory/MemoryModel"
@@ -311,6 +319,7 @@ import type {
 	CrossTaskRecord,
 	CrossTaskWaitResult,
 	CrossTaskWorkspaceMode,
+	IndependentTaskModelSelection,
 } from "./CrossTaskOrchestration"
 import {
 	AgentLifecycleProjector,
@@ -1023,6 +1032,30 @@ export class AlphaProvider
 			// getModel() uses the configured selector's catalog data as a fast fallback;
 			// task admission refreshes this against the live model before a request.
 			return resolveTaskReasoning(configuration, requested, handler.getModel()).state
+		} finally {
+			handler.dispose?.()
+		}
+	}
+
+	private async resolveLaunchReasoningCapabilities(
+		configuration: ProviderSettings,
+		signal?: AbortSignal,
+	): Promise<TaskReasoningProjection["capabilities"]> {
+		const selector = configuration.vsCodeLmModelSelector
+		const catalogId = selector?.id
+			? getVscodeLlmExactModelId({ vendor: selector.vendor, id: selector.id })
+			: selector && getVscodeLlmExactModelId(selector)
+		if (configuration.apiProvider !== "vscode-lm" || catalogId) {
+			return (await this.resolveReasoningCapabilities(configuration, { kind: "default" })).capabilities
+		}
+		// Only an explicit launch effort for an opaque host model needs live
+		// metadata. Ordinary reasoning previews remain local and synchronous.
+		signal?.throwIfAborted()
+		const handler = buildApiHandler(configuration)
+		try {
+			await handler.prepareModel?.({ signal })
+			signal?.throwIfAborted()
+			return resolveTaskReasoning(configuration, { kind: "default" }, handler.getModel()).state.capabilities
 		} finally {
 			handler.dispose?.()
 		}
@@ -2144,9 +2177,23 @@ export class AlphaProvider
 	): Promise<Task> {
 		assertCancellationOwner?.()
 		let restoredApiConfiguration: ProviderSettings | undefined
-		const savedProfileEntries = historyItem.apiConfigName
-			? await this.providerSettingsManager.listConfig()
+		const capturedModelRoute = historyItem.threadModelRoute
+			? await restoreIndependentTaskModelSelection(historyItem, this.providerSettingsManager)
 			: undefined
+		const hasCapturedConfiguration = Boolean(capturedModelRoute || options?.subagentRuntime?.apiConfiguration)
+		if (capturedModelRoute) {
+			restoredApiConfiguration = capturedModelRoute.apiConfiguration
+			historyItem = {
+				...historyItem,
+				apiConfigName: capturedModelRoute.apiConfigName,
+				threadModelRoute: capturedModelRoute.route,
+			}
+		}
+		assertCancellationOwner?.()
+		const savedProfileEntries =
+			!hasCapturedConfiguration && historyItem.apiConfigName
+				? await this.providerSettingsManager.listConfig()
+				: undefined
 		assertCancellationOwner?.()
 		this.assertProviderProfileAvailable(savedProfileEntries?.find(({ name }) => name === historyItem.apiConfigName))
 
@@ -2223,7 +2270,7 @@ export class AlphaProvider
 		// If the history item has a saved API config name (provider profile), restore it.
 		// This overrides any mode-based config restoration above, because the task's
 		// specific provider profile takes precedence over mode defaults.
-		if (historyItem.apiConfigName) {
+		if (!hasCapturedConfiguration && historyItem.apiConfigName) {
 			const listApiConfig = savedProfileEntries ?? []
 			assertCancellationOwner?.()
 			// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
@@ -2293,13 +2340,15 @@ export class AlphaProvider
 				assertCancellationOwner?.()
 			}
 		}
-		const restoredConfiguration = historyItem.threadModelOverride
-			? this.applyIndependentTaskModel(
-					apiConfiguration,
-					historyItem.apiConfigName,
-					historyItem.threadModelOverride,
-				)
-			: apiConfiguration
+		const restoredConfiguration =
+			capturedModelRoute?.apiConfiguration ??
+			(historyItem.threadModelOverride
+				? this.applyIndependentTaskModel(
+						apiConfiguration,
+						historyItem.apiConfigName,
+						historyItem.threadModelOverride,
+					)
+				: apiConfiguration)
 
 		assertSupportedApiProvider(restoredConfiguration.apiProvider)
 
@@ -3006,7 +3055,13 @@ export class AlphaProvider
 			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 		if (taskHistoryItem) {
-			await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
+			await this.updateTaskHistory({
+				...taskHistoryItem,
+				apiConfigName,
+				// An explicit human profile binding replaces the tool-selected route.
+				threadModelOverride: undefined,
+				threadModelRoute: undefined,
+			})
 		}
 
 		if (postState && this.isTaskOnScreen(task.taskId)) {
@@ -3016,6 +3071,11 @@ export class AlphaProvider
 
 	getProviderProfileEntries(): ProviderSettingsEntry[] {
 		return this.contextProxy.getValues().listApiConfigMeta || []
+	}
+
+	/** Discover saved metadata directly; the webview's profile projection may be stale. */
+	public async listProviderProfiles(): Promise<ProviderSettingsEntry[]> {
+		return this.providerSettingsManager.listConfig()
 	}
 
 	getProviderProfileEntry(name: string): ProviderSettingsEntry | undefined {
@@ -3335,7 +3395,13 @@ export class AlphaProvider
 				(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 			if (taskHistoryItem) {
-				await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
+				await this.updateTaskHistory({
+					...taskHistoryItem,
+					apiConfigName,
+					// An explicit human profile binding replaces the tool-selected route.
+					threadModelOverride: undefined,
+					threadModelRoute: undefined,
+				})
 			}
 		} catch (error) {
 			// If persistence fails, log the error but don't fail the profile switch.
@@ -4720,9 +4786,12 @@ export class AlphaProvider
 	 * every heartbeat and stalled the webview. Keep those paths on this patch.
 	 */
 	async postTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean } = {}): Promise<void> {
+		const publications: Promise<void>[] = []
+		// Each view owns its projection; a slow tree or transport must not defer its peers.
 		for (const provider of this.getHostProviders()) {
-			if (!provider._disposed) await provider.postLocalTaskSessionStateToWebview(options)
+			if (!provider._disposed) publications.push(provider.postLocalTaskSessionStateToWebview(options))
 		}
+		await Promise.all(publications)
 	}
 
 	private async postLocalTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean }): Promise<void> {
@@ -5283,7 +5352,7 @@ export class AlphaProvider
 			includeCurrentCost,
 			maxGitStatusFiles,
 			lockApiConfigAcrossModes,
-		} = await this.getState({ includeTaskHistory: false })
+		} = await this.getState({ includeTaskHistory: false, includeScheduledTasks: false })
 
 		const telemetryKey = undefined
 		const machineId = vscode.env.machineId
@@ -5496,17 +5565,19 @@ export class AlphaProvider
 	 */
 
 	private getProviderSettingsSnapshot(): ProviderSettings {
-		const stateValues = this.contextProxy.getValues()
 		const providerSettings = this.contextProxy.getProviderSettings()
 
 		if (!providerSettings.apiProvider) {
-			providerSettings.apiProvider = stateValues.apiProvider ?? "vertex"
+			providerSettings.apiProvider = this.contextProxy.getValue("apiProvider") ?? "vertex"
 		}
 
 		return providerSettings
 	}
 
-	async getState({ includeTaskHistory = true }: { includeTaskHistory?: boolean } = {}): Promise<
+	async getState({
+		includeTaskHistory = true,
+		includeScheduledTasks = true,
+	}: { includeTaskHistory?: boolean; includeScheduledTasks?: boolean } = {}): Promise<
 		Omit<
 			ExtensionState,
 			"alphaMessages" | "renderContext" | "hasOpenedModeSelector" | "version" | "shouldShowAnnouncement"
@@ -5514,6 +5585,8 @@ export class AlphaProvider
 	> {
 		const stateValues = this.contextProxy.getValues()
 		const customModes = await this.customModesManager.getCustomModes()
+		// Full projections capture schedules later, after asynchronous task metadata resolves.
+		const scheduledTaskState = includeScheduledTasks ? this.scheduledTaskService?.getState() : undefined
 
 		// Build the apiConfiguration object combining state values and secrets.
 		const providerSettings = this.getProviderSettingsSnapshot()
@@ -5561,8 +5634,8 @@ export class AlphaProvider
 			taskHistory: includeTaskHistory
 				? this.taskHistoryStore.getByWorkspace(this.cwd).filter((item) => !item.archived)
 				: [],
-			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
-			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
+			scheduledTasks: scheduledTaskState?.tasks ?? [],
+			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
 			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
 			soundEnabled: stateValues.soundEnabled ?? false,
@@ -6366,7 +6439,7 @@ export class AlphaProvider
 		objective: string,
 		workspaceMode: CrossTaskWorkspaceMode,
 		signal?: AbortSignal,
-		options?: { title?: string; model?: string; notifyOnCompletion?: boolean },
+		options?: IndependentTaskModelSelection & { title?: string; notifyOnCompletion?: boolean },
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(parent)
 		if (
@@ -6396,7 +6469,7 @@ export class AlphaProvider
 		throwIfCancelled()
 		if (options?.title !== undefined && (!options.title.trim() || options.title.trim().length > 96))
 			throw new Error("The thread title must contain 1 to 96 characters")
-		this.assertIndependentModelRequest(parent, options?.model)
+		await this.assertIndependentModelRequest(parent, options)
 		await this.taskHistoryStoreReady
 		if (!this.taskSessions.canCreateTask()) {
 			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
@@ -6404,7 +6477,15 @@ export class AlphaProvider
 
 		const taskApprovalMode = parent.getTaskApprovalMode()
 		const taskMode = await parent.getTaskMode()
-		const taskApiConfigName = await parent.getTaskApiConfigName()
+		const modelRoute = await this.resolveIndependentThreadModelRoute(
+			parent,
+			undefined,
+			options ?? {},
+			!hasIndependentTaskModelSelection(options),
+			signal,
+		)
+		const taskApiConfigName = modelRoute.apiConfigName
+		throwIfCancelled()
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
 		const taskId = uuidv7()
 		let workspacePath = parent.workspacePath
@@ -6421,13 +6502,7 @@ export class AlphaProvider
 		let child: Task | undefined
 		try {
 			throwIfCancelled()
-			const { fakeAi, ...providerSettings } = parent.apiConfiguration
-			let apiConfiguration = structuredClone(providerSettings) as typeof parent.apiConfiguration
-			// FakeAI is a host-provided runtime adapter, not persisted configuration. Keep
-			// its methods intact while snapshotting the serializable provider settings.
-			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
-			if (options?.model)
-				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
+			const apiConfiguration = modelRoute.apiConfiguration
 			child = await runtimeOwner.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
 				startTask: false,
@@ -6440,7 +6515,7 @@ export class AlphaProvider
 				taskApiConfigName,
 				taskApprovalMode,
 				apiConfiguration,
-				reasoningPreference: structuredClone(parent.reasoningPreference),
+				reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? parent.reasoningPreference),
 				subagentDelegationPolicy: structuredClone(parent.subagentDelegationPolicy),
 				subagentDelegationExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled,
 				orchestrationParentTaskId: parent.taskId,
@@ -6453,12 +6528,18 @@ export class AlphaProvider
 						}
 					: {}),
 			})
-			if (options?.title || options?.model) {
-				const history = await runtimeOwner.ensureCrossTaskHistory(child)
-				if (options.model)
-					await runtimeOwner.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
-				if (options.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
-			}
+			const history = await runtimeOwner.ensureCrossTaskHistory(child)
+			await runtimeOwner.updateCrossTaskHistory({
+				...history,
+				apiConfigName: taskApiConfigName,
+				reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
+				threadModelOverride: modelRoute.route.modelId,
+				threadModelRoute:
+					modelRoute.route.profileId || modelRoute.route.unboundProfile
+						? structuredClone(modelRoute.route)
+						: undefined,
+			})
+			if (options?.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
 			throwIfCancelled()
 			const record = await runtimeOwner.getCrossTaskRecord(
 				runtimeOwner.taskHistoryStore.get(child.taskId),
@@ -6627,6 +6708,7 @@ export class AlphaProvider
 		caller: Task,
 		sourceTaskId = caller.taskId,
 		signal?: AbortSignal,
+		options?: IndependentTaskModelSelection,
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(caller)
 		this.throwIfThreadCancelled(signal)
@@ -6640,6 +6722,7 @@ export class AlphaProvider
 		) {
 			throw new Error("Forking requires an explicit user request to fork or retain conversation history")
 		}
+		await this.assertIndependentModelRequest(caller, options)
 		return this.taskSessions.runOwnershipOperation(`cross-task:${sourceTaskId}`, async () => {
 			const owner = this.getTaskOwner(sourceTaskId) ?? this
 			const source = await owner.getDirectCrossTask(caller, sourceTaskId, true)
@@ -6647,6 +6730,18 @@ export class AlphaProvider
 			const history =
 				source.history ?? (source.task ? await owner.ensureCrossTaskHistory(source.task) : undefined)
 			if (!history) throw new Error("The source thread has no saved history")
+			const modelRoute =
+				source.task || hasIndependentTaskModelSelection(options)
+					? await owner.enqueueConfiguration(() =>
+							owner.resolveIndependentThreadModelRoute(
+								source.task,
+								history,
+								options ?? {},
+								!hasIndependentTaskModelSelection(options),
+								signal,
+							),
+						)
+					: undefined
 			const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
 			const apiMessages =
 				source.task && (source.task.apiConversationHistory.length > 0 || source.task.isInitialized)
@@ -6667,6 +6762,11 @@ export class AlphaProvider
 					(!source.task && ["active", "blocked", "delegated"].includes(history.status ?? "")),
 			})
 			this.throwIfThreadCancelled(signal)
+			if (
+				modelRoute &&
+				(options?.provider !== undefined || options?.profile !== undefined || options?.model !== undefined)
+			)
+				fork.apiMessages = invalidateOpaqueProviderStateReplay(fork.apiMessages)
 			const taskId = uuidv7()
 			// A fork copies conversation evidence only. It owns no inherited live
 			// goal, child, mailbox, journal, or completion-notification producer.
@@ -6686,13 +6786,18 @@ export class AlphaProvider
 				totalCost: 0,
 				workspace: history.workspace,
 				mode: history.mode,
-				apiConfigName: history.apiConfigName,
-				reasoningPreference: structuredClone(history.reasoningPreference),
+				apiConfigName: modelRoute ? modelRoute.apiConfigName : history.apiConfigName,
+				reasoningPreference: structuredClone(modelRoute?.reasoningPreference ?? history.reasoningPreference),
 				approvalMode: history.approvalMode ?? "ask",
 				taskKind: "primary",
 				status: "interrupted",
 				forkedFromId: sourceTaskId,
-				threadModelOverride: history.threadModelOverride,
+				threadModelOverride: modelRoute ? modelRoute.route.modelId : history.threadModelOverride,
+				threadModelRoute: modelRoute
+					? modelRoute.route.profileId || modelRoute.route.unboundProfile
+						? structuredClone(modelRoute.route)
+						: undefined
+					: structuredClone(history.threadModelRoute),
 				subagentDelegationPolicy: structuredClone(history.subagentDelegationPolicy),
 				// Creation opt-in is human authority, never inherited through copied history.
 				subagentDelegationExplicitlyEnabled: false,
@@ -7320,11 +7425,11 @@ export class AlphaProvider
 		sender: Task,
 		targetTaskId: string,
 		message: string,
-		options?: { model?: string; signal?: AbortSignal },
+		options?: IndependentTaskModelSelection & { signal?: AbortSignal },
 	): Promise<{ task_id: string; status: string }> {
 		this.assertCrossTaskRoot(sender)
 		this.throwIfThreadCancelled(options?.signal)
-		this.assertIndependentModelRequest(sender, options?.model)
+		await this.assertIndependentModelRequest(sender, options)
 		const resolvedTargetTaskId =
 			targetTaskId === "parent" && sender.taskKind === "primary" && sender.orchestrationParentTaskId
 				? sender.orchestrationParentTaskId
@@ -7337,32 +7442,137 @@ export class AlphaProvider
 			if (history?.archived) throw new Error("The thread is archived; restore it before sending a message")
 			owner.assertSavedThreadControlAllowed(history, task, "resuming")
 			this.throwIfThreadCancelled(options?.signal)
-			if (options?.model && task && !task.isCompleted() && !task.abort)
-				throw new Error("A thread model can be changed only when the target thread is idle")
+			if (hasIndependentTaskModelSelection(options) && task && !task.isCompleted() && !task.abort)
+				throw new Error(
+					"A thread model/provider/reasoning selection can be changed only when the target thread is idle",
+				)
 			const input = { id: uuidv7(), senderTaskId: sender.taskId, text }
 			let target = task
 			if (!target || target.abort) {
 				if (!history) throw new Error("The task has no saved history to resume")
 				if (!owner.taskSessions.canCreateTask())
 					throw new Error(`Maximum live task limit reached (${owner.taskSessions.getMaxLiveTasks()})`)
-				// Validate configuration before accepting the durable input. A deleted
-				// profile must never redirect a peer message to the sender's model.
-				target = await owner.createTaskWithHistoryItem(history, {
+				// Resolve explicit replacement settings before creating a dormant runtime.
+				// An omitted selection must restore the recipient's saved profile.
+				const modelRoute = hasIndependentTaskModelSelection(options)
+					? await owner.enqueueConfiguration(() =>
+							owner.resolveIndependentThreadModelRoute(
+								undefined,
+								history,
+								options!,
+								true,
+								options?.signal,
+							),
+						)
+					: undefined
+				const restoreHistory: HistoryItem = modelRoute
+					? {
+							...history,
+							apiConfigName: modelRoute.apiConfigName,
+							reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
+							threadModelOverride: modelRoute.route.modelId,
+							threadModelRoute:
+								modelRoute.route.profileId || modelRoute.route.unboundProfile
+									? structuredClone(modelRoute.route)
+									: undefined,
+						}
+					: history
+				target = await owner.createTaskWithHistoryItem(restoreHistory, {
 					startTask: false,
 					background: true,
 					preserveExisting: true,
 					preserveSelection: true,
 					requireSavedConfiguration: true,
 				})
-				if (options?.model) await owner.setCrossTaskModel(target, options.model)
-				this.throwIfThreadCancelled(options?.signal)
+				try {
+					if (modelRoute)
+						await owner.setCrossTaskModel(
+							target,
+							options!,
+							modelRoute,
+							options?.provider !== undefined ||
+								options?.profile !== undefined ||
+								options?.model !== undefined,
+						)
+					this.throwIfThreadCancelled(options?.signal)
+				} catch (error) {
+					try {
+						await owner.discardProvisionalThreadRecipient(target, history, restoreHistory)
+					} catch (cleanupError) {
+						throw new AggregateError(
+							[error, cleanupError],
+							"Failed to clean up the provisional thread recipient",
+							{ cause: error },
+						)
+					}
+					throw error
+				}
 				await target.receiveAgentMessage(input)
 				await target.resumeWithAgentMessages()
 				return { task_id: resolvedTargetTaskId, status: "resumed" }
 			}
-			if (options?.model) await owner.setCrossTaskModel(target, options.model)
+			if (hasIndependentTaskModelSelection(options)) await owner.setCrossTaskModel(target, options!)
 			this.throwIfThreadCancelled(options?.signal)
 			return owner.admitIndependentTaskMessage(target, input)
+		})
+	}
+
+	/** A failed cold admission owns only its still-unstarted recipient and its inference selection. */
+	private async discardProvisionalThreadRecipient(
+		target: Task,
+		previous: HistoryItem,
+		attempted: HistoryItem,
+	): Promise<void> {
+		await this.enqueueConfiguration(async () => {
+			if (
+				this.getLiveTask(target.taskId) !== target ||
+				target.hasStarted ||
+				target.abort ||
+				target.isTurnActive() ||
+				target.isStreaming ||
+				target.isWaitingForFirstChunk ||
+				target.hasPendingAsk() ||
+				target.hasPendingAgentMessages() ||
+				target.messageQueueService.hasUnconsumedInput()
+			)
+				return
+			const selection = (item: HistoryItem) => ({
+				apiConfigName: item.apiConfigName,
+				threadModelOverride: item.threadModelOverride,
+				threadModelRoute: item.threadModelRoute,
+				reasoningPreference: item.reasoningPreference,
+			})
+			const before = this.taskHistoryStore.get(target.taskId)
+			if (
+				!before ||
+				(!isDeepStrictEqual(selection(before), selection(previous)) &&
+					!isDeepStrictEqual(selection(before), selection(attempted)))
+			)
+				return
+			const cleanupSelection = {
+				...before,
+				apiConfigName: target.taskApiConfigName,
+				reasoningPreference: structuredClone(target.reasoningPreference),
+			}
+			// No await separates the idle/unstarted check from synchronous cancellation.
+			// A human resume cannot acquire this provisional runtime after that point.
+			target.beginTaskCancellation(true)
+			await this.removeTaskFromStack({ taskId: target.taskId, requireAbortSuccess: true, expectedTask: target })
+			await this.taskLifecycleHistoryWrites.get(target.taskId)
+			// removeTaskFromStack has released this raw-ID fence. Reacquire it only
+			// for compensation, so a rehydrated successor can never be overwritten.
+			await this.taskSessions.runOwnershipOperation(target.taskId, async () => {
+				const ownsRecovery = () => this.getLiveTask(target.taskId) === undefined
+				if (!ownsRecovery()) return
+				const current = this.taskHistoryStore.get(target.taskId)
+				if (
+					!current ||
+					(!isDeepStrictEqual(selection(current), selection(before)) &&
+						!isDeepStrictEqual(selection(current), selection(cleanupSelection)))
+				)
+					return
+				await this.taskHistoryStore.restoreModelRoute(target.taskId, current, previous, ownsRecovery)
+			})
 		})
 	}
 
@@ -7500,14 +7710,65 @@ export class AlphaProvider
 		)
 	}
 
-	private assertIndependentModelRequest(caller: Task, model?: string): void {
-		if (model === undefined) return
+	private async assertIndependentModelRequest(
+		caller: Task,
+		selection?: IndependentTaskModelSelection,
+	): Promise<void> {
 		const request = extractUserRequestText(
 			caller.apiConversationHistory,
 			caller.orchestrationParentTaskId ? undefined : caller.metadata?.task,
 		)
-		if (!model.trim() || model.length > 256 || !request?.includes(model))
-			throw new Error("A thread model override requires that exact model ID in the latest human request")
+		const profiles = selection?.profile ? await this.providerSettingsManager.listConfig() : []
+		const matches = profiles.filter(
+			(profile) => profile.id === selection?.profile || profile.name === selection?.profile,
+		)
+		assertIndependentTaskModelSelectionRequest(request, selection, matches.length === 1 ? matches[0] : undefined)
+	}
+
+	private async resolveIndependentThreadModelRoute(
+		task: Task | undefined,
+		history: HistoryItem | undefined,
+		selection: IndependentTaskModelSelection,
+		preserveReasoning = false,
+		signal?: AbortSignal,
+	): Promise<ResolvedSubagentModelRoute> {
+		let apiConfiguration: ProviderSettings
+		let apiConfigName: string | undefined
+		let reasoningPreference: TaskReasoningPreference | undefined
+		if (task) {
+			apiConfiguration = snapshotProviderSettings(task.apiConfiguration)
+			apiConfigName = await task.getTaskApiConfigName()
+			reasoningPreference = structuredClone(task.reasoningPreference)
+		} else {
+			if (!history) throw new Error("The thread has no saved configuration")
+			try {
+				const saved = await restoreIndependentTaskModelSelection(history, this.providerSettingsManager)
+				apiConfiguration = saved.apiConfiguration
+				apiConfigName = saved.apiConfigName
+				reasoningPreference = saved.reasoningPreference
+			} catch (error) {
+				if (selection.provider === undefined && selection.profile === undefined) throw error
+				// An explicit credentialed replacement need not restore a deleted old
+				// profile. The requested replacement is independently validated below.
+				apiConfiguration = {}
+				reasoningPreference = { kind: "default" }
+			}
+		}
+		const parentProfileId = task
+			? (this.taskHistoryStore.get(task.taskId)?.threadModelRoute?.profileId ??
+				task.subagentModelRoute?.profileId)
+			: history?.threadModelRoute?.profileId
+		return resolveIndependentTaskModelSelection({
+			apiConfiguration,
+			apiConfigName,
+			parentProfileId,
+			reasoningPreference,
+			selection,
+			profileLoader: this.providerSettingsManager,
+			preserveReasoning,
+			resolveReasoningCapabilities: (configuration) =>
+				this.resolveLaunchReasoningCapabilities(configuration, signal),
+		})
 	}
 
 	private applyIndependentTaskModel(
@@ -7531,11 +7792,29 @@ export class AlphaProvider
 		).apiConfiguration
 	}
 
-	private async setCrossTaskModel(task: Task, model: string): Promise<void> {
-		const history = await this.ensureCrossTaskHistory(task)
-		const configuration = this.applyIndependentTaskModel(task.apiConfiguration, history.apiConfigName, model)
-		await this.updateCrossTaskHistory({ ...history, threadModelOverride: model })
-		task.updateApiConfiguration(configuration)
+	private async setCrossTaskModel(
+		task: Task,
+		selection: IndependentTaskModelSelection & { signal?: AbortSignal },
+		preparedRoute?: ResolvedSubagentModelRoute,
+		invalidateProviderStateReplay = false,
+	): Promise<void> {
+		await this.ensureCrossTaskHistory(task)
+		await this.enqueueConfiguration(async () => {
+			const route =
+				preparedRoute ??
+				(await this.resolveIndependentThreadModelRoute(task, undefined, selection, true, selection.signal))
+			selection.signal?.throwIfAborted()
+			await task.updateModelRoute({
+				apiConfiguration: route.apiConfiguration,
+				apiConfigName: route.apiConfigName,
+				reasoningPreference: structuredClone(route.reasoningPreference ?? { kind: "default" }),
+				threadModelOverride: route.route.modelId,
+				threadModelRoute:
+					route.route.profileId || route.route.unboundProfile ? structuredClone(route.route) : undefined,
+				signal: selection.signal,
+				invalidateProviderStateReplay,
+			})
+		})
 	}
 
 	private async ensureCrossTaskHistory(task: Task): Promise<HistoryItem> {
@@ -8981,18 +9260,30 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
+						parentProfileId: invocation
+							? invocation.modelRoute.profileId
+							: (parent.subagentModelRoute?.profileId ??
+								this.taskHistoryStore.get(parent.taskId)?.threadModelRoute?.profileId),
 						parentReasoningPreference,
 						profileLoader: this.providerSettingsManager,
 						defaultModelId: defaultModel,
 						defaultReasoningEffort,
+						agentProfileId: typeDefinition?.apiConfigId,
 						agentModelId: typeDefinition?.model,
 						agentReasoningEffort: typeDefinition?.reasoningEffort,
 						resolveModelDefaultReasoningEffort: async (configuration) => {
 							const state = await this.resolveReasoningCapabilities(configuration, { kind: "default" })
 							return state.effective.kind === "effort" ? state.effective.effort : undefined
 						},
+						resolveReasoningCapabilities: (configuration) =>
+							this.resolveLaunchReasoningCapabilities(
+								configuration,
+								parent.getTaskLifetimeCancellationSignal?.(),
+							),
 						...(spawnRequest?.source === "codex-v2"
 							? {
+									requestedProvider: spawnRequest.provider,
+									requestedProfile: spawnRequest.profile,
 									requestedModelId: spawnRequest.model,
 									requestedReasoningEffort: spawnRequest.reasoning_effort,
 								}
@@ -12482,6 +12773,26 @@ export class AlphaProvider
 		manifest: SubagentContextManifest | undefined,
 	): Promise<ResolvedSubagentModelRoute> {
 		const capturedRoute = manifest?.modelRoute ?? historyItem.subagentModelRoute
+		if (capturedRoute?.unboundProfile) {
+			// Inline credentials cannot be recovered from a coincidentally matching
+			// profile name. FakeAI has an existing host-owned registry instead.
+			if (capturedRoute.profileId || capturedRoute.provider !== "fake-ai" || !capturedRoute.modelId) {
+				throw new Error("Cannot resume child: its inline provider configuration has no saved profile binding")
+			}
+			const apiConfiguration: ProviderSettings = {
+				apiProvider: "fake-ai",
+				fakeAi: { id: capturedRoute.modelId },
+				...capturedRoute.reasoningConfiguration,
+			}
+			const handler = buildApiHandler(apiConfiguration)
+			handler.dispose?.()
+			return {
+				apiConfiguration,
+				apiConfigName: historyItem.apiConfigName ?? capturedRoute.profileName,
+				reasoningPreference: structuredClone(historyItem.reasoningPreference ?? { kind: "default" }),
+				route: structuredClone(capturedRoute),
+			}
+		}
 		if (!capturedRoute) {
 			// Historical children may predate manifests while retaining their own sticky profile.
 			// Today's delegation routes must never replace that historical selection.
@@ -12539,18 +12850,32 @@ export class AlphaProvider
 			apiConfigName = (await parent.getTaskApiConfigName()) ?? capturedRoute.profileName
 		}
 
+		const isFakeAi = apiConfiguration.apiProvider === "fake-ai"
+		const capturedFakeLocator = isFakeAi && capturedRoute.reasoningConfiguration !== undefined
+		if (capturedFakeLocator && capturedRoute.provider === "fake-ai" && capturedRoute.modelId) {
+			apiConfiguration = { ...apiConfiguration, fakeAi: { id: capturedRoute.modelId } }
+		}
 		const restoredRoute = applySubagentSpawnOverrides(
 			{
 				apiConfiguration,
 				apiConfigName,
 				route: capturedRoute,
 			},
-			capturedRoute.requestedModelId,
+			isFakeAi ? undefined : (capturedRoute.modelId ?? capturedRoute.requestedModelId),
 			capturedRoute.requestedReasoningEffort,
+			capturedRoute.requestedModelId !== undefined,
 		)
 		apiConfiguration = restoredRoute.apiConfiguration
+		if (capturedRoute.reasoningConfiguration) {
+			apiConfiguration = {
+				...apiConfiguration,
+				enableReasoningEffort: capturedRoute.reasoningConfiguration.enableReasoningEffort,
+				reasoningEffort: capturedRoute.reasoningConfiguration.reasoningEffort,
+			}
+		}
 		const restoredProvider = apiConfiguration.apiProvider
-		const restoredModel = getSubagentRouteModelId(apiConfiguration)
+		const restoredModel =
+			isFakeAi && !capturedFakeLocator ? getModelId(apiConfiguration) : getSubagentRouteModelId(apiConfiguration)
 		if (capturedRoute.provider && restoredProvider !== capturedRoute.provider) {
 			throw new Error(
 				`Cannot resume child: captured provider ${capturedRoute.provider} now resolves to ${restoredProvider ?? "unknown"}`,
@@ -12560,6 +12885,10 @@ export class AlphaProvider
 			throw new Error(
 				`Cannot resume child: captured model ${capturedRoute.modelId} now resolves to ${restoredModel}`,
 			)
+		}
+		if (isFakeAi) {
+			const handler = buildApiHandler(apiConfiguration)
+			handler.dispose?.()
 		}
 
 		return {

@@ -31,12 +31,9 @@ const mockState: ViewState = {
 	},
 }
 
-vi.mock("../useStateManager", () => ({
-	useStateManager: () => [mockState, { transition: mockTransition }],
-}))
-
 const defaultProps = {
-	stateManager: {} as any,
+	state: mockState,
+	stateManager: { transition: mockTransition },
 	allTags: ["tag1", "tag2"],
 	filteredTags: ["tag1", "tag2"],
 }

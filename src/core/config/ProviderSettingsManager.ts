@@ -55,11 +55,26 @@ export const providerProfilesSchema = z.object({
 			consecutiveMistakeLimitMigrated: z.boolean().optional(),
 			todoListEnabledMigrated: z.boolean().optional(),
 			claudeCodeLegacySettingsMigrated: z.boolean().optional(),
+			legacyStorageMigrated: z.boolean().optional(),
 		})
 		.optional(),
 })
 
 export type ProviderProfiles = z.infer<typeof providerProfilesSchema>
+
+/** Only an untouched bootstrap profile may yield to the pre-branding store. */
+function isEmptyDefaultProfile(value: unknown): boolean {
+	if (!isRecord(value) || value.currentApiConfigName !== "default" || !isRecord(value.apiConfigs)) return false
+	if (Object.keys(value.apiConfigs).length !== 1 || !Object.hasOwn(value.apiConfigs, "default")) return false
+	const profile = value.apiConfigs.default
+	if (!isRecord(profile) || typeof profile.id !== "string" || Object.keys(profile).some((key) => key !== "id"))
+		return false
+	if (isRecord(value.migrations) && value.migrations.legacyStorageMigrated) return false
+	if (isRecord(value.retainedApiConfigs) && Object.keys(value.retainedApiConfigs).length) return false
+	if (isRecord(value.modeApiConfigs) && Object.values(value.modeApiConfigs).some((id) => id !== profile.id))
+		return false
+	return Object.keys(value).every((key) => Object.hasOwn(providerProfilesSchema.shape, key))
+}
 
 function profileIdentities(profiles: ProviderProfiles): [string, string][] {
 	return [
@@ -200,6 +215,7 @@ export interface ProviderProfileRename {
 export class ProviderSettingsManager {
 	// Profile storage is isolated under the canonical Alpha namespace.
 	private static readonly SCOPE_PREFIX = "alpha_config_"
+	private static readonly LEGACY_SECRETS_KEY = "roo_cline_config_api_config"
 	private static readonly storageLocks = new WeakMap<ExtensionContext["secrets"], Promise<void>>()
 	// Fresh views must agree before the first settings write; persisted IDs remain authoritative.
 	private readonly defaultConfigId = "default"
@@ -965,6 +981,8 @@ export class ProviderSettingsManager {
 	 */
 	public async resetAllConfigs() {
 		return await this.lock(async () => {
+			// Delete the recovery source first so a successful reset cannot resurrect it.
+			await this.context.secrets.delete(ProviderSettingsManager.LEGACY_SECRETS_KEY)
 			await this.context.secrets.delete(this.secretsKey)
 		})
 	}
@@ -980,12 +998,24 @@ export class ProviderSettingsManager {
 	private async read(): Promise<{ profiles: ProviderProfiles; needsPersistence: boolean }> {
 		try {
 			const content = await this.context.secrets.get(this.secretsKey)
+			const raw: unknown = content ? JSON.parse(content) : undefined
+			const current = content
+				? readPersistedProviderProfiles(raw, () => this.generateId())
+				: { profiles: this.defaultProviderProfiles, needsPersistence: false }
 
-			if (!content) {
-				return { profiles: this.defaultProviderProfiles, needsPersistence: false }
+			if (!content || isEmptyDefaultProfile(raw)) {
+				const legacy = await this.context.secrets.get(ProviderSettingsManager.LEGACY_SECRETS_KEY)
+				if (legacy) {
+					const recovered = readPersistedProviderProfiles(JSON.parse(legacy), () => this.generateId())
+					recovered.profiles.migrations = {
+						...recovered.profiles.migrations,
+						legacyStorageMigrated: true,
+					}
+					return { profiles: recovered.profiles, needsPersistence: true }
+				}
 			}
 
-			return readPersistedProviderProfiles(JSON.parse(content), () => this.generateId())
+			return current
 		} catch (error) {
 			if (error instanceof ZodError) {
 				TelemetryService.instance.captureSchemaValidationError({
@@ -1003,7 +1033,18 @@ export class ProviderSettingsManager {
 
 	private async store(providerProfiles: ProviderProfiles) {
 		try {
-			await this.context.secrets.store(this.secretsKey, JSON.stringify(providerProfiles, null, 2))
+			// Any new canonical write is authoritative, even if a later edit leaves it empty.
+			await this.context.secrets.store(
+				this.secretsKey,
+				JSON.stringify(
+					{
+						...providerProfiles,
+						migrations: { ...providerProfiles.migrations, legacyStorageMigrated: true },
+					},
+					null,
+					2,
+				),
+			)
 		} catch (error) {
 			throw new Error(`Failed to write provider profiles to secrets: ${error}`)
 		}

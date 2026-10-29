@@ -152,7 +152,122 @@ describe("TaskHistoryStore", () => {
 		})
 	})
 
+	describe("restoreModelRoute()", () => {
+		it("refuses a new owner appearing immediately before the atomic commit", async () => {
+			await store.initialize()
+			const previous = makeHistoryItem({ id: "route-owner", apiConfigName: "saved" })
+			const expected = { ...previous, apiConfigName: "provisional" }
+			await store.upsert(expected)
+			const file = path.join(tmpDir, "tasks", previous.id, GlobalFileNames.historyItem)
+			const before = await fs.readFile(file, "utf8")
+			let owns = true
+			const write = mockSafeWriteJson.getMockImplementation()!
+			mockSafeWriteJson.mockImplementationOnce(
+				async (destination: string, value: unknown, options?: SafeWriteJsonOptions) =>
+					write(destination, value, {
+						...options,
+						commitTempFile: (temporaryPath: string, destinationPath: string) => {
+							owns = false
+							return options!.commitTempFile!(temporaryPath, destinationPath)
+						},
+					}),
+			)
+			await expect(store.restoreModelRoute(previous.id, expected, previous, () => owns)).rejects.toThrow(
+				"no longer owns",
+			)
+			expect(await fs.readFile(file, "utf8")).toBe(before)
+			expect(store.get(previous.id)).toEqual(expected)
+		})
+
+		it("restores only route fields while preserving newer labels, archive, usage and mode", async () => {
+			await store.initialize()
+			const previous = makeHistoryItem({
+				id: "route-recovery",
+				apiConfigName: "saved",
+				threadModelOverride: "old-model",
+				reasoningPreference: { kind: "effort", effort: "high" },
+				status: "completed",
+			})
+			const expected = {
+				...previous,
+				apiConfigName: "provisional",
+				threadModelOverride: "new-model",
+				reasoningPreference: { kind: "default" } as const,
+				status: "interrupted" as const,
+			}
+			await store.upsert(expected)
+			const file = path.join(tmpDir, "tasks", previous.id, GlobalFileNames.historyItem)
+			await fs.writeFile(
+				file,
+				JSON.stringify({
+					...expected,
+					displayName: "New title",
+					archived: true,
+					tokensIn: 900,
+					mode: "architect",
+				}),
+			)
+			await expect(store.restoreModelRoute(previous.id, expected, previous)).resolves.toBe(true)
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toMatchObject({
+				apiConfigName: "saved",
+				threadModelOverride: "old-model",
+				reasoningPreference: previous.reasoningPreference,
+				status: "completed",
+				displayName: "New title",
+				archived: true,
+				tokensIn: 900,
+				mode: "architect",
+			})
+		})
+
+		it("keeps a newer explicit profile or reasoning choice instead of rolling it back", async () => {
+			await store.initialize()
+			const previous = makeHistoryItem({ id: "newer-route", apiConfigName: "saved", status: "completed" })
+			const expected = { ...previous, apiConfigName: "provisional", status: "interrupted" as const }
+			await store.upsert(expected)
+			const file = path.join(tmpDir, "tasks", previous.id, GlobalFileNames.historyItem)
+			const newest = {
+				...expected,
+				apiConfigName: "human-choice",
+				reasoningPreference: { kind: "effort", effort: "low" },
+			}
+			await fs.writeFile(file, JSON.stringify(newest))
+			await expect(store.restoreModelRoute(previous.id, expected, previous)).resolves.toBe(false)
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toEqual(newest)
+		})
+	})
+
 	describe("renameProviderProfile()", () => {
+		it("renames a captured thread route without changing its stable provider/model identity", async () => {
+			await store.initialize()
+			const route = {
+				source: "spawn",
+				resolution: "selected",
+				profileId: "profile-id",
+				profileName: "saved",
+				provider: "openai-native",
+				modelId: "gpt-5.6-sol",
+				requestedReasoningEffort: "high",
+			} as const
+			const item = makeHistoryItem({
+				id: "captured-route",
+				apiConfigName: "saved",
+				threadModelRoute: route,
+				threadModelOverride: route.modelId,
+			})
+			await store.upsert(item)
+			await store.renameProviderProfile("saved", "renamed")
+			expect(store.get(item.id)).toMatchObject({
+				apiConfigName: "renamed",
+				threadModelRoute: { ...route, profileName: "renamed" },
+				threadModelOverride: route.modelId,
+			})
+			const file = path.join(tmpDir, "tasks", item.id, GlobalFileNames.historyItem)
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toMatchObject({
+				threadModelRoute: { ...route, profileName: "renamed" },
+			})
+		})
+
 		it("patches matching saved names while preserving unrelated tasks and all task metadata", async () => {
 			await store.initialize()
 			const matching = makeHistoryItem({ id: "matching", apiConfigName: "saved", tokensIn: 42, status: "active" })

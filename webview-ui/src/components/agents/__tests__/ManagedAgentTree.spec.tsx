@@ -7,6 +7,7 @@ import { vscode } from "@/utils/vscode"
 import chat from "@/i18n/locales/en/chat.json"
 
 import { ManagedAgentTree } from "../ManagedAgentTree"
+import * as managedAgentTreeAdapter from "../managedAgentTreeAdapter"
 vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 
 const NOW = 1_700_000_000_000
@@ -105,6 +106,29 @@ const hierarchyProjection = (): ManagedAgentTreeProjection => ({
 	omittedNodeCount: 0,
 	omittedActivityCount: 0,
 })
+
+const wideProjection = (): ManagedAgentTreeProjection => {
+	const projection = hierarchyProjection()
+	const child = projection.nodes[1]
+	projection.nodes = [
+		projection.nodes[0],
+		...Array.from({ length: 100 }, (_, index) => ({
+			...child,
+			taskId: `child-${index}`,
+			path: `/root/agent-${index}`,
+			nickname: `Agent ${index}`,
+		})),
+	]
+	projection.activity = Array.from({ length: 100 }, (_, index) => ({
+		...projection.activity[0],
+		eventId: `mail-${index}`,
+		sequence: index + 1,
+		senderTaskId: "child-99",
+		recipientTaskId: "child-99",
+		summary: `Activity ${index}`,
+	}))
+	return projection
+}
 
 describe("ManagedAgentTree", () => {
 	beforeAll(async () => {
@@ -451,5 +475,174 @@ describe("ManagedAgentTree", () => {
 	it("does not render an empty strip", () => {
 		const { container } = render(<ManagedAgentTree rootTaskId="root-1" groups={[]} onShowTask={vi.fn()} />)
 		expect(container).toBeEmptyDOMElement()
+	})
+
+	it("defers 100 overflow rows until their existing dialog mounts", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const projection = wideProjection()
+		const model = managedAgentTreeAdapter.buildManagedAgentTreeModel({ rootTaskId: "root-1", projection })
+		let nicknameReads = 0
+		let overflowOnlyNicknameReads = 0
+		for (const [index, node] of model.nodes.entries()) {
+			const nickname = node.nickname
+			Object.defineProperty(node, "nickname", {
+				get: () => {
+					nicknameReads += 1
+					if (index >= 24) overflowOnlyNicknameReads += 1
+					return nickname
+				},
+			})
+		}
+		const buildModel = vi.spyOn(managedAgentTreeAdapter, "buildManagedAgentTreeModel").mockReturnValue(model)
+		try {
+			render(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />)
+			expect(nicknameReads).toBe(24)
+			expect(overflowOnlyNicknameReads).toBe(0)
+			expect(screen.getAllByRole("listitem")).toHaveLength(24)
+
+			await user.click(screen.getByRole("button", { name: "agentNavigation.more" }))
+			// Opening can replay the visible strip. Off-strip rows measure only the mounted overflow pass.
+			expect(overflowOnlyNicknameReads).toBe(76)
+			const dialog = screen.getByRole("dialog", { name: "agentNavigation.title" })
+			expect(within(dialog).getAllByRole("listitem")).toHaveLength(100)
+			await user.click(within(dialog).getByRole("button", { name: /Open Agent 99/i }))
+			expect(onShowTask).toHaveBeenCalledWith("child-99")
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		} finally {
+			buildModel.mockRestore()
+		}
+	})
+
+	it("defers hidden activity details and indexes 100 activity targets in one node pass", async () => {
+		const user = userEvent.setup()
+		const projection = wideProjection()
+		let taskIdReads = 0
+		let summaryReads = 0
+		for (const node of projection.nodes) {
+			const taskId = node.taskId
+			Object.defineProperty(node, "taskId", {
+				get: () => {
+					taskIdReads += 1
+					return taskId
+				},
+			})
+		}
+		for (const event of projection.activity) {
+			const summary = event.summary
+			Object.defineProperty(event, "summary", {
+				get: () => {
+					summaryReads += 1
+					return summary
+				},
+			})
+		}
+
+		render(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={vi.fn()} />)
+		expect(summaryReads).toBe(0)
+		expect(taskIdReads).toBeLessThanOrEqual(projection.nodes.length * 4)
+
+		taskIdReads = 0
+		await user.click(screen.getByRole("button", { name: "agentActivity.open" }))
+		expect(summaryReads).toBe(100)
+		expect(taskIdReads).toBeLessThanOrEqual(projection.nodes.length * 2)
+		const dialog = screen.getByRole("dialog", { name: "agentActivity.title" })
+		expect(within(dialog).getAllByRole("listitem")).toHaveLength(100)
+		expect(within(dialog).getByText("Activity 99")).toBeInTheDocument()
+	})
+
+	it("refreshes mounted activity names, routing callbacks, and the displayed read cursor together", async () => {
+		const user = userEvent.setup()
+		const onShowTask = vi.fn()
+		const updatedOnShowTask = vi.fn()
+		const projection = hierarchyProjection()
+		projection.activity[0] = {
+			...projection.activity[0],
+			senderTaskId: "parent-1",
+			recipientTaskId: "child-2",
+		}
+		const { rerender } = render(
+			<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={onShowTask} />,
+		)
+		await user.click(screen.getByRole("button", { name: "agentActivity.open" }))
+
+		const refreshed = {
+			...projection,
+			nodes: projection.nodes.map((node) => ({ ...node, nickname: `${node.nickname} refreshed` })),
+			activity: [
+				{
+					...projection.activity[0],
+					sequence: 7,
+					senderTaskId: "child-2",
+					recipientTaskId: "parent-1",
+					summary: "Refreshed activity",
+				},
+			],
+		}
+		rerender(<ManagedAgentTree rootTaskId="root-1" projection={refreshed} onShowTask={updatedOnShowTask} />)
+		const dialog = screen.getByRole("dialog", { name: "agentActivity.title" })
+		expect(within(dialog).getByText("Iris refreshed")).toBeInTheDocument()
+		expect(within(dialog).getByText("Refreshed activity")).toBeInTheDocument()
+		await user.click(within(dialog).getByRole("button", { name: "agentActivity.markRead" }))
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "markManagedAgentActivityRead",
+			taskId: "root-1",
+			activitySequence: 7,
+		})
+		await user.click(within(dialog).getByRole("button", { name: "agentActivity.openNamed" }))
+		expect(updatedOnShowTask).toHaveBeenCalledTimes(1)
+		expect(updatedOnShowTask).toHaveBeenCalledWith("parent-1")
+		expect(onShowTask).not.toHaveBeenCalled()
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+	})
+
+	it("retains the first activity identity if a stale projection repeats a task", async () => {
+		const user = userEvent.setup()
+		const projection = hierarchyProjection()
+		projection.nodes.push({ ...projection.nodes[0], nickname: "Duplicate root" })
+		projection.activity[0] = { ...projection.activity[0], senderTaskId: "root-1", recipientTaskId: "root-1" }
+		render(<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={vi.fn()} />)
+		await user.click(screen.getByRole("button", { name: "agentActivity.open" }))
+		const dialog = screen.getByRole("dialog", { name: "agentActivity.title" })
+		expect(within(dialog).getByText("Release root")).toBeInTheDocument()
+		expect(within(dialog).queryByText("Duplicate root")).not.toBeInTheDocument()
+	})
+
+	it.each(["agentNavigation.more", "agentActivity.open"])("resets %s when the root changes", async (buttonName) => {
+		const user = userEvent.setup()
+		const projection = hierarchyProjection()
+		const onShowTask = vi.fn()
+		const { rerender } = render(
+			<ManagedAgentTree
+				rootTaskId="root-1"
+				projection={projection}
+				maxVisibleAgents={1}
+				onShowTask={onShowTask}
+			/>,
+		)
+		await user.click(screen.getByRole("button", { name: buttonName }))
+		expect(screen.getByRole("dialog")).toBeVisible()
+		const otherProjection = {
+			...projection,
+			rootTaskId: "other-root",
+			nodes: projection.nodes.map((node) => ({
+				...node,
+				rootTaskId: "other-root",
+				taskId: node.role === "root" ? "other-root" : node.taskId,
+				parentTaskId: node.parentTaskId === "root-1" ? "other-root" : node.parentTaskId,
+			})),
+		}
+		rerender(
+			<ManagedAgentTree
+				rootTaskId="other-root"
+				projection={otherProjection}
+				maxVisibleAgents={1}
+				onShowTask={onShowTask}
+			/>,
+		)
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(onShowTask).not.toHaveBeenCalled()
 	})
 })

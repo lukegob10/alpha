@@ -67,6 +67,85 @@ const compactAttention = (node: ManagedAgentNode): string | undefined => {
 	return "subagentRow.attention.input"
 }
 
+// Radix mounts these children with the dialog, deferring hidden row work without changing its exit animation.
+function ManagedAgentOverflowRows({
+	nodes,
+	attentionForNode,
+	onShowTask,
+	onClose,
+}: {
+	nodes: readonly ManagedAgentNode[]
+	attentionForNode: (node: ManagedAgentNode) => string | undefined
+	onShowTask?: (taskId: string) => void
+	onClose: () => void
+}) {
+	return nodes.map((node) => (
+		<li key={node.taskId}>
+			<SubagentTaskLink
+				name={node.nickname}
+				status={node.status}
+				attention={attentionForNode(node)}
+				detail={`${node.role} · ${node.path}`}
+				disabled={!onShowTask || node.stopReason === "never_launched"}
+				onOpen={() => {
+					onClose()
+					onShowTask?.(node.taskId)
+				}}
+			/>
+		</li>
+	))
+}
+
+function ManagedAgentActivityRows({
+	projection,
+	onShowTask,
+	onClose,
+}: {
+	projection: ManagedAgentTreeProjection
+	onShowTask?: (taskId: string) => void
+	onClose: () => void
+}) {
+	const { t } = useTranslation("chat")
+	const nodesByTaskId = useMemo(() => {
+		const nodes = new Map<string, ManagedAgentTreeProjection["nodes"][number]>()
+		for (const node of projection.nodes) {
+			const taskId = node.taskId
+			// Retain the first match, including when a stale projection contains duplicate task IDs.
+			if (!nodes.has(taskId)) nodes.set(taskId, node)
+		}
+		return nodes
+	}, [projection.nodes])
+
+	return projection.activity.map((event) => {
+		const sender = event.senderTaskId === undefined ? undefined : nodesByTaskId.get(event.senderTaskId)
+		const targetTaskId = event.recipientTaskId ?? event.senderTaskId
+		const target = targetTaskId === undefined ? undefined : nodesByTaskId.get(targetTaskId)
+		return (
+			<li key={event.eventId} className="rounded border border-vscode-panel-border p-2">
+				<p className="font-medium">{sender?.nickname ?? event.senderPath ?? event.name}</p>
+				<p className="break-words whitespace-pre-wrap">{event.summary}</p>
+				<p className="text-xs text-vscode-descriptionForeground">
+					{t(event.pendingDelivery ? "agentActivity.pending" : "agentActivity.delivered")}
+				</p>
+				{targetTaskId && onShowTask && (
+					<Button
+						variant="ghost"
+						size="sm"
+						aria-label={t("agentActivity.openNamed", {
+							name: target?.nickname ?? event.recipientPath ?? event.senderPath ?? targetTaskId,
+						})}
+						onClick={() => {
+							onClose()
+							onShowTask(targetTaskId)
+						}}>
+						{t("agentActivity.openChat")}
+					</Button>
+				)}
+			</li>
+		)
+	})
+}
+
 /**
  * Compact parent-facing view of managed descendants.
  *
@@ -234,21 +313,12 @@ export function ManagedAgentTree({
 						<DialogDescription>{t("agentNavigation.description")}</DialogDescription>
 					</DialogHeader>
 					<ul className="space-y-2">
-						{descendants.map((node) => (
-							<li key={node.taskId}>
-								<SubagentTaskLink
-									name={node.nickname}
-									status={node.status}
-									attention={attentionForNode(node)}
-									detail={`${node.role} · ${node.path}`}
-									disabled={!onShowTask || node.stopReason === "never_launched"}
-									onOpen={() => {
-										setShowAllAgents(false)
-										onShowTask?.(node.taskId)
-									}}
-								/>
-							</li>
-						))}
+						<ManagedAgentOverflowRows
+							nodes={descendants}
+							attentionForNode={attentionForNode}
+							onShowTask={onShowTask}
+							onClose={() => setShowAllAgents(false)}
+						/>
 					</ul>
 					{model.omittedNodeCount > 0 && (
 						<p>{t("agentNavigation.omitted", { count: model.omittedNodeCount })}</p>
@@ -270,38 +340,13 @@ export function ManagedAgentTree({
 						{t("agentActivity.markRead")}
 					</Button>
 					<ul className="space-y-3">
-						{activity.map((event) => {
-							const sender = projection?.nodes.find((node) => node.taskId === event.senderTaskId)
-							const targetTaskId = event.recipientTaskId ?? event.senderTaskId
-							const target = projection?.nodes.find((node) => node.taskId === targetTaskId)
-							return (
-								<li key={event.eventId} className="rounded border border-vscode-panel-border p-2">
-									<p className="font-medium">{sender?.nickname ?? event.senderPath ?? event.name}</p>
-									<p className="break-words whitespace-pre-wrap">{event.summary}</p>
-									<p className="text-xs text-vscode-descriptionForeground">
-										{t(event.pendingDelivery ? "agentActivity.pending" : "agentActivity.delivered")}
-									</p>
-									{targetTaskId && onShowTask && (
-										<Button
-											variant="ghost"
-											size="sm"
-											aria-label={t("agentActivity.openNamed", {
-												name:
-													target?.nickname ??
-													event.recipientPath ??
-													event.senderPath ??
-													targetTaskId,
-											})}
-											onClick={() => {
-												setShowActivity(false)
-												onShowTask(targetTaskId)
-											}}>
-											{t("agentActivity.openChat")}
-										</Button>
-									)}
-								</li>
-							)
-						})}
+						{projection && (
+							<ManagedAgentActivityRows
+								projection={projection}
+								onShowTask={onShowTask}
+								onClose={() => setShowActivity(false)}
+							/>
+						)}
 					</ul>
 					{Boolean(projection?.omittedActivityCount) && (
 						<p>{t("agentActivity.omitted", { count: projection?.omittedActivityCount })}</p>

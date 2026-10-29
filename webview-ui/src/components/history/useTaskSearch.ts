@@ -27,34 +27,37 @@ export const useTaskSearch = () => {
 		return taskHistory.filter((item) => item.ts && item.task)
 	}, [taskHistory])
 
+	const hasSearchQuery = !!searchQuery
 	const fzf = useMemo(() => {
+		if (!hasSearchQuery) return null
+
 		return new Fzf(presentableTasks, {
 			selector: (item) => {
 				const name = getTaskDisplayName(item)
 				return name === item.task ? name : `${name}\n${item.task}`
 			},
 		})
-	}, [presentableTasks])
+	}, [presentableTasks, hasSearchQuery])
+
+	const searchResults = useMemo(() => {
+		if (!searchQuery || !fzf) return presentableTasks
+
+		return fzf.find(searchQuery).map((result) => {
+			const displayName = getTaskDisplayName(result.item)
+			const positions = Array.from(result.positions).filter((position) => position < displayName.length)
+
+			return {
+				...result.item,
+				highlight: positions.length ? highlightFzfMatch(displayName, positions) : undefined,
+				workspace: result.item.workspace,
+			}
+		})
+	}, [presentableTasks, searchQuery, fzf])
 
 	const tasks = useMemo(() => {
-		let results = presentableTasks
+		if (sortOption === "mostRelevant" && hasSearchQuery) return [...searchResults]
 
-		if (searchQuery) {
-			const searchResults = fzf.find(searchQuery)
-			results = searchResults.map((result) => {
-				const displayName = getTaskDisplayName(result.item)
-				const positions = Array.from(result.positions).filter((position) => position < displayName.length)
-
-				return {
-					...result.item,
-					highlight: positions.length ? highlightFzfMatch(displayName, positions) : undefined,
-					workspace: result.item.workspace,
-				}
-			})
-		}
-
-		// Then sort the results
-		return [...results].sort((a, b) => {
+		return [...searchResults].sort((a, b) => {
 			switch (sortOption) {
 				case "oldest":
 					return (a.ts || 0) - (b.ts || 0)
@@ -65,14 +68,12 @@ export const useTaskSearch = () => {
 					const bTokens = (b.tokensIn || 0) + (b.tokensOut || 0) + (b.cacheWrites || 0) + (b.cacheReads || 0)
 					return bTokens - aTokens
 				case "mostRelevant":
-					// Keep fuse order if searching, otherwise sort by newest
-					return searchQuery ? 0 : (b.ts || 0) - (a.ts || 0)
 				case "newest":
 				default:
 					return (b.ts || 0) - (a.ts || 0)
 			}
 		})
-	}, [presentableTasks, searchQuery, fzf, sortOption])
+	}, [searchResults, hasSearchQuery, sortOption])
 
 	return {
 		tasks,

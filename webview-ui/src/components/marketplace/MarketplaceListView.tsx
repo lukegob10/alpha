@@ -6,21 +6,26 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command"
 import { X, ChevronsUpDown } from "lucide-react"
 import { MarketplaceItemCard } from "./components/MarketplaceItemCard"
-import { MarketplaceViewStateManager } from "./MarketplaceViewStateManager"
+import type { MarketplaceViewStateManager, ViewState } from "./MarketplaceViewStateManager"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-import { useStateManager } from "./useStateManager"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { IssueFooter } from "./IssueFooter"
 
 export interface MarketplaceListViewProps {
-	stateManager: MarketplaceViewStateManager
+	state: ViewState
+	stateManager: Pick<MarketplaceViewStateManager, "transition">
 	allTags: string[]
 	filteredTags: string[]
 	filterByType?: "mcp" | "mode"
 }
 
-export function MarketplaceListView({ stateManager, allTags, filteredTags, filterByType }: MarketplaceListViewProps) {
-	const [state, manager] = useStateManager(stateManager)
+export function MarketplaceListView({
+	state,
+	stateManager: manager,
+	allTags,
+	filteredTags,
+	filterByType,
+}: MarketplaceListViewProps) {
 	const { t } = useAppTranslation()
 	const { marketplaceInstalledMetadata } = useExtensionState()
 	const [isTagPopoverOpen, setIsTagPopoverOpen] = React.useState(false)

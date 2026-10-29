@@ -1,6 +1,6 @@
 import { MessageSquare, Pencil, Plus, Trash2 } from "lucide-react"
-import { useEffect, useLayoutEffect, useRef, type MouseEventHandler } from "react"
-import ReactMarkdown from "react-markdown"
+import { memo, useEffect, useLayoutEffect, useRef, type MouseEventHandler } from "react"
+import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useTranslation } from "react-i18next"
 import {
@@ -44,6 +44,28 @@ type PropertyFocus = {
 	element: HTMLSelectElement
 	userMoved: boolean
 }
+
+const ticketRemarkPlugins = [remarkGfm]
+const ticketMarkdownComponents: Components = {
+	a: ({ href, children }) =>
+		href && /^https?:\/\//i.test(href) ? (
+			<a href={href} target="_blank" rel="noreferrer noopener">
+				{children}
+			</a>
+		) : (
+			<span>{children}</span>
+		),
+	img: ({ alt }) => <span>{alt}</span>,
+}
+
+// Property saves replace the ticket object while its Markdown fields usually stay unchanged.
+const TicketMarkdown = memo(function TicketMarkdown({ content }: { content: string }) {
+	return (
+		<ReactMarkdown remarkPlugins={ticketRemarkPlugins} components={ticketMarkdownComponents}>
+			{content}
+		</ReactMarkdown>
+	)
+})
 
 export function TicketReader({
 	ticket,
@@ -193,21 +215,7 @@ export function TicketReader({
 									aria-labelledby={`ticket-${field}`}>
 									<h2 id={`ticket-${field}`}>{t(field)}</h2>
 									<div className="ticket-prose">
-										<ReactMarkdown
-											remarkPlugins={[remarkGfm]}
-											components={{
-												a: ({ href, children }) =>
-													href && /^https?:\/\//i.test(href) ? (
-														<a href={href} target="_blank" rel="noreferrer noopener">
-															{children}
-														</a>
-													) : (
-														<span>{children}</span>
-													),
-												img: ({ alt }) => <span>{alt}</span>,
-											}}>
-											{ticket[field]}
-										</ReactMarkdown>
+										<TicketMarkdown content={ticket[field]} />
 									</div>
 								</section>
 							),

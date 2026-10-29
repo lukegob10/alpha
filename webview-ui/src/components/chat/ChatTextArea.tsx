@@ -224,7 +224,7 @@ export const ChatTextArea = memo(
 						if (message.text && textAreaRef.current) {
 							// Insert the command text at the current cursor position
 							const textarea = textAreaRef.current
-							const currentValue = inputValue
+							const currentValue = textarea.value
 							const cursorPos = textarea.selectionStart || 0
 
 							// Check if we need to add a space before the command
@@ -269,7 +269,7 @@ export const ChatTextArea = memo(
 
 				window.addEventListener("message", messageHandler)
 				return () => window.removeEventListener("message", messageHandler)
-			}, [setInputValue, inputValue])
+			}, [setInputValue])
 
 			const [isDraggingOver, setIsDraggingOver] = useState(false)
 			const [textAreaBaseHeight, setTextAreaBaseHeight] = useState<number | undefined>(undefined)
@@ -277,6 +277,17 @@ export const ChatTextArea = memo(
 			const [cursorPosition, setCursorPosition] = useState(0)
 			const [searchQuery, setSearchQuery] = useState("")
 			const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
+			const setTextAreaRef = useCallback(
+				(element: HTMLTextAreaElement | null) => {
+					if (typeof ref === "function") {
+						ref(element)
+					} else if (ref) {
+						ref.current = element
+					}
+					textAreaRef.current = element
+				},
+				[ref],
+			)
 			const isMouseDownOnMenuRef = useRef(false)
 			const highlightLayerRef = useRef<HTMLDivElement>(null)
 			const [selectedMenuIndex, setSelectedMenuIndex] = useState(-1)
@@ -1331,14 +1342,7 @@ export const ChatTextArea = memo(
 										}}
 									/>
 									<DynamicTextArea
-										ref={(el) => {
-											if (typeof ref === "function") {
-												ref(el)
-											} else if (ref) {
-												ref.current = el
-											}
-											textAreaRef.current = el
-										}}
+										ref={setTextAreaRef}
 										value={inputValue}
 										aria-label={placeholderText}
 										aria-keyshortcuts={modeSwitchDisabled ? undefined : "Shift+Tab"}
@@ -1427,6 +1431,7 @@ export const ChatTextArea = memo(
 						<div className="chat-composer-footer">
 							<div className="chat-composer-settings" aria-label={t("chat:composer.settings")}>
 								<ModeSelector
+									isVisible={isVisible}
 									value={mode}
 									title={t("chat:selectMode")}
 									onChange={handleModeChange}
@@ -1437,6 +1442,7 @@ export const ChatTextArea = memo(
 									customModePrompts={customModePrompts}
 								/>
 								<ApiConfigSelector
+									isVisible={isVisible}
 									value={currentConfigId}
 									displayName={displayName}
 									disabled={selectApiConfigDisabled}
@@ -1447,7 +1453,11 @@ export const ChatTextArea = memo(
 									pinnedApiConfigs={pinnedApiConfigs}
 									togglePinnedApiConfig={togglePinnedApiConfig}
 								/>
-								<ChatReasoningControl profileLoading={reasoningProfileLoading} />
+								<ChatReasoningControl
+									isVisible={isVisible}
+									profileLoading={reasoningProfileLoading}
+									isDraft={isTaskDraft || isNewTask}
+								/>
 								<AutoApproveDropdown
 									isVisible={isVisible && !isEditMode}
 									isDraft={isTaskDraft}

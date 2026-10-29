@@ -136,10 +136,12 @@ function directRequestClauses(userRequestText: string | undefined): string[] {
 }
 
 function directAction(clause: string): string {
-	return clause.replace(
-		/^(?:(?:hey|okay|ok|alright)[,]?\s+)?(?:please\s+)?(?:(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d|’d| would)\s+like\s+you\s+to\s+|i\s+(?:want|need)\s+to\s+|let['’]?s\s+|go ahead and\s+)?/i,
-		"",
-	)
+	return clause
+		.replace(
+			/^(?:(?:hey|okay|ok|alright)[,]?\s+)?(?:please\s+)?(?:(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d|’d| would)\s+like\s+you\s+to\s+|i\s+(?:want|need)\s+to\s+|let['’]?s\s+|go ahead and\s+)?/i,
+			"",
+		)
+		.replace(/^use\s+(?:it|this|that)\s+to\s+(?=(?:create|start|launch|open|spin\s+up|make)\b)/i, "")
 }
 
 function normalizeDirectNounIntent(clause: string): string {
@@ -163,7 +165,7 @@ function isExplicitRevocation(clause: string): boolean {
 		/^(?:(?:actually|wait|no)[,:\s]+)?(?:scratch that|never mind|i(?:(?:'ve|’ve)|\s+have)?\s+changed my mind|let['’]?s not)\b/i.test(
 			clause,
 		) ||
-		/^(?:(?:actually|wait|no|scratch that|never mind|on second thought)[,:\s]+)?(?:please\s+)?(?:(?:do not|don't|don’t)\s+(?:(?:create|start|launch|open|spin\s+up|make|fork|clone|duplicate|branch)\s+)?|(?:forget|skip)\s+)(?:it|this|that|one|(?:(?:a|an|the|my|our|new|separate|independent|current|existing|original|saved)\s+)*(?:task|thread|chat|conversation)s?)\b/i.test(
+		/^(?:(?:actually|wait|no|scratch that|never mind|on second thought)[,:\s]+)?(?:please\s+)?(?:(?:do not|don't|don’t)\s+(?:use\s+(?:it|this|that)\s+to\s+)?(?:(?:create|start|launch|open|spin\s+up|make|fork|clone|duplicate|branch)\s+)?|(?:forget|skip)\s+)(?:it|this|that|one|(?:(?:a|an|the|my|our|new|separate|independent|current|existing|original|saved)\s+)*(?:task|thread|chat|conversation)s?)\b/i.test(
 			clause,
 		)
 	)

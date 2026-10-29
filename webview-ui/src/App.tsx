@@ -353,7 +353,12 @@ const App = () => {
 						}
 					/>
 					<div className="relative min-h-0 flex-1 [&>.app-shell]:absolute">
-						<React.Suspense fallback={null}>
+						<React.Suspense
+							fallback={
+								<div role="status" className="p-4 text-sm text-vscode-descriptionForeground">
+									{t("chat:reasoning.loading")}
+								</div>
+							}>
 							{tab === "settings" && (
 								<SettingsView
 									ref={settingsRef}

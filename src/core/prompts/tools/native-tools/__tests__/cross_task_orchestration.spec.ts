@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest"
 
+import { providerNames, reasoningEffortsExtended } from "@alpha-code/types"
+
 import { getNativeTools } from ".."
 import { getToolCapabilities } from "../../../../tools/ToolRegistry"
 
@@ -95,6 +97,29 @@ describe("thread orchestration tool surface", () => {
 				},
 			},
 		})
+	})
+
+	it("uses the same independent model selection fields for fresh tasks, forks, and follow-ups", () => {
+		const tools = getNativeTools({
+			crossTaskRole: "root",
+			includeCreateThreadSchema: true,
+			includeForkThreadSchema: true,
+		})
+		for (const name of ["create_thread", "fork_thread", "send_message_to_thread"]) {
+			expect(tools.find((tool) => tool.type === "function" && tool.function.name === name)).toMatchObject({
+				function: {
+					parameters: {
+						additionalProperties: false,
+						properties: {
+							provider: { type: "string", enum: [...providerNames] },
+							profile: { type: "string", minLength: 1 },
+							model: { type: "string", minLength: 1 },
+							reasoning_effort: { type: "string", enum: [...reasoningEffortsExtended] },
+						},
+					},
+				},
+			})
+		}
 	})
 
 	it("serializes lifecycle effects and approval-gates every mutation", () => {

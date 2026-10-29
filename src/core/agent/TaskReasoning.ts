@@ -66,6 +66,19 @@ export function getAdjacentReasoningPreference(
 	return next >= 0 && next < efforts.length ? { kind: "effort", effort: efforts[next] } : undefined
 }
 
+/** Tool-requested levels must be honored exactly; saved/UI preferences retain their normal fallback behavior. */
+export function assertTaskReasoningEffortSupported(
+	effort: ReasoningEffortExtended,
+	capabilities: TaskReasoningCapabilities,
+	modelId: string,
+): void {
+	if (capabilities.kind === "effort" && capabilities.efforts?.includes(effort)) return
+	const supported = capabilities.kind === "effort" ? capabilities.efforts?.join(", ") : undefined
+	throw new Error(
+		`Model ${JSON.stringify(modelId)} does not support reasoning effort ${JSON.stringify(effort)}. ${supported ? `Supported levels: ${supported}.` : "This model does not support named reasoning levels."}`,
+	)
+}
+
 /**
  * Resolve one task preference against the model descriptor captured for the
  * next step. The profile is the input and is never persisted with task-only

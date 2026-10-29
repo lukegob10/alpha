@@ -66,6 +66,7 @@ export function ReasoningSummary({ state }: { state: TaskReasoningState }) {
 export interface ReasoningSelectorProps {
 	state?: TaskReasoningProjection
 	loading?: boolean
+	isVisible?: boolean
 	saving?: boolean
 	error?: boolean
 	onChange: (preference: TaskReasoningPreference) => void
@@ -77,6 +78,7 @@ export interface ReasoningSelectorProps {
 export function ReasoningSelector({
 	state,
 	loading = false,
+	isVisible = true,
 	saving = false,
 	error = false,
 	onChange,
@@ -102,6 +104,10 @@ export function ReasoningSelector({
 		setCustom(requestedCustom)
 		// A streamed state refresh must not erase a custom token being edited.
 	}, [scopeKey, requestedCustom])
+	useEffect(() => {
+		// Hiding the composer closes its portal without discarding a custom token draft.
+		if (!isVisible) setOpen(false)
+	}, [isVisible])
 
 	const ready = !loading && state !== undefined
 	const capabilities = ready ? state.capabilities : undefined
@@ -149,7 +155,7 @@ export function ReasoningSelector({
 
 	return (
 		<div className="min-w-0 max-w-full" data-testid="reasoning-control">
-			<Popover open={open && ready} onOpenChange={setOpen}>
+			<Popover open={open && ready && isVisible} onOpenChange={(nextOpen) => setOpen(nextOpen && isVisible)}>
 				<PopoverTrigger asChild>
 					<button
 						type="button"
@@ -170,6 +176,9 @@ export function ReasoningSelector({
 				<PopoverContent
 					container={portal}
 					align="start"
+					onCloseAutoFocus={(event) => {
+						if (!isVisible) event.preventDefault()
+					}}
 					aria-labelledby={titleId}
 					className={cn(
 						"max-w-[calc(100vw-24px)] space-y-3 p-3",

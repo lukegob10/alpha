@@ -20,6 +20,7 @@ interface ModeSelectorProps {
 	value: Mode
 	onChange: (value: Mode) => void
 	disabled?: boolean
+	isVisible?: boolean
 	title: string
 	triggerClassName?: string
 	modeShortcutText: string
@@ -31,6 +32,7 @@ export const ModeSelector = ({
 	value,
 	onChange,
 	disabled = false,
+	isVisible = true,
 	title,
 	triggerClassName = "",
 	modeShortcutText,
@@ -94,27 +96,27 @@ export const ModeSelector = ({
 
 	const handleSelect = React.useCallback(
 		(modeSlug: string) => {
-			if (disabled) return
+			if (disabled || !isVisible) return
 
 			onChange(modeSlug as Mode)
 			setOpen(false)
 		},
-		[disabled, onChange],
+		[disabled, isVisible, onChange],
 	)
 
 	const onOpenChange = React.useCallback(
 		(isOpen: boolean) => {
-			if (disabled && isOpen) return
+			if ((disabled || !isVisible) && isOpen) return
 
 			if (isOpen) trackModeSelectorOpened()
 			setOpen(isOpen)
 		},
-		[disabled, trackModeSelectorOpened],
+		[disabled, isVisible, trackModeSelectorOpened],
 	)
 
 	React.useEffect(() => {
-		if (disabled) setOpen(false)
-	}, [disabled])
+		if (disabled || !isVisible) setOpen(false)
+	}, [disabled, isVisible])
 
 	// Scroll to the selected compatibility item when an older task is restored.
 	React.useEffect(() => {
@@ -149,7 +151,7 @@ export const ModeSelector = ({
 	const instructionText = `${t("chat:modeSelector.description")} ${modeShortcutText}`
 
 	return (
-		<Popover open={open} onOpenChange={onOpenChange} data-testid="mode-selector-root">
+		<Popover open={open && isVisible} onOpenChange={onOpenChange} data-testid="mode-selector-root">
 			<StandardTooltip content={title}>
 				<PopoverTrigger
 					disabled={disabled}
@@ -162,6 +164,9 @@ export const ModeSelector = ({
 				align="start"
 				sideOffset={4}
 				container={portalContainer}
+				onCloseAutoFocus={(event) => {
+					if (!isVisible) event.preventDefault()
+				}}
 				className="p-0 overflow-hidden min-w-80 max-w-9/10">
 				<div className="flex flex-col w-full">
 					<div className="p-3 border-b border-vscode-dropdown-border">

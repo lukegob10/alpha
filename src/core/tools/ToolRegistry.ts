@@ -75,6 +75,7 @@ import { isParallelCommandReadReady, prepareParallelCommand } from "./ParallelCo
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
+import { listProviderProfilesTool } from "./ListProviderProfilesTool"
 import { newTaskTool } from "./NewTaskTool"
 import { manageCommandTool } from "./ManageCommandTool"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
@@ -618,6 +619,7 @@ const TOOL_NAMES = [
 	"list_mcp_resource_templates",
 	"read_mcp_resource",
 	"read_diagnostic_evidence",
+	"list_provider_profiles",
 	"codebase_search",
 	"apply_diff",
 	"apply_patch",
@@ -730,6 +732,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 			!MEMORY_READ_TOOL_NAMES.has(name) &&
 			name !== "get_goal" &&
 			name !== "read_diagnostic_evidence" &&
+			name !== "list_provider_profiles" &&
 			name !== "report_progress" &&
 			name !== "send_message" &&
 			name !== "interrupt_agent" &&
@@ -1060,6 +1063,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("set_thread_title", setThreadTitleTool, schemas)
 		this.registerBuiltIn("set_thread_archived", setThreadArchivedTool, schemas)
 		this.registerBuiltIn("spawn_agent", spawnAgentTool, schemas)
+		this.registerBuiltIn("list_provider_profiles", listProviderProfilesTool, schemas)
 		this.registerBuiltIn("list_agents", listAgentsTool, schemas)
 		this.registerBuiltIn("wait_agent", waitAgentTool, schemas)
 		this.registerBuiltIn("send_message", sendMessageTool, schemas)

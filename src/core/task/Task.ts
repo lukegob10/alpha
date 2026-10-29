@@ -51,7 +51,8 @@ import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentM
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
 import {
-	canReplayProviderState,
+	canReplayMessageProviderState,
+	invalidateOpaqueProviderStateReplay,
 	hasOpaqueProviderState,
 	isOpaqueProviderContentBlock,
 	providerStateScopeSchema,
@@ -195,8 +196,13 @@ import {
 	type TaskReasoningState,
 	type TaskReasoningProjection,
 	taskReasoningPreferenceSchema,
+	subagentModelRouteStateSchema,
 } from "@alpha-code/types"
-import { hasPendingReasoningChange, resolveTaskReasoning } from "../agent/TaskReasoning"
+import {
+	assertTaskReasoningEffortSupported,
+	hasPendingReasoningChange,
+	resolveTaskReasoning,
+} from "../agent/TaskReasoning"
 import { fallbackTaskTitle, generateTaskTitle } from "./taskTitle"
 import {
 	ApiStreamDeadlineError,
@@ -321,7 +327,7 @@ import {
 	getFinalAssistantMessageIndexes,
 	type SubagentInvocationContext,
 } from "../agent/SubagentInvocationContext"
-import { snapshotProviderSettings } from "../agent/SubagentModelRouter"
+import { getSubagentRouteModelId, snapshotProviderSettings } from "../agent/SubagentModelRouter"
 import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
 import type { AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
@@ -577,6 +583,7 @@ type CapturedTaskProvider = {
 	apiConfiguration: ProviderSettings
 	profileConfiguration?: ProviderSettings
 	apiConfigName?: string
+	profileId?: string
 }
 
 type TaskRequestOptions = {
@@ -886,6 +893,7 @@ export function getSubagentAllowedToolNames(
 			tools.length - 1,
 			0,
 			"spawn_agent",
+			"list_provider_profiles",
 			"list_agents",
 			"wait_agent",
 			"followup_task",
@@ -4267,7 +4275,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async saveApiConversationHistory(guard?: CanonicalLifecycleEventGuard): Promise<boolean> {
+	private async saveApiConversationHistory(
+		guard?: CanonicalLifecycleEventGuard,
+		stagedMessages?: readonly ApiMessage[],
+	): Promise<boolean> {
 		if (guard && !guard()) return false
 		if (
 			(Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) >=
@@ -4286,7 +4297,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
 				? this.pendingResumeHistoryRepair
 				: undefined
-		const messages = structuredClone(this.apiConversationHistory)
+		const messages = structuredClone(stagedMessages ? [...stagedMessages] : this.apiConversationHistory)
 		const failureGeneration = this.apiConversationHistoryFailureGeneration
 
 		return this.enqueueApiConversationHistoryPersistence(async () => {
@@ -6258,6 +6269,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private getTaskProviderProfileId(): string | undefined {
+		const route =
+			this.subagentModelRoute ?? this.providerRef.deref()?.taskHistoryStore?.get(this.taskId)?.threadModelRoute
+		return route &&
+			route.provider === this.apiConfiguration.apiProvider &&
+			route.profileName === this._taskApiConfigName
+			? route.profileId
+			: undefined
+	}
+
 	/**
 	 * Capture the model-visible request boundary once all request inputs have been
 	 * assembled. Transport retries derive a retry snapshot so the context ID and
@@ -6378,6 +6399,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				capturedProvider?.profileConfiguration ?? this.apiConfiguration,
 			),
 			apiConfigName: capturedProvider ? capturedProvider.apiConfigName : this._taskApiConfigName,
+			profileId: capturedProvider ? capturedProvider.profileId : this.getTaskProviderProfileId(),
 		}
 		this.agentTurnStep += 1
 		const model = apiHandler.getModel()
@@ -6418,8 +6440,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						source: "parent",
 						resolution: "selected",
 						provider: apiConfiguration.apiProvider,
-						modelId: model.id,
+						modelId:
+							apiConfiguration.apiProvider === "fake-ai"
+								? getSubagentRouteModelId(apiConfiguration)
+								: model.id,
 						profileName: capturedApiConfigName ?? "Parent profile",
+						profileId: providerCapture.profileId,
 					},
 					history: forkHistory,
 					allowedTools: [...surface.policy.allowedTools],
@@ -6927,12 +6953,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.alphaMessages),
 		onPersisted?: () => void,
 		designHandoff?: TaskDesignHandoff,
-		reasoning?: { preference: TaskReasoningPreference; state: TaskReasoningState },
+		reasoning?: {
+			preference: TaskReasoningPreference
+			state: TaskReasoningState
+			route?: Pick<HistoryItem, "apiConfigName" | "threadModelOverride" | "threadModelRoute">
+		},
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
 	): Promise<boolean> {
 		if (ownership && !ownership.guard()) return false
 		const capturedProvider = ownership?.provider
 		const save = this.alphaMessagesSaveQueue.then(async () => {
+			let routeProvider: AlphaProvider | undefined
+			let previousRouteHistory: HistoryItem | undefined
+			let attemptedRouteHistory: HistoryItem | undefined
+			let routePersistenceAttempted = false
+			let routeCommitted = false
 			try {
 				if (ownership && !ownership.guard()) return false
 				// A reopened task must not replace its saved transcript with the empty
@@ -6972,7 +7007,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					globalStoragePath: this.globalStoragePath,
 					workspace: this.historyWorkspacePath,
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
-					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
+					apiConfigName: reasoning?.route?.apiConfigName ?? this._taskApiConfigName,
 					approvalMode: this.taskApprovalMode,
 					memory: this.memory,
 					reasoningPreference: reasoning?.preference ?? this.reasoningPreference,
@@ -7004,21 +7039,53 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				if (ownership && !ownership.guard()) return false
 				const provider = ownership ? capturedProvider : this.providerRef.deref()
-				await provider?.updateTaskHistory(historyItem, reasoning ? { broadcast: false } : undefined)
+				if (reasoning?.route) {
+					routeProvider = provider
+					previousRouteHistory = provider?.taskHistoryStore.get(this.taskId)
+					if (!provider || !previousRouteHistory) throw new Error("The task model route is unavailable")
+					previousRouteHistory = structuredClone(previousRouteHistory)
+					attemptedRouteHistory = { ...historyItem, ...reasoning.route }
+					routePersistenceAttempted = true
+				}
+				await provider?.updateTaskHistory(
+					reasoning?.route ? { ...historyItem, ...reasoning.route } : historyItem,
+					reasoning ? { broadcast: false } : undefined,
+				)
 				if (ownership && !ownership.guard()) return false
 				onPersisted?.()
+				routeCommitted = true
 				if (ownership && !ownership.guard()) return false
 				return true
 			} catch (error) {
 				if (ownership && !ownership.guard()) return false
 				console.error("Failed to save Alpha messages:", error)
 				return false
+			} finally {
+				if (
+					routePersistenceAttempted &&
+					!routeCommitted &&
+					routeProvider &&
+					previousRouteHistory &&
+					attemptedRouteHistory
+				) {
+					// Compensate under the store's file lease. Stop may restore its own
+					// provisional route; a replacement Task owns all later selection writes.
+					await routeProvider.taskHistoryStore.restoreModelRoute(
+						this.taskId,
+						attemptedRouteHistory,
+						previousRouteHistory,
+						() => this.isCurrentApiConversationHistoryOwner(),
+					)
+				}
 			}
 		})
 
 		// Keep the queue usable after a failed write. The caller still receives the
 		// boolean result for this specific operation.
-		this.alphaMessagesSaveQueue = save.then(() => undefined)
+		this.alphaMessagesSaveQueue = save.then(
+			() => undefined,
+			() => undefined,
+		)
 		return save
 	}
 
@@ -10985,30 +11052,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public updateApiConfiguration(newApiConfiguration: ProviderSettings): void {
 		// Build first so a rejected profile cannot leave the old handler paired with new settings.
 		const prepared = this.prepareReasoningConfiguration(newApiConfiguration, this.reasoningPreference)
+		this.installPreparedReasoningConfiguration(newApiConfiguration, prepared)()
+	}
+
+	private installPreparedReasoningConfiguration(
+		newApiConfiguration: ProviderSettings,
+		prepared: ReturnType<Task["prepareReasoningConfiguration"]>,
+	): () => void {
 		const previous = this.api
 		const comparableConfiguration = (configuration: ProviderSettings) => {
 			const { apiModelId, openAiModelId, vsCodeLmModelSelector, ...rest } = configuration
 			return rest
 		}
-		const retained = this.previousCompactionHandler
-		this.previousCompactionHandler = undefined
-		if (
-			previous.getModel().id !== prepared.api.getModel().id &&
-			(previous.getModel().info.contextWindow > prepared.api.getModel().info.contextWindow ||
+		const previousModel = previous.getModel()
+		const selectedModel = prepared.api.getModel()
+		const retainForCompaction =
+			previousModel.id !== selectedModel.id &&
+			(previousModel.info.contextWindow > selectedModel.info.contextWindow ||
 				prepared.api.prepareModel !== undefined) &&
 			isDeepStrictEqual(
 				comparableConfiguration(this.apiConfiguration),
 				comparableConfiguration(newApiConfiguration),
 			)
-		) {
-			this.previousCompactionHandler = previous
-		}
+		const retained = this.previousCompactionHandler
+		this.previousCompactionHandler = retainForCompaction ? previous : undefined
 		this.apiConfiguration = newApiConfiguration
 		this.api = prepared.api
 		this.effectiveApiConfiguration = prepared.configuration
 		this.reasoningState = prepared.state
-		if (retained) this.retireReasoningHandler(retained)
-		this.retireReasoningHandler(previous)
+		return () => {
+			if (retained) this.retireReasoningHandler(retained)
+			this.retireReasoningHandler(previous)
+		}
 	}
 
 	private getCompactionHandler(selected: ApiHandler, previous: ApiHandler | undefined): ApiHandler | undefined {
@@ -11156,6 +11231,198 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		} finally {
 			if (!committed) this.disposeReasoningHandler(prepared.api)
+		}
+	}
+
+	/** Change an idle task's captured route without exposing a partially persisted selection. */
+	public async updateModelRoute(input: {
+		apiConfiguration: ProviderSettings
+		apiConfigName?: string
+		reasoningPreference: TaskReasoningPreference
+		threadModelOverride?: string
+		threadModelRoute?: SubagentModelRouteState
+		signal?: AbortSignal
+		/** A cold replacement may not have the previous account's in-memory settings. */
+		invalidateProviderStateReplay?: boolean
+	}): Promise<void> {
+		const requestSignal = input.signal
+		requestSignal?.throwIfAborted()
+		this.assertModelRouteUpdateAvailable()
+		const preference = taskReasoningPreferenceSchema.parse(input.reasoningPreference)
+		const configuration = snapshotProviderSettings(input.apiConfiguration)
+		const apiConfigName = input.apiConfigName?.trim() || undefined
+		const route = input.threadModelRoute ? subagentModelRouteStateSchema.parse(input.threadModelRoute) : undefined
+		const threadModelOverride = input.threadModelOverride
+		if (
+			route &&
+			(route.provider !== configuration.apiProvider ||
+				route.modelId !== getSubagentRouteModelId(configuration) ||
+				route.profileName !== apiConfigName ||
+				(threadModelOverride !== undefined && threadModelOverride !== route.modelId))
+		) {
+			throw new Error("The captured task model route does not match its selected provider profile and model")
+		}
+		const invalidateProviderStateReplay = input.invalidateProviderStateReplay === true
+		const mutation = this.acquireExternalMutationLease("updating its model route", {
+			allowed: true,
+			state: "available",
+			reason: "The task is idle.",
+		})
+		const lease = this.externalMutationLease
+		const previousApi = this.api
+		let prepared: ReturnType<Task["prepareReasoningConfiguration"]> | undefined
+		let committed = false
+		let retirePrevious: (() => void) | undefined
+		const ownsUpdate = () => {
+			if (requestSignal?.aborted) return false
+			try {
+				this.assertModelRouteUpdateAvailable(lease)
+				return this.api === (committed ? prepared?.api : previousApi)
+			} catch {
+				return false
+			}
+		}
+		try {
+			prepared = this.prepareReasoningConfiguration(configuration, preference)
+			const lifetimeSignal = this.getTaskLifetimeCancellationSignal()
+			const signal = requestSignal ? AbortSignal.any([lifetimeSignal, requestSignal]) : lifetimeSignal
+			const captured = {
+				apiHandler: prepared.api,
+				apiConfiguration: prepared.configuration,
+				profileConfiguration: configuration,
+			}
+			await this.waitForRequestControl(this.prepareCapturedReasoning(captured, { signal }), signal)
+			if (!ownsUpdate()) throw new Error("The task model route update is no longer available")
+			prepared = {
+				api: prepared.api,
+				configuration: captured.apiConfiguration,
+				state: this.reasoningByHandler.get(prepared.api) ?? prepared.state,
+			}
+			const configuredEffort =
+				configuration.enableReasoningEffort !== false && configuration.reasoningEffort !== "disable"
+					? configuration.reasoningEffort
+					: undefined
+			const requestedEffort =
+				preference.kind === "effort"
+					? preference.effort
+					: preference.kind === "default"
+						? (route?.requestedReasoningEffort ?? configuredEffort)
+						: undefined
+			if (requestedEffort) {
+				assertTaskReasoningEffortSupported(
+					requestedEffort,
+					prepared.state.capabilities,
+					prepared.api.getModel().id,
+				)
+			}
+			if (!this.alphaMessagesHydrated) {
+				await this.flushApiConversationHistoryPersistence(ownsUpdate)
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				await this.recoverConversationRewind()
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				const [messages, apiHistory] = await Promise.all([
+					this.getSavedAlphaMessages(true),
+					this.getSavedApiConversationHistory({ hydrateOnly: true }),
+				])
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				this.alphaMessages = messages
+				this.observeUiMessageTimestamps()
+				this.apiConversationHistory = apiHistory
+				this.alphaMessagesHydrated = true
+			}
+			const withoutReasoning = (settings: ProviderSettings) => {
+				const { reasoningEffort: _effort, enableReasoningEffort: _enabled, ...rest } = settings
+				return rest
+			}
+			const previousRoute = this.providerRef.deref()?.taskHistoryStore.get(this.taskId)?.threadModelRoute
+			const changedProfile =
+				previousRoute?.profileId && route?.profileId
+					? previousRoute.profileId !== route.profileId
+					: this.taskApiConfigName !== apiConfigName
+			const routeChanged =
+				invalidateProviderStateReplay ||
+				changedProfile ||
+				!isDeepStrictEqual(withoutReasoning(this.apiConfiguration), withoutReasoning(configuration))
+			if (routeChanged) {
+				const stagedHistory = invalidateOpaqueProviderStateReplay(this.apiConversationHistory)
+				if (stagedHistory.some((message, index) => message !== this.apiConversationHistory[index])) {
+					if (!(await this.saveApiConversationHistory(ownsUpdate, stagedHistory))) {
+						throw new Error("Unable to persist provider state before changing the task model route")
+					}
+					// Invalidation is safe even if the following route write fails. Keep
+					// canonical evidence while preventing replay through a new account.
+					this.apiConversationHistory = stagedHistory
+				}
+			}
+			const selected = prepared
+			const saved = await this.enqueueAlphaMessagesSave(
+				undefined,
+				() => {
+					if (!ownsUpdate()) throw new Error("The task model route update is no longer available")
+					retirePrevious = this.installPreparedReasoningConfiguration(configuration, selected)
+					this.reasoningPreference = preference
+					this.setTaskApiConfigName(apiConfigName)
+					this.skipPrevResponseIdOnce = true
+					committed = true
+				},
+				undefined,
+				{
+					preference,
+					state: selected.state,
+					route: {
+						apiConfigName,
+						threadModelOverride,
+						threadModelRoute: route,
+					},
+				},
+				{ guard: ownsUpdate, provider: this.providerRef.deref() },
+			)
+			if (!saved) throw new Error("Unable to persist task model route")
+			try {
+				retirePrevious?.()
+			} catch (error) {
+				console.error("Failed to dispose the previous task model route handler:", error)
+			}
+		} finally {
+			try {
+				if (prepared && !committed) this.disposeReasoningHandler(prepared.api)
+			} catch (error) {
+				console.error("Failed to dispose the staged task model route handler:", error)
+			} finally {
+				mutation.release?.()
+			}
+		}
+	}
+
+	private assertModelRouteUpdateAvailable(lease?: { label: string; token: symbol }): void {
+		if (
+			this.abort ||
+			this.abandoned ||
+			this.reasoningDisposed ||
+			this.taskCancellationController?.signal.aborted ||
+			!this.isCurrentApiConversationHistoryOwner()
+		) {
+			throw new Error("The task is unavailable for a model route update")
+		}
+		if (
+			this.isStreaming ||
+			this.isWaitingForFirstChunk ||
+			this.isTaskLoopActive ||
+			this.isAgentTurnEngineActive ||
+			this.contextCondenseAbortController ||
+			this.manualContextCondenseSettlement ||
+			this.postTurnCompactionAbortController ||
+			this.ownedLifecyclePromise ||
+			this.queuedInputWakePromise ||
+			this.pendingSteerMessage ||
+			this.steerMessageAwaitingPersistence ||
+			this.hasPendingAsk() ||
+			this.hasActiveCommandExecutions() ||
+			this.messageQueueService?.hasUnconsumedInput() ||
+			this.hasPendingAgentMessages() ||
+			(this.externalMutationLease && this.externalMutationLease !== lease)
+		) {
+			throw new Error("Task work is in progress; wait until it is idle before changing its model route")
 		}
 	}
 
@@ -12908,6 +13175,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			console.error("[Task#getEnabledMcpToolsCount] Error counting MCP tools:", error)
 			return { enabledToolCount: 0, enabledServerCount: 0 }
 		}
+	}
+
+	/** A dormant recipient can be removed only before any lifecycle has started. */
+	public get hasStarted(): boolean {
+		return this._started
 	}
 
 	/**
@@ -19634,6 +19906,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					? captured.profileConfiguration
 					: snapshotProviderSettings(this.apiConfiguration),
 				apiConfigName: captured ? captured.apiConfigName : this._taskApiConfigName,
+				profileId: captured ? captured.profileId : this.getTaskProviderProfileId(),
 			})
 		} finally {
 			this.releaseCompactionHandler(compactionApiHandler)
@@ -20996,12 +21269,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		for (const msg of messages) {
-			const replayOpaqueState =
-				msg.provider_state_scope === undefined ||
-				canReplayProviderState(msg.provider_state_scope, {
-					provider: apiConfiguration.apiProvider ?? "vertex",
-					modelId: apiHandler.getModel().id,
-				})
+			const replayOpaqueState = canReplayMessageProviderState(msg, {
+				provider: apiConfiguration.apiProvider ?? "vertex",
+				modelId: apiHandler.getModel().id,
+			})
 			// Opaque replay state stays on its owning protocol. Keep saved history
 			// intact when a task changes providers or resumes through another adapter.
 			const requestContent = Array.isArray(msg.content)

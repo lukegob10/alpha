@@ -61,6 +61,7 @@ export const toolNames = [
 	"new_task",
 	"delegate_task",
 	"spawn_agent",
+	"list_provider_profiles",
 	"list_threads",
 	"list_archived_threads",
 	"read_thread",

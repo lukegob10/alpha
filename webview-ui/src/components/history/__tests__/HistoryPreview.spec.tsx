@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor, within } from "@/utils/test-utils"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
 import HistoryPreview from "../HistoryPreview"
+import * as taskSearch from "../useTaskSearch"
 
 vi.mock("@/context/ExtensionStateContext")
 vi.mock("@/utils/vscode")
@@ -57,6 +58,16 @@ describe("inline Chats history", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		setHistory()
+	})
+
+	it.each([false, true])("does not rerender an empty selection after mounting (expanded=%s)", (expanded) => {
+		const searchSpy = vi.spyOn(taskSearch, "useTaskSearch")
+		try {
+			render(<HistoryPreview expanded={expanded} />)
+			expect(searchSpy).toHaveBeenCalledTimes(1)
+		} finally {
+			searchSpy.mockRestore()
+		}
 	})
 
 	it("shows four quiet recent chats under the Chats heading without expanded controls", () => {

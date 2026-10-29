@@ -59,6 +59,11 @@ export class OpenAiNativeHandler extends OpenAiHandler {
 	}
 
 	setReasoningOptions(settings: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">): void {
-		this.options = { ...this.options, ...settings }
+		// Runtime callers can pass a full profile; preserve the mapped native transport and credential fields.
+		this.options = {
+			...this.options,
+			enableReasoningEffort: settings.enableReasoningEffort,
+			reasoningEffort: settings.reasoningEffort,
+		}
 	}
 }

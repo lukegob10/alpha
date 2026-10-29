@@ -5,6 +5,7 @@ import {
 	type ExperimentId,
 	type ExtensionState,
 	type AlphaMessage,
+	type LiveTaskMetadata,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	agentLifecycleDegradedSignalSchema,
 	agentLifecycleEventSchema,
@@ -898,6 +899,94 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("foreground-message-count")).toHaveTextContent("1")
 		expect(screen.getByTestId("background-activity")).toHaveTextContent("20")
 		expect(screen.getByTestId("background-context")).toHaveTextContent("935793")
+	})
+
+	it("applies a background task batch atomically without mutating the previous snapshot", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 1
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		const snapshots: ReturnType<typeof useExtensionState>[] = []
+		const StateProbe = () => {
+			snapshots.push(useExtensionState())
+			return null
+		}
+		const makeLiveTask = (id: string, transcriptRevision: number): LiveTaskMetadata => ({
+			id,
+			transcriptRevision,
+			status: TaskStatus.Running,
+			lifecycle: TaskLifecycleState.Running,
+			isActive: false,
+			isStreaming: true,
+			isWaitingForInput: false,
+			lastUpdatedAt: transcriptRevision,
+			queueCount: 0,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		})
+		const liveTasksById = Object.fromEntries(
+			Array.from({ length: 32 }, (_, index) => {
+				const id = `background-${index}`
+				return [id, makeLiveTask(id, 1)]
+			}),
+		)
+		render(
+			<ExtensionStateContextProvider>
+				<StateProbe />
+			</ExtensionStateContextProvider>,
+		)
+		act(() => {
+			dispatchExtensionState({
+				currentTaskId: "foreground-task",
+				alphaMessages: [{ ts: 1, type: "say", say: "text", text: "foreground" }],
+				alphaMessagesSeq: 1_000,
+				liveTasksById,
+			})
+		})
+		const previous = snapshots.at(-1)!
+		Object.freeze(previous.liveTasksById)
+		const rendersBeforeBatch = snapshots.length
+		const publish = (ts: number, alphaMessagesSeq: number, liveTask: LiveTaskMetadata) => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId: liveTask.id,
+						alphaMessage: { ts, type: "say", say: "text", text: "background", partial: true },
+						alphaMessagesSeq,
+						liveTask,
+					},
+				}),
+			)
+		}
+		act(() => {
+			Object.keys(liveTasksById).forEach((taskId, index) => {
+				publish(100 + index, index + 2, makeLiveTask(taskId, 2))
+			})
+			publish(200, 34, makeLiveTask("background-0", 3))
+			publish(201, 35, { ...makeLiveTask("background-0", 2), lastUpdatedAt: 1_000 })
+			publish(202, 36, { ...makeLiveTask("background-0", 3), lastUpdatedAt: 1_001 })
+		})
+		expect(snapshots).toHaveLength(rendersBeforeBatch)
+		expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+		act(() => frameCallback?.(0))
+
+		expect(snapshots).toHaveLength(rendersBeforeBatch + 1)
+		const current = snapshots.at(-1)!
+		expect(current.liveTasksById).not.toBe(previous.liveTasksById)
+		expect(Object.keys(current.liveTasksById ?? {})).toHaveLength(32)
+		for (const taskId of Object.keys(liveTasksById)) {
+			expect(current.liveTasksById?.[taskId]).toEqual(makeLiveTask(taskId, taskId === "background-0" ? 3 : 2))
+			expect(previous.liveTasksById?.[taskId]).toEqual(makeLiveTask(taskId, 1))
+		}
+		expect(current.alphaMessages).toBe(previous.alphaMessages)
+		expect(current.alphaMessagesSeq).toBe(previous.alphaMessagesSeq)
 	})
 
 	it("ignores stale incremental messages and replaces duplicate creations idempotently", () => {

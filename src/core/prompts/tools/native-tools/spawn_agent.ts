@@ -1,8 +1,7 @@
 import type OpenAI from "openai"
 
-import { reasoningEffortsExtended } from "@alpha-code/types"
-
 import type { ManagedAgentKind } from "./delegate_task"
+import { modelSelectionProperties } from "./model_selection"
 
 const ALL_AGENT_KINDS: readonly ManagedAgentKind[] = ["explore", "review", "worker"]
 
@@ -25,8 +24,8 @@ export function createSpawnAgentTool(
 		function: {
 			name: "spawn_agent",
 			description: readOnlyOnly
-				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type to let the host resolve the narrowest role. Omitted fork_turns defaults to all available turns. The requested role never grants authority. Set model or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing."
-				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type so the host selects a role within parent authority. Omitted fork_turns defaults to all available turns. The host derives or rejects Worker scope from trusted parent authority. Set model or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing.",
+				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type to let the host resolve the narrowest role. Omitted fork_turns defaults to all available turns. The requested role never grants authority. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing."
+				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type so the host selects a role within parent authority. Omitted fork_turns defaults to all available turns. The host derives or rejects Worker scope from trusted parent authority. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing.",
 			strict: false,
 			parameters: {
 				type: "object",
@@ -54,21 +53,9 @@ export function createSpawnAgentTool(
 						pattern: "^(?:none|all|[1-9][0-9]*)$",
 						default: "all",
 						description:
-							"Parent conversation inheritance after host sanitization and within its context bound. Omit for all available turns, or use none or a canonical positive decimal integer string for the most recent N turns. Workspace, instructions, skills, model route, and narrowed runtime policy are inherited independently.",
+							"Parent conversation inheritance after host sanitization and within its context bound. Omit for all available turns, or use none to start without parent turns. Canonical positive decimal integer strings are accepted as aliases for all. Workspace, instructions, skills, model route, and narrowed runtime policy are inherited independently.",
 					},
-					model: {
-						type: "string",
-						minLength: 1,
-						maxLength: 256,
-						description:
-							"Optional model override. Omit unless the user explicitly requested a different model.",
-					},
-					reasoning_effort: {
-						type: "string",
-						enum: [...reasoningEffortsExtended],
-						description:
-							"Optional reasoning effort override. Omit unless the user explicitly requested a different effort; the host validates support for the selected model.",
-					},
+					...modelSelectionProperties(),
 				},
 				required: ["task_name", "message"],
 				additionalProperties: false,

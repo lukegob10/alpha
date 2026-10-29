@@ -1,8 +1,23 @@
 import type { Task } from "../task/Task"
-import type { ThreadListOptions, ThreadListResult, ThreadReadOptions, ThreadReadResult } from "@alpha-code/types"
+import type {
+	ProviderName,
+	ReasoningEffortExtended,
+	ThreadListOptions,
+	ThreadListResult,
+	ThreadReadOptions,
+	ThreadReadResult,
+} from "@alpha-code/types"
 
 export type CrossTaskWorkspaceMode = "shared" | "worktree"
 export type CrossTaskLifecycle = "initializing" | "running" | "waiting" | "completed" | "failed" | "closed" | "unknown"
+
+/** Task-local inference selection; the saved profile owns credentials, independently of execution authority. */
+export interface IndependentTaskModelSelection {
+	provider?: ProviderName
+	profile?: string
+	model?: string
+	reasoningEffort?: ReasoningEffortExtended
+}
 
 export interface CrossTaskRecord {
 	task_id: string
@@ -33,7 +48,7 @@ export interface CrossTaskOrchestrationProvider {
 		objective: string,
 		workspaceMode: CrossTaskWorkspaceMode,
 		signal?: AbortSignal,
-		options?: { title?: string; model?: string; notifyOnCompletion?: boolean },
+		options?: IndependentTaskModelSelection & { title?: string; notifyOnCompletion?: boolean },
 	): Promise<CrossTaskRecord>
 	listIndependentTasks(parent: Task): Promise<CrossTaskRecord[]>
 	listIndependentThreads(caller: Task, options?: ThreadListOptions, signal?: AbortSignal): Promise<ThreadListResult>
@@ -43,7 +58,12 @@ export interface CrossTaskOrchestrationProvider {
 		options?: ThreadReadOptions,
 		signal?: AbortSignal,
 	): Promise<ThreadReadResult>
-	forkIndependentTask(caller: Task, sourceTaskId?: string, signal?: AbortSignal): Promise<CrossTaskRecord>
+	forkIndependentTask(
+		caller: Task,
+		sourceTaskId?: string,
+		signal?: AbortSignal,
+		options?: IndependentTaskModelSelection,
+	): Promise<CrossTaskRecord>
 	setIndependentTaskTitle(
 		caller: Task,
 		taskId: string | undefined,
@@ -66,7 +86,7 @@ export interface CrossTaskOrchestrationProvider {
 		sender: Task,
 		targetTaskId: string,
 		message: string,
-		options?: { model?: string; signal?: AbortSignal },
+		options?: IndependentTaskModelSelection & { signal?: AbortSignal },
 	): Promise<{ task_id: string; status: string }>
 	steerIndependentTask(
 		parent: Task,

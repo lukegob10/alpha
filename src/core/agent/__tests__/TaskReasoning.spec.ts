@@ -1,6 +1,52 @@
-import type { ModelInfo, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
+import type { ModelInfo, ProviderSettings, TaskReasoningCapabilities, TaskReasoningState } from "@alpha-code/types"
 
-import { getAdjacentReasoningPreference, resolveTaskReasoning } from "../TaskReasoning"
+import {
+	assertTaskReasoningEffortSupported,
+	getAdjacentReasoningPreference,
+	resolveTaskReasoning,
+} from "../TaskReasoning"
+
+describe("explicit reasoning effort validation", () => {
+	it.each(["none", "high"] as const)("accepts an advertised %s effort exactly", (effort) => {
+		expect(() =>
+			assertTaskReasoningEffortSupported(
+				effort,
+				{ kind: "effort", efforts: ["none", "low", "high"], canDisable: true },
+				"selected-model",
+			),
+		).not.toThrow()
+	})
+
+	it("rejects an unsupported level with the model and supported choices", () => {
+		expect(() =>
+			assertTaskReasoningEffortSupported(
+				"ultra",
+				{ kind: "effort", efforts: ["low", "high"], canDisable: true },
+				"selected-model",
+			),
+		).toThrow(/selected-model.*ultra.*Supported levels: low, high/)
+	})
+
+	it("requires advertised none support even when a separate control can disable reasoning", () => {
+		expect(() =>
+			assertTaskReasoningEffortSupported(
+				"none",
+				{ kind: "effort", efforts: ["low", "high"], canDisable: true },
+				"selected-model",
+			),
+		).toThrow(/does not support reasoning effort "none"/)
+	})
+
+	it.each(["budget", "binary", "custom", "unavailable"] as const)(
+		"rejects named efforts for %s controls without changing fallback resolution",
+		(kind) => {
+			const capabilities: TaskReasoningCapabilities = { kind, canDisable: true }
+			expect(() => assertTaskReasoningEffortSupported("high", capabilities, "selected-model")).toThrow(
+				"does not support named reasoning levels",
+			)
+		},
+	)
+})
 
 describe("reasoning hotkey levels", () => {
 	const state: TaskReasoningState = {

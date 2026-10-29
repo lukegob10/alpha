@@ -37,6 +37,8 @@ type TaskSession = {
 	waitingReason?: string
 	/** Canonical lifecycle state, when the runtime has supplied one. */
 	lifecycleSnapshot?: AgentLifecycleSnapshot
+	/** Derived from the owned snapshot so metadata reads do not rescan tool history. */
+	hasPendingToolCalls: boolean
 }
 
 type SharedTaskSessions = {
@@ -87,6 +89,12 @@ const isTerminalAsk = (ask: AlphaAsk | undefined) => Boolean(ask && terminalAskT
 const terminalInputAskTypes = new Set<AlphaAsk>(["completion_result", "resume_task", "resume_completed_task"])
 
 const canAcceptTerminalAskInput = (ask: AlphaAsk | undefined) => Boolean(ask && terminalInputAskTypes.has(ask))
+
+const hasPendingToolCalls = (snapshot: AgentLifecycleSnapshot | undefined): boolean => {
+	if (!snapshot?.acceptedToolCallIds.length) return false
+	const terminalToolCalls = new Set(snapshot.terminalToolCallIds)
+	return snapshot.acceptedToolCallIds.some((id) => !terminalToolCalls.has(id))
+}
 
 export class TaskSessionRegistry {
 	private static readonly hosts = new Map<string, SharedTaskSessions>()
@@ -477,6 +485,7 @@ export class TaskSessionRegistry {
 						messages: task.alphaMessages,
 					})
 				: undefined
+		const lifecycleSnapshot = pendingSnapshot ? structuredClone(pendingSnapshot) : undefined
 		this.sessions.set(task.taskId, {
 			task,
 			owner: this,
@@ -484,9 +493,10 @@ export class TaskSessionRegistry {
 			lifecycle: projection?.lifecycle ?? TaskLifecycleState.Initializing,
 			lastActivityAt: Date.now(),
 			waitingReason: projection?.waitingReason,
-			lifecycleSnapshot: pendingSnapshot ? structuredClone(pendingSnapshot) : undefined,
+			lifecycleSnapshot,
+			hasPendingToolCalls: hasPendingToolCalls(lifecycleSnapshot),
 		})
-		if (pendingSnapshot) this.lifecycleSnapshots.set(task.taskId, structuredClone(pendingSnapshot))
+		if (lifecycleSnapshot) this.lifecycleSnapshots.set(task.taskId, lifecycleSnapshot)
 
 		if (options.focus ?? true) {
 			this.activeTaskId = task.taskId
@@ -603,6 +613,7 @@ export class TaskSessionRegistry {
 		snapshot: AgentLifecycleSnapshot,
 	): void {
 		session.lifecycleSnapshot = snapshot
+		session.hasPendingToolCalls = hasPendingToolCalls(snapshot)
 		session.lastActivityAt = snapshot.terminalAt ?? Date.now()
 		if (this.lifecycleDegradedTaskIds.has(taskId)) return
 
@@ -657,13 +668,19 @@ export class TaskSessionRegistry {
 	clearLifecycleSnapshot(taskId?: string): void {
 		if (taskId === undefined) {
 			this.lifecycleSnapshots.clear()
-			for (const session of this.sessions.values()) session.lifecycleSnapshot = undefined
+			for (const session of this.sessions.values()) {
+				session.lifecycleSnapshot = undefined
+				session.hasPendingToolCalls = false
+			}
 			return
 		}
 
 		this.lifecycleSnapshots.delete(taskId)
 		const session = this.sessions.get(taskId)
-		if (session) session.lifecycleSnapshot = undefined
+		if (session) {
+			session.lifecycleSnapshot = undefined
+			session.hasPendingToolCalls = false
+		}
 	}
 
 	private getCurrentTaskAsk(task: Task): AlphaMessage | undefined {
@@ -690,11 +707,14 @@ export class TaskSessionRegistry {
 		return projectAlphaMessageStatus({ messages: task.alphaMessages, taskAsk, taskStatus: task.taskStatus })
 	}
 
-	private getEffectiveLifecycle(session: TaskSession): TaskLifecycleState {
+	private getEffectiveLifecycle(
+		session: TaskSession,
+		current?: { taskAsk?: AlphaMessage; projection: AlphaMessageStatusProjection },
+	): TaskLifecycleState {
 		if (isTerminalLifecycle(session.lifecycle)) {
 			return session.lifecycle
 		}
-		const taskAsk = this.getCurrentTaskAsk(session.task)
+		const taskAsk = current ? current.taskAsk : this.getCurrentTaskAsk(session.task)
 		if (isTerminalAsk(taskAsk?.ask)) {
 			return TaskLifecycleState.Completed
 		}
@@ -703,7 +723,7 @@ export class TaskSessionRegistry {
 			(session.lifecycleSnapshot?.status === "in_progress" &&
 				!this.lifecycleDegradedTaskIds.has(session.task.taskId))
 		) {
-			return this.getTaskProjection(session, taskAsk).lifecycle
+			return (current?.projection ?? this.getTaskProjection(session, taskAsk)).lifecycle
 		}
 
 		return session.lifecycle
@@ -738,10 +758,10 @@ export class TaskSessionRegistry {
 	private projectMetadata(session: TaskSession): LiveTaskMetadata {
 		const { task } = session
 		const tokenUsage = task.tokenUsage
-		const lifecycle = this.getEffectiveLifecycle(session)
 		const taskAsk = this.getCurrentTaskAsk(task)
-		const isTerminal = isTerminalLifecycle(lifecycle)
 		const projection = this.getTaskProjection(session, taskAsk)
+		const lifecycle = this.getEffectiveLifecycle(session, { taskAsk, projection })
+		const isTerminal = isTerminalLifecycle(lifecycle)
 		const isWaitingForInput =
 			!isTerminal &&
 			(lifecycle === TaskLifecycleState.Waiting || projection.isWaitingForInput || Boolean(taskAsk))
@@ -768,7 +788,6 @@ export class TaskSessionRegistry {
 				: isTurnActive && !isWaitingForInput
 		const hasPendingSteer =
 			typeof task.hasPendingSteerMessage === "function" ? task.hasPendingSteerMessage() : false
-		const terminalToolCalls = new Set(session.lifecycleSnapshot?.terminalToolCallIds)
 		const metadata: LiveTaskMetadata = {
 			id: task.taskId,
 			...(task.orchestrationParentTaskId ? { orchestrationParentTaskId: task.orchestrationParentTaskId } : {}),
@@ -786,8 +805,7 @@ export class TaskSessionRegistry {
 			canInterrupt,
 			activityPhase: session.lifecycleSnapshot?.phase,
 			turnId: session.lifecycleSnapshot?.turnId,
-			hasPendingToolCalls:
-				session.lifecycleSnapshot?.acceptedToolCallIds.some((id) => !terminalToolCalls.has(id)) ?? false,
+			hasPendingToolCalls: session.hasPendingToolCalls,
 			hasPendingSteer,
 			isWaitingForInput,
 			lastUpdatedAt: Math.max(

@@ -316,14 +316,22 @@ async function dispatch(
 			const args = threadToolParamsSchemas.create_thread.parse(params)
 			const created = await provider.createIndependentTask(task, args.prompt, "shared", signal, {
 				title: args.title,
+				provider: args.provider,
+				profile: args.profile,
 				model: args.model,
+				reasoningEffort: args.reasoning_effort,
 				notifyOnCompletion: false,
 			})
 			return { threadId: created.task_id }
 		}
 		case "fork_thread": {
 			const args = threadToolParamsSchemas.fork_thread.parse(params)
-			const forked = await provider.forkIndependentTask(task, args.threadId, signal)
+			const forked = await provider.forkIndependentTask(task, args.threadId, signal, {
+				provider: args.provider,
+				profile: args.profile,
+				model: args.model,
+				reasoningEffort: args.reasoning_effort,
+			})
 			return {
 				environment: { type: "same-directory" },
 				sourceThreadId: args.threadId ?? task.taskId,
@@ -334,7 +342,10 @@ async function dispatch(
 		case "send_message_to_thread": {
 			const args = threadToolParamsSchemas.send_message_to_thread.parse(params)
 			const delivered = await provider.sendIndependentTaskMessage(task, args.threadId, args.prompt, {
+				provider: args.provider,
+				profile: args.profile,
 				model: args.model,
+				reasoningEffort: args.reasoning_effort,
 				signal,
 			})
 			return { threadId: delivered.task_id }

@@ -90,7 +90,7 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 		}
 	}, [code, themeRevision])
 
-	// 2) Debounce the actual parse/render
+	// Completed diagrams render on the next task, leaving scheduled work cancellable on unmount.
 	useDebounceEffect(
 		() => {
 			const generation = renderGeneration.current
@@ -106,9 +106,7 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 						suppressErrorRendering: true,
 						themeVariables: theme,
 					})
-					await mermaid.parse(code)
-					if (generation !== renderGeneration.current) return
-
+					// Mermaid 11.16.1 render parses the diagram and rejects invalid input itself.
 					const id = `mermaid-${Math.random().toString(36).substring(2)}`
 					const { svg } = await mermaid.render(id, code)
 					if (generation !== renderGeneration.current) return
@@ -128,7 +126,7 @@ export default function MermaidBlock({ code }: MermaidBlockProps) {
 
 			void renderDiagram()
 		},
-		500, // Delay 500ms
+		0,
 		[code, themeRevision],
 	)
 
