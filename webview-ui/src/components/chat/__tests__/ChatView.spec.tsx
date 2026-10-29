@@ -501,6 +501,72 @@ const renderChatView = (props: Partial<ChatViewProps> = {}, ref?: React.Ref<Chat
 	)
 }
 
+describe("ChatView host message compatibility", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("renders a submitted prompt and continued replies from an older host", async () => {
+		const view = renderChatView()
+		const input = view.getByTestId("chat-textarea").querySelector("input")!
+		const promptText = "Check the workspace and explain what needs fixing"
+		fireEvent.change(input, { target: { value: promptText } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "newTask", text: promptText }),
+			),
+		)
+		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "newTask")![0]
+		const taskId = request.taskId!
+		const prompt: AlphaMessage = { type: "say", say: "task", ts: 1, text: promptText }
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							currentTaskId: taskId,
+							currentView: { type: "task", taskId },
+							clineMessages: [],
+							clineMessagesSeq: 1,
+						},
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "messageCreated", taskId, clineMessage: prompt, clineMessagesSeq: 2 },
+				}),
+			)
+		})
+		expect(await view.findByText(promptText)).toBeInTheDocument()
+
+		const response: AlphaMessage = { type: "say", say: "text", ts: 2, text: "Checking the workspace" }
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "messageCreated", taskId, alphaMessage: response, alphaMessagesSeq: 3 },
+				}),
+			)
+		})
+		expect(await view.findByText(/Checking the workspace/)).toBeInTheDocument()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId,
+						clineMessage: { ...response, text: "The workspace check is complete", partial: false },
+						clineMessagesSeq: 4,
+					},
+				}),
+			)
+		})
+		expect(await view.findByText(/The workspace check is complete/)).toBeInTheDocument()
+		expect(view.getByText(promptText)).toBeInTheDocument()
+	})
+})
+
 describe("ChatView retired speech playback", () => {
 	beforeEach(() => vi.clearAllMocks())
 

@@ -606,6 +606,192 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
 	})
 
+	it("preserves legacy transcript wire creation, streaming, completion, and sequence ordering", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 1
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		let state: ReturnType<typeof useExtensionState> | undefined
+		const CaptureState = () => {
+			state = useExtensionState()
+			return null
+		}
+		const publish = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data }))
+		const prompt: AlphaMessage = { ts: 1, type: "say", say: "user_feedback", text: "Please help" }
+		const response: AlphaMessage = { ts: 2, type: "say", say: "text", text: "start", partial: true }
+		render(
+			<ExtensionStateContextProvider>
+				<CaptureState />
+			</ExtensionStateContextProvider>,
+		)
+
+		act(() => {
+			publish({
+				type: "state",
+				state: { currentTaskId: "task-1", clineMessages: [], clineMessagesSeq: 10 },
+			})
+			publish({ type: "messageCreated", taskId: "task-1", clineMessage: prompt, clineMessagesSeq: 11 })
+		})
+		expect(state?.alphaMessages).toEqual([prompt])
+		expect(state?.alphaMessagesSeq).toBe(11)
+
+		act(() => {
+			publish({ type: "messageCreated", taskId: "task-1", clineMessage: response, clineMessagesSeq: 12 })
+			for (const [clineMessagesSeq, text] of [
+				[13, "first"],
+				[15, "newest"],
+				[14, "older"],
+			] as const) {
+				publish({
+					type: "messageUpdated",
+					taskId: "task-1",
+					clineMessage: { ...response, text },
+					clineMessagesSeq,
+				})
+			}
+		})
+		act(() => frameCallback?.(0))
+		expect(state?.alphaMessages).toEqual([prompt, { ...response, text: "newest" }])
+		expect(state?.alphaMessagesSeq).toBe(15)
+
+		const completed = { ...response, text: "complete", partial: false }
+		act(() => {
+			publish({
+				type: "messageUpdated",
+				taskId: "task-1",
+				clineMessage: { ...response, text: "queued" },
+				clineMessagesSeq: 16,
+			})
+			publish({ type: "messageUpdated", taskId: "task-1", clineMessage: completed, clineMessagesSeq: 17 })
+			publish({
+				type: "state",
+				state: { currentTaskId: "task-1", clineMessages: [prompt], clineMessagesSeq: 16 },
+			})
+			publish({ type: "messageCreated", taskId: "task-1", clineMessage: prompt, clineMessagesSeq: 16 })
+		})
+		act(() => frameCallback?.(0))
+		expect(state?.alphaMessages).toEqual([prompt, completed])
+		expect(state?.alphaMessagesSeq).toBe(17)
+	})
+
+	it("restores legacy transcript wire snapshots without accepting older revisions", () => {
+		let state: ReturnType<typeof useExtensionState> | undefined
+		const CaptureState = () => {
+			state = useExtensionState()
+			return null
+		}
+		const message: AlphaMessage = { ts: 1, type: "say", say: "text", text: "saved conversation" }
+		render(
+			<ExtensionStateContextProvider>
+				<CaptureState />
+			</ExtensionStateContextProvider>,
+		)
+		act(() => {
+			for (const [clineMessagesSeq, clineMessages] of [
+				[7, [message]],
+				[6, []],
+			] as const) {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "state", state: { currentTaskId: "task-1", clineMessages, clineMessagesSeq } },
+					}),
+				)
+			}
+		})
+		expect(state?.alphaMessages).toEqual([message])
+		expect(state?.alphaMessagesSeq).toBe(7)
+	})
+
+	it("prefers canonical transcript wire fields when legacy aliases are also present", () => {
+		let state: ReturnType<typeof useExtensionState> | undefined
+		const CaptureState = () => {
+			state = useExtensionState()
+			return null
+		}
+		const canonical: AlphaMessage = { ts: 1, type: "say", say: "text", text: "canonical" }
+		const legacy: AlphaMessage = { ...canonical, text: "legacy" }
+		render(
+			<ExtensionStateContextProvider>
+				<CaptureState />
+			</ExtensionStateContextProvider>,
+		)
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							currentTaskId: "task-1",
+							alphaMessages: [canonical],
+							alphaMessagesSeq: 20,
+							clineMessages: [legacy],
+							clineMessagesSeq: 100,
+						},
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId: "task-1",
+						alphaMessage: { ...canonical, text: "canonical update" },
+						alphaMessagesSeq: 21,
+						clineMessage: { ...legacy, text: "legacy update" },
+						clineMessagesSeq: 101,
+					},
+				}),
+			)
+		})
+		expect(state?.alphaMessages).toEqual([{ ...canonical, text: "canonical update" }])
+		expect(state?.alphaMessagesSeq).toBe(21)
+	})
+
+	it.each(["messageCreated", "messageUpdated"])(
+		"ignores malformed incremental %s payloads without corrupting the transcript",
+		(type) => {
+			let state: ReturnType<typeof useExtensionState> | undefined
+			const CaptureState = () => {
+				state = useExtensionState()
+				return null
+			}
+			const errors: unknown[] = []
+			const captureError = (event: ErrorEvent) => {
+				errors.push(event.error)
+				event.preventDefault()
+			}
+			window.addEventListener("error", captureError)
+			try {
+				render(
+					<ExtensionStateContextProvider>
+						<CaptureState />
+					</ExtensionStateContextProvider>,
+				)
+				act(() => dispatchExtensionState({ currentTaskId: "task-1", alphaMessages: [], alphaMessagesSeq: 1 }))
+				const previous = state
+				for (const payload of [{}, { alphaMessage: null }, { alphaMessage: 7 }]) {
+					act(() => {
+						window.dispatchEvent(
+							new MessageEvent("message", {
+								data: { type, taskId: "task-1", alphaMessagesSeq: 2, ...payload },
+							}),
+						)
+					})
+					expect(state).toBe(previous)
+					expect(state?.alphaMessages).toEqual([])
+				}
+				expect(errors).toEqual([])
+			} finally {
+				window.removeEventListener("error", captureError)
+			}
+		},
+	)
+
 	it("applies interleaved partial updates in wire-sequence order", () => {
 		let frameCallback: FrameRequestCallback | undefined
 		vi.stubGlobal(
