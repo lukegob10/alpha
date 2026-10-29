@@ -557,6 +557,34 @@ describe("Task canonical response admission", () => {
 })
 
 describe("Task committed partial stream recovery", () => {
+	it.each([undefined, 1_000])(
+		"recovers a long initial response from committed history with an explicit recovery allowance of %s",
+		async (maxElapsedMs) => {
+			let elapsed = 0
+			vi.spyOn(performance, "now").mockImplementation(() => elapsed)
+			const fixture = await harness(
+				async function* (attempt) {
+					if (attempt === 1) {
+						yield { type: "text", text: partialText }
+						elapsed = 600_000
+						throw transportFailure()
+					}
+					yield { type: "text", text: "Recovered after the long response." }
+					yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				},
+				{ ...(maxElapsedMs !== undefined ? { maxElapsedMs } : {}) },
+			)
+			await fixture.run()
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			const failed = (await fixture.history()).filter(
+				(message) => message.agentResponseOutcome?.status === "failed",
+			)
+			expect(failed).toHaveLength(1)
+			expect(fixture.effect).not.toHaveBeenCalled()
+		},
+	)
+
 	it("keeps rejected complete tool arguments out of task diagnostics", async () => {
 		const canary = "CANARYt8"
 		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)

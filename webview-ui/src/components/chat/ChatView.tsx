@@ -16,7 +16,6 @@ import { LRUCache } from "lru-cache"
 import { useDebounceEffect } from "@src/utils/useDebounceEffect"
 import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
-import { batchConsecutive } from "@src/utils/batchConsecutive"
 
 import type {
 	AlphaAsk,
@@ -135,20 +134,26 @@ export const isContextCondensationRequest = (text: string): boolean =>
 	)
 
 function useStableConversationPromptMessages(messages: AlphaMessage[]): AlphaMessage[] {
-	const key = messages
-		.filter((message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim())
-		.map((message) => `${message.ts}:${message.text}`)
-		.join("\0")
-	const cached = useRef({ key: "", value: [] as AlphaMessage[] })
-	if (cached.current.key !== key) {
-		cached.current = {
-			key,
-			value: messages.filter(
-				(message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim(),
-			),
+	const cached = useRef<AlphaMessage[]>([])
+	return useMemo(() => {
+		const prompts = messages.filter(
+			(message) => message.type === "say" && message.say === "user_feedback" && message.text?.trim(),
+		)
+		// The composer consumes prompt text only. Assistant streaming must not reset
+		// its navigation, and typing must not rebuild a key from the entire history.
+		if (
+			prompts.length === cached.current.length &&
+			prompts.every(
+				(message, index) =>
+					message === cached.current[index] ||
+					(message.ts === cached.current[index].ts && message.text === cached.current[index].text),
+			)
+		) {
+			return cached.current
 		}
-	}
-	return cached.current.value
+		cached.current = prompts
+		return prompts
+	}, [messages])
 }
 
 interface ChatTranscriptRowsProps {
@@ -652,6 +657,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		: visibleMessageQueue
 	const inputValueRef = useRef(inputValue)
 	const textAreaRef = useRef<HTMLTextAreaElement>(null)
+	const expandChatsPanel = useCallback(() => setIsHistoryExpanded(true), [])
 	const closeChatsPanel = useCallback(() => {
 		setIsHistoryExpanded(false)
 		setDismissedHistoryRequest(historyFocusRequest)
@@ -1399,6 +1405,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		},
 		[enterBlankTaskView, postNewTaskSubmission],
 	)
+	const startBlankTask = useCallback(() => startNewTask(), [startNewTask])
 	const restoreNewTaskSubmission = useCallback(
 		(submission: ComposerSubmission) => {
 			updateTaskDraft(undefined, (draft) =>
@@ -2642,22 +2649,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			message.partial !== true &&
 			message.isAnswered === true
 
-		// Helper to check if a message is a read_file ask that should be batched
-		const isReadFileAsk = (msg: AlphaMessage): boolean => {
-			if (!isCompletedToolAsk(msg)) return false
-			const tool = getBatchToolPayload(msg)
-			return tool?.tool === "readFile" && !tool.batchFiles // Don't re-batch already batched
-		}
-
-		// Helper to check if a message is a list_files ask that should be batched
-		const isListFilesAsk = (msg: AlphaMessage): boolean => {
-			if (!isCompletedToolAsk(msg)) return false
-			const tool = getBatchToolPayload(msg)
-			return (
-				(tool?.tool === "listFilesTopLevel" || tool?.tool === "listFilesRecursive") && !tool.batchDirs // Don't re-batch already batched
-			)
-		}
-
 		// Set of tool names that represent file-editing operations
 		const editFileTools = new Set([
 			"editedExistingFile",
@@ -2667,11 +2658,16 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			"searchAndReplace",
 		])
 
-		// Helper to check if a message is a file-edit ask that should be batched
-		const isEditFileAsk = (msg: AlphaMessage): boolean => {
-			if (!isCompletedToolAsk(msg)) return false
-			const tool = getBatchToolPayload(msg)
-			return tool !== undefined && editFileTools.has(tool.tool) && !tool.batchDiffs // Don't re-batch already batched
+		type BatchKind = "read" | "list" | "edit"
+		const getBatchKind = (message: AlphaMessage): BatchKind | undefined => {
+			if (!isCompletedToolAsk(message)) return undefined
+			const tool = getBatchToolPayload(message)
+			if (tool?.tool === "readFile" && !tool.batchFiles) return "read"
+			if ((tool?.tool === "listFilesTopLevel" || tool?.tool === "listFilesRecursive") && !tool.batchDirs) {
+				return "list"
+			}
+			if (tool && editFileTools.has(tool.tool) && !tool.batchDiffs) return "edit"
+			return undefined
 		}
 
 		// Synthesize a batch of consecutive read_file asks into a single message
@@ -2738,10 +2734,31 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 		}
 
-		// Consolidate consecutive ask messages into batches
-		const readFileBatched = batchConsecutive(filtered, isReadFileAsk, synthesizeReadFileBatch)
-		const listFilesBatched = batchConsecutive(readFileBatched, isListFilesAsk, synthesizeListFilesBatch)
-		const result = batchConsecutive(listFilesBatched, isEditFileAsk, synthesizeEditFileBatch)
+		const synthesizeBatch = {
+			read: synthesizeReadFileBatch,
+			list: synthesizeListFilesBatch,
+			edit: synthesizeEditFileBatch,
+		}
+		const result: AlphaMessage[] = []
+		let batchKind: BatchKind | undefined
+		let batch: AlphaMessage[] = []
+		const flushBatch = () => {
+			if (batch.length === 0 || batchKind === undefined) return
+			result.push(batch.length === 1 ? batch[0] : synthesizeBatch[batchKind](batch))
+			batch = []
+		}
+		// Each row is classified once; a different tool kind or an unbatchable
+		// message ends the run without joining groups across that boundary.
+		for (const message of filtered) {
+			const kind = getBatchKind(message)
+			if (kind !== batchKind) {
+				flushBatch()
+				batchKind = kind
+			}
+			if (kind) batch.push(message)
+			else result.push(message)
+		}
+		flushBatch()
 
 		if (isCondensing) {
 			result.push({
@@ -3438,15 +3455,15 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					{...chatToolbarActions}
 					renderContext={extensionState.renderContext}
 					debug={extensionState.debug === true}
-					onNewChat={() => startNewTask()}
+					onNewChat={startBlankTask}
 					navigation={
 						task ? (
 							<ChatHistorySwitcher
 								isVisible={!isHidden}
 								currentTaskId={visibleCurrentTaskId}
-								onBackToHome={() => startNewTask()}
+								onBackToHome={startBlankTask}
 								onOpenTask={openTaskWithCache}
-								onViewAll={() => setIsHistoryExpanded(true)}
+								onViewAll={expandChatsPanel}
 							/>
 						) : undefined
 					}
@@ -3470,7 +3487,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						{(taskHistory.length > 0 || showChatsPanel) && (
 							<HistoryPreview
 								expanded={showChatsPanel}
-								onExpand={() => setIsHistoryExpanded(true)}
+								onExpand={expandChatsPanel}
 								focusRequest={historyFocusRequest}
 								onClose={closeChatsPanel}
 								onOpenTask={openTaskWithCache}

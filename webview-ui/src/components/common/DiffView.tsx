@@ -155,26 +155,17 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 	}, [hunks, shouldHighlight, normalizedLang, isLightTheme, filePath])
 
 	// Render helper that uses precomputed highlighting
-	const renderContent = (line: DiffLine, hunk: Hunk, lineIndexInHunk: number): React.ReactNode => {
+	const renderContent = (line: DiffLine, hunk: Hunk, oldLineIndex: number, newLineIndex: number): React.ReactNode => {
 		if (!shouldHighlight || !hunk.highlightedOldLines || !hunk.highlightedNewLines) {
 			return line.content
 		}
 
-		// Find the line index within the old/new text for this hunk
-		const hunkLinesBeforeThis = hunk.lines.slice(0, lineIndexInHunk).filter((l) => l.type !== "gap")
-
 		if (line.type === "deletion") {
-			// Count deletions and context lines before this line
-			const oldLineIndex = hunkLinesBeforeThis.filter((l) => l.type === "deletion" || l.type === "context").length
 			return hunk.highlightedOldLines[oldLineIndex] || line.content
 		} else if (line.type === "addition") {
-			// Count additions and context lines before this line
-			const newLineIndex = hunkLinesBeforeThis.filter((l) => l.type === "addition" || l.type === "context").length
 			return hunk.highlightedNewLines[newLineIndex] || line.content
 		} else if (line.type === "context") {
 			// For context lines, prefer new-side highlighting, fall back to old-side
-			const newLineIndex = hunkLinesBeforeThis.filter((l) => l.type === "addition" || l.type === "context").length
-			const oldLineIndex = hunkLinesBeforeThis.filter((l) => l.type === "deletion" || l.type === "context").length
 			return hunk.highlightedNewLines[newLineIndex] || hunk.highlightedOldLines[oldLineIndex] || line.content
 		}
 
@@ -186,8 +177,11 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 			<div className="overflow-x-hidden">
 				<table className="w-full border-collapse table-auto">
 					<tbody>
-						{processedHunks.flatMap((hunk, hunkIndex) =>
-							hunk.lines.map((line, lineIndex) => {
+						{processedHunks.flatMap((hunk, hunkIndex) => {
+							// Each side advances independently; gaps never consume a highlighted source line.
+							let oldLineIndex = 0
+							let newLineIndex = 0
+							return hunk.lines.map((line, lineIndex) => {
 								const globalIndex = `${hunkIndex}-${lineIndex}`
 
 								// Render compact separator between hunks
@@ -205,6 +199,10 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 										</tr>
 									)
 								}
+
+								const content = renderContent(line, hunk, oldLineIndex, newLineIndex)
+								if (line.type !== "addition") oldLineIndex++
+								if (line.type !== "deletion") newLineIndex++
 
 								// Use VSCode's built-in diff editor color variables as classes for gutters
 								const gutterBgClass =
@@ -245,12 +243,12 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 										{/* Code content (no +/- prefix here) */}
 										<td
 											className={`pl-1 pr-3 whitespace-pre-wrap break-words w-full ${contentBgClass}`}>
-											{renderContent(line, hunk, lineIndex)}
+											{content}
 										</td>
 									</tr>
 								)
-							}),
-						)}
+							})
+						})}
 					</tbody>
 				</table>
 			</div>

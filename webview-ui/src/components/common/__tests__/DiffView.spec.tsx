@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@/utils/test-utils"
+import * as diffParser from "@src/utils/parseUnifiedDiff"
 
 import DiffView from "../DiffView"
 
@@ -25,6 +26,131 @@ const diff = (label: string) => `--- a/example.ts
 +new ${label}`
 
 describe("DiffView", () => {
+	beforeEach(() => {
+		highlightHunksMock.mockReset()
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("preserves independent old/new line ordering, gaps, and plain-text fallbacks", async () => {
+		highlightHunksMock
+			.mockResolvedValueOnce({
+				oldLines: ["old start", "old one highlighted", "old two highlighted", "old fallback highlighted", ""],
+				newLines: ["new start highlighted", "new one highlighted", "new two highlighted", "", ""],
+			})
+			.mockResolvedValueOnce({
+				oldLines: ["tail old highlighted", "old tail context"],
+				newLines: ["tail new highlighted", "tail context highlighted"],
+			})
+		const source = `--- a/example.ts
++++ b/example.ts
+@@ -1,5 +1,5 @@
+ context start
+-old one
+-old two
++new one
++new two
+ context fallback
+ context raw
+@@ -10,2 +10,2 @@
+-tail old
++tail new
+ tail context`
+
+		const { container } = render(<DiffView source={source} filePath="example.ts" />)
+		await screen.findByText("tail context highlighted")
+
+		const rows = Array.from(container.querySelectorAll("tbody > tr"))
+		expect(rows.map((row) => row.lastElementChild?.textContent)).toEqual([
+			"new start highlighted",
+			"old one highlighted",
+			"old two highlighted",
+			"new one highlighted",
+			"new two highlighted",
+			"old fallback highlighted",
+			"context raw",
+			"4 hidden lines",
+			"tail old highlighted",
+			"tail new highlighted",
+			"tail context highlighted",
+		])
+		expect(rows.map((row) => [row.children[0].textContent, row.children[1].textContent])).toEqual([
+			["1", "1"],
+			["2", ""],
+			["3", ""],
+			["", "2"],
+			["", "3"],
+			["4", "4"],
+			["5", "5"],
+			["", ""],
+			["10", ""],
+			["", "10"],
+			["11", "11"],
+		])
+	})
+
+	it("retains all raw lines when highlight results are unavailable", async () => {
+		const pending = deferred<HighlightResult>()
+		highlightHunksMock.mockReturnValue(pending.promise)
+		const { container } = render(<DiffView source={diff("plain")} filePath="example.ts" />)
+
+		await act(async () => {
+			pending.resolve({ oldLines: [], newLines: [] })
+		})
+
+		expect(
+			Array.from(container.querySelectorAll("tbody > tr"), (row) => row.lastElementChild?.textContent),
+		).toEqual(["old plain", "new plain"])
+	})
+
+	it("reuses parse and highlight work when source and path are unchanged", async () => {
+		const parseSpy = vi.spyOn(diffParser, "parseUnifiedDiff")
+		highlightHunksMock.mockResolvedValue({ oldLines: ["old highlighted"], newLines: ["new highlighted"] })
+		const source = diff("unchanged")
+		const { rerender } = render(<DiffView source={source} filePath="example.ts" />)
+		await screen.findByText("new highlighted")
+
+		rerender(<DiffView source={source} filePath="example.ts" />)
+
+		expect(parseSpy).toHaveBeenCalledTimes(1)
+		expect(highlightHunksMock).toHaveBeenCalledTimes(1)
+	})
+
+	it("keeps highlighted line lookup work linear for a large mixed hunk", async () => {
+		const rowCount = 900
+		let lineTypeReads = 0
+		const lines: diffParser.DiffLine[] = Array.from({ length: rowCount }, (_, index) => {
+			const type = index % 3 === 0 ? "context" : index % 3 === 1 ? "deletion" : "addition"
+			return {
+				oldLineNum: null,
+				newLineNum: null,
+				get type() {
+					lineTypeReads++
+					return type
+				},
+				content: `line ${index}`,
+			}
+		})
+		vi.spyOn(diffParser, "parseUnifiedDiff").mockReturnValue(lines)
+		const pending = deferred<HighlightResult>()
+		highlightHunksMock.mockReturnValue(pending.promise)
+		const { container } = render(<DiffView source={diff("large")} filePath="example.ts" />)
+		lineTypeReads = 0
+
+		await act(async () => {
+			pending.resolve({
+				oldLines: Array.from({ length: 600 }, (_, index) => `old highlighted ${index}`),
+				newLines: Array.from({ length: 600 }, (_, index) => `new highlighted ${index}`),
+			})
+		})
+
+		expect(container.querySelectorAll("tbody > tr")).toHaveLength(rowCount)
+		// Counting source-line inspections avoids a timing threshold while catching repeated prefix scans.
+		expect(lineTypeReads).toBeLessThanOrEqual(rowCount * 16)
+	})
+
 	it("does not let an older highlight overwrite newer source", async () => {
 		const pending: Array<ReturnType<typeof deferred<HighlightResult>>> = []
 		highlightHunksMock.mockImplementation(() => {

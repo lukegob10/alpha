@@ -69,6 +69,7 @@ const renderSelector = (
 			scopeKey={props.scopeKey ?? "task-1/profile-a"}
 			onChange={props.onChange ?? vi.fn()}
 			loading={props.loading}
+			isVisible={props.isVisible}
 			saving={props.saving}
 			error={props.error}
 			onOpenAdvanced={props.onOpenAdvanced}
@@ -398,6 +399,65 @@ describe("ReasoningSelector", () => {
 		)
 
 		await waitFor(() => expect(screen.queryByRole("slider", { name: "Reasoning" })).not.toBeInTheDocument())
+	})
+
+	it("closes the reasoning portal when hidden and leaves it closed when the composer returns", () => {
+		const onChange = vi.fn()
+		const state = effortState({
+			pending: true,
+			current: {
+				requested: { kind: "effort", effort: "low" },
+				effective: { kind: "effort", effort: "low" },
+				capabilities: { kind: "effort", efforts: ["low", "medium", "high"], canDisable: true },
+			},
+		})
+		const { rerender } = renderSelector(state, { onChange })
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByRole("dialog", { name: "Reasoning" })).toBeInTheDocument()
+		expect(screen.getByText("Current: Low")).toBeInTheDocument()
+
+		rerender(<ReasoningSelector state={state} scopeKey="task-1/profile-a" onChange={onChange} isVisible={false} />)
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+		expect(screen.getByTestId("reasoning-trigger")).toHaveAccessibleName("Reasoning: Medium")
+		expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("next step")
+
+		rerender(<ReasoningSelector state={state} scopeKey="task-1/profile-a" onChange={onChange} />)
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByText("Current: Low")).toBeInTheDocument()
+		expect(onChange).not.toHaveBeenCalled()
+	})
+
+	it("keeps an unapplied custom token when the composer is hidden and shown again", () => {
+		const onChange = vi.fn()
+		const state = effortState({
+			requested: { kind: "custom", value: "balanced" },
+			effective: { kind: "custom", value: "balanced" },
+			capabilities: { kind: "custom", canDisable: true },
+		})
+		const { rerender } = renderSelector(state, { onChange })
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		fireEvent.change(screen.getByLabelText("Custom reasoning token"), { target: { value: "draft-token" } })
+
+		rerender(<ReasoningSelector state={state} scopeKey="task-1/profile-a" onChange={onChange} isVisible={false} />)
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+		rerender(<ReasoningSelector state={state} scopeKey="task-1/profile-a" onChange={onChange} />)
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByLabelText("Custom reasoning token")).toHaveValue("draft-token")
+		expect(onChange).not.toHaveBeenCalled()
+	})
+
+	it("ignores a stale trigger activation while its composer is hidden", () => {
+		const onChange = vi.fn()
+		const state = effortState()
+		const { rerender } = renderSelector(state, { onChange, isVisible: false })
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+
+		rerender(<ReasoningSelector state={state} scopeKey="task-1/profile-a" onChange={onChange} />)
+		expect(screen.queryByRole("dialog", { name: "Reasoning" })).not.toBeInTheDocument()
+		expect(onChange).not.toHaveBeenCalled()
 	})
 
 	it("disables the trigger while loading and exposes only the loading label", () => {

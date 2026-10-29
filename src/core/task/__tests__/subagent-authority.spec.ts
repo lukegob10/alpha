@@ -114,6 +114,7 @@ describe("sub-agent task authority", () => {
 			expect(child.getTaskAllowedToolNames()).toEqual(["send_message", "list_agents", "attempt_completion"])
 			expect(child.isToolAllowedForTask("send_message")).toBe(true)
 			expect(child.isToolAllowedForTask("spawn_agent")).toBe(false)
+			expect(child.isToolAllowedForTask("list_provider_profiles")).toBe(false)
 			expect(child.isToolAllowedForTask("apply_patch")).toBe(false)
 			expect(child.isToolAllowedForTask("exec_command")).toBe(false)
 		},
@@ -325,6 +326,7 @@ describe("sub-agent task authority", () => {
 			"send_message",
 			"skill",
 			"spawn_agent",
+			"list_provider_profiles",
 			"list_agents",
 			"wait_agent",
 			"followup_task",

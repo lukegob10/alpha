@@ -51,7 +51,8 @@ import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentM
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
 import {
-	canReplayProviderState,
+	canReplayMessageProviderState,
+	invalidateOpaqueProviderStateReplay,
 	hasOpaqueProviderState,
 	isOpaqueProviderContentBlock,
 	providerStateScopeSchema,
@@ -195,11 +196,17 @@ import {
 	type TaskReasoningState,
 	type TaskReasoningProjection,
 	taskReasoningPreferenceSchema,
+	subagentModelRouteStateSchema,
 } from "@alpha-code/types"
-import { hasPendingReasoningChange, resolveTaskReasoning } from "../agent/TaskReasoning"
+import {
+	assertTaskReasoningEffortSupported,
+	hasPendingReasoningChange,
+	resolveTaskReasoning,
+} from "../agent/TaskReasoning"
 import { fallbackTaskTitle, generateTaskTitle } from "./taskTitle"
 import {
 	ApiStreamDeadlineError,
+	type ApiDeadlineScope,
 	createLinkedAbortController,
 	createApiStreamOutcome,
 	ApiStream,
@@ -212,7 +219,11 @@ import {
 	normalizeApiStreamErrorMetadata,
 } from "../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
-import { getApiRequestTimeout, withApiRequestTimeout } from "../../api/providers/utils/timeout-config"
+import {
+	ApiRequestTimeoutError,
+	getApiRequestTimeout,
+	withApiRequestTimeout,
+} from "../../api/providers/utils/timeout-config"
 
 // shared
 import { findLastIndex } from "../../shared/array"
@@ -306,6 +317,7 @@ import { classifyRequestWorkClass, extractUserRequestText } from "../agent/reque
 import {
 	AgentRetryPolicy,
 	delayWithAbort,
+	getAgentRetryDeadline,
 	type AgentRetryCategory,
 	type AgentRetryDecision,
 } from "../agent/AgentRetryPolicy"
@@ -315,7 +327,7 @@ import {
 	getFinalAssistantMessageIndexes,
 	type SubagentInvocationContext,
 } from "../agent/SubagentInvocationContext"
-import { snapshotProviderSettings } from "../agent/SubagentModelRouter"
+import { getSubagentRouteModelId, snapshotProviderSettings } from "../agent/SubagentModelRouter"
 import { AgentTurnEventLog } from "../agent/AgentTurnEventLog"
 import type { AgentLifecycleEventInput } from "../agent/lifecycle"
 import {
@@ -389,7 +401,12 @@ import {
 	type TokenCountContext,
 } from "../condense"
 import { MessageQueueService } from "../message-queue/MessageQueueService"
-import { AutoApprovalHandler, captureToolReviewPolicy, checkAutoApprovalWithInheritedPolicy } from "../auto-approval"
+import {
+	AutoApprovalHandler,
+	captureToolReviewPolicy,
+	checkAutoApprovalWithInheritedPolicy,
+	getFollowupAutoApprovalTimeoutMs,
+} from "../auto-approval"
 import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
 import { clearTaskSessionApprovalGrants } from "../auto-approval/taskSessionApprovalGrants"
 import { collectArtifactExecutionIds, MessageManager } from "../message-manager"
@@ -538,16 +555,19 @@ function getTimeoutWithinDeadline(
 ): number | undefined {
 	if (absoluteDeadline === undefined || !Number.isFinite(absoluteDeadline)) return configuredTimeoutMs
 	const remainingMs = absoluteDeadline - Date.now()
-	if (remainingMs <= 0) throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+	if (remainingMs <= 0) throw new ApiStreamDeadlineError("Automatic retry deadline exceeded", "retry_deadline")
 	if (typeof configuredTimeoutMs !== "number" || !Number.isFinite(configuredTimeoutMs) || configuredTimeoutMs <= 0) {
 		return remainingMs
 	}
 	return Math.min(configuredTimeoutMs, remainingMs)
 }
 
-function throwIfAbsoluteDeadlineExceeded(absoluteDeadline: number | undefined): void {
+function throwIfAbsoluteDeadlineExceeded(
+	absoluteDeadline: number | undefined,
+	timeoutScope: ApiDeadlineScope = "retry_deadline",
+): void {
 	if (typeof absoluteDeadline === "number" && Number.isFinite(absoluteDeadline) && absoluteDeadline <= Date.now()) {
-		throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+		throw new ApiStreamDeadlineError(undefined, timeoutScope)
 	}
 }
 
@@ -563,6 +583,7 @@ type CapturedTaskProvider = {
 	apiConfiguration: ProviderSettings
 	profileConfiguration?: ProviderSettings
 	apiConfigName?: string
+	profileId?: string
 }
 
 type TaskRequestOptions = {
@@ -673,7 +694,7 @@ interface TaskStreamRecovery {
 	error: Error
 	retryAttempt: number
 	retryAttempts: TaskRetryAttempts
-	retryDeadline: number
+	retryDeadline?: number
 	sequenceStartedAt: number
 }
 
@@ -872,6 +893,7 @@ export function getSubagentAllowedToolNames(
 			tools.length - 1,
 			0,
 			"spawn_agent",
+			"list_provider_profiles",
 			"list_agents",
 			"wait_agent",
 			"followup_task",
@@ -1127,8 +1149,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		| { kind: "toolApproval"; requestId: string; decision: ToolApprovalDecision }
 	private activeToolApprovalRequest?: ToolApprovalRequest
 	private activeToolApprovalDecision?: ToolApprovalDecision
-	private subagentReviewBarrier?: { promise: Promise<void>; resolve: () => void; resumeForInput: boolean }
-	private subagentReviewInputTurn?: { runId: string; turnId: string }
+	private subagentReviewBarrier?: { promise: Promise<void>; resolve: () => void }
 	private isAwaitingSubagentReview = false
 	private isTaskLoopActive = false
 	private didComplete = false
@@ -1301,10 +1322,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private askResponse?: AlphaAskResponse
 	private askResponseText?: string
 	private askResponseImages?: string[]
-	private activeAsk?: { type: AlphaAsk; ts: number; toolCallId?: string; queuedMessageIds?: string[] }
+	private activeAsk?: {
+		type: AlphaAsk
+		ts: number
+		toolCallId?: string
+		queuedMessageIds?: string[]
+		signal?: AbortSignal
+		published?: boolean
+	}
 	private askResponseQueuedMessageIds?: string[]
 	public lastMessageTs?: number
 	private autoApprovalTimeoutRef?: NodeJS.Timeout
+	private autoApprovalTimeoutRevision = 0
 
 	// Tool Use
 	consecutiveMistakeCount: number = 0
@@ -4246,7 +4275,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async saveApiConversationHistory(guard?: CanonicalLifecycleEventGuard): Promise<boolean> {
+	private async saveApiConversationHistory(
+		guard?: CanonicalLifecycleEventGuard,
+		stagedMessages?: readonly ApiMessage[],
+	): Promise<boolean> {
 		if (guard && !guard()) return false
 		if (
 			(Task.apiConversationHistoryPendingCounts.get(this.apiConversationHistoryPersistenceKey) ?? 0) >=
@@ -4265,7 +4297,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.apiConversationHistory.includes(this.pendingResumeHistoryRepair.message)
 				? this.pendingResumeHistoryRepair
 				: undefined
-		const messages = structuredClone(this.apiConversationHistory)
+		const messages = structuredClone(stagedMessages ? [...stagedMessages] : this.apiConversationHistory)
 		const failureGeneration = this.apiConversationHistoryFailureGeneration
 
 		return this.enqueueApiConversationHistoryPersistence(async () => {
@@ -5452,7 +5484,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * turn so the task journal can begin a new local sequence at one.
 	 */
 	private async beginCanonicalLifecycleTurn(): Promise<boolean> {
-		this.subagentReviewInputTurn = undefined
 		try {
 			await this.replayCanonicalLifecycle()
 		} catch (error) {
@@ -6238,6 +6269,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private getTaskProviderProfileId(): string | undefined {
+		const route =
+			this.subagentModelRoute ?? this.providerRef.deref()?.taskHistoryStore?.get(this.taskId)?.threadModelRoute
+		return route &&
+			route.provider === this.apiConfiguration.apiProvider &&
+			route.profileName === this._taskApiConfigName
+			? route.profileId
+			: undefined
+	}
+
 	/**
 	 * Capture the model-visible request boundary once all request inputs have been
 	 * assembled. Transport retries derive a retry snapshot so the context ID and
@@ -6275,6 +6316,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const {
 					signal: _signal,
 					deadline: _deadline,
+					deadlineScope: _deadlineScope,
 					streamCapabilities: _capabilities,
 					...recoveryMetadata
 				} = metadata
@@ -6351,17 +6393,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
 		let providerCapture: CapturedTaskProvider | undefined = {
 			apiHandler,
+			compactionApiHandler: capturedProvider?.compactionApiHandler,
 			apiConfiguration: snapshotProviderSettings(apiConfiguration),
 			profileConfiguration: snapshotProviderSettings(
 				capturedProvider?.profileConfiguration ?? this.apiConfiguration,
 			),
 			apiConfigName: capturedProvider ? capturedProvider.apiConfigName : this._taskApiConfigName,
+			profileId: capturedProvider ? capturedProvider.profileId : this.getTaskProviderProfileId(),
 		}
 		this.agentTurnStep += 1
 		const model = apiHandler.getModel()
 		const {
 			signal: _requestSignal,
 			deadline: _requestDeadline,
+			deadlineScope: _requestDeadlineScope,
 			streamCapabilities: _streamCapabilities,
 			...capturedMetadata
 		} = metadata
@@ -6395,8 +6440,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						source: "parent",
 						resolution: "selected",
 						provider: apiConfiguration.apiProvider,
-						modelId: model.id,
+						modelId:
+							apiConfiguration.apiProvider === "fake-ai"
+								? getSubagentRouteModelId(apiConfiguration)
+								: model.id,
 						profileName: capturedApiConfigName ?? "Parent profile",
+						profileId: providerCapture.profileId,
 					},
 					history: forkHistory,
 					allowedTools: [...surface.policy.allowedTools],
@@ -6512,6 +6561,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 
 		this.currentAgentStep?.releaseRequest?.()
+		if (providerCapture.compactionApiHandler) {
+			this.reasoningHandlerUsers.set(
+				providerCapture.compactionApiHandler,
+				(this.reasoningHandlerUsers.get(providerCapture.compactionApiHandler) ?? 0) + 1,
+			)
+		}
 		const summaryConfiguration: ProviderSettings = {
 			...structuredClone(diagnosticProviderOptions),
 			modelMaxTokens: 2_048,
@@ -6543,9 +6598,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 			releaseRequest: () => {
 				if (!capturedRequest) return
+				const compactionApiHandler = providerCapture?.compactionApiHandler
 				capturedRequest = undefined
 				capturedForkContext = undefined
 				providerCapture = undefined
+				this.releaseCompactionHandler(compactionApiHandler)
 				this.retireReasoningHandler(apiHandler)
 			},
 			hasRetainedRequest: () => capturedRequest !== undefined,
@@ -6832,10 +6889,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.generatedTitleAbortController?.abort(new Error("The task was renamed"))
 	}
 
-	private recordProviderRequestTimeout(): void {
-		// appendAgentTurnEvent captures the current immutable step and request IDs
-		// before its first await, including when this timeout triggers cancellation.
-		void this.appendAgentTurnEvent({ type: "model_request_failed", purpose: "task", code: "ProviderTimeout" })
+	private reportedProviderTimeoutSteps?: WeakSet<CurrentAgentStep>
+
+	private recordProviderRequestTimeout(error: unknown, step = this.currentAgentStep): void {
+		if (!step || normalizeApiStreamErrorMetadata(error).code !== "ProviderTimeout") return
+		this.reportedProviderTimeoutSteps ??= new WeakSet()
+		if (this.reportedProviderTimeoutSteps.has(step)) return
+		this.reportedProviderTimeoutSteps.add(step)
+		// Capture the exact attempt before cancellation can install its successor.
+		void this.appendAgentTurnEvent(
+			{ type: "model_request_failed", purpose: "task", code: "ProviderTimeout" },
+			step.snapshot.context,
+			{ turnId: step.turnId, stepId: step.stepId, requestId: step.requestId, attemptId: step.attemptId },
+		)
 	}
 
 	private summarizeReasoning(message: AlphaMessage | undefined): void {
@@ -6887,12 +6953,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		createSnapshot: () => AlphaMessage[] = () => structuredClone(this.alphaMessages),
 		onPersisted?: () => void,
 		designHandoff?: TaskDesignHandoff,
-		reasoning?: { preference: TaskReasoningPreference; state: TaskReasoningState },
+		reasoning?: {
+			preference: TaskReasoningPreference
+			state: TaskReasoningState
+			route?: Pick<HistoryItem, "apiConfigName" | "threadModelOverride" | "threadModelRoute">
+		},
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
 	): Promise<boolean> {
 		if (ownership && !ownership.guard()) return false
 		const capturedProvider = ownership?.provider
 		const save = this.alphaMessagesSaveQueue.then(async () => {
+			let routeProvider: AlphaProvider | undefined
+			let previousRouteHistory: HistoryItem | undefined
+			let attemptedRouteHistory: HistoryItem | undefined
+			let routePersistenceAttempted = false
+			let routeCommitted = false
 			try {
 				if (ownership && !ownership.guard()) return false
 				// A reopened task must not replace its saved transcript with the empty
@@ -6932,7 +7007,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					globalStoragePath: this.globalStoragePath,
 					workspace: this.historyWorkspacePath,
 					mode: this._taskMode || defaultModeSlug, // Use the task's own mode, not the current provider mode.
-					apiConfigName: this._taskApiConfigName, // Use the task's own provider profile, not the current provider profile.
+					apiConfigName: reasoning?.route?.apiConfigName ?? this._taskApiConfigName,
 					approvalMode: this.taskApprovalMode,
 					memory: this.memory,
 					reasoningPreference: reasoning?.preference ?? this.reasoningPreference,
@@ -6964,21 +7039,53 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				if (ownership && !ownership.guard()) return false
 				const provider = ownership ? capturedProvider : this.providerRef.deref()
-				await provider?.updateTaskHistory(historyItem, reasoning ? { broadcast: false } : undefined)
+				if (reasoning?.route) {
+					routeProvider = provider
+					previousRouteHistory = provider?.taskHistoryStore.get(this.taskId)
+					if (!provider || !previousRouteHistory) throw new Error("The task model route is unavailable")
+					previousRouteHistory = structuredClone(previousRouteHistory)
+					attemptedRouteHistory = { ...historyItem, ...reasoning.route }
+					routePersistenceAttempted = true
+				}
+				await provider?.updateTaskHistory(
+					reasoning?.route ? { ...historyItem, ...reasoning.route } : historyItem,
+					reasoning ? { broadcast: false } : undefined,
+				)
 				if (ownership && !ownership.guard()) return false
 				onPersisted?.()
+				routeCommitted = true
 				if (ownership && !ownership.guard()) return false
 				return true
 			} catch (error) {
 				if (ownership && !ownership.guard()) return false
 				console.error("Failed to save Alpha messages:", error)
 				return false
+			} finally {
+				if (
+					routePersistenceAttempted &&
+					!routeCommitted &&
+					routeProvider &&
+					previousRouteHistory &&
+					attemptedRouteHistory
+				) {
+					// Compensate under the store's file lease. Stop may restore its own
+					// provisional route; a replacement Task owns all later selection writes.
+					await routeProvider.taskHistoryStore.restoreModelRoute(
+						this.taskId,
+						attemptedRouteHistory,
+						previousRouteHistory,
+						() => this.isCurrentApiConversationHistoryOwner(),
+					)
+				}
 			}
 		})
 
 		// Keep the queue usable after a failed write. The caller still receives the
 		// boolean result for this specific operation.
-		this.alphaMessagesSaveQueue = save.then(() => undefined)
+		this.alphaMessagesSaveQueue = save.then(
+			() => undefined,
+			() => undefined,
+		)
 		return save
 	}
 
@@ -7338,6 +7445,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCommandApproved?: (commandExecutionId: string) => void,
 		signal?: AbortSignal,
 	): Promise<{ response: AlphaAskResponse; text?: string; images?: string[]; queuedMessageIds?: string[] }> {
+		const capturedAutoApprovalTimeoutRevision = this.autoApprovalTimeoutRevision ?? 0
 		const capturedTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
 		const addMessage = (message: AlphaMessage) =>
 			this.addToAlphaMessages(message, undefined, undefined, capturedTurn)
@@ -7406,23 +7514,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			partial === true || requiresExplicitApproval
 				? undefined
 				: this.getOffscreenAutoAskResponse(type, text, isProtected)
+		const autoApprovalInput = {
+			state: taskApprovalState,
+			commandPolicy,
+			reviewPolicy,
+			inheritedState:
+				this.taskKind === "subagent"
+					? (this.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy)
+					: undefined,
+			ask: type,
+			text: type === "command" ? commandForApproval : text,
+			isProtected,
+			requiresExplicitApproval,
+		}
 		const pendingApproval =
 			partial === true || offscreenAutoResponse
 				? undefined
-				: checkAutoApprovalWithInheritedPolicy({
-						state: taskApprovalState,
-						commandPolicy,
-						reviewPolicy,
-						inheritedState:
-							this.taskKind === "subagent"
-								? (this.subagentContextManifest?.runtimePolicy.autoApproval ??
-									disabledSubagentAutoApprovalPolicy)
-								: undefined,
-						ask: type,
-						text: type === "command" ? commandForApproval : text,
-						isProtected,
-						requiresExplicitApproval,
-					})
+				: checkAutoApprovalWithInheritedPolicy(autoApprovalInput)
 		const approval = pendingApproval
 			? signal
 				? await this.waitForRequestControl(pendingApproval, signal)
@@ -7438,7 +7546,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let askTs: number
 		let installedAsk: Task["activeAsk"]
 		const installActiveAsk = (ts: number) => {
-			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId }
+			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId, signal }
 			this.activeAsk = installedAsk
 		}
 
@@ -7552,6 +7660,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 		}
 
+		if (installedAsk) installedAsk.published = true
 		let timeouts: NodeJS.Timeout[] = []
 
 		const onAbort = () => {
@@ -7582,14 +7691,67 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.approveAsk()
 			} else if (!signal?.aborted && approval.decision === "deny") {
 				this.denyAsk()
-			} else if (!signal?.aborted && approval.decision === "timeout") {
+			} else if (
+				!signal?.aborted &&
+				approval.decision === "timeout" &&
+				(this.autoApprovalTimeoutRevision ?? 0) === capturedAutoApprovalTimeoutRevision
+			) {
 				// Store the auto-approval timeout so it can be cancelled if user interacts
-				this.autoApprovalTimeoutRef = setTimeout(() => {
-					const { askResponse, text, images } = approval.fn()
-					this.handleWebviewAskResponse(askResponse, text, images)
-					this.autoApprovalTimeoutRef = undefined
+				const timeout = setTimeout(() => {
+					const ownsAutomaticAnswer = () =>
+						!this.abort &&
+						!this.abandoned &&
+						!signal?.aborted &&
+						(this.autoApprovalTimeoutRevision ?? 0) === capturedAutoApprovalTimeoutRevision &&
+						this.autoApprovalTimeoutRef === timeout &&
+						this.activeAsk === installedAsk &&
+						this.activeAsk?.ts === askTs &&
+						this.lastMessageTs === askTs &&
+						this.askResponse === undefined &&
+						!this.deferredAskResponse
+					void (async () => {
+						try {
+							if (!provider || !ownsAutomaticAnswer()) return
+							const pendingCurrentState = provider.getState()
+							const currentState = signal
+								? await this.waitForRequestControl(pendingCurrentState, signal)
+								: await pendingCurrentState
+							if (!ownsAutomaticAnswer()) return
+							// Settings may revoke a timed answer while preserving the admitted step's authority.
+							const pendingCurrentApproval = checkAutoApprovalWithInheritedPolicy({
+								...autoApprovalInput,
+								state: this.approvalStateForAsk(currentState, taskApprovalMode),
+							})
+							const currentApproval = signal
+								? await this.waitForRequestControl(pendingCurrentApproval, signal)
+								: await pendingCurrentApproval
+							if (!ownsAutomaticAnswer()) return
+							// Imports/API writes may revoke the preference after getState captured it.
+							// Read it synchronously at the effect boundary, after the last await.
+							if (
+								currentApproval.decision !== "timeout" ||
+								currentApproval.timeout !== approval.timeout ||
+								provider.contextProxy.getValue("followupAutoApproveTimeoutMs") !== approval.timeout
+							) {
+								this.markActiveFollowupQuestionWaiting(askTs)
+								return
+							}
+							const { askResponse, text, images } = approval.fn()
+							this.handleWebviewAskResponse(askResponse, text, images, undefined, askTs)
+						} catch {
+							if (ownsAutomaticAnswer()) {
+								provider?.log(
+									"Skipping automatic question answer because settings could not be revalidated.",
+								)
+								this.markActiveFollowupQuestionWaiting(askTs)
+							}
+						} finally {
+							if (this.autoApprovalTimeoutRef === timeout) this.autoApprovalTimeoutRef = undefined
+						}
+					})()
 				}, approval.timeout)
-				timeouts.push(this.autoApprovalTimeoutRef)
+				this.autoApprovalTimeoutRef = timeout
+				timeouts.push(timeout)
 			}
 
 			// The state is mutable if the message is complete and the task will
@@ -7606,7 +7768,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!signal?.aborted &&
 				isBlocking &&
 				(!shouldDrainQueuedMessageForAsk() || !isMessageQueued) &&
-				approval.decision === "ask"
+				(approval.decision === "ask" ||
+					(approval.decision === "timeout" &&
+						(this.autoApprovalTimeoutRevision ?? 0) !== capturedAutoApprovalTimeoutRevision))
 			if (
 				isStatusMutable &&
 				this.taskKind === "subagent" &&
@@ -7631,6 +7795,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (isInteractiveAsk(type)) {
 					timeouts.push(
 						setTimeout(() => {
+							if (type === "followup") {
+								this.markActiveFollowupQuestionWaiting(askTs)
+								return
+							}
 							const message = this.findMessageByTimestamp(askTs)
 
 							if (message) {
@@ -8127,11 +8295,47 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Cancel any pending auto-approval timeout.
 	 * Called when user interacts (types, clicks buttons, etc.) to prevent the timeout from firing.
 	 */
-	public cancelAutoApprovalTimeout(): void {
+	public cancelAutoApprovalTimeout(notifyQuestionWaiting = false): void {
+		// Revocation also covers an ask still admitting settings before its timer is installed.
+		this.autoApprovalTimeoutRevision = (this.autoApprovalTimeoutRevision ?? 0) + 1
 		if (this.autoApprovalTimeoutRef) {
 			clearTimeout(this.autoApprovalTimeoutRef)
 			this.autoApprovalTimeoutRef = undefined
 		}
+		if (notifyQuestionWaiting) this.markActiveFollowupQuestionWaiting()
+	}
+
+	private markActiveFollowupQuestionWaiting(expectedAskTs?: number): void {
+		const ask = this.activeAsk
+		if (
+			!ask ||
+			ask.type !== "followup" ||
+			!ask.published ||
+			ask.signal?.aborted ||
+			this.abort ||
+			this.abandoned ||
+			this.didComplete ||
+			(expectedAskTs !== undefined && ask.ts !== expectedAskTs) ||
+			this.lastMessageTs !== ask.ts ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse
+		) {
+			return
+		}
+		const message = this.findMessageByTimestamp(ask.ts)
+		if (
+			!message ||
+			message.type !== "ask" ||
+			message.ask !== "followup" ||
+			message.partial ||
+			message.isAnswered ||
+			this.interactiveAsk?.ts === ask.ts
+		) {
+			return
+		}
+		this.interactiveAsk = message
+		this.emit(AlphaCodeEventName.TaskInteractive, this.taskId)
+		this.providerRef.deref()?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
 	}
 
 	public approveAsk({ text, images }: { text?: string; images?: string[] } = {}) {
@@ -10523,7 +10727,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getPendingSubagentReviewCompletionDecision(): CompletionGateDecision | undefined {
-		if (!this.externalMutationLease && !this.hasPendingSubagentChangeSetReview()) return undefined
+		if (!this.externalMutationLease) return undefined
 		return {
 			allowed: false,
 			classification: "waiting",
@@ -10535,53 +10739,47 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private releaseSubagentReviewBarrierIfSettled(force = false): void {
 		const barrier = this.subagentReviewBarrier
-		if (!barrier) return
-		if (
-			!force &&
-			(this.externalMutationLease ||
-				(this.hasPendingSubagentChangeSetReview() && !barrier.resumeForInput && !this.pendingSteerMessage))
-		)
-			return
+		if (!barrier || (!force && this.externalMutationLease)) return
 		this.subagentReviewBarrier = undefined
 		barrier.resolve()
 	}
 
-	private async waitForPendingSubagentChangeSetReviews(hasHumanInput = false): Promise<void> {
+	private async waitForPendingSubagentChangeSetReviews(): Promise<void> {
+		let attemptedIntegration = false
 		while (
 			!this.abort &&
 			!this.getTaskLifetimeCancellationSignal().aborted &&
 			(this.externalMutationLease ||
-				(this.hasPendingSubagentChangeSetReview() && !hasHumanInput && !this.pendingSteerMessage))
+				(!attemptedIntegration && !this.pendingSteerMessage && this.hasPendingSubagentChangeSetReview()))
 		) {
 			if (!this.subagentReviewBarrier) {
 				let resolve!: () => void
 				const promise = new Promise<void>((resolveBarrier) => {
 					resolve = resolveBarrier
 				})
-				this.subagentReviewBarrier = { promise, resolve, resumeForInput: hasHumanInput }
+				this.subagentReviewBarrier = { promise, resolve }
 			}
 
 			const barrier = this.subagentReviewBarrier
-			barrier.resumeForInput ||= hasHumanInput
 			const wait = this.beginAgentWait()
+			// This safe step boundary permits already-authorized integration. A
+			// quarantined proposal never grants authority or waits for human review.
 			this.isAwaitingSubagentReview = true
 			try {
-				try {
-					await this.providerRef.deref()?.autoApplyPendingSubagentChangeSets?.(this.taskId)
-				} catch (error) {
-					console.error(
-						`[Task#waitForPendingSubagentChangeSetReviews] Automatic Worker apply failed: ${String(error)}`,
-					)
+				if (!this.externalMutationLease && !attemptedIntegration) {
+					attemptedIntegration = true
+					try {
+						await this.providerRef.deref()?.autoApplyPendingSubagentChangeSets?.(this.taskId)
+					} catch (error) {
+						console.error(
+							`[Task#waitForPendingSubagentChangeSetReviews] Automatic Worker apply failed: ${String(error)}`,
+						)
+					}
 				}
 				this.releaseSubagentReviewBarrierIfSettled()
-				if (this.hasPendingSubagentChangeSetReview()) {
-					const publication = this.providerRef
-						.deref()
-						?.postStateToWebviewWithoutTaskHistory()
-						.catch(() => undefined)
-					if (publication) await this.waitForRequestControl(publication, wait.signal)
-				}
-				await this.waitForRequestControl(barrier.promise, wait.signal)
+				// Only an admitted workspace effect owns this barrier. The canonical
+				// ledger decides completion for unapplied and applied proposals.
+				if (this.externalMutationLease) await this.waitForRequestControl(barrier.promise, wait.signal)
 			} catch (error) {
 				if (
 					!this.abort &&
@@ -10589,8 +10787,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					wait.signal.aborted &&
 					this.pendingSteerMessage
 				) {
-					// Input interrupts the pause, not the quarantined proposal or an
-					// admitted Apply/Discard. Its mutation lease still drains first.
+					// Steering must join an already-admitted effect before sampling.
 					this.releaseSubagentReviewBarrierIfSettled()
 					await barrier.promise
 				} else if (!this.abort && !this.getTaskLifetimeCancellationSignal().aborted) throw error
@@ -10599,6 +10796,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (this.subagentReviewBarrier === barrier) this.subagentReviewBarrier = undefined
 				this.isAwaitingSubagentReview = false
 			}
+			if (this.pendingSteerMessage) return
 		}
 	}
 
@@ -10854,30 +11052,38 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public updateApiConfiguration(newApiConfiguration: ProviderSettings): void {
 		// Build first so a rejected profile cannot leave the old handler paired with new settings.
 		const prepared = this.prepareReasoningConfiguration(newApiConfiguration, this.reasoningPreference)
+		this.installPreparedReasoningConfiguration(newApiConfiguration, prepared)()
+	}
+
+	private installPreparedReasoningConfiguration(
+		newApiConfiguration: ProviderSettings,
+		prepared: ReturnType<Task["prepareReasoningConfiguration"]>,
+	): () => void {
 		const previous = this.api
 		const comparableConfiguration = (configuration: ProviderSettings) => {
 			const { apiModelId, openAiModelId, vsCodeLmModelSelector, ...rest } = configuration
 			return rest
 		}
-		const retained = this.previousCompactionHandler
-		this.previousCompactionHandler = undefined
-		if (
-			previous.getModel().id !== prepared.api.getModel().id &&
-			(previous.getModel().info.contextWindow > prepared.api.getModel().info.contextWindow ||
+		const previousModel = previous.getModel()
+		const selectedModel = prepared.api.getModel()
+		const retainForCompaction =
+			previousModel.id !== selectedModel.id &&
+			(previousModel.info.contextWindow > selectedModel.info.contextWindow ||
 				prepared.api.prepareModel !== undefined) &&
 			isDeepStrictEqual(
 				comparableConfiguration(this.apiConfiguration),
 				comparableConfiguration(newApiConfiguration),
 			)
-		) {
-			this.previousCompactionHandler = previous
-		}
+		const retained = this.previousCompactionHandler
+		this.previousCompactionHandler = retainForCompaction ? previous : undefined
 		this.apiConfiguration = newApiConfiguration
 		this.api = prepared.api
 		this.effectiveApiConfiguration = prepared.configuration
 		this.reasoningState = prepared.state
-		if (retained) this.retireReasoningHandler(retained)
-		this.retireReasoningHandler(previous)
+		return () => {
+			if (retained) this.retireReasoningHandler(retained)
+			this.retireReasoningHandler(previous)
+		}
 	}
 
 	private getCompactionHandler(selected: ApiHandler, previous: ApiHandler | undefined): ApiHandler | undefined {
@@ -11025,6 +11231,198 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		} finally {
 			if (!committed) this.disposeReasoningHandler(prepared.api)
+		}
+	}
+
+	/** Change an idle task's captured route without exposing a partially persisted selection. */
+	public async updateModelRoute(input: {
+		apiConfiguration: ProviderSettings
+		apiConfigName?: string
+		reasoningPreference: TaskReasoningPreference
+		threadModelOverride?: string
+		threadModelRoute?: SubagentModelRouteState
+		signal?: AbortSignal
+		/** A cold replacement may not have the previous account's in-memory settings. */
+		invalidateProviderStateReplay?: boolean
+	}): Promise<void> {
+		const requestSignal = input.signal
+		requestSignal?.throwIfAborted()
+		this.assertModelRouteUpdateAvailable()
+		const preference = taskReasoningPreferenceSchema.parse(input.reasoningPreference)
+		const configuration = snapshotProviderSettings(input.apiConfiguration)
+		const apiConfigName = input.apiConfigName?.trim() || undefined
+		const route = input.threadModelRoute ? subagentModelRouteStateSchema.parse(input.threadModelRoute) : undefined
+		const threadModelOverride = input.threadModelOverride
+		if (
+			route &&
+			(route.provider !== configuration.apiProvider ||
+				route.modelId !== getSubagentRouteModelId(configuration) ||
+				route.profileName !== apiConfigName ||
+				(threadModelOverride !== undefined && threadModelOverride !== route.modelId))
+		) {
+			throw new Error("The captured task model route does not match its selected provider profile and model")
+		}
+		const invalidateProviderStateReplay = input.invalidateProviderStateReplay === true
+		const mutation = this.acquireExternalMutationLease("updating its model route", {
+			allowed: true,
+			state: "available",
+			reason: "The task is idle.",
+		})
+		const lease = this.externalMutationLease
+		const previousApi = this.api
+		let prepared: ReturnType<Task["prepareReasoningConfiguration"]> | undefined
+		let committed = false
+		let retirePrevious: (() => void) | undefined
+		const ownsUpdate = () => {
+			if (requestSignal?.aborted) return false
+			try {
+				this.assertModelRouteUpdateAvailable(lease)
+				return this.api === (committed ? prepared?.api : previousApi)
+			} catch {
+				return false
+			}
+		}
+		try {
+			prepared = this.prepareReasoningConfiguration(configuration, preference)
+			const lifetimeSignal = this.getTaskLifetimeCancellationSignal()
+			const signal = requestSignal ? AbortSignal.any([lifetimeSignal, requestSignal]) : lifetimeSignal
+			const captured = {
+				apiHandler: prepared.api,
+				apiConfiguration: prepared.configuration,
+				profileConfiguration: configuration,
+			}
+			await this.waitForRequestControl(this.prepareCapturedReasoning(captured, { signal }), signal)
+			if (!ownsUpdate()) throw new Error("The task model route update is no longer available")
+			prepared = {
+				api: prepared.api,
+				configuration: captured.apiConfiguration,
+				state: this.reasoningByHandler.get(prepared.api) ?? prepared.state,
+			}
+			const configuredEffort =
+				configuration.enableReasoningEffort !== false && configuration.reasoningEffort !== "disable"
+					? configuration.reasoningEffort
+					: undefined
+			const requestedEffort =
+				preference.kind === "effort"
+					? preference.effort
+					: preference.kind === "default"
+						? (route?.requestedReasoningEffort ?? configuredEffort)
+						: undefined
+			if (requestedEffort) {
+				assertTaskReasoningEffortSupported(
+					requestedEffort,
+					prepared.state.capabilities,
+					prepared.api.getModel().id,
+				)
+			}
+			if (!this.alphaMessagesHydrated) {
+				await this.flushApiConversationHistoryPersistence(ownsUpdate)
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				await this.recoverConversationRewind()
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				const [messages, apiHistory] = await Promise.all([
+					this.getSavedAlphaMessages(true),
+					this.getSavedApiConversationHistory({ hydrateOnly: true }),
+				])
+				if (!ownsUpdate()) throw new Error("The task stopped before loading its saved history")
+				this.alphaMessages = messages
+				this.observeUiMessageTimestamps()
+				this.apiConversationHistory = apiHistory
+				this.alphaMessagesHydrated = true
+			}
+			const withoutReasoning = (settings: ProviderSettings) => {
+				const { reasoningEffort: _effort, enableReasoningEffort: _enabled, ...rest } = settings
+				return rest
+			}
+			const previousRoute = this.providerRef.deref()?.taskHistoryStore.get(this.taskId)?.threadModelRoute
+			const changedProfile =
+				previousRoute?.profileId && route?.profileId
+					? previousRoute.profileId !== route.profileId
+					: this.taskApiConfigName !== apiConfigName
+			const routeChanged =
+				invalidateProviderStateReplay ||
+				changedProfile ||
+				!isDeepStrictEqual(withoutReasoning(this.apiConfiguration), withoutReasoning(configuration))
+			if (routeChanged) {
+				const stagedHistory = invalidateOpaqueProviderStateReplay(this.apiConversationHistory)
+				if (stagedHistory.some((message, index) => message !== this.apiConversationHistory[index])) {
+					if (!(await this.saveApiConversationHistory(ownsUpdate, stagedHistory))) {
+						throw new Error("Unable to persist provider state before changing the task model route")
+					}
+					// Invalidation is safe even if the following route write fails. Keep
+					// canonical evidence while preventing replay through a new account.
+					this.apiConversationHistory = stagedHistory
+				}
+			}
+			const selected = prepared
+			const saved = await this.enqueueAlphaMessagesSave(
+				undefined,
+				() => {
+					if (!ownsUpdate()) throw new Error("The task model route update is no longer available")
+					retirePrevious = this.installPreparedReasoningConfiguration(configuration, selected)
+					this.reasoningPreference = preference
+					this.setTaskApiConfigName(apiConfigName)
+					this.skipPrevResponseIdOnce = true
+					committed = true
+				},
+				undefined,
+				{
+					preference,
+					state: selected.state,
+					route: {
+						apiConfigName,
+						threadModelOverride,
+						threadModelRoute: route,
+					},
+				},
+				{ guard: ownsUpdate, provider: this.providerRef.deref() },
+			)
+			if (!saved) throw new Error("Unable to persist task model route")
+			try {
+				retirePrevious?.()
+			} catch (error) {
+				console.error("Failed to dispose the previous task model route handler:", error)
+			}
+		} finally {
+			try {
+				if (prepared && !committed) this.disposeReasoningHandler(prepared.api)
+			} catch (error) {
+				console.error("Failed to dispose the staged task model route handler:", error)
+			} finally {
+				mutation.release?.()
+			}
+		}
+	}
+
+	private assertModelRouteUpdateAvailable(lease?: { label: string; token: symbol }): void {
+		if (
+			this.abort ||
+			this.abandoned ||
+			this.reasoningDisposed ||
+			this.taskCancellationController?.signal.aborted ||
+			!this.isCurrentApiConversationHistoryOwner()
+		) {
+			throw new Error("The task is unavailable for a model route update")
+		}
+		if (
+			this.isStreaming ||
+			this.isWaitingForFirstChunk ||
+			this.isTaskLoopActive ||
+			this.isAgentTurnEngineActive ||
+			this.contextCondenseAbortController ||
+			this.manualContextCondenseSettlement ||
+			this.postTurnCompactionAbortController ||
+			this.ownedLifecyclePromise ||
+			this.queuedInputWakePromise ||
+			this.pendingSteerMessage ||
+			this.steerMessageAwaitingPersistence ||
+			this.hasPendingAsk() ||
+			this.hasActiveCommandExecutions() ||
+			this.messageQueueService?.hasUnconsumedInput() ||
+			this.hasPendingAgentMessages() ||
+			(this.externalMutationLease && this.externalMutationLease !== lease)
+		) {
+			throw new Error("Task work is in progress; wait until it is idle before changing its model route")
 		}
 	}
 
@@ -11548,11 +11946,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		operation: PromiseLike<T>,
 		signal?: AbortSignal,
 		absoluteDeadline?: number,
+		timeoutScope: ApiDeadlineScope = "retry_deadline",
 	): Promise<T> {
 		const controlledOperation = Promise.resolve(operation)
 		try {
 			this.throwIfStepInterrupted(signal)
-			throwIfAbsoluteDeadlineExceeded(absoluteDeadline)
+			if (absoluteDeadline !== undefined && Number.isFinite(absoluteDeadline) && absoluteDeadline <= Date.now()) {
+				throw new ApiStreamDeadlineError(undefined, timeoutScope)
+			}
 		} catch (error) {
 			// The operation may already have been created by the caller. Observe its
 			// eventual rejection even when control was lost before this race began.
@@ -11592,7 +11993,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			if (!settled && typeof absoluteDeadline === "number" && Number.isFinite(absoluteDeadline)) {
 				deadlineTimer = setTimeout(
-					() => finish(() => reject(new ApiStreamDeadlineError("Automatic retry deadline exceeded"))),
+					() => finish(() => reject(new ApiStreamDeadlineError(undefined, timeoutScope))),
 					Math.max(0, absoluteDeadline - Date.now()),
 				)
 			}
@@ -11839,7 +12240,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (taskSignal.aborted) abortFromTask()
 		else taskSignal.addEventListener("abort", abortFromTask, { once: true })
 		const deadline = getBoundedRequestDeadline(getApiRequestTimeout(), undefined)
-		const contextControl = createLinkedAbortController({ signal: controller.signal, deadline })
+		const contextControl = createLinkedAbortController({
+			signal: controller.signal,
+			deadline,
+			deadlineScope: "compaction_deadline",
+		})
 
 		const capturedProvider: CapturedTaskProvider = {
 			apiHandler: this.api,
@@ -11853,9 +12258,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		try {
 			await this.waitForRequestControl(
-				this.prepareCapturedReasoning(capturedProvider, { signal: contextControl.signal, deadline }),
+				this.prepareCapturedReasoning(capturedProvider, {
+					signal: contextControl.signal,
+					deadline,
+					deadlineScope: "compaction_deadline",
+				}),
 				contextControl.signal,
 				deadline,
+				"compaction_deadline",
 			)
 			await this.condenseContextWithSignal(contextControl.signal, capturedProvider, undefined, deadline)
 			performanceStatus = "completed"
@@ -11888,12 +12298,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const contextControl = createLinkedAbortController({
 			signal: AbortSignal.any([lifetimeSignal, interruption.signal]),
 			deadline,
+			deadlineScope: "compaction_deadline",
 		})
 		const signal = contextControl.signal
 		let capturedProvider: CapturedTaskProvider | undefined
 		try {
 			const pendingState = this.providerRef.deref()?.getState()
-			const state = pendingState ? await this.waitForRequestControl(pendingState, signal, deadline) : undefined
+			const state = pendingState
+				? await this.waitForRequestControl(pendingState, signal, deadline, "compaction_deadline")
+				: undefined
 			if (signal.aborted) signal.throwIfAborted()
 			if (this.pendingSteerMessage !== undefined || this.messageQueueService.hasUnconsumedInput()) return
 			const percent = state?.postTurnCondenseContextPercent ?? DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT
@@ -11910,9 +12323,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				(this.reasoningHandlerUsers.get(capturedProvider.apiHandler) ?? 0) + 1,
 			)
 			await this.waitForRequestControl(
-				this.prepareCapturedReasoning(capturedProvider, { signal, deadline }),
+				this.prepareCapturedReasoning(capturedProvider, {
+					signal,
+					deadline,
+					deadlineScope: "compaction_deadline",
+				}),
 				signal,
 				deadline,
+				"compaction_deadline",
 			)
 			if (this.pendingSteerMessage !== undefined || this.messageQueueService.hasUnconsumedInput()) return
 			const scope = state?.autoCondenseContextScope ?? "full-context"
@@ -12000,10 +12418,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	): Promise<void> {
 		const assertWithinBudget = () => {
 			this.throwIfStepInterrupted(signal)
-			throwIfAbsoluteDeadlineExceeded(deadline)
+			throwIfAbsoluteDeadlineExceeded(deadline, "compaction_deadline")
 		}
 		const waitForContextPreparation = <T>(operation: PromiseLike<T>): Promise<T> =>
-			this.waitForRequestControl(operation, signal, deadline)
+			this.waitForRequestControl(operation, signal, deadline, "compaction_deadline")
 		assertWithinBudget()
 		// CRITICAL: Flush any pending tool results before condensing
 		// to ensure tool_use/tool_result pairs are complete in history
@@ -12045,6 +12463,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: this.getDisabledToolsForStep(state),
+					waitForQuestionAnswers:
+						getFollowupAutoApprovalTimeoutMs(
+							this.approvalStateForAsk(state, this.captureTaskApprovalMode(state)),
+						) === 0,
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -12072,7 +12494,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			taskId: this.taskId,
 			signal,
 			...(instructionFragments ? { instructionFragments } : {}),
-			...(deadline !== undefined ? { deadline } : {}),
+			...(deadline !== undefined ? { deadline, deadlineScope: "compaction_deadline" as const } : {}),
 			...(allTools.length > 0
 				? {
 						tools: allTools,
@@ -12753,6 +13175,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			console.error("[Task#getEnabledMcpToolsCount] Error counting MCP tools:", error)
 			return { enabledToolCount: 0, enabledServerCount: 0 }
 		}
+	}
+
+	/** A dormant recipient can be removed only before any lifecycle has started. */
+	public get hasStarted(): boolean {
+		return this._started
 	}
 
 	/**
@@ -13944,7 +14371,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const ownsCancellation = cancellation.guard
 
 		this.abort = true
-		this.subagentReviewInputTurn = undefined
 		this.activeToolApprovalRequest = undefined
 		this.activeToolApprovalDecision = undefined
 		this.failActiveCommandExecutions("cancelled")
@@ -15002,7 +15428,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const openingMessageTs = pendingOpeningMessageTs
 			pendingOpeningMessageTs = undefined
 			finalAssistantMessageTs = undefined
-			let reviewTurnOwner: { runId: string; turnId: string } | undefined
 			if (this.contextCondenseAbortController) {
 				throw new Error("Context compaction is in progress")
 			}
@@ -15036,7 +15461,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const runId = this.agentRunId
 				const turnId = this.agentTurnId
-				reviewTurnOwner = runId && turnId ? { runId, turnId } : undefined
 				ownsTurnBoundary = () =>
 					this.isCurrentApiConversationHistoryOwner() &&
 					this.agentRunId === runId &&
@@ -15112,12 +15536,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				return outcome
 			} finally {
-				if (
-					reviewTurnOwner &&
-					this.subagentReviewInputTurn?.runId === reviewTurnOwner.runId &&
-					this.subagentReviewInputTurn.turnId === reviewTurnOwner.turnId
-				)
-					this.subagentReviewInputTurn = undefined
 				try {
 					if (ownsTurnAndSample()) await this.settleGoalStep(this.activeGoalStep)
 				} finally {
@@ -15740,7 +16158,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		]
 		const wasTaskLoopActive = this.isTaskLoopActive
 		this.isTaskLoopActive = true
-		const retrySequenceStartedAt = options.recovery?.sequenceStartedAt ?? performance.now()
+		let retrySequenceStartedAt = options.recovery?.sequenceStartedAt
+		const getRetryElapsedMs = () => {
+			// Healthy generation does not consume an optional recovery allowance.
+			retrySequenceStartedAt ??= performance.now()
+			return performance.now() - retrySequenceStartedAt
+		}
 		const committedRecoveryResult = (
 			response: AgentResponse,
 			error: Error,
@@ -15752,7 +16175,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const attempts = item.retryAttempts ?? {}
 			const attempt = (attempts.transport ?? 0) + 1
 			const retryAttempt = (item.retryAttempt ?? 0) + 1
-			const elapsedMs = performance.now() - retrySequenceStartedAt
+			const elapsedMs = getRetryElapsedMs()
 			const decision = this.agentRetryPolicy.decide({
 				category: "transport",
 				attempt,
@@ -15781,9 +16204,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					error,
 					retryAttempt,
 					retryAttempts: { ...attempts, transport: attempt },
-					retryDeadline:
-						item.retryDeadline ?? Date.now() + Math.max(0, this.agentRetryPolicy.maxElapsedMs - elapsedMs),
-					sequenceStartedAt: retrySequenceStartedAt,
+					retryDeadline: getAgentRetryDeadline(
+						this.agentRetryPolicy.maxElapsedMs,
+						elapsedMs,
+						item.retryDeadline,
+					),
+					sequenceStartedAt: retrySequenceStartedAt ?? performance.now(),
 				},
 			}
 		}
@@ -16185,28 +16611,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const pacingWaitCountBefore = this.requestPacingWaitCount
 				try {
-					// Automated continuation pauses for Worker review. A captured human
-					// instruction can proceed without approving that proposal; an
-					// already admitted Apply/Discard must still finish before sampling.
-					const hasHumanInput = inputBlocksToAcknowledge.some(
-						(block) =>
-							(block.type === "text" || block.type === "image") &&
-							this.inputBlockOrigins.get(block) === "human",
-					)
-					if (hasHumanInput && this.hasPendingSubagentChangeSetReview()) {
-						const runId = this.agentRunId
-						const turnId = this.agentTurnId
-						if (!runId || !turnId) {
-							throw new Error("Cannot continue pending Worker review without a canonical turn owner.")
-						}
-						this.subagentReviewInputTurn = { runId, turnId }
-					}
-					const reviewInputTurn = this.subagentReviewInputTurn
-					const humanGuidedReviewTurn =
-						reviewInputTurn !== undefined &&
-						reviewInputTurn.runId === this.agentRunId &&
-						reviewInputTurn.turnId === this.agentTurnId
-					await this.waitForPendingSubagentChangeSetReviews(hasHumanInput || humanGuidedReviewTurn)
+					// Settle admitted Worker effects at the shared model-step boundary.
+					// Quarantined proposals remain available without pausing inference.
+					await this.waitForPendingSubagentChangeSetReviews()
 					this.throwIfStepInterrupted(stepInterruptionSignal)
 					await this.maybeWaitForProviderRateLimit(
 						currentItem.retryAttempt ?? 0,
@@ -16697,8 +17104,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 							try {
 								return await withApiRequestTimeout(operation, operationName, boundedTimeoutMs, () => {
-									this.recordProviderRequestTimeout()
-									requestController?.abort(new ApiStreamDeadlineError())
+									requestController?.abort(
+										currentItem.retryDeadline !== undefined &&
+											Date.now() >= currentItem.retryDeadline
+											? new ApiStreamDeadlineError(
+													"Automatic retry deadline exceeded",
+													"retry_deadline",
+												)
+											: new ApiRequestTimeoutError(operationName, boundedTimeoutMs ?? 0),
+									)
 									const iteratorReturn = iterator.return?.(undefined)
 									if (iteratorReturn) {
 										void Promise.resolve(iteratorReturn).catch((error) => {
@@ -17310,7 +17724,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const attempt = (retryAttempts[category] ?? 0) + 1
 							const hasSemanticOutput =
 								semanticOutputObserved || retryMetadata.semanticOutputObserved === true
-							const retryElapsedMs = performance.now() - retrySequenceStartedAt
+							const retryElapsedMs = getRetryElapsedMs()
 							const decision = this.agentRetryPolicy.decide({
 								category,
 								attempt,
@@ -17376,16 +17790,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									response: canonicalResponse,
 								}
 							}
-							const automaticRetryDeadline =
-								currentItem.retryDeadline ??
-								Date.now() + Math.max(0, this.agentRetryPolicy.maxElapsedMs - retryElapsedMs)
+							const automaticRetryDeadline = getAgentRetryDeadline(
+								this.agentRetryPolicy.maxElapsedMs,
+								retryElapsedMs,
+								currentItem.retryDeadline,
+							)
 
 							if (category === "context") {
-								await this.handleContextWindowExceededError(automaticRetryDeadline)
+								const failedStep = this.currentAgentStep
+								await this.handleContextWindowExceededError(automaticRetryDeadline, failedStep)
 								if (!ownsResponseStep()) return supersededResponseResult()
-								if (this.currentAgentStep) {
+								if (failedStep) {
 									const compactionStep = this.agentStepContextBuilder.compaction(
-										this.currentAgentStep.snapshot,
+										failedStep.snapshot,
 										{
 											action: "summary",
 										},
@@ -18419,7 +18836,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						}
 
 						const emptyAttempt = (retryAttempts["empty-response"] ?? 0) + 1
-						const retryElapsedMs = performance.now() - retrySequenceStartedAt
+						const retryElapsedMs = getRetryElapsedMs()
 						const emptyDecision = this.agentRetryPolicy.decide({
 							category: "empty-response",
 							attempt: emptyAttempt,
@@ -18428,9 +18845,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						})
 
 						if (state?.autoApprovalEnabled && emptyDecision.shouldRetry) {
-							const automaticRetryDeadline =
-								currentItem.retryDeadline ??
-								Date.now() + Math.max(0, this.agentRetryPolicy.maxElapsedMs - retryElapsedMs)
+							const automaticRetryDeadline = getAgentRetryDeadline(
+								this.agentRetryPolicy.maxElapsedMs,
+								retryElapsedMs,
+								currentItem.retryDeadline,
+							)
 							try {
 								await this.waitForRetryDecision(
 									emptyDecision,
@@ -18978,28 +19397,72 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return redactedPrompt
 	}
 
-	private async handleContextWindowExceededError(retryDeadline?: number): Promise<void> {
+	private async handleContextWindowExceededError(
+		retryDeadline?: number,
+		failedStep?: CurrentAgentStep,
+	): Promise<void> {
+		const recoveryGuard = failedStep ? this.captureAgentStepOwnership() : undefined
 		const contextRecoveryDeadline = getBoundedRequestDeadline(getApiRequestTimeout(), retryDeadline)
+		const contextRecoveryDeadlineScope: ApiDeadlineScope =
+			retryDeadline !== undefined && contextRecoveryDeadline === retryDeadline
+				? "retry_deadline"
+				: "compaction_deadline"
+		const taskSignal = this.getTaskLifetimeCancellationSignal()
+		const stepSignal = this.stepInterruptionController?.signal
 		const contextControl = createLinkedAbortController({
-			signal: this.stepInterruptionController?.signal ?? this.getTaskLifetimeCancellationSignal(),
+			signal: stepSignal ? AbortSignal.any([taskSignal, stepSignal]) : taskSignal,
 			deadline: contextRecoveryDeadline,
+			deadlineScope: contextRecoveryDeadlineScope,
 		})
 		const signal = contextControl.signal
+		// Receipt settlement can suspend before write admission while Stop preserves the step identity.
+		const canCommitRecovery = () =>
+			(!recoveryGuard || recoveryGuard()) &&
+			!signal.aborted &&
+			(contextRecoveryDeadline === undefined || Date.now() < contextRecoveryDeadline)
+		let recoveryProvider: CapturedTaskProvider | undefined
 		try {
 			const assertRecoveryWithinBudget = () => {
+				if (failedStep && this.currentAgentStep !== failedStep) throw new LifecycleHookOwnershipError()
+				if (recoveryGuard) this.assertLifecycleHookOwnership(recoveryGuard)
 				this.throwIfStepInterrupted(signal)
-				throwIfAbsoluteDeadlineExceeded(contextRecoveryDeadline)
+				throwIfAbsoluteDeadlineExceeded(contextRecoveryDeadline, contextRecoveryDeadlineScope)
 			}
-			const waitForBoundedRecovery = <T>(operation: PromiseLike<T>): Promise<T> =>
-				this.waitForRequestControl(operation, signal, contextRecoveryDeadline)
+			const waitForBoundedRecovery = async <T>(operation: PromiseLike<T>): Promise<T> => {
+				const result = await this.waitForRequestControl(
+					operation,
+					signal,
+					contextRecoveryDeadline,
+					contextRecoveryDeadlineScope,
+				)
+				assertRecoveryWithinBudget()
+				return result
+			}
 			assertRecoveryWithinBudget()
-			const apiHandler = this.api
-			const apiConfiguration = this.effectiveApiConfiguration
+			// Codex c92700d session/turn.rs keeps mid-turn compaction on its captured step.
+			// Raw request inputs preserve schema values and provider state redacted from diagnostics.
+			const capturedProvider = failedStep?.getCapturedProvider?.()
+			if (failedStep && !capturedProvider) {
+				throw new Error("A captured provider route is required for context recovery.")
+			}
+			const capturedRequest = failedStep?.getRequest()
+			const apiHandler = capturedProvider?.apiHandler ?? this.api
+			const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
+			const compactionApiHandler = capturedProvider
+				? capturedProvider.compactionApiHandler
+				: this.captureCompactionHandler(apiHandler)
+			if (capturedProvider && compactionApiHandler) {
+				this.reasoningHandlerUsers.set(
+					compactionApiHandler,
+					(this.reasoningHandlerUsers.get(compactionApiHandler) ?? 0) + 1,
+				)
+			}
+			this.reasoningHandlerUsers.set(apiHandler, (this.reasoningHandlerUsers.get(apiHandler) ?? 0) + 1)
+			recoveryProvider = { apiHandler, apiConfiguration, compactionApiHandler }
 			const pendingState = this.providerRef.deref()?.getState()
 			const state = pendingState ? await waitForBoundedRecovery(pendingState) : undefined
 			assertRecoveryWithinBudget()
-			const capturedExecution = this.captureToolExecutionPolicy(state)
-			const mode = await waitForBoundedRecovery(this.getTaskMode())
+			const mode = failedStep?.snapshot.context.mode.slug ?? (await waitForBoundedRecovery(this.getTaskMode()))
 			assertRecoveryWithinBudget()
 
 			const { contextTokens } = this.getTokenUsage()
@@ -19040,9 +19503,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				// Build tools for condensing metadata (same tools used for normal API calls).
 				const provider = this.providerRef.deref()
-				let allTools: import("openai").default.Chat.ChatCompletionTool[] = []
-				let allowedFunctionNames: string[] | undefined
-				if (provider) {
+				let allTools = capturedRequest?.metadata.tools ?? []
+				let allowedFunctionNames = capturedRequest?.metadata.allowedFunctionNames
+				if (!failedStep && provider) {
 					const toolsResult = await waitForBoundedRecovery(
 						buildNativeToolsArrayWithRestrictions({
 							provider,
@@ -19052,7 +19515,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							experiments: state?.experiments,
 							apiConfiguration,
 							disabledTools: this.getDisabledToolsForStep(state),
-							execution: capturedExecution,
+							waitForQuestionAnswers:
+								getFollowupAutoApprovalTimeoutMs(
+									this.approvalStateForAsk(state, this.captureTaskApprovalMode(state)),
+								) === 0,
+							execution: this.captureToolExecutionPolicy(state),
 							modelInfo,
 							modelIdentity: createModelToolIdentity(apiConfiguration, model),
 							includeAllToolsWithRestrictions: supportsFunctionCallingRestrictions(
@@ -19079,13 +19546,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const metadata: ApiHandlerCreateMessageMetadata = {
 					mode,
 					taskId: this.taskId,
+					...(capturedRequest?.metadata.instructionFragments
+						? { instructionFragments: capturedRequest.metadata.instructionFragments }
+						: {}),
 					...(signal ? { signal } : {}),
-					...(contextRecoveryDeadline !== undefined ? { deadline: contextRecoveryDeadline } : {}),
+					...(contextRecoveryDeadline !== undefined
+						? { deadline: contextRecoveryDeadline, deadlineScope: contextRecoveryDeadlineScope }
+						: {}),
 					...(allTools.length > 0
 						? {
 								tools: allTools,
-								tool_choice: "auto",
-								parallelToolCalls: true,
+								tool_choice: capturedRequest?.metadata.tool_choice ?? "auto",
+								parallelToolCalls: capturedRequest?.metadata.parallelToolCalls ?? true,
 								...(allowedFunctionNames ? { allowedFunctionNames } : {}),
 							}
 						: {}),
@@ -19094,9 +19566,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					signal,
 					remoteDeadline: metadata.deadline,
 				})
-				const systemPrompt = await waitForBoundedRecovery(
-					this.getSystemPrompt(state, { apiHandler, apiConfiguration }),
-				)
+				const systemPrompt =
+					capturedRequest?.systemPrompt ??
+					(await waitForBoundedRecovery(this.getSystemPrompt(state, { apiHandler, apiConfiguration })))
 				assertRecoveryWithinBudget()
 				// Provider rejection forces a real reduction under the same captured settings.
 				const truncateResult = await waitForBoundedRecovery(
@@ -19107,6 +19579,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						maxTokens,
 						contextWindow,
 						apiHandler,
+						compactionApiHandler: this.getCompactionHandler(apiHandler, compactionApiHandler),
 						autoCondenseContext: true,
 						autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
 						forceCompaction: true,
@@ -19155,10 +19628,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Transcript writes are atomic, generation-owned, and queue-capped. Await
 					// their commit instead of racing them so no detached stale snapshot can
 					// land after this recovery attempt has already reported cancellation.
-					if (!(await this.overwriteApiConversationHistory(truncateResult.messages))) {
+					const persisted = await this.overwriteApiConversationHistory(
+						truncateResult.messages,
+						canCommitRecovery,
+					)
+					assertRecoveryWithinBudget()
+					if (!persisted) {
 						throw new Error("Unable to persist forced context truncation before continuing.")
 					}
-					assertRecoveryWithinBudget()
 					this.environmentContext.reset()
 					await this.refreshEnvironmentContext(state, signal)
 					assertRecoveryWithinBudget()
@@ -19234,7 +19711,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				try {
 					await recoveryAccounting.persistUnreportedCost(contextRecoveryError !== undefined)
 				} finally {
-					if (contextManagementUiStarted) {
+					if (contextManagementUiStarted && (!recoveryGuard || recoveryGuard())) {
 						try {
 							const contextFinishedMessage = this.providerRef
 								.deref()
@@ -19249,6 +19726,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (contextRecoveryCleanupError !== undefined) throw contextRecoveryCleanupError
 		} finally {
 			contextControl.dispose()
+			if (recoveryProvider) {
+				this.releaseCompactionHandler(recoveryProvider.compactionApiHandler)
+				const users = (this.reasoningHandlerUsers.get(recoveryProvider.apiHandler) ?? 1) - 1
+				if (users) this.reasoningHandlerUsers.set(recoveryProvider.apiHandler, users)
+				else this.reasoningHandlerUsers.delete(recoveryProvider.apiHandler)
+				this.retireReasoningHandler(recoveryProvider.apiHandler)
+			}
 		}
 	}
 
@@ -19358,7 +19842,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await delayWithAbort(boundedDelayMs ?? 0, interruptionSignal)
 			this.throwIfStepInterrupted(interruptionSignal)
 			if (boundedDelayMs !== delayMs) {
-				throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+				throw new ApiStreamDeadlineError("Automatic retry deadline exceeded", "retry_deadline")
 			}
 			throwIfAbsoluteDeadlineExceeded(retryDeadline)
 			return
@@ -19422,6 +19906,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					? captured.profileConfiguration
 					: snapshotProviderSettings(this.apiConfiguration),
 				apiConfigName: captured ? captured.apiConfigName : this._taskApiConfigName,
+				profileId: captured ? captured.profileId : this.getTaskProviderProfileId(),
 			})
 		} finally {
 			this.releaseCompactionHandler(compactionApiHandler)
@@ -19448,7 +19933,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		const waitForBoundedPreflight = <T>(operation: PromiseLike<T>): Promise<T> =>
 			this.waitForRequestControl(operation, stepInterruptionSignal, options.retryDeadline)
-		const compatibilityRetryStartedAt = performance.now()
+		let compatibilityRetryStartedAt: number | undefined
 		const retainedStep =
 			options.recoveryStep ??
 			(options.retryCategory === "transport" || options.retryCategory === "rate-limit"
@@ -19464,6 +19949,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.captureToolExecutionPolicy(state)
 		const capturedApprovalMode =
 			retainedStep?.snapshot.context.policy.approval.mode ?? this.captureTaskApprovalMode(state)
+		const waitForQuestionAnswers =
+			getFollowupAutoApprovalTimeoutMs(this.approvalStateForAsk(state, capturedApprovalMode)) === 0
 		const capturedReviewPolicy = retainedStep
 			? (retainedStep.snapshot.context.policy.approval.reviewPolicy ?? CLOSED_TOOL_REVIEW_POLICY)
 			: captureToolReviewPolicy(this.approvalStateForAsk(state, capturedApprovalMode))
@@ -19551,7 +20038,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				contextManagementTimeoutMs,
 				options.retryDeadline,
 			)
-			const contextControl = createLinkedAbortController({ deadline: contextManagementDeadline })
+			const contextManagementDeadlineScope: ApiDeadlineScope =
+				options.retryDeadline !== undefined && contextManagementDeadline === options.retryDeadline
+					? "retry_deadline"
+					: "compaction_deadline"
+			const contextControl = createLinkedAbortController({
+				deadline: contextManagementDeadline,
+				deadlineScope: contextManagementDeadlineScope,
+			})
 			// Keep caller cancellation linked after this phase so the shared token-count
 			// context remains cancellable at the final dispatched-request measurement.
 			const stepInterruptionSignal = AbortSignal.any([
@@ -19561,7 +20055,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const assertPreflightWithinBudget = () => {
 				throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
 				this.throwIfStepInterrupted(stepInterruptionSignal)
-				throwIfAbsoluteDeadlineExceeded(contextManagementDeadline)
+				throwIfAbsoluteDeadlineExceeded(contextManagementDeadline, contextManagementDeadlineScope)
 			}
 			const waitForBoundedPreflight = async <T>(operation: PromiseLike<T>): Promise<T> => {
 				try {
@@ -19569,6 +20063,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						operation,
 						stepInterruptionSignal,
 						contextManagementDeadline,
+						contextManagementDeadlineScope,
 					)
 				} catch (error) {
 					if (error instanceof ApiStreamDeadlineError) throwIfAbsoluteDeadlineExceeded(options.retryDeadline)
@@ -19649,7 +20144,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						mode,
 						taskId: this.taskId,
 						...(stepInterruptionSignal ? { signal: stepInterruptionSignal } : {}),
-						...(contextManagementDeadline !== undefined ? { deadline: contextManagementDeadline } : {}),
+						...(contextManagementDeadline !== undefined
+							? { deadline: contextManagementDeadline, deadlineScope: contextManagementDeadlineScope }
+							: {}),
 					}
 					// The preview can differ from the authoritative count. Let manageContext
 					// request tool overhead only when needed, retaining it for post-compaction counts.
@@ -19667,6 +20164,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									experiments: state?.experiments,
 									apiConfiguration,
 									disabledTools: this.getDisabledToolsForStep(state),
+									waitForQuestionAnswers,
 									execution: capturedExecution,
 									modelInfo,
 									modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -20025,6 +20523,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					experiments: state?.experiments,
 					apiConfiguration,
 					disabledTools: this.getDisabledToolsForStep(state),
+					waitForQuestionAnswers,
 					execution: capturedExecution,
 					modelInfo,
 					modelIdentity: createModelToolIdentity(apiConfiguration, model),
@@ -20116,7 +20615,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		assertPreflightWithinBudget()
 
 		const configuredRequestTimeoutMs = getApiRequestTimeout()
-		const requestDeadline = getBoundedRequestDeadline(configuredRequestTimeoutMs, options.retryDeadline)
+		// Codex c92700d resets provider idle waits after each application event.
+		// Only an explicit caller/recovery limit bounds a progressing response.
+		const requestDeadline = options.retryDeadline
+		const requestAdmissionDeadline = getBoundedRequestDeadline(configuredRequestTimeoutMs, requestDeadline)
+		const admissionDeadlineScope: ApiDeadlineScope =
+			requestDeadline !== undefined && requestAdmissionDeadline === requestDeadline
+				? "retry_deadline"
+				: "request_deadline"
 		const requestTimeoutMs = getTimeoutWithinDeadline(configuredRequestTimeoutMs, requestDeadline)
 		// Create an AbortController to allow cancelling the request mid-stream
 		const requestController = new AbortController()
@@ -20138,7 +20644,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			requestId,
 			attemptId,
 			signal: abortSignal,
-			...(requestDeadline !== undefined ? { deadline: requestDeadline } : {}),
+			...(requestDeadline !== undefined
+				? { deadline: requestDeadline, deadlineScope: "retry_deadline" as const }
+				: {}),
 			...(requestHandler.streamCapabilities ? { streamCapabilities: requestHandler.streamCapabilities } : {}),
 		}
 		const step = this.captureAgentStep(
@@ -20169,7 +20677,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const lifecyclePreflightIsCurrent = () =>
 			this.currentAgentStep === step &&
 			!stepInterruptionSignal?.aborted &&
-			(requestDeadline === undefined || Date.now() < requestDeadline)
+			(requestAdmissionDeadline === undefined || Date.now() < requestAdmissionDeadline)
 		const lifecyclePreflight = (async () => {
 			await this.ensureCanonicalLifecycleStepStarted(step, lifecyclePreflightIsCurrent)
 			if (!lifecyclePreflightIsCurrent()) return
@@ -20187,7 +20695,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				step.snapshot.context,
 			)
 		})()
-		await this.waitForRequestControl(lifecyclePreflight, stepInterruptionSignal, requestDeadline)
+		try {
+			await this.waitForRequestControl(
+				lifecyclePreflight,
+				stepInterruptionSignal,
+				requestAdmissionDeadline,
+				admissionDeadlineScope,
+			)
+		} catch (error) {
+			this.recordProviderRequestTimeout(error, step)
+			throw error
+		}
 		this.throwIfStepInterrupted(stepInterruptionSignal)
 		throwIfAbsoluteDeadlineExceeded(requestDeadline)
 		if (this.currentAgentStep !== step) {
@@ -20262,6 +20780,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw error
 		}
 		const iterator = stream[Symbol.asyncIterator]()
+		let activeRequestStep = step
 		let streamCompleted = false
 		let streamFailure: unknown
 
@@ -20292,12 +20811,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 
 				const firstChunk = await withApiRequestTimeout(
-					Promise.race([firstChunkPromise, abortPromise]),
+					// abortPromise owns normalized user/steer cancellation; this guard owns only the deadline.
+					this.waitForRequestControl(
+						Promise.race([firstChunkPromise, abortPromise]),
+						undefined,
+						requestDeadline,
+					),
 					`API response stream for ${step.snapshot.context.provider.modelId}`,
 					requestTimeoutMs,
 					() => {
-						this.recordProviderRequestTimeout()
-						requestController.abort(new ApiStreamDeadlineError())
+						requestController.abort(
+							requestDeadline !== undefined && Date.now() >= requestDeadline
+								? new ApiStreamDeadlineError("Automatic retry deadline exceeded", "retry_deadline")
+								: new ApiRequestTimeoutError("Provider response stream", requestTimeoutMs ?? 0),
+						)
 					},
 				)
 				removeFirstChunkAbortListener?.()
@@ -20307,6 +20834,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				streamCompleted = firstChunk.done === true
 				yield firstChunk.value
 			} catch (error) {
+				const failure = abortSignal.reason instanceof ApiStreamDeadlineError ? abortSignal.reason : error
+				this.recordProviderRequestTimeout(failure, step)
 				this.isWaitingForFirstChunk = false
 				clearRequestOwnership()
 				if (error instanceof SteerRequestInterruptError) {
@@ -20317,15 +20846,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// this as a first-chunk failure so that loop can decide whether to ask
 				// the user or schedule a bounded automatic retry; this generator never
 				// recursively invokes itself.
-				const retryError = error instanceof Error ? error : new Error(String(error))
+				const retryError = failure instanceof Error ? failure : new Error(String(failure))
 				const retryMetadata = retryError as Error & {
 					firstChunkFailure?: boolean
 					retryCategory?: AgentRetryCategory
 				}
 				retryMetadata.firstChunkFailure = true
 				retryMetadata.retryCategory = this.retryCategoryForError(
-					error,
-					checkContextWindowExceededError(error) ? "context" : "transport",
+					failure,
+					checkContextWindowExceededError(failure) ? "context" : "transport",
 				)
 
 				// A few legacy integrations call this generator directly instead of
@@ -20335,13 +20864,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// the sole policy owner and does not double-delay or replay a step here.
 				if (!options.ownerHandlesRetry && autoApprovalEnabled) {
 					const compatibilityRetryPolicy = this.agentRetryPolicy ?? new AgentRetryPolicy()
+					compatibilityRetryStartedAt ??= performance.now()
 					const compatibilityElapsedMs = performance.now() - compatibilityRetryStartedAt
-					const policyRetryDeadline =
-						Date.now() + Math.max(0, compatibilityRetryPolicy.maxElapsedMs - compatibilityElapsedMs)
-					const compatibilityRetryDeadline =
-						typeof options.retryDeadline === "number" && Number.isFinite(options.retryDeadline)
-							? Math.min(options.retryDeadline, policyRetryDeadline)
-							: policyRetryDeadline
+					const compatibilityRetryDeadline = getAgentRetryDeadline(
+						compatibilityRetryPolicy.maxElapsedMs,
+						compatibilityElapsedMs,
+						options.retryDeadline,
+					)
 					let compatibilityAttempt = Math.max(1, retryAttempt + 1)
 					let compatibilityError: unknown = retryError
 
@@ -20375,10 +20904,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						)
 						if (this.abort) break
 
-						const compatibilityDeadline = getBoundedRequestDeadline(
-							configuredRequestTimeoutMs,
-							compatibilityRetryDeadline,
-						)
+						const compatibilityDeadline = compatibilityRetryDeadline
 						this.throwIfStepInterrupted(stepInterruptionSignal)
 						throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
 						const compatibilityRequest = step.getRequest()
@@ -20405,7 +20931,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							...compatibilityRequest.metadata,
 							attemptId: compatibilityAttemptId,
 							signal: compatibilityController.signal,
-							...(compatibilityDeadline !== undefined ? { deadline: compatibilityDeadline } : {}),
+							...(compatibilityDeadline !== undefined
+								? { deadline: compatibilityDeadline, deadlineScope: "retry_deadline" as const }
+								: {}),
 							...(requestHandler.streamCapabilities
 								? { streamCapabilities: requestHandler.streamCapabilities }
 								: {}),
@@ -20426,6 +20954,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								taskToolSurface,
 								step,
 							)
+							activeRequestStep = compatibilityStep
 							this.currentTaskToolSurface = compatibilityStep.surface
 							options.onStepCaptured?.(compatibilityStep)
 							const compatibilityStream = requestHandler.createMessage(
@@ -20467,13 +20996,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 											`API response stream for ${step.snapshot.context.provider.modelId}`,
 											readTimeoutMs,
 											() => {
-												this.recordProviderRequestTimeout()
-												compatibilityController.abort(new ApiStreamDeadlineError())
+												compatibilityController.abort(
+													compatibilityDeadline !== undefined &&
+														Date.now() >= compatibilityDeadline
+														? new ApiStreamDeadlineError(
+																"Automatic retry deadline exceeded",
+																"retry_deadline",
+															)
+														: new ApiRequestTimeoutError(
+																"Provider response stream",
+																readTimeoutMs ?? 0,
+															),
+												)
 											},
 										)
 									} catch (error) {
-										if (Date.now() >= compatibilityRetryDeadline) {
-											throw new ApiStreamDeadlineError("Automatic retry deadline exceeded")
+										if (
+											compatibilityRetryDeadline !== undefined &&
+											Date.now() >= compatibilityRetryDeadline
+										) {
+											throw new ApiStreamDeadlineError(
+												"Automatic retry deadline exceeded",
+												"retry_deadline",
+											)
 										}
 										throw error
 									}
@@ -20497,6 +21042,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							compatibilityStreamCompleted = true
 							return
 						} catch (nextError) {
+							this.recordProviderRequestTimeout(nextError, activeRequestStep)
 							this.isWaitingForFirstChunk = false
 							compatibilityError = nextError
 							if (nextError instanceof SteerRequestInterruptError) throw nextError
@@ -20534,12 +21080,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// closes the generator while it is suspended at the first yield.
 			while (!streamCompleted) {
 				this.throwIfStepInterrupted(abortSignal)
-				const chunk = await this.waitForRequestControl(iterator.next(), abortSignal, requestDeadline)
+				const chunk = await withApiRequestTimeout(
+					this.waitForRequestControl(iterator.next(), abortSignal, requestDeadline),
+					`API response stream for ${step.snapshot.context.provider.modelId}`,
+					configuredRequestTimeoutMs,
+					() =>
+						requestController.abort(
+							new ApiRequestTimeoutError("Provider response stream", configuredRequestTimeoutMs ?? 0),
+						),
+				)
 				this.throwIfStepInterrupted(abortSignal)
 				streamCompleted = chunk.done === true
 				if (!chunk.done) yield chunk.value
 			}
 		} catch (error) {
+			this.recordProviderRequestTimeout(error, activeRequestStep)
 			streamFailure = error
 			throw error
 		} finally {
@@ -20714,12 +21269,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		for (const msg of messages) {
-			const replayOpaqueState =
-				msg.provider_state_scope === undefined ||
-				canReplayProviderState(msg.provider_state_scope, {
-					provider: apiConfiguration.apiProvider ?? "vertex",
-					modelId: apiHandler.getModel().id,
-				})
+			const replayOpaqueState = canReplayMessageProviderState(msg, {
+				provider: apiConfiguration.apiProvider ?? "vertex",
+				modelId: apiHandler.getModel().id,
+			})
 			// Opaque replay state stays on its owning protocol. Keep saved history
 			// intact when a task changes providers or resumes through another adapter.
 			const requestContent = Array.isArray(msg.content)

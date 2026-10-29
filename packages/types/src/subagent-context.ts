@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { subagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
+import { strictSubagentModelRouteStateSchema, subagentRoleSchema } from "./subagent.js"
 import {
 	finalizedSubagentManifestOrchestrationSchema,
 	subagentManifestOrchestrationSchema,
@@ -309,7 +309,7 @@ export const subagentContextManifestSchema = z
 				(skills) => getSubagentSkillDescriptionsByteLength(skills) <= SUBAGENT_SKILL_DESCRIPTIONS_MAX_BYTES,
 				"Captured skill descriptions exceed the metadata byte limit",
 			),
-		modelRoute: subagentModelRouteStateSchema.strict(),
+		modelRoute: strictSubagentModelRouteStateSchema,
 		runtimePolicy: subagentContextRuntimePolicySchema,
 		/**
 		 * Frozen guardrails for new managed children. Optional only so retained

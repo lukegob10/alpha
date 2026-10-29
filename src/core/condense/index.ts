@@ -317,6 +317,7 @@ const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"agentResponseItems",
 	"agentResponseOutcome",
 	"provider_state_scope",
+	"provider_state_replay_disabled",
 	"isSummary",
 	"condenseId",
 	"condenseParent",

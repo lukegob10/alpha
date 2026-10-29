@@ -40,9 +40,9 @@ describe("AlphaProvider Worker change-set actions", () => {
 		await fs.rm(root, { recursive: true, force: true })
 	}, TEST_TIMEOUT_MS)
 
-	const createArtifact = async (content = "worker change\n") => {
+	const createArtifact = async (content = "worker change\n", taskId = "worker-1") => {
 		const scope = await managedSubagentWorktreeService.validateScope(repo, ["docs/worker.txt"])
-		const prepared = await managedSubagentWorktreeService.create(storage, "worker-1", scope)
+		const prepared = await managedSubagentWorktreeService.create(storage, taskId, scope)
 		await fs.mkdir(path.join(prepared.workspacePath, "docs"), { recursive: true })
 		await fs.writeFile(path.join(prepared.workspacePath, "docs/worker.txt"), content)
 		return managedSubagentWorktreeService.capture(storage, prepared.artifact.id)
@@ -93,6 +93,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 			taskId: "parent-1",
 			taskKind: "primary",
 			_taskMode: "code",
+			taskApprovalModePersistence: Promise.resolve(),
 			metadata: { task: "Coordinate work" },
 			alphaMessages: [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: group }],
 			abort: false,
@@ -107,6 +108,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 			pendingSteerMessage: undefined,
 			messageQueueService: { isEmpty: () => true },
 			commandExecutionEvidence: new Map(),
+			saveAlphaMessages: vi.fn(async () => true),
 			upsertSubagentGroup: vi.fn(async () => undefined),
 		}) as Task
 
@@ -140,10 +142,13 @@ describe("AlphaProvider Worker change-set actions", () => {
 	const configureAutoApplyPolicy = (
 		provider: AlphaProvider,
 		historyItems: Map<string, any>,
-		approvalMode: "ask" | "auto" | "bypass" | (() => "ask" | "auto" | "bypass"),
+		approvalMode: "ask" | "auto" | "bypass",
 	) => {
+		const parent = provider.getLiveTask("parent-1")
+		if (!parent) throw new Error("The Worker fixture must retain its owning parent task")
+		parent.setTaskApprovalMode(approvalMode)
 		;(provider as any).contextProxy = {
-			getValues: () => ({ approvalMode: typeof approvalMode === "function" ? approvalMode() : approvalMode }),
+			getValues: () => ({ approvalMode }),
 		}
 		vi.spyOn(provider as any, "mergeAllowedCommands").mockReturnValue([])
 		vi.spyOn(provider as any, "mergeDeniedCommands").mockReturnValue([])
@@ -152,17 +157,17 @@ describe("AlphaProvider Worker change-set actions", () => {
 				autoApproval: {
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly: true,
-					alwaysAllowReadOnlyOutsideWorkspace: false,
+					alwaysAllowReadOnlyOutsideWorkspace: approvalMode === "bypass",
 					alwaysAllowWrite: true,
-					alwaysAllowWriteOutsideWorkspace: false,
-					alwaysAllowWriteProtected: false,
+					alwaysAllowWriteOutsideWorkspace: approvalMode === "bypass",
+					alwaysAllowWriteProtected: approvalMode === "bypass",
 					alwaysAllowTickets: true,
 					alwaysAllowExecute: true,
 					alwaysAllowSubagents: true,
 					commandApproval: {
 						algorithm: "sha256-salted-prefix-v1",
 						salt: "0".repeat(64),
-						allowAll: false,
+						allowAll: approvalMode === "bypass",
 						denyAll: false,
 						allowed: [],
 						denied: [],
@@ -470,16 +475,15 @@ describe("AlphaProvider Worker change-set actions", () => {
 	)
 
 	it(
-		"rechecks the live approval mode under the mutation gate before applying",
+		"rechecks the current task approval mode under the mutation gate before applying",
 		async () => {
 			const artifact = await createArtifact()
 			const { provider, parent, group, historyItems } = await createHarness(artifact)
-			let currentApprovalMode: "ask" | "auto" = "auto"
-			configureAutoApplyPolicy(provider, historyItems, () => currentApprovalMode)
+			configureAutoApplyPolicy(provider, historyItems, "auto")
 			const getCapability = provider.getSubagentChangeSetActionCapability.bind(provider)
 			vi.spyOn(provider, "getSubagentChangeSetActionCapability").mockImplementation(async (...args) => {
 				const capability = await getCapability(...args)
-				currentApprovalMode = "ask"
+				parent.setTaskApprovalMode("ask")
 				return capability
 			})
 
@@ -487,14 +491,14 @@ describe("AlphaProvider Worker change-set actions", () => {
 
 			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
 			expect(group.agents[0]?.changeSet?.status).toBe("pending_review")
-			expect(currentApprovalMode).toBe("ask")
+			expect(parent.getTaskApprovalMode()).toBe("ask")
 			await expect(fs.readFile(path.join(repo, "docs/worker.txt"), "utf8")).rejects.toThrow()
 		},
 		TEST_TIMEOUT_MS,
 	)
 
 	it(
-		"keeps Worker proposals in review when the current approval mode is Ask",
+		"keeps Worker proposals in review when the current task approval mode is Ask",
 		async () => {
 			const artifact = await createArtifact()
 			const { provider, parent, group, historyItems } = await createHarness(artifact)
@@ -512,7 +516,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 	it(
 		"makes the immediate Worker the durable verification owner for a nested Worker",
 		async () => {
-			const artifact = await createArtifact("nested worker change\n")
+			const artifact = await createArtifact("nested worker change\n", "nested-worker")
 			const store = new AgentControlStore(new InMemoryAgentControlPersistence())
 			await store.initialize()
 			await store.ensureRoot({ taskId: "root-1", objective: "Coordinate work", status: "running" })
@@ -564,6 +568,8 @@ describe("AlphaProvider Worker change-set actions", () => {
 				taskId: "outer-worker",
 				rootTaskId: "root-1",
 				taskKind: "subagent",
+				_taskMode: "code",
+				taskApprovalMode: "ask",
 				subagentRole: "worker",
 				subagentContextManifest: { runtimePolicy: { role: "worker" } },
 				metadata: { task: "Own the private checkout" },
@@ -756,9 +762,9 @@ describe("AlphaProvider Worker change-set actions", () => {
 		TEST_TIMEOUT_MS,
 	)
 
-	it(
-		"blocks completion while an undelivered descendant result remains unowned",
-		async () => {
+	it.each(["completed", "failed"] as const)(
+		"blocks completion while an undelivered %s descendant result remains unowned",
+		async (status) => {
 			const artifact = await createArtifact()
 			const { provider, parent, store } = await createHarness(artifact)
 
@@ -770,7 +776,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 				recipient: "parent-1",
 				kind: "result",
 				name: "agent_result",
-				payload: { taskId: "worker-1", report: "Worker finished." },
+				payload: { taskId: "worker-1", status, report: "Worker finished." },
 			})
 
 			const blocked = await provider.getParentCompletionDecision(parent)

@@ -53,16 +53,16 @@ const HistoryPreview = ({ focusRequest = 0, expanded = false, onExpand, onClose,
 			setSearchQuery("")
 			setSortOption("newest")
 			setIsSelectionMode(false)
-			setSelectedTaskIds([])
+			setSelectedTaskIds((ids) => (ids.length ? [] : ids))
 		}
 	}, [expanded, setSearchQuery, setSortOption])
 	// Filtering clears selection so hidden chats cannot be deleted accidentally.
 	useEffect(() => {
-		setSelectedTaskIds([])
+		setSelectedTaskIds((ids) => (ids.length ? [] : ids))
 	}, [searchQuery])
 	useEffect(() => {
 		setSearchQuery("")
-		setSelectedTaskIds([])
+		setSelectedTaskIds((ids) => (ids.length ? [] : ids))
 		setDeleteTaskId(null)
 		setShowBatchDeleteDialog(false)
 	}, [cwd, setSearchQuery])

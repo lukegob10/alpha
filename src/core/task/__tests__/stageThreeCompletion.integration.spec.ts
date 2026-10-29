@@ -1101,8 +1101,12 @@ describe("Stage Three durable completion integration", () => {
 					sender: "completion-worker",
 					recipient: TASK_ID,
 					kind: "result",
-					name: "worker_result",
-					payload: { taskId: "completion-worker", summary: "Review this result before finishing." },
+					name: "agent_completed",
+					payload: {
+						taskId: "completion-worker",
+						status: "completed",
+						summary: "Review this result before finishing.",
+					},
 				})
 			}
 			expect(await harness.provider.getParentCompletionDecision()).toMatchObject({
@@ -1143,6 +1147,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(persisted.verificationObligations).toEqual([])
 			const result = persisted.mailbox.find((entry) => entry.eventId === "unconsumed-managed-result")
 			expect(result).toBeDefined()
+			expect(result?.payload?.status).toBe("completed")
 			expect(result?.acknowledgedAt).toBeUndefined()
 		},
 	)

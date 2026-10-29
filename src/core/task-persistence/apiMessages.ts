@@ -56,6 +56,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	agentResponseOutcome?: AgentResponseOutcome
 	/** Producing provider/model for new opaque replay state; absent on legacy transcripts. */
 	provider_state_scope?: ProviderStateScope
+	/** Host-owned durable replay revocation after an explicit provider/profile boundary. */
+	provider_state_replay_disabled?: true
 	// For reasoning items stored in API history
 	type?: "reasoning"
 	summary?: any[]

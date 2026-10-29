@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react"
+import { useState, useMemo, useCallback, useEffect } from "react"
 import { Fzf } from "fzf"
 import type { ProviderSettingsEntry } from "@alpha-code/types"
 
@@ -15,6 +15,7 @@ interface ApiConfigSelectorProps {
 	value: string
 	displayName: string
 	disabled?: boolean
+	isVisible?: boolean
 	title: string
 	onChange: (value: string) => void
 	triggerClassName?: string
@@ -27,6 +28,7 @@ export const ApiConfigSelector = ({
 	value,
 	displayName,
 	disabled = false,
+	isVisible = true,
 	title,
 	onChange,
 	triggerClassName = "",
@@ -38,6 +40,10 @@ export const ApiConfigSelector = ({
 	const [open, setOpen] = useState(false)
 	const [searchValue, setSearchValue] = useState("")
 	const portalContainer = useAlphaPortal("alpha-portal")
+	useEffect(() => {
+		if (!isVisible) setOpen(false)
+	}, [isVisible])
+	const onOpenChange = useCallback((isOpen: boolean) => setOpen(isOpen && isVisible), [isVisible])
 
 	// Create searchable items for fuzzy search.
 	const searchableItems = useMemo(
@@ -74,12 +80,12 @@ export const ApiConfigSelector = ({
 
 	const handleSelect = useCallback(
 		(configId: string) => {
-			if (listApiConfigMeta.find(({ id }) => id === configId)?.availability) return
+			if (!isVisible || listApiConfigMeta.find(({ id }) => id === configId)?.availability) return
 			onChange(configId)
 			setOpen(false)
 			setSearchValue("")
 		},
-		[onChange, listApiConfigMeta],
+		[isVisible, onChange, listApiConfigMeta],
 	)
 
 	const handleEditClick = useCallback(() => {
@@ -156,7 +162,7 @@ export const ApiConfigSelector = ({
 	)
 
 	return (
-		<Popover open={open} onOpenChange={setOpen} data-testid="api-config-selector-root">
+		<Popover open={open && isVisible} onOpenChange={onOpenChange} data-testid="api-config-selector-root">
 			<StandardTooltip content={title}>
 				<PopoverTrigger
 					disabled={disabled}
@@ -169,6 +175,9 @@ export const ApiConfigSelector = ({
 				align="start"
 				sideOffset={4}
 				container={portalContainer}
+				onCloseAutoFocus={(event) => {
+					if (!isVisible) event.preventDefault()
+				}}
 				className="p-0 overflow-hidden w-[300px]">
 				<div className="flex flex-col w-full">
 					{/* Search input or info blurb */}

@@ -1,6 +1,9 @@
 import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
-import { act, render, screen, waitFor } from "@/utils/test-utils"
+import i18next from "i18next"
+import { initReactI18next } from "react-i18next"
+import { act, render, screen, waitFor, within } from "@/utils/test-utils"
+import chat from "@/i18n/locales/en/chat.json"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
 
@@ -56,6 +59,11 @@ const sendChangeSetCapability = (allowed: boolean, reason: string) =>
 	})
 
 describe("SubagentGroupCard Worker regressions", () => {
+	beforeAll(async () => {
+		await i18next
+			.use(initReactI18next)
+			.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
+	})
 	it.each(["pending", "failed"] as const)(
 		"keeps advisory %s evidence from requesting another check",
 		async (status) => {
@@ -151,9 +159,9 @@ describe("SubagentGroupCard Worker regressions", () => {
 			/>,
 		)
 
-		expect(screen.getByRole("button", { name: /Open Maple · Completed · Review/i })).toBeEnabled()
+		expect(screen.getByRole("button", { name: /Open Maple · Completed · Parent action needed/i })).toBeEnabled()
 		await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
-		expect(screen.getByText("Review changes")).toBeInTheDocument()
+		expect(within(screen.getByRole("menu")).getByText("Parent action needed")).toBeInTheDocument()
 		expect(screen.queryByText(/Run a parent verification command/)).not.toBeInTheDocument()
 		expect(screen.getByText("An admitted mutation still needs its durable content receipt.")).toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Apply changes" })).not.toBeInTheDocument()

@@ -260,6 +260,12 @@ describe("Task reasoning preference runtime boundaries", () => {
 				compactionApiHandler: activeHandler,
 			}),
 		)
+		if (!fails) {
+			// The request projection remains owned until the turn engine finishes
+			// processing its successful response. Model that terminal cleanup here.
+			expect(activeHandler.dispose).not.toHaveBeenCalled()
+			Reflect.get(task, "currentAgentStep").releaseRequest()
+		}
 		expect(activeHandler.dispose).toHaveBeenCalledOnce()
 		expect(small.dispose).not.toHaveBeenCalled()
 	})
@@ -487,5 +493,76 @@ describe("Task reasoning preference runtime boundaries", () => {
 		expect(capturedStep(first.task).snapshot.context.provider.options).toMatchObject({ reasoningEffort: "high" })
 		expect(capturedStep(second.task).snapshot.context.provider.options).toMatchObject({ reasoningEffort: "low" })
 		expect(first.task.apiConfiguration).toEqual(second.task.apiConfiguration)
+	})
+
+	it("keeps the invoking profile identity across a concurrent profile change and a transport retry", async () => {
+		const { task, provider, baseConfiguration } = harness("high")
+		const spawnSurface = surface("spawn_agent")
+		vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({
+			tools: structuredClone([...spawnSurface.schemas]),
+			surface: spawnSurface,
+		})
+		let selectedRoute = {
+			profileId: "profile-a",
+			profileName: "Profile A",
+			provider: "vertex",
+		}
+		Object.assign(provider, { taskHistoryStore: { get: () => ({ threadModelRoute: selectedRoute }) } })
+		task.setTaskApiConfigName("Profile A")
+		let releaseState!: () => void
+		let observeState!: () => void
+		const stateStarted = new Promise<void>((resolve) => {
+			observeState = resolve
+		})
+		const statePending = new Promise<void>((resolve) => {
+			releaseState = resolve
+		})
+		provider.getState.mockImplementationOnce(async () => {
+			observeState()
+			await statePending
+			return { mode: "code", autoCondenseContext: false, autoApprovalEnabled: false }
+		})
+		const request = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		const firstChunk = request.next()
+		await stateStarted
+
+		const nextHandler = handler("model-b", "high")
+		const nextConfiguration = { ...baseConfiguration, apiModelId: "model-b", vertexProjectId: "account-b" }
+		Reflect.set(task, "prepareReasoningConfiguration", () => ({
+			api: nextHandler,
+			configuration: nextConfiguration,
+			state: reasoningState("high"),
+		}))
+		task.updateApiConfiguration(nextConfiguration)
+		task.setTaskApiConfigName("Profile B")
+		selectedRoute = { profileId: "profile-b", profileName: "Profile B", provider: "vertex" }
+		releaseState()
+		await firstChunk
+		for await (const _chunk of request) {
+		}
+
+		const invocation = () => Reflect.get(task, "currentAgentStep").getSubagentInvocationContext()
+		expect(invocation()).toMatchObject({
+			apiConfigName: "Profile A",
+			apiConfiguration: baseConfiguration,
+			modelRoute: { profileId: "profile-a", profileName: "Profile A", modelId: "reasoning-model" },
+		})
+		for await (const _chunk of task.attemptApiRequest(1, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryCategory: "transport",
+		})) {
+		}
+		expect(invocation().modelRoute.profileId).toBe("profile-a")
+
+		for await (const _chunk of task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+		})) {
+		}
+		expect(invocation()).toMatchObject({
+			apiConfigName: "Profile B",
+			modelRoute: { profileId: "profile-b", profileName: "Profile B", modelId: "model-b" },
+		})
 	})
 })

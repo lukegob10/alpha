@@ -43,6 +43,7 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"exec_command",
 	"write_stdin",
 	"spawn_agent",
+	"list_provider_profiles",
 	"list_agents",
 	"wait_agent",
 	"send_message",

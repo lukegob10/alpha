@@ -176,7 +176,9 @@ export interface ScriptedTurn {
 	summary: string
 	chunks?: ApiStreamChunk[]
 	entered: Promise<void>
+	progressed: Promise<void>
 	request?: ApiHandlerCreateMessageMetadata
+	messages?: Parameters<ApiHandler["createMessage"]>[1]
 	release(): void
 }
 
@@ -196,13 +198,22 @@ export interface PublicChild {
 	result?: InternalTaskResult
 }
 
-export async function createManagedPublicLifecycleHarness(options = { maxLiveTasks: 3 }) {
+export async function createManagedPublicLifecycleHarness(
+	options: { maxLiveTasks?: number; rootObjective?: string } = {},
+) {
 	const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-ws08-public-"))
 	const workspacePath = path.join(storagePath, "workspace")
 	await fs.mkdir(workspacePath)
 	const turns = new Map<
 		string,
-		Array<ScriptedTurn & { permit: ReturnType<typeof deferred<void>>; start: ReturnType<typeof deferred<void>> }>
+		Array<
+			ScriptedTurn & {
+				permit: ReturnType<typeof deferred<void>>
+				start: ReturnType<typeof deferred<void>>
+				progress: ReturnType<typeof deferred<void>>
+				beforeHold: ApiStreamChunk[]
+			}
+		>
 	>()
 	const allTurns: ScriptedTurn[] = []
 	const handlers: ScriptedApiHandler[] = []
@@ -213,7 +224,7 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		apiProvider: "openai",
 		openAiModelId: "ws08-scripted",
 		currentApiConfigName: "Scripted",
-		maxConcurrentTasks: options.maxLiveTasks,
+		maxConcurrentTasks: options.maxLiveTasks ?? 3,
 		maxConcurrentSubagents: 2,
 		subagentMaxDepth: 1,
 		subagentDelegationPolicy: "proactive",
@@ -260,10 +271,27 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		apiProvider: "openai",
 		openAiModelId: settings.openAiModelId,
 	}))
-	const queueTurn = (taskId: string, summary: string, chunks?: ApiStreamChunk[]): ScriptedTurn => {
+	const queueTurn = (
+		taskId: string,
+		summary: string,
+		chunks?: ApiStreamChunk[],
+		options: { beforeHold?: ApiStreamChunk[] } = {},
+	): ScriptedTurn => {
 		const start = deferred()
 		const permit = deferred()
-		const turn = { taskId, summary, chunks, entered: start.promise, permit, start, release: () => permit.resolve() }
+		const progress = deferred()
+		const turn = {
+			taskId,
+			summary,
+			chunks,
+			entered: start.promise,
+			progressed: progress.promise,
+			beforeHold: options.beforeHold ?? [],
+			permit,
+			start,
+			progress,
+			release: () => permit.resolve(),
+		}
 		const pending = turns.get(taskId) ?? []
 		pending.push(turn)
 		turns.set(taskId, pending)
@@ -299,12 +327,16 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 				const turn = turns.get(metadata.taskId)?.shift()
 				if (!turn) throw new Error(`No scripted response for ${metadata.taskId}`)
 				turn.request = metadata
+				turn.messages = structuredClone(_messages)
 				turn.start.resolve()
 				const cancelled = deferred<never>()
 				const onAbort = () => cancelled.reject(metadata.signal?.reason ?? new Error("Task cancelled"))
 				metadata.signal?.addEventListener("abort", onAbort, { once: true })
 				try {
 					if (metadata.signal?.aborted) onAbort()
+					for (const chunk of turn.beforeHold) yield chunk
+					// The consumer requested another chunk after observing all progress.
+					turn.progress.resolve()
 					await Promise.race([turn.permit.promise, cancelled.promise])
 				} finally {
 					metadata.signal?.removeEventListener("abort", onAbort)
@@ -359,12 +391,17 @@ export async function createManagedPublicLifecycleHarness(options = { maxLiveTas
 		Reflect.get(provider, "taskHistoryStoreReady"),
 		Reflect.get(provider, "mcpHubInitialization"),
 	])
-	const root = await provider.createTask("Integrate and verify the short child reports.", undefined, undefined, {
-		startTask: false,
-		taskMode: "code",
-		workspacePath,
-		enableCheckpoints: false,
-	})
+	const root = await provider.createTask(
+		options.rootObjective ?? "Integrate and verify the short child reports.",
+		undefined,
+		undefined,
+		{
+			startTask: false,
+			taskMode: "code",
+			workspacePath,
+			enableCheckpoints: false,
+		},
+	)
 	const taskSessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
 	const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
 	const runs = Reflect.get(provider, "asyncSubagentRunManager") as AsyncSubagentRunManager

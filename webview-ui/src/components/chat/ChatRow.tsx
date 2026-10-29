@@ -311,6 +311,9 @@ const ChatRowContentInner = ({
 
 	// Handle message events for image selection during edit mode
 	useEffect(() => {
+		// Closed edit buffers must not receive every streamed extension update.
+		if (!isEditing) return
+
 		const handleMessage = (event: MessageEvent) => {
 			const msg = event.data
 			if (msg.type === "selectedImages" && msg.context === "edit" && msg.messageTs === message.ts && isEditing) {

@@ -14,6 +14,11 @@ import {
 	TaskLifecycleState,
 	TaskStatus,
 	subagentContextManifestSchema,
+	subagentAutoApprovalPolicySchema,
+	inferApprovalModeFromPolicy,
+	getCuratedModelInfo,
+	type ApprovalMode,
+	type ProviderSettings,
 	type SubagentGroupState,
 } from "@alpha-code/types"
 
@@ -24,7 +29,7 @@ import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
-import { buildInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
+import { buildInternalTaskEnvelope, isValidInternalTaskEnvelope } from "../../agent/InternalTaskEnvelope"
 import {
 	captureSubagentContext,
 	isValidSubagentContextManifest,
@@ -42,6 +47,9 @@ import { TaskGoalStore } from "../../task-persistence/TaskGoalStore"
 import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBindingStore"
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 import { captureVerificationContent } from "../../agent/VerificationScope"
+import { checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
+import { resolveTaskReasoning } from "../../agent/TaskReasoning"
+import * as api from "../../../api"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -91,6 +99,9 @@ const makeProviderHarness = (
 	} = {},
 	profiles: Array<Record<string, any>> = [],
 ) => {
+	const storedProfiles = profiles.some((profile) => profile.name === "Parent")
+		? profiles
+		: [...profiles, { id: "parent-profile", name: "Parent", apiProvider: "openai", openAiModelId: "alpha-model" }]
 	const agentControlStore = new AgentControlStore(new InMemoryAgentControlPersistence())
 	const agentControlStoreReady = agentControlStore.initialize()
 	const taskSessions = new TaskSessionRegistry(3)
@@ -121,8 +132,13 @@ const makeProviderHarness = (
 			setValues: vi.fn(async (values: Record<string, unknown>) => Object.assign(routingSettings, values)),
 		},
 		providerSettingsManager: {
+			listConfig: vi.fn(async () =>
+				storedProfiles.map(({ id, name, apiProvider }) => ({ id, name, apiProvider })),
+			),
 			getProfile: vi.fn(async (query: { id?: string; name?: string }) => {
-				const profile = profiles.find((candidate) => candidate.id === query.id || candidate.name === query.name)
+				const profile = storedProfiles.find(
+					(candidate) => candidate.id === query.id || candidate.name === query.name,
+				)
 				if (!profile) throw new Error("Profile not found")
 				return structuredClone(profile)
 			}),
@@ -183,7 +199,7 @@ const makeProviderHarness = (
 	return provider
 }
 
-const makeParent = () => ({
+const makeParent = (apiConfiguration: ProviderSettings = { apiProvider: "openai", openAiModelId: "alpha-model" }) => ({
 	admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
 	taskId: "parent-1",
 	taskKind: "primary",
@@ -192,7 +208,7 @@ const makeParent = () => ({
 	apiConversationHistory: [] as any[],
 	cwd: "F:/workspace",
 	historyWorkspacePath: "F:/workspace",
-	apiConfiguration: { apiProvider: "openai", openAiModelId: "alpha-model" },
+	apiConfiguration: structuredClone(apiConfiguration),
 	getTaskMode: vi.fn(async () => "code"),
 	getTaskApiConfigName: vi.fn(async () => "Parent"),
 	captureEffectiveInheritedInstructions: vi.fn(async () => ({
@@ -645,21 +661,101 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		},
 	)
 
-	it("narrows a Bypass task's child authority when the global setting is Ask", async () => {
-		const provider = makeProviderHarness(2, { approvalMode: "ask" })
+	it.each([
+		{ approvalMode: "ask" as const, source: "legacy" },
+		{ approvalMode: "auto" as const, source: "legacy" },
+		{ approvalMode: "ask" as const, source: "codex-v2" },
+		{ approvalMode: "auto" as const, source: "codex-v2" },
+	])("inherits a Full Access task's child authority independently of the global default: %j", async (testCase) => {
+		const provider = makeProviderHarness(2, { approvalMode: testCase.approvalMode, deniedCommands: ["git push"] })
 		const parent = { ...makeParent(), getStepApprovalMode: vi.fn(() => "bypass") }
-		const prepared = await provider.prepareSubagentGroup(parent as any, [
-			{ objective: "Respect the current narrower grant", agent_kind: "review" },
-		])
-		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		const prepared = await provider.prepareSubagentGroup(
+			parent as unknown as Task,
+			testCase.source === "legacy"
+				? [{ objective: "Inspect under the inherited task policy", agent_kind: "review" }]
+				: {
+						task_name: "inherit_task_policy",
+						agent_type: "review",
+						message: "Inspect under the inherited task policy",
+					},
+		)
+		const policy = subagentAutoApprovalPolicySchema.parse(
+			Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+				.autoApproval,
+		)
 
-		expect(prepared.requiresExplicitApproval).toBe(true)
-		expect(descriptor.contextManifest.runtimePolicy.autoApproval).toMatchObject({
-			alwaysAllowWrite: false,
-			alwaysAllowExecute: false,
-			alwaysAllowSubagents: false,
-		})
+		expect(prepared.requiresExplicitApproval).toBe(false)
+		expect(inferApprovalModeFromPolicy(policy)).toBe("bypass")
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState: policy,
+				ask: "tool",
+				text: JSON.stringify({ tool: "editedExistingFile", path: "src/value.ts", isOutsideWorkspace: false }),
+			}),
+		).resolves.toEqual({ decision: "approve" })
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: "bypass" },
+				inheritedState: policy,
+				ask: "command",
+				text: "git push origin main",
+			}),
+		).resolves.toEqual({ decision: "deny" })
 	})
+
+	it("uses the current parent task dial when no invoking step is available", async () => {
+		const provider = makeProviderHarness(2, { approvalMode: "ask" })
+		const parent = { ...makeParent(), getTaskApprovalMode: vi.fn(() => "bypass") }
+		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+			task_name: "inherit_current_policy",
+			agent_type: "review",
+			message: "Inspect under the current task policy",
+		})
+		const policy = subagentAutoApprovalPolicySchema.parse(
+			Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+				.autoApproval,
+		)
+		expect(inferApprovalModeFromPolicy(policy)).toBe("bypass")
+	})
+
+	it.each(["ask", "auto"] as const)(
+		"keeps approved child integration on the Full Access parent when the global default becomes %s",
+		async (approvalMode) => {
+			const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+			const parent = {
+				...makeParent(),
+				getStepApprovalMode: vi.fn(() => "bypass"),
+				getTaskApprovalMode: vi.fn<() => "ask" | "bypass">(() => "bypass"),
+			}
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "retain_integration_policy",
+				agent_type: "review",
+				message: "Inspect under the inherited task policy",
+			})
+			const taskId = prepared.envelopes[0].id
+			const captured = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "subagentDescriptors").get(taskId).contextManifest.runtimePolicy.autoApproval,
+			)
+			await provider.contextProxy.setValues({ approvalMode })
+
+			expect(Reflect.get(provider, "hasCurrentWorkerIntegrationPolicy").call(provider, parent, captured)).toBe(
+				true,
+			)
+			const effective = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "getAutoApprovedWorkerChangePolicy").call(provider, taskId, parent),
+			)
+			expect(inferApprovalModeFromPolicy(effective)).toBe("bypass")
+
+			parent.getTaskApprovalMode.mockReturnValue("ask")
+			expect(Reflect.get(provider, "hasCurrentWorkerIntegrationPolicy").call(provider, parent, captured)).toBe(
+				false,
+			)
+			expect(
+				Reflect.get(provider, "getAutoApprovedWorkerChangePolicy").call(provider, taskId, parent),
+			).toBeUndefined()
+		},
+	)
 
 	it.each(["auto", "bypass"] as const)(
 		"launches a default %s sub-agent without an approval dialog",
@@ -705,7 +801,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		expect(descriptor.modelRoute.apiConfiguration.enableReasoningEffort).toBeUndefined()
 	})
 
-	it("applies a named agent type after spawn defaults while inheriting the parent provider", async () => {
+	it("applies a named agent type's saved profile and model after spawn defaults", async () => {
 		const provider = makeProviderHarness(
 			2,
 			{
@@ -716,7 +812,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 						description: "Investigates code paths",
 						role: "explore",
 						apiConfigId: "research-profile",
-						model: "configured-model",
+						model: "gpt-5.6-sol",
 						reasoningEffort: "medium",
 						developerInstructions: "Cite the inspected source paths.",
 					},
@@ -726,8 +822,9 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 				{
 					id: "research-profile",
 					name: "Research profile",
-					apiProvider: "openai",
-					openAiModelId: "original-model",
+					apiProvider: "openai-native",
+					apiModelId: "gpt-5.6-terra",
+					openAiNativeApiKey: "research-secret",
 				},
 			],
 		)
@@ -736,21 +833,24 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			task_name: "research_agent",
 			message: "Inspect the agent loop",
 			agent_type: "researcher",
-			model: "spawn-model",
+			model: "gpt-5.6-luna",
 			reasoning_effort: "high",
 		})
 		expect(prepared.group.agents[0]).toMatchObject({
 			role: "explore",
 			modelRoute: {
 				source: "spawn",
-				profileName: "Parent",
-				modelId: "configured-model",
-				requestedModelId: "configured-model",
+				profileName: "Research profile",
+				provider: "openai-native",
+				modelId: "gpt-5.6-sol",
+				requestedModelId: "gpt-5.6-sol",
 				requestedReasoningEffort: "medium",
 			},
 		})
-		expect(prepared.group.agents[0].modelRoute?.profileId).toBeUndefined()
+		expect(prepared.group.agents[0].modelRoute?.profileId).toBe("research-profile")
 		const descriptor = (provider as any).subagentDescriptors.get(prepared.envelopes[0].id)
+		expect(descriptor.modelRoute.apiConfiguration.openAiNativeApiKey).toBe("research-secret")
+		expect(JSON.stringify(prepared.group)).not.toContain("research-secret")
 		expect(descriptor.inheritedInstructions).toContain("Cite the inspected source paths.")
 		expect(descriptor.contextManifest.instructions.sources).toEqual(
 			expect.arrayContaining([expect.objectContaining({ kind: "agent-type" })]),
@@ -771,7 +871,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 							description: "Reviews independent evidence",
 							role: "review",
 							apiConfigId: "type-profile",
-							model: "configured-type-model",
+							model: "gemini-3.7-flash",
 							reasoningEffort: "medium",
 						},
 					},
@@ -783,7 +883,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 						id: "type-profile",
 						name: "Auditor",
 						apiProvider: "vertex",
-						apiModelId: "profile-model",
+						apiModelId: "gemini-3.7-flash",
 						vertexJsonCredentials: "type-secret",
 					},
 				],
@@ -797,16 +897,17 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			})
 			const route = prepared.group.agents[0].modelRoute
 			expect(route).toMatchObject({
-				profileId: undefined,
-				profileName: "Parent",
-				provider: "openai",
-				modelId: "configured-type-model",
+				profileId: "type-profile",
+				profileName: "Auditor",
+				provider: "vertex",
+				modelId: "gemini-3.7-flash",
 				requestedReasoningEffort: "medium",
 			})
 			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
 			expect(descriptor.modelRoute.apiConfiguration).toMatchObject({
-				apiProvider: "openai",
-				openAiModelId: "configured-type-model",
+				apiProvider: "vertex",
+				apiModelId: "gemini-3.7-flash",
+				vertexJsonCredentials: "type-secret",
 				reasoningEffort: "medium",
 			})
 			expect(prepared.inheritsParentPermissions).toBe(true)
@@ -822,20 +923,21 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 	)
 
 	it.each([
-		["model", "spawn-model", "medium"],
-		["effort", "configured-model", "high"],
+		["model", "gpt-5.6-sol", "medium"],
+		["effort", "gpt-5.6-terra", "high"],
 	] as const)("applies the custom agent after a spawn %s choice", async (override, model, effort) => {
 		const provider = makeProviderHarness(2, {
 			subagentAgentTypes: {
 				researcher: {
 					description: "Inspects code",
 					role: "review",
-					model: "configured-model",
+					model: "gpt-5.6-terra",
 					reasoningEffort: "medium",
 				},
 			},
 		})
-		const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+		const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
 			task_name: "typed_override",
 			message: "Inspect the effective model settings",
 			agent_type: "researcher",
@@ -843,8 +945,8 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			...(override === "model" ? { model } : { reasoning_effort: effort }),
 		})
 		expect(prepared.group.agents[0].modelRoute).toMatchObject({
-			provider: "openai",
-			modelId: "configured-model",
+			provider: "openai-native",
+			modelId: "gpt-5.6-terra",
 			requestedReasoningEffort: "medium",
 		})
 	})
@@ -864,7 +966,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 
 	it("turns a Codex default spawn into an approved editing worker with inherited provider overrides", async () => {
 		const provider = makeProviderHarness()
-		const parent = makeParent()
+		const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
 		const validateScope = vi.spyOn(managedSubagentWorktreeService, "validateScope").mockResolvedValue({
 			gitRoot: parent.cwd,
 			logicalWorkspace: parent.cwd,
@@ -878,7 +980,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		const prepared = await provider.prepareSubagentGroup(parent as any, {
 			task_name: "implement_change",
 			message: "Implement the requested change",
-			model: "gpt-6-sol",
+			model: "gpt-6.1-sol",
 			reasoning_effort: "high",
 		})
 
@@ -888,8 +990,8 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			writeScope: ["."],
 			modelRoute: {
 				source: "spawn",
-				provider: "openai",
-				modelId: "gpt-6-sol",
+				provider: "openai-native",
+				modelId: "gpt-6.1-sol",
 				requestedReasoningEffort: "high",
 			},
 		})
@@ -1562,7 +1664,9 @@ If complete, use attempt_completion.
 				inspector: { description: "Inspects code", role: "review", reasoningEffort: testCase.agentEffort },
 			},
 		})
-		const parent = Object.assign(makeParent(), { reasoningPreference: { kind: "effort", effort: "high" } })
+		const parent = Object.assign(makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" }), {
+			reasoningPreference: { kind: "effort", effort: "high" },
+		})
 		const instructions = await parent.captureEffectiveInheritedInstructions()
 		Object.assign(parent, {
 			getSubagentInvocationContext: () => ({
@@ -1573,8 +1677,8 @@ If complete, use attempt_completion.
 				modelRoute: {
 					source: "parent",
 					resolution: "selected",
-					provider: "openai",
-					modelId: "alpha-model",
+					provider: "openai-native",
+					modelId: "gpt-5.6-luna",
 					profileName: "Parent",
 				},
 				history: [],
@@ -1749,6 +1853,59 @@ If complete, use attempt_completion.
 		expect(policy.commandApprovalCeilings).toContainEqual(capturedApproval.commandApproval)
 		expect(JSON.stringify(policy)).not.toContain("git push")
 	})
+
+	it.each(["ask", "auto"] as const)(
+		"retains the invoking %s step after the current task dial changes to Full Access",
+		async (approvalMode) => {
+			const settings = { approvalMode: "bypass" as const, deniedCommands: ["git push"] }
+			const provider = makeProviderHarness(2, settings)
+			const parent = makeParent()
+			const capturedApproval = provider.snapshotSubagentAutoApprovalPolicy({ ...settings, approvalMode })
+			const instructions = await parent.captureEffectiveInheritedInstructions()
+			Object.assign(parent, {
+				getStepApprovalMode: () => approvalMode,
+				getTaskApprovalMode: () => "bypass",
+				getSubagentInvocationContext: () => ({
+					mode: "code",
+					apiConfiguration: parent.apiConfiguration,
+					apiConfigName: "Parent",
+					modelRoute: {
+						source: "parent",
+						resolution: "selected",
+						profileName: "Parent",
+						provider: "openai",
+						modelId: "alpha-model",
+					},
+					history: [],
+					finalAssistantMessageIndexes: [],
+					instructions,
+					autoApprovalPolicy: capturedApproval,
+				}),
+			})
+			settings.deniedCommands = ["git reset"]
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "retain_invoking_policy",
+				agent_type: "review",
+				message: "Inspect under the invoking step's policy",
+			})
+			const policy = subagentAutoApprovalPolicySchema.parse(
+				Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest.runtimePolicy
+					.autoApproval,
+			)
+			expect(inferApprovalModeFromPolicy(policy)).toBe(approvalMode)
+			expect(policy.alwaysAllowWriteProtected).toBe(false)
+			for (const command of ["git push origin main", "git reset --hard"]) {
+				await expect(
+					checkAutoApprovalWithInheritedPolicy({
+						state: { approvalMode: "bypass" },
+						inheritedState: policy,
+						ask: "command",
+						text: command,
+					}),
+				).resolves.toEqual({ decision: "deny" })
+			}
+		},
+	)
 
 	it("does not reserve or publish children when the parent persistence barrier fails", async () => {
 		const provider = makeProviderHarness()
@@ -2789,12 +2946,12 @@ If complete, use attempt_completion.
 			]
 			const settings = { subagentApiConfigByRole: { review: "captured-id" } }
 			const provider = makeProviderHarness(2, settings, profiles)
-			const parent = makeParent()
+			const parent = makeParent({ apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" })
 			const prepared = await provider.prepareSubagentGroup(parent as any, {
 				task_name: "captured_route",
 				message: "Inspect captured settings",
 				agent_type: "review",
-				model: "captured-model",
+				model: "gpt-5.6-terra",
 				reasoning_effort: "high",
 			})
 			const manifest = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest
@@ -2836,10 +2993,261 @@ If complete, use attempt_completion.
 		},
 	)
 
+	it.each([false, true])(
+		"preserves legacy profile flags unless the stored model was explicitly requested: %s",
+		async (explicitModel) => {
+			const profile = {
+				id: "legacy-flags-profile",
+				name: "Legacy flags",
+				apiProvider: "openai",
+				openAiModelId: "edited-default-model",
+				enableReasoningEffort: true,
+				reasoningEffort: "high",
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const capturedRoute = {
+				source: "parent",
+				resolution: "selected",
+				profileId: profile.id,
+				profileName: profile.name,
+				provider: "openai",
+				modelId: "captured-model",
+				...(explicitModel ? { requestedModelId: "captured-model" } : {}),
+			}
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{ id: "legacy-flags-child", subagentModelRoute: capturedRoute },
+				undefined,
+			)
+			expect(restored.apiConfiguration.openAiModelId).toBe("captured-model")
+			expect(restored.apiConfiguration.enableReasoningEffort).toBe(explicitModel ? undefined : true)
+			expect(restored.apiConfiguration.reasoningEffort).toBe(explicitModel ? undefined : "high")
+		},
+	)
+
+	it("restores a bound FakeAI registry locator after the saved profile selects another runtime", async () => {
+		const dispose = vi.fn()
+		const factory = vi.spyOn(api, "buildApiHandler").mockReturnValue({
+			createMessage: async function* () {},
+			getModel: () => ({ id: "reported-model", info: { contextWindow: 8_000, supportsPromptCache: false } }),
+			countTokens: async () => 0,
+			dispose,
+		})
+		const profile = {
+			id: "scripted-profile",
+			name: "Scripted child",
+			apiProvider: "fake-ai",
+			fakeAi: { id: "edited-saved-runtime" },
+			apiModelId: "reported-model",
+			enableReasoningEffort: true,
+			reasoningEffort: "low",
+		}
+		const provider = makeProviderHarness(2, {}, [profile])
+		const capturedRoute = {
+			source: "parent",
+			resolution: "selected",
+			profileId: profile.id,
+			profileName: profile.name,
+			provider: "fake-ai",
+			modelId: "captured-runtime",
+			reasoningConfiguration: {},
+		}
+		const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+			provider,
+			makeParent(),
+			"review",
+			{ id: "scripted-child", subagentModelRoute: capturedRoute },
+			undefined,
+		)
+		expect(restored.apiConfiguration.fakeAi).toEqual({ id: "captured-runtime" })
+		expect(restored.apiConfiguration.apiModelId).toBe("reported-model")
+		expect(restored.apiConfiguration.enableReasoningEffort).toBeUndefined()
+		expect(restored.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(factory).toHaveBeenCalledExactlyOnceWith(restored.apiConfiguration)
+		expect(dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each([undefined, "legacy-reported-model"])(
+		"retains the saved FakeAI runtime for a legacy diagnostic model %s",
+		async (modelId) => {
+			const dispose = vi.fn()
+			const factory = vi.spyOn(api, "buildApiHandler").mockReturnValue({
+				createMessage: async function* () {},
+				getModel: () => ({
+					id: "legacy-reported-model",
+					info: { contextWindow: 8_000, supportsPromptCache: false },
+				}),
+				countTokens: async () => 0,
+				dispose,
+			})
+			const profile = {
+				id: "legacy-scripted-profile",
+				name: "Legacy scripted child",
+				apiProvider: "fake-ai",
+				fakeAi: { id: "saved-runtime-id" },
+				apiModelId: "legacy-reported-model",
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const capturedRoute = {
+				source: "parent",
+				resolution: "selected",
+				profileId: profile.id,
+				profileName: profile.name,
+				provider: "fake-ai",
+				...(modelId ? { modelId } : {}),
+			}
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{ id: "legacy-scripted-child", subagentModelRoute: capturedRoute },
+				undefined,
+			)
+			expect(restored.apiConfiguration.fakeAi).toEqual({ id: "saved-runtime-id" })
+			expect(restored.apiConfiguration.apiModelId).toBe("legacy-reported-model")
+			expect(factory).toHaveBeenCalledExactlyOnceWith(restored.apiConfiguration)
+			expect(dispose).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("rejects changed legacy FakeAI diagnostic models before opening a cached runtime", async () => {
+		const factory = vi.spyOn(api, "buildApiHandler")
+		const profile = {
+			id: "legacy-scripted-profile",
+			name: "Legacy scripted child",
+			apiProvider: "fake-ai",
+			fakeAi: { id: "saved-runtime-id" },
+			apiModelId: "changed-reported-model",
+		}
+		const provider = makeProviderHarness(2, {}, [profile])
+		await expect(
+			Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				makeParent(),
+				"review",
+				{
+					id: "legacy-scripted-child",
+					subagentModelRoute: {
+						source: "parent",
+						resolution: "selected",
+						profileId: profile.id,
+						profileName: profile.name,
+						provider: "fake-ai",
+						modelId: "captured-reported-model",
+					},
+				},
+				undefined,
+			),
+		).rejects.toThrow("Cannot resume child: captured model")
+		expect(factory).not.toHaveBeenCalled()
+	})
+
+	const profileOnlyCases: Array<{
+		label: string
+		model: string
+		reasoning: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">
+		changedModel: string
+		changedReasoning: Pick<ProviderSettings, "enableReasoningEffort" | "reasoningEffort">
+		expected: "high" | "off" | "default"
+	}> = [
+		{
+			label: "profile effort",
+			model: "gpt-5.6-luna",
+			reasoning: { enableReasoningEffort: true, reasoningEffort: "high" },
+			changedModel: "gpt-5.6-luna",
+			changedReasoning: { enableReasoningEffort: true, reasoningEffort: "low" },
+			expected: "high",
+		},
+		{
+			label: "omitted flags on a required-reasoning model",
+			model: "gpt-6.1-sol",
+			reasoning: {},
+			changedModel: "gpt-5.6-luna",
+			changedReasoning: { enableReasoningEffort: false, reasoningEffort: "none" },
+			expected: "default",
+		},
+		{
+			label: "disabled profile reasoning",
+			model: "gpt-5.6-luna",
+			reasoning: { enableReasoningEffort: false, reasoningEffort: "none" },
+			changedModel: "gpt-5.6-terra",
+			changedReasoning: { enableReasoningEffort: true, reasoningEffort: "high" },
+			expected: "off",
+		},
+	]
+	it.each(profileOnlyCases.flatMap((testCase) => ["manifest", "history"].map((source) => ({ ...testCase, source }))))(
+		"restores profile-only $label from $source after saved defaults change",
+		async (testCase) => {
+			const profile = {
+				id: "profile-only-child",
+				name: "Selected child",
+				apiProvider: "openai-native",
+				apiModelId: testCase.model,
+				openAiNativeApiKey: "selected-child-secret",
+				...testCase.reasoning,
+			}
+			const provider = makeProviderHarness(2, {}, [profile])
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "profile_only_capture",
+				message: "Inspect the selected profile",
+				agent_type: "review",
+				profile: profile.id,
+			})
+			const manifest = structuredClone(
+				Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id).contextManifest,
+			)
+			expect(manifest.modelRoute).toMatchObject({
+				profileId: profile.id,
+				modelId: testCase.model,
+				reasoningConfiguration: testCase.reasoning,
+			})
+			expect(manifest.modelRoute.requestedModelId).toBeUndefined()
+			expect(manifest.modelRoute.requestedReasoningEffort).toBeUndefined()
+			Object.assign(profile, {
+				name: "Renamed child",
+				apiModelId: testCase.changedModel,
+				...testCase.changedReasoning,
+			})
+			const restored = await Reflect.get(provider, "restoreCapturedSubagentModelRoute").call(
+				provider,
+				parent,
+				"review",
+				{
+					id: prepared.envelopes[0].id,
+					apiConfigName: "Selected child",
+					reasoningPreference: { kind: "default" },
+					...(testCase.source === "history" ? { subagentModelRoute: manifest.modelRoute } : {}),
+				},
+				testCase.source === "manifest" ? manifest : undefined,
+			)
+			expect(restored.apiConfigName).toBe("Renamed child")
+			expect(restored.apiConfiguration.apiModelId).toBe(testCase.model)
+			expect(restored.apiConfiguration.enableReasoningEffort).toBe(testCase.reasoning.enableReasoningEffort)
+			expect(restored.apiConfiguration.reasoningEffort).toBe(testCase.reasoning.reasoningEffort)
+			expect(restored.apiConfiguration.openAiNativeApiKey).toBe("selected-child-secret")
+			const info = getCuratedModelInfo("openai-native", testCase.model)
+			if (!info) throw new Error("Fixture model is missing from the current native catalog")
+			const state = resolveTaskReasoning(
+				restored.apiConfiguration,
+				{ kind: "default" },
+				{ id: testCase.model, info },
+			).state
+			if (testCase.expected === "high") expect(state.effective).toEqual({ kind: "effort", effort: "high" })
+			else if (testCase.expected === "off") expect(state.effective.kind).toBe("off")
+			else {
+				expect(state.capabilities.canDisable).toBe(false)
+				expect(state.effective.kind).toBe("effort")
+			}
+		},
+	)
+
 	it.each([
 		{ apiProvider: "openai", openAiModelId: "other-model" },
 		{ apiProvider: "vertex", apiModelId: "captured-model" },
-	])("rejects captured profile drift on reload: %j", async (changedConfiguration) => {
+	])("pins the captured model and rejects a changed provider on reload: %j", async (changedConfiguration) => {
 		const profiles: Array<Record<string, unknown>> = [
 			{ id: "captured-id", name: "Captured child", apiProvider: "openai", openAiModelId: "captured-model" },
 		]
@@ -2858,14 +3266,20 @@ If complete, use attempt_completion.
 			modelId: "captured-model",
 		}
 		Object.assign(profiles[0], changedConfiguration)
-		await expect(
-			(provider as any).restoreCapturedSubagentModelRoute(
-				parent,
-				"review",
-				{ id: prepared.envelopes[0].id },
-				manifest,
-			),
-		).rejects.toThrow("Cannot resume child: captured")
+		const restoring = (provider as any).restoreCapturedSubagentModelRoute(
+			parent,
+			"review",
+			{ id: prepared.envelopes[0].id },
+			manifest,
+		)
+		if (changedConfiguration.apiProvider !== "openai") {
+			await expect(restoring).rejects.toThrow("Cannot resume child: captured")
+		} else {
+			expect((await restoring).apiConfiguration).toMatchObject({
+				apiProvider: "openai",
+				openAiModelId: "captured-model",
+			})
+		}
 	})
 
 	it("captures configured Worker routing before an awaited workspace-scope check", async () => {
@@ -3997,6 +4411,8 @@ If complete, use attempt_completion.
 			taskKind: "subagent",
 			subagentContextManifest: legacyManifest,
 			subagentDelegationPolicy: "proactive",
+			getStepApprovalMode: () => "bypass",
+			getTaskApprovalMode: () => "bypass",
 		}
 		const nested = await provider.prepareSubagentGroup(retainedChild as any, [
 			{ objective: "Do not inherit widened live settings", agent_kind: "explore" },
@@ -4095,6 +4511,8 @@ If complete, use attempt_completion.
 			taskKind: "subagent",
 			subagentContextManifest: manifest,
 			subagentDelegationPolicy: "proactive",
+			getStepApprovalMode: () => "bypass",
+			getTaskApprovalMode: () => "bypass",
 		}
 		const nested = await provider.prepareSubagentGroup(child as any, [
 			{ objective: "Stay under the Auto ceiling", agent_kind: "explore" },
@@ -6592,6 +7010,44 @@ If complete, use attempt_completion.
 		expect(parent.alphaMessages[0].subagentGroup?.agents[0].resultDeliveredAt).toBeUndefined()
 	})
 
+	it("keeps an interrupted result addressable without treating it as an automatic completion blocker", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const child = await store.createAgent({
+			taskId: "explicit-interrupted-result",
+			parentTaskId: parent.taskId,
+			rootTaskId: root.rootTaskId,
+			nickname: "Interrupted result",
+			role: "review",
+			objective: "Retain interruption evidence",
+			status: "interrupted",
+		})
+		await store.appendEvent({
+			rootTaskId: root.rootTaskId,
+			sender: child.taskId,
+			recipient: parent.taskId,
+			kind: "result",
+			name: "agent_interrupted",
+			payload: { taskId: child.taskId, status: "interrupted", summary: "Review interrupted." },
+		})
+		expect(provider.hasPendingAgentResultNotifications(parent as unknown as Task)).toBe(false)
+		await expect(provider.getParentCompletionDecision(parent as unknown as Task)).resolves.toMatchObject({
+			allowed: true,
+		})
+		await expect(
+			provider.waitForAgent(parent as unknown as Task, 10_000, { target: child.path, untilTerminal: true }),
+		).resolves.toMatchObject({ eventCount: 1 })
+		expect(parent.stageWaitAgentNotifications).toHaveBeenCalledWith(expect.any(String), [
+			expect.objectContaining({
+				senderTaskId: child.taskId,
+				payload: expect.objectContaining({ status: "interrupted", summary: "Review interrupted." }),
+			}),
+		])
+		expect(store.getAgent(child.taskId, root.rootTaskId)?.status).toBe("interrupted")
+	})
+
 	it("returns ordered completion, failure, and cancellation provenance and blocks completion until its native receipt", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -6698,10 +7154,12 @@ If complete, use attempt_completion.
 		])
 
 		// Returning/rendering a wait result is not a durable receipt. The completion
-		// gate releases the orphaned claim for retry but keeps all results blocking.
+		// gate releases the orphaned claim for retry. Completed/failed results block;
+		// cancellation evidence remains explicitly readable without requiring another turn.
 		await expect(provider.getParentCompletionDecision(parent as any)).resolves.toMatchObject({
 			allowed: false,
-			message: expect.stringContaining("3 immediate-parent terminal results remain unconsumed"),
+			unconsumedResultCount: 2,
+			message: expect.stringContaining("2 immediate-parent terminal results remain unconsumed"),
 		})
 		const retried = (await provider.waitForAgent(parent as any, 10_000)) as any
 		expect(retried.claimId).not.toBe(firstWait.claimId)
@@ -7628,6 +8086,495 @@ If complete, use attempt_completion.
 			capturedManifest.skills.map((skill: any) => ({ id: skill.name, digest: skill.digest })),
 		)
 		expect(parent.captureEffectiveInheritedInstructions).not.toHaveBeenCalled()
+	})
+
+	describe("follow-up runtime approval admission", () => {
+		const setup = async (initialMode: ApprovalMode, source: "retained" | "evicted", missingGrant = false) => {
+			const settings = { approvalMode: "auto" as ApprovalMode, deniedCommands: ["git push"] }
+			let parentMode = initialMode
+			const provider = makeProviderHarness(3, settings)
+			const parent = {
+				...makeParent(),
+				getStepApprovalMode: () => parentMode,
+				getTaskApprovalMode: () => parentMode,
+			}
+			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+				task_name: "continued_review",
+				agent_type: "review",
+				message: "Inspect the retained implementation",
+			})
+			const taskId = prepared.envelopes[0].id
+			const descriptors = Reflect.get(provider, "subagentDescriptors")
+			let manifest = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+			if (missingGrant) {
+				const { digest: _digest, autoApproval: _autoApproval, ...runtimePolicy } = manifest.runtimePolicy
+				manifest = captureSubagentContext({
+					parentTaskId: parent.taskId,
+					capturedAt: manifest.capturedAt,
+					forkTurns: "none",
+					history: [],
+					instructions: await parent.captureEffectiveInheritedInstructions(),
+					skills: [],
+					cwd: parent.cwd,
+					workspaceRoots: [parent.cwd],
+					modelRoute: manifest.modelRoute,
+					runtimePolicy,
+					orchestration: manifest.orchestration,
+				}).manifest
+				descriptors.get(taskId).contextManifest = manifest
+			}
+			Reflect.get(provider, "__historyItems").set(taskId, {
+				id: taskId,
+				number: 2,
+				ts: 2,
+				task: "Retained review",
+				taskKind: "subagent",
+				mode: "code",
+				approvalMode: initialMode,
+				apiConfigName: "Parent",
+				subagentContextManifest: manifest,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			})
+			prepared.group.status = "interrupted"
+			prepared.group.agents[0].status = "interrupted"
+			parent.alphaMessages = [{ subagentGroup: structuredClone(prepared.group) }]
+			const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+			await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+			const record = await store.createAgent({
+				taskId,
+				rootTaskId: parent.taskId,
+				parentTaskId: parent.taskId,
+				groupId: prepared.group.groupId,
+				nickname: prepared.group.agents[0].nickname,
+				role: "review",
+				objective: "Inspect the retained implementation",
+				status: "interrupted",
+				snapshot: { contextManifest: manifest },
+			})
+			if (source === "evicted") {
+				descriptors.clear()
+				Reflect.get(provider, "preparedSubagentGroups").clear()
+				Reflect.get(provider, "reservedSubagentSlots").clear()
+			}
+			const start = vi.spyOn(provider as any, "startPreparedSubagentRun").mockImplementation(async () => ({
+				taskId,
+				runId: `${taskId}:continued`,
+				groupId: prepared.group.groupId,
+				parentTaskId: parent.taskId,
+				path: record.path,
+				nickname: record.nickname,
+				role: record.role,
+				status: "pending",
+				createdAt: Date.now(),
+			}))
+			return {
+				provider,
+				parent,
+				settings,
+				prepared,
+				taskId,
+				manifest,
+				store,
+				record,
+				start,
+				setMode: (mode: ApprovalMode) => {
+					parentMode = mode
+				},
+			}
+		}
+
+		it.each([
+			{ initial: "ask" as const, next: "bypass" as const, source: "retained" as const },
+			{ initial: "ask" as const, next: "bypass" as const, source: "evicted" as const },
+			{ initial: "auto" as const, next: "bypass" as const, source: "retained" as const },
+			{ initial: "auto" as const, next: "bypass" as const, source: "evicted" as const },
+			{ initial: "bypass" as const, next: "ask" as const, source: "retained" as const },
+			{ initial: "bypass" as const, next: "ask" as const, source: "evicted" as const },
+		])("refreshes only the new follow-up's approval authority: %j", async ({ initial, next, source }) => {
+			const fixture = await setup(initial, source)
+			fixture.setMode(next)
+			fixture.settings.deniedCommands = ["git reset"]
+			await fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			const refreshed = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			const approval = subagentAutoApprovalPolicySchema.parse(refreshed.runtimePolicy.autoApproval)
+			expect(inferApprovalModeFromPolicy(approval)).toBe(next)
+			expect(isValidSubagentContextManifest(refreshed)).toBe(true)
+			const admittedPrepared = Reflect.get(fixture.provider, "preparedSubagentGroups").get(
+				fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.groupId,
+			)
+			expect(admittedPrepared.envelopes[0].scope.contextRefs).toEqual(refreshed.contextRefs)
+			expect(isValidInternalTaskEnvelope(admittedPrepared.envelopes[0])).toBe(true)
+			expect(refreshed.workspace).toEqual(fixture.manifest.workspace)
+			expect(refreshed.instructions).toEqual(fixture.manifest.instructions)
+			expect(refreshed.runtimePolicy).toEqual({
+				...fixture.manifest.runtimePolicy,
+				autoApproval: approval,
+				digest: expect.any(String),
+			})
+			expect(fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.snapshot?.contextManifest).toEqual(
+				refreshed,
+			)
+			for (const command of ["git push origin main", "git reset --hard"]) {
+				await expect(
+					checkAutoApprovalWithInheritedPolicy({
+						state: { approvalMode: next },
+						inheritedState: approval,
+						ask: "command",
+						text: command,
+					}),
+				).resolves.toEqual({ decision: "deny" })
+			}
+		})
+
+		it("keeps an invoking Ask ceiling when a later serialized admission sees Full Access", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.setMode("ask")
+			let release!: () => void
+			const predecessor = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			Reflect.get(fixture.provider, "agentFollowupAdmissions").set(fixture.taskId, predecessor)
+			const following = fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			fixture.setMode("bypass")
+			release()
+			await following
+			const manifest = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(manifest.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it("caps a captured Full Access invocation after the owner dial narrows during serialized admission", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.parent.getStepApprovalMode = () => "bypass"
+			let release!: () => void
+			const predecessor = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			Reflect.get(fixture.provider, "agentFollowupAdmissions").set(fixture.taskId, predecessor)
+			const following = fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			fixture.setMode("ask")
+			release()
+			await following
+			const manifest = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(manifest.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it("keeps repeated follow-ups bounded while preserving a distinct prior denial", async () => {
+			const fixture = await setup("bypass", "retained")
+			fixture.settings.deniedCommands = ["git reset"]
+			let ceilingCount = 0
+			for (let attempt = 0; attempt < 24; attempt++) {
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const descriptor = Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId)
+				const policy = subagentAutoApprovalPolicySchema.parse(
+					descriptor.contextManifest.runtimePolicy.autoApproval,
+				)
+				ceilingCount = policy.commandApprovalCeilings?.length ?? 0
+				for (const command of ["git push origin main", "git reset --hard"]) {
+					await expect(
+						checkAutoApprovalWithInheritedPolicy({
+							state: { approvalMode: "bypass" },
+							inheritedState: policy,
+							ask: "command",
+							text: command,
+						}),
+					).resolves.toEqual({ decision: "deny" })
+				}
+				await fixture.store.updateAgentStatus(
+					fixture.taskId,
+					"running",
+					{ pendingFollowupEventId: null },
+					fixture.parent.taskId,
+				)
+				await fixture.store.updateAgentStatus(fixture.taskId, "completed", {}, fixture.parent.taskId)
+				fixture.prepared.group.status = "completed"
+				fixture.prepared.group.agents[0].status = "completed"
+			}
+			expect(ceilingCount).toBeLessThanOrEqual(2)
+		})
+
+		it("retains an admitted Ask receipt through rollback and eviction instead of inheriting a later Full Access dial", async () => {
+			const fixture = await setup("bypass", "evicted")
+			fixture.setMode("ask")
+			fixture.start.mockRejectedValueOnce(new Error("Continuation publication failed"))
+			await expect(
+				fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				),
+			).rejects.toThrow("Continuation publication failed")
+			const retained = fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)
+			expect(retained?.pendingFollowupEventId).toEqual(expect.any(String))
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(
+						retained?.snapshot?.contextManifest?.runtimePolicy.autoApproval,
+					),
+				),
+			).toBe("ask")
+			fixture.setMode("bypass")
+			Reflect.get(fixture.provider, "subagentDescriptors").clear()
+			Reflect.get(fixture.provider, "preparedSubagentGroups").clear()
+			Reflect.get(fixture.provider, "reservedSubagentSlots").clear()
+			await fixture.provider.followupAgentTask(
+				fixture.parent as unknown as Task,
+				fixture.record.path,
+				"Inspect again",
+			)
+			const restored = subagentContextManifestSchema.parse(
+				Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+			)
+			expect(
+				inferApprovalModeFromPolicy(
+					subagentAutoApprovalPolicySchema.parse(restored.runtimePolicy.autoApproval),
+				),
+			).toBe("ask")
+		})
+
+		it.each([false, true])(
+			"launches the replacement with its admitted mode, including legacy=%s",
+			async (missingGrant) => {
+				const fixture = await setup(missingGrant ? "bypass" : "ask", "evicted", missingGrant)
+				fixture.setMode("bypass")
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const child = Object.assign(new EventEmitter(), {
+					taskId: fixture.taskId,
+					alphaMessages: [],
+					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+					finalizeSubagentHistory: vi.fn(async () => undefined),
+					cancelCurrentRequest: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+					isCompleted: () => true,
+					resumeSubagentFollowup: async () => {
+						child.emit(AlphaCodeEventName.Message, {
+							action: "created",
+							message: { ts: 201, type: "say", say: "completion_result", text: "Current report" },
+						})
+					},
+				})
+				const create = vi.fn(async (_history: unknown) => child)
+				Reflect.set(fixture.provider, "createTaskWithHistoryItem", create)
+				const prepared = Reflect.get(fixture.provider, "preparedSubagentGroups").get(fixture.record.groupId)
+				await Reflect.get(fixture.provider, "runSubagentEnvelope").call(
+					fixture.provider,
+					prepared.envelopes[0],
+					new AbortController().signal,
+				)
+				expect(create.mock.calls[0][0]).toMatchObject({ approvalMode: missingGrant ? "ask" : "bypass" })
+			},
+		)
+
+		it.each(["retained", "evicted"] as const)(
+			"keeps a missing legacy grant conservative on %s follow-up",
+			async (source) => {
+				const fixture = await setup("ask", source, true)
+				fixture.setMode("bypass")
+				await fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect again",
+				)
+				const refreshed = subagentContextManifestSchema.parse(
+					Reflect.get(fixture.provider, "subagentDescriptors").get(fixture.taskId).contextManifest,
+				)
+				expect(refreshed.runtimePolicy.autoApproval).toBeUndefined()
+				expect(refreshed.runtimePolicy).toEqual(fixture.manifest.runtimePolicy)
+			},
+		)
+
+		it("does not widen a running child's accepted step when buffering a follow-up", async () => {
+			const fixture = await setup("ask", "retained")
+			fixture.setMode("bypass")
+			await fixture.store.updateAgentStatus(fixture.taskId, "pending", {}, fixture.parent.taskId)
+			await fixture.store.updateAgentStatus(fixture.taskId, "running", {}, fixture.parent.taskId)
+			const child = {
+				taskId: fixture.taskId,
+				subagentContextManifest: fixture.manifest,
+				getStepApprovalMode: () => "ask",
+				getTaskApprovalMode: () => "ask",
+				admitAgentMessage: async (persist: () => Promise<unknown>) => persist(),
+			}
+			Reflect.get(fixture.provider, "taskSessions").getTask = (taskId: string) =>
+				taskId === child.taskId ? child : undefined
+			await expect(
+				fixture.provider.followupAgentTask(
+					fixture.parent as unknown as Task,
+					fixture.record.path,
+					"Inspect at the next input boundary",
+				),
+			).resolves.toMatchObject({ delivery: "buffered" })
+			expect(child.getStepApprovalMode()).toBe("ask")
+			expect(child.subagentContextManifest).toBe(fixture.manifest)
+			expect(fixture.start).not.toHaveBeenCalled()
+			expect(fixture.store.getAgent(fixture.taskId, fixture.parent.taskId)?.snapshot?.contextManifest).toEqual(
+				fixture.manifest,
+			)
+		})
+
+		it.each(["auto", "bypass"] as const)(
+			"keeps a pending descendant retry under its current owner and frozen %s scope",
+			async (ownerApprovalMode) => {
+				const provider = makeProviderHarness(3, { approvalMode: "bypass" })
+				const root = {
+					...makeParent(),
+					getStepApprovalMode: () => "bypass",
+					getTaskApprovalMode: () => "bypass",
+				}
+				const ownerPrepared = await provider.prepareSubagentGroup(root as unknown as Task, {
+					task_name: "scoped_owner",
+					agent_type: "review",
+					message: "Inspect the scoped implementation",
+				})
+				const descriptors = Reflect.get(provider, "subagentDescriptors")
+				const originalOwnerManifest = subagentContextManifestSchema.parse(
+					descriptors.get(ownerPrepared.envelopes[0].id).contextManifest,
+				)
+				const { digest: _digest, ...ownerRuntimePolicy } = originalOwnerManifest.runtimePolicy
+				const ownerManifest = captureSubagentContext({
+					parentTaskId: root.taskId,
+					capturedAt: originalOwnerManifest.capturedAt,
+					forkTurns: "none",
+					history: [],
+					instructions: await root.captureEffectiveInheritedInstructions(),
+					skills: [],
+					cwd: root.cwd,
+					workspaceRoots: [root.cwd],
+					modelRoute: originalOwnerManifest.modelRoute,
+					orchestration: originalOwnerManifest.orchestration,
+					runtimePolicy: {
+						...ownerRuntimePolicy,
+						allowedTools: ["read_file", "spawn_agent", "send_message"],
+						writeScope: ["src/one.ts"],
+						fileWriteScope: ["src/one.ts"],
+						autoApproval: provider.snapshotSubagentAutoApprovalPolicy({ approvalMode: ownerApprovalMode }),
+					},
+				}).manifest
+				let ownerMode: ApprovalMode = "ask"
+				const owner = {
+					...makeParent(),
+					taskId: ownerPrepared.envelopes[0].id,
+					taskKind: "subagent",
+					rootTaskId: root.taskId,
+					subagentRole: "review",
+					subagentContextManifest: ownerManifest,
+					getStepApprovalMode: () => ownerMode,
+					getTaskApprovalMode: () => ownerMode,
+					getTaskAllowedToolNames: () => ownerManifest.runtimePolicy.allowedTools,
+					getSubagentFileWriteScope: () => ["src/one.ts"],
+				}
+				const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+				await Reflect.get(provider, "ensureAgentControlRoot").call(provider, root)
+				await store.createAgent({
+					taskId: owner.taskId,
+					parentTaskId: root.taskId,
+					rootTaskId: root.taskId,
+					groupId: ownerPrepared.group.groupId,
+					nickname: ownerPrepared.group.agents[0].nickname,
+					role: "review",
+					objective: "Own the scoped work",
+					status: "running",
+					snapshot: { contextManifest: ownerManifest },
+				})
+				Reflect.get(provider, "taskSessions").getTask = (taskId: string) =>
+					taskId === owner.taskId ? owner : undefined
+				const prepared = await provider.prepareSubagentGroup(owner as unknown as Task, {
+					task_name: "scoped_descendant",
+					agent_type: "review",
+					message: "Inspect the exact file",
+				})
+				const taskId = prepared.envelopes[0].id
+				const frozen = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+				prepared.group.status = "interrupted"
+				prepared.group.agents[0].status = "interrupted"
+				owner.alphaMessages = [{ subagentGroup: structuredClone(prepared.group) }]
+				Reflect.get(provider, "__historyItems").set(taskId, {
+					id: taskId,
+					approvalMode: "ask",
+					subagentContextManifest: frozen,
+				})
+				const record = await store.createAgent({
+					taskId,
+					rootTaskId: root.taskId,
+					parentTaskId: owner.taskId,
+					groupId: prepared.group.groupId,
+					nickname: prepared.group.agents[0].nickname,
+					role: "review",
+					objective: "Inspect the exact file",
+					status: "interrupted",
+					snapshot: { contextManifest: frozen },
+				})
+				ownerMode = "bypass"
+				const start = vi.spyOn(provider as any, "startPreparedSubagentRun").mockResolvedValue({
+					taskId,
+					runId: "scoped-followup",
+				})
+				start.mockRejectedValueOnce(new Error("Nested continuation publication failed"))
+				await expect(
+					provider.followupAgentTask(
+						root as unknown as Task,
+						record.path,
+						"Continue within the assigned file",
+					),
+				).rejects.toThrow("Nested continuation publication failed")
+				expect(
+					inferApprovalModeFromPolicy(
+						subagentAutoApprovalPolicySchema.parse(
+							store.getAgent(taskId, root.taskId)?.snapshot?.contextManifest?.runtimePolicy.autoApproval,
+						),
+					),
+				).toBe(ownerApprovalMode)
+				ownerMode = "ask"
+				await provider.followupAgentTask(
+					root as unknown as Task,
+					record.path,
+					"Continue within the assigned file",
+				)
+				const refreshed = subagentContextManifestSchema.parse(descriptors.get(taskId).contextManifest)
+				const approval = subagentAutoApprovalPolicySchema.parse(refreshed.runtimePolicy.autoApproval)
+				expect(inferApprovalModeFromPolicy(approval)).toBe("ask")
+				expect(refreshed.runtimePolicy.allowedTools).toEqual(frozen.runtimePolicy.allowedTools)
+				expect(refreshed.runtimePolicy.allowedTools).not.toContain("apply_patch")
+				expect(refreshed.runtimePolicy.writeScope).toEqual(["src/one.ts"])
+				expect(refreshed.runtimePolicy.fileWriteScope).toEqual(["src/one.ts"])
+				expect(refreshed.workspace).toEqual(frozen.workspace)
+			},
+		)
 	})
 
 	it("queues a follow-up for a running child without starting an overlapping run", async () => {

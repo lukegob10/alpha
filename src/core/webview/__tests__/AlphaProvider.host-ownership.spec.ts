@@ -143,14 +143,25 @@ describe("agent hotkey view ownership", () => {
 		const host = storage()
 		const sidebar = makeProvider(host)
 		const editor = makeProvider(host)
+		const savedHistory = new Map<string, HistoryItem>()
+		for (const owner of [sidebar, editor])
+			Object.assign(owner.taskHistoryStore, {
+				get: (taskId: string) => savedHistory.get(taskId),
+				getAll: () => [...savedHistory.values()],
+				upsert: vi.fn(async (item: HistoryItem) => {
+					savedHistory.set(item.id, item)
+					return [...savedHistory.values()]
+				}),
+			})
 		Object.assign(editor, { renderContext: "editor" })
 		const parent = Object.assign(makeTask("launcher"), {
 			metadata: { task: "Launch a new chat thread" },
 			workspacePath: "C:/repo",
 			historyWorkspacePath: "C:/repo",
 			apiConversationHistory: [],
-			getTaskApiConfigName: vi.fn(async () => "profile-a"),
+			getTaskApiConfigName: vi.fn(async () => "default"),
 			getTaskApprovalMode: vi.fn(() => "ask"),
+			reasoningPreference: { kind: "default" },
 			isCompleted: vi.fn(() => false),
 			isTurnActive: vi.fn(() => true),
 		})
@@ -158,6 +169,10 @@ describe("agent hotkey view ownership", () => {
 		const child = Object.assign(makeTask("independent"), {
 			start: vi.fn(),
 			workspacePath: parent.workspacePath,
+			historyWorkspacePath: parent.historyWorkspacePath,
+			getTaskApiConfigName: vi.fn(async () => "default"),
+			getTaskApprovalMode: vi.fn(() => "ask"),
+			reasoningPreference: { kind: "default" },
 			isCompleted: vi.fn(() => false),
 			isTurnActive: vi.fn(() => true),
 		})

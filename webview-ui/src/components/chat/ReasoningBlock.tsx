@@ -15,6 +15,24 @@ interface ReasoningBlockProps {
 	onExpandedChange?: (expanded: boolean) => void
 }
 
+function ReasoningElapsed({ active, formatSeconds }: { active: boolean; formatSeconds: (seconds: number) => string }) {
+	const startTimeRef = useRef(Date.now())
+	const [elapsed, setElapsed] = useState(0)
+	useEffect(() => {
+		if (!active) return
+		const tick = () => setElapsed(Date.now() - startTimeRef.current)
+		tick()
+		const id = setInterval(tick, 1000)
+		return () => clearInterval(id)
+	}, [active])
+
+	return elapsed > 0 ? (
+		<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">
+			{formatSeconds(Math.floor(elapsed / 1000))}
+		</span>
+	) : null
+}
+
 export const ReasoningBlock = ({
 	content,
 	isStreaming,
@@ -27,25 +45,11 @@ export const ReasoningBlock = ({
 	const [localExpanded, setLocalExpanded] = useState(!(collapsedByDefault ?? true))
 	const isExpanded = controlledExpanded ?? localExpanded
 
-	const startTimeRef = useRef<number>(Date.now())
-	const [elapsed, setElapsed] = useState<number>(0)
 	const contentRef = useRef<HTMLDivElement>(null)
 
 	useEffect(() => {
 		setLocalExpanded(!(collapsedByDefault ?? true))
 	}, [collapsedByDefault])
-
-	useEffect(() => {
-		if (isLast && isStreaming) {
-			const tick = () => setElapsed(Date.now() - startTimeRef.current)
-			tick()
-			const id = setInterval(tick, 1000)
-			return () => clearInterval(id)
-		}
-	}, [isLast, isStreaming])
-
-	const seconds = Math.floor(elapsed / 1000)
-	const secondsLabel = t("chat:reasoning.seconds", { count: seconds })
 
 	const handleToggle = () => {
 		const expanded = !isExpanded
@@ -62,14 +66,13 @@ export const ReasoningBlock = ({
 				<>
 					<Lightbulb aria-hidden="true" className="size-4 shrink-0" />
 					<span>{t("chat:reasoning.thinking")}</span>
-					{elapsed > 0 && (
-						<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">
-							{secondsLabel}
-						</span>
-					)}
+					<ReasoningElapsed
+						active={isLast && isStreaming}
+						formatSeconds={(count) => t("chat:reasoning.seconds", { count })}
+					/>
 				</>
 			}>
-			{(content?.trim()?.length ?? 0) > 0 && isExpanded && (
+			{isExpanded && (content?.trim()?.length ?? 0) > 0 && (
 				<div
 					ref={contentRef}
 					className="border-l border-vscode-descriptionForeground/20 ml-2 pl-4 pb-1 text-vscode-descriptionForeground break-words">

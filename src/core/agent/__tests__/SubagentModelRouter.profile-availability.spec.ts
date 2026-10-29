@@ -97,6 +97,72 @@ it("inherits a captured parent configuration despite an unavailable later saved 
 
 	expect(result.apiConfiguration).toEqual(parentApiConfiguration)
 	expect(result.reasoningPreference).toEqual({ kind: "off" })
-	expect(result.route).toMatchObject({ source: "parent", resolution: "selected", modelId: "captured-parent-model" })
+	expect(result.route).toMatchObject({
+		source: "parent",
+		resolution: "selected",
+		modelId: "captured-parent-model",
+		unboundProfile: true,
+	})
+	expect(result.route.profileId).toBeUndefined()
 	expect(profileLoader.assertProfileAvailable).not.toHaveBeenCalled()
+})
+
+describe.each(["requested", "named-agent", "provider"] as const)("strict %s profile selection", (source) => {
+	it.each(failures)("rejects $label availability before reading credentials", async ({ code, fields }) => {
+		const unavailable = new ProviderProfileUnavailableError(code, selectedProfile, fields)
+		const profileLoader = {
+			listConfig: vi.fn().mockResolvedValue([selectedProfile]),
+			assertProfileAvailable: vi.fn().mockRejectedValue(unavailable),
+			getProfile: vi.fn().mockResolvedValue(selectedProfile),
+		}
+		await expect(
+			resolveSubagentModelRoute({
+				role: "worker",
+				parentApiConfiguration,
+				profileLoader,
+				...(source === "requested"
+					? { requestedProfile: selectedProfile.id }
+					: source === "named-agent"
+						? { agentProfileId: selectedProfile.id }
+						: { requestedProvider: "vertex" }),
+			}),
+		).rejects.toBe(unavailable)
+		expect(profileLoader.getProfile).not.toHaveBeenCalled()
+	})
+
+	it("fails closed if the selected profile disappears after enumeration", async () => {
+		const profileLoader = {
+			listConfig: vi.fn().mockResolvedValue([selectedProfile]),
+			assertProfileAvailable: vi.fn().mockResolvedValue(undefined),
+			getProfile: vi.fn().mockRejectedValue(new Error("credential-sensitive diagnostic")),
+		}
+		const pending = resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader,
+			...(source === "requested"
+				? { requestedProfile: selectedProfile.id }
+				: source === "named-agent"
+					? { agentProfileId: selectedProfile.id }
+					: { requestedProvider: "vertex" }),
+		})
+		await expect(pending).rejects.toThrow(/profile.*could not be loaded/i)
+		await expect(pending).rejects.not.toThrow("credential-sensitive")
+	})
+})
+
+it("rejects unavailable metadata even when the loader has no separate availability hook", async () => {
+	const profileLoader = {
+		listConfig: vi.fn().mockResolvedValue([{ ...selectedProfile, availability: "invalid", invalidFields: ["id"] }]),
+		getProfile: vi.fn().mockResolvedValue(selectedProfile),
+	}
+	await expect(
+		resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader,
+			requestedProfile: selectedProfile.name,
+		}),
+	).rejects.toMatchObject({ name: "ProviderProfileUnavailableError", invalidFields: ["id"] })
+	expect(profileLoader.getProfile).not.toHaveBeenCalled()
 })

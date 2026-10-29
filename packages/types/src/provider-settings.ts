@@ -466,7 +466,7 @@ export const getApiProtocol = (provider: ProviderName | undefined, modelId?: str
 
 export const MODELS_BY_PROVIDER: Record<
 	Exclude<ProviderName, CustomProvider>,
-	{ id: ProviderName; label: string; models: string[] }
+	{ id: ProviderName; label: string; aliases?: readonly string[]; models: string[] }
 > = {
 	vertex: {
 		id: "vertex",
@@ -481,6 +481,7 @@ export const MODELS_BY_PROVIDER: Record<
 	"vscode-lm": {
 		id: "vscode-lm",
 		label: "VS Code LM API",
+		aliases: ["GitHub Copilot"],
 		models: Object.keys(vscodeLlmModels),
 	},
 	"openai-native": { id: "openai-native", label: "OpenAI", models: Object.keys(openAiNativeModels) },

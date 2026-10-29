@@ -191,6 +191,17 @@ Use a supported reasoning effort for the selected Claude model. Both commands re
 the live suite uses the signed-in dedicated profile and retains the actual model, host, request counts, and task results.
 An unavailable Claude model cannot fall back to another model or count as a live pass.
 
+To test normal conversational requests for a different-model subagent and a new chat, set
+`ALPHA_E2E_ROUTING_TARGET_MODEL_ID` to an exact discovered Copilot model with catalog support for `high` reasoning.
+Choose a different parent model and reasoning level, then run:
+
+```sh
+pnpm --filter @alpha-code/vscode-e2e test:model-selection:live --model-id "<exact-parent-model-id>" --reasoning-effort max --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>"
+```
+
+Each case permits at most 12 task requests and records the actual parent and child model IDs, sent reasoning levels,
+and completion counts. Both models run live; missing target capabilities fail before the conversational test starts.
+
 The live model matrix runs the same complete suite sequentially with **GPT 6 Luna / max**, **Claude Haiku 5.5 / high**,
 then **Grok 4.6 / low**, exclusively on **VS Code 1.138.0**. It prepares the build and deterministic host gates once,
 uses fresh scenario workspaces, and retains separate model reports plus a combined `matrix-result.json`. Every model

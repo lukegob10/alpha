@@ -56,6 +56,8 @@ const DISCARD_OBJECTIVE = "Produce a throwaway Worker proposal that the root wil
 const INTERRUPT_OBJECTIVE = "Hold one wait_agent call so the root can interrupt this Worker."
 const STEERING_MESSAGE = "Before applying your proposal, include the exact owner name outer_worker."
 const INTERRUPT_PATH = "/root/interrupt-worker"
+const REVIEW_BOUNDARY_QUESTION =
+	"MANAGED_AGENT_FIXTURE_REVIEW: Finish the explicit proposal actions before verification."
 
 type ScriptRole = "root" | "outer" | "nested" | "discard" | "interrupt"
 
@@ -142,6 +144,7 @@ class ManagedAgentScriptedAI {
 	constructor(
 		private readonly getTaskHistory: (taskId: string) => Promise<ManagedAgentHistory>,
 		private readonly beforeWorkerCompletion: (taskId: string, role: ScriptRole) => Promise<void>,
+		private readonly waitForReviewBoundary: (taskId: string) => Promise<void>,
 	) {}
 
 	releaseDiscard(): void {
@@ -314,7 +317,7 @@ class ManagedAgentScriptedAI {
 		}
 		console.log(`[managed-agent-e2e] model task=${taskId} role=${role} turn=${turn}`)
 		this.turnsByTask.set(taskId, turn + 1)
-		const call: ScriptedToolCall = commandSession
+		let call: ScriptedToolCall = commandSession
 			? {
 					name: "write_stdin",
 					arguments: { session_id: Number(commandSession), chars: "", yield_time_ms: 30_000 },
@@ -328,7 +331,21 @@ class ManagedAgentScriptedAI {
 								result: "Applied and verified the nested proposal, then produced the outer proposal.",
 							},
 						}
-					: await this.getToolCall(role, turn)
+					: this.getToolCall(role, turn)
+		if (call.name === "exec_command") {
+			if (!this.verificationChangeSetsByRole.get(role)?.length) {
+				// An explicit fixture input owns the manual action window. A
+				// quarantined proposal must never pause the production task loop.
+				yield { type: "text", text: "Waiting for the fixture's explicit review input before verification." }
+				await this.waitForReviewBoundary(taskId)
+			}
+			const changeSetIds = this.verificationChangeSetsByRole.get(role)
+			assert.ok(changeSetIds?.length, `The ${role} review reply must follow scoped proposal actions`)
+			call = {
+				...call,
+				arguments: { ...call.arguments, verification: { change_set_ids: [...changeSetIds] } },
+			}
+		}
 		if (role === "outer" && call.name === "apply_patch") {
 			assert.ok(
 				JSON.stringify(messages).includes(STEERING_MESSAGE),
@@ -428,7 +445,7 @@ class ManagedAgentScriptedAI {
 		return serialized
 	}
 
-	private async getToolCall(role: ScriptRole, turn: number): Promise<ScriptedToolCall> {
+	private getToolCall(role: ScriptRole, turn: number): ScriptedToolCall {
 		const scripts: Record<ScriptRole, ScriptedToolCall[]> = {
 			root: [
 				{
@@ -580,20 +597,6 @@ class ManagedAgentScriptedAI {
 			}
 		}
 		if (!call) throw new Error(`Unexpected ${role} model turn ${turn + 1}`)
-		if (call.name === "exec_command") {
-			await waitFor(() => (this.verificationChangeSetsByRole.get(role)?.length ?? 0) > 0, {
-				timeout: 60_000,
-				interval: 25,
-			})
-			const changeSetIds = this.verificationChangeSetsByRole.get(role)!
-			return {
-				...call,
-				arguments: {
-					...call.arguments,
-					verification: { change_set_ids: [...changeSetIds] },
-				},
-			}
-		}
 		return call
 	}
 }
@@ -645,6 +648,15 @@ interface ManagedAgentHostProvider {
 				messageQueueService?: { isEmpty(): boolean; hasUnconsumedInput(): boolean }
 				alphaMessages?: AlphaMessage[]
 				approveAsk(): void
+				ask(type: "followup", text: string, partial: false): Promise<unknown>
+				getActiveAskTimestamp(): number | undefined
+				handleWebviewAskResponse(
+					response: "messageResponse",
+					text: string,
+					images?: string[],
+					queuedMessageIds?: string[],
+					expectedAskTs?: number,
+				): boolean
 				waitForTermination(): Promise<void>
 				getCommandExecutionEvidence(): Array<{
 					command?: string
@@ -751,6 +763,56 @@ const waitForAvailableCapability = async (
 	return capability!
 }
 
+const waitForReviewBoundary = async (provider: ManagedAgentHostProvider, taskId: string): Promise<number> => {
+	let askTs: number | undefined
+	await waitFor(
+		() => {
+			const task = provider.getLiveTask(taskId)
+			const question = task?.taskAsk
+			const currentAskTs = task?.getActiveAskTimestamp()
+			if (
+				question?.ask !== "followup" ||
+				question.partial === true ||
+				!question.text?.includes(REVIEW_BOUNDARY_QUESTION) ||
+				currentAskTs === undefined ||
+				question.ts !== currentAskTs
+			)
+				return false
+			askTs = currentAskTs
+			return true
+		},
+		{
+			timeout: 60_000,
+			interval: 25,
+			description: "the addressed fixture review input before manual proposal actions",
+			onTimeout: () => getTaskDiagnostics(provider, taskId),
+		},
+	)
+	return askTs!
+}
+
+const answerReviewBoundary = (provider: ManagedAgentHostProvider, taskId: string, expectedAskTs: number): void => {
+	const task = provider.getLiveTask(taskId)
+	assert.ok(task)
+	const question = task.taskAsk
+	assert.ok(question)
+	assert.equal(question.ask, "followup")
+	assert.ok(question.text?.includes(REVIEW_BOUNDARY_QUESTION))
+	assert.equal(question.ts, expectedAskTs)
+	assert.equal(task.getActiveAskTimestamp(), expectedAskTs)
+	assert.equal(
+		task.handleWebviewAskResponse(
+			"messageResponse",
+			"Continue scoped verification.",
+			undefined,
+			undefined,
+			expectedAskTs,
+		),
+		true,
+		"Only the addressed fixture review reply may release its explicit input boundary",
+	)
+}
+
 const initializeFixtureRepository = async (workspace: string): Promise<void> => {
 	const workerDir = path.join(workspace, FIXTURE_ROOT, "worker")
 	await fs.mkdir(workerDir, { recursive: true })
@@ -836,6 +898,18 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 					role === "discard"
 						? '{"owner":"concurrent","verified":false}\n'
 						: stateModuleText("concurrent", false),
+				)
+			},
+			async (taskId) => {
+				const task = provider.getLiveTask(taskId)
+				assert.ok(task, "The explicit review boundary requires its live owning task")
+				await task.ask(
+					"followup",
+					JSON.stringify({
+						question: REVIEW_BOUNDARY_QUESTION,
+						suggest: [{ answer: "Continue scoped verification." }],
+					}),
+					false,
 				)
 			},
 		)
@@ -1044,6 +1118,9 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				}
 				scriptedAI.releaseDiscard()
 			}
+			// A transient production safe boundary can expose Apply before the next
+			// model request. Admit the fixture question before publishing its scope.
+			const nestedReviewAskTs = await waitForReviewBoundary(provider, outerTaskId)
 			await resolveConcurrentEdit(nestedTaskId)
 			await waitForAvailableCapability(provider, nestedChangeSet, "apply")
 			if (renderedUi) {
@@ -1064,12 +1141,14 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(nestedApply.changeSetStatus, "applied")
 			}
 			scriptedAI.setVerificationChangeSets("outer", [nestedChangeSet.changeSetId])
+			answerReviewBoundary(provider, outerTaskId, nestedReviewAskTs)
 			// The inherited vitest rule must approve verification without a harness response.
 
 			const [outerChangeSet, discardChangeSet] = await Promise.all([
 				waitForConflictedChangeSet(groups, rootTaskId, OUTER_OBJECTIVE),
 				waitForConflictedChangeSet(groups, rootTaskId, DISCARD_OBJECTIVE),
 			])
+			const rootReviewAskTs = await waitForReviewBoundary(provider, rootTaskId)
 			await resolveConcurrentEdit(discardTaskId)
 			await waitForAvailableCapability(provider, discardChangeSet, "discard")
 			if (renderedUi) {
@@ -1110,6 +1189,7 @@ suite("Managed-agent deterministic Extension Host acceptance", function () {
 				assert.equal(outerApply.changeSetStatus, "applied")
 			}
 			scriptedAI.setVerificationChangeSets("root", [outerChangeSet.changeSetId])
+			answerReviewBoundary(provider, rootTaskId, rootReviewAskTs)
 			await waitFor(() => scriptedAI.heldReviewTaskId === rootTaskId, {
 				timeout: 60_000,
 				interval: 50,

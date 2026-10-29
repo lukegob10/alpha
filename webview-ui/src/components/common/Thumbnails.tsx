@@ -1,5 +1,4 @@
 import React, { useRef, useLayoutEffect, memo } from "react"
-import { useWindowSize } from "react-use"
 import { vscode } from "@src/utils/vscode"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 
@@ -13,18 +12,38 @@ interface ThumbnailsProps {
 const Thumbnails = ({ images, style, setImages, onHeightChange }: ThumbnailsProps) => {
 	const { t } = useAppTranslation()
 	const containerRef = useRef<HTMLDivElement>(null)
-	const { width } = useWindowSize()
 
 	useLayoutEffect(() => {
-		if (containerRef.current) {
-			let height = containerRef.current.clientHeight
+		const container = containerRef.current
+		if (!onHeightChange || !container) return
+
+		const measureHeight = () => {
+			let height = container.clientHeight
 			// some browsers return 0 for clientHeight
 			if (!height) {
-				height = containerRef.current.getBoundingClientRect().height
+				height = container.getBoundingClientRect().height
 			}
-			onHeightChange?.(height)
+			onHeightChange(height)
 		}
-	}, [images, width, onHeightChange])
+		let width = window.innerWidth
+		let resizeFrame: number | undefined
+		const handleResize = () => {
+			if (window.innerWidth === width) return
+			width = window.innerWidth
+			if (resizeFrame !== undefined) return
+			resizeFrame = window.requestAnimationFrame(() => {
+				resizeFrame = undefined
+				measureHeight()
+			})
+		}
+
+		measureHeight()
+		window.addEventListener("resize", handleResize)
+		return () => {
+			window.removeEventListener("resize", handleResize)
+			if (resizeFrame !== undefined) window.cancelAnimationFrame(resizeFrame)
+		}
+	}, [images, onHeightChange])
 
 	const handleDelete = (index: number) => {
 		setImages?.((prevImages) => prevImages.filter((_, i) => i !== index))

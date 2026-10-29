@@ -1,5 +1,7 @@
 import type OpenAI from "openai"
 
+import { modelSelectionProperties } from "./model_selection"
+
 const threadId = { type: "string", minLength: 1 }
 const limit = { type: "integer", minimum: 1, maximum: 50 }
 const prompt = {
@@ -70,20 +72,20 @@ export const threadOrchestrationTools = [
 	),
 	threadTool(
 		"send_message_to_thread",
-		"Send a follow-up prompt to an existing independent task in the current workspace in the background. Omit model unless the user explicitly requests an override. This does not answer human approval or user-input requests.",
-		{ threadId, prompt, model: { type: "string", minLength: 1 } },
+		"Send a follow-up prompt to an existing independent task in the current workspace in the background. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. This does not answer human approval or user-input requests.",
+		{ threadId, prompt, ...modelSelectionProperties() },
 		["threadId", "prompt"],
 	),
 	threadTool(
 		"create_thread",
-		"Create and start a fresh chat only when the user requests a new task, thread, or chat. This starts with empty conversation history. For a handoff, supply a concise, self-contained prompt with ticket references, the objective, essential decisions and constraints; do not copy the old transcript or compaction summary. The task inherits the working directory, mode, policy, and model; omit model unless explicitly requested. Use spawn_agent for bounded delegated work.",
-		{ prompt, title: { type: "string", minLength: 1 }, model: { type: "string", minLength: 1 } },
+		"Create and start a fresh chat only when the user requests a new task, thread, or chat. This starts with empty conversation history. For a handoff, supply a concise, self-contained prompt with ticket references, the objective, essential decisions and constraints; do not copy the old transcript or compaction summary. The task inherits the working directory, mode, policy, and model route. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Use spawn_agent for bounded delegated work.",
+		{ prompt, title: { type: "string", minLength: 1 }, ...modelSelectionProperties() },
 		["prompt"],
 	),
 	threadTool(
 		"fork_thread",
-		"Copy a task's completed conversation history into a new chat only when the user explicitly requests a fork or retaining that history. A request for a new or fresh chat uses create_thread. Omit threadId to fork the calling task. The fork excludes an unfinished source turn and remains idle; send a follow-up to continue work there.",
-		{ threadId },
+		"Copy a task's completed conversation history into a new chat only when the user explicitly requests a fork or retaining that history. A request for a new or fresh chat uses create_thread. Omit threadId to fork the calling task. The fork excludes an unfinished source turn and remains idle; send a follow-up to continue work there. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user.",
+		{ threadId, ...modelSelectionProperties() },
 	),
 	threadTool(
 		"set_thread_title",

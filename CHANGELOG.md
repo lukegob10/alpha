@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.17
+
+### Patch Changes
+
+- Add Grok 4.7 and GPT-6.1 Terra to the GitHub Copilot picker; make Grok 4.6, Claude Haiku 5.5, GPT-6 Luna, and GPT-6 Sol selectable alongside the complete GPT-5.6 family, GPT-6 Astra, and GPT-6.1 Sol.
+- Recognize GPT-5.6 and Grok display names while preserving exact live routing identities and host availability checks.
+- Keep conservative capability defaults for new models until Copilot-specific limits are verified.
+- Include the pending task-recovery and delegation fixes, including inherited Full Access, interrupted worker recovery, question waiting, and saved provider routing.
+- Keep older transcript messages readable when the webview reloads.
+- Update the extension, VSIX release, and in-app announcement together for Alpha 3.2.17.
+
 ## 3.2.16
 
 ### Patch Changes

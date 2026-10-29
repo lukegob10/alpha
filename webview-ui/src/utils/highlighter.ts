@@ -1,10 +1,5 @@
-import {
-	createHighlighter,
-	type Highlighter,
-	type BundledTheme,
-	type BundledLanguage,
-	bundledLanguages,
-} from "shiki"
+import type { Highlighter, BundledTheme, BundledLanguage } from "shiki"
+import { bundledLanguages } from "shiki/langs"
 
 // Extend BundledLanguage to include 'txt' because Shiki supports this but it is
 // not listed in the bundled languages
@@ -150,6 +145,8 @@ export const getHighlighter = async (language?: string): Promise<Highlighter> =>
 				// const startTime = performance.now()
 				// console.debug("[Shiki] Initialization started...")
 
+				// Load the rendering runtime only when syntax highlighting is requested.
+				const { createHighlighter } = await import("shiki")
 				const instance = await createHighlighter({
 					themes: activeThemes,
 					langs: initialLanguages,

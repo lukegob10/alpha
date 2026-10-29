@@ -1,4 +1,14 @@
+import type { AgentMailboxEntry, ParentVerificationObligation } from "@alpha-code/types"
+
+import { decideParentCompletion } from "../../agent/ParentVerification"
+import { AlphaProvider } from "../../webview/AlphaProvider"
 import { Task } from "../Task"
+
+const deferred = <T = void>() => {
+	let resolve!: (value: T | PromiseLike<T>) => void
+	const promise = new Promise<T>((complete) => (resolve = complete))
+	return { promise, resolve }
+}
 
 const makePausedTask = (overrides: Record<string, unknown> = {}) =>
 	Object.assign(Object.create(Task.prototype), {
@@ -56,10 +66,49 @@ describe("Task external mutation runtime state", () => {
 		})
 	})
 
-	it("pauses between a nested Worker result and the next provider request until review settles", async () => {
+	it.each(["pending_review", "conflicted"] as const)(
+		"continues after a %s proposal without requiring human review",
+		async (status) => {
+			const blocked = deferred<"blocked">()
+			const controller = new AbortController()
+			const provider = {
+				postStateToWebviewWithoutTaskHistory: vi.fn(async () => blocked.resolve("blocked")),
+				autoApplyPendingSubagentChangeSets: vi.fn(async () => undefined),
+			}
+			const task = makePausedTask({
+				activeAsk: undefined,
+				providerRef: { deref: () => provider },
+				alphaMessages: [{ subagentGroup: { agents: [{ changeSet: { status } }] } }],
+				beginAgentWait: () => ({ signal: controller.signal, dispose: vi.fn() }),
+			})
+			const waiting = task["waitForPendingSubagentChangeSetReviews"]()
+			try {
+				expect(await Promise.race([waiting.then(() => "continued"), blocked.promise])).toBe("continued")
+				expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
+				expect(task["isAwaitingSubagentReview"]).toBe(false)
+			} finally {
+				task.abort = true
+				controller.abort()
+				await waiting
+			}
+		},
+	)
+
+	it("drains an admitted Worker mutation before the next provider request without waiting for review", async () => {
+		const entered = deferred()
+		const finishIntegration = deferred()
+		const draining = deferred()
+		const blocked = deferred<"blocked">()
+		const controller = new AbortController()
+		let releaseMutation: (() => void) | undefined
 		const provider = {
-			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
-			autoApplyPendingSubagentChangeSets: vi.fn(async () => undefined),
+			postStateToWebviewWithoutTaskHistory: vi.fn(async () => blocked.resolve("blocked")),
+			autoApplyPendingSubagentChangeSets: vi.fn(async () => {
+				const lease = task.acquireExternalMutation("applying Worker changes")
+				releaseMutation = lease.release
+				entered.resolve()
+				await finishIntegration.promise
+			}),
 		}
 		const group = {
 			groupId: "nested-group",
@@ -78,44 +127,50 @@ describe("Task external mutation runtime state", () => {
 			],
 			isAwaitingSubagentReview: false,
 			subagentReviewBarrier: undefined,
-			// Storage is isolated here; keep Task's real staged mutation and durable commit callback.
-			enqueueAlphaMessagesSave: vi.fn(async (createSnapshot: () => unknown, onPersisted?: () => void) => {
-				createSnapshot()
-				onPersisted?.()
-				return true
-			}),
-			updateAlphaMessage: vi.fn(async () => undefined),
+			beginAgentWait: () => ({ signal: controller.signal, dispose: vi.fn() }),
+		})
+		const waitForRequestControl = task["waitForRequestControl"].bind(task)
+		Object.assign(task, {
+			waitForRequestControl: (...args: Parameters<typeof waitForRequestControl>) => {
+				draining.resolve()
+				return waitForRequestControl(...args)
+			},
 		})
 
-		const waiting = (task as any).waitForPendingSubagentChangeSetReviews() as Promise<void>
-		await vi.waitFor(() => expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce())
-		expect(task.getExternalMutationCapability()).toEqual({
-			allowed: true,
-			state: "available",
-			reason: "The parent is paused for nested Worker review.",
-		})
+		const waiting = task["waitForPendingSubagentChangeSetReviews"]()
+		try {
+			await entered.promise
+			expect(releaseMutation).toBeTypeOf("function")
+			expect(task.getExternalMutationCapability()).toEqual({
+				allowed: false,
+				state: "busy",
+				reason: "The parent is already applying Worker changes.",
+			})
 
-		const lease = task.acquireExternalMutation("applying Worker changes")
-		expect(lease.release).toBeTypeOf("function")
-		const reviewedGroup = structuredClone(group)
-		reviewedGroup.agents[0].changeSet.status = "applied"
-		await task.upsertSubagentGroup(reviewedGroup as any)
+			let resumed = false
+			void waiting.then(() => {
+				resumed = true
+			})
+			finishIntegration.resolve()
+			await draining.promise
+			expect(resumed).toBe(false)
 
-		let resumed = false
-		void waiting.then(() => {
-			resumed = true
-		})
-		await Promise.resolve()
-		expect(resumed).toBe(false)
-
-		lease.release!()
-		await waiting
-		expect(resumed).toBe(true)
-		expect((task as any).isAwaitingSubagentReview).toBe(false)
-		expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
+			releaseMutation!()
+			releaseMutation!()
+			expect(await Promise.race([waiting.then(() => "continued"), blocked.promise])).toBe("continued")
+			expect(resumed).toBe(true)
+			expect(task["isAwaitingSubagentReview"]).toBe(false)
+			expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
+		} finally {
+			task.abort = true
+			controller.abort()
+			finishIntegration.resolve()
+			releaseMutation?.()
+			await waiting
+		}
 	})
 
-	it("settles Auto-approved Worker proposals before opening the review barrier", async () => {
+	it("integrates authorized Worker proposals at the safe step boundary", async () => {
 		const group = {
 			groupId: "auto-group",
 			createdAt: Date.now(),
@@ -135,11 +190,99 @@ describe("Task external mutation runtime state", () => {
 			subagentReviewBarrier: undefined,
 		})
 
-		await (task as any).waitForPendingSubagentChangeSetReviews()
+		await task["waitForPendingSubagentChangeSetReviews"]()
 
 		expect(provider.autoApplyPendingSubagentChangeSets).toHaveBeenCalledWith(task.taskId)
 		expect(provider.postStateToWebviewWithoutTaskHistory).not.toHaveBeenCalled()
-		expect((task as any).isAwaitingSubagentReview).toBe(false)
+		expect(task["isAwaitingSubagentReview"]).toBe(false)
+	})
+
+	it("leaves proposals quarantined when newer steering is waiting to be read", async () => {
+		const provider = { autoApplyPendingSubagentChangeSets: vi.fn(async () => undefined) }
+		const task = makePausedTask({
+			providerRef: { deref: () => provider },
+			alphaMessages: [{ subagentGroup: { agents: [{ changeSet: { status: "pending_review" } }] } }],
+			pendingSteerMessage: { text: "Keep this proposal pending." },
+		})
+
+		await task["waitForPendingSubagentChangeSetReviews"]()
+
+		expect(provider.autoApplyPendingSubagentChangeSets).not.toHaveBeenCalled()
+		expect(task["isAwaitingSubagentReview"]).not.toBe(true)
+	})
+
+	it.each(["pending_review", "conflicted"] as const)(
+		"uses the canonical nonblocking obligation for a %s proposal",
+		async (status) => {
+			const obligation: ParentVerificationObligation = {
+				id: "worker-change:proposal",
+				rootTaskId: "root",
+				parentTaskId: "root",
+				workerTaskId: "worker",
+				workerNickname: "Worker",
+				groupId: "group",
+				changeSetId: "proposal",
+				changedFiles: ["pending.txt"],
+				status: "required",
+				createdAt: 1,
+				updatedAt: 2,
+			}
+			const provider = { getParentCompletionDecision: vi.fn(async () => decideParentCompletion([obligation])) }
+			const task = makePausedTask({
+				providerRef: { deref: () => provider },
+				alphaMessages: [{ subagentGroup: { agents: [{ changeSet: { status } }] } }],
+				hasPendingAgentMessages: () => false,
+				getOpenTodoCompletionDecision: () => undefined,
+			})
+
+			expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true, classification: "ready" })
+			expect(provider.getParentCompletionDecision).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("keeps an admitted external mutation in the completion gate", async () => {
+		const task = makePausedTask({ hasPendingAgentMessages: () => false })
+		const lease = task.acquireExternalMutation("applying Worker changes")
+		try {
+			expect(await task.getCompletionGateDecision()).toMatchObject({
+				allowed: false,
+				classification: "waiting",
+				reasonCode: "review_pending",
+			})
+		} finally {
+			lease.release!()
+		}
+	})
+
+	it("keeps an applied Worker effect without an approved receipt in the canonical completion gate", async () => {
+		const obligation: ParentVerificationObligation = {
+			id: "worker-change:applied",
+			rootTaskId: "root",
+			parentTaskId: "root",
+			workerTaskId: "worker",
+			workerNickname: "Worker",
+			groupId: "group",
+			changeSetId: "applied",
+			changedFiles: ["pending.txt"],
+			status: "pending",
+			appliedAt: 2,
+			createdAt: 1,
+			updatedAt: 2,
+		}
+		const task = makePausedTask({
+			providerRef: {
+				deref: () => ({ getParentCompletionDecision: async () => decideParentCompletion([obligation]) }),
+			},
+			alphaMessages: [{ subagentGroup: { agents: [{ changeSet: { status: "applied" } }] } }],
+			hasPendingAgentMessages: () => false,
+			getOpenTodoCompletionDecision: () => undefined,
+		})
+
+		expect(await task.getCompletionGateDecision()).toMatchObject({
+			allowed: false,
+			classification: "repairable",
+			reasonCode: "verification_missing",
+		})
 	})
 
 	it.each([
@@ -162,4 +305,44 @@ describe("Task external mutation runtime state", () => {
 			reason,
 		})
 	})
+})
+
+describe("parent completion and automatic agent notifications", () => {
+	it.each(["interrupted", "cancelled", "completed", "blocked", "failed", "timed_out"] as const)(
+		"uses the automatic notification contract for unread %s results",
+		async (status) => {
+			const entry: AgentMailboxEntry = {
+				eventId: `child:${status}`,
+				sequence: 1,
+				rootTaskId: "root",
+				recipientTaskId: "root",
+				recipientPath: "/root",
+				kind: "result",
+				name: `agent_${status}`,
+				payload: { taskId: "child", status },
+				createdAt: 1,
+			}
+			const provider = Object.assign(Object.create(AlphaProvider.prototype), {
+				recordParentVerificationEvidence: vi.fn(async () => undefined),
+				ensureAgentControlRoot: vi.fn(async () => ({ rootTaskId: "root" })),
+				reconcileWaitAgentClaims: vi.fn(async () => undefined),
+				agentControlStore: {
+					retryPendingMailboxClaimSettlements: vi.fn(async () => undefined),
+					getParentCompletionDecision: () => decideParentCompletion([]),
+					listDescendants: () => [],
+					getUnacknowledgedMailboxEntries: () => [entry],
+				},
+			}) as AlphaProvider
+			const parent = makePausedTask({ taskId: "root" })
+
+			expect((await provider.getParentCompletionDecision(parent)).allowed).toBe(
+				status === "interrupted" || status === "cancelled",
+			)
+			expect(
+				await provider.getParentCompletionDecision(parent, { deferResultNotifications: true }),
+			).toMatchObject({
+				allowed: true,
+			})
+		},
+	)
 })

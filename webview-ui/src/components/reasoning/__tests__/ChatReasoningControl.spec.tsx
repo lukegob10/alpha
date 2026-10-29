@@ -24,6 +24,7 @@ vi.mock("../ReasoningSelector", () => ({
 	ReasoningSelector: ({
 		state,
 		loading,
+		isVisible,
 		saving,
 		error,
 		onChange,
@@ -31,6 +32,7 @@ vi.mock("../ReasoningSelector", () => ({
 	}: {
 		state?: TaskReasoningProjection
 		loading?: boolean
+		isVisible?: boolean
 		saving?: boolean
 		error?: boolean
 		onChange: (preference: TaskReasoningPreference) => void
@@ -40,6 +42,7 @@ vi.mock("../ReasoningSelector", () => ({
 			data-testid="reasoning-selector"
 			data-scope={scopeKey}
 			data-loading={String(Boolean(loading))}
+			data-visible={String(isVisible)}
 			data-saving={String(Boolean(saving))}
 			data-error={String(Boolean(error))}
 			data-effective={state?.effective.kind === "effort" ? state.effective.effort : state?.effective.kind}>
@@ -103,6 +106,45 @@ describe("ChatReasoningControl", () => {
 			},
 		})
 		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "true")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-visible", "true")
+	})
+
+	it.each([false, true])("retains the request scope while hidden (draft: %s)", async (isDraft) => {
+		const { rerender } = render(<ChatReasoningControl isDraft={isDraft} />)
+		const taskId = isDraft ? undefined : "task-1"
+		const scope = screen.getByTestId("reasoning-selector").getAttribute("data-scope") ?? ""
+		fireEvent.click(screen.getByTestId("choose-high"))
+
+		rerender(<ChatReasoningControl isDraft={isDraft} isVisible={false} />)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-visible", "false")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-scope", scope)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "true")
+		expect(mockPostMessage).toHaveBeenCalledTimes(1)
+
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: hostAck(request1, taskId, { ...stateFor("task-1", "high"), taskId }),
+			}),
+		)
+		await waitFor(() => {
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+		})
+
+		rerender(<ChatReasoningControl isDraft={isDraft} />)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-visible", "true")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-scope", scope)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+		expect(mockPostMessage).toHaveBeenCalledTimes(1)
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: request1,
+				taskId,
+				preference: { kind: "effort", effort: "high" },
+			},
+		})
 	})
 
 	it("uses the taskless composer path and accepts its matching acknowledgement", async () => {
@@ -134,6 +176,70 @@ describe("ChatReasoningControl", () => {
 		await waitFor(() => {
 			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
 			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+		})
+	})
+
+	it("addresses the draft before the host leaves the previous chat", async () => {
+		render(<ChatReasoningControl isDraft />)
+		expect(screen.getByTestId("reasoning-selector")).not.toHaveAttribute("data-effective")
+
+		fireEvent.click(screen.getByTestId("choose-high"))
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: request1,
+				taskId: undefined,
+				preference: { kind: "effort", effort: "high" },
+			},
+		})
+
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: hostAck(request1, undefined, { ...stateFor("task-1", "high"), taskId: undefined }),
+			}),
+		)
+		await waitFor(() => {
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+		})
+	})
+
+	it("ignores a previous chat acknowledgement after the composer enters the draft", async () => {
+		vi.mocked(crypto.randomUUID).mockReturnValueOnce(request1).mockReturnValueOnce(request2)
+		const { rerender } = render(<ChatReasoningControl />)
+		fireEvent.click(screen.getByTestId("choose-high"))
+		rerender(<ChatReasoningControl isDraft />)
+
+		window.dispatchEvent(
+			new MessageEvent("message", { data: hostAck(request1, "task-1", stateFor("task-1", "high")) }),
+		)
+		await waitFor(() => {
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
+			expect(screen.getByTestId("reasoning-selector")).not.toHaveAttribute("data-effective")
+		})
+
+		fireEvent.click(screen.getByTestId("choose-low"))
+		expect(mockPostMessage).toHaveBeenLastCalledWith({
+			type: "setTaskReasoningPreference",
+			taskReasoningUpdate: {
+				requestId: request2,
+				taskId: undefined,
+				preference: { kind: "effort", effort: "low" },
+			},
+		})
+		window.dispatchEvent(
+			new MessageEvent("message", { data: hostAck(request2, "task-1", stateFor("task-1", "high")) }),
+		)
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "true")
+
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: hostAck(request2, undefined, { ...stateFor("task-1", "low"), taskId: undefined }),
+			}),
+		)
+		await waitFor(() => {
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-saving", "false")
+			expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "low")
 		})
 	})
 

@@ -12,6 +12,7 @@ import { browserTools } from "./browser"
 import listFiles from "./list_files"
 import type { ManagedAgentKind } from "./delegate_task"
 import { createSpawnAgentTool } from "./spawn_agent"
+import listProviderProfiles from "./list_provider_profiles"
 import { list_agents as listAgents } from "./list_agents"
 import { wait_agent as waitAgent } from "./wait_agent"
 import { send_message as sendMessage } from "./send_message"
@@ -131,6 +132,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		createExecCommandTool(planMode),
 		...(supportsImages ? [viewImageToolSchema] : []),
 		...availableBrowserTools,
+		listProviderProfiles,
 		createSpawnAgentTool(agentKinds, namedAgentTypes),
 		...(taskKind === "primary" && crossTaskRole !== "none"
 			? [

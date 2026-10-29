@@ -4,6 +4,7 @@ import * as vscode from "vscode"
 
 import type { ApiHandler } from "../../../api"
 import { FakeAIHandler } from "../../../api/providers/fake-ai"
+import * as requestTimeout from "../../../api/providers/utils/timeout-config"
 import type { ApiStream, ApiStreamChunk } from "../../../api/transform/stream"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
@@ -158,6 +159,156 @@ function deferred<T = void>() {
 }
 
 describe("request stream steering", () => {
+	it("does not let lifecycle admission latency extend an explicit first-response deadline", async () => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		const { task, originalHandler } = harness()
+		vi.mocked(task["ensureCanonicalLifecycleStepStarted"]).mockImplementationOnce(
+			() => new Promise<void>((resolve) => setTimeout(resolve, 80)),
+		)
+		originalHandler.createMessage.mockImplementationOnce(async function* () {
+			await new Promise<void>((resolve) => setTimeout(resolve, 90))
+			yield { type: "text", text: "late first response" }
+		})
+		const stream = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryDeadline: Date.now() + 150,
+		})
+		let outcome: unknown
+		const next = stream.next().then(
+			(result) => (outcome = result),
+			(error: unknown) => (outcome = error),
+		)
+		try {
+			await vi.advanceTimersByTimeAsync(150)
+			expect(outcome).toMatchObject({ code: "ProviderTimeout", timeoutScope: "retry_deadline" })
+			await next
+			await vi.advanceTimersByTimeAsync(20)
+			expect(task.currentRequestAbortController).toBeUndefined()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			await vi.advanceTimersByTimeAsync(30)
+			await next
+			await stream.return(undefined)
+			vi.useRealTimers()
+			vi.restoreAllMocks()
+		}
+	})
+
+	it("keeps a progressing provider stream alive beyond the configured inactivity window", async () => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		const { task, originalHandler } = harness()
+		originalHandler.createMessage.mockImplementationOnce(async function* () {
+			for (let index = 0; index < 4; index++) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 60))
+				yield { type: "text", text: `chunk ${index}` }
+			}
+		})
+		const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		try {
+			for (let index = 0; index < 4; index++) {
+				const next = stream.next().catch((error: unknown) => error)
+				await vi.advanceTimersByTimeAsync(60)
+				expect(await next).toMatchObject({ value: { text: `chunk ${index}` } })
+			}
+			await expect(stream.next()).resolves.toMatchObject({ done: true })
+			expect(originalHandler.createMessage.mock.calls[0][2]).not.toHaveProperty("deadline")
+			expect(
+				vi
+					.mocked(task["appendAgentTurnEvent"])
+					.mock.calls.filter(([event]) => event.type === "model_request_failed"),
+			).toEqual([])
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			await stream.return(undefined)
+			vi.useRealTimers()
+			vi.restoreAllMocks()
+		}
+	})
+
+	it("times out a genuinely idle later read once and ignores its late result after a healthy successor", async () => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		const { task, originalHandler } = harness()
+		const lateRead = deferred<IteratorResult<ApiStreamChunk>>()
+		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+		const next = vi
+			.fn<() => Promise<IteratorResult<ApiStreamChunk>>>()
+			.mockResolvedValueOnce({ done: false, value: { type: "text", text: "first" } })
+			.mockImplementationOnce(() => lateRead.promise)
+		originalHandler.createMessage.mockReturnValueOnce({
+			[Symbol.asyncIterator]() {
+				return this
+			},
+			next,
+			return: close,
+		} as unknown as ApiStream)
+		const stream = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		try {
+			await stream.next()
+			const idle = stream.next().catch((error: unknown) => error)
+			await vi.advanceTimersByTimeAsync(100)
+			expect(await idle).toMatchObject({ code: "ProviderTimeout", timeoutScope: "provider_idle" })
+			const failures = vi
+				.mocked(task["appendAgentTurnEvent"])
+				.mock.calls.filter(([event]) => event.type === "model_request_failed")
+			expect(failures).toHaveLength(1)
+			expect(close).toHaveBeenCalledOnce()
+			const successor = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+			await expect(successor.next()).resolves.toMatchObject({ value: { text: "response" } })
+			const successorSignal = originalHandler.createMessage.mock.calls[1][2]?.signal
+			lateRead.resolve({ done: false, value: { type: "text", text: "stale" } })
+			await vi.advanceTimersByTimeAsync(0)
+			expect(successorSignal?.aborted).toBe(false)
+			await expect(successor.next()).resolves.toMatchObject({ done: true })
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			await stream.return(undefined)
+			vi.useRealTimers()
+			vi.restoreAllMocks()
+		}
+	})
+
+	it("preserves an explicit retry deadline while response chunks keep arriving", async () => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		const { task, originalHandler } = harness()
+		originalHandler.createMessage.mockImplementationOnce(async function* () {
+			for (let index = 0; index < 4; index++) {
+				await new Promise<void>((resolve) => setTimeout(resolve, 60))
+				yield { type: "text", text: `chunk ${index}` }
+			}
+		})
+		const stream = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryDeadline: Date.now() + 150,
+		})
+		try {
+			for (let index = 0; index < 2; index++) {
+				const next = stream.next().catch((error: unknown) => error)
+				await vi.advanceTimersByTimeAsync(60)
+				expect(await next).toMatchObject({ value: { text: `chunk ${index}` } })
+			}
+			const expired = stream.next().catch((error: unknown) => error)
+			await vi.advanceTimersByTimeAsync(30)
+			expect(await expired).toMatchObject({ code: "ProviderTimeout", timeoutScope: "retry_deadline" })
+			const failures = vi
+				.mocked(task["appendAgentTurnEvent"])
+				.mock.calls.filter(([event]) => event.type === "model_request_failed")
+			expect(failures).toHaveLength(1)
+			expect(originalHandler.createMessage.mock.calls[0][2]?.signal?.aborted).toBe(true)
+			await vi.advanceTimersByTimeAsync(30)
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			await stream.return(undefined)
+			vi.useRealTimers()
+			vi.restoreAllMocks()
+		}
+	})
+
 	it("does not publish a ready first chunk after steering is admitted", async () => {
 		vi.useFakeTimers()
 		try {
@@ -320,6 +471,7 @@ function logicalRequest(call: Parameters<ApiHandler["createMessage"]>) {
 	const {
 		signal: _signal,
 		deadline: _deadline,
+		deadlineScope: _deadlineScope,
 		requestId: _requestId,
 		attemptId: _attemptId,
 		streamCapabilities: _capabilities,
@@ -586,7 +738,8 @@ describe("Task retained retry wire inputs", () => {
 				expect(retryMetadata.streamCapabilities).toEqual({ lifecycle: false, cancellation: true })
 				expect(retryMetadata.requestId).toBe(initialMetadata.requestId)
 				expect(retryMetadata.attemptId).not.toBe(initialMetadata.attemptId)
-				expect(retryMetadata.deadline).toBe(Number(initialMetadata.deadline) + 1000)
+				expect(initialMetadata).not.toHaveProperty("deadline")
+				expect(retryMetadata).not.toHaveProperty("deadline")
 				expect(retryMetadata.signal).not.toBe(initialMetadata.signal)
 				firstStepController.abort()
 				expect(retryMetadata.signal!.aborted).toBe(false)
@@ -968,12 +1121,18 @@ describe("Task retained retry wire inputs", () => {
 			expect(originalHandler.createMessage).not.toHaveBeenCalled()
 			expect(task.currentRequestAbortController).toBeUndefined()
 			expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
+			expect(appendEvent).toHaveBeenCalledOnce()
+			expect(appendEvent).toHaveBeenCalledWith(
+				{ type: "model_request_failed", purpose: "task", code: "ProviderTimeout" },
+				expect.anything(),
+				expect.objectContaining({ attemptId: capturedStep(task).attemptId }),
+			)
 
 			releaseLifecycle()
 			await Promise.resolve()
 			await Promise.resolve()
 			expect(publishPhase).not.toHaveBeenCalled()
-			expect(appendEvent).not.toHaveBeenCalled()
+			expect(appendEvent).toHaveBeenCalledOnce()
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {
 			vi.useRealTimers()
@@ -1398,25 +1557,32 @@ describe("Task retained retry wire inputs", () => {
 		expect(capturedStep(task).snapshot.context.retryAttempt).toBe(1)
 	})
 
-	it("does not retry a direct-caller first-chunk failure after the logical elapsed budget", async () => {
+	it("gives a long initial failure a fresh explicit recovery allowance and then enforces it", async () => {
 		const { task, live, originalHandler } = harness()
 		live.autoApprovalEnabled = true
+		Reflect.set(task, "agentRetryPolicy", new AgentRetryPolicy({ maxAttempts: 4, maxElapsedMs: 90_000 }))
 		let elapsedMs = 0
 		vi.spyOn(performance, "now").mockImplementation(() => elapsedMs)
 		const backoff = vi.fn(async () => {})
 		Object.assign(task, { backoffAndAnnounce: backoff })
-		originalHandler.createMessage.mockImplementationOnce(async function* () {
-			elapsedMs = 90_001
-			yield* []
-			throw new Error("long first-chunk deadline exhausted")
-		})
+		originalHandler.createMessage
+			.mockImplementationOnce(async function* () {
+				elapsedMs = 600_000
+				yield* []
+				throw new Error("initial long request failed")
+			})
+			.mockImplementationOnce(async function* () {
+				elapsedMs = 690_001
+				yield* []
+				throw new Error("recovery allowance exhausted")
+			})
 
 		await expect(task.attemptApiRequest(0, { skipProviderRateLimit: true }).next()).rejects.toThrow(
-			"long first-chunk deadline exhausted",
+			"recovery allowance exhausted",
 		)
 
-		expect(originalHandler.createMessage).toHaveBeenCalledOnce()
-		expect(backoff).not.toHaveBeenCalled()
+		expect(originalHandler.createMessage).toHaveBeenCalledTimes(2)
+		expect(backoff).toHaveBeenCalledOnce()
 		expect(task.currentRequestAbortController).toBeUndefined()
 		expect(Reflect.get(task, "currentRequestSignal")).toBeUndefined()
 	})
@@ -1605,11 +1771,11 @@ describe("Task retained retry wire inputs", () => {
 			await vi.advanceTimersByTimeAsync(100)
 			await rejected
 			expect(compatibilityMetadata?.deadline).toBe(6_100)
-			expect(Reflect.get(task, "appendAgentTurnEvent")).toHaveBeenCalledWith({
-				type: "model_request_failed",
-				purpose: "task",
-				code: "ProviderTimeout",
-			})
+			expect(Reflect.get(task, "appendAgentTurnEvent")).toHaveBeenCalledWith(
+				{ type: "model_request_failed", purpose: "task", code: "ProviderTimeout" },
+				expect.anything(),
+				expect.objectContaining({ attemptId: compatibilityMetadata?.attemptId }),
+			)
 			expect(compatibilityMetadata?.signal?.aborted).toBe(true)
 			expect(closeCompatibilityIterator).toHaveBeenCalledOnce()
 			expect(originalHandler.createMessage).toHaveBeenCalledTimes(2)

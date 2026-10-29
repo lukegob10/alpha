@@ -361,7 +361,7 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 			expect(await fs.readFile(path.join(artifactDirectory, changed.beforeFile!), "utf8")).toBe("baseline\n")
 			expect(await fs.readFile(path.join(artifactDirectory, changed.afterFile!), "utf8")).toBe("worker changes\n")
 			await expect(fs.access(prepared.workspacePath)).rejects.toMatchObject({ code: "ENOENT" })
-			await expect(new ManagedSubagentWorktreeService().recoverOrphans(storage)).resolves.toEqual([])
+			await expect(new ManagedSubagentWorktreeService().recoverOrphans(storage)).resolves.toEqual([artifact])
 		},
 		TIMEOUT,
 	)

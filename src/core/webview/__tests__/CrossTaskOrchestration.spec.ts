@@ -50,12 +50,16 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		apiConversationHistory: [],
 		abort: false,
 		abortReason: undefined,
+		hasStarted: false,
 		taskAsk: undefined,
 		getTaskMode: vi.fn(async () => "code"),
 		getTaskApiConfigName: vi.fn(async () => "profile-a"),
+		setTaskApiConfigName: vi.fn(),
 		getTaskApprovalMode: vi.fn(() => "ask"),
 		isCompleted: vi.fn(() => false),
 		isTurnActive: vi.fn(() => true),
+		hasPendingAsk: vi.fn(() => false),
+		hasPendingAgentMessages: vi.fn(() => false),
 		steerUserMessage: vi.fn(async () => undefined),
 		steerAgentMessage: vi.fn(async () => "steered"),
 		markIndependentAgentMessagesPending: vi.fn(),
@@ -72,8 +76,9 @@ function createTask(overrides: Record<string, unknown> = {}): FakeTask {
 		),
 		submitUserMessage: vi.fn(async () => undefined),
 		start: vi.fn(),
-		messageQueueService: { addMessage: vi.fn(() => true) },
+		messageQueueService: { addMessage: vi.fn(() => true), hasUnconsumedInput: vi.fn(() => false) },
 		updateApiConfiguration: vi.fn(),
+		updateModelRoute: vi.fn(async () => undefined),
 		...overrides,
 	}) as FakeTask
 }
@@ -85,6 +90,9 @@ function createProviderFixture(storagePath?: string) {
 	const tasks = new Map<string, FakeTask>()
 	const history = new Map<string, Record<string, unknown>>()
 	const metadata = new Map<string, Record<string, unknown>>()
+	const profiles = new Map<string, Record<string, unknown>>([
+		["profile-a", { id: "profile-a-id", name: "profile-a", apiProvider: "openai", openAiModelId: "test" }],
+	])
 	const internals = provider as unknown as Record<string, any>
 	const sessions = storagePath ? TaskSessionRegistry.forGlobalStorage(storagePath) : new TaskSessionRegistry()
 	Object.assign(internals, {
@@ -101,6 +109,18 @@ function createProviderFixture(storagePath?: string) {
 			runOwnershipOperation: sessions.runOwnershipOperation.bind(sessions),
 		},
 		contextProxy: { globalStorageUri: { fsPath: globalStoragePath } },
+		context: { secrets: {} },
+		providerSettingsManager: {
+			listConfig: vi.fn(async () => Array.from(profiles.values())),
+			getProfile: vi.fn(async (query: { name: string } | { id: string }) => {
+				const profile = Array.from(profiles.values()).find((value) =>
+					"id" in query ? value.id === query.id : value.name === query.name,
+				)
+				if (!profile) throw new Error("The saved provider profile was not found")
+				return structuredClone(profile)
+			}),
+			assertProfileAvailable: vi.fn(async () => undefined),
+		},
 		log: vi.fn(),
 		taskLifecycleHistoryWrites: new Map(),
 		independentTaskWaiters: new Map(),
@@ -132,6 +152,7 @@ function createProviderFixture(storagePath?: string) {
 		history,
 		metadata,
 		sessions,
+		profiles,
 	}
 }
 
@@ -176,6 +197,316 @@ function independentCreationFixture() {
 }
 
 describe("Cross-task orchestration host", () => {
+	it("captures an inherited inline route on new threads even without a model override", async () => {
+		const { provider, parent, internals, history } = independentCreationFixture()
+		parent.apiConfiguration = {
+			apiProvider: "openai",
+			openAiModelId: "inline-model",
+			openAiApiKey: "inline-only-key",
+		}
+		parent.reasoningPreference = { kind: "effort", effort: "high" }
+		const created = await provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared")
+		expect(internals.createTask).toHaveBeenCalledWith(
+			expect.any(String),
+			undefined,
+			undefined,
+			expect.objectContaining({
+				apiConfiguration: parent.apiConfiguration,
+				reasoningPreference: parent.reasoningPreference,
+				taskApiConfigName: "profile-a",
+			}),
+		)
+		expect(history.get(created.task_id)).toMatchObject({
+			apiConfigName: "profile-a",
+			threadModelOverride: "inline-model",
+			threadModelRoute: { unboundProfile: true, provider: "openai", modelId: "inline-model" },
+			reasoningPreference: parent.reasoningPreference,
+		})
+		expect(JSON.stringify(history.get(created.task_id))).not.toContain("inline-only-key")
+	})
+
+	it("captures a live fork source's inline configuration without inheriting its stale saved binding", async () => {
+		const { provider, tasks, history } = createProviderFixture()
+		const caller = createTask({ metadata: { task: "Fork this chat." } })
+		const source = createTask({
+			taskId: "inline-source",
+			isCompleted: () => true,
+			isTurnActive: () => false,
+			apiConfiguration: {
+				apiProvider: "openai",
+				openAiModelId: "live-inline-model",
+				openAiApiKey: "source-inline-key",
+			},
+			reasoningPreference: { kind: "effort", effort: "high" },
+			apiConversationHistory: [{ role: "user", content: "Inspect parser", ts: 10 }],
+		})
+		tasks.set(source.taskId, source)
+		history.set(source.taskId, {
+			...taskHistoryItem(source.taskId, "other"),
+			apiConfigName: "profile-a",
+			status: "completed",
+			threadModelOverride: "stale-saved-model",
+		})
+		const fork = await provider.forkIndependentTask(caller as unknown as Task, source.taskId)
+		expect(history.get(fork.task_id)).toMatchObject({
+			apiConfigName: "profile-a",
+			threadModelOverride: "live-inline-model",
+			threadModelRoute: { unboundProfile: true, provider: "openai", modelId: "live-inline-model" },
+			reasoningPreference: source.reasoningPreference,
+		})
+		expect(JSON.stringify(history.get(fork.task_id))).not.toContain("source-inline-key")
+		expect(source.apiConfiguration.openAiApiKey).toBe("source-inline-key")
+	})
+
+	it("leaves an idle recipient unchanged when request cancellation wins during route lookup", async () => {
+		const { provider, internals, tasks, history } = createProviderFixture()
+		const caller = createTask({
+			apiConversationHistory: [
+				{ role: "user", input_origin: "human", content: "Send a follow up using target-model" },
+			],
+		})
+		const peer = createTask({ taskId: "cancelled-route", isCompleted: () => true, isTurnActive: () => false })
+		tasks.set(peer.taskId, peer)
+		const saved = { ...taskHistoryItem(peer.taskId, "other"), apiConfigName: "profile-a", status: "completed" }
+		history.set(peer.taskId, saved)
+		let entered!: () => void
+		let release!: () => void
+		const lookupEntered = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const lookupReleased = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const getProfile = internals.providerSettingsManager.getProfile
+		const load = getProfile.getMockImplementation()!
+		getProfile.mockImplementationOnce(async (query: unknown) => {
+			entered()
+			await lookupReleased
+			return load(query)
+		})
+		const control = new AbortController()
+		const pending = provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Continue", {
+			model: "target-model",
+			signal: control.signal,
+		})
+		const rejected = expect(pending).rejects.toThrow("Request route lookup cancelled")
+		await lookupEntered
+		control.abort(new Error("Request route lookup cancelled"))
+		release()
+		await rejected
+		expect(peer.updateModelRoute).not.toHaveBeenCalled()
+		expect(peer.receiveAgentMessage).not.toHaveBeenCalled()
+		expect(peer.apiConfiguration).toEqual({ apiProvider: "openai", openAiModelId: "test" })
+		expect(history.get(peer.taskId)).toEqual(saved)
+	})
+
+	it.each(["started", "queued", "successor"] as const)(
+		"preserves a %s runtime when a cold model-route admission fails",
+		async (transition) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			const caller = createTask({
+				apiConversationHistory: [
+					{ role: "user", input_origin: "human", content: "Send a follow up using target-model" },
+				],
+			})
+			const peer = createTask({
+				taskId: "cold-peer",
+				isTurnActive: () => false,
+				beginTaskCancellation: vi.fn(),
+				hasStarted: transition === "started",
+				messageQueueService: { hasUnconsumedInput: () => transition === "queued" },
+			})
+			const successor = createTask({ taskId: peer.taskId })
+			history.set(peer.taskId, {
+				...taskHistoryItem(peer.taskId, "other"),
+				apiConfigName: "profile-a",
+				status: "completed",
+			})
+			peer.updateModelRoute.mockImplementation(async () => {
+				if (transition === "successor") tasks.set(peer.taskId, successor)
+				throw new Error("Route persistence rejected")
+			})
+			internals.createTaskWithHistoryItem = vi.fn(async () => {
+				tasks.set(peer.taskId, peer)
+				return peer
+			})
+			await expect(
+				provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Continue", {
+					model: "target-model",
+				}),
+			).rejects.toThrow("Route persistence rejected")
+			expect(tasks.get(peer.taskId)).toBe(transition === "successor" ? successor : peer)
+			expect(internals.removeTaskFromStack).not.toHaveBeenCalled()
+			expect(peer.beginTaskCancellation).not.toHaveBeenCalled()
+			expect(peer.receiveAgentMessage).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["task", "sticky"] as const)(
+		"lets an explicit %s profile selection replace a saved tool-selected route",
+		async (surface) => {
+			const { provider, internals, tasks, history } = createProviderFixture()
+			const task = createTask()
+			tasks.set(task.taskId, task)
+			history.set(task.taskId, {
+				...taskHistoryItem(task.taskId, "other"),
+				apiConfigName: "profile-a",
+				threadModelOverride: "old-model",
+				threadModelRoute: {
+					source: "spawn",
+					resolution: "selected",
+					profileId: "old-profile-id",
+					profileName: "profile-a",
+					provider: "openai",
+					modelId: "old-model",
+				},
+			})
+			internals.updateTaskApiHandlerIfNeeded = vi.fn()
+			if (surface === "task")
+				await provider.setTaskProviderProfile(
+					task.taskId,
+					"profile-b",
+					{ apiProvider: "anthropic", apiModelId: "claude-opus-5-5" },
+					{ postState: false },
+				)
+			else await internals.persistStickyProviderProfileToCurrentTask("profile-b", task)
+			expect(history.get(task.taskId)).toMatchObject({
+				apiConfigName: "profile-b",
+				threadModelOverride: undefined,
+				threadModelRoute: undefined,
+			})
+		},
+	)
+
+	it("resolves a new thread's complete saved provider route and resets inherited reasoning", async () => {
+		const { provider, internals, parent, history, profiles } = independentCreationFixture()
+		parent.reasoningPreference = { kind: "custom", value: "parent-only" }
+		parent.apiConversationHistory = [
+			{
+				role: "user",
+				input_origin: "human",
+				content:
+					"Create a new thread using the Claude work profile and claude-opus-5-5 model with high reasoning.",
+			},
+		]
+		profiles.set("Claude work", {
+			id: "claude-work-id",
+			name: "Claude work",
+			apiProvider: "anthropic",
+			apiModelId: "claude-opus-5-5",
+			apiKey: "target-test-key",
+		})
+		const parentConfiguration = structuredClone(parent.apiConfiguration)
+		const created = await provider.createIndependentTask(
+			parent as unknown as Task,
+			"Inspect parser",
+			"shared",
+			undefined,
+			{
+				provider: "anthropic",
+				profile: "claude-work-id",
+				model: "claude-opus-5-5",
+				reasoningEffort: "high",
+			},
+		)
+		expect(internals.createTask).toHaveBeenCalledWith(
+			"Inspect parser",
+			undefined,
+			undefined,
+			expect.objectContaining({
+				taskApiConfigName: "Claude work",
+				apiConfiguration: expect.objectContaining({
+					apiProvider: "anthropic",
+					apiKey: "target-test-key",
+					apiModelId: "claude-opus-5-5",
+					reasoningEffort: "high",
+				}),
+				reasoningPreference: { kind: "default" },
+				taskApprovalMode: "ask",
+			}),
+		)
+		expect(history.get(created.task_id)).toMatchObject({
+			apiConfigName: "Claude work",
+			threadModelOverride: "claude-opus-5-5",
+			threadModelRoute: { profileId: "claude-work-id", provider: "anthropic", requestedReasoningEffort: "high" },
+		})
+		expect(parent.apiConfiguration).toEqual(parentConfiguration)
+		expect(parent.reasoningPreference).toEqual({ kind: "custom", value: "parent-only" })
+	})
+
+	it("rejects an unavailable explicit route before allocating a worktree or a task", async () => {
+		const { provider, internals, parent } = independentCreationFixture()
+		parent.apiConversationHistory = [
+			{ role: "user", input_origin: "human", content: "Create a new thread using another profile." },
+		]
+		const worktree = vi
+			.spyOn(crossTaskWorktreeService, "create")
+			.mockRejectedValue(new Error("Worktree allocated before route validation"))
+		try {
+			await expect(
+				provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "worktree", undefined, {
+					profile: "deleted-profile",
+				}),
+			).rejects.toThrow(/saved.*profile|profile.*not.*found/i)
+			expect(worktree).not.toHaveBeenCalled()
+			expect(internals.createTask).not.toHaveBeenCalled()
+		} finally {
+			worktree.mockRestore()
+		}
+	})
+
+	it.each(["with Research account", "using my Research account profile"])(
+		"resolves a discovered profile ID before authorizing a fresh thread %s",
+		async (phrase) => {
+			const { provider, internals, parent, profiles } = independentCreationFixture()
+			parent.apiConversationHistory = [
+				{ role: "user", input_origin: "human", content: `Create a new thread ${phrase}` },
+			]
+			profiles.set("Research account", {
+				id: "opaque-profile-id",
+				name: "Research account",
+				apiProvider: "openai-native",
+				apiModelId: "gpt-5.6-sol",
+				openAiNativeApiKey: "target-test-key",
+			})
+			await provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", undefined, {
+				profile: "opaque-profile-id",
+			})
+			expect(internals.createTask).toHaveBeenCalledWith(
+				"Inspect parser",
+				undefined,
+				undefined,
+				expect.objectContaining({
+					taskApiConfigName: "Research account",
+					apiConfiguration: expect.objectContaining({
+						apiProvider: "openai-native",
+						apiModelId: "gpt-5.6-sol",
+						openAiNativeApiKey: "target-test-key",
+					}),
+				}),
+			)
+		},
+	)
+
+	it("accepts a human model name with natural punctuation when creating a separate thread", async () => {
+		const { provider, parent, internals } = independentCreationFixture()
+		parent.apiConversationHistory = [
+			{ role: "user", input_origin: "human", content: "Create a new thread with GPT 5.6 Sol." },
+		]
+		await provider.createIndependentTask(parent as unknown as Task, "Inspect parser", "shared", undefined, {
+			model: "gpt-5.6-sol",
+		})
+		expect(internals.createTask).toHaveBeenCalledWith(
+			expect.any(String),
+			undefined,
+			undefined,
+			expect.objectContaining({
+				apiConfiguration: expect.objectContaining({ openAiModelId: "gpt-5.6-sol" }),
+				reasoningPreference: { kind: "default" },
+			}),
+		)
+	})
+
 	it.each([
 		"This chat is long. Create a new chat and work on tickets ALPHA-42 and ALPHA-43.",
 		"Inspect and coordinate the existing independent conversation, preserving its separate identity.",
@@ -1488,7 +1819,13 @@ describe("Cross-task orchestration host", () => {
 	)
 
 	it("forks committed peer history into an idle persisted task without launching a turn", async () => {
-		const { provider, internals, tasks, history } = createProviderFixture()
+		const { provider, internals, tasks, history, profiles } = createProviderFixture()
+		profiles.set("peer-profile", {
+			id: "peer-profile-id",
+			name: "peer-profile",
+			apiProvider: "openai",
+			openAiModelId: "test",
+		})
 		const caller = createTask({
 			metadata: {
 				task: "Inspect and coordinate the existing independent conversation. Fork the existing conversation with its completed history, preserving its separate identity.",
@@ -1506,6 +1843,7 @@ describe("Cross-task orchestration host", () => {
 		]
 		const peer = createTask({
 			taskId: "peer",
+			getTaskApiConfigName: async () => "peer-profile",
 			isCompleted: () => true,
 			isTurnActive: () => false,
 			apiConversationHistory: api,
@@ -1643,9 +1981,11 @@ describe("Cross-task orchestration host", () => {
 		await provider.sendIndependentTaskMessage(caller as unknown as Task, peer.taskId, "Hello", {
 			model: "target-model",
 		})
-		expect(history.get(peer.taskId)).toHaveProperty("threadModelOverride", "target-model")
-		expect(peer.updateApiConfiguration).toHaveBeenCalledWith(
-			expect.objectContaining({ apiProvider: "openai", openAiModelId: "target-model" }),
+		expect(peer.updateModelRoute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				apiConfiguration: expect.objectContaining({ apiProvider: "openai", openAiModelId: "target-model" }),
+				threadModelOverride: "target-model",
+			}),
 		)
 	})
 

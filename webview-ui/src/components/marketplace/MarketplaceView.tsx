@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react"
+import { useEffect, useMemo } from "react"
 import { Button } from "@/components/ui/button"
 import { ArrowLeft } from "lucide-react"
 import { Tab, TabContent, TabHeader } from "../common/Tab"
@@ -17,15 +17,6 @@ interface MarketplaceViewProps {
 export function MarketplaceView({ stateManager, onDone }: MarketplaceViewProps) {
 	const { t } = useAppTranslation()
 	const [state, manager] = useStateManager(stateManager)
-	const [hasReceivedInitialState, setHasReceivedInitialState] = useState(false)
-
-	// Track when we receive the initial state
-	useEffect(() => {
-		// Check if we already have items (state might have been received before mount)
-		if (state.allItems.length > 0 && !hasReceivedInitialState) {
-			setHasReceivedInitialState(true)
-		}
-	}, [state.allItems, hasReceivedInitialState])
 
 	// Legacy callers and persisted view state may still request the hidden mode
 	// catalog. Keep that state compatible, but project this ordinary surface to MCP.
@@ -35,43 +26,15 @@ export function MarketplaceView({ stateManager, onDone }: MarketplaceViewProps) 
 		}
 	}, [state.activeTab, manager])
 
-	// Ensure marketplace state manager processes messages when component mounts
 	useEffect(() => {
-		// When the marketplace view first mounts, we need to trigger a state update
-		// to ensure we get the current marketplace items. We do this by sending
-		// a filter message with empty filters, which will cause the extension to
-		// send back the full state including all marketplace items.
-		if (!hasReceivedInitialState && state.allItems.length === 0) {
-			// Fetch marketplace data on demand
-			// Note: isFetching is already true by default for initial load
+		// Fetch once on entry when the persistent manager has no catalog. The
+		// hook owns message ingestion and the only state subscription for this view.
+		if (manager.getState().allItems.length === 0) {
 			vscode.postMessage({
 				type: "fetchMarketplaceData",
 			})
 		}
-
-		// Listen for state changes to know when initial data arrives
-		const unsubscribe = manager.onStateChange((newState) => {
-			// Mark as received initial state when we get any state update
-			// This prevents infinite loops and ensures proper state handling
-			if (!hasReceivedInitialState && (newState.allItems.length > 0 || newState.displayItems !== undefined)) {
-				setHasReceivedInitialState(true)
-			}
-		})
-
-		const handleVisibilityMessage = (event: MessageEvent) => {
-			const message = event.data
-			if (message.type === "webviewVisible" && message.visible === true) {
-				// Data will be automatically fresh when panel becomes visible
-				// No manual fetching needed since we removed caching
-			}
-		}
-
-		window.addEventListener("message", handleVisibilityMessage)
-		return () => {
-			window.removeEventListener("message", handleVisibilityMessage)
-			unsubscribe()
-		}
-	}, [manager, hasReceivedInitialState, state.allItems.length])
+	}, [manager])
 
 	// Memoize all available tags
 	const allTags = useMemo(
@@ -103,7 +66,8 @@ export function MarketplaceView({ stateManager, onDone }: MarketplaceViewProps) 
 
 				<TabContent className="p-3 pt-2">
 					<MarketplaceListView
-						stateManager={stateManager}
+						state={state}
+						stateManager={manager}
 						allTags={allTags}
 						filteredTags={filteredTags}
 						filterByType="mcp"

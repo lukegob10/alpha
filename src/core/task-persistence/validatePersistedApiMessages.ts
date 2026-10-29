@@ -15,6 +15,14 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		const location = `message ${messageIndex}`
 		if (!isRecord(candidate)) return `${location} must be an object`
 		if (
+			candidate.provider_state_replay_disabled !== undefined &&
+			(candidate.provider_state_replay_disabled !== true ||
+				(candidate.role !== undefined && candidate.role !== "assistant") ||
+				(candidate.role === undefined && candidate.type !== "reasoning"))
+		) {
+			return `${location} has invalid provider state replay policy`
+		}
+		if (
 			candidate.provider_state_scope !== undefined &&
 			((candidate.role !== undefined && candidate.role !== "assistant") ||
 				!providerStateScopeSchema.safeParse(candidate.provider_state_scope).success)

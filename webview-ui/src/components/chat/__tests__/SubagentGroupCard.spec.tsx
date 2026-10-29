@@ -1,8 +1,12 @@
 import type { SubagentGroupState, SubagentRunState } from "@alpha-code/types"
 import userEvent from "@testing-library/user-event"
+import i18next from "i18next"
+import { initReactI18next } from "react-i18next"
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 import { installNativeTestFocus } from "@/utils/test-native-focus"
+import chat from "@/i18n/locales/en/chat.json"
+import * as subagentTaskLink from "@/components/agents/SubagentTaskLink"
 
 import { SubagentGroupCard } from "../SubagentGroupCard"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -102,7 +106,136 @@ const openActions = async (user: ReturnType<typeof userEvent.setup>, nickname: s
 }
 
 describe("SubagentGroupCard", () => {
+	beforeAll(async () => {
+		await i18next
+			.use(initReactI18next)
+			.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
+	})
 	beforeEach(() => postMessage.mockReset())
+
+	it("keeps steering-draft cards isolated from transcript-only context broadcasts", () => {
+		const attentionSpy = vi.spyOn(subagentTaskLink, "getSubagentAttentionKey")
+		try {
+			render(
+				<ExtensionStateContextProvider>
+					{Array.from({ length: 30 }, (_, index) => {
+						const group = makeGroup({ groupId: `group-${index}`, agents: [makeGroup().agents[0]] })
+						return <SubagentGroupCard key={group.groupId} group={group} />
+					})}
+				</ExtensionStateContextProvider>,
+			)
+			expect(attentionSpy).toHaveBeenCalledTimes(30)
+			// The first host state hydrates the shell as well as the transcript.
+			act(() => {
+				window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state: {} } }))
+			})
+			expect(attentionSpy).toHaveBeenCalledTimes(60)
+			attentionSpy.mockClear()
+			for (let tick = 0; tick < 20; tick++) {
+				act(() => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "state",
+								state: {
+									alphaMessages: [
+										{ ts: 1, type: "say", say: "text", text: `Stream ${tick}`, partial: true },
+									],
+								},
+							},
+						}),
+					)
+				})
+			}
+			expect(attentionSpy).not.toHaveBeenCalled()
+		} finally {
+			attentionSpy.mockRestore()
+		}
+	})
+
+	it.each(["state", "messageUpdated", "taskHistoryItemUpdated", "interactionRequired"])(
+		"preserves %s capability refreshes after immutable agent updates",
+		(type) => {
+			vi.useFakeTimers()
+			try {
+				const group = makeWorkerGroup()
+				const { rerender } = render(<SubagentGroupCard group={group} />)
+				const capabilityRequests = () =>
+					postMessage.mock.calls.filter(
+						([message]) => message.type === "requestSubagentChangeSetActionCapability",
+					)
+				expect(capabilityRequests()).toHaveLength(1)
+				for (let tick = 0; tick < 20; tick++) {
+					rerender(
+						<SubagentGroupCard
+							group={{
+								...group,
+								agents: group.agents.map((agent) => ({
+									...agent,
+									usage: { durationMs: 4_000 + tick },
+								})),
+							}}
+						/>,
+					)
+				}
+				expect(capabilityRequests()).toHaveLength(1)
+				act(() => {
+					window.dispatchEvent(new MessageEvent("message", { data: { type } }))
+					vi.advanceTimersByTime(75)
+				})
+				expect(capabilityRequests()).toHaveLength(2)
+
+				rerender(<SubagentGroupCard group={makeWorkerGroup({ changeSet: undefined })} />)
+				act(() => {
+					window.dispatchEvent(new MessageEvent("message", { data: { type } }))
+					vi.advanceTimersByTime(75)
+				})
+				expect(capabilityRequests()).toHaveLength(2)
+				rerender(<SubagentGroupCard group={group} />)
+				expect(capabilityRequests()).toHaveLength(3)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it("refreshes capabilities during continuous broadcasts within one bounded window", () => {
+		vi.useFakeTimers()
+		try {
+			const group = makeWorkerGroup()
+			const { rerender, unmount } = render(<SubagentGroupCard group={group} />)
+			const capabilityRequests = () =>
+				postMessage.mock.calls.filter(
+					([message]) => message.type === "requestSubagentChangeSetActionCapability",
+				)
+			expect(capabilityRequests()).toHaveLength(1)
+			for (let tick = 0; tick < 10; tick++) {
+				act(() => {
+					window.dispatchEvent(new MessageEvent("message", { data: { type: "messageUpdated" } }))
+					vi.advanceTimersByTime(25)
+				})
+				if (tick === 2) expect(capabilityRequests()).toHaveLength(2)
+			}
+			expect(capabilityRequests()).toHaveLength(4)
+			rerender(<SubagentGroupCard group={group} isVisible={false} />)
+			act(() => {
+				vi.advanceTimersByTime(75)
+				window.dispatchEvent(new MessageEvent("message", { data: { type: "state" } }))
+				vi.advanceTimersByTime(75)
+			})
+			expect(capabilityRequests()).toHaveLength(4)
+			rerender(<SubagentGroupCard group={group} />)
+			expect(capabilityRequests()).toHaveLength(5)
+			act(() => {
+				window.dispatchEvent(new MessageEvent("message", { data: { type: "interactionRequired" } }))
+			})
+			unmount()
+			act(() => vi.advanceTimersByTime(75))
+			expect(capabilityRequests()).toHaveLength(5)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
 
 	describe("confirmation opener focus", () => {
 		let restoreFocus: () => void
@@ -114,6 +247,39 @@ describe("SubagentGroupCard", () => {
 		afterEach(() => {
 			cleanup()
 			restoreFocus()
+		})
+
+		it("opens an actual approval with the keyboard and restores its action trigger after Escape", async () => {
+			const user = userEvent.setup()
+			const agent = makeGroup().agents[0]
+			render(
+				<SubagentGroupCard
+					group={makeGroup({
+						agents: [
+							{
+								...agent,
+								pendingApproval: {
+									id: "approval-keyboard",
+									type: "command",
+									operation: "pnpm test",
+									createdAt: 2_000,
+								},
+							},
+						],
+					})}
+				/>,
+			)
+			expect(screen.getByRole("button", { name: /Open Maple · Working · Approval required/ })).toBeEnabled()
+			const trigger = screen.getByRole("button", { name: "Actions for Maple" })
+			trigger.focus()
+			await user.keyboard("{ArrowDown}")
+			expect(screen.getByRole("menuitem", { name: "Open task" })).toHaveFocus()
+			await user.keyboard("{ArrowDown}{Enter}")
+			expect(screen.getByRole("dialog", { name: "Review Maple's request" })).toHaveTextContent("pnpm test")
+			await user.keyboard("{Escape}")
+			await waitFor(() => expect(trigger).toHaveFocus())
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
 		})
 
 		it.each([
@@ -158,6 +324,86 @@ describe("SubagentGroupCard", () => {
 			},
 		)
 	})
+
+	it("keeps interrupted work distinct from available changes and exposes the host recovery reason", () => {
+		const reason =
+			"The extension reloaded before this sub-agent finished. The parent can resume it with followup_task."
+		render(
+			<SubagentGroupCard
+				group={makeWorkerGroup({ status: "interrupted", stopReason: "interrupted", error: reason })}
+				parentTaskId="parent-1"
+				presentation="dock"
+			/>,
+		)
+		const row = screen.getByRole("button", { name: /Open Maple · Interrupted · Changes available/i })
+		expect(row).toHaveTextContent("Interrupted")
+		expect(row).toHaveTextContent("Changes available")
+		expect(row).toHaveAccessibleDescription(reason)
+		expect(screen.getByRole("status")).toHaveTextContent(reason)
+		expect(screen.queryByText("Approval required")).not.toBeInTheDocument()
+		expect(row.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+	})
+
+	it("distinguishes a conflicted proposal from available changes without hiding failure", () => {
+		const worker = makeWorkerGroup().agents[0]
+		render(
+			<SubagentGroupCard
+				group={makeWorkerGroup({
+					status: "failed",
+					error: "Parent files changed before the proposal could be applied.",
+					changeSet: { ...worker.changeSet!, status: "conflicted" },
+				})}
+				presentation="dock"
+			/>,
+		)
+		const row = screen.getByRole("button", { name: /Open Maple · Failed · Conflict/i })
+		expect(row).toHaveTextContent("Failed")
+		expect(row).toHaveTextContent("Conflict")
+		expect(row).toHaveAccessibleDescription("Parent files changed before the proposal could be applied.")
+		expect(screen.queryByText("Changes available")).not.toBeInTheDocument()
+		expect(screen.queryByText("Approval required")).not.toBeInTheDocument()
+	})
+
+	it("shows a denied operation as a failure reason without inventing another approval request", async () => {
+		const user = userEvent.setup()
+		render(
+			<SubagentGroupCard
+				group={makeWorkerGroup({ status: "failed", stopReason: "authority_denied", changeSet: undefined })}
+				presentation="dock"
+			/>,
+		)
+		const row = screen.getByRole("button", { name: /Open Maple · Failed/i })
+		expect(row).toHaveAccessibleDescription("The operation was denied by the sub-agent's execution policy.")
+		await openActions(user, "Maple")
+		expect(screen.queryByRole("menuitem", { name: "Review request" })).not.toBeInTheDocument()
+		expect(screen.queryByText("Approval required")).not.toBeInTheDocument()
+	})
+
+	it.each(["completed", "interrupted", "cancelled", "failed", "blocked", "timed_out"] as const)(
+		"does not offer an obsolete operation approval on a historical %s row",
+		async (status) => {
+			const user = userEvent.setup()
+			render(
+				<SubagentGroupCard
+					group={makeWorkerGroup({
+						status,
+						changeSet: undefined,
+						pendingApproval: {
+							id: "obsolete-approval",
+							type: "command",
+							operation: "an earlier command",
+							createdAt: 2_000,
+						},
+					})}
+					presentation="dock"
+				/>,
+			)
+			expect(screen.getByRole("button", { name: /Open Maple/ })).not.toHaveTextContent("Approval required")
+			await openActions(user, "Maple")
+			expect(screen.queryByRole("menuitem", { name: "Review request" })).not.toBeInTheDocument()
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "respondToSubagentApproval" }))
+		},
+	)
 
 	it("renders active agents as compact task rows without verbose trace detail", () => {
 		render(<SubagentGroupCard group={makeGroup()} parentTaskId="parent-1" />)
@@ -359,10 +605,12 @@ describe("SubagentGroupCard", () => {
 		expect(postMessage).not.toHaveBeenCalledWith({ type: "showTaskWithId", text: "child-1" })
 	})
 
-	it("shows review attention while keeping Worker internals out of the trace", () => {
+	it("shows available changes while keeping Worker internals out of the trace", () => {
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" />)
 
-		expect(screen.getByRole("button", { name: /Open Maple · Completed · Review/i })).toHaveTextContent("Review")
+		expect(screen.getByRole("button", { name: /Open Maple · Completed · Changes available/i })).toHaveTextContent(
+			"Changes available",
+		)
 		expect(screen.queryByText("src/parser/index.ts")).not.toBeInTheDocument()
 		expect(screen.queryByText("src/parser")).not.toBeInTheDocument()
 		expect(postMessage).toHaveBeenCalledWith(
@@ -378,9 +626,9 @@ describe("SubagentGroupCard", () => {
 	it("keeps dock completion status and change-set review actions together in compact rows", async () => {
 		const user = userEvent.setup()
 		render(<SubagentGroupCard group={makeWorkerGroup()} parentTaskId="parent-1" presentation="dock" />)
-		const row = screen.getByRole("button", { name: /Open Maple · Completed · Review/i })
+		const row = screen.getByRole("button", { name: /Open Maple · Completed · Changes available/i })
 		expect(row).toHaveTextContent("Completed")
-		expect(row).toHaveTextContent("Review")
+		expect(row).toHaveTextContent("Changes available")
 		expect(row.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
 		await openActions(user, "Maple")
 		expect(screen.getByRole("menu")).toHaveClass("max-w-[calc(100vw-16px)]")

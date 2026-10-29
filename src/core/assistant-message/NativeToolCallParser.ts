@@ -11,6 +11,7 @@ import {
 	discoverToolsParamsSchema,
 	toolSearchParamsSchema,
 	subagentSpawnAgentArgsSchema,
+	listProviderProfilesParamsSchema,
 	threadToolParamsSchemas,
 } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
@@ -906,6 +907,11 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "list_provider_profiles": {
+				const parsed = listProviderProfilesParamsSchema.safeParse(partialArgs)
+				if (parsed.success) nativeArgs = parsed.data
+				break
+			}
 			case "skill":
 				if (partialArgs.skill !== undefined || partialArgs.action === "list") {
 					nativeArgs = {
@@ -1478,6 +1484,12 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "list_provider_profiles": {
+					const parsed = listProviderProfilesParamsSchema.safeParse(args)
+					if (!parsed.success) throw new Error("Invalid saved provider profile query")
+					nativeArgs = parsed.data as NativeArgsFor<TName>
+					break
+				}
 				case "skill":
 					if (args.skill !== undefined || args.action === "list") {
 						nativeArgs = {

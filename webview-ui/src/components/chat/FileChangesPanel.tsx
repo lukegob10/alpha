@@ -25,6 +25,7 @@ interface FileChangesPanelProps {
 // Larger reviews remain available inline; the host limits each native review request.
 const MAX_NATIVE_DIFF_FILES = 128
 const MAX_NATIVE_DIFF_TITLE_LENGTH = 256
+const MAX_CACHED_NET_STATS = 128
 
 function countChangedLines(originalContent: string, finalContent: string): { added: number; removed: number } {
 	let added = 0
@@ -91,20 +92,30 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 
 	const summariesByPath = useMemo(() => {
 		const summaries = new Map<string, { added: number; removed: number }>()
+		const netStatsCache = netStatsCacheRef.current
+		for (const path of netStatsCache.keys()) {
+			const entries = byPath.get(path)
+			if (
+				!entries ||
+				entries[0].originalContent === undefined ||
+				entries[entries.length - 1].finalContent === undefined
+			) {
+				netStatsCache.delete(path)
+			}
+		}
 		for (const [path, entries] of byPath) {
 			const originalContent = entries[0].originalContent
 			const finalContent = entries[entries.length - 1].finalContent
 			if (originalContent !== undefined && finalContent !== undefined) {
-				const cached = netStatsCacheRef.current.get(path)
+				const cached = netStatsCache.get(path)
 				if (cached?.originalContent === originalContent && cached.finalContent === finalContent) {
 					summaries.set(path, cached.stats)
 				} else {
 					const stats = countChangedLines(originalContent, finalContent)
-					if (!netStatsCacheRef.current.has(path) && netStatsCacheRef.current.size >= 128) {
-						const oldestPath = netStatsCacheRef.current.keys().next().value
-						if (oldestPath !== undefined) netStatsCacheRef.current.delete(oldestPath)
+					// Retain active paths: evicting during this scan makes every path miss above the cache limit.
+					if (cached || netStatsCache.size < MAX_CACHED_NET_STATS) {
+						netStatsCache.set(path, { originalContent, finalContent, stats })
 					}
-					netStatsCacheRef.current.set(path, { originalContent, finalContent, stats })
 					summaries.set(path, stats)
 				}
 			} else {

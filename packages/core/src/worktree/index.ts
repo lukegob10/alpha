@@ -17,6 +17,7 @@ export {
 	type ApplyManagedWorktreeResult,
 	type ManagedWorkerArtifact,
 	type ManagedWorkerChange,
+	type ManagedWorkerApplyOptions,
 	type ManagedWorkerCreationOptions,
 	type PreparedManagedWorktree,
 	type ValidatedWorkerScope,

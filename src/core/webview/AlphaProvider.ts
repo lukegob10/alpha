@@ -23,7 +23,7 @@ import {
 	getPersistedAgentNotificationIds,
 	isAgentResultNotification,
 } from "../task-persistence/agentNotifications"
-import { redactTaskPrivatePaths } from "../tools/taskPathPresentation"
+import { isWorkerWritePathAllowed, redactTaskPrivatePaths } from "../tools/taskPathPresentation"
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
@@ -120,6 +120,7 @@ import {
 	DEFAULT_MODES,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	getModelId,
+	getVscodeLlmExactModelId,
 	getProviderDefaultModelId,
 	getCuratedModelInfo,
 	isCuratedProvider,
@@ -259,6 +260,7 @@ import { GoalAccountingBindingStore } from "../agent/goals/GoalAccountingBinding
 import {
 	captureSubagentContext,
 	finalizeSubagentContextManifestAuthorization,
+	refreshSubagentContextAutoApproval,
 	isValidSubagentContextManifest,
 	SUBAGENT_HOST_CONTEXT_HEADER,
 	upgradeLegacySubagentContextManifest,
@@ -292,8 +294,16 @@ import {
 	TaskHistoryStore,
 } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
+import { resolveWorkerArtifactRecoveryTarget } from "../task-persistence/workerArtifactRecovery"
 import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
+import { invalidateOpaqueProviderStateReplay } from "../task-persistence/providerStateScope"
+import {
+	assertIndependentTaskModelSelectionRequest,
+	hasIndependentTaskModelSelection,
+	resolveIndependentTaskModelSelection,
+	restoreIndependentTaskModelSelection,
+} from "./IndependentTaskModelRouting"
 import { memorySettingsSchema, type MemorySettings } from "@alpha-code/types"
 import { MemoryStore } from "../../services/memory/MemoryStore"
 import { MemoryModel } from "../../services/memory/MemoryModel"
@@ -309,6 +319,7 @@ import type {
 	CrossTaskRecord,
 	CrossTaskWaitResult,
 	CrossTaskWorkspaceMode,
+	IndependentTaskModelSelection,
 } from "./CrossTaskOrchestration"
 import {
 	AgentLifecycleProjector,
@@ -320,7 +331,8 @@ import { cancelPromptEnhancements } from "./promptEnhancementRequests"
 import { cancelTicketSearches, enqueueTicketSearch } from "./ticketSearchRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
-import { createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
+import { compactSubagentCommandApprovalCeilings, createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
+import { digestValue } from "../agent/StepContext"
 
 /**
  * https://github.com/microsoft/vscode-webview-ui-toolkit-samples/blob/main/default/weather-webview/src/providers/WeatherViewProvider.ts
@@ -1025,6 +1037,30 @@ export class AlphaProvider
 		}
 	}
 
+	private async resolveLaunchReasoningCapabilities(
+		configuration: ProviderSettings,
+		signal?: AbortSignal,
+	): Promise<TaskReasoningProjection["capabilities"]> {
+		const selector = configuration.vsCodeLmModelSelector
+		const catalogId = selector?.id
+			? getVscodeLlmExactModelId({ vendor: selector.vendor, id: selector.id })
+			: selector && getVscodeLlmExactModelId(selector)
+		if (configuration.apiProvider !== "vscode-lm" || catalogId) {
+			return (await this.resolveReasoningCapabilities(configuration, { kind: "default" })).capabilities
+		}
+		// Only an explicit launch effort for an opaque host model needs live
+		// metadata. Ordinary reasoning previews remain local and synchronous.
+		signal?.throwIfAborted()
+		const handler = buildApiHandler(configuration)
+		try {
+			await handler.prepareModel?.({ signal })
+			signal?.throwIfAborted()
+			return resolveTaskReasoning(configuration, { kind: "default" }, handler.getModel()).state.capabilities
+		} finally {
+			handler.dispose?.()
+		}
+	}
+
 	private async getReasoningProjection(task?: Task): Promise<TaskReasoningProjection> {
 		const accepted = task?.getReasoningState?.()
 		// The task owns resolved capabilities and captured request state for every
@@ -1131,7 +1167,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.16-reasoning-state"
+	public readonly latestAnnouncementId = "october-2026-v3.2.17-copilot-models"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -2141,9 +2177,23 @@ export class AlphaProvider
 	): Promise<Task> {
 		assertCancellationOwner?.()
 		let restoredApiConfiguration: ProviderSettings | undefined
-		const savedProfileEntries = historyItem.apiConfigName
-			? await this.providerSettingsManager.listConfig()
+		const capturedModelRoute = historyItem.threadModelRoute
+			? await restoreIndependentTaskModelSelection(historyItem, this.providerSettingsManager)
 			: undefined
+		const hasCapturedConfiguration = Boolean(capturedModelRoute || options?.subagentRuntime?.apiConfiguration)
+		if (capturedModelRoute) {
+			restoredApiConfiguration = capturedModelRoute.apiConfiguration
+			historyItem = {
+				...historyItem,
+				apiConfigName: capturedModelRoute.apiConfigName,
+				threadModelRoute: capturedModelRoute.route,
+			}
+		}
+		assertCancellationOwner?.()
+		const savedProfileEntries =
+			!hasCapturedConfiguration && historyItem.apiConfigName
+				? await this.providerSettingsManager.listConfig()
+				: undefined
 		assertCancellationOwner?.()
 		this.assertProviderProfileAvailable(savedProfileEntries?.find(({ name }) => name === historyItem.apiConfigName))
 
@@ -2220,7 +2270,7 @@ export class AlphaProvider
 		// If the history item has a saved API config name (provider profile), restore it.
 		// This overrides any mode-based config restoration above, because the task's
 		// specific provider profile takes precedence over mode defaults.
-		if (historyItem.apiConfigName) {
+		if (!hasCapturedConfiguration && historyItem.apiConfigName) {
 			const listApiConfig = savedProfileEntries ?? []
 			assertCancellationOwner?.()
 			// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
@@ -2290,13 +2340,15 @@ export class AlphaProvider
 				assertCancellationOwner?.()
 			}
 		}
-		const restoredConfiguration = historyItem.threadModelOverride
-			? this.applyIndependentTaskModel(
-					apiConfiguration,
-					historyItem.apiConfigName,
-					historyItem.threadModelOverride,
-				)
-			: apiConfiguration
+		const restoredConfiguration =
+			capturedModelRoute?.apiConfiguration ??
+			(historyItem.threadModelOverride
+				? this.applyIndependentTaskModel(
+						apiConfiguration,
+						historyItem.apiConfigName,
+						historyItem.threadModelOverride,
+					)
+				: apiConfiguration)
 
 		assertSupportedApiProvider(restoredConfiguration.apiProvider)
 
@@ -3003,7 +3055,13 @@ export class AlphaProvider
 			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 		if (taskHistoryItem) {
-			await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
+			await this.updateTaskHistory({
+				...taskHistoryItem,
+				apiConfigName,
+				// An explicit human profile binding replaces the tool-selected route.
+				threadModelOverride: undefined,
+				threadModelRoute: undefined,
+			})
 		}
 
 		if (postState && this.isTaskOnScreen(task.taskId)) {
@@ -3013,6 +3071,11 @@ export class AlphaProvider
 
 	getProviderProfileEntries(): ProviderSettingsEntry[] {
 		return this.contextProxy.getValues().listApiConfigMeta || []
+	}
+
+	/** Discover saved metadata directly; the webview's profile projection may be stale. */
+	public async listProviderProfiles(): Promise<ProviderSettingsEntry[]> {
+		return this.providerSettingsManager.listConfig()
 	}
 
 	getProviderProfileEntry(name: string): ProviderSettingsEntry | undefined {
@@ -3332,7 +3395,13 @@ export class AlphaProvider
 				(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 			if (taskHistoryItem) {
-				await this.updateTaskHistory({ ...taskHistoryItem, apiConfigName })
+				await this.updateTaskHistory({
+					...taskHistoryItem,
+					apiConfigName,
+					// An explicit human profile binding replaces the tool-selected route.
+					threadModelOverride: undefined,
+					threadModelRoute: undefined,
+				})
 			}
 		} catch (error) {
 			// If persistence fails, log the error but don't fail the profile switch.
@@ -4717,9 +4786,12 @@ export class AlphaProvider
 	 * every heartbeat and stalled the webview. Keep those paths on this patch.
 	 */
 	async postTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean } = {}): Promise<void> {
+		const publications: Promise<void>[] = []
+		// Each view owns its projection; a slow tree or transport must not defer its peers.
 		for (const provider of this.getHostProviders()) {
-			if (!provider._disposed) await provider.postLocalTaskSessionStateToWebview(options)
+			if (!provider._disposed) publications.push(provider.postLocalTaskSessionStateToWebview(options))
 		}
+		await Promise.all(publications)
 	}
 
 	private async postLocalTaskSessionStateToWebview(options: { includeManagedAgentTree?: boolean }): Promise<void> {
@@ -5280,7 +5352,7 @@ export class AlphaProvider
 			includeCurrentCost,
 			maxGitStatusFiles,
 			lockApiConfigAcrossModes,
-		} = await this.getState({ includeTaskHistory: false })
+		} = await this.getState({ includeTaskHistory: false, includeScheduledTasks: false })
 
 		const telemetryKey = undefined
 		const machineId = vscode.env.machineId
@@ -5493,17 +5565,19 @@ export class AlphaProvider
 	 */
 
 	private getProviderSettingsSnapshot(): ProviderSettings {
-		const stateValues = this.contextProxy.getValues()
 		const providerSettings = this.contextProxy.getProviderSettings()
 
 		if (!providerSettings.apiProvider) {
-			providerSettings.apiProvider = stateValues.apiProvider ?? "vertex"
+			providerSettings.apiProvider = this.contextProxy.getValue("apiProvider") ?? "vertex"
 		}
 
 		return providerSettings
 	}
 
-	async getState({ includeTaskHistory = true }: { includeTaskHistory?: boolean } = {}): Promise<
+	async getState({
+		includeTaskHistory = true,
+		includeScheduledTasks = true,
+	}: { includeTaskHistory?: boolean; includeScheduledTasks?: boolean } = {}): Promise<
 		Omit<
 			ExtensionState,
 			"alphaMessages" | "renderContext" | "hasOpenedModeSelector" | "version" | "shouldShowAnnouncement"
@@ -5511,6 +5585,8 @@ export class AlphaProvider
 	> {
 		const stateValues = this.contextProxy.getValues()
 		const customModes = await this.customModesManager.getCustomModes()
+		// Full projections capture schedules later, after asynchronous task metadata resolves.
+		const scheduledTaskState = includeScheduledTasks ? this.scheduledTaskService?.getState() : undefined
 
 		// Build the apiConfiguration object combining state values and secrets.
 		const providerSettings = this.getProviderSettingsSnapshot()
@@ -5558,8 +5634,8 @@ export class AlphaProvider
 			taskHistory: includeTaskHistory
 				? this.taskHistoryStore.getByWorkspace(this.cwd).filter((item) => !item.archived)
 				: [],
-			scheduledTasks: this.scheduledTaskService?.getState().tasks ?? [],
-			scheduledTaskRuns: this.scheduledTaskService?.getState().runs ?? [],
+			scheduledTasks: scheduledTaskState?.tasks ?? [],
+			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
 			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
 			soundEnabled: stateValues.soundEnabled ?? false,
@@ -6363,7 +6439,7 @@ export class AlphaProvider
 		objective: string,
 		workspaceMode: CrossTaskWorkspaceMode,
 		signal?: AbortSignal,
-		options?: { title?: string; model?: string; notifyOnCompletion?: boolean },
+		options?: IndependentTaskModelSelection & { title?: string; notifyOnCompletion?: boolean },
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(parent)
 		if (
@@ -6393,7 +6469,7 @@ export class AlphaProvider
 		throwIfCancelled()
 		if (options?.title !== undefined && (!options.title.trim() || options.title.trim().length > 96))
 			throw new Error("The thread title must contain 1 to 96 characters")
-		this.assertIndependentModelRequest(parent, options?.model)
+		await this.assertIndependentModelRequest(parent, options)
 		await this.taskHistoryStoreReady
 		if (!this.taskSessions.canCreateTask()) {
 			throw new Error(`Maximum live task limit reached (${this.taskSessions.getMaxLiveTasks()})`)
@@ -6401,7 +6477,15 @@ export class AlphaProvider
 
 		const taskApprovalMode = parent.getTaskApprovalMode()
 		const taskMode = await parent.getTaskMode()
-		const taskApiConfigName = await parent.getTaskApiConfigName()
+		const modelRoute = await this.resolveIndependentThreadModelRoute(
+			parent,
+			undefined,
+			options ?? {},
+			!hasIndependentTaskModelSelection(options),
+			signal,
+		)
+		const taskApiConfigName = modelRoute.apiConfigName
+		throwIfCancelled()
 		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
 		const taskId = uuidv7()
 		let workspacePath = parent.workspacePath
@@ -6418,13 +6502,7 @@ export class AlphaProvider
 		let child: Task | undefined
 		try {
 			throwIfCancelled()
-			const { fakeAi, ...providerSettings } = parent.apiConfiguration
-			let apiConfiguration = structuredClone(providerSettings) as typeof parent.apiConfiguration
-			// FakeAI is a host-provided runtime adapter, not persisted configuration. Keep
-			// its methods intact while snapshotting the serializable provider settings.
-			if (fakeAi !== undefined) apiConfiguration.fakeAi = fakeAi
-			if (options?.model)
-				apiConfiguration = this.applyIndependentTaskModel(apiConfiguration, taskApiConfigName, options.model)
+			const apiConfiguration = modelRoute.apiConfiguration
 			child = await runtimeOwner.createTask(normalizedObjective, undefined, undefined, {
 				taskId,
 				startTask: false,
@@ -6437,7 +6515,7 @@ export class AlphaProvider
 				taskApiConfigName,
 				taskApprovalMode,
 				apiConfiguration,
-				reasoningPreference: structuredClone(parent.reasoningPreference),
+				reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? parent.reasoningPreference),
 				subagentDelegationPolicy: structuredClone(parent.subagentDelegationPolicy),
 				subagentDelegationExplicitlyEnabled: parent.subagentDelegationExplicitlyEnabled,
 				orchestrationParentTaskId: parent.taskId,
@@ -6450,12 +6528,18 @@ export class AlphaProvider
 						}
 					: {}),
 			})
-			if (options?.title || options?.model) {
-				const history = await runtimeOwner.ensureCrossTaskHistory(child)
-				if (options.model)
-					await runtimeOwner.updateCrossTaskHistory({ ...history, threadModelOverride: options.model })
-				if (options.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
-			}
+			const history = await runtimeOwner.ensureCrossTaskHistory(child)
+			await runtimeOwner.updateCrossTaskHistory({
+				...history,
+				apiConfigName: taskApiConfigName,
+				reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
+				threadModelOverride: modelRoute.route.modelId,
+				threadModelRoute:
+					modelRoute.route.profileId || modelRoute.route.unboundProfile
+						? structuredClone(modelRoute.route)
+						: undefined,
+			})
+			if (options?.title) await runtimeOwner.renameTask(child.taskId, options.title.trim())
 			throwIfCancelled()
 			const record = await runtimeOwner.getCrossTaskRecord(
 				runtimeOwner.taskHistoryStore.get(child.taskId),
@@ -6624,6 +6708,7 @@ export class AlphaProvider
 		caller: Task,
 		sourceTaskId = caller.taskId,
 		signal?: AbortSignal,
+		options?: IndependentTaskModelSelection,
 	): Promise<CrossTaskRecord> {
 		this.assertCrossTaskRoot(caller)
 		this.throwIfThreadCancelled(signal)
@@ -6637,6 +6722,7 @@ export class AlphaProvider
 		) {
 			throw new Error("Forking requires an explicit user request to fork or retain conversation history")
 		}
+		await this.assertIndependentModelRequest(caller, options)
 		return this.taskSessions.runOwnershipOperation(`cross-task:${sourceTaskId}`, async () => {
 			const owner = this.getTaskOwner(sourceTaskId) ?? this
 			const source = await owner.getDirectCrossTask(caller, sourceTaskId, true)
@@ -6644,6 +6730,18 @@ export class AlphaProvider
 			const history =
 				source.history ?? (source.task ? await owner.ensureCrossTaskHistory(source.task) : undefined)
 			if (!history) throw new Error("The source thread has no saved history")
+			const modelRoute =
+				source.task || hasIndependentTaskModelSelection(options)
+					? await owner.enqueueConfiguration(() =>
+							owner.resolveIndependentThreadModelRoute(
+								source.task,
+								history,
+								options ?? {},
+								!hasIndependentTaskModelSelection(options),
+								signal,
+							),
+						)
+					: undefined
 			const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
 			const apiMessages =
 				source.task && (source.task.apiConversationHistory.length > 0 || source.task.isInitialized)
@@ -6664,6 +6762,11 @@ export class AlphaProvider
 					(!source.task && ["active", "blocked", "delegated"].includes(history.status ?? "")),
 			})
 			this.throwIfThreadCancelled(signal)
+			if (
+				modelRoute &&
+				(options?.provider !== undefined || options?.profile !== undefined || options?.model !== undefined)
+			)
+				fork.apiMessages = invalidateOpaqueProviderStateReplay(fork.apiMessages)
 			const taskId = uuidv7()
 			// A fork copies conversation evidence only. It owns no inherited live
 			// goal, child, mailbox, journal, or completion-notification producer.
@@ -6683,13 +6786,18 @@ export class AlphaProvider
 				totalCost: 0,
 				workspace: history.workspace,
 				mode: history.mode,
-				apiConfigName: history.apiConfigName,
-				reasoningPreference: structuredClone(history.reasoningPreference),
+				apiConfigName: modelRoute ? modelRoute.apiConfigName : history.apiConfigName,
+				reasoningPreference: structuredClone(modelRoute?.reasoningPreference ?? history.reasoningPreference),
 				approvalMode: history.approvalMode ?? "ask",
 				taskKind: "primary",
 				status: "interrupted",
 				forkedFromId: sourceTaskId,
-				threadModelOverride: history.threadModelOverride,
+				threadModelOverride: modelRoute ? modelRoute.route.modelId : history.threadModelOverride,
+				threadModelRoute: modelRoute
+					? modelRoute.route.profileId || modelRoute.route.unboundProfile
+						? structuredClone(modelRoute.route)
+						: undefined
+					: structuredClone(history.threadModelRoute),
 				subagentDelegationPolicy: structuredClone(history.subagentDelegationPolicy),
 				// Creation opt-in is human authority, never inherited through copied history.
 				subagentDelegationExplicitlyEnabled: false,
@@ -7317,11 +7425,11 @@ export class AlphaProvider
 		sender: Task,
 		targetTaskId: string,
 		message: string,
-		options?: { model?: string; signal?: AbortSignal },
+		options?: IndependentTaskModelSelection & { signal?: AbortSignal },
 	): Promise<{ task_id: string; status: string }> {
 		this.assertCrossTaskRoot(sender)
 		this.throwIfThreadCancelled(options?.signal)
-		this.assertIndependentModelRequest(sender, options?.model)
+		await this.assertIndependentModelRequest(sender, options)
 		const resolvedTargetTaskId =
 			targetTaskId === "parent" && sender.taskKind === "primary" && sender.orchestrationParentTaskId
 				? sender.orchestrationParentTaskId
@@ -7334,32 +7442,137 @@ export class AlphaProvider
 			if (history?.archived) throw new Error("The thread is archived; restore it before sending a message")
 			owner.assertSavedThreadControlAllowed(history, task, "resuming")
 			this.throwIfThreadCancelled(options?.signal)
-			if (options?.model && task && !task.isCompleted() && !task.abort)
-				throw new Error("A thread model can be changed only when the target thread is idle")
+			if (hasIndependentTaskModelSelection(options) && task && !task.isCompleted() && !task.abort)
+				throw new Error(
+					"A thread model/provider/reasoning selection can be changed only when the target thread is idle",
+				)
 			const input = { id: uuidv7(), senderTaskId: sender.taskId, text }
 			let target = task
 			if (!target || target.abort) {
 				if (!history) throw new Error("The task has no saved history to resume")
 				if (!owner.taskSessions.canCreateTask())
 					throw new Error(`Maximum live task limit reached (${owner.taskSessions.getMaxLiveTasks()})`)
-				// Validate configuration before accepting the durable input. A deleted
-				// profile must never redirect a peer message to the sender's model.
-				target = await owner.createTaskWithHistoryItem(history, {
+				// Resolve explicit replacement settings before creating a dormant runtime.
+				// An omitted selection must restore the recipient's saved profile.
+				const modelRoute = hasIndependentTaskModelSelection(options)
+					? await owner.enqueueConfiguration(() =>
+							owner.resolveIndependentThreadModelRoute(
+								undefined,
+								history,
+								options!,
+								true,
+								options?.signal,
+							),
+						)
+					: undefined
+				const restoreHistory: HistoryItem = modelRoute
+					? {
+							...history,
+							apiConfigName: modelRoute.apiConfigName,
+							reasoningPreference: structuredClone(modelRoute.reasoningPreference ?? { kind: "default" }),
+							threadModelOverride: modelRoute.route.modelId,
+							threadModelRoute:
+								modelRoute.route.profileId || modelRoute.route.unboundProfile
+									? structuredClone(modelRoute.route)
+									: undefined,
+						}
+					: history
+				target = await owner.createTaskWithHistoryItem(restoreHistory, {
 					startTask: false,
 					background: true,
 					preserveExisting: true,
 					preserveSelection: true,
 					requireSavedConfiguration: true,
 				})
-				if (options?.model) await owner.setCrossTaskModel(target, options.model)
-				this.throwIfThreadCancelled(options?.signal)
+				try {
+					if (modelRoute)
+						await owner.setCrossTaskModel(
+							target,
+							options!,
+							modelRoute,
+							options?.provider !== undefined ||
+								options?.profile !== undefined ||
+								options?.model !== undefined,
+						)
+					this.throwIfThreadCancelled(options?.signal)
+				} catch (error) {
+					try {
+						await owner.discardProvisionalThreadRecipient(target, history, restoreHistory)
+					} catch (cleanupError) {
+						throw new AggregateError(
+							[error, cleanupError],
+							"Failed to clean up the provisional thread recipient",
+							{ cause: error },
+						)
+					}
+					throw error
+				}
 				await target.receiveAgentMessage(input)
 				await target.resumeWithAgentMessages()
 				return { task_id: resolvedTargetTaskId, status: "resumed" }
 			}
-			if (options?.model) await owner.setCrossTaskModel(target, options.model)
+			if (hasIndependentTaskModelSelection(options)) await owner.setCrossTaskModel(target, options!)
 			this.throwIfThreadCancelled(options?.signal)
 			return owner.admitIndependentTaskMessage(target, input)
+		})
+	}
+
+	/** A failed cold admission owns only its still-unstarted recipient and its inference selection. */
+	private async discardProvisionalThreadRecipient(
+		target: Task,
+		previous: HistoryItem,
+		attempted: HistoryItem,
+	): Promise<void> {
+		await this.enqueueConfiguration(async () => {
+			if (
+				this.getLiveTask(target.taskId) !== target ||
+				target.hasStarted ||
+				target.abort ||
+				target.isTurnActive() ||
+				target.isStreaming ||
+				target.isWaitingForFirstChunk ||
+				target.hasPendingAsk() ||
+				target.hasPendingAgentMessages() ||
+				target.messageQueueService.hasUnconsumedInput()
+			)
+				return
+			const selection = (item: HistoryItem) => ({
+				apiConfigName: item.apiConfigName,
+				threadModelOverride: item.threadModelOverride,
+				threadModelRoute: item.threadModelRoute,
+				reasoningPreference: item.reasoningPreference,
+			})
+			const before = this.taskHistoryStore.get(target.taskId)
+			if (
+				!before ||
+				(!isDeepStrictEqual(selection(before), selection(previous)) &&
+					!isDeepStrictEqual(selection(before), selection(attempted)))
+			)
+				return
+			const cleanupSelection = {
+				...before,
+				apiConfigName: target.taskApiConfigName,
+				reasoningPreference: structuredClone(target.reasoningPreference),
+			}
+			// No await separates the idle/unstarted check from synchronous cancellation.
+			// A human resume cannot acquire this provisional runtime after that point.
+			target.beginTaskCancellation(true)
+			await this.removeTaskFromStack({ taskId: target.taskId, requireAbortSuccess: true, expectedTask: target })
+			await this.taskLifecycleHistoryWrites.get(target.taskId)
+			// removeTaskFromStack has released this raw-ID fence. Reacquire it only
+			// for compensation, so a rehydrated successor can never be overwritten.
+			await this.taskSessions.runOwnershipOperation(target.taskId, async () => {
+				const ownsRecovery = () => this.getLiveTask(target.taskId) === undefined
+				if (!ownsRecovery()) return
+				const current = this.taskHistoryStore.get(target.taskId)
+				if (
+					!current ||
+					(!isDeepStrictEqual(selection(current), selection(before)) &&
+						!isDeepStrictEqual(selection(current), selection(cleanupSelection)))
+				)
+					return
+				await this.taskHistoryStore.restoreModelRoute(target.taskId, current, previous, ownsRecovery)
+			})
 		})
 	}
 
@@ -7497,14 +7710,65 @@ export class AlphaProvider
 		)
 	}
 
-	private assertIndependentModelRequest(caller: Task, model?: string): void {
-		if (model === undefined) return
+	private async assertIndependentModelRequest(
+		caller: Task,
+		selection?: IndependentTaskModelSelection,
+	): Promise<void> {
 		const request = extractUserRequestText(
 			caller.apiConversationHistory,
 			caller.orchestrationParentTaskId ? undefined : caller.metadata?.task,
 		)
-		if (!model.trim() || model.length > 256 || !request?.includes(model))
-			throw new Error("A thread model override requires that exact model ID in the latest human request")
+		const profiles = selection?.profile ? await this.providerSettingsManager.listConfig() : []
+		const matches = profiles.filter(
+			(profile) => profile.id === selection?.profile || profile.name === selection?.profile,
+		)
+		assertIndependentTaskModelSelectionRequest(request, selection, matches.length === 1 ? matches[0] : undefined)
+	}
+
+	private async resolveIndependentThreadModelRoute(
+		task: Task | undefined,
+		history: HistoryItem | undefined,
+		selection: IndependentTaskModelSelection,
+		preserveReasoning = false,
+		signal?: AbortSignal,
+	): Promise<ResolvedSubagentModelRoute> {
+		let apiConfiguration: ProviderSettings
+		let apiConfigName: string | undefined
+		let reasoningPreference: TaskReasoningPreference | undefined
+		if (task) {
+			apiConfiguration = snapshotProviderSettings(task.apiConfiguration)
+			apiConfigName = await task.getTaskApiConfigName()
+			reasoningPreference = structuredClone(task.reasoningPreference)
+		} else {
+			if (!history) throw new Error("The thread has no saved configuration")
+			try {
+				const saved = await restoreIndependentTaskModelSelection(history, this.providerSettingsManager)
+				apiConfiguration = saved.apiConfiguration
+				apiConfigName = saved.apiConfigName
+				reasoningPreference = saved.reasoningPreference
+			} catch (error) {
+				if (selection.provider === undefined && selection.profile === undefined) throw error
+				// An explicit credentialed replacement need not restore a deleted old
+				// profile. The requested replacement is independently validated below.
+				apiConfiguration = {}
+				reasoningPreference = { kind: "default" }
+			}
+		}
+		const parentProfileId = task
+			? (this.taskHistoryStore.get(task.taskId)?.threadModelRoute?.profileId ??
+				task.subagentModelRoute?.profileId)
+			: history?.threadModelRoute?.profileId
+		return resolveIndependentTaskModelSelection({
+			apiConfiguration,
+			apiConfigName,
+			parentProfileId,
+			reasoningPreference,
+			selection,
+			profileLoader: this.providerSettingsManager,
+			preserveReasoning,
+			resolveReasoningCapabilities: (configuration) =>
+				this.resolveLaunchReasoningCapabilities(configuration, signal),
+		})
 	}
 
 	private applyIndependentTaskModel(
@@ -7528,11 +7792,29 @@ export class AlphaProvider
 		).apiConfiguration
 	}
 
-	private async setCrossTaskModel(task: Task, model: string): Promise<void> {
-		const history = await this.ensureCrossTaskHistory(task)
-		const configuration = this.applyIndependentTaskModel(task.apiConfiguration, history.apiConfigName, model)
-		await this.updateCrossTaskHistory({ ...history, threadModelOverride: model })
-		task.updateApiConfiguration(configuration)
+	private async setCrossTaskModel(
+		task: Task,
+		selection: IndependentTaskModelSelection & { signal?: AbortSignal },
+		preparedRoute?: ResolvedSubagentModelRoute,
+		invalidateProviderStateReplay = false,
+	): Promise<void> {
+		await this.ensureCrossTaskHistory(task)
+		await this.enqueueConfiguration(async () => {
+			const route =
+				preparedRoute ??
+				(await this.resolveIndependentThreadModelRoute(task, undefined, selection, true, selection.signal))
+			selection.signal?.throwIfAborted()
+			await task.updateModelRoute({
+				apiConfiguration: route.apiConfiguration,
+				apiConfigName: route.apiConfigName,
+				reasoningPreference: structuredClone(route.reasoningPreference ?? { kind: "default" }),
+				threadModelOverride: route.route.modelId,
+				threadModelRoute:
+					route.route.profileId || route.route.unboundProfile ? structuredClone(route.route) : undefined,
+				signal: selection.signal,
+				invalidateProviderStateReplay,
+			})
+		})
 	}
 
 	private async ensureCrossTaskHistory(task: Task): Promise<HistoryItem> {
@@ -8754,7 +9036,7 @@ export class AlphaProvider
 				? (invocation.reasoningPreference ?? { kind: "default" })
 				: (parent.reasoningPreference ?? { kind: "default" }),
 		)
-		const invokingApprovalMode = parent.getStepApprovalMode?.()
+		const invokingApprovalMode = parent.getStepApprovalMode?.() ?? parent.getTaskApprovalMode?.()
 		const parentHistory =
 			invocation?.history ?? structuredClone(getEffectiveApiHistory(parent.apiConversationHistory))
 		await parent.flushApiConversationHistoryPersistence?.()
@@ -8832,21 +9114,15 @@ export class AlphaProvider
 			)
 		}
 		if (!authorityModel) assertSubagentTaskAuthorities(normalizedDrafts)
-		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
-		const liveApprovalMode = migrateApprovalMode(settings)
-		const parentApprovalMode = invokingApprovalMode ?? liveApprovalMode
-		// A spawn approval authorizes this child, not a wider approval tier. The
-		// invoking step may be narrower than the foreground/global setting.
-		const parentTierApprovalPolicy =
-			approvalModeRank[parentApprovalMode] < approvalModeRank[liveApprovalMode]
-				? this.intersectSubagentAutoApprovalPolicies(
-						this.snapshotSubagentAutoApprovalPolicy({ ...settings, approvalMode: parentApprovalMode }),
-						liveAutoApprovalPolicy,
-					)
-				: liveAutoApprovalPolicy
+		// Codex c92700d2993707ee16eb63b35a1cdd7fcc563f69, codex-rs/core/src/agent/child_config.rs:
+		// the invoking turn owns the approval tier after role/config defaults. Live
+		// settings still supply explicit command denials and optional review grants.
+		const liveAutoApprovalPolicy = this.snapshotSubagentAutoApprovalPolicy(
+			invokingApprovalMode === undefined ? settings : { ...settings, approvalMode: invokingApprovalMode },
+		)
 		const parentAutoApprovalPolicy = invocation?.autoApprovalPolicy
-			? this.intersectSubagentAutoApprovalPolicies(parentTierApprovalPolicy, invocation.autoApprovalPolicy)
-			: parentTierApprovalPolicy
+			? this.intersectSubagentAutoApprovalPolicies(liveAutoApprovalPolicy, invocation.autoApprovalPolicy)
+			: liveAutoApprovalPolicy
 		const inheritedAutoApprovalPolicy =
 			parent.taskKind === "subagent"
 				? (parent.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy)
@@ -8984,18 +9260,30 @@ export class AlphaProvider
 						role: draft.agent_kind,
 						parentApiConfiguration: invocation?.apiConfiguration ?? parent.apiConfiguration,
 						parentApiConfigName,
+						parentProfileId: invocation
+							? invocation.modelRoute.profileId
+							: (parent.subagentModelRoute?.profileId ??
+								this.taskHistoryStore.get(parent.taskId)?.threadModelRoute?.profileId),
 						parentReasoningPreference,
 						profileLoader: this.providerSettingsManager,
 						defaultModelId: defaultModel,
 						defaultReasoningEffort,
+						agentProfileId: typeDefinition?.apiConfigId,
 						agentModelId: typeDefinition?.model,
 						agentReasoningEffort: typeDefinition?.reasoningEffort,
 						resolveModelDefaultReasoningEffort: async (configuration) => {
 							const state = await this.resolveReasoningCapabilities(configuration, { kind: "default" })
 							return state.effective.kind === "effort" ? state.effective.effort : undefined
 						},
+						resolveReasoningCapabilities: (configuration) =>
+							this.resolveLaunchReasoningCapabilities(
+								configuration,
+								parent.getTaskLifetimeCancellationSignal?.(),
+							),
 						...(spawnRequest?.source === "codex-v2"
 							? {
+									requestedProvider: spawnRequest.provider,
+									requestedProfile: spawnRequest.profile,
 									requestedModelId: spawnRequest.model,
 									requestedReasoningEffort: spawnRequest.reasoning_effort,
 								}
@@ -9849,7 +10137,11 @@ export class AlphaProvider
 	}
 
 	private toAgentRuntimeSnapshot(agent: SubagentGroupState["agents"][number]): AgentRuntimeSnapshot {
-		const contextManifest = this.subagentDescriptors.get(agent.taskId)?.contextManifest
+		const descriptor = this.subagentDescriptors.get(agent.taskId)
+		const contextManifest = descriptor?.contextManifest
+		const artifact = descriptor?.managedWorktree?.artifact
+		const runId = this.asyncSubagentRunManager?.getRunId(agent.taskId)
+		const ownsArtifact = artifact?.groupId === descriptor?.groupId && artifact?.runId === runId
 		const usage = Object.fromEntries(
 			Object.entries(agent.usage).filter(
 				(entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1]),
@@ -9864,6 +10156,9 @@ export class AlphaProvider
 			stopReason: agent.stopReason,
 			...(contextManifest ? { contextManifest: structuredClone(contextManifest) } : {}),
 			metadata: {
+				...(artifact && ownsArtifact
+					? { workerArtifactId: artifact.id, ...(runId ? { workerRunId: runId } : {}) }
+					: {}),
 				...(agent.writeScope ? { writeScope: [...agent.writeScope] } : {}),
 				...(agent.changedFiles ? { changedFiles: [...agent.changedFiles] } : {}),
 			},
@@ -10797,7 +11092,7 @@ export class AlphaProvider
 				rootTaskId: root.rootTaskId,
 				kinds: ["result"],
 			})
-			.filter((entry) => !options.deferResultNotifications || !isAgentResultNotification(entry))
+			.filter((entry) => !options.deferResultNotifications && isAgentResultNotification(entry))
 		if (activeDescendants.length === 0 && unacknowledgedResults.length === 0) return verificationDecision
 		const activePaths = activeDescendants.map(({ path }) => path).join(", ")
 		return {
@@ -11499,10 +11794,34 @@ export class AlphaProvider
 		return !finalizedSubagentContextManifestSchema.safeParse(manifest).success
 	}
 
+	private captureAgentFollowupAutoApprovalPolicy(
+		parent: Task,
+		currentTaskMode = false,
+	): SubagentAutoApprovalPolicy | undefined {
+		const approvalMode = currentTaskMode
+			? parent.getTaskApprovalMode?.()
+			: (parent.getStepApprovalMode?.() ?? parent.getTaskApprovalMode?.())
+		if (approvalMode === undefined) return undefined
+		let policy = this.snapshotSubagentAutoApprovalPolicy({
+			...this.contextProxy.getValues(),
+			approvalMode,
+		})
+		const captured = parent.getSubagentInvocationContext?.()?.autoApprovalPolicy
+		if (captured) policy = this.intersectSubagentAutoApprovalPolicies(policy, captured)
+		if (parent.taskKind === "subagent") {
+			policy = this.intersectSubagentAutoApprovalPolicies(
+				policy,
+				parent.subagentContextManifest?.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy,
+			)
+		}
+		return policy
+	}
+
 	public async followupAgentTask(parent: Task, target: string, message: string): Promise<unknown> {
 		const owner = this.getTaskOwner(parent.taskId)
 		if (owner && owner !== this) return owner.followupAgentTask(parent, target, message)
 		const instruction = this.normalizeAgentInstruction(message, "Follow-up instruction")
+		const capturedAutoApprovalPolicy = this.captureAgentFollowupAutoApprovalPolicy(parent)
 		const record = await this.requireControlledAgent(parent, target)
 		const previous = this.agentFollowupAdmissions.get(record.taskId) ?? Promise.resolve()
 		const eviction = this.subagentResidencyEvictions.get(record.taskId)
@@ -11519,7 +11838,8 @@ export class AlphaProvider
 					if (parent.abort) throw new Error("Follow-up admission was cancelled")
 					latest = await this.requireControlledAgent(parent, record.taskId)
 				}
-				const resume = () => this.followupAgentTaskAfterAdmission(parent, latest, instruction)
+				const resume = () =>
+					this.followupAgentTaskAfterAdmission(parent, latest, instruction, capturedAutoApprovalPolicy)
 				return latest.role === "worker"
 					? this.workspaceMutationGate.run(
 							parent.taskId,
@@ -11543,6 +11863,7 @@ export class AlphaProvider
 		parent: Task,
 		record: AgentRecord,
 		instruction: string,
+		capturedAutoApprovalPolicy?: SubagentAutoApprovalPolicy,
 	): Promise<unknown> {
 		const goalAccountingBinding = parent.captureGoalAccountingBinding?.()
 		await goalAccountingBinding
@@ -11622,12 +11943,81 @@ export class AlphaProvider
 		const previousGroup = structuredClone(prepared.group)
 		const previousInstruction = descriptor.pendingFollowup
 		const previousGoalBinding = descriptor.goalAccountingBinding
+		const previousContextManifest = descriptor.contextManifest
+		const previousEnvelopes = prepared.envelopes
 		const publicationKey = `${prepared.group.groupId}:${record.taskId}`
 		const wasPublished = this.publishedSubagentResults.has(publicationKey)
 		const previousRunId = this.asyncSubagentRunManager.getRunId(record.taskId)
 		const eventId = record.pendingFollowupEventId ?? `agent-followup:${crypto.randomUUID()}`
 		let admitted = false
 		try {
+			// A fresh follow-up is a new runtime admission. Preserve the child's frozen
+			// scope/catalog and explicit denials while inheriting its invoking owner's tier.
+			// A pending receipt remains a ceiling; current owner/caller downgrades still apply.
+			let followupPolicy = record.pendingFollowupEventId
+				? record.snapshot?.contextManifest?.runtimePolicy.autoApproval
+				: capturedAutoApprovalPolicy
+			if (followupPolicy && previousContextManifest?.runtimePolicy.autoApproval) {
+				if (record.pendingFollowupEventId && capturedAutoApprovalPolicy) {
+					followupPolicy = this.intersectSubagentAutoApprovalPolicies(
+						capturedAutoApprovalPolicy,
+						followupPolicy,
+					)
+				}
+				const currentCallerPolicy = this.captureAgentFollowupAutoApprovalPolicy(parent, true)
+				if (currentCallerPolicy)
+					followupPolicy = this.intersectSubagentAutoApprovalPolicies(currentCallerPolicy, followupPolicy)
+				const ownerPolicy =
+					owner === parent ? undefined : this.captureAgentFollowupAutoApprovalPolicy(owner, true)
+				if (ownerPolicy)
+					followupPolicy = this.intersectSubagentAutoApprovalPolicies(followupPolicy, ownerPolicy)
+				if (!record.pendingFollowupEventId) {
+					const previousApproval = previousContextManifest.runtimePolicy.autoApproval
+					const denialCeilings = [
+						previousApproval.commandApproval,
+						...(previousApproval.commandApprovalCeilings ?? []),
+					]
+						.filter(
+							(policy) =>
+								policy.denyAll ||
+								policy.denied.length > 0 ||
+								(policy.algorithm === "sha256-salted-argv-v2" && policy.unresolvedDenyRules),
+						)
+						.map((policy) => ({ ...policy, allowAll: true, allowed: [] }))
+					if (denialCeilings.length)
+						followupPolicy = {
+							...followupPolicy,
+							commandApprovalCeilings: [
+								...(followupPolicy.commandApprovalCeilings ?? []),
+								...denialCeilings,
+							],
+						}
+				}
+				if (followupPolicy.commandApprovalCeilings !== undefined) {
+					followupPolicy = {
+						...followupPolicy,
+						commandApprovalCeilings: compactSubagentCommandApprovalCeilings(
+							followupPolicy.commandApproval,
+							followupPolicy.commandApprovalCeilings,
+							this.mergeDeniedCommands(this.contextProxy.getValues().deniedCommands),
+						),
+					}
+				}
+				descriptor.contextManifest = refreshSubagentContextAutoApproval(previousContextManifest, followupPolicy)
+				prepared.envelopes = prepared.envelopes.map(({ digest: _digest, ...envelope }) => {
+					const contents = {
+						...envelope,
+						scope: {
+							...envelope.scope,
+							contextRefs: descriptor.contextManifest!.contextRefs,
+						},
+					}
+					return Object.freeze({
+						...contents,
+						digest: digestValue(contents),
+					})
+				})
+			}
 			descriptor.pendingFollowup = instruction
 			descriptor.goalAccountingBinding = goalAccountingBinding
 			const restartedAt = Date.now()
@@ -11663,6 +12053,9 @@ export class AlphaProvider
 						? previousRecoveryGroupId
 						: record.groupId,
 			}
+			// A pending continuation has not created the successor's Worker artifact yet.
+			delete snapshot.metadata.workerArtifactId
+			delete snapshot.metadata.workerRunId
 			const admission = await this.agentControlStore.updateAgentStatusAndAppendEvent(
 				record.taskId,
 				"pending",
@@ -11709,12 +12102,26 @@ export class AlphaProvider
 				!admitted ||
 				(await this.retryDurableSubagentWrite(
 					`restore sub-agent ${record.taskId} after follow-up admission failed`,
-					() => this.agentControlStore.rollbackAgentFollowup(record, eventId),
+					() =>
+						this.agentControlStore.rollbackAgentFollowup(
+							descriptor.contextManifest && descriptor.contextManifest !== previousContextManifest
+								? {
+										...record,
+										snapshot: {
+											...record.snapshot,
+											contextManifest: structuredClone(descriptor.contextManifest),
+										},
+									}
+								: record,
+							eventId,
+						),
 				))
 			if (rolledBack) {
 				prepared.group = previousGroup
 				descriptor.pendingFollowup = previousInstruction
 				descriptor.goalAccountingBinding = previousGoalBinding
+				descriptor.contextManifest = previousContextManifest
+				prepared.envelopes = previousEnvelopes
 				if (wasPublished) this.publishedSubagentResults.add(publicationKey)
 				if (createsContinuationGroup) releaseContinuationGroup()
 				else this.retainCompletedSubagentGroup(prepared.group.groupId)
@@ -12366,6 +12773,26 @@ export class AlphaProvider
 		manifest: SubagentContextManifest | undefined,
 	): Promise<ResolvedSubagentModelRoute> {
 		const capturedRoute = manifest?.modelRoute ?? historyItem.subagentModelRoute
+		if (capturedRoute?.unboundProfile) {
+			// Inline credentials cannot be recovered from a coincidentally matching
+			// profile name. FakeAI has an existing host-owned registry instead.
+			if (capturedRoute.profileId || capturedRoute.provider !== "fake-ai" || !capturedRoute.modelId) {
+				throw new Error("Cannot resume child: its inline provider configuration has no saved profile binding")
+			}
+			const apiConfiguration: ProviderSettings = {
+				apiProvider: "fake-ai",
+				fakeAi: { id: capturedRoute.modelId },
+				...capturedRoute.reasoningConfiguration,
+			}
+			const handler = buildApiHandler(apiConfiguration)
+			handler.dispose?.()
+			return {
+				apiConfiguration,
+				apiConfigName: historyItem.apiConfigName ?? capturedRoute.profileName,
+				reasoningPreference: structuredClone(historyItem.reasoningPreference ?? { kind: "default" }),
+				route: structuredClone(capturedRoute),
+			}
+		}
 		if (!capturedRoute) {
 			// Historical children may predate manifests while retaining their own sticky profile.
 			// Today's delegation routes must never replace that historical selection.
@@ -12423,18 +12850,32 @@ export class AlphaProvider
 			apiConfigName = (await parent.getTaskApiConfigName()) ?? capturedRoute.profileName
 		}
 
+		const isFakeAi = apiConfiguration.apiProvider === "fake-ai"
+		const capturedFakeLocator = isFakeAi && capturedRoute.reasoningConfiguration !== undefined
+		if (capturedFakeLocator && capturedRoute.provider === "fake-ai" && capturedRoute.modelId) {
+			apiConfiguration = { ...apiConfiguration, fakeAi: { id: capturedRoute.modelId } }
+		}
 		const restoredRoute = applySubagentSpawnOverrides(
 			{
 				apiConfiguration,
 				apiConfigName,
 				route: capturedRoute,
 			},
-			capturedRoute.requestedModelId,
+			isFakeAi ? undefined : (capturedRoute.modelId ?? capturedRoute.requestedModelId),
 			capturedRoute.requestedReasoningEffort,
+			capturedRoute.requestedModelId !== undefined,
 		)
 		apiConfiguration = restoredRoute.apiConfiguration
+		if (capturedRoute.reasoningConfiguration) {
+			apiConfiguration = {
+				...apiConfiguration,
+				enableReasoningEffort: capturedRoute.reasoningConfiguration.enableReasoningEffort,
+				reasoningEffort: capturedRoute.reasoningConfiguration.reasoningEffort,
+			}
+		}
 		const restoredProvider = apiConfiguration.apiProvider
-		const restoredModel = getSubagentRouteModelId(apiConfiguration)
+		const restoredModel =
+			isFakeAi && !capturedFakeLocator ? getModelId(apiConfiguration) : getSubagentRouteModelId(apiConfiguration)
 		if (capturedRoute.provider && restoredProvider !== capturedRoute.provider) {
 			throw new Error(
 				`Cannot resume child: captured provider ${capturedRoute.provider} now resolves to ${restoredProvider ?? "unknown"}`,
@@ -12444,6 +12885,10 @@ export class AlphaProvider
 			throw new Error(
 				`Cannot resume child: captured model ${capturedRoute.modelId} now resolves to ${restoredModel}`,
 			)
+		}
+		if (isFakeAi) {
+			const handler = buildApiHandler(apiConfiguration)
+			handler.dispose?.()
 		}
 
 		return {
@@ -12558,7 +13003,9 @@ export class AlphaProvider
 				apiConfigName: agent.modelRoute?.profileName,
 				subagentModelRoute: agent.modelRoute,
 			} as HistoryItem)
-		const retainedContextManifest = childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest
+		const retainedContextManifest = record.pendingFollowupEventId
+			? (record.snapshot?.contextManifest ?? childHistoryItem.subagentContextManifest)
+			: (childHistoryItem.subagentContextManifest ?? record.snapshot?.contextManifest)
 		if (retainedContextManifest && !isValidSubagentContextManifest(retainedContextManifest)) {
 			throw new Error(`recovery_failed: agent ${record.path} retained an invalid context manifest`)
 		}
@@ -13318,7 +13765,12 @@ export class AlphaProvider
 					this.context.globalStorageUri.fsPath,
 					envelope.id,
 					descriptor.validatedScope,
-					{ signal, terminateProcessTree },
+					{
+						signal,
+						terminateProcessTree,
+						groupId,
+						runId: this.asyncSubagentRunManager.getRunId(envelope.id),
+					},
 				)
 			} catch (error) {
 				if (signal.aborted && error !== signal.reason) descriptor.runtimeCleanupFailed = true
@@ -13368,6 +13820,24 @@ export class AlphaProvider
 		let child: Task
 		try {
 			signal.throwIfAborted()
+			if (role === "worker" && descriptor.managedWorktree) {
+				const record = this.agentControlStore.getAgent(envelope.id, ancestry.rootTaskId)
+				if (!record) throw new Error("Managed Worker artifact has no admitted agent record")
+				const artifact = descriptor.managedWorktree.artifact
+				// Commit exact attempt ownership before the child can modify its checkout.
+				await this.agentControlStore.updateAgentSnapshot(
+					envelope.id,
+					{
+						...record.snapshot,
+						metadata: {
+							...record.snapshot?.metadata,
+							workerArtifactId: artifact.id,
+							...(artifact.runId ? { workerRunId: artifact.runId } : {}),
+						},
+					},
+					ancestry.rootTaskId,
+				)
+			}
 			const subagentAuthority =
 				role === "worker"
 					? {
@@ -13384,14 +13854,21 @@ export class AlphaProvider
 						}
 
 			if (followupInstruction) {
-				const { historyItem } = await this.getTaskWithId(envelope.id, { includeApiConversationHistory: false })
+				const { historyItem } = await this.getTaskWithId(envelope.id, {
+					includeApiConversationHistory: false,
+				})
 				const activeHistory = {
 					...historyItem,
 					status: "active" as const,
+					approvalMode: inferApprovalModeFromPolicy(
+						finalizedManifest.data.runtimePolicy.autoApproval ?? disabledSubagentAutoApprovalPolicy,
+					),
 					subagentGroupId: groupId,
 					apiConfigName: modelRoute.apiConfigName,
 					...(descriptor.contextManifest
-						? { subagentContextManifest: structuredClone(descriptor.contextManifest) }
+						? {
+								subagentContextManifest: structuredClone(descriptor.contextManifest),
+							}
 						: {}),
 				}
 				await this.updateTaskHistory(activeHistory)
@@ -13797,6 +14274,15 @@ export class AlphaProvider
 			// update encountered a transient persistence error.
 			this.log(`Failed to publish sub-agent ${child.taskId} result: ${String(error)}`)
 		}
+		if (result.status === "interrupted" && result.changeSet?.partial === true) {
+			const settledChangeSet = this.preparedSubagentGroups
+				.get(groupId)
+				?.group.agents.find((agent) => agent.taskId === result.taskId)?.changeSet
+			// Recovery settles isolated effects without changing the interrupted computational outcome.
+			if (settledChangeSet?.id === result.changeSet.id) {
+				result = { ...result, changeSet: structuredClone(settledChangeSet) }
+			}
+		}
 		return result
 	}
 
@@ -13807,41 +14293,77 @@ export class AlphaProvider
 			hasTaskOwner,
 		})
 		for (const artifact of recovered) {
+			if (hasTaskOwner(artifact.taskId)) continue
 			const childHistory = this.taskHistoryStore.get(artifact.taskId)
 			if (!childHistory?.parentTaskId) continue
-			const changedFiles = this.getLogicalWorkerChangedFiles(artifact)
-			const changeSet = this.toSubagentChangeSetState(artifact, changedFiles)
-			const recoveryStopReason: SubagentStopReason = this.taskHistoryStore.get(childHistory.parentTaskId)
-				? "interrupted"
-				: "orphaned"
-			await this.taskHistoryStore.upsert({
-				...childHistory,
-				status: "interrupted",
-				subagentChangeSet: changeSet,
-				stopReason: recoveryStopReason,
-			})
 			try {
 				const messages = await readTaskMessages({
 					taskId: childHistory.parentTaskId,
 					globalStoragePath: this.context.globalStorageUri.fsPath,
 				})
-				const groupMessage = messages.find((message) =>
-					message.subagentGroup?.agents.some((agent) => agent.taskId === artifact.taskId),
-				)
-				const agent = groupMessage?.subagentGroup?.agents.find((item) => item.taskId === artifact.taskId)
-				if (!groupMessage?.subagentGroup || !agent) continue
-				agent.status = "interrupted"
-				agent.stopReason = recoveryStopReason
-				agent.error =
-					"The extension reloaded while this worker was active. Recoverable partial changes were quarantined."
+				const record = this.agentControlStore.getAgent(artifact.taskId, childHistory.rootTaskId)
+				const target = resolveWorkerArtifactRecoveryTarget(artifact, childHistory, record, messages)
+				if (!target) {
+					this.log(
+						`Retained Worker artifact ${artifact.id} has no unambiguous saved attempt; its changes remain preserved.`,
+					)
+					continue
+				}
+				if (hasTaskOwner(artifact.taskId)) continue
+				const { agent } = target
+				const previousAgent = structuredClone(agent)
+				const changedFiles = this.getLogicalWorkerChangedFiles(artifact)
+				const changeSet = this.toSubagentChangeSetState(artifact, changedFiles)
+				const recoveryStopReason: SubagentStopReason = this.taskHistoryStore.get(childHistory.parentTaskId)
+					? "interrupted"
+					: "orphaned"
+				if (target.currentAttempt && ["pending", "running", "cancelling"].includes(agent.status)) {
+					// A captured patch alone cannot establish successful child completion.
+					agent.status =
+						childHistory.status === "completed" ||
+						childHistory.status === "blocked" ||
+						childHistory.status === "failed" ||
+						childHistory.status === "cancelled" ||
+						childHistory.status === "timed_out" ||
+						childHistory.status === "interrupted"
+							? childHistory.status
+							: "interrupted"
+					agent.stopReason =
+						childHistory.stopReason ??
+						(agent.status === "completed" || agent.status === "blocked"
+							? "completed"
+							: agent.status === "timed_out"
+								? "timeout"
+								: agent.status === "interrupted"
+									? recoveryStopReason
+									: agent.status)
+					if (agent.status === "interrupted") {
+						agent.error ??=
+							"The extension reloaded before this sub-agent finished. The parent can resume it with followup_task."
+					}
+					delete agent.phase
+					delete agent.phaseStartedAt
+					delete agent.pendingApproval
+				}
 				agent.changedFiles = changedFiles
 				agent.changeSet = changeSet
-				delete agent.pendingApproval
-				await saveTaskMessages({
-					taskId: childHistory.parentTaskId,
-					globalStoragePath: this.context.globalStorageUri.fsPath,
-					messages,
-				})
+				if (target.currentHistory) {
+					const historyItem: HistoryItem = {
+						...childHistory,
+						subagentChangeSet: structuredClone(changeSet),
+						...(target.currentAttempt && childHistory.status === "active"
+							? { status: "interrupted", stopReason: recoveryStopReason }
+							: {}),
+					}
+					if (!isDeepStrictEqual(childHistory, historyItem)) await this.taskHistoryStore.upsert(historyItem)
+				}
+				if (!isDeepStrictEqual(previousAgent, agent)) {
+					await saveTaskMessages({
+						taskId: childHistory.parentTaskId,
+						globalStoragePath: this.context.globalStorageUri.fsPath,
+						messages,
+					})
+				}
 			} catch (error) {
 				this.log(`Failed to reconcile recovered worker ${artifact.taskId}: ${String(error)}`)
 			}
@@ -14095,15 +14617,28 @@ export class AlphaProvider
 
 	private hasCurrentWorkerIntegrationPolicy(parent: Task, captured: SubagentAutoApprovalPolicy): boolean {
 		const settings = this.contextProxy.getValues()
+		const approvalMode = parent.getTaskApprovalMode()
 		const capturedMode = inferApprovalModeFromPolicy(captured)
-		if (
-			approvalModeRank[migrateApprovalMode(settings)] < approvalModeRank[capturedMode] ||
-			approvalModeRank[parent.getTaskApprovalMode()] < approvalModeRank[capturedMode]
-		)
-			return false
-		const live = resolveApprovalFlags(settings)
+		if (approvalModeRank[approvalMode] < approvalModeRank[capturedMode]) return false
+		const live = resolveApprovalFlags({ ...settings, approvalMode })
 		return (["autoApprovalEnabled", "alwaysAllowWrite", "alwaysAllowWriteProtected"] as const).every(
 			(key) => !captured[key] || live[key],
+		)
+	}
+
+	private isCurrentWorkerChangeSetMutation(
+		parent: Task,
+		signal: AbortSignal,
+		minimumApprovalMode: ReturnType<Task["getTaskApprovalMode"]>,
+	): boolean {
+		return (
+			this.getLiveTask(parent.taskId) === parent &&
+			!parent.abandoned &&
+			parent.canMutateWorkspace() &&
+			parent.getTaskLifetimeCancellationSignal() === signal &&
+			!signal.aborted &&
+			parent.taskMode === defaultModeSlug &&
+			approvalModeRank[parent.getTaskApprovalMode()] >= approvalModeRank[minimumApprovalMode]
 		)
 	}
 
@@ -14123,6 +14658,12 @@ export class AlphaProvider
 		)
 			return artifact
 
+		const parentSignal = parent.getTaskLifetimeCancellationSignal()
+		const approvalMode = parent.getTaskApprovalMode()
+		const descriptor = this.subagentDescriptors.get(artifact.taskId)
+		// Capture objects can own optional undefined keys that persisted JSON omits.
+		const artifactDigest = digestValue(artifact)
+		const applySignal = AbortSignal.any([parentSignal, signal])
 		const integrated = await this.runWorkspaceMutation(parent, "integrate completed Worker changes", async () => {
 			if (
 				(await getTaskModeForSwitch(parent)) !== defaultModeSlug ||
@@ -14133,16 +14674,205 @@ export class AlphaProvider
 			// The child already passed its inherited per-action approvals. Isolation
 			// still validates the write scope; apply checks the original content
 			// under the shared mutation gate so concurrent edits cannot be lost.
-			await managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, artifact.id)
-			return true
+			let revoked = false
+			try {
+				await managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, artifact.id, {
+					signal: applySignal,
+					terminateProcessTree,
+					validateBeforeMutation: (currentArtifact) => {
+						if (
+							!this.isCurrentWorkerChangeSetMutation(parent, parentSignal, approvalMode) ||
+							applySignal.aborted ||
+							!this.hasCurrentWorkerIntegrationPolicy(parent, capturedPolicy) ||
+							this.subagentDescriptors.get(artifact.taskId) !== descriptor ||
+							descriptor?.parent !== parent ||
+							digestValue(currentArtifact) !== artifactDigest
+						) {
+							revoked = true
+							throw new Error("Worker changes could not be applied.")
+						}
+					},
+				})
+				return true
+			} catch (error) {
+				if (revoked || applySignal.aborted) return false
+				throw error
+			}
 		})
 		return integrated
 			? managedSubagentWorktreeService.load(this.context.globalStorageUri.fsPath, artifact.id)
 			: artifact
 	}
 
+	/** Interrupted effects remain partial; Full Access may recover only joined, still-owned in-scope writes. */
+	private async getInterruptedWorkerRecoveryGuard(
+		parent: Task,
+		group: SubagentGroupState,
+		agent: SubagentGroupState["agents"][number],
+		joinedChild: Task | undefined,
+		joinedChildSignal: AbortSignal | undefined,
+	): Promise<((artifact: ManagedWorkerArtifact) => boolean) | undefined> {
+		const parentSignal = parent.getTaskLifetimeCancellationSignal()
+		const current = this.getWorkerChangeSetTarget(parent.taskId, group.groupId, agent.changeSet?.id ?? "")
+		const policy = this.getAutoApprovedWorkerChangePolicy(agent.taskId, parent)
+		if (
+			current?.parent !== parent ||
+			current.group !== group ||
+			current.agent !== agent ||
+			!parent.canMutateWorkspace() ||
+			parent.abandoned ||
+			parentSignal.aborted ||
+			parent.getTaskApprovalMode() !== "bypass" ||
+			!joinedChild ||
+			!joinedChildSignal?.aborted ||
+			!policy ||
+			inferApprovalModeFromPolicy(policy) !== "bypass" ||
+			(await getTaskModeForSwitch(parent)) !== defaultModeSlug ||
+			parent.hasActiveCommandExecutions() ||
+			agent.status !== "interrupted" ||
+			agent.stopReason !== "interrupted" ||
+			agent.changeSet?.partial !== true ||
+			this.getLiveTask(agent.taskId) !== joinedChild ||
+			!joinedChild.abort ||
+			joinedChild.getTaskLifetimeCancellationSignal() !== joinedChildSignal ||
+			joinedChild.hasActiveCommandExecutions()
+		)
+			return undefined
+
+		const descriptor = this.subagentDescriptors.get(agent.taskId)
+		if (descriptor?.runtimeCleanupFailed || (descriptor && descriptor.groupId !== group.groupId)) return undefined
+		const history = this.taskHistoryStore.get(agent.taskId)
+		const record = this.agentControlStore.getAgent(agent.taskId, this.getAgentControlRootTaskId(parent))
+		if (
+			history?.parentTaskId !== parent.taskId ||
+			history.subagentGroupId !== group.groupId ||
+			history.status !== "interrupted" ||
+			history.stopReason !== "interrupted" ||
+			record?.parentTaskId !== parent.taskId ||
+			record.groupId !== group.groupId ||
+			record.role !== "worker" ||
+			record.pendingFollowupEventId
+		)
+			return undefined
+
+		const capturedManifest =
+			descriptor?.contextManifest ?? joinedChild?.subagentContextManifest ?? history.subagentContextManifest
+		if (!isValidSubagentContextManifest(capturedManifest)) return undefined
+		const manifest = finalizedSubagentContextManifestSchema.safeParse(capturedManifest)
+		if (!manifest.success || manifest.data.runtimePolicy.role !== "worker" || !manifest.data.runtimePolicy.mutate)
+			return undefined
+		const artifact = await managedSubagentWorktreeService.load(
+			this.context.globalStorageUri.fsPath,
+			agent.changeSet.id,
+		)
+		if (
+			artifact.taskId !== agent.taskId ||
+			artifact.status !== "pending_review" ||
+			artifact.partial !== true ||
+			artifact.worktreePath ||
+			artifact.error ||
+			artifact.conflictPaths?.length ||
+			artifact.changes.length === 0 ||
+			!arePathsEqual(artifact.logicalWorkspace, await fs.realpath(parent.cwd)) ||
+			!arePathsEqual(
+				await fs.realpath(path.resolve(artifact.gitRoot, artifact.logicalWorkspaceFromRoot)),
+				await fs.realpath(parent.cwd),
+			) ||
+			!isDeepStrictEqual(
+				[...artifact.writeScope].sort(),
+				[...(manifest.data.runtimePolicy.writeScope ?? [])].sort(),
+			) ||
+			!isDeepStrictEqual(
+				[...artifact.fileWriteScope].sort(),
+				[...(manifest.data.runtimePolicy.fileWriteScope ?? [])].sort(),
+			)
+		)
+			return undefined
+
+		const canRecover = (currentArtifact: ManagedWorkerArtifact): boolean => {
+			if (!isDeepStrictEqual(currentArtifact, artifact)) return false
+			const parentAuthority = this.getParentDelegationAuthority(parent)
+			if (!parentAuthority.policy.mutate || !parent.alphaIgnoreController || !parent.alphaProtectedController)
+				return false
+			for (const change of artifact.changes) {
+				// Legacy missing modes and nonregular files cannot establish safe path authority for recovery.
+				if (
+					[
+						[change.beforeHash, change.beforeMode],
+						[change.afterHash, change.afterMode],
+					].some(
+						([hash, mode]) =>
+							(hash !== undefined || mode !== undefined) && mode !== "100644" && mode !== "100755",
+					)
+				)
+					return false
+				for (const changedPath of [change.previousPath, change.path]) {
+					if (!changedPath) continue
+					const relativePath = path.posix.relative(artifact.logicalWorkspaceFromRoot || ".", changedPath)
+					if (
+						!isWorkerWritePathAllowed(
+							{
+								cwd: parent.cwd,
+								subagentWriteScope: artifact.writeScope,
+								subagentAuthority: { role: "worker", fileWriteScope: artifact.fileWriteScope },
+							},
+							relativePath,
+						) ||
+						!isWorkerWritePathAllowed(
+							{
+								cwd: parent.cwd,
+								subagentWriteScope: parentAuthority.allowedPaths ?? ["."],
+								subagentAuthority: {
+									role: "worker",
+									fileWriteScope: parentAuthority.fileAllowedPaths ?? [],
+								},
+							},
+							relativePath,
+						) ||
+						!parent.alphaIgnoreController.validateAccess(relativePath) ||
+						(parent.alphaProtectedController.isWriteProtected(relativePath) &&
+							!policy.alwaysAllowWriteProtected)
+					)
+						return false
+				}
+			}
+			// Policy and Stop can change while artifact metadata is read. Recheck at the final effect boundary.
+			const currentMode = parent.taskMode
+			const currentPolicy = this.getAutoApprovedWorkerChangePolicy(agent.taskId, parent)
+			const currentTarget = this.getWorkerChangeSetTarget(parent.taskId, group.groupId, artifact.id)
+			const currentRecord = this.agentControlStore.getAgent(agent.taskId, this.getAgentControlRootTaskId(parent))
+			return (
+				currentMode === defaultModeSlug &&
+				this.subagentDescriptors.get(agent.taskId) === descriptor &&
+				isValidSubagentContextManifest(descriptor?.contextManifest ?? joinedChild.subagentContextManifest) &&
+				this.getLiveTask(parent.taskId) === parent &&
+				currentTarget?.group === group &&
+				currentTarget.agent === agent &&
+				agent.status === "interrupted" &&
+				agent.stopReason === "interrupted" &&
+				this.getLiveTask(agent.taskId) === joinedChild &&
+				joinedChild.abort &&
+				joinedChild.getTaskLifetimeCancellationSignal() === joinedChildSignal &&
+				joinedChildSignal.aborted &&
+				currentRecord?.parentTaskId === parent.taskId &&
+				currentRecord.groupId === group.groupId &&
+				!currentRecord.pendingFollowupEventId &&
+				parent.canMutateWorkspace() &&
+				!parent.abandoned &&
+				!parent.hasActiveCommandExecutions() &&
+				!joinedChild.hasActiveCommandExecutions() &&
+				parent.getTaskLifetimeCancellationSignal() === parentSignal &&
+				!parentSignal.aborted &&
+				parent.getTaskApprovalMode() === "bypass" &&
+				currentPolicy !== undefined &&
+				inferApprovalModeFromPolicy(currentPolicy) === "bypass"
+			)
+		}
+		return canRecover(artifact) ? canRecover : undefined
+	}
+
 	private getAutoApprovedWorkerChangePolicy(taskId: string, parent: Task): SubagentAutoApprovalPolicy | undefined {
-		const settings = this.contextProxy.getValues()
+		const settings = { ...this.contextProxy.getValues(), approvalMode: parent.getTaskApprovalMode() }
 		const livePolicy = this.snapshotSubagentAutoApprovalPolicy(settings)
 		if (migrateApprovalMode(settings) === "ask" || !livePolicy.autoApprovalEnabled || !livePolicy.alwaysAllowWrite)
 			return undefined
@@ -14171,23 +14901,51 @@ export class AlphaProvider
 				.filter(
 					(agent) =>
 						agent.role === "worker" &&
-						agent.status === "completed" &&
+						((agent.status === "completed" && agent.changeSet?.partial !== true) ||
+							(agent.status === "interrupted" &&
+								agent.stopReason === "interrupted" &&
+								agent.changeSet?.partial === true)) &&
 						agent.changeSet?.status === "pending_review" &&
-						agent.changeSet.partial !== true &&
 						agent.changeSet.changedFiles.length > 0,
 				)
-				.map((agent) => ({ groupId: group.groupId, changeSetId: agent.changeSet!.id, taskId: agent.taskId }))
+				.map((agent) => ({
+					groupId: group.groupId,
+					changeSetId: agent.changeSet!.id,
+					taskId: agent.taskId,
+					interrupted: agent.status === "interrupted",
+				}))
 		})
 
 		for (const pending of pendingChangeSets) {
-			if (!this.getAutoApprovedWorkerChangePolicy(pending.taskId, parent)) continue
+			const policy = this.getAutoApprovedWorkerChangePolicy(pending.taskId, parent)
+			if (!policy || (pending.interrupted && inferApprovalModeFromPolicy(policy) !== "bypass")) continue
+			const child = pending.interrupted ? this.getLiveTask(pending.taskId) : undefined
+			// Persisted interruption alone cannot prove that a crash-orphaned process finished its writes.
+			if (pending.interrupted && !child) continue
+			const childSignal = child?.getTaskLifetimeCancellationSignal()
+			if (child) {
+				if (!child.abort || !childSignal?.aborted) continue
+				try {
+					// Join native effects only. The provider finalization invoking us can still own this run.
+					await child.waitForTermination()
+				} catch (error) {
+					this.log(`Interrupted Worker shutdown is unconfirmed for ${pending.taskId}: ${String(error)}`)
+					continue
+				}
+			}
 			const capability = await this.getSubagentChangeSetActionCapability(
 				parentTaskId,
 				pending.groupId,
 				pending.changeSetId,
 			)
 			if (!capability.actions.apply.allowed) continue
-			await this.applySubagentChangeSetInternal(parentTaskId, pending.groupId, pending.changeSetId, true)
+			await this.applySubagentChangeSetInternal(
+				parentTaskId,
+				pending.groupId,
+				pending.changeSetId,
+				true,
+				pending.interrupted ? { child, signal: childSignal } : undefined,
+			)
 		}
 	}
 
@@ -14225,6 +14983,7 @@ export class AlphaProvider
 		groupId: string,
 		changeSetId: string,
 		requireAutoApproval: boolean,
+		interruptedRecovery?: { child: Task | undefined; signal: AbortSignal | undefined },
 	): Promise<SubagentChangeSetActionResult> {
 		const target = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
 		if (!target) {
@@ -14238,6 +14997,9 @@ export class AlphaProvider
 			}
 		}
 
+		const parentSignal = target.parent.getTaskLifetimeCancellationSignal()
+		const approvalMode = target.parent.getTaskApprovalMode()
+		let applyRevoked = false
 		const lease = target.parent.acquireExternalMutation("applying Worker changes")
 		if (!lease.release) {
 			const capability = await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId)
@@ -14276,7 +15038,37 @@ export class AlphaProvider
 				) {
 					return undefined
 				}
-				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId)
+				const recoveryGuard = interruptedRecovery
+					? await this.getInterruptedWorkerRecoveryGuard(
+							target.parent,
+							target.group,
+							target.agent,
+							interruptedRecovery.child,
+							interruptedRecovery.signal,
+						)
+					: undefined
+				if (interruptedRecovery && !recoveryGuard) return undefined
+				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId, {
+					signal: parentSignal,
+					terminateProcessTree,
+					validateBeforeMutation: (artifact) => {
+						const current = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
+						if (
+							!this.isCurrentWorkerChangeSetMutation(target.parent, parentSignal, approvalMode) ||
+							current?.parent !== target.parent ||
+							current.group !== target.group ||
+							current.agent !== target.agent ||
+							artifact.id !== changeSetId ||
+							artifact.taskId !== target.agent.taskId ||
+							(requireAutoApproval &&
+								!this.getAutoApprovedWorkerChangePolicy(target.agent.taskId, target.parent)) ||
+							(recoveryGuard && !recoveryGuard(artifact))
+						) {
+							applyRevoked = true
+							throw new Error("Worker changes could not be applied.")
+						}
+					},
+				})
 			})
 			if (!result) {
 				actionResult = {
@@ -14332,6 +15124,12 @@ export class AlphaProvider
 				}
 			}
 		} catch (error) {
+			if (applyRevoked || parentSignal.aborted) {
+				return {
+					...actionResult,
+					capability: await this.getSubagentChangeSetActionCapability(parentTaskId, groupId, changeSetId),
+				}
+			}
 			const message = `Worker changes remain quarantined: ${error instanceof Error ? error.message : String(error)}`
 			void vscode.window.showErrorMessage(message)
 			actionResult = { ...actionResult, message }
@@ -14449,9 +15247,9 @@ export class AlphaProvider
 			changedFiles,
 			createdAt: artifact.createdAt,
 			updatedAt: artifact.updatedAt,
-			partial: artifact.partial,
-			conflictPaths: artifact.conflictPaths,
-			error: artifact.error,
+			...(artifact.partial === undefined ? {} : { partial: artifact.partial }),
+			...(artifact.conflictPaths === undefined ? {} : { conflictPaths: artifact.conflictPaths }),
+			...(artifact.error === undefined ? {} : { error: artifact.error }),
 		}
 	}
 

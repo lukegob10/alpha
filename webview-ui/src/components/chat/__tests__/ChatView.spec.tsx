@@ -303,23 +303,31 @@ vi.mock("../common/TelemetryBanner", () => ({
 }))
 
 // Mock i18n
-vi.mock("react-i18next", () => ({
-	useTranslation: () => ({
-		t: (key: string, options?: any) => {
-			if (key === "chat:versionIndicator.ariaLabel" && options?.version) {
-				return `Version ${options.version}`
-			}
-			return key
+vi.mock("react-i18next", async () => {
+	const { createInstance } = await import("i18next")
+	const { default: chat } = await import("@/i18n/locales/en/chat.json")
+	const subagentTranslations = createInstance()
+	await subagentTranslations.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
+	return {
+		useTranslation: () => ({
+			t: (key: string, options?: Record<string, unknown>) => {
+				// Keep existing key-based fixtures while exercising the task links' localized names and statuses.
+				if (key.startsWith("subagentRow.")) return subagentTranslations.t(key, { ...options, ns: "chat" })
+				if (key === "chat:versionIndicator.ariaLabel" && options?.version) {
+					return `Version ${options.version}`
+				}
+				return key
+			},
+		}),
+		initReactI18next: {
+			type: "3rdParty",
+			init: () => {},
 		},
-	}),
-	initReactI18next: {
-		type: "3rdParty",
-		init: () => {},
-	},
-	Trans: ({ i18nKey, children }: { i18nKey: string; children?: React.ReactNode }) => {
-		return <>{children || i18nKey}</>
-	},
-}))
+		Trans: ({ i18nKey, children }: { i18nKey: string; children?: React.ReactNode }) => {
+			return <>{children || i18nKey}</>
+		},
+	}
+})
 
 interface ChatTextAreaProps {
 	contextControl?: React.ReactNode
@@ -492,6 +500,72 @@ const renderChatView = (props: Partial<ChatViewProps> = {}, ref?: React.Ref<Chat
 		</ExtensionStateContextProvider>,
 	)
 }
+
+describe("ChatView host message compatibility", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("renders a submitted prompt and continued replies from an older host", async () => {
+		const view = renderChatView()
+		const input = view.getByTestId("chat-textarea").querySelector("input")!
+		const promptText = "Check the workspace and explain what needs fixing"
+		fireEvent.change(input, { target: { value: promptText } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		await waitFor(() =>
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "newTask", text: promptText }),
+			),
+		)
+		const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === "newTask")![0]
+		const taskId = request.taskId!
+		const prompt: AlphaMessage = { type: "say", say: "task", ts: 1, text: promptText }
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							currentTaskId: taskId,
+							currentView: { type: "task", taskId },
+							clineMessages: [],
+							clineMessagesSeq: 1,
+						},
+					},
+				}),
+			)
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "messageCreated", taskId, clineMessage: prompt, clineMessagesSeq: 2 },
+				}),
+			)
+		})
+		expect(await view.findByText(promptText)).toBeInTheDocument()
+
+		const response: AlphaMessage = { type: "say", say: "text", ts: 2, text: "Checking the workspace" }
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "messageCreated", taskId, alphaMessage: response, alphaMessagesSeq: 3 },
+				}),
+			)
+		})
+		expect(await view.findByText(/Checking the workspace/)).toBeInTheDocument()
+
+		await act(async () => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "messageUpdated",
+						taskId,
+						clineMessage: { ...response, text: "The workspace check is complete", partial: false },
+						clineMessagesSeq: 4,
+					},
+				}),
+			)
+		})
+		expect(await view.findByText(/The workspace check is complete/)).toBeInTheDocument()
+		expect(view.getByText(promptText)).toBeInTheDocument()
+	})
+})
 
 describe("ChatView retired speech playback", () => {
 	beforeEach(() => vi.clearAllMocks())

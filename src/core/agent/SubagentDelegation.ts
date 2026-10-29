@@ -1,7 +1,7 @@
 import {
 	subagentForkTurnsSchema,
 	subagentSpawnAgentArgsSchema,
-	type ReasoningEffortExtended,
+	type ModelSelectionParams,
 	type SubagentForkTurns,
 	type SubagentGroupState,
 	type SubagentSpawnAgentType,
@@ -35,14 +35,12 @@ type LegacySpawnAgentRequest = {
 } & ({ agent_type: "explore" | "review"; write_scope?: never } | { agent_type: "worker"; write_scope: string[] })
 
 /** Model-facing V2 request after strict normalization; runtime role and authority remain host decisions. */
-export interface CodexV2SpawnAgentRequest {
+export interface CodexV2SpawnAgentRequest extends ModelSelectionParams {
 	source: "codex-v2"
 	task_name: string
 	message: string
 	agent_type?: SubagentSpawnAgentType
 	fork_turns: SubagentForkTurns
-	model?: string
-	reasoning_effort?: ReasoningEffortExtended
 }
 
 export type SpawnAgentRequest = CodexV2SpawnAgentRequest | LegacySpawnAgentRequest
@@ -107,7 +105,7 @@ export function normalizeSpawnAgentRequest(input: unknown): SpawnAgentRequest {
 	}
 
 	if ("message" in parsed.data) {
-		// Codex 970111f6cb62cc02fe36a82ea7d71b37a2889c97 treats numeric V2 values as full-history aliases.
+		// Codex 2f47f9779282e6b273ad14bd29bec4561627083e treats numeric V2 values as full-history aliases.
 		// Legacy calls and persisted manifests retain their bounded numeric turn selection.
 		return {
 			source: "codex-v2",
@@ -115,6 +113,8 @@ export function normalizeSpawnAgentRequest(input: unknown): SpawnAgentRequest {
 			message: parsed.data.message,
 			agent_type: parsed.data.agent_type,
 			fork_turns: parsed.data.fork_turns === "none" ? "none" : "all",
+			...(parsed.data.provider ? { provider: parsed.data.provider } : {}),
+			...(parsed.data.profile ? { profile: parsed.data.profile } : {}),
 			...(parsed.data.model ? { model: parsed.data.model } : {}),
 			...(parsed.data.reasoning_effort ? { reasoning_effort: parsed.data.reasoning_effort } : {}),
 		}

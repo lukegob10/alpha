@@ -1,6 +1,6 @@
 import React, { useCallback, useContext, useEffect, useRef, useState } from "react"
 
-import { ExtensionStateContext, ShellStateContext } from "./ExtensionStateContextStore"
+import { ExtensionStateContext, ShellStateContext, retainUnchangedExtensionState } from "./ExtensionStateContextStore"
 
 import {
 	type ProviderSettings,
@@ -22,6 +22,7 @@ import {
 	type McpServer,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
+	normalizeExtensionMessageTranscript,
 } from "@alpha-code/types"
 
 import { findLastIndex } from "@alpha/array"
@@ -400,7 +401,10 @@ export const mergeExtensionState = (
 		}
 	}
 
-	return applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots)
+	return retainUnchangedExtensionState(
+		prevState,
+		applyLifecycleSnapshotsToExtensionState(mergedState, agentLifecycleSnapshots),
+	)
 }
 
 const TRANSCRIPT_STATE_KEYS = [
@@ -643,7 +647,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
 				if (liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)) {
-					liveTasksById = { ...(liveTasksById ?? {}), [liveTask.id]: liveTask }
+					// Share one copy across the frame while checking each task's latest revision.
+					if (!liveTasksById || liveTasksById === prevState.liveTasksById) {
+						liveTasksById = { ...(liveTasksById ?? {}) }
+					}
+					liveTasksById[liveTask.id] = liveTask
 				}
 				if (!isVisibleTask) continue
 
@@ -763,7 +771,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 
 	const handleMessage = useCallback(
 		(event: MessageEvent) => {
-			const message: ExtensionMessage = event.data
+			if (!event.data || typeof event.data !== "object" || typeof event.data.type !== "string") return
+			const message = normalizeExtensionMessageTranscript(event.data as ExtensionMessage)
+			if (!message) return
 			switch (message.type) {
 				case "chatCommandResult": {
 					const result = message.chatCommandResult
@@ -887,7 +897,8 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					break
 				}
 				case "messageUpdated": {
-					const alphaMessage = message.alphaMessage!
+					const alphaMessage = message.alphaMessage
+					if (!alphaMessage) break
 					const key = `${message.taskId ?? ""}:${alphaMessage.ts}`
 
 					if (alphaMessage.partial) {
@@ -914,10 +925,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					break
 				}
 				case "messageCreated": {
+					if (!message.alphaMessage) break
 					flushPendingMessageUpdates()
 					applyMessageCreation({
 						taskId: message.taskId,
-						alphaMessage: message.alphaMessage!,
+						alphaMessage: message.alphaMessage,
 						alphaMessagesSeq: message.alphaMessagesSeq,
 						liveTask: message.liveTask,
 					})

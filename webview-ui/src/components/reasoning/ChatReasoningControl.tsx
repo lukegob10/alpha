@@ -13,13 +13,23 @@ import { ReasoningSelector } from "./ReasoningSelector"
 function composerTaskId(
 	currentView: CurrentTaskView | undefined,
 	currentTaskId: string | undefined,
+	isDraft: boolean,
 ): string | undefined {
-	return currentView?.type === "newTaskDraft" ? undefined : currentTaskId
+	return isDraft || currentView?.type === "newTaskDraft" ? undefined : currentTaskId
 }
 
-export function ChatReasoningControl({ profileLoading = false }: { profileLoading?: boolean }) {
+export function ChatReasoningControl({
+	profileLoading = false,
+	isDraft = false,
+	isVisible = true,
+}: {
+	profileLoading?: boolean
+	isDraft?: boolean
+	isVisible?: boolean
+}) {
 	const { currentTaskId, currentView, taskReasoning, currentApiConfigName, apiConfiguration } = useShellState()
-	const taskId = composerTaskId(currentView, currentTaskId)
+	// The composer enters its draft before the host's navigation snapshot arrives.
+	const taskId = composerTaskId(currentView, currentTaskId, isDraft)
 	const scope = JSON.stringify([taskId, currentApiConfigName, apiConfiguration])
 	const scopeRef = useRef(scope)
 	scopeRef.current = scope
@@ -78,6 +88,7 @@ export function ChatReasoningControl({ profileLoading = false }: { profileLoadin
 			state={state?.taskId === taskId ? state : undefined}
 			scopeKey={scope}
 			loading={profileLoading}
+			isVisible={isVisible}
 			saving={saving}
 			error={error}
 			onChange={choose}

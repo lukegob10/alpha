@@ -9059,9 +9059,13 @@ describe("Alpha", () => {
 			},
 		)
 
-		it.each([false, true])(
-			"compacts a first-chunk context rejection independently of tool auto-approval=%s",
-			async (autoApprovalEnabled) => {
+		it.each(
+			[false, true].flatMap((autoApprovalEnabled) =>
+				[undefined, 1_000].map((maxElapsedMs) => ({ autoApprovalEnabled, maxElapsedMs })),
+			),
+		)(
+			"compacts a first-chunk context rejection with auto-approval=$autoApprovalEnabled and recovery allowance=$maxElapsedMs",
+			async ({ autoApprovalEnabled, maxElapsedMs }) => {
 				const task = createTask()
 				mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled })
 				vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
@@ -9069,7 +9073,13 @@ describe("Alpha", () => {
 				vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
 				vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
 				const compact = vi.spyOn(task as any, "handleContextWindowExceededError").mockResolvedValue(undefined)
-				Object.assign(task, { agentRetryPolicy: new AgentRetryPolicy({ maxAttempts: 2, baseDelayMs: 0 }) })
+				Object.assign(task, {
+					agentRetryPolicy: new AgentRetryPolicy({
+						maxAttempts: 2,
+						baseDelayMs: 0,
+						...(maxElapsedMs !== undefined ? { maxElapsedMs } : {}),
+					}),
+				})
 				const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
 				const request = vi
 					.spyOn(task, "attemptApiRequest")
@@ -9094,11 +9104,15 @@ describe("Alpha", () => {
 				).resolves.toMatchObject({
 					status: "completed",
 				})
-				expect(compact).toHaveBeenCalledExactlyOnceWith(expect.any(Number))
+				// The scripted stream bypasses step capture; only an explicit elapsed limit creates a deadline.
+				expect(compact).toHaveBeenCalledExactlyOnceWith(
+					maxElapsedMs === undefined ? undefined : expect.any(Number),
+					undefined,
+				)
 				expect(request).toHaveBeenCalledTimes(2)
 				expect(request.mock.calls[1]?.[1]).toMatchObject({
 					retryCategory: "context",
-					retryDeadline: expect.any(Number),
+					retryDeadline: maxElapsedMs === undefined ? undefined : expect.any(Number),
 				})
 				expect(ask).not.toHaveBeenCalled()
 				expect(task.apiConversationHistory.filter((message) => message.role === "user")).toHaveLength(1)

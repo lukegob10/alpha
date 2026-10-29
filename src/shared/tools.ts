@@ -35,6 +35,7 @@ import type {
 	BrowserToolArgs,
 	DiscoverToolsParams,
 	ToolSearchParams,
+	ListProviderProfilesParams,
 	SearchFilesParams,
 	ViewImageParams,
 } from "@alpha-code/types"
@@ -310,6 +311,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 		>
 	}
 	spawn_agent: SubagentSpawnAgentArgs
+	list_provider_profiles: ListProviderProfilesParams
 	list_agents: ListAgentsParams
 	wait_agent: WaitAgentParams
 	send_message: SendMessageParams
@@ -583,6 +585,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	new_task: "create new task",
 	delegate_task: "delegate bounded tasks",
 	spawn_agent: "spawn a bounded agent",
+	list_provider_profiles: "list saved provider profiles",
 	create_task: "create an independent task",
 	list_tasks: "list tasks created by this task",
 	wait_task: "wait for a task update",
@@ -683,6 +686,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 	},
 	agents: {
 		tools: [
+			"list_provider_profiles",
 			"spawn_agent",
 			"wait_agent",
 			"send_message",

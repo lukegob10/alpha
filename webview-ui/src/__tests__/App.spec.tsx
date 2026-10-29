@@ -19,6 +19,7 @@ const mockChatCommands = vi.hoisted(() => ({
 }))
 const mockCheckUnsavedChanges = vi.hoisted(() => vi.fn<(onContinue: () => void) => void>())
 const mockStateSubscriptionRead = vi.hoisted(() => vi.fn())
+const mockScheduledTasksImport = vi.hoisted(() => ({ ready: undefined as Promise<void> | undefined }))
 
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
@@ -86,11 +87,14 @@ vi.mock("@src/components/settings/SettingsView", async () => {
 	}
 })
 
-vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", () => ({
-	default: ({ targetTaskId }: { targetTaskId?: string }) => (
-		<div data-testid="scheduled-tasks-view" data-target={targetTaskId} />
-	),
-}))
+vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", async () => {
+	await mockScheduledTasksImport.ready
+	return {
+		default: ({ targetTaskId }: { targetTaskId?: string }) => (
+			<div data-testid="scheduled-tasks-view" data-target={targetTaskId} />
+		),
+	}
+})
 
 vi.mock("@src/components/mcp/McpView", () => ({
 	__esModule: true,
@@ -205,6 +209,59 @@ vi.mock("process.env", () => ({
 }))
 
 describe("App", () => {
+	it("shows loading status while a secondary view imports without replacing the chat draft or controller", async () => {
+		let resolveImport = () => {}
+		mockScheduledTasksImport.ready = new Promise<void>((resolve) => {
+			resolveImport = resolve
+		})
+		render(<AppWithProviders />)
+		const chat = screen.getByTestId("chat-view")
+		const draft = screen.getByRole("textbox", { name: "Draft" })
+		fireEvent.change(draft, { target: { value: "Keep this draft while loading" } })
+
+		try {
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "action",
+							action: "switchTab",
+							tab: "scheduledTasks",
+							values: { scheduledTaskId: "loading-schedule" },
+						},
+					}),
+				),
+			)
+			expect(screen.getByRole("status")).toHaveTextContent("chat:reasoning.loading")
+			expect(screen.getByRole("status")).toBeVisible()
+			expect(screen.queryByTestId("scheduled-tasks-view")).not.toBeInTheDocument()
+			expect(screen.getByTestId("chat-view")).toBe(chat)
+			expect(chat).not.toBeVisible()
+			expect(screen.getByRole("textbox", { name: "Draft", hidden: true })).toBe(draft)
+			expect(draft).toHaveValue("Keep this draft while loading")
+			act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "acceptInput" } })))
+			expect(mockChatCommands.acceptInput).toHaveBeenCalledTimes(1)
+		} finally {
+			await act(async () => resolveImport())
+			mockScheduledTasksImport.ready = undefined
+		}
+
+		expect(await screen.findByTestId("scheduled-tasks-view")).toHaveAttribute("data-target", "loading-schedule")
+		expect(screen.queryByRole("status")).not.toBeInTheDocument()
+		expect(screen.getByTestId("chat-view")).toBe(chat)
+		expect(screen.getByRole("textbox", { name: "Draft", hidden: true })).toBe(draft)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "action", action: "chatButtonClicked" } }),
+			),
+		)
+		expect(chat).toBeVisible()
+		expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft)
+		expect(draft).toHaveValue("Keep this draft while loading")
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "acceptInput" } })))
+		expect(mockChatCommands.acceptInput).toHaveBeenCalledTimes(2)
+	})
+
 	it.each([false, true])("restores inline edit focus on cancel (checkpoint: %s)", async (hasCheckpoint) => {
 		render(<AppWithProviders />)
 		const editContainer = document.createElement("div")

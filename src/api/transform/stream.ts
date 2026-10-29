@@ -10,12 +10,17 @@ export type ApiStream = AsyncGenerator<ApiStreamChunk>
 
 export type ApiStreamOutcomeStatus = "completed" | "failed" | "incomplete" | "cancelled"
 
+export type ApiTimeoutScope = "provider_idle" | "request_deadline" | "retry_deadline" | "compaction_deadline"
+export type ApiDeadlineScope = Exclude<ApiTimeoutScope, "provider_idle">
+
 /** Stable request-scoped metadata shared by provider transports. */
 export interface ApiStreamRequestMetadata {
 	/** Abort the request and any pending stream read. */
 	signal?: AbortSignal
 	/** Absolute deadline in epoch milliseconds (Date is accepted for callers that already use Date values). */
 	deadline?: number | Date
+	/** Owner of an explicit absolute deadline; idle guards do not set this field. */
+	deadlineScope?: ApiDeadlineScope
 	/** Stable logical request identifier. */
 	requestId?: string
 	/** Stable attempt identifier for retries of one logical request. */
@@ -45,6 +50,8 @@ export interface ApiStreamErrorMetadata {
 	attemptId?: string
 	/** True when semantic model output was observed before the error. */
 	semanticOutputObserved?: boolean
+	/** The bounded operation that expired, independent of provider error text. */
+	timeoutScope?: ApiTimeoutScope
 	/** Provider-specific metadata retained without widening the common contract. */
 	metadata?: Record<string, unknown>
 }
@@ -99,12 +106,13 @@ export interface ApiStreamError {
 	requestId?: string
 	attemptId?: string
 	semanticOutputObserved?: boolean
+	timeoutScope?: ApiTimeoutScope
 	metadata?: Record<string, unknown>
 }
 
 /** Inputs accepted by the request-signal helper. Kept structural to avoid a
  * dependency from the transform layer back to the API handler interface. */
-export type ApiStreamRequestControl = Pick<ApiStreamRequestMetadata, "signal" | "deadline">
+export type ApiStreamRequestControl = Pick<ApiStreamRequestMetadata, "signal" | "deadline" | "deadlineScope">
 
 export interface LinkedAbortController {
 	controller: AbortController
@@ -117,9 +125,20 @@ export interface LinkedAbortController {
 export class ApiStreamDeadlineError extends Error {
 	override readonly name = "ApiStreamDeadlineError"
 	readonly code = "ProviderTimeout"
+	readonly retryable = false
 
-	constructor(message = "Provider request deadline exceeded") {
-		super(message)
+	constructor(
+		message: string | undefined = undefined,
+		readonly timeoutScope: ApiDeadlineScope = "request_deadline",
+	) {
+		super(
+			message ??
+				(timeoutScope === "retry_deadline"
+					? "Automatic retry deadline exceeded"
+					: timeoutScope === "compaction_deadline"
+						? "Context compaction deadline exceeded"
+						: "Provider request deadline exceeded"),
+		)
 	}
 }
 
@@ -152,7 +171,9 @@ export function createLinkedAbortController(options: ApiStreamRequestControl = {
 		if (Number.isFinite(deadlineMs)) {
 			const delay = deadlineMs - Date.now()
 			const abortAtDeadline = () => {
-				if (!controller.signal.aborted) controller.abort(new ApiStreamDeadlineError())
+				if (!controller.signal.aborted) {
+					controller.abort(new ApiStreamDeadlineError(undefined, options.deadlineScope))
+				}
 			}
 			// An elapsed deadline is an admission barrier. A zero-delay timer would
 			// still let an SDK dispatch before the next event-loop turn.
@@ -256,6 +277,7 @@ export function createApiStreamError(input: ApiStreamErrorInput): ApiStreamError
 		...(input.requestId !== undefined ? { requestId: input.requestId } : {}),
 		...(input.attemptId !== undefined ? { attemptId: input.attemptId } : {}),
 		...(input.semanticOutputObserved !== undefined ? { semanticOutputObserved: input.semanticOutputObserved } : {}),
+		...(input.timeoutScope !== undefined ? { timeoutScope: input.timeoutScope } : {}),
 		...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
 	}
 }
@@ -316,6 +338,14 @@ export function normalizeApiStreamErrorMetadata(
 		nested.semanticOutputObserved,
 		defaults.semanticOutputObserved,
 	)
+	const timeoutScope = getString(source.timeoutScope, nested.timeoutScope)
+	const knownTimeoutScope =
+		timeoutScope === "provider_idle" ||
+		timeoutScope === "request_deadline" ||
+		timeoutScope === "retry_deadline" ||
+		timeoutScope === "compaction_deadline"
+			? timeoutScope
+			: undefined
 
 	return {
 		...(code !== undefined ? { code } : {}),
@@ -326,6 +356,7 @@ export function normalizeApiStreamErrorMetadata(
 		...(requestId !== undefined ? { requestId } : {}),
 		...(attemptId !== undefined ? { attemptId } : {}),
 		...(semanticOutputObserved !== undefined ? { semanticOutputObserved } : {}),
+		...(knownTimeoutScope !== undefined ? { timeoutScope: knownTimeoutScope } : {}),
 	}
 }
 

@@ -224,6 +224,7 @@ export function filterNativeToolsForMode(
 	// merely by naming the broader agents group.
 	if (modeSlug !== "code" && modeSlug !== planModeSlug) {
 		for (const tool of [
+			"list_provider_profiles",
 			"spawn_agent",
 			"list_agents",
 			"wait_agent",

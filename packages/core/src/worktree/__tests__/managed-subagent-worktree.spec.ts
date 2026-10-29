@@ -7,7 +7,7 @@ import { promisify } from "util"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { ManagedSubagentWorktreeService } from "../managed-subagent-worktree.js"
+import { ManagedSubagentWorktreeService, type ManagedWorkerCreationOptions } from "../managed-subagent-worktree.js"
 import { worktreeIncludeService } from "../worktree-include.js"
 
 const execFileAsync = promisify(execFile)
@@ -366,6 +366,167 @@ describe("ManagedSubagentWorktreeService", () => {
 		},
 		WORKTREE_TEST_TIMEOUT_MS,
 	)
+
+	it(
+		"keeps a proposed deletion conflicted when the parent path becomes a directory",
+		async () => {
+			const prepared = await service.create(
+				storage,
+				"worker-directory-conflict",
+				await service.validateScope(repo, ["src/value.txt"]),
+			)
+			await fs.unlink(path.join(prepared.workspacePath, "src/value.txt"))
+			const artifact = await service.capture(storage, prepared.artifact.id)
+			await fs.unlink(path.join(repo, "src/value.txt"))
+			await write("src/value.txt/external.txt", "external user work\n")
+
+			expect(await service.apply(storage, artifact.id)).toEqual({
+				status: "conflicted",
+				conflictPaths: ["src/value.txt"],
+			})
+			expect((await service.load(storage, artifact.id)).status).toBe("conflicted")
+			expect(await fs.readFile(path.join(repo, "src/value.txt/external.txt"), "utf8")).toBe(
+				"external user work\n",
+			)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"keeps a recovered rename conflicted when its old path becomes a directory",
+		async () => {
+			const prepared = await service.create(
+				storage,
+				"worker-rename-directory-conflict",
+				await service.validateScope(repo, ["src"]),
+			)
+			await fs.rename(
+				path.join(prepared.workspacePath, "src/value.txt"),
+				path.join(prepared.workspacePath, "src/renamed.txt"),
+			)
+			const artifact = await service.capture(storage, prepared.artifact.id)
+			const patchPath = path.join(storage, "subagent-change-sets", artifact.id, artifact.patchFile!)
+			await git(["apply", "--binary", "--whitespace=nowarn", patchPath])
+			await write("src/value.txt/external.txt", "external user work\n")
+
+			const result = await service.apply(storage, artifact.id)
+
+			expect(result.status).toBe("conflicted")
+			expect(result.conflictPaths).toContain("src/value.txt")
+			expect((await service.load(storage, artifact.id)).status).toBe("conflicted")
+			expect(await fs.readFile(path.join(repo, "src/value.txt/external.txt"), "utf8")).toBe(
+				"external user work\n",
+			)
+			expect((await fs.readFile(path.join(repo, "src/renamed.txt"), "utf8")).replace(/\r\n/g, "\n")).toBe(
+				"base\n",
+			)
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it.each(["EACCES", "EIO"])(
+		"does not settle or apply a deletion when reading the parent content fails with %s",
+		async (code) => {
+			await git(["config", "core.filemode", "false"])
+			const prepared = await service.create(
+				storage,
+				"worker-unreadable-parent",
+				await service.validateScope(repo, ["src/value.txt"]),
+			)
+			await fs.unlink(path.join(prepared.workspacePath, "src/value.txt"))
+			const artifact = await service.capture(storage, prepared.artifact.id)
+			const failure = Object.assign(new Error("Parent content could not be read"), { code })
+			const gitOwner = service as unknown as {
+				git(
+					cwd: string,
+					args: string[],
+					env?: NodeJS.ProcessEnv,
+					creation?: ManagedWorkerCreationOptions,
+					input?: Buffer,
+				): Promise<string>
+			}
+			const actualGit = gitOwner.git.bind(service)
+			vi.spyOn(gitOwner, "git").mockImplementation(async (cwd, args, env, creation, input) => {
+				if (args[0] === "hash-object" && args.includes("--path=src/value.txt")) throw failure
+				return actualGit(cwd, args, env, creation, input)
+			})
+
+			await expect(service.apply(storage, artifact.id)).rejects.toBe(failure)
+			expect((await service.load(storage, artifact.id)).status).toBe("pending_review")
+			expect(await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).toBe("base\n")
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	for (const { phase, expectedKind } of [
+		{ phase: "before", expectedKind: "file" },
+		{ phase: "after", expectedKind: "file" },
+		{ phase: "before", expectedKind: "symlink" },
+		{ phase: "after", expectedKind: "symlink" },
+	] as const) {
+		it(
+			`rejects a substituted ${expectedKind} in the ${phase} state even when executable bits are ignored`,
+			async ({ skip }) => {
+				await git(["config", "core.filemode", "false"])
+				await git(["config", "core.symlinks", "true"])
+				await git(["config", "core.autocrlf", "false"])
+				await write("src/target.txt", "external user work\n")
+				const replaceWithSymlink = async (directory: string) => {
+					const file = path.join(directory, "src/value.txt")
+					await fs.unlink(file)
+					try {
+						await fs.symlink("target.txt", file, "file")
+					} catch (error) {
+						if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") skip()
+						throw error
+					}
+				}
+				if (phase === "before") {
+					if (expectedKind === "symlink") await replaceWithSymlink(repo)
+					else await write("src/value.txt", "target.txt")
+				}
+				const prepared = await service.create(
+					storage,
+					"worker-substituted-path",
+					await service.validateScope(repo, ["src/value.txt"]),
+				)
+				if (phase === "after" && expectedKind === "symlink") {
+					await replaceWithSymlink(prepared.workspacePath)
+				} else {
+					await fs.unlink(path.join(prepared.workspacePath, "src/value.txt"))
+					await fs.writeFile(
+						path.join(prepared.workspacePath, "src/value.txt"),
+						phase === "after" ? "target.txt" : "worker change\n",
+					)
+				}
+				const artifact = await service.capture(storage, prepared.artifact.id)
+				expect(artifact.changes[0]?.[phase === "before" ? "beforeMode" : "afterMode"]).toBe(
+					expectedKind === "file" ? "100644" : "120000",
+				)
+				if (expectedKind === "file") await replaceWithSymlink(repo)
+				else {
+					await fs.unlink(path.join(repo, "src/value.txt"))
+					await write("src/value.txt", "target.txt")
+				}
+
+				expect(await service.apply(storage, artifact.id)).toEqual({
+					status: "conflicted",
+					conflictPaths: ["src/value.txt"],
+				})
+				expect((await service.load(storage, artifact.id)).status).toBe("conflicted")
+				expect((await fs.lstat(path.join(repo, "src/value.txt"))).isSymbolicLink()).toBe(
+					expectedKind === "file",
+				)
+				if (expectedKind === "file") {
+					expect(await fs.readlink(path.join(repo, "src/value.txt"))).toBe("target.txt")
+				} else {
+					expect(await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).toBe("target.txt")
+				}
+				expect(await fs.readFile(path.join(repo, "src/target.txt"), "utf8")).toBe("external user work\n")
+			},
+			WORKTREE_TEST_TIMEOUT_MS,
+		)
+	}
 
 	it(
 		"captures and applies renames and deletions without staging them",

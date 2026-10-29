@@ -564,6 +564,7 @@ export const hostTestInventory = [
 			"file-tools-live.test",
 			"harness-quality-live.test",
 			"live-quality.test",
+			"model-selection-live.test",
 			"read-evidence-live.test",
 			"security-injection-live.test",
 			"vscode-lm-empty-recovery.test",

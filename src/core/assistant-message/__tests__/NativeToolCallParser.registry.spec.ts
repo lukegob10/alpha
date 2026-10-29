@@ -103,12 +103,16 @@ describe("NativeToolCallParser registry dispatch", () => {
 		expect(new ToolRegistry().resolve(call.name)).toBeUndefined()
 	})
 
-	it("accepts the current spawn_agent agent_type field without reporting it as unknown", () => {
+	it("preserves spawn_agent type and independent model routing controls without unknown-field warnings", () => {
 		const args = {
 			task_name: "outer_worker",
 			message: "Inspect the task and report your findings.",
 			agent_type: "worker",
 			fork_turns: "none",
+			provider: "openai-native",
+			profile: "Saved OpenAI",
+			model: "gpt-6-sol",
+			reasoning_effort: "high",
 		}
 		const warning = vi.spyOn(console, "warn").mockImplementation(() => {})
 		const call = parseToolUse("spawn_agent", args)
@@ -116,6 +120,13 @@ describe("NativeToolCallParser registry dispatch", () => {
 		expect(warning).not.toHaveBeenCalled()
 		expect(call.params.agent_type).toBe(args.agent_type)
 		expect(call.nativeArgs).toEqual(args)
+		NativeToolCallParser.startStreamingToolCall("spawn-route-stream", "spawn_agent")
+		expect(
+			NativeToolCallParser.processStreamingChunk("spawn-route-stream", JSON.stringify(args))?.nativeArgs,
+		).toEqual(args)
+		const finalized = NativeToolCallParser.finalizeStreamingToolCall("spawn-route-stream")
+		expect(finalized?.type).toBe("tool_use")
+		if (finalized?.type === "tool_use") expect(finalized.nativeArgs).toEqual(args)
 	})
 
 	it("dispatches parsed exec_command through the canonical registry descriptor", async () => {

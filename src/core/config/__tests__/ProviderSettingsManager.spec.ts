@@ -433,6 +433,7 @@ describe("ProviderSettingsManager", () => {
 
 			const expectedConfig = {
 				currentApiConfigName: "default",
+				migrations: { legacyStorageMigrated: true },
 				apiConfigs: {
 					default: {},
 					test: {
@@ -483,6 +484,7 @@ describe("ProviderSettingsManager", () => {
 
 			const expectedConfig = {
 				currentApiConfigName: "default",
+				migrations: { legacyStorageMigrated: true },
 				apiConfigs: {
 					default: {},
 					test: {
@@ -536,6 +538,7 @@ describe("ProviderSettingsManager", () => {
 				},
 				migrations: {
 					rateLimitSecondsMigrated: false,
+					legacyStorageMigrated: true,
 				},
 			}
 

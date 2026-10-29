@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import { modelSelectionParamsSchema } from "./model-selection.js"
+
 const threadIdSchema = z.string().min(1)
 const nonBlankStringSchema = z
 	.string()
@@ -39,12 +41,14 @@ export const createThreadParamsSchema = z
 	.object({
 		prompt: threadPromptSchema,
 		title: nonBlankStringSchema.optional(),
-		model: nonBlankStringSchema.optional(),
+		...modelSelectionParamsSchema.shape,
 	})
 	.strict()
-export const forkThreadParamsSchema = z.object({ threadId: threadIdSchema.optional() }).strict()
+export const forkThreadParamsSchema = z
+	.object({ threadId: threadIdSchema.optional(), ...modelSelectionParamsSchema.shape })
+	.strict()
 export const sendMessageToThreadParamsSchema = z
-	.object({ threadId: threadIdSchema, prompt: threadPromptSchema, model: nonBlankStringSchema.optional() })
+	.object({ threadId: threadIdSchema, prompt: threadPromptSchema, ...modelSelectionParamsSchema.shape })
 	.strict()
 export const setThreadTitleParamsSchema = z
 	.object({ threadId: threadIdSchema.optional(), title: nonBlankStringSchema })

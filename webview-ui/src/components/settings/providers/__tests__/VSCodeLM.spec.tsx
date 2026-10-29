@@ -97,6 +97,21 @@ describe("VSCodeLM supported model setup", () => {
 		renderProvider()
 
 		expect(Object.keys(picker().models ?? {})).toEqual(getVscodeLlmCatalogModels().map(getVscodeLlmModelId))
+		expect(Object.keys(picker().models ?? {})).toEqual(
+			expect.arrayContaining([
+				"grok-4.6",
+				"grok-4.7",
+				"claude-haiku-5.5",
+				"gpt-5.6-luna",
+				"gpt-5.6-sol",
+				"gpt-5.6-terra",
+				"gpt-6-astra",
+				"gpt-6-luna",
+				"gpt-6-sol",
+				"gpt-6.1-sol",
+				"gpt-6.1-terra",
+			]),
+		)
 		expect(picker().models).not.toHaveProperty("claude-mythos-5")
 		expect(picker().models).not.toHaveProperty("gpt-4o")
 	})

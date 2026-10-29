@@ -316,10 +316,13 @@ export function getContextMenuOptions(
 		}
 	}
 
-	const searchableItems = queryItems.map((item) => ({
-		original: item,
-		searchStr: [item.value, item.label, item.description].filter(Boolean).join(" "),
-	}))
+	// File and folder matches come from dynamic search; only rank local items used below.
+	const searchableItems = queryItems
+		.filter((item) => item.type === ContextMenuOptionType.OpenedFile || item.type === ContextMenuOptionType.Git)
+		.map((item) => ({
+			original: item,
+			searchStr: [item.value, item.label, item.description].filter(Boolean).join(" "),
+		}))
 
 	// Initialize fzf instance for fuzzy search
 	const fzf = new Fzf(searchableItems, {

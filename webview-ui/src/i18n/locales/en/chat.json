@@ -37,11 +37,54 @@
 		"count_other": "{{count}} sub-agents",
 		"approvals_one": "{{count}} approval",
 		"approvals_other": "{{count}} approvals",
-		"reviews_one": "{{count}} review",
-		"reviews_other": "{{count}} reviews",
+		"changes_one": "{{count}} change set available",
+		"changes_other": "{{count}} change sets available",
+		"conflicts_one": "{{count}} conflict",
+		"conflicts_other": "{{count}} conflicts",
+		"parentActions": "{{count}} awaiting parent action",
 		"input": "{{count}} awaiting input",
 		"running": "{{count}} running",
 		"finished": "Finished"
+	},
+	"subagentRow": {
+		"open": "Open {{name}}",
+		"taskUnavailable": "{{name}} task unavailable",
+		"attention": {
+			"approval": "Approval required",
+			"changes": "Changes available",
+			"conflict": "Conflict",
+			"parentAction": "Parent action needed",
+			"input": "Input"
+		},
+		"status": {
+			"pending": "Starting",
+			"running": "Working",
+			"cancelling": "Stopping",
+			"completed": "Completed",
+			"blocked": "Blocked",
+			"failed": "Failed",
+			"cancelled": "Cancelled",
+			"timed_out": "Timed out",
+			"interrupted": "Interrupted",
+			"unknown": "Status unavailable"
+		},
+		"stopReason": {
+			"cancelled": "The sub-agent was cancelled.",
+			"never_launched": "The sub-agent was never launched.",
+			"parent_cancelled": "The parent cancelled the sub-agent.",
+			"ancestor_cancelled": "An ancestor task cancelled the sub-agent.",
+			"interrupted": "The sub-agent's work was interrupted.",
+			"timeout": "The sub-agent reached its execution time limit.",
+			"input_token_limit": "The sub-agent reached its input token limit.",
+			"output_token_limit": "The sub-agent reached its output token limit.",
+			"root_token_budget": "The sub-agent reached the shared token budget.",
+			"root_cost_budget": "The sub-agent reached the shared cost budget.",
+			"depth_limit": "The sub-agent reached the delegation depth limit.",
+			"authority_denied": "The operation was denied by the sub-agent's execution policy.",
+			"orphaned": "The sub-agent lost its parent task.",
+			"recovery_failed": "The sub-agent could not be recovered.",
+			"failed": "The sub-agent failed."
+		}
 	},
 	"completionReport": "Completion report",
 	"greeting": "Welcome to Alpha.",
@@ -511,11 +554,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} fixes reasoning availability and incorrect next-step indicators.",
+			"welcome": "Alpha v{{version}} expands GitHub Copilot model choices and preserves reasoning settings.",
 			"taskContinuity": "Keep the resolved reasoning level visible throughout a chat.",
-			"toolsAndProviders": "Copilot chats retain their model's resolved reasoning capabilities.",
-			"delegation": "See next step only when the applied reasoning settings change during a request.",
-			"workspaceExperience": "Restore each task's saved reasoning choice without replacing it with the new-chat default."
+			"toolsAndProviders": "Choose Grok 4.6, Grok 4.7, and Claude Haiku 5.5 in GitHub Copilot.",
+			"delegation": "Use each model's supported reasoning levels for delegated work.",
+			"workspaceExperience": "Select the full GPT-5.6 family, GPT-6 Astra, Luna and Sol, and GPT-6.1 Terra and Sol."
 		}
 	},
 	"crossTasks": {

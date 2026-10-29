@@ -87,6 +87,10 @@ function ChatHistorySwitcher({
 					}}
 					onKeyDown={(event) => {
 						if (
+							(event.key !== "Home" &&
+								event.key !== "End" &&
+								event.key !== "ArrowDown" &&
+								event.key !== "ArrowUp") ||
 							!(event.target instanceof HTMLElement) ||
 							!event.target.dataset.testid?.startsWith("task-item-")
 						)

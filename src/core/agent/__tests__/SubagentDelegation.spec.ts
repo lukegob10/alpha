@@ -252,6 +252,8 @@ describe("normalizeSpawnAgentRequest", () => {
 			message: "Update the parser tests.",
 			agent_type: "default",
 			fork_turns: "all",
+			provider: "openai-native",
+			profile: "Saved OpenAI",
 			model: "gpt-6-sol",
 			reasoning_effort: "high",
 		})
@@ -262,6 +264,8 @@ describe("normalizeSpawnAgentRequest", () => {
 			message: "Update the parser tests.",
 			agent_type: "default",
 			fork_turns: "all",
+			provider: "openai-native",
+			profile: "Saved OpenAI",
 			model: "gpt-6-sol",
 			reasoning_effort: "high",
 		})
@@ -280,6 +284,8 @@ describe("normalizeSpawnAgentRequest", () => {
 	})
 
 	it.each([
+		{ provider: "fake-ai" },
+		{ profile: " " },
 		{ model: " " },
 		{ reasoning_effort: "disable" },
 		{ reasoning_effort: "unsupported" },

@@ -1,5 +1,6 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ApiHandler } from "../../index"
+import * as requestTimeout from "../utils/timeout-config"
 import type { ApiStreamChunk } from "../../transform/stream"
 import { convertAnthropicMessagesToGemini } from "../../transform/gemini-format"
 import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
@@ -36,6 +37,103 @@ const routes: Array<{ name: string; create(): ApiHandler }> = [
 ]
 
 describe("Gemini stream fidelity", () => {
+	it.each(routes)(
+		"keeps $name SDK total timeouts out of a progressing inactivity-controlled stream",
+		async ({ create }) => {
+			vi.useFakeTimers()
+			vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+			generateContentStream.mockResolvedValue({
+				async *[Symbol.asyncIterator]() {
+					for (let index = 0; index < 4; index++) {
+						await new Promise<void>((resolve) => setTimeout(resolve, 60))
+						yield {
+							candidates: [
+								{
+									content: { parts: [{ text: `chunk ${index}` }] },
+									...(index === 3 ? { finishReason: "STOP" } : {}),
+								},
+							],
+						}
+					}
+				},
+			})
+			const text: string[] = []
+			const consuming = (async () => {
+				for await (const chunk of create().createMessage("System", messages)) {
+					if (chunk.type === "text") text.push(chunk.text)
+				}
+			})()
+			try {
+				await vi.advanceTimersByTimeAsync(240)
+				await consuming
+				expect(text).toEqual(["chunk 0", "chunk 1", "chunk 2", "chunk 3"])
+				expect(generateContentStream.mock.calls[0][0].config.httpOptions ?? {}).not.toHaveProperty("timeout")
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(routes)("reports a genuine $name stream stall as retryable provider inactivity", async ({ create }) => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		generateContentStream.mockResolvedValue({
+			[Symbol.asyncIterator]() {
+				return { next: () => new Promise<never>(() => {}), return: async () => ({ done: true as const }) }
+			},
+		})
+		const result = create()
+			.createMessage("System", messages)
+			.next()
+			.catch((error: unknown) => error)
+		try {
+			await vi.advanceTimersByTimeAsync(100)
+			expect(await result).toMatchObject({
+				code: "ProviderTimeout",
+				timeoutScope: "provider_idle",
+				retryable: true,
+			})
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
+	it.each(routes)("preserves an explicit $name compaction deadline during stream progress", async ({ create }) => {
+		vi.useFakeTimers()
+		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+		generateContentStream.mockResolvedValue({
+			async *[Symbol.asyncIterator]() {
+				for (let index = 0; index < 4; index++) {
+					await new Promise<void>((resolve) => setTimeout(resolve, 60))
+					yield { candidates: [{ content: { parts: [{ text: `chunk ${index}` }] } }] }
+				}
+			},
+		})
+		const consuming = (async () => {
+			for await (const _chunk of create().createMessage("System", messages, {
+				taskId: "explicit-compaction-deadline",
+				deadline: Date.now() + 150,
+				deadlineScope: "compaction_deadline",
+			})) {
+				// The deadline must win even when the provider keeps progressing.
+			}
+		})().catch((error: unknown) => error)
+		try {
+			await vi.advanceTimersByTimeAsync(150)
+			expect(await consuming).toMatchObject({
+				code: "ProviderTimeout",
+				timeoutScope: "compaction_deadline",
+				retryable: false,
+			})
+			await vi.advanceTimersByTimeAsync(30)
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	beforeAll(() => {
 		i18next.addResourceBundle("en", "common", commonTranslations, true, true)
 	})

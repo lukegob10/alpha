@@ -2,7 +2,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import type { ModelInfo, ProviderSettings, TaskReasoningState } from "@alpha-code/types"
+import type { ModelInfo, ProviderSettings, SubagentModelRouteState, TaskReasoningState } from "@alpha-code/types"
 import type { ApiHandler, ApiHandlerCreateMessageMetadata, ApiInstructionFragment } from "../../../api"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { digestValue } from "../../agent/StepContext"
@@ -110,6 +110,15 @@ function invocationHarness(toolName = "spawn_agent") {
 		reasoningEffort: "max",
 	}
 	const effectiveApiConfiguration = { ...apiConfiguration }
+	const modelRoute: SubagentModelRouteState = {
+		source: "parent",
+		resolution: "selected",
+		profileId: "invoking-profile-id",
+		profileName: "Invoking parent profile",
+		provider: apiConfiguration.apiProvider,
+		modelId: "parent-model",
+	}
+	const provider = { taskHistoryStore: { get: () => ({ threadModelRoute: modelRoute }) } }
 	const history: ApiMessage[] = [
 		{ role: "user", input_origin: "human", content: "Original human request", ts: 1 },
 		Object.assign(
@@ -146,6 +155,7 @@ function invocationHarness(toolName = "spawn_agent") {
 		api,
 		apiConfiguration,
 		effectiveApiConfiguration,
+		providerRef: { deref: () => provider },
 		reasoningPreference: { kind: "effort", effort: "low" },
 		reasoningByHandler,
 		_taskApiConfigName: "Invoking parent profile",
@@ -196,6 +206,7 @@ function invocationHarness(toolName = "spawn_agent") {
 		live,
 		capture,
 		reasoningByHandler,
+		modelRoute,
 	}
 }
 
@@ -306,8 +317,17 @@ describe("Task managed-child native history startup", () => {
 
 describe("Task invoking-step subagent snapshot", () => {
 	it("keeps model, profile, instructions and effective history at the invoking boundary despite live changes", () => {
-		const { task, capture, history, cleanHistory, apiConfiguration, effectiveApiConfiguration, fragments, live } =
-			invocationHarness()
+		const {
+			task,
+			capture,
+			history,
+			cleanHistory,
+			apiConfiguration,
+			effectiveApiConfiguration,
+			fragments,
+			live,
+			modelRoute,
+		} = invocationHarness()
 		const step = capture()
 		const captured = step.getSubagentInvocationContext()
 		expect(captured).not.toHaveProperty("personality")
@@ -317,7 +337,12 @@ describe("Task invoking-step subagent snapshot", () => {
 			reasoningPreference: { kind: "effort", effort: "max" },
 			apiConfiguration: { apiProvider: "openai", apiModelId: "parent-model", reasoningEffort: "max" },
 			apiConfigName: "Invoking parent profile",
-			modelRoute: { source: "parent", provider: "openai", modelId: "parent-model" },
+			modelRoute: {
+				source: "parent",
+				provider: "openai",
+				modelId: "parent-model",
+				profileId: "invoking-profile-id",
+			},
 			history,
 			finalAssistantMessageIndexes: [1],
 			instructions: { effectiveText: "Invoking user guidance\n\nInvoking repository rules" },
@@ -336,6 +361,8 @@ describe("Task invoking-step subagent snapshot", () => {
 		live.systemPrompt = "Later system prompt"
 		task.reasoningPreference = { kind: "effort", effort: "high" }
 		Reflect.set(task, "_taskApiConfigName", "Later profile")
+		modelRoute.profileId = "later-profile-id"
+		modelRoute.profileName = "Later profile"
 
 		expect(task.getSubagentInvocationContext()).toEqual(captured)
 		expect(step.getRequest()).toEqual(request)
@@ -358,6 +385,30 @@ describe("Task invoking-step subagent snapshot", () => {
 		first.finalAssistantMessageIndexes.length = 0
 
 		expect(task.getSubagentInvocationContext()).toEqual(original)
+	})
+
+	it("keeps a FakeAI registry locator separate from the actual model recorded in the invoking step", () => {
+		const { task, capture, apiConfiguration, effectiveApiConfiguration, live, modelRoute } = invocationHarness()
+		const fakeAi = { id: "registered-scripted-provider" }
+		Object.assign(apiConfiguration, { apiProvider: "fake-ai", apiModelId: undefined, fakeAi })
+		Object.assign(effectiveApiConfiguration, { apiProvider: "fake-ai", apiModelId: undefined, fakeAi })
+		Object.assign(modelRoute, { provider: "fake-ai", modelId: fakeAi.id, profileId: undefined })
+		live.modelId = "actual-scripted-reasoning-model"
+
+		const step = capture()
+		expect(step.snapshot.context.provider.modelId).toBe("actual-scripted-reasoning-model")
+		expect(step.getSubagentInvocationContext()).toMatchObject({
+			apiConfiguration: { apiProvider: "fake-ai", fakeAi: { id: "registered-scripted-provider" } },
+			modelRoute: { provider: "fake-ai", modelId: "registered-scripted-provider" },
+		})
+
+		fakeAi.id = "later-scripted-provider"
+		modelRoute.modelId = fakeAi.id
+		expect(task.getSubagentInvocationContext()).toMatchObject({
+			apiConfiguration: { fakeAi: { id: "registered-scripted-provider" } },
+			modelRoute: { modelId: "registered-scripted-provider" },
+		})
+		expect(step.snapshot.context.provider.modelId).toBe("actual-scripted-reasoning-model")
 	})
 
 	it("reuses the invoking boundary and original provider handler across transport retries", () => {

@@ -4,6 +4,7 @@ import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ApiStreamChunk } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
+import { invalidateOpaqueProviderStateReplay } from "../../task-persistence/providerStateScope"
 import { getEffectiveApiHistory, getToolFreeMetadata, summarizeConversation } from "../index"
 
 vi.mock("@alpha-code/telemetry", () => ({
@@ -50,6 +51,55 @@ const completed: ApiStreamChunk = {
 }
 
 describe("isolated summary requests", () => {
+	it.each([{ isAutomaticTrigger: false }, { isAutomaticTrigger: true }, { forceCompaction: true }])(
+		"preserves durable route replay revocation through compaction (%j)",
+		async (trigger) => {
+			const { options, messages, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
+			const tail: ApiMessage[] = [
+				{ role: "user", content: "Continue from the result.", ts: 4 },
+				{
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "Private reasoning", signature: "prior-account-signature" },
+						{ type: "tool_use", id: "retained-call", name: "read_file", input: { path: "recent.ts" } },
+					],
+					ts: 5,
+				},
+				{
+					role: "user",
+					content: [{ type: "tool_result", tool_use_id: "retained-call", content: "Recent evidence." }],
+					ts: 6,
+				},
+			]
+			const invalidated = invalidateOpaqueProviderStateReplay([
+				messages[0],
+				{
+					...messages[1],
+					reasoning_details: [{ type: "reasoning.encrypted", data: "prior-account-prefix" }],
+				},
+				...tail,
+			])
+			const before = structuredClone(invalidated)
+			const result = await summarizeConversation({
+				...options,
+				...trigger,
+				messages: invalidated,
+				recentTailTokenBudget: 500,
+			})
+			expect(result.status).toBe("reduced")
+			const request = vi.mocked(handler.createMessage).mock.calls[0][1]
+			expect(JSON.stringify(request)).not.toContain("prior-account")
+			expect(JSON.stringify(request)).not.toContain("provider_state_replay_disabled")
+			const reloaded = JSON.parse(JSON.stringify(result.messages)) as ApiMessage[]
+			const active = getEffectiveApiHistory(reloaded)
+			expect(active.slice(1)).toEqual(invalidated.slice(2))
+			expect(active.at(-2)).toHaveProperty("provider_state_replay_disabled", true)
+			expect(reloaded[1]).toHaveProperty("provider_state_replay_disabled", true)
+			expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
+			expect(invalidated).toEqual(before)
+		},
+	)
+
 	it("summarizes accepted standalone reasoning history without exposing opaque prefix or tail state", async () => {
 		const { options, messages, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
 		const standaloneReasoning = {

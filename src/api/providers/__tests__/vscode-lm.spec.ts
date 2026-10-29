@@ -118,6 +118,7 @@ import type { ModelRequestPhase, ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
 import { ApiStreamDeadlineError, iterateApiStreamWithAbort } from "../../transform/stream"
+import { ApiRequestTimeoutError } from "../utils/timeout-config"
 import { TelemetryService } from "@alpha-code/telemetry"
 import { countContextTokens, getEffectiveApiHistory, summarizeConversation } from "../../../core/condense"
 import { getContextLimits, manageContext } from "../../../core/context-management"
@@ -2649,6 +2650,37 @@ describe("VsCodeLmHandler", () => {
 				} finally {
 					log.mockRestore()
 				}
+			},
+		)
+
+		it("preserves retryable provider inactivity from its owning task through VS Code cancellation", async () => {
+			const controller = new AbortController()
+			controller.abort(new ApiRequestTimeoutError("Owned provider stream", 100))
+			await expect(
+				handler
+					.createMessage("System", [{ role: "user", content: "Hello" }], {
+						taskId: "owned-provider-inactivity",
+						signal: controller.signal,
+					})
+					.next(),
+			).rejects.toMatchObject({ code: "ProviderTimeout", timeoutScope: "provider_idle", retryable: true })
+			expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+		})
+
+		it.each(["request_deadline", "retry_deadline", "compaction_deadline"] as const)(
+			"preserves the %s cause through the VS Code cancellation adapter",
+			async (timeoutScope) => {
+				const controller = new AbortController()
+				controller.abort(new ApiStreamDeadlineError(undefined, timeoutScope))
+				await expect(
+					handler
+						.createMessage("System", [{ role: "user", content: "Hello" }], {
+							taskId: "typed-deadline",
+							signal: controller.signal,
+						})
+						.next(),
+				).rejects.toMatchObject({ code: "ProviderTimeout", timeoutScope, retryable: false })
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
 			},
 		)
 

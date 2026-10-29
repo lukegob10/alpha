@@ -77,6 +77,8 @@ export const historyItemSchema = z.object({
 		.optional(),
 	/** Explicit task-local model selection; provider credentials and policy remain in the saved profile. */
 	threadModelOverride: z.string().trim().min(1).max(256).optional(),
+	/** Captured task-local route identity; stable profile IDs prevent restore from borrowing another account. */
+	threadModelRoute: subagentModelRouteStateSchema.optional(),
 	tokensIn: z.number(),
 	tokensOut: z.number(),
 	cacheWrites: z.number().optional(),

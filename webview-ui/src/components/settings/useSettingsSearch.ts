@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useRef, createContext, useContext } from "react"
+import { useState, useMemo, useCallback, useRef, useEffect, createContext, useContext } from "react"
 import { Fzf } from "fzf"
 
 import type { SectionName } from "./SettingsView"
@@ -42,27 +42,49 @@ export function useSearchIndexContext() {
 export function useSearchIndexRegistry(getSectionLabel: (section: SectionName) => string) {
 	const settingsRef = useRef<Map<string, Omit<SearchableSettingData, "sectionLabel">>>(new Map())
 	const [index, setIndex] = useState<SearchableSettingData[]>([])
-	const updateScheduled = useRef(false)
+	const updateFrame = useRef<number>()
 
 	const scheduleUpdate = useCallback(() => {
-		if (updateScheduled.current) return
-		updateScheduled.current = true
+		if (updateFrame.current !== undefined) return
 
 		// Batch updates to avoid frequent re-renders
-		requestAnimationFrame(() => {
+		updateFrame.current = requestAnimationFrame(() => {
+			updateFrame.current = undefined
 			const settings = Array.from(settingsRef.current.values()).map((s) => ({
 				...s,
 				sectionLabel: getSectionLabel(s.section),
 			}))
-			setIndex(settings)
-			updateScheduled.current = false
+			setIndex((previous) =>
+				previous.length === settings.length &&
+				previous.every(
+					(setting, index) =>
+						setting.settingId === settings[index].settingId &&
+						setting.section === settings[index].section &&
+						setting.label === settings[index].label &&
+						setting.sectionLabel === settings[index].sectionLabel,
+				)
+					? previous
+					: settings,
+			)
 		})
 	}, [getSectionLabel])
+
+	useEffect(() => {
+		// Refresh translated section labels without republishing an unchanged index.
+		if (settingsRef.current.size > 0) scheduleUpdate()
+		return () => {
+			if (updateFrame.current !== undefined) cancelAnimationFrame(updateFrame.current)
+			updateFrame.current = undefined
+		}
+	}, [scheduleUpdate])
 
 	const contextValue = useMemo<SearchIndexContextValue>(
 		() => ({
 			registerSetting: (setting) => {
-				settingsRef.current.set(setting.settingId, setting)
+				const previous = settingsRef.current.get(setting.settingId)
+				// Tabs remount after indexing; identical registrations must retain the index and fuzzy matcher.
+				if (previous?.section === setting.section && previous.label === setting.label) return
+				settingsRef.current.set(setting.settingId, { ...setting })
 				scheduleUpdate()
 			},
 		}),

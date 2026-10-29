@@ -1,4 +1,4 @@
-import type { McpServer, ModelInfo, ModeConfig, CustomToolDefinition } from "@alpha-code/types"
+import type { McpServer, ModelInfo, ModeConfig, CustomToolDefinition, ProviderSettingsEntry } from "@alpha-code/types"
 import { parametersSchema as z } from "@alpha-code/types"
 import { customToolRegistry } from "@alpha-code/core"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -151,6 +151,27 @@ afterEach(() => {
 })
 
 describe("TaskToolCatalogCache effective input invalidation", () => {
+	it("keeps discovery eager without embedding mutable saved profiles in cached tool definitions", async () => {
+		const { options } = createFixture()
+		const profiles: ProviderSettingsEntry[] = [
+			{ id: "haiku", name: "Haiku 5.5", apiProvider: "vscode-lm", modelId: "claude-haiku-5.5" },
+		]
+		options.provider.getProviderProfileEntries = () => profiles
+		const first = await capture(options)
+		const firstSchemas = JSON.stringify(first.schemas)
+		expect(firstSchemas).toContain("list_provider_profiles")
+		expect(firstSchemas).not.toContain("Haiku 5.5")
+		expect(await capture(options)).toBe(first)
+
+		profiles[0] = { ...profiles[0], name: "Haiku Direct", apiProvider: "anthropic", modelId: "claude-haiku-5-5" }
+		const changed = await capture(options)
+		expect(changed).toBe(first)
+		expect(JSON.stringify(changed.schemas)).not.toContain("Haiku Direct")
+		expect(JSON.stringify(first.schemas)).toBe(firstSchemas)
+		profiles[0] = { ...profiles[0], availability: "invalid" }
+		expect(JSON.stringify((await capture(options)).schemas)).not.toContain("Haiku Direct")
+	})
+
 	it("reuses one capture for equivalent object keys and MCP tool order", async () => {
 		const { servers, options } = createFixture()
 		options.experiments = { imageGeneration: false, runSlashCommand: false }

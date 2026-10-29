@@ -30,6 +30,9 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Create a new thread, with a short parser review prompt.",
 		"Create a new thread\nDon't change any files.",
 		"Create a new thread, don't create it, create a new chat instead.",
+		'Please find my saved profile "Live review 42" and use it to create a new thread in Alpha. Use that profile\'s configured model and reasoning.',
+		"Use this to start a new chat for the parser.",
+		"Please use that to launch a separate task for review.",
 	])("accepts a direct request: %s", (request) => {
 		expect(isExplicitIndependentTaskRequest(request)).toBe(true)
 	})
@@ -68,6 +71,13 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Create a new thread, please don't.",
 		"'Create a new thread, don't create it, create another thread'",
 		"Please 'create a new thread, don't create it, create another thread'",
+		"How do I use it to create a new thread?",
+		"Explain why we use it to create a new thread.",
+		"Use it to explain how to create a new thread.",
+		'"Use it to create a new thread."',
+		"Use it to create a new thread only after I approve.",
+		"Use it to create a new thread. Actually, don't create it.",
+		"Use it to create a new thread. Don't use it to create one.",
 	])("rejects an absent or indirect request: %s", (request) => {
 		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
 	})
