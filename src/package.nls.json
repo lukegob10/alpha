@@ -64,5 +64,6 @@
 	"command.openTickets.title": "Alpha: Tickets",
 	"command.openIncidents.title": "Alpha: Incident Dashboard",
 	"command.exportDiagnostics.title": "Alpha: Export Chat Diagnostics",
+	"command.recoverTaskHistory.title": "Alpha: Recover Task History",
 	"command.previewHtmlDocument.title": "Preview HTML Document"
 }

@@ -1,12 +1,84 @@
 import { describe, expect, it } from "vitest"
+import { normalizeAssistantMessageMetadata } from "@alpha-code/types"
 import { createAgentResponse } from "../../../core/agent/AgentResponse"
+import { buildCanonicalAssistantHistoryItems } from "../../../core/task-persistence/canonicalAssistantHistory"
 import { splitMemoryCitations, stripMemoryCitations } from "../../../shared/memory-citations"
-import { assistantMemoryCitationReferences, parseMemoryCitationReferences } from "../MemoryCitations"
+import {
+	assistantMemoryCitationReferences,
+	parseMemoryCitationReferences,
+	parseMemoryCitation,
+	withAssistantMemoryCitations,
+} from "../MemoryCitations"
 
 const body = (ids = "source-1") => `<rollout_ids>\n${ids}\n</rollout_ids>`
 const citation = (ids = "source-1") => `<alpha-mem-citation>\n${body(ids)}\n</alpha-mem-citation>`
 
 describe("Alpha memory citations", () => {
+	it("round-trips citation locations and notes through canonical text merging and persistence", () => {
+		const block = `<citation_entries>\nrollout_summaries/source-1.md:2-8|note=[prior task evidence]\n</citation_entries>\n${body()}`
+		const raw = `Answer.\n<alpha-mem-citation>\n${block}\n</alpha-mem-citation>`
+		const response = createAgentResponse([
+			{ type: "text", id: "message-1", phase: "final_answer", text: raw.slice(0, 12) },
+			{ type: "text", id: "message-1", phase: "final_answer", text: raw.slice(12) },
+		])
+		const enriched = withAssistantMemoryCitations(response)
+		const expected = {
+			entries: [{ path: "rollout_summaries/source-1.md", lineStart: 2, lineEnd: 8, note: "prior task evidence" }],
+			rolloutIds: ["source-1"],
+		}
+		expect(enriched.text).toBe(raw)
+		expect(response.items).not.toEqual(enriched.items)
+		expect(response.items[1]).not.toHaveProperty("memoryCitation")
+		const history = buildCanonicalAssistantHistoryItems(enriched)
+		expect(history).toHaveLength(1)
+		expect(history[0]).toMatchObject({ text: raw, memoryCitation: expected })
+		expect(normalizeAssistantMessageMetadata(JSON.parse(JSON.stringify(history[0])))).toMatchObject({
+			memoryCitation: expected,
+		})
+		expect(assistantMemoryCitationReferences(enriched)).toEqual(["rollout_summaries/source-1.md", "source-1"])
+	})
+
+	it("retains index attribution without marking an index as rollout usage", () => {
+		const block = `<citation_entries>\nMEMORY.md:1-2|note=[index]\nmemory_summary.md:3-4|note=[summary]\n</citation_entries>`
+		expect(parseMemoryCitation(block)).toEqual({
+			entries: [
+				{ path: "MEMORY.md", lineStart: 1, lineEnd: 2, note: "index" },
+				{ path: "memory_summary.md", lineStart: 3, lineEnd: 4, note: "summary" },
+			],
+			rolloutIds: [],
+		})
+		expect(parseMemoryCitationReferences(block)).toEqual([])
+	})
+
+	it.each([
+		"../outside.md",
+		"/private.md",
+		"rollout_summaries/../../private.md",
+		"file:///private.md",
+		"command:run",
+	])("rejects unsafe structured citation locations: %s", (path) => {
+		expect(
+			parseMemoryCitation(`<citation_entries>\n${path}:1-2|note=[unsafe]\n</citation_entries>`),
+		).toBeUndefined()
+		expect(
+			normalizeAssistantMessageMetadata({
+				id: "safe-identity",
+				memoryCitation: { entries: [{ path, lineStart: 1, lineEnd: 2, note: "unsafe" }], rolloutIds: [] },
+			}),
+		).toEqual({ id: "safe-identity" })
+	})
+
+	it("preserves structured citation provenance in normalized canonical metadata", () => {
+		const memoryCitation = {
+			entries: [{ path: "rollout_summaries/source.md", lineStart: 2, lineEnd: 8, note: "prior task evidence" }],
+			rolloutIds: ["source-1"],
+		}
+		expect(normalizeAssistantMessageMetadata({ id: "message-1", memoryCitation })).toEqual({
+			id: "message-1",
+			memoryCitation,
+		})
+	})
+
 	it("parses exact source IDs and relative rollout locations once", () => {
 		expect(
 			parseMemoryCitationReferences(

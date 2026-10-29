@@ -1,5 +1,6 @@
 export { type ApiMessage, type ApiMessagesCommitReceipt, readApiMessages, saveApiMessages } from "./apiMessages"
 export { getLatestTaskCompletionText } from "./completionText"
+export { recoverApiMessages } from "./recoverApiMessages"
 export { readTaskMessages, saveTaskMessages } from "./taskMessages"
 export { taskMetadata } from "./taskMetadata"
 export {

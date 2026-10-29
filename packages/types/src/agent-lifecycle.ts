@@ -124,6 +124,7 @@ export const agentLifecycleAssistantTextItemSchema = z
 		/** Message phase never substitutes for explicit turn status. */
 		phase: assistantMessagePhaseSchema.optional(),
 		outputIndex: assistantMessageMetadataSchema.shape.outputIndex,
+		memoryCitation: assistantMessageMetadataSchema.shape.memoryCitation,
 	})
 	.strict()
 

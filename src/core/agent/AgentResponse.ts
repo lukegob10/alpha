@@ -68,7 +68,16 @@ export type AgentResponseItem =
 			id?: string
 			summary?: unknown[]
 	  }
-	| { type: "tool_call"; id: string; name: string; arguments: unknown }
+	| {
+			type: "tool_call"
+			id: string
+			name: string
+			arguments: unknown
+			/** A completed, identified call whose payload must produce an error receipt without execution. */
+			argumentParseError?: string
+			/** Bounded original malformed payload retained as evidence, never an object-only provider input. */
+			rawArguments?: string
+	  }
 	| ({ type: "usage" } & AgentResponseUsage)
 	| { type: "grounding"; sources: GroundingSource[] }
 	| AgentResponseError

@@ -16,7 +16,7 @@ const manageCommand = {
 		name: "manage_command",
 		strict: false,
 		description:
-			"Wait for new output or completion, stop, send input to, or read truncated output from a command started by this task. Use the execution_id returned by exec_command or by historical shell calls for wait, stop, or input. Use action read with the artifact_id returned by exec_command when output was persisted. Wait inside the host instead of repeatedly polling unchanged output. A running server is not ready merely because it has a process: inspect its output and verify its observed URL before browser interaction. Input is supported only by interactive terminal providers. A stop request is not proof of exit; inspect the returned status. Never relaunch an existing server just to obtain its output.",
+			"Collect command output until the wait deadline or completion, stop, send input to, or read truncated output from a command started by this task. Use the execution_id returned by exec_command or by historical shell calls for wait, stop, or input. Use action read with the artifact_id returned by exec_command when output was persisted. Wait inside the host instead of repeatedly polling unchanged output. A running server is not ready merely because it has a process: inspect its output and verify its observed URL before browser interaction. Input is supported only by interactive terminal providers. A stop request is not proof of exit; inspect the returned status. Never relaunch an existing server just to obtain its output.",
 		parameters: {
 			type: "object",
 			properties: {
@@ -35,7 +35,7 @@ const manageCommand = {
 					minimum: 0,
 					maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
 					description:
-						"Maximum wait in milliseconds; returns early on output, completion, or cancellation. Default 10000.",
+						"Maximum wait in milliseconds; collects output throughout the wait and returns early on completion, failure, or cancellation. Default 10000.",
 				},
 				artifact_id: {
 					type: "string",
@@ -99,7 +99,7 @@ export function createWriteStdinTool(artifactOnly = false): OpenAI.Chat.ChatComp
 			minimum: 0,
 			maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
 			description:
-				"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Returns early on new output, completion, or cancellation. Session calls only.",
+				"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Collects output throughout the wait and returns early on completion, failure, or cancellation. Session calls only.",
 		},
 		max_output_tokens: {
 			type: "integer",

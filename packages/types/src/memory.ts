@@ -1,5 +1,33 @@
 import { z } from "zod"
 
+/** Citation locations are memory-relative data, never arbitrary filesystem or command targets. */
+export const memoryCitationPathSchema = z
+	.string()
+	.regex(/^(?:MEMORY\.md|memory_summary\.md|rollout_summaries\/[A-Za-z0-9][A-Za-z0-9_-]{0,180}\.md)$/)
+
+export const memoryCitationEntrySchema = z
+	.object({
+		path: memoryCitationPathSchema,
+		lineStart: z.number().int().min(1).max(999_999_999),
+		lineEnd: z.number().int().min(1).max(999_999_999),
+		note: z
+			.string()
+			.max(160)
+			.regex(/^[^\r\n[\]<>]*$/),
+	})
+	.strict()
+	.refine((entry) => entry.lineStart <= entry.lineEnd, "Memory citation line range is reversed")
+
+export const memoryCitationSchema = z
+	.object({
+		entries: z.array(memoryCitationEntrySchema).max(128),
+		rolloutIds: z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/)).max(128),
+	})
+	.strict()
+
+export type MemoryCitationEntry = z.infer<typeof memoryCitationEntrySchema>
+export type MemoryCitation = z.infer<typeof memoryCitationSchema>
+
 /**
  * Native Alpha settings for Codex CLI's current memory contract.
  * Reference: openai/codex 970111f6cb62cc02fe36a82ea7d71b37a2889c97 (2026-10-23).

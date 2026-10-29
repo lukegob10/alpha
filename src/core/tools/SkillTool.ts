@@ -1,8 +1,10 @@
 import path from "path"
+import { randomUUID } from "node:crypto"
 
 import { t } from "../../i18n"
 import { Task } from "../task/Task"
 import { digestValue } from "../agent/StepContext"
+import { DEFAULT_TOOL_OUTPUT_LIMIT } from "../agent/ToolPolicy"
 import { formatResponse } from "../prompts/responses"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { NativeToolArgs, ToolUse } from "../../shared/tools"
@@ -15,6 +17,50 @@ import {
 } from "../../services/skills/skillInvocation"
 
 type SkillParams = NativeToolArgs["skill"]
+
+const MAX_SKILL_INSTRUCTION_CHARACTERS = 512 * 1024
+const MAX_PENDING_SKILL_READS = 8
+
+interface SkillInstructionRead {
+	identity: string
+	contents: string
+	offset: number
+}
+
+/** Preserve every instruction while respecting the collector's complete response budget. */
+function instructionPage(contents: string, start: number, budget: number, nextCursor: string) {
+	const render = (end: number) =>
+		JSON.stringify({
+			contents: contents.slice(start, end),
+			complete: end === contents.length,
+			next_cursor: end === contents.length ? null : nextCursor,
+		})
+	const complete = render(contents.length)
+	if (complete.length <= budget) return { text: complete, end: contents.length, complete: true }
+	let low = start
+	let high = contents.length
+	let end = start
+	while (low <= high) {
+		const middle = Math.floor((low + high) / 2)
+		let boundary = middle
+		if (
+			boundary > start &&
+			boundary < contents.length &&
+			contents.charCodeAt(boundary - 1) >= 0xd800 &&
+			contents.charCodeAt(boundary - 1) <= 0xdbff &&
+			contents.charCodeAt(boundary) >= 0xdc00 &&
+			contents.charCodeAt(boundary) <= 0xdfff
+		) {
+			boundary--
+		}
+		if (render(boundary).length <= budget) {
+			end = boundary
+			low = middle + 1
+		} else high = middle - 1
+	}
+	if (end === start) throw new Error(t("skills:errors.instruction_output_budget"))
+	return { text: render(end), end, complete: end === contents.length }
+}
 
 function buildSkillCatalogPage(
 	skills: readonly SkillCatalogEntry[],
@@ -74,6 +120,7 @@ function formatSuggestedSkillNames(names: readonly string[]): string {
 
 export class SkillTool extends BaseTool<"skill"> {
 	readonly name = "skill" as const
+	private readonly instructionReads = new WeakMap<Task, Map<string, SkillInstructionRead>>()
 
 	private async publishCatalogPage(
 		skills: readonly SkillCatalogEntry[],
@@ -223,6 +270,17 @@ export class SkillTool extends BaseTool<"skill"> {
 				}
 			}
 
+			const contents = buildSkillResult(skillName, args, skillContent)
+			if (contents.length > MAX_SKILL_INSTRUCTION_CHARACTERS) {
+				throw new Error(t("skills:errors.instruction_size_limit"))
+			}
+			const identity = digestValue({ skillName, args, currentMode, ...skillContent })
+			const cursor = params.cursor ?? undefined
+			const pending = cursor !== undefined ? this.instructionReads.get(task)?.get(cursor) : undefined
+			if (cursor !== undefined && (!pending || pending.identity !== identity)) {
+				throw new Error(t("skills:errors.instruction_invalid_cursor"))
+			}
+
 			// Build approval message
 			const toolMessage = buildSkillApprovalMessage(skillName, args, skillContent)
 
@@ -233,8 +291,30 @@ export class SkillTool extends BaseTool<"skill"> {
 			}
 
 			callbacks.signal?.throwIfAborted()
+			if (cursor !== undefined && this.instructionReads.get(task)?.get(cursor) !== pending) {
+				throw new Error(t("skills:errors.instruction_invalid_cursor"))
+			}
+			const available = callbacks.getRemainingOutputChars?.() ?? DEFAULT_TOOL_OUTPUT_LIMIT
+			const budget = Number.isFinite(available) ? Math.max(0, Math.floor(available)) : DEFAULT_TOOL_OUTPUT_LIMIT
+			if (!pending && contents.length <= budget) {
+				pushToolResult(contents)
+			} else {
+				const nextCursor = randomUUID()
+				const page = instructionPage(pending?.contents ?? contents, pending?.offset ?? 0, budget, nextCursor)
+				// Failed delivery leaves an existing cursor retryable and never advances provenance.
+				pushToolResult(page.text)
+				const reads = this.instructionReads.get(task) ?? new Map<string, SkillInstructionRead>()
+				if (cursor) reads.delete(cursor)
+				if (!page.complete) {
+					while (reads.size >= MAX_PENDING_SKILL_READS) reads.delete(reads.keys().next().value!)
+					reads.set(nextCursor, { identity, contents, offset: page.end })
+				}
+				if (reads.size > 0) this.instructionReads.set(task, reads)
+				else this.instructionReads.delete(task)
+				if (!page.complete) return
+			}
+			callbacks.signal?.throwIfAborted()
 			await task.recordLoadedSkill?.(skillName, skillContent.path, digestValue(skillContent.instructions))
-			pushToolResult(buildSkillResult(skillName, args, skillContent))
 		} catch (error) {
 			await handleError("executing skill", error as Error)
 		}

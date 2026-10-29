@@ -30,21 +30,24 @@ const makeEvent = (type: "started" | "status" | "completed", snapshot: Record<st
 })
 
 describe("asynchronous sub-agent contracts", () => {
-	it("accepts a stable, nonterminal spawn handle", () => {
-		expect(
-			subagentSpawnHandleSchema.safeParse({
-				taskId: "child-1",
-				runId: "child-1:1",
-				groupId: "group-1",
-				parentTaskId: "parent-1",
-				path: "/root/ada",
-				nickname: "Ada",
-				role: "explore",
-				status: "pending",
-				createdAt: 10,
-			}).success,
-		).toBe(true)
-	})
+	it.each(["/root/ada", "/root/code_review", "/root/legacy-name/code_review"])(
+		"accepts spawn handle path %s",
+		(path) => {
+			expect(
+				subagentSpawnHandleSchema.safeParse({
+					taskId: "child-1",
+					runId: "child-1:1",
+					groupId: "group-1",
+					parentTaskId: "parent-1",
+					path,
+					nickname: "Ada",
+					role: "explore",
+					status: "pending",
+					createdAt: 10,
+				}).success,
+			).toBe(true)
+		},
+	)
 
 	it("rejects a completed run masquerading as a spawn handle", () => {
 		const result = subagentSpawnHandleSchema.safeParse({

@@ -776,6 +776,12 @@ describe("NativeToolCallParser", () => {
 
 		describe("agent lifecycle tools", () => {
 			it.each([
+				["list_agents", { path_prefix: "/root/code_review" }],
+				["send_message", { target: "/root/code_review", message: "Check underscores." }],
+				[
+					"followup_task",
+					{ target: "worker/code_review", message: "  Detailed findings\n" + "x".repeat(8_000) + "  " },
+				],
 				["list_agents", { path_prefix: "/root/review" }],
 				["wait_agent", { timeout_ms: 45_000 }],
 				["wait_agent", { timeout_ms: 45_000, target: "/root/review", until_terminal: true }],
@@ -1436,15 +1442,17 @@ describe("NativeToolCallParser", () => {
 		})
 
 		describe("agent lifecycle tools", () => {
-			it("preserves a streamed follow-up through finalization", () => {
+			it.each([
+				{ target: "/root/review", message: "Inspect the remaining race." },
+				{ target: "worker/code_review", message: "  Detailed handoff:\n" + "x".repeat(8_000) + "  " },
+			])("preserves a streamed follow-up to $target through finalization", (payload) => {
 				const id = "followup-streaming"
-				const payload = { target: "/root/review", message: "Inspect the remaining race." }
 				const encoded = JSON.stringify(payload)
 				const splitAt = encoded.indexOf('"message"')
 				NativeToolCallParser.startStreamingToolCall(id, "followup_task")
 
 				const incomplete = NativeToolCallParser.processStreamingChunk(id, encoded.slice(0, splitAt))
-				expect(incomplete?.nativeArgs).toEqual({ target: "/root/review", message: undefined })
+				expect(incomplete?.nativeArgs).toEqual({ target: payload.target, message: undefined })
 
 				const partial = NativeToolCallParser.processStreamingChunk(id, encoded.slice(splitAt))
 				expect(partial?.nativeArgs).toEqual(payload)

@@ -252,10 +252,29 @@ afterEach(() => {
 })
 
 describe.each(["vscode", "execa"] as const)("completed %s command receipts", (provider) => {
+	it("honors a native output budget above the legacy 8000-character receipt cap", async () => {
+		const output = "x".repeat(20_000) + "final diagnostic"
+		const fixture = await completedReceiptFixture(provider, output)
+		const result = (
+			await fixture.run("full-output", "write_stdin", {
+				session_id: fixture.sessionId,
+				max_output_tokens: 10_000,
+			})
+		).results[0]
+		expect(result.commandResult?.output).toBe(output)
+		expect(result.commandResult).not.toHaveProperty("has_more_output")
+		expect(commandSessionRegistry.resolve(fixture.task, fixture.sessionId)).toBeUndefined()
+	})
+
 	it("advertises and drains the retained tail without implying the process is still running", async () => {
 		const output = `${"build progress\n".repeat(600)}final diagnostic`
 		const fixture = await completedReceiptFixture(provider, output)
-		const first = (await fixture.run("first", "write_stdin", { session_id: fixture.sessionId })).results[0]
+		const first = (
+			await fixture.run("first", "write_stdin", {
+				session_id: fixture.sessionId,
+				max_output_tokens: 2_000,
+			})
+		).results[0]
 		expect(first).toMatchObject({
 			status: "success",
 			executionStatus: "success",
@@ -410,10 +429,11 @@ describe("native command transaction consistency", () => {
 			const fixture = commandFixture()
 			const sessionId = await startBackgroundCommand(fixture)
 			if (completion === "before") await fixture.finish(7)
+			const completedListeners = fixture.terminalProcess.listenerCount("completed")
 			const poll = fixture.run("poll", "write_stdin", { session_id: sessionId, yield_time_ms: 30_000 })
 			if (completion === "during") {
 				await vi.advanceTimersByTimeAsync(0)
-				expect(fixture.terminalProcess.listenerCount("output_available")).toBe(1)
+				expect(fixture.terminalProcess.listenerCount("completed")).toBe(completedListeners + 1)
 				await fixture.finish(7)
 			}
 			const outcome = await poll

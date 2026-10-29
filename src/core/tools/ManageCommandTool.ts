@@ -32,7 +32,10 @@ export async function waitForCommand(
 	signal?: AbortSignal,
 ): Promise<void> {
 	signal?.throwIfAborted()
-	if (process.isSettled || process.hasUnretrievedOutput() || timeoutMs === 0) return
+	// Codex collect_output_until_deadline (upstream main, retrieved 2026-10-29)
+	// accumulates progress until the deadline or terminal outcome, even with buffered output.
+	// Terminal adapters already bound and archive output independently of this wait.
+	if (process.isSettled || timeoutMs === 0) return
 	await new Promise<void>((resolve, reject) => {
 		const finish = () => {
 			cleanup()
@@ -47,15 +50,13 @@ export async function waitForCommand(
 			clearTimeout(timer)
 			process.off("completed", finish)
 			process.off("error", finish)
-			process.off("output_available", finish)
 			signal?.removeEventListener("abort", cancel)
 		}
 		process.once("completed", finish)
 		process.once("error", finish)
-		process.once("output_available", finish)
 		signal?.addEventListener("abort", cancel, { once: true })
 		if (signal?.aborted) cancel()
-		else if (process.isSettled || process.hasUnretrievedOutput()) finish()
+		else if (process.isSettled) finish()
 	})
 }
 
@@ -152,7 +153,7 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				current.status === "failed" && typeof current.exitCode === "number" && current.signalName === undefined
 			const receiptOutputLimit =
 				callbacks.commandResultMaxOutputTokens !== undefined
-					? Math.max(0, Math.min(8_000, getCommandToolResultLimit(callbacks) - 512))
+					? Math.max(0, getCommandToolResultLimit(callbacks) - 512)
 					: Math.max(0, Math.min(8_000, (callbacks.getRemainingOutputChars?.() ?? 9_000) - 1_000))
 			const receipt = process?.captureUnretrievedOutput(receiptOutputLimit)
 			try {

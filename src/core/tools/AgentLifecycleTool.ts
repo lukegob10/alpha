@@ -1,4 +1,10 @@
-import type { AlphaSayTool, ToolName } from "@alpha-code/types"
+import {
+	AGENT_CANONICAL_PATH_PATTERN,
+	AGENT_TARGET_REFERENCE_PATTERN,
+	AGENT_MESSAGE_MAX_CHARACTERS,
+	type AlphaSayTool,
+	type ToolName,
+} from "@alpha-code/types"
 
 import type { Task } from "../task/Task"
 
@@ -39,8 +45,8 @@ export interface AgentLifecycleControlProvider {
 	closeAgent(parent: Task, target: string): Promise<unknown>
 }
 
-const AGENT_TARGET_PATTERN = /^(?:\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$/
-const CANONICAL_AGENT_PATH_PATTERN = /^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/
+const AGENT_TARGET_PATTERN = new RegExp(AGENT_TARGET_REFERENCE_PATTERN)
+const CANONICAL_AGENT_PATH_PATTERN = new RegExp(AGENT_CANONICAL_PATH_PATTERN)
 
 export function requireAgentTarget(value: unknown): string {
 	if (typeof value !== "string" || !AGENT_TARGET_PATTERN.test(value)) {
@@ -62,20 +68,20 @@ export function optionalCanonicalPath(value: unknown): string | undefined {
 	return value
 }
 
-export function requireNonEmptyMessage(value: unknown, field = "message"): string {
-	if (typeof value !== "string") {
-		throw new Error(`${field} must be a string between 1 and 2,000 characters`)
+export function requireNonEmptyMessage(
+	value: unknown,
+	field = "message",
+	maximum = AGENT_MESSAGE_MAX_CHARACTERS,
+): string {
+	if (typeof value !== "string" || value.trim().length === 0 || value.length > maximum) {
+		throw new Error(`${field} must be a string between 1 and ${maximum.toLocaleString("en-US")} characters`)
 	}
-	const normalized = value.trim()
-	if (normalized.length === 0 || normalized.length > 2_000) {
-		throw new Error(`${field} must be a string between 1 and 2,000 characters`)
-	}
-	return normalized
+	return value
 }
 
 export function optionalReason(value: unknown): string | undefined {
 	if (value === undefined || value === null) return undefined
-	return requireNonEmptyMessage(value, "reason")
+	return requireNonEmptyMessage(value, "reason", 2_000)
 }
 
 export function resolveWaitTimeout(value: unknown): number {

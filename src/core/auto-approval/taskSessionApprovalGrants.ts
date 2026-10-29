@@ -1,5 +1,6 @@
 import { createHash } from "crypto"
 import stringify from "safe-stable-stringify"
+import path from "path"
 
 import type { AlphaAsk } from "@alpha-code/types"
 
@@ -14,13 +15,47 @@ export interface TaskSessionApprovalIdentity {
 	argumentsValue: unknown
 	cwd?: string
 	policyDigest?: string
+	/** Host-captured path or other execution authority beyond model arguments. */
+	authorityValue?: unknown
 }
 
 const grants = new Map<string, string>()
 
+function reviewedArguments(identity: TaskSessionApprovalIdentity): unknown {
+	const value = identity.argumentsValue
+	if (
+		identity.askType !== "command" ||
+		(identity.toolName !== "exec_command" && identity.toolName !== "execute_command") ||
+		!value ||
+		typeof value !== "object" ||
+		Array.isArray(value)
+	)
+		return value
+	const args = value as Record<string, unknown>
+	if (typeof args.cmd !== "string" && typeof args.command !== "string") return value
+	// Ambiguous historical/malformed shapes retain their complete reviewed identity.
+	if ((args.cmd != null && args.command != null) || (args.workdir != null && args.cwd != null)) return value
+	if (
+		(args.workdir != null && typeof args.workdir !== "string") ||
+		(args.cwd != null && typeof args.cwd !== "string")
+	)
+		return value
+	const normalized = { ...args }
+	// Codex UnifiedExecApprovalKey excludes output/wait controls; authority remains exact.
+	delete normalized.yield_time_ms
+	delete normalized.max_output_tokens
+	delete normalized.workdir
+	delete normalized.cwd
+	return {
+		...normalized,
+		cwd: path.resolve(identity.cwd!, (args.workdir ?? args.cwd ?? ".") as string),
+		tty: args.tty ?? false,
+	}
+}
+
 /**
  * Build an opaque task-session key for one exact reviewed tool request.
- * The key binds the command text, complete tool arguments, and working directory.
+ * Command keys omit presentation controls; other tools bind their complete arguments.
  */
 export function createTaskSessionApprovalKey(identity: TaskSessionApprovalIdentity): string | undefined {
 	if (
@@ -40,9 +75,10 @@ export function createTaskSessionApprovalKey(identity: TaskSessionApprovalIdenti
 		identity.toolName,
 		identity.askType,
 		identity.description ?? null,
-		identity.argumentsValue,
+		reviewedArguments(identity),
 		identity.cwd ?? null,
 		identity.policyDigest ?? null,
+		identity.authorityValue ?? null,
 	])
 	if (!serialized || Buffer.byteLength(serialized, "utf8") > MAX_APPROVAL_IDENTITY_BYTES) return undefined
 

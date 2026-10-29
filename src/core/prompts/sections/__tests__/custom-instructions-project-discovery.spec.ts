@@ -75,7 +75,7 @@ describe("project instruction discovery", () => {
 		)
 	})
 
-	it("caps root-to-cwd AGENTS files at 32 KiB while preserving UTF-8 and Alpha local rules", async () => {
+	it("caps root-to-cwd, personal, and descendant AGENTS files together at 32 KiB", async () => {
 		const maxBytes = 32 * 1024
 		const rootText = "R".repeat(maxBytes - 3)
 		const nestedDirectory = path.join(projectCwd, "src")
@@ -98,9 +98,7 @@ describe("project instruction discovery", () => {
 
 		expect(sources).toEqual([
 			{ kind: "agents", ref: path.join(fixtureRoot, "AGENTS.override.md"), text: rootText },
-			{ kind: "agents", ref: path.join(fixtureRoot, "AGENTS.local.md"), text: localText },
-			{ kind: "agents", ref: path.join(projectCwd, "AGENTS.md"), text: "a" },
-			{ kind: "agents", ref: alphaSubfolderRules, text: alphaSubfolderText },
+			{ kind: "agents", ref: path.join(fixtureRoot, "AGENTS.local.md"), text: "Alp" },
 		])
 		expect(
 			readFileSpy.mock.calls.some(([filePath]) => {
@@ -121,9 +119,10 @@ describe("project instruction discovery", () => {
 		const prompt = renderCustomInstructionParts(parts)
 		const agentRules = parts.find(({ origin }) => origin === "agent-rules")
 
-		expect(agentRules?.content).toContain("Alpha personal guidance")
-		expect(agentRules?.content).toContain(alphaSubfolderText)
-		expect(agentRules?.content).toContain("\na")
+		expect(agentRules?.content).toContain("\nAlp")
+		expect(agentRules?.content).not.toContain("Alpha personal guidance")
+		expect(agentRules?.content).not.toContain(alphaSubfolderText)
+		expect(agentRules?.content).not.toContain("\na")
 		expect(agentRules?.content).not.toContain("�")
 		expect(agentRules?.content).not.toContain("😀")
 		expect(prompt).toContain("Alpha global guidance")

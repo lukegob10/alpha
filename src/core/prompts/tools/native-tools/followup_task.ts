@@ -1,4 +1,5 @@
 import type OpenAI from "openai"
+import { AGENT_MESSAGE_MAX_CHARACTERS } from "@alpha-code/types"
 
 import { agentTargetSchema } from "./agent_lifecycle_schema"
 
@@ -16,7 +17,7 @@ export const followup_task = {
 				message: {
 					type: "string",
 					minLength: 1,
-					maxLength: 2_000,
+					maxLength: AGENT_MESSAGE_MAX_CHARACTERS,
 					description: "The follow-up objective or instruction.",
 				},
 			},

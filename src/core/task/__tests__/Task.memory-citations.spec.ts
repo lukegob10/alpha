@@ -50,6 +50,33 @@ function fixture(options: { taskKind?: "primary" | "subagent"; diagnosticSession
 }
 
 describe("finalized assistant memory citation usage", () => {
+	it("persists structured line provenance while preserving raw text and legacy source usage", async () => {
+		const { commit, save, recordMemoryUsage } = fixture()
+		const block =
+			"<alpha-mem-citation>\n<citation_entries>\nrollout_summaries/source-1.md:2-8|note=[evidence]\n</citation_entries>\n<rollout_ids>\nsource-1\n</rollout_ids>\n</alpha-mem-citation>"
+		const output = createAgentResponse([{ type: "text", id: "answer", text: `Answer.\n${block}` }])
+		expect(await commit(output)).toBe(true)
+		expect(save.mock.calls[0][0]).toMatchObject({
+			content: output.text,
+			agentResponseItems: [
+				{
+					type: "text",
+					text: output.text,
+					memoryCitation: {
+						entries: [
+							{ path: "rollout_summaries/source-1.md", lineStart: 2, lineEnd: 8, note: "evidence" },
+						],
+						rolloutIds: ["source-1"],
+					},
+				},
+			],
+		})
+		expect(recordMemoryUsage).toHaveBeenCalledWith(
+			["rollout_summaries/source-1.md", "source-1"],
+			expect.any(String),
+		)
+	})
+
 	it("records only after durable response persistence and preserves the raw canonical output", async () => {
 		const { commit, save, recordMemoryUsage } = fixture()
 		let finishSave!: (saved: boolean) => void

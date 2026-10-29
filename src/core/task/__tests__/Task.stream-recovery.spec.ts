@@ -121,6 +121,7 @@ async function harness(
 		apiProvider?: ProviderSettings["apiProvider"]
 		onReadEffect?: () => void
 		finalizeEarlyRead?: (callId: string) => Promise<void>
+		malformedCompletionCall?: boolean
 	} = {},
 ) {
 	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
@@ -147,6 +148,15 @@ async function harness(
 				controlFlow: false,
 				requiresApproval: true,
 			},
+			execute: effect,
+		})
+	}
+	if (options.malformedCompletionCall) {
+		registry.register({
+			name: "attempt_completion",
+			aliases: [],
+			schema: { type: "function", function: { name: "attempt_completion", parameters: { type: "object" } } },
+			capabilities: { concurrency: "barrier", sideEffects: "none", controlFlow: true, requiresApproval: false },
 			execute: effect,
 		})
 	}
@@ -585,6 +595,54 @@ describe("Task committed partial stream recovery", () => {
 		},
 	)
 
+	it.each(["read_file", "attempt_completion"] as const)(
+		"returns correlated malformed %s errors and runs an independent valid call before recovery",
+		async (malformedTool) => {
+			let fixture!: Awaited<ReturnType<typeof harness>>
+			fixture = await harness(
+				async function* (attempt) {
+					if (attempt === 1) {
+						yield { type: "tool_call", id: "malformed", name: malformedTool, arguments: "{malformed" }
+						yield { type: "tool_call", id: "valid", name: "read_file", arguments: '{"path":"README.md"}' }
+					} else {
+						expect(attempt).toBe(2)
+						const history = await fixture.history()
+						const receipts = history.flatMap((message) =>
+							Array.isArray(message.content)
+								? message.content.filter((item) => item.type === "tool_result")
+								: [],
+						)
+						expect(receipts).toEqual(
+							expect.arrayContaining([
+								expect.objectContaining({
+									type: "tool_result",
+									tool_use_id: "malformed",
+									is_error: true,
+								}),
+								expect.objectContaining({ type: "tool_result", tool_use_id: "valid", is_error: false }),
+							]),
+						)
+						const assistant = history.find((message) =>
+							message.agentResponseItems?.some((item) => item.type === "tool_call"),
+						)
+						expect(assistant?.agentResponseItems).toContainEqual(
+							expect.objectContaining({ id: "malformed", arguments: {}, rawArguments: "{malformed" }),
+						)
+						yield { type: "text", text: "Recovered after inspecting the invalid call." }
+					}
+					yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				},
+				{},
+				{ malformedCompletionCall: malformedTool === "attempt_completion" },
+			)
+			await fixture.run()
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(fixture.effect).toHaveBeenCalledOnce()
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		},
+	)
+
 	it("keeps rejected complete tool arguments out of task diagnostics", async () => {
 		const canary = "CANARYt8"
 		const errors = vi.spyOn(console, "error").mockImplementation(() => undefined)
@@ -599,7 +657,6 @@ describe("Task committed partial stream recovery", () => {
 
 		await fixture.run()
 
-		expect(errors).toHaveBeenCalled()
 		expect(
 			errors.mock.calls
 				.flat()

@@ -19,6 +19,7 @@ import { evaluateCompactionProgress, getCompactionTargetTokens } from "../contex
 import { getModelReservedOutputTokens } from "../../shared/api"
 import { createTokenCountContext, TokenCountContext } from "./tokenCountContext"
 import { getToolCallId, getToolResultId } from "../../utils/tool-id"
+import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 
 export {
 	createTokenCountContext,
@@ -1089,11 +1090,9 @@ ${commandBlocks}
 	// This is necessary because some providers (like Bedrock via LiteLLM) require the `tools` parameter
 	// when tool blocks are present. By converting them to text, we can send the conversation for
 	// summarization without needing to pass the tools parameter.
-	const messagesWithTextToolBlocks = transformMessagesForCondensing(
-		maybeRemoveImageBlocks([...messagesToSummarize, finalRequestMessage], compactionApiHandler),
-	)
-
-	const requestMessages = messagesWithTextToolBlocks.map(({ role, content }) => ({ role, content }))
+	let summaryInput = messagesToSummarize
+	let overflowRetries = 0
+	let previousAttemptCost = 0
 
 	// Note: this doesn't need to be a stream, consider using something like apiHandler.completePrompt
 	const promptToUse = SUMMARY_PROMPT
@@ -1104,6 +1103,22 @@ ${commandBlocks}
 	let unsuccessfulOutcome: ApiStreamOutcomeChunk | undefined
 	let streamError: ApiStreamError | undefined
 	let unexpectedToolOutput = false
+	const retryContextOverflow = (error: unknown): boolean => {
+		if (!checkContextWindowExceededError(error) || overflowRetries >= 2) return false
+		const nextStep = getLogicalStepStarts(summaryInput)[1]
+		if (nextStep === undefined) return false
+		// Codex local compaction retries smaller input on overflow. Keep Alpha's
+		// complete-step boundary and exact tail intact (upstream retrieved 2026-10-29).
+		summaryInput = summaryInput.slice(nextStep)
+		overflowRetries++
+		previousAttemptCost = cost
+		summary = ""
+		completedOutcomeObserved = false
+		unsuccessfulOutcome = undefined
+		streamError = undefined
+		unexpectedToolOutput = false
+		return true
+	}
 	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
 		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
 		return finish(
@@ -1121,107 +1136,119 @@ ${commandBlocks}
 	// Keep host stop/cancellation outside the provider-error fallback boundary.
 	await options.beforeCompact?.()
 	signal?.throwIfAborted()
-	try {
-		// Historical tool blocks were converted to text above.  Do not let the
-		// active task tool registry leak into this summarization-only request.
-		const stream = compactionApiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
-		const iterator = stream[Symbol.asyncIterator]()
-		let reachedEof = false
+	while (true) {
+		const requestMessages = transformMessagesForCondensing(
+			maybeRemoveImageBlocks([...summaryInput, finalRequestMessage], compactionApiHandler),
+		).map(({ role, content }) => ({ role, content }))
 		try {
-			while (true) {
-				const next = await nextStreamItem(iterator, signal)
-				if (next.done) {
-					reachedEof = true
-					break
-				}
-				const chunk = next.value
-				if (chunk.type === "usage") {
-					// Preserve delivered accounting before cancellation can discard the summary.
-					if (
-						typeof chunk.totalCost === "number" &&
-						Number.isFinite(chunk.totalCost) &&
-						chunk.totalCost >= 0
-					) {
-						cost = chunk.totalCost
-						options.observeCost?.(cost)
+			// Historical tool blocks were converted to text above.  Do not let the
+			// active task tool registry leak into this summarization-only request.
+			const stream = compactionApiHandler.createMessage(
+				promptToUse,
+				requestMessages,
+				getToolFreeMetadata(metadata),
+			)
+			const iterator = stream[Symbol.asyncIterator]()
+			let reachedEof = false
+			try {
+				while (true) {
+					const next = await nextStreamItem(iterator, signal)
+					if (next.done) {
+						reachedEof = true
+						break
+					}
+					const chunk = next.value
+					if (chunk.type === "usage") {
+						// Preserve delivered accounting before cancellation can discard the summary.
+						if (
+							typeof chunk.totalCost === "number" &&
+							Number.isFinite(chunk.totalCost) &&
+							chunk.totalCost >= 0
+						) {
+							cost = previousAttemptCost + chunk.totalCost
+							options.observeCost?.(cost)
+						}
+						signal?.throwIfAborted()
+						continue
 					}
 					signal?.throwIfAborted()
-					continue
-				}
-				signal?.throwIfAborted()
-				if (chunk.type === "text") {
-					diagnostic.textParts++
-					diagnostic.summaryCharacters += chunk.text.length
-				} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
-				else if (
-					chunk.type === "tool_call" ||
-					chunk.type === "tool_call_start" ||
-					chunk.type === "tool_call_delta" ||
-					chunk.type === "tool_call_end" ||
-					chunk.type === "tool_call_partial"
-				) {
-					diagnostic.toolParts++
-					unexpectedToolOutput = true
-				}
-				if (chunk.type === "error") {
-					streamError ??= chunk
-					continue
-				}
-				if (chunk.type === "outcome") {
-					if (!streamError) {
-						if (chunk.status === "completed" && chunk.terminal && !chunk.requiresContinuation) {
-							completedOutcomeObserved = true
-						} else {
-							// An incomplete declaration cannot be repaired by a later completion.
-							unsuccessfulOutcome ??= chunk
-						}
+					if (chunk.type === "text") {
+						diagnostic.textParts++
+						diagnostic.summaryCharacters += chunk.text.length
+					} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
+					else if (
+						chunk.type === "tool_call" ||
+						chunk.type === "tool_call_start" ||
+						chunk.type === "tool_call_delta" ||
+						chunk.type === "tool_call_end" ||
+						chunk.type === "tool_call_partial"
+					) {
+						diagnostic.toolParts++
+						unexpectedToolOutput = true
 					}
-					// A canonical terminal outcome ends the response. Further reads can
-					// stall indefinitely or append text belonging to a different response.
-					if (chunk.terminal) break
-					continue
+					if (chunk.type === "error") {
+						streamError ??= chunk
+						continue
+					}
+					if (chunk.type === "outcome") {
+						if (!streamError) {
+							if (chunk.status === "completed" && chunk.terminal && !chunk.requiresContinuation) {
+								completedOutcomeObserved = true
+							} else {
+								// An incomplete declaration cannot be repaired by a later completion.
+								unsuccessfulOutcome ??= chunk
+							}
+						}
+						// A canonical terminal outcome ends the response. Further reads can
+						// stall indefinitely or append text belonging to a different response.
+						if (chunk.terminal) break
+						continue
+					}
+					if (!streamError && chunk.type === "text") summary += chunk.text
 				}
-				if (!streamError && chunk.type === "text") summary += chunk.text
+			} finally {
+				if (!reachedEof) closeSummaryIterator(iterator)
 			}
-		} finally {
-			if (!reachedEof) closeSummaryIterator(iterator)
-		}
-	} catch (error) {
-		signal?.throwIfAborted()
-		if (error instanceof Error && error.name === "AbortError") throw error
-		if (streamError) return getStreamErrorResponse(streamError)
-		const errorMessage = getCondenseStreamErrorDetail({
-			type: "error",
-			error: "CondenseProviderError",
-			message: error instanceof Error ? error.message : typeof error === "string" ? error : "Provider error",
-		})
-		// Error response/body objects can include credentials or echoed input. Keep
-		// only bounded message text and scalar transport identifiers for diagnosis.
-		let errorDetails = errorMessage
-		if (error instanceof Error) {
-			const anyError = error as unknown as Record<string, unknown>
-			if (typeof anyError.status === "number" && Number.isInteger(anyError.status)) {
-				errorDetails += `\n\nHTTP Status: ${anyError.status}`
+		} catch (error) {
+			signal?.throwIfAborted()
+			if (error instanceof Error && error.name === "AbortError") throw error
+			if (retryContextOverflow(streamError ? getCondenseStreamErrorDetail(streamError) : error)) continue
+			if (streamError) return getStreamErrorResponse(streamError)
+			const errorMessage = getCondenseStreamErrorDetail({
+				type: "error",
+				error: "CondenseProviderError",
+				message: error instanceof Error ? error.message : typeof error === "string" ? error : "Provider error",
+			})
+			// Error response/body objects can include credentials or echoed input. Keep
+			// only bounded message text and scalar transport identifiers for diagnosis.
+			let errorDetails = errorMessage
+			if (error instanceof Error) {
+				const anyError = error as unknown as Record<string, unknown>
+				if (typeof anyError.status === "number" && Number.isInteger(anyError.status)) {
+					errorDetails += `\n\nHTTP Status: ${anyError.status}`
+				}
+				if (typeof anyError.code === "string" && /^[\w.-]{1,64}$/.test(anyError.code)) {
+					errorDetails += `\nError Code: ${anyError.code}`
+				}
 			}
-			if (typeof anyError.code === "string" && /^[\w.-]{1,64}$/.test(anyError.code)) {
-				errorDetails += `\nError Code: ${anyError.code}`
-			}
-		}
-		console.error("Error during condensing API call:", errorDetails)
+			console.error("Error during condensing API call:", errorDetails)
 
-		return finish(
-			{
-				...response,
-				cost,
-				error: t("common:errors.condense_api_failed", { message: errorMessage }),
-				errorDetails,
-				status: "no_progress",
-			},
-			"provider_error",
-		)
+			return finish(
+				{
+					...response,
+					cost,
+					error: t("common:errors.condense_api_failed", { message: errorMessage }),
+					errorDetails,
+					status: "no_progress",
+				},
+				"provider_error",
+			)
+		}
+		signal?.throwIfAborted()
+		if (streamError && retryContextOverflow(getCondenseStreamErrorDetail(streamError))) continue
+		if (streamError) return getStreamErrorResponse(streamError)
+		break
 	}
-	signal?.throwIfAborted()
-	if (streamError) return getStreamErrorResponse(streamError)
 	diagnostic.lifecycleRequired = compactionApiHandler.streamCapabilities?.lifecycle === true
 	diagnostic.completedOutcomeObserved = completedOutcomeObserved
 	diagnostic.unsuccessfulOutcome = unsuccessfulOutcome?.status
@@ -1263,6 +1290,12 @@ ${commandBlocks}
 		{ type: "text", text: `## Conversation Summary\n${summary}` },
 		...mandatoryContent,
 	]
+	if (overflowRetries > 0) {
+		summaryContent.push({
+			type: "text",
+			text: "[Older complete steps were omitted from summary input after a context-window overflow. Original records remain in saved history.]",
+		})
+	}
 	if (tail.newestStepTooLarge) {
 		summaryContent.push({
 			type: "text",

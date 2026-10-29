@@ -1,7 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
-import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { normalizeToolHistory, toToolArgumentsString } from "./tool-history"
 
 type ContentPartText = OpenAI.Chat.ChatCompletionContentPartText
 type ContentPartImage = OpenAI.Chat.ChatCompletionContentPartImage
@@ -180,7 +180,7 @@ export function convertToR1Format(
 							type: "function",
 							function: {
 								name: part.name,
-								arguments: JSON.stringify(toFunctionToolInput(part.name, part.input)),
+								arguments: toToolArgumentsString(part),
 							},
 						})
 					} else if ((part as any).type === "reasoning" && (part as any).text) {

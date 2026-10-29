@@ -339,7 +339,11 @@ export class AgentLifecycleProjector {
 		})
 	}
 
-	/** Apply a full snapshot and clear any pending resync incident. */
+	/**
+	 * Apply a full snapshot from the authoritative journal/runtime and clear resync.
+	 * Callers own ordering across turns: identifiers are opaque and sequences restart,
+	 * so a new turn cannot be ranked against the previous one at this boundary.
+	 */
 	ingestSnapshot(value: unknown): AgentLifecycleProjectionResult {
 		const { taskId: envelopeTaskId, snapshot: candidate } = snapshotFromMessage(value)
 		const parsed = agentLifecycleSnapshotSchema.safeParse(candidate)

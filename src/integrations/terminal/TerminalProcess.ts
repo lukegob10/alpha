@@ -592,13 +592,13 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.outputCleanupState = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
 	}
 
-	protected override getOutputTranscript(): string {
+	protected override getOutputTranscript(final = true): string {
 		const parts = this.getOutputTranscriptParts()
 		if (!parts.some((part) => part.omitted)) {
 			const raw = parts.map((part) => part.output).join("")
 			return this.sanitizeOutputRange(
 				this.matchBeforeVsceEndMarkers(raw) ?? raw,
-				true,
+				final,
 				INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE,
 			).output
 		}
@@ -611,7 +611,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 				state = INITIAL_TERMINAL_OUTPUT_CLEANUP_STATE
 				continue
 			}
-			const sanitized = this.sanitizeOutputRange(part.output, index === parts.length - 1, state)
+			const sanitized = this.sanitizeOutputRange(part.output, final && index === parts.length - 1, state)
 			output += sanitized.output
 			state = sanitized.state
 		}

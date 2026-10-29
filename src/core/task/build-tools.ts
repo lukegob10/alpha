@@ -21,7 +21,7 @@ import { expandLegacyThreadToolDisables } from "../../shared/tools"
 
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { buildMcpServerTools } from "../prompts/tools/native-tools/mcp_server"
-import { discoverTools, toolSearch } from "../prompts/tools/native-tools/discover_tools"
+import { createToolSearchTool, discoverTools, toolSearch } from "../prompts/tools/native-tools/discover_tools"
 import {
 	filterNativeToolsForMode,
 	filterMcpToolsForMode,
@@ -29,13 +29,13 @@ import {
 } from "../prompts/tools/filter-tools-for-mode"
 import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } from "../tools/TaskToolSurface"
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
-import type { ToolPolicyInput, ToolPolicySnapshot } from "../agent/ToolPolicy"
+import { isToolAllowed, type ToolPolicyInput, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
 import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
-import { buildMcpToolName } from "../../utils/mcp-name"
+import { buildMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { DISCOVERY_OUTPUT_LIMIT, type ToolSearch, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
 import { availableCustomTools } from "./customToolCatalog"
 import {
@@ -79,7 +79,7 @@ export interface BuildToolsOptions {
 	execution?: ToolPolicyInput["execution"]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
-	/** Captured effective question policy; omitted values keep answers user-owned. */
+	/** Captured blocking-question preference; never gates nonblocking question availability. */
 	waitForQuestionAnswers?: boolean
 	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	readGrant?: TaskReadGrant
@@ -386,9 +386,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		taskKind === "primary" &&
 		includeAllToolsWithRestrictions &&
 		historyContainsToolName(options.discoveryHistory, "request_user_input_async")
-	// Codex c92700d (2026-10-28) keeps async questions nonblocking. Alpha's
-	// indefinite-answer policy selects the existing blocking tool instead.
-	const allowAsyncQuestions = supportsAsyncQuestions && options.waitForQuestionAnswers === false
+	// Codex b75d1e8966 (2026-10-29) exposes nonblocking questions independently
+	// of blocking-question answer timers. Elapsed time never supplies an async answer.
+	const allowAsyncQuestions = supportsAsyncQuestions
 	const disabledTools = orderedNames(
 		expandLegacyThreadToolDisables([
 			...(requestedDisabledTools ?? []),
@@ -626,9 +626,27 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
 			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
 		)
+		const nativeNames = new Set(taskNativeTools.map((tool) => canonicalizeToolName(getToolName(tool))))
+		const disabledNames = new Set(disabledTools.map(canonicalizeToolName))
+		const availableSources = [...filteredMcpTools, ...nativeCustomTools]
+			.map((tool) => canonicalizeToolName(getToolName(tool)))
+			.filter(
+				(name) =>
+					!nativeNames.has(name) &&
+					!disabledNames.has(name) &&
+					(!taskAllowedNames || taskAllowedNames.has(name)) &&
+					isToolAllowed(options.policy, name),
+			)
+			.map((name) => parseMcpToolName(name)?.serverName ?? "Custom tools")
+		// Capture source guidance with the same schema registered for execution.
+		// Codex tool_search_spec advertises enabled sources (b75d1e89, 2026-10-29).
+		const discoverySchema = createToolSearchTool(availableSources)
+		const withDiscoverySources = (tool: OpenAI.Chat.ChatCompletionTool) =>
+			canDiscover && getToolName(tool) === "tool_search" ? discoverySchema : tool
+		const capturedNativeTools = taskNativeTools.map(withDiscoverySources)
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
-			nativeTools: taskNativeTools,
+			nativeTools: capturedNativeTools,
 			supportsImages,
 			mcpTools,
 			customTools,
@@ -642,7 +660,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		// Restricted providers retain declarations for history replay. Only the
 		// policy-filtered allowedFunctionNames are callable on this step.
 		if (includeAllToolsWithRestrictions) {
-			const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
+			const allTools = [...capturedNativeTools, ...mcpTools, ...nativeCustomTools]
 			const allowedFunctionNames = filteredTools.map((tool) => resolveToolAlias(getToolName(tool)))
 
 			return createCapturedToolSurface({
@@ -660,7 +678,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			options,
 			disabledTools,
 			registry,
-			schemas: filteredTools,
+			schemas: filteredTools.map(withDiscoverySources),
 			allowedFunctionNames: filteredTools.map((tool) => resolveToolAlias(getToolName(tool))),
 			includeAllToolsWithRestrictions: false,
 		})

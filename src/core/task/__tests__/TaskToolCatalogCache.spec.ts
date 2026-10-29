@@ -29,6 +29,10 @@ import { McpHub } from "../../../services/mcp/McpHub"
 import type { Task } from "../Task"
 import { buildNativeToolsArrayWithRestrictions, type BuildToolsOptions } from "../build-tools"
 import { TaskToolCatalogCache, DISCOVERY_OUTPUT_LIMIT } from "../TaskToolCatalogCache"
+import {
+	createToolSearchTool,
+	TOOL_SEARCH_SOURCE_INVENTORY_MAX_BYTES,
+} from "../../prompts/tools/native-tools/discover_tools"
 
 const target = "mcp--calendar--lookup_00"
 const targetAlias = "mcp__calendar__lookup_00"
@@ -1228,7 +1232,97 @@ describe("TaskToolCatalogCache", () => {
 			expect(item.status).toBe("success")
 			expect((item.content as string).length).toBeLessThanOrEqual(DISCOVERY_OUTPUT_LIMIT)
 		}
+		const overflowResult = await execute(initial, [call("tool_search", { query: "39", limit: 1 }, "overflow")])
+		const overflow = JSON.parse(String(overflowResult.outcome.results[0].content))
+		expect(overflow).toMatchObject({ status: "success", tools: [], message: expect.stringContaining("next step") })
 		const next = await capture({ ...options, discoveryHistory: receipt(calls, result.executionHost) })
 		expect(next.allowedFunctionNames.filter((name) => name.startsWith("mcp--calendar--lookup_"))).toHaveLength(32)
+		const promisedNames = result.outcome.results.flatMap((item) => {
+			const content = JSON.parse(String(item.content)) as { tools: Array<{ name: string }> }
+			return content.tools.map((tool) => tool.name)
+		})
+		expect(new Set(promisedNames).size).toBe(32)
+		for (const name of promisedNames) expect(next.isCallable(name)).toBe(true)
+	})
+
+	it("advertises only searchable permitted sources from the captured catalog", async () => {
+		const { options, server, hub, connection } = fixture()
+		const hidden = { ...server, name: "hidden-source" }
+		const disconnected = { ...server, name: "disconnected-source", status: "disconnected" as const }
+		const disabled = { ...server, name: "disabled-source", disabled: true }
+		hub.connections.push({ ...connection, server: hidden })
+		hub.getServers = () => [server, hidden, disconnected, disabled]
+		options.disabledTools = hidden.tools!.map((tool) => `mcp--hidden-source--${tool.name}`)
+		const surface = await capture(options)
+		const schema = surface.schemas.find((tool) => tool.type === "function" && tool.function.name === "tool_search")
+		expect(schema?.type).toBe("function")
+		if (schema?.type !== "function") throw new Error("Expected discovery schema")
+		expect(schema.function.description).toContain("- calendar")
+		expect(schema.function.description).not.toContain("hidden-source")
+		expect(schema.function.description).not.toContain("disconnected-source")
+		expect(schema.function.description).not.toContain("disabled-source")
+	})
+
+	it("starts a new discovery capacity window only at the next captured history boundary", async () => {
+		const { options } = fixture(40)
+		const initial = await capture(options)
+		const calls = Array.from({ length: 32 }, (_, index) =>
+			call("tool_search", { query: `lookup_${String(index).padStart(2, "0")}`, limit: 1 }, `search-${index}`),
+		)
+		const result = await execute(initial, calls)
+		expect(await capture(options)).toBe(initial)
+		expect(await discoverNames(initial, "39", 1)).toEqual([])
+		const firstHistory = receipt(calls, result.executionHost)
+		const next = await capture({ ...options, discoveryHistory: firstHistory })
+		const nextCalls = [call("tool_search", { query: "lookup_39", limit: 1 }, "next-search")]
+		const nextResult = await execute(next, nextCalls)
+		expect(next.isCallable("mcp--calendar--lookup_39")).toBe(false)
+		const promoted = await capture({
+			...options,
+			discoveryHistory: [...firstHistory, ...receipt(nextCalls, nextResult.executionHost)],
+		})
+		expect(promoted.isCallable("mcp--calendar--lookup_39")).toBe(true)
+		expect(promoted.allowedFunctionNames.filter((name) => name.startsWith("mcp--calendar--lookup_"))).toHaveLength(
+			32,
+		)
+	})
+
+	it.each(["policy", "task allow-list"] as const)(
+		"omits sources unavailable under the captured %s",
+		async (authority) => {
+			const { options, server, hub, connection } = fixture()
+			const initial = await capture(options)
+			const permittedNames = initial.registry.list().map((tool) => tool.name)
+			const hidden = { ...server, name: "unauthorized-source" }
+			hub.connections.push({ ...connection, server: hidden })
+			hub.getServers = () => [server, hidden]
+			if (authority === "policy") {
+				options.policy = createToolPolicySnapshot({
+					visibleTools: [
+						...permittedNames,
+						...hidden.tools!.map((tool) => `mcp--unauthorized-source--${tool.name}`),
+					],
+					allowedTools: permittedNames,
+				})
+			} else options.allowedToolNames = permittedNames
+			const surface = await capture(options)
+			const schema = surface.registry.resolve("tool_search")!.schema
+			if (schema.type !== "function") throw new Error("Expected discovery schema")
+			expect(schema.function.description).toContain("- calendar")
+			expect(schema.function.description).not.toContain("unauthorized-source")
+		},
+	)
+
+	it("bounds, deduplicates, and orders the available-source inventory", () => {
+		const sources = Array.from(
+			{ length: 1_000 },
+			(_, index) => `source-${String(index).padStart(4, "0")}-${"é".repeat(40)}`,
+		)
+		const schema = createToolSearchTool([...sources.reverse(), sources[0]])
+		const inventory = schema.function.description.split("sources:\n")[1]
+		expect(Buffer.byteLength(inventory, "utf8")).toBeLessThanOrEqual(TOOL_SEARCH_SOURCE_INVENTORY_MAX_BYTES)
+		const lines = inventory.trim().split("\n")
+		expect(lines).toEqual([...new Set(lines)].sort())
+		expect(lines[0]).toContain("source-0000")
 	})
 })

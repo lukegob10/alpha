@@ -477,12 +477,29 @@ suite("Alpha native compaction acceptance", function () {
 					assert.equal(task.isTaskLoopActive, false)
 				}
 				const summaries = model.requests.filter(({ summary }) => summary)
-				assert.equal(summaries.length, automatic ? 1 : 0)
-				if (automatic) assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
+				assert.equal(
+					summaries.length,
+					automatic ? 3 : 0,
+					"Overflow recovery permits at most two reduced-input retries",
+				)
+				if (automatic) {
+					assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
+					assert.ok(summaries[1]!.tokens < summaries[0]!.tokens, "The first retry must shrink summary input")
+					assert.ok(summaries[2]!.tokens < summaries[1]!.tokens, "The second retry must shrink summary input")
+					assert.equal(summaries[2]!.rejected, false, "The reduced summary must fit the provider window")
+				}
 				const task = provider.getLiveTask(taskId)!
-				assert.ok(task.alphaMessages.some(({ say }) => say === "sliding_window_truncation"))
+				assert.equal(
+					task.alphaMessages.some(({ say }) => say === "sliding_window_truncation"),
+					!automatic,
+				)
+				assert.ok(!task.alphaMessages.some(({ say }) => say === "condense_context_error"))
 				assert.ok(!task.alphaMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"))
 				const persisted = (await provider.getTaskWithId(taskId)).apiConversationHistory
+				assert.equal(
+					persisted.some((message) => message.isSummary),
+					automatic,
+				)
 				assert.equal(
 					persisted.filter(
 						(message) =>

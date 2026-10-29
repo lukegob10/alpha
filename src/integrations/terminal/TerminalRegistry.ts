@@ -10,6 +10,8 @@ import { Terminal } from "./Terminal"
 import { ExecaTerminal } from "./ExecaTerminal"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
 import { getRipgrepPathOverlay } from "./ripgrepEnvironment"
+import { MAX_RETAINED_TERMINAL_PROCESSES } from "./types"
+import { t } from "../../i18n"
 
 // Although vscode.window.terminals provides a list of all open terminals,
 // there's no way to know whether they're busy or not (exitStatus does not
@@ -26,6 +28,16 @@ export class TerminalRegistry {
 	private static disposables: vscode.Disposable[] = []
 	private static isInitialized = false
 	private static readonly removingTerminalIds = new Set<number>()
+
+	private static assertCommandCapacity(): void {
+		// Codex unified_exec bounds its process store at 64 (b75d1e89665d, 2026-10-29).
+		// Alpha rejects excess launches instead of evicting a live owned command.
+		// Reservations count too: persistence can await before physical process launch.
+		const active = this.getAllTerminals().filter((terminal) => terminal.busy || terminal.running).length
+		if (active >= MAX_RETAINED_TERMINAL_PROCESSES) {
+			throw new Error(t("common:errors.command_capacity_exceeded", { limit: MAX_RETAINED_TERMINAL_PROCESSES }))
+		}
+	}
 
 	/** Session expiry also releases the terminal queue's reference to its output. */
 	public static releaseCompletedProcess(process: AlphaTerminalProcess): void {
@@ -150,6 +162,7 @@ export class TerminalRegistry {
 		provider: AlphaTerminalProvider,
 		commandEnv: Record<string, string> = {},
 	): AlphaTerminal {
+		this.assertCommandCapacity()
 		let newTerminal
 
 		if (provider === "vscode") {
@@ -176,6 +189,7 @@ export class TerminalRegistry {
 		taskId?: string,
 		provider: AlphaTerminalProvider = "vscode",
 	): Promise<AlphaTerminal> {
+		this.assertCommandCapacity()
 		const findAvailableTerminal = () => {
 			const terminals = this.getAllTerminals()
 			const matches = (t: AlphaTerminal) => {
@@ -202,6 +216,9 @@ export class TerminalRegistry {
 		let terminal = findAvailableTerminal()
 		if (!terminal) {
 			const commandEnv = await getRipgrepPathOverlay()
+			// Capacity may have been consumed by another task during environment lookup.
+			// This check and the reservation below have no asynchronous boundary.
+			this.assertCommandCapacity()
 			// Another request may have created a terminal while binary resolution was pending.
 			terminal = findAvailableTerminal() ?? this.createTerminal(cwd, provider, commandEnv)
 		}

@@ -96,7 +96,7 @@ class AsyncInputScriptedAI {
 		if (this.requests.length === 1) {
 			assert.ok(
 				toolNames(tools).includes("request_user_input_async"),
-				"An opted-in capable root model must receive the async tool",
+				"A capable root model must receive the async tool independently of blocking-question answer timing",
 			)
 			yield {
 				type: "tool_call" as const,
@@ -199,7 +199,7 @@ class WaitingInputScriptedAI extends AsyncInputScriptedAI {
 suite("Alpha async user input acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
-	test("posts one nonblocking question card, continues, then receives a normal user reply", async () => {
+	test("keeps async questions nonblocking with indefinite timing and accepts a later reply", async () => {
 		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
@@ -219,7 +219,7 @@ suite("Alpha async user input acceptance", function () {
 				approvalMode: "bypass",
 				autoApprovalEnabled: true,
 				alwaysAllowFollowupQuestions: true,
-				followupAutoApproveTimeoutMs: 60_000,
+				followupAutoApproveTimeoutMs: 0,
 				requestDelaySeconds: 0,
 				writeDelayMs: 0,
 				enableCheckpoints: false,
@@ -246,6 +246,7 @@ suite("Alpha async user input acceptance", function () {
 			assert.equal(cards.length, 1, "One tool call must produce one nonblocking card")
 			const card = cards[0]
 			assert.ok(card)
+			assert.notEqual(card.isAnswered, true, "Continuing independent work must not select an async answer")
 			assert.deepEqual(card.asyncUserInput?.questions, [
 				{ title: FIRST_QUESTION, options: ["Blue", "Green"] },
 				{ title: SECOND_QUESTION },
@@ -291,7 +292,7 @@ suite("Alpha async user input acceptance", function () {
 	})
 
 	for (const decision of ["answer", "cancel"] as const) {
-		test(`keeps a capable Full Access model waiting indefinitely until an addressed ${decision}`, async () => {
+		test(`keeps a blocking Full Access question waiting indefinitely until an addressed ${decision}`, async () => {
 			assert.equal(vscode.version, "1.138.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const api = globalThis.api
@@ -335,7 +336,10 @@ suite("Alpha async user input acceptance", function () {
 				assert.equal(completions.filter((id) => id === taskId).length, 0)
 				const names = toolNames(model.requests[0]!.tools)
 				assert.ok(names.includes("request_user_input"))
-				assert.ok(!names.includes("request_user_input_async"), "Indefinite wait must withhold the async tool")
+				assert.ok(
+					names.includes("request_user_input_async"),
+					"The capable root model must retain async questions while blocking questions wait indefinitely",
+				)
 				const question = task.alphaMessages.find(
 					(message) =>
 						message.type === "ask" &&

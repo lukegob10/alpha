@@ -27,6 +27,7 @@ describe("anthropic-filter", () => {
 					role: "assistant" as const,
 					id: "source-response",
 					phase: "final_answer",
+					memoryCitation: { entries: [], rolloutIds: ["source-1"] },
 					agentResponseItems: [{ type: "text", text: "Canonical evidence" }],
 					agentResponseOutcome: { status: "completed" },
 					content: [
@@ -43,6 +44,7 @@ describe("anthropic-filter", () => {
 							id: "answer",
 							phase: "final_answer",
 							outputIndex: 1,
+							memoryCitation: { entries: [], rolloutIds: ["source-1"] },
 							cache_control: { type: "ephemeral" as const },
 						},
 					],

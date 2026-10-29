@@ -121,6 +121,17 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}))
 			const prepared: Array<PreflightChange | undefined> = []
 			let status: ApplyPatchChangeOutcome["status"] = "success"
+			// Codex b75d1e89665 rejects duplicate resolved source paths before effects.
+			// Preparing both against the original bytes would otherwise let the first
+			// operation commit before the second fails its stale-content check.
+			const sourcePaths: string[] = []
+			for (const hunk of parsedPatch.hunks) {
+				const resolved = path.resolve(task.cwd, hunk.path)
+				if (sourcePaths.some((source) => arePathsEqual(source, resolved))) {
+					throw new Error(`Multiple operations target ${hunk.path}`)
+				}
+				sourcePaths.push(resolved)
+			}
 
 			// Validate the full patch before approval. Report every target's outcome
 			// without reading ignored paths or partially applying an invalid patch.

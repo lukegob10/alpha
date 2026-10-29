@@ -5764,6 +5764,49 @@ If complete, use attempt_completion.
 		expect(afterClose.agents).toEqual([])
 	})
 
+	it("routes detailed caller-relative messages without granting control of peer subtrees", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, parent)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const branch = await store.createAgent({
+			taskId: "backend-id",
+			parentTaskId: root.taskId,
+			nickname: "backend_api",
+			role: "review",
+			objective: "Review backend",
+			status: "running",
+		})
+		const child = await store.createAgent({
+			taskId: "review-id",
+			parentTaskId: branch.taskId,
+			nickname: "code_review",
+			role: "review",
+			objective: "Review code",
+			status: "running",
+		})
+		const childTask = {
+			...makeParent(),
+			taskId: child.taskId,
+			taskKind: "subagent",
+			rootTaskId: root.rootTaskId,
+			parentTaskId: branch.taskId,
+		}
+		const message = `  Detailed findings:\n${"evidence ".repeat(1_000)}\n  `
+		await expect(
+			provider.sendMessageToAgent(parent as any, "backend_api/code_review", message),
+		).resolves.toMatchObject({
+			taskId: child.taskId,
+			delivery: "buffered",
+		})
+		expect(store.getUnacknowledgedMailboxEntries(child.taskId, { kinds: ["message"] })[0].payload?.message).toBe(
+			message,
+		)
+		await expect(provider.interruptAgent(childTask as any, branch.path)).rejects.toThrow(
+			"outside the caller's managed subtree",
+		)
+	})
+
 	it("allows passive child replies to root and same-tree peers without granting lifecycle control", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()
@@ -6327,7 +6370,7 @@ If complete, use attempt_completion.
 			expect.objectContaining({
 				taskId: child.taskId,
 				parentTaskId: root.taskId,
-				path: "/root/durable-parent",
+				path: "/root/durable_parent",
 				depth: 1,
 				maxDepth: null,
 				delegationPolicy: "explicit-only",
@@ -6335,7 +6378,7 @@ If complete, use attempt_completion.
 			expect.objectContaining({
 				taskId: grandchild.taskId,
 				parentTaskId: child.taskId,
-				path: "/root/durable-parent/nested-review",
+				path: "/root/durable_parent/nested-review",
 				depth: 2,
 				stopReason: "root_cost_budget",
 				usage: expect.objectContaining({ inputTokens: 120, outputTokens: 30, cost: 0.75, durationMs: 0 }),

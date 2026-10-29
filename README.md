@@ -20,6 +20,14 @@ The exact development and release reference host is VS Code **1.138.0**; it does
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
 policy or workspace protections.
 
+Streamable HTTP MCP servers supporting OAuth dynamic registration can request browser authorization. Alpha stores
+their credentials in VS Code SecretStorage. Servers with configured authorization headers and SSE servers retain
+their configured authentication.
+
+Use **Alpha: Recover Task History** from the Command Palette to inspect malformed records in an inactive saved task.
+Recovery requires explicit confirmation, preserves the original history, and does not resume the task automatically.
+Incomplete JSON and uncertain tool transactions remain blocked.
+
 Default Windows keyboard shortcuts:
 
 | Shortcut                                | Action                               | Scope                                                |

@@ -647,20 +647,26 @@ describe("Task small Copilot context exhaustion", () => {
 				if (chunk.type === "text") text.push(chunk.text)
 			}
 			expect(text.join("")).toContain("task can continue")
-			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 2 : 1)
-			expect(task.say).toHaveBeenCalledWith(
-				"sliding_window_truncation",
-				undefined,
-				undefined,
-				false,
-				undefined,
-				undefined,
-				expect.any(Object),
-				undefined,
-				expect.objectContaining({ messagesRemoved: expect.any(Number) }),
-			)
+			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 3 : 1)
+			if (automatic) {
+				const requests = api.createMessage.mock.calls
+				expect(JSON.stringify(requests[1][1]).length).toBeLessThan(JSON.stringify(requests[0][1]).length)
+				expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).not.toContain("sliding_window_truncation")
+				expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
+			} else
+				expect(task.say).toHaveBeenCalledWith(
+					"sliding_window_truncation",
+					undefined,
+					undefined,
+					false,
+					undefined,
+					undefined,
+					expect.any(Object),
+					undefined,
+					expect.objectContaining({ messagesRemoved: expect.any(Number) }),
+				)
 			expect(history).toEqual(original)
-			expect(task.apiConversationHistory.some((message) => message.isTruncationMarker)).toBe(true)
+			expect(task.apiConversationHistory.some((message) => message.isTruncationMarker)).toBe(!automatic)
 			if (automatic) {
 				expect(provider.postMessageToWebview).toHaveBeenCalledTimes(2)
 				expect(provider.postMessageToWebview).toHaveBeenNthCalledWith(1, {
@@ -675,21 +681,17 @@ describe("Task small Copilot context exhaustion", () => {
 		},
 	)
 
-	it("releases manual compaction admission when the smaller model rejects its summary", async () => {
+	it("retries smaller manual summary input and releases compaction admission on success", async () => {
 		const { task, api, provider, history, save } = await smallWindowFixture(true)
+		const original = structuredClone(history)
 		await task.condenseContext()
-		expect(task.say).toHaveBeenCalledWith(
-			"condense_context_error",
-			expect.any(String),
-			undefined,
-			false,
-			undefined,
-			undefined,
-			expect.any(Object),
-		)
-		expect(api.createMessage).toHaveBeenCalledOnce()
-		expect(save).not.toHaveBeenCalled()
-		expect(task.apiConversationHistory).toBe(history)
+		expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).not.toContain("condense_context_error")
+		expect(api.createMessage).toHaveBeenCalledTimes(2)
+		const requests = api.createMessage.mock.calls
+		expect(JSON.stringify(requests[1][1]).length).toBeLessThan(JSON.stringify(requests[0][1]).length)
+		expect(save).toHaveBeenCalledOnce()
+		expect(history).toEqual(original)
+		expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
 		expect(Reflect.get(task, "contextCondenseAbortController")).toBeUndefined()
 		expect(Reflect.get(task, "manualContextCondenseSettlement")).toBeUndefined()
 		// AlphaProvider owns the manual response notification; Task owns releasing its admission guard.

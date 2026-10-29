@@ -6,6 +6,7 @@ import { skillTool } from "../SkillTool"
 import { Task } from "../../task/Task"
 import { formatResponse } from "../../prompts/responses"
 import { digestValue } from "../../agent/StepContext"
+import { buildSkillResult } from "../../../services/skills/skillInvocation"
 import type { ToolUse } from "../../../shared/tools"
 
 describe("skillTool", () => {
@@ -41,6 +42,136 @@ describe("skillTool", () => {
 			handleError: vi.fn(),
 			pushToolResult: vi.fn(),
 		}
+	})
+
+	it("delivers large instructions in bounded pages and records provenance only after the final page", async () => {
+		const content = {
+			name: "large-skill",
+			description: "Large instructions",
+			path: "/skills/large-skill/SKILL.md",
+			source: "global" as const,
+			instructions: 'Important "rules" 😀\n'.repeat(2_000),
+		}
+		mockSkillsManager.getSkillContent.mockResolvedValue(content)
+		mockTask.recordLoadedSkill = vi.fn()
+		mockCallbacks.getRemainingOutputChars = () => 2_000
+		const pieces: string[] = []
+		let cursor: string | null = null
+		for (let page = 0; page < 100; page++) {
+			mockCallbacks.pushToolResult.mockClear()
+			await skillTool.execute({ skill: content.name, action: "load", cursor }, mockTask, mockCallbacks)
+			expect(mockCallbacks.handleError).not.toHaveBeenCalled()
+			const output = mockCallbacks.pushToolResult.mock.calls[0][0]
+			expect(output.length).toBeLessThanOrEqual(2_000)
+			const result = JSON.parse(output)
+			pieces.push(result.contents)
+			cursor = result.next_cursor
+			if (result.complete) {
+				expect(cursor).toBeNull()
+				break
+			}
+			expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+			expect(cursor).toEqual(expect.any(String))
+		}
+		expect(cursor).toBeNull()
+		expect(pieces.join("")).toBe(buildSkillResult(content.name, undefined, content))
+		expect(mockTask.recordLoadedSkill).toHaveBeenCalledExactlyOnceWith(
+			content.name,
+			content.path,
+			digestValue(content.instructions),
+		)
+	})
+
+	it("does not record loaded provenance when the output budget or delivery prevents complete instructions", async () => {
+		mockSkillsManager.getSkillContent.mockResolvedValue({
+			name: "review",
+			description: "Review",
+			path: "/skills/review/SKILL.md",
+			source: "project",
+			instructions: "Follow all instructions",
+		})
+		mockTask.recordLoadedSkill = vi.fn()
+		mockCallbacks.getRemainingOutputChars = () => 1
+		await skillTool.execute({ skill: "review" }, mockTask, mockCallbacks)
+		expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+		expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+		expect(mockCallbacks.handleError).toHaveBeenCalled()
+
+		mockCallbacks.getRemainingOutputChars = () => 32_000
+		mockCallbacks.pushToolResult.mockImplementationOnce(() => {
+			throw new Error("delivery failed")
+		})
+		await skillTool.execute({ skill: "review" }, mockTask, mockCallbacks)
+		expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+	})
+
+	it.each(["another task", "changed source", "changed args", "forged", "consumed"])(
+		"rejects a continuation for %s without recording complete provenance",
+		async (cause) => {
+			const content = {
+				name: "long-skill",
+				description: "Long instructions",
+				path: "/skills/long-skill/SKILL.md",
+				source: "project",
+				instructions: "instructions\n".repeat(3_000),
+			}
+			mockSkillsManager.getSkillContent.mockResolvedValue(content)
+			mockTask.recordLoadedSkill = vi.fn()
+			mockCallbacks.getRemainingOutputChars = () => 1_000
+			await skillTool.execute({ skill: content.name, args: "original" }, mockTask, mockCallbacks)
+			const cursor = JSON.parse(mockCallbacks.pushToolResult.mock.calls[0][0]).next_cursor
+			if (cause === "changed source")
+				mockSkillsManager.getSkillContent.mockResolvedValue({ ...content, instructions: "changed" })
+			if (cause === "consumed") {
+				await skillTool.execute({ skill: content.name, args: "original", cursor }, mockTask, mockCallbacks)
+			}
+			mockCallbacks.pushToolResult.mockClear()
+			mockCallbacks.handleError.mockClear()
+			await skillTool.execute(
+				{
+					skill: content.name,
+					args: cause === "changed args" ? "other" : "original",
+					cursor: cause === "forged" ? "invented" : cursor,
+				},
+				cause === "another task" ? { ...mockTask } : mockTask,
+				mockCallbacks,
+			)
+			expect(mockCallbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(mockCallbacks.handleError).toHaveBeenCalledWith("executing skill", expect.any(Error))
+			expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
+		},
+	)
+
+	it("keeps a failed continuation retryable and caps pending reads", async () => {
+		const content = {
+			name: "long-skill",
+			description: "Long instructions",
+			path: "/skills/long-skill/SKILL.md",
+			source: "project",
+			instructions: "instructions\n".repeat(3_000),
+		}
+		mockSkillsManager.getSkillContent.mockResolvedValue(content)
+		mockTask.recordLoadedSkill = vi.fn()
+		mockCallbacks.getRemainingOutputChars = () => 1_000
+		const cursors: string[] = []
+		for (let index = 0; index < 9; index++) {
+			mockCallbacks.pushToolResult.mockClear()
+			await skillTool.execute({ skill: content.name }, mockTask, mockCallbacks)
+			cursors.push(JSON.parse(mockCallbacks.pushToolResult.mock.calls[0][0]).next_cursor)
+		}
+		await skillTool.execute({ skill: content.name, cursor: cursors[0] }, mockTask, mockCallbacks)
+		expect(mockCallbacks.handleError).toHaveBeenCalled()
+		mockCallbacks.handleError.mockClear()
+		mockCallbacks.pushToolResult.mockImplementationOnce(() => {
+			throw new Error("delivery failed")
+		})
+		await skillTool.execute({ skill: content.name, cursor: cursors[8] }, mockTask, mockCallbacks)
+		mockCallbacks.pushToolResult.mockClear()
+		mockCallbacks.handleError.mockClear()
+		await skillTool.execute({ skill: content.name, cursor: cursors[8] }, mockTask, mockCallbacks)
+		expect(mockCallbacks.handleError).not.toHaveBeenCalled()
+		expect(JSON.parse(mockCallbacks.pushToolResult.mock.calls[0][0])).toMatchObject({ complete: false })
+		expect(mockTask.recordLoadedSkill).not.toHaveBeenCalled()
 	})
 
 	it("should handle missing skill parameter", async () => {

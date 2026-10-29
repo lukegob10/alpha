@@ -18,7 +18,7 @@ export interface AgentRetryPolicyOptions {
 	maxElapsedMs?: number
 	/** Delay before retrying the first failed attempt. */
 	baseDelayMs?: number
-	/** Hard upper bound for local exponential delay; server advice is a minimum. */
+	/** Hard upper bound for local exponential delay; valid server advice takes precedence. */
 	maxDelayMs?: number
 	/** Jitter strategy for exponential backoff. */
 	jitter?: "none" | "full"
@@ -127,9 +127,9 @@ function normalizeAttempt(attempt: number): number {
 	return attempt
 }
 
-function normalizeRetryAfterMs(retryAfterMs: number | undefined): number {
-	if (retryAfterMs === undefined || !Number.isFinite(retryAfterMs)) return 0
-	return Math.max(0, Math.ceil(retryAfterMs))
+function normalizeRetryAfterMs(retryAfterMs: number | undefined): number | undefined {
+	if (retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs < 0) return undefined
+	return Math.ceil(retryAfterMs)
 }
 
 function normalizeElapsedMs(elapsedMs: number | undefined): number {
@@ -205,11 +205,13 @@ export class AgentRetryPolicy {
 
 	/**
 	 * Calculate an exponential delay. Full jitter samples from zero through the
-	 * exponential ceiling. Provider advice is a minimum and must never be
-	 * shortened by the local cap; decide() separately enforces the elapsed budget.
+	 * exponential ceiling. Valid provider advice takes precedence over local backoff,
+	 * matching Codex responses_retry.rs at b75d1e8; decide() still enforces budgets.
 	 */
 	getDelayMs(attempt: number, retryAfterMs?: number): number {
 		const normalizedAttempt = normalizeAttempt(attempt)
+		const providerDelay = normalizeRetryAfterMs(retryAfterMs)
+		if (providerDelay !== undefined) return providerDelay
 		const exponent = normalizedAttempt - 1
 		const exponentialCeiling = this.baseDelayMs * 2 ** exponent
 		const boundedCeiling = Math.min(
@@ -218,7 +220,7 @@ export class AgentRetryPolicy {
 		)
 		const exponentialDelay =
 			this.jitter === "full" ? boundedCeiling * normalizeRandomValue(this.random()) : boundedCeiling
-		return Math.max(exponentialDelay, normalizeRetryAfterMs(retryAfterMs))
+		return exponentialDelay
 	}
 
 	/** Resolve retry/exhaustion, output guards, and delay in one stable result. */

@@ -68,8 +68,8 @@ export type SubagentCallsignPickIndex = (size: number) => number
 export class SubagentNicknameRegistry {
 	private readonly callsigns: readonly string[]
 	private readonly pickIndex: SubagentCallsignPickIndex
-	private readonly assignedByRoot = new Map<string, Set<string>>()
-	private readonly assignments = new Map<string, { rootTaskId: string; names: string[] }>()
+	private readonly assignedByScope = new Map<string, Set<string>>()
+	private readonly assignments = new Map<string, { scope: string; names: string[] }>()
 
 	constructor(
 		options: {
@@ -90,6 +90,7 @@ export class SubagentNicknameRegistry {
 		count: number,
 		reserved: Iterable<string> = [],
 		preferredNames: readonly (string | undefined)[] = [],
+		parentTaskId = rootTaskId,
 	): string[] {
 		if (!rootTaskId.trim() || !groupId.trim()) {
 			throw new Error("Sub-agent nickname assignment requires a root task and reservation group")
@@ -104,7 +105,9 @@ export class SubagentNicknameRegistry {
 			throw new Error("Preferred sub-agent names must match the requested count")
 		}
 
-		const rootAssignments = this.assignedByRoot.get(rootTaskId) ?? new Set<string>()
+		// V2 task names belong to the immediate parent, matching its canonical child path.
+		const reservationScope = JSON.stringify([rootTaskId, parentTaskId])
+		const rootAssignments = this.assignedByScope.get(reservationScope) ?? new Set<string>()
 		const unavailable = new Set([...rootAssignments, ...Array.from(reserved, (name) => name.toLowerCase())])
 		for (const preferredName of preferredNames) {
 			const preferred = preferredName?.trim()
@@ -132,8 +135,11 @@ export class SubagentNicknameRegistry {
 		for (const name of assigned) {
 			rootAssignments.add(name.toLowerCase())
 		}
-		this.assignedByRoot.set(rootTaskId, rootAssignments)
-		this.assignments.set(groupId, { rootTaskId, names: assigned.map((name) => name.toLowerCase()) })
+		this.assignedByScope.set(reservationScope, rootAssignments)
+		this.assignments.set(groupId, {
+			scope: reservationScope,
+			names: assigned.map((name) => name.toLowerCase()),
+		})
 
 		return assigned
 	}
@@ -143,15 +149,15 @@ export class SubagentNicknameRegistry {
 		const assignment = this.assignments.get(groupId)
 		if (!assignment) return
 		this.assignments.delete(groupId)
-		const rootAssignments = this.assignedByRoot.get(assignment.rootTaskId)
+		const rootAssignments = this.assignedByScope.get(assignment.scope)
 		if (!rootAssignments) return
 		for (const name of assignment.names) rootAssignments.delete(name)
-		if (rootAssignments.size === 0) this.assignedByRoot.delete(assignment.rootTaskId)
+		if (rootAssignments.size === 0) this.assignedByScope.delete(assignment.scope)
 	}
 
 	clear(): void {
 		this.assignments.clear()
-		this.assignedByRoot.clear()
+		this.assignedByScope.clear()
 	}
 
 	private nextCallsign(unavailable: Set<string>): string {

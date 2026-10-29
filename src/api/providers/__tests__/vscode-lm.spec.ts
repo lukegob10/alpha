@@ -297,7 +297,7 @@ describe("VsCodeLmHandler", () => {
 				tokensPerTurn: 27_500,
 				automatic: true,
 				status: "reduced",
-				receipt: "truncation",
+				receipt: "retry-summary",
 			},
 			{
 				label: "past the window with automatic summarization disabled",
@@ -323,12 +323,15 @@ describe("VsCodeLmHandler", () => {
 				taskId: "small-copilot-window",
 			})
 			expect(result.status).toBe(status)
-			if (receipt === "summary") expect(result.condenseId).toBeDefined()
+			if (receipt === "summary" || receipt === "retry-summary") expect(result.condenseId).toBeDefined()
 			if (receipt === "truncation") expect(result.truncationId).toBeDefined()
 			if (receipt === "none" || !automatic) expect(model.sendRequest).not.toHaveBeenCalled()
-			if (receipt === "truncation" && automatic) {
-				expect(model.sendRequest).toHaveBeenCalledOnce()
+			if (receipt === "retry-summary") {
+				expect(model.sendRequest).toHaveBeenCalledTimes(2)
 				expect(Math.ceil(JSON.stringify(model.sendRequest.mock.calls[0][0]).length / 4)).toBeGreaterThan(
+					contextWindow,
+				)
+				expect(Math.ceil(JSON.stringify(model.sendRequest.mock.calls[1][0]).length / 4)).toBeLessThanOrEqual(
 					contextWindow,
 				)
 			}
@@ -354,7 +357,7 @@ describe("VsCodeLmHandler", () => {
 			expect(mockCancellationSources.every((source) => source.dispose.mock.calls.length === 1)).toBe(true)
 		})
 
-		it("reports a rejected manual summary without changing the overflowing saved history", async () => {
+		it("recovers a manual summary overflow without changing the original saved history", async () => {
 			const model = await prepareSmallWindow()
 			const messages = history(27_500)
 			const original = structuredClone(messages)
@@ -364,10 +367,13 @@ describe("VsCodeLmHandler", () => {
 				systemPrompt,
 				taskId: "manual-overflow",
 			})
-			expect(model.sendRequest).toHaveBeenCalledOnce()
-			expect(result.errorDetails).toContain("maximum context length")
-			expect(result.status).toBe("no_progress")
-			expect(result.messages).toBe(messages)
+			expect(model.sendRequest).toHaveBeenCalledTimes(2)
+			expect(result.errorDetails).toBeUndefined()
+			expect(result.status).toBe("reduced")
+			expect(result.condenseId).toBeDefined()
+			const retained = result.messages.filter((message) => !message.isSummary)
+			expect(retained).toHaveLength(original.length)
+			for (const [index, message] of retained.entries()) expect(message).toMatchObject(original[index])
 			expect(messages).toEqual(original)
 		})
 
@@ -1342,6 +1348,69 @@ describe("VsCodeLmHandler", () => {
 			expect(handler.getStatefulMarker()).toBe(Buffer.from(statefulMarker).toString("base64"))
 			expect(warnSpy).not.toHaveBeenCalledWith("Alpha <Language Model API>: Unknown chunk type received")
 			warnSpy.mockRestore()
+		})
+
+		it.each([
+			{
+				label: "reported cache and reasoning details",
+				details: {
+					prompt_tokens_details: { cached_tokens: 40, cache_creation_input_tokens: 12 },
+					completion_tokens_details: { reasoning_tokens: 7 },
+				},
+				expected: { cacheReadTokens: 40, cacheWriteTokens: 12, reasoningTokens: 7 },
+			},
+			{
+				label: "explicit zero details",
+				details: {
+					prompt_tokens_details: { cached_tokens: 0, cache_creation_input_tokens: 0 },
+					completion_tokens_details: { reasoning_tokens: 0 },
+				},
+				expected: { cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+			},
+			{
+				label: "absent details",
+				details: {},
+				expected: {},
+			},
+			{
+				label: "malformed optional details",
+				details: {
+					prompt_tokens_details: { cached_tokens: "40", cache_creation_input_tokens: null },
+					completion_tokens_details: { reasoning_tokens: "7" },
+				},
+				expected: {},
+			},
+			{
+				label: "unsupported response-specific aliases",
+				details: {
+					input_tokens_details: { cached_tokens: 40, cache_write_tokens: 12 },
+					output_tokens_details: { reasoning_tokens: 7 },
+				},
+				expected: {},
+			},
+		])("preserves host usage totals with $label", async ({ details, expected }) => {
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Verified.")
+					yield {
+						mimeType: "usage",
+						data: new TextEncoder().encode(
+							JSON.stringify({ prompt_tokens: 100, completion_tokens: 20, ...details }),
+						),
+					}
+				})(),
+			})
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+			expect(chunks.at(-1)).toEqual({
+				type: "usage",
+				usageSource: "provider",
+				inputTokens: 100,
+				outputTokens: 20,
+				...expected,
+			})
 		})
 
 		it("defers long-input fallback accounting until after sendRequest and skips it for host usage", async () => {

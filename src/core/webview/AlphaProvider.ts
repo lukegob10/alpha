@@ -27,7 +27,7 @@ import { isWorkerWritePathAllowed, redactTaskPrivatePaths } from "../tools/taskP
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
-import { resolveWaitTimeout } from "../tools/AgentLifecycleTool"
+import { requireNonEmptyMessage, resolveWaitTimeout } from "../tools/AgentLifecycleTool"
 import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
 import { captureToolReviewPolicy } from "../auto-approval"
 
@@ -6412,6 +6412,22 @@ export class AlphaProvider
 		return this.taskSessions.getTask(taskId)
 	}
 
+	/** Native recovery owns admission so another view cannot reopen the history during replacement. */
+	public async runTaskHistoryRecovery<T>(taskId: string, recover: () => Promise<T>): Promise<T> {
+		await this.taskHistoryStoreReady
+		return this.taskSessions.runOwnershipOperation(taskId, async () => {
+			if (this.getLiveTask(taskId) || this.getTaskOwner(taskId) || !this.taskHistoryStore.get(taskId)) {
+				throw new Error("Task history is unavailable for recovery while its runtime is owned")
+			}
+			const release = this.taskSessions.reserveTaskAdmission(taskId)
+			try {
+				return await recover()
+			} finally {
+				release()
+			}
+		})
+	}
+
 	private getHostProviders(): AlphaProvider[] {
 		const peers = [...AlphaProvider.activeInstances].filter(
 			(provider) => provider === this || this.taskSessions.sharesHostWith?.(provider.taskSessions),
@@ -9181,10 +9197,12 @@ export class AlphaProvider
 
 		const reservedNames = this.agentControlStore
 			.listAgents({ rootTaskId: controlRoot.rootTaskId, includeRoot: false })
+			.filter((record) => record.parentTaskId === parent.taskId)
 			.map((record) => record.nickname)
 		for (const descriptor of this.subagentDescriptors.values()) {
 			const descriptorRootTaskId = this.getAgentControlRootTaskId(descriptor.parent)
-			if (descriptorRootTaskId === controlRoot.rootTaskId) reservedNames.push(descriptor.nickname)
+			if (descriptorRootTaskId === controlRoot.rootTaskId && descriptor.parent.taskId === parent.taskId)
+				reservedNames.push(descriptor.nickname)
 		}
 		const groupId = crypto.randomUUID()
 		const nicknames = this.subagentNicknameRegistry.assign(
@@ -9193,6 +9211,7 @@ export class AlphaProvider
 			normalizedDrafts.length,
 			reservedNames,
 			normalizedDrafts.map((draft) => draft.task_name),
+			parent.taskId,
 		)
 		const frozenTotalCap = Math.min(...orchestrations.map(({ limits }) => limits.maxConcurrentTasks))
 		const effectiveTotalCap = Math.min(this.taskSessions.getMaxLiveTasks(), frozenTotalCap)
@@ -12578,11 +12597,7 @@ export class AlphaProvider
 	}
 
 	private normalizeAgentInstruction(message: string, label: string): string {
-		const instruction = message.trim()
-		if (!instruction || instruction.length > 2_000) {
-			throw new Error(`${label} must be between 1 and 2,000 characters`)
-		}
-		return instruction
+		return requireNonEmptyMessage(message, label)
 	}
 
 	private getTaskRequestPacingMetrics(task: Task) {
@@ -12599,7 +12614,8 @@ export class AlphaProvider
 	private async requireMessageRecipient(sender: Task, target: string): Promise<AgentRecord> {
 		const root = await this.ensureAgentControlRoot(sender)
 		const normalizedTarget = target.trim()
-		const record = this.agentControlStore.getAgent(
+		const record = this.agentControlStore.resolveAgentReference(
+			sender.taskId,
 			this.asyncSubagentRunManager.resolveRunTaskId(normalizedTarget) ?? normalizedTarget,
 			root.rootTaskId,
 		)
@@ -12611,7 +12627,8 @@ export class AlphaProvider
 	private async requireControlledAgent(parent: Task, target: string): Promise<AgentRecord> {
 		const root = await this.ensureAgentControlRoot(parent)
 		const normalizedTarget = target.trim()
-		const record = this.agentControlStore.getAgent(
+		const record = this.agentControlStore.resolveAgentReference(
+			parent.taskId,
 			this.asyncSubagentRunManager.resolveRunTaskId(normalizedTarget) ?? normalizedTarget,
 			root.rootTaskId,
 		)

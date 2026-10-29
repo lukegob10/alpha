@@ -5,7 +5,6 @@
 
 import type { Hunk, UpdateFileChunk } from "./parser"
 import { seekSequence } from "./seek-sequence"
-import { fileEditContent } from "../fileEditContent"
 
 /**
  * Error during patch application.
@@ -55,10 +54,8 @@ function computeReplacements(
 		}
 
 		if (chunk.oldLines.length === 0) {
-			// Anchored additions belong immediately after their context. Unanchored
-			// additions retain the existing append-at-end behavior.
-			const insertionIdx = chunk.changeContext !== null ? lineIndex : originalLines.length
-			replacements.push([insertionIdx, 0, chunk.newLines])
+			// Codex b75d1e89665 locates context but appends pure additions at EOF.
+			replacements.push([originalLines.length, 0, chunk.newLines])
 			continue
 		}
 
@@ -111,7 +108,13 @@ function computeReplacements(
  * Apply replacements to the original lines, returning the modified content.
  * Replacements must be applied in reverse order to preserve indices.
  */
-function applyReplacements(lines: string[], replacements: Array<[number, number, string[]]>): string[] {
+type SourceLine = { text: string; ending: string }
+
+function applyReplacements(
+	lines: SourceLine[],
+	replacements: Array<[number, number, string[]]>,
+	preferredEnding: string,
+): SourceLine[] {
 	const result = [...lines]
 
 	// Apply in reverse order so earlier replacements don't shift later indices
@@ -119,7 +122,7 @@ function applyReplacements(lines: string[], replacements: Array<[number, number,
 		const [startIdx, oldLen, newSegment] = replacements[i]!
 
 		// Remove old lines
-		result.splice(startIdx, oldLen, ...newSegment)
+		result.splice(startIdx, oldLen, ...newSegment.map((text) => ({ text, ending: preferredEnding })))
 	}
 
 	return result
@@ -134,22 +137,35 @@ function applyReplacements(lines: string[], replacements: Array<[number, number,
  * @returns The new file content
  */
 export function applyChunksToContent(originalContent: string, filePath: string, chunks: UpdateFileChunk[]): string {
-	const projection = fileEditContent(originalContent)
-	const hasTrailingNewline = projection.content.endsWith("\n")
-	let originalLines = projection.content === "" ? [] : projection.content.split("\n")
-
-	// Drop trailing empty element that results from final newline
-	// so that line counts match standard diff behavior
-	if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
-		originalLines = originalLines.slice(0, -1)
+	const bom = originalContent.startsWith("\uFEFF") ? "\uFEFF" : ""
+	const content = originalContent.slice(bom.length)
+	// Keep each untouched line's terminator, as Codex b75d1e89665 does, rather
+	// than normalizing the entire file when only one region is being patched.
+	const sourceLines: SourceLine[] = []
+	for (const match of content.matchAll(/([^\r\n]*)(\r\n|\r|\n|$)/g)) {
+		if (match[0].length > 0) sourceLines.push({ text: match[1]!, ending: match[2]! })
 	}
-
-	const replacements = computeReplacements(originalLines, filePath, chunks)
-	const newLines = applyReplacements(originalLines, replacements)
-	// Patch line separators do not implicitly add a final newline. An explicit
-	// added empty line can still terminate a previously unterminated file.
-	const content = newLines.join("\n") + (hasTrailingNewline && newLines.length > 0 ? "\n" : "")
-	return projection.restore(content)
+	const preferredEnding = sourceLines.find((line) => line.ending)?.ending ?? "\n"
+	const hasTrailingNewline = sourceLines.at(-1)?.ending !== "" && sourceLines.length > 0
+	const replacements = computeReplacements(
+		sourceLines.map((line) => line.text),
+		filePath,
+		chunks,
+	)
+	const newLines = applyReplacements(sourceLines, replacements, preferredEnding)
+	// Intentional byte-preservation difference: unlike Codex, an update does not
+	// implicitly terminate an originally unterminated file. An explicit added
+	// empty line can still supply that terminator.
+	return (
+		bom +
+		newLines
+			.map((line, index) => {
+				const ending =
+					index === newLines.length - 1 && !hasTrailingNewline ? "" : line.ending || preferredEnding
+				return line.text + ending
+			})
+			.join("")
+	)
 }
 
 /**

@@ -1305,10 +1305,10 @@ export async function executeCommandInTerminal(
 				? "execa"
 				: "vscode"
 	const provider = capturedProvider ?? (await task.providerRef.deref())
-	const postStatus = (status: CommandExecutionStatus): void => {
+	const postStatus = (status: CommandExecutionStatus): Promise<void> => {
 		const slot =
 			status.status === "started" ? "started" : status.status === "output" ? "output-status" : "terminal-status"
-		void project(slot, async () => {
+		return project(slot, async () => {
 			await provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 		}).catch((error) => console.error("[ExecuteCommandTool] Could not publish command status", error))
 	}
@@ -1551,6 +1551,45 @@ export async function executeCommandInTerminal(
 	}
 
 	let createdProcess: AlphaTerminalProcess | undefined
+	let backgroundPreviewTimer: NodeJS.Timeout | undefined
+	let backgroundPreviewPublication: Promise<void> | undefined
+	let backgroundPreviewDirty = false
+	let backgroundPreviewClosed = false
+	const stopBackgroundPreview = () => {
+		backgroundPreviewClosed = true
+		backgroundPreviewDirty = false
+		clearTimeout(backgroundPreviewTimer)
+		backgroundPreviewTimer = undefined
+		createdProcess?.off("output_available", observeBackgroundOutput)
+		createdProcess?.off("error", stopBackgroundPreview)
+		createdProcess?.off("terminal_closed", stopBackgroundPreview)
+		createdProcess?.off("completed", stopBackgroundPreview)
+	}
+	const observeBackgroundOutput = () => {
+		if (!runInBackground || backgroundPreviewClosed || !createdProcess?.getOutputPreview) return
+		backgroundPreviewDirty = true
+		if (backgroundPreviewTimer || backgroundPreviewPublication) return
+		backgroundPreviewTimer = setTimeout(() => {
+			backgroundPreviewTimer = undefined
+			if (backgroundPreviewClosed || !backgroundPreviewDirty) return
+			backgroundPreviewDirty = false
+			// Preview snapshots use each provider's existing sanitation and never advance
+			// the model's receipt cursor. A single publication coalesces a blocked UI.
+			backgroundPreviewPublication = (async () => {
+				const preview = Terminal.compressTerminalOutput(createdProcess?.getOutputPreview?.() ?? "")
+				if (preview === latestCompressedOutput) return
+				latestCompressedOutput = preview
+				await postStatus({ executionId, status: "output", output: preview })
+				if (backgroundPreviewClosed) return
+				await queueCommandOutputMessage(preview, true)
+			})()
+				.catch((error) => console.error("[ExecuteCommandTool] Could not publish background progress", error))
+				.finally(() => {
+					backgroundPreviewPublication = undefined
+					if (backgroundPreviewDirty) observeBackgroundOutput()
+				})
+		}, commandOutputStreamThrottleMs)
+	}
 	const outputArchive = {
 		archiveExecutionId: executionId,
 		isClosed: () => interceptor?.isOutputClosed() ?? true,
@@ -1564,6 +1603,12 @@ export async function executeCommandInTerminal(
 		}
 		process.executionId = physicalExecutionId
 		createdProcess = process
+		if (process.getOutputPreview) {
+			process.on("output_available", observeBackgroundOutput)
+			process.once("error", stopBackgroundPreview)
+			process.once("terminal_closed", stopBackgroundPreview)
+			process.once("completed", stopBackgroundPreview)
+		}
 		onProcessCreated?.(process, outputArchive.isClosed)
 		commandSessionRegistry.trackTaskOutput(task, process, physicalExecutionId, outputArchive)
 	}
@@ -1592,6 +1637,7 @@ export async function executeCommandInTerminal(
 			}
 		},
 		onLine: (lines: string, process: AlphaTerminalProcess) => {
+			if (runInBackground && process.getOutputPreview) return
 			accumulatedOutput += lines
 
 			// Trim accumulated output to prevent unbounded memory growth
@@ -1631,6 +1677,7 @@ export async function executeCommandInTerminal(
 		},
 		onCompleted: async (output: string | undefined, process: AlphaTerminalProcess) => {
 			onCompletedInvoked = true
+			stopBackgroundPreview()
 			clearTimeout(missingOutputCompletionTimer)
 			missingOutputCompletionTimer = undefined
 			try {
@@ -1816,6 +1863,7 @@ export async function executeCommandInTerminal(
 	try {
 		await beforeLaunch?.()
 	} catch (error) {
+		stopBackgroundPreview()
 		releaseTerminalReservation()
 		await releaseMutationReservationBeforeLaunch(error)
 		if (taskWasCancelled()) return cancellationResult()
@@ -1846,6 +1894,7 @@ export async function executeCommandInTerminal(
 		stepOwnsLaunch = false
 		onExecutionState?.("yes")
 	} catch (error) {
+		stopBackgroundPreview()
 		releaseTerminalReservation()
 		let launchCause = error
 		// A canonical creation-hook throw precedes spawn. Its adapter already owns

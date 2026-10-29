@@ -67,6 +67,7 @@ import {
 	finishGoalStep,
 	getGoalStepElapsedReceipt,
 	goalResponseTokens,
+	goalStepElapsedMs,
 	type GoalStepAccounting,
 	type GoalAccountingBinding,
 } from "../agent/GoalStepAccounting"
@@ -83,7 +84,7 @@ import {
 } from "../agent/CompletionHooks"
 import { LifecycleHookStoppedError } from "../agent/LifecycleHookTargets"
 import { TaskMemoryContext } from "../../services/memory/TaskMemoryContext"
-import { assistantMemoryCitationReferences } from "../../services/memory/MemoryCitations"
+import { assistantMemoryCitationReferences, withAssistantMemoryCitations } from "../../services/memory/MemoryCitations"
 
 /** Process-local abort marker; never lets an old hook continue through a replacement owner. */
 class LifecycleHookOwnershipError extends Error {
@@ -4579,6 +4580,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const ownsResponse = guard ?? this.captureAgentStepOwnership()
 		const responseStep = this.currentAgentStep
 		if (!ownsResponse()) return false
+		if (response) response = withAssistantMemoryCitations(response)
 		let canonicalAnthropicThinkingProjected = false
 		const goalStep = this.activeGoalStep
 		if (goalStep && this.currentAgentStep?.snapshot.context.mode.slug === "architect") {
@@ -4603,7 +4605,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				eventId: `${goalStep.eventId}:usage`,
 				tokens: goalResponseTokens(response, goalStep.inputIncludesCache),
 				timeMs: goalStep.accountElapsed
-					? Math.max(0, Date.now() - goalStep.startedAt - (goalStep.elapsedChargedMs ?? 0))
+					? Math.max(0, goalStepElapsedMs(goalStep) - (goalStep.elapsedChargedMs ?? 0))
 					: 0,
 			}
 			;(message as ApiMessage).goal_usage_receipts = [goalStep.usageReceipt]
@@ -5617,6 +5619,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								stepId: step.stepId,
 								type: "assistant_text",
 								text: responseItem.text,
+								...(responseItem.memoryCitation ? { memoryCitation: responseItem.memoryCitation } : {}),
 								...(responseItem.id !== undefined ? { messageId: responseItem.id } : {}),
 								...(responseItem.phase !== undefined ? { phase: responseItem.phase } : {}),
 								...(responseItem.outputIndex !== undefined
@@ -8874,6 +8877,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			...binding,
 			eventId: `goal-step:${crypto.randomUUID()}`,
 			startedAt: Date.now(),
+			monotonicStartedAt: performance.now(),
 			executionMode,
 			accountElapsed: binding.goalTaskId === this.taskId && executionMode === "code",
 		}
@@ -18170,7 +18174,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									? streamedToolBatchIsolationError
 									: getToolBatchIsolationError(
 											this.currentTaskToolSurface.registry,
-											assistantToolUses.map((tool) => tool.name),
+											canonicalResponse!.toolCalls
+												.filter((call) => call.argumentParseError === undefined)
+												.map((call) => call.name),
 										)
 								: undefined
 							const earlyReadPrefixMatches =

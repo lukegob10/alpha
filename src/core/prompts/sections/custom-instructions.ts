@@ -299,7 +299,6 @@ function formatDirectoryContent(files: Array<{ filename: string; content: string
 
 interface InstructionDirectories {
 	alpha: string[]
-	projectAgents: string[]
 	agents: string[]
 	agentTrustRoot: string
 }
@@ -316,7 +315,6 @@ async function captureInstructionDirectories(
 
 	return {
 		alpha: alphaDirectories,
-		projectAgents: projectInstructions.directories,
 		// Project instructions follow the captured project boundary through cwd. Alpha's
 		// optional .alpha subfolder rule discovery remains scoped below cwd.
 		agents: [
@@ -513,7 +511,7 @@ async function loadAgentRulesFileFromDirectory(
 	const localFile =
 		standard?.ref === localPath
 			? undefined
-			: await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory)
+			: await readAgentInstructionFile(localPath, trustedRoot ?? cwd ?? directory, budget)
 
 	if (localFile?.text) {
 		const localHeader = showPath
@@ -536,25 +534,23 @@ async function loadAgentRulesFileFromDirectory(
 async function loadAllAgentRulesFiles(
 	cwd: string,
 	directories: readonly string[],
-	projectDirectories: readonly string[],
 	trustedRoot: string,
 	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<string> {
 	const agentRules: string[] = []
+	// Codex agents_md.rs (b75d1e8) shares one budget across discovered project instructions;
+	// Alpha's personal and optional descendant files retain their existing order.
 	const budget = createProjectInstructionBudget()
 
 	for (const directory of directories) {
 		// Show path for all directories except the root
 		const showPath = path.resolve(directory) !== path.resolve(cwd)
-		const isProjectDirectory = projectDirectories.some(
-			(projectDirectory) => path.resolve(projectDirectory) === path.resolve(directory),
-		)
 		const content = await loadAgentRulesFileFromDirectory(
 			directory,
 			showPath,
 			cwd,
 			trustedRoot,
-			isProjectDirectory ? budget : undefined,
+			budget,
 			discoveryOptions,
 		)
 		if (content && content.trim()) {
@@ -581,13 +577,10 @@ export async function loadApplicableAgentInstructionSources(
 	const budget = createProjectInstructionBudget()
 
 	for (const directory of instructionDirectories.agents) {
-		const isProjectDirectory = instructionDirectories.projectAgents.some(
-			(projectDirectory) => path.resolve(projectDirectory) === path.resolve(directory),
-		)
 		const standard = await readPreferredAgentRulesFile(
 			directory,
 			instructionDirectories.agentTrustRoot,
-			isProjectDirectory ? budget : undefined,
+			budget,
 			discoveryOptions,
 		)
 		if (standard?.text) sources.push({ kind: "agents", ref: standard.ref, text: standard.text })
@@ -596,7 +589,7 @@ export async function loadApplicableAgentInstructionSources(
 		const localFile =
 			standard?.ref === localRef
 				? undefined
-				: await readAgentInstructionFile(localRef, instructionDirectories.agentTrustRoot)
+				: await readAgentInstructionFile(localRef, instructionDirectories.agentTrustRoot, budget)
 		if (localFile?.text) sources.push({ kind: "agents", ref: localFile.ref, text: localFile.text })
 	}
 
@@ -691,7 +684,6 @@ export async function addCustomInstructionParts(
 				: loadAllAgentRulesFiles(
 						cwd,
 						directories.agents,
-						directories.projectAgents,
 						directories.agentTrustRoot,
 						options.settings?.projectInstructionDiscovery,
 					),

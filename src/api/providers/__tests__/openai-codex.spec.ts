@@ -1,7 +1,13 @@
 import { OpenAiCodexHandler } from "../openai-codex"
 import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 
-const mocks = vi.hoisted(() => ({ create: vi.fn(), chat: vi.fn(), construct: vi.fn(), authorize: vi.fn() }))
+const mocks = vi.hoisted(() => ({
+	create: vi.fn(),
+	chat: vi.fn(),
+	construct: vi.fn(),
+	authorize: vi.fn(),
+	recover: vi.fn(),
+}))
 
 vi.mock("openai", () => ({
 	default: vi.fn(function (options) {
@@ -17,7 +23,9 @@ vi.mock("openai", () => ({
 }))
 
 vi.mock("../../../services/chatgpt/ChatGptAuthService", () => ({
-	ChatGptAuthService: { getInstance: () => ({ authorizeRequest: mocks.authorize }) },
+	ChatGptAuthService: {
+		getInstance: () => ({ authorizeRequest: mocks.authorize, recoverUnauthorizedRequest: mocks.recover }),
+	},
 }))
 
 function message(text = "answer") {
@@ -63,11 +71,118 @@ function deferred<T>() {
 
 beforeEach(() => {
 	vi.clearAllMocks()
-	mocks.authorize.mockResolvedValue({ accessToken: "app-owned-token", signal: new AbortController().signal })
+	const signal = new AbortController().signal
+	mocks.authorize.mockResolvedValue({ accessToken: "app-owned-token", signal })
+	mocks.recover.mockResolvedValue({ accessToken: "refreshed-app-owned-token", signal })
 	mocks.create.mockImplementation(async () => response())
 })
 
 describe("Sign in with ChatGPT provider", () => {
+	it("recovers an admission 401 once without publishing the provisional failed outcome", async () => {
+		mocks.create.mockRejectedValueOnce(Object.assign(new Error("expired credential"), { status: 401 }))
+		const chunks = await collect(new OpenAiCodexHandler({}).createMessage("", []))
+		expect(mocks.recover).toHaveBeenCalledExactlyOnceWith(
+			await mocks.authorize.mock.results[0].value,
+			expect.any(AbortSignal),
+		)
+		expect(mocks.create).toHaveBeenCalledTimes(2)
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "completed", semanticOutputObserved: true }),
+		])
+	})
+
+	it("does not repeat a request rejected with the refreshed credential", async () => {
+		mocks.create.mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }))
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({}).createMessage("", [])) chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ status: 401, retryable: false })
+		expect(mocks.recover).toHaveBeenCalledOnce()
+		expect(mocks.create).toHaveBeenCalledTimes(2)
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "failed" }),
+		])
+	})
+
+	it("does not replay semantic output after an unauthorized stream failure", async () => {
+		mocks.create.mockImplementation(async () =>
+			(async function* () {
+				yield { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "partial" }
+				throw Object.assign(new Error("unauthorized"), { status: 401 })
+			})(),
+		)
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({}).createMessage("", [])) chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ status: 401, retryable: false })
+		expect(mocks.recover).not.toHaveBeenCalled()
+		expect(mocks.create).toHaveBeenCalledOnce()
+		expect(chunks).toContainEqual(expect.objectContaining({ type: "text", text: "partial" }))
+	})
+
+	it("does not retry inference after refresh confirms unusable credentials", async () => {
+		mocks.create.mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }))
+		mocks.recover.mockRejectedValue(
+			Object.assign(new Error("invalid refresh"), { code: "invalid_grant", retryable: false }),
+		)
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({}).createMessage("", [])) chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ code: "invalid_grant", retryable: false })
+		expect(mocks.create).toHaveBeenCalledOnce()
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "failed", semanticOutputObserved: false }),
+		])
+	})
+
+	it("does not replay a request cancelled during credential recovery", async () => {
+		const controller = new AbortController()
+		mocks.create.mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }))
+		mocks.recover.mockImplementation(async (authorization) => {
+			controller.abort()
+			return { ...authorization, accessToken: "refreshed-app-owned-token" }
+		})
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({}).createMessage("", [], {
+					taskId: "cancelled-recovery",
+					signal: controller.signal,
+				}))
+					chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ name: "AbortError" })
+		expect(mocks.create).toHaveBeenCalledOnce()
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "cancelled", semanticOutputObserved: false }),
+		])
+	})
+
+	it.each(["subscription_sharing_invalid_user", "chatpass_v2_scope_not_authorized"])(
+		"does not refresh a permanent %s failure even when its status is 401",
+		async (code) => {
+			mocks.create.mockRejectedValue(Object.assign(new Error("admission rejected"), { code, status: 401 }))
+			await expect(collect(new OpenAiCodexHandler({}).createMessage("", []))).rejects.toMatchObject({
+				code,
+				retryable: false,
+			})
+			expect(mocks.recover).not.toHaveBeenCalled()
+		},
+	)
+
+	it("keeps the original 401 when recovery cannot supply a different permitted token", async () => {
+		mocks.recover.mockImplementation(async (authorization) => authorization)
+		mocks.create.mockRejectedValue(Object.assign(new Error("unauthorized"), { status: 401 }))
+		await expect(collect(new OpenAiCodexHandler({}).createMessage("", []))).rejects.toMatchObject({ status: 401 })
+		expect(mocks.create).toHaveBeenCalledOnce()
+	})
+
 	it.each(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"])(
 		"exposes %s without authentication and sends all supported reasoning efforts",
 		async (apiModelId) => {

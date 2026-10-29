@@ -1,4 +1,9 @@
 {
+	"mcpOAuth": {
+		"authorize": "Authorize MCP server {{server}} using {{issuer}}?",
+		"openBrowser": "Open authorization browser",
+		"browserComplete": "Return to Alpha Code to finish authorization."
+	},
 	"chatGptAuth": {
 		"invalidAction": "The ChatGPT account action is invalid. Reopen settings and try again.",
 		"unavailable": "ChatGPT sign-in is unavailable. Reload the extension and try again.",
@@ -30,6 +35,17 @@
 		"postToolBlocked": "PostToolUse hook blocked the tool result.",
 		"postToolStopped": "PostToolUse hook stopped execution",
 		"completedBeforeBlock": "The tool completed before this result was blocked. Inspect the existing state before repeating it."
+	},
+	"historyRecovery": {
+		"title": "Recover inactive task history",
+		"record": "Record {{number}}",
+		"chooseRecords": "Select malformed records to remove after reviewing the original history",
+		"noInvalidRecords": "This history has no malformed records to recover.",
+		"confirm": "Recover selected records",
+		"warning": "Remove the selected malformed records from this task history?",
+		"details": "Task: {{taskId}}\nRecords: {{records}}\nOriginal SHA-256: {{digest}}\n\nReview the original history in the editor before continuing. Alpha preserves its exact original bytes in the task folder. Valid records, structured content, provider continuity, and tool transactions cannot be discarded. The task stays stopped.",
+		"complete": "Task history recovered. The original bytes are preserved in its task folder. Resume the task when ready.",
+		"failed": "Task history could not be recovered safely. The task remains stopped. Truncated JSON, structured records, incomplete tool transactions, changed history, and active tasks cannot be recovered by this command."
 	},
 	"goals": {
 		"title": "Task Goal",
@@ -155,6 +171,7 @@
 		"command_output_archive_interrupted": "Output artifact was interrupted and is incomplete.",
 		"command_terminal_closed": "The command terminal closed before the command exit was reported. Its outcome is unknown.",
 		"command_terminal_closed_output": "The command terminal closed before its output could be finalized.",
+		"command_capacity_exceeded": "The active command limit ({{limit}}) has been reached. Wait for a running command to finish or stop an existing command before starting another. Existing commands remain running.",
 		"share_task_failed": "Failed to share task. Please try again.",
 		"share_no_active_task": "No active task to share",
 		"share_auth_required": "Authentication required. Please sign in to share tasks.",

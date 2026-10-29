@@ -49,6 +49,7 @@ export const commandIds = [
 	"setCustomStoragePath",
 	"importSettings",
 	"exportDiagnostics",
+	"recoverTaskHistory",
 
 	"focusInput",
 	"acceptInput",

@@ -165,6 +165,83 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it("publishes bounded background progress without consuming session output or reopening a user ask", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers()
+		let preview = ""
+		const getOutputPreview = vi.fn(() => preview)
+		const captureUnretrievedOutput = vi.fn()
+		Object.assign(fixture.process, { getOutputPreview, captureUnretrievedOutput })
+		fixture.task.ask = vi.fn()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "background-progress",
+			command: "command",
+			agentTimeout: 1_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		fixture.provider.postMessageToWebview.mockClear()
+		for (let index = 0; index < 100; index++) {
+			preview = `progress ${index}`
+			fixture.process.emit("output_available")
+		}
+		await vi.advanceTimersByTimeAsync(150)
+		const progress = fixture.provider.postMessageToWebview.mock.calls
+			.map(([message]) => message)
+			.filter((message) => message.type === "commandExecutionStatus")
+		expect(progress).toHaveLength(1)
+		expect(JSON.parse(progress[0].text)).toMatchObject({ status: "output", output: "progress 99" })
+		expect(getOutputPreview).toHaveBeenCalledOnce()
+		expect(captureUnretrievedOutput).not.toHaveBeenCalled()
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		await fixture.finishProcess()
+		expect(fixture.process.listenerCount("output_available")).toBe(0)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("finishes archival and terminal evidence while background UI publication is blocked", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers()
+		const getOutputPreview = vi.fn(() => "background progress")
+		Object.assign(fixture.process, { getOutputPreview })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "blocked-background-progress",
+			toolCallId: "blocked-progress-call",
+			command: "command",
+			agentTimeout: 1_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		let releaseUi!: () => void
+		const blockedUi = new Promise<void>((resolve) => (releaseUi = resolve))
+		fixture.provider.postMessageToWebview.mockImplementation((message: { text?: string }) =>
+			message.text?.includes("background progress") ? blockedUi : undefined,
+		)
+		const evidencePublished = new Promise<void>((resolve) => {
+			vi.mocked(fixture.task.completeCommandExecution).mockImplementation(() => resolve())
+		})
+		try {
+			fixture.process.emit("output_available")
+			await vi.advanceTimersByTimeAsync(150)
+			for (let index = 0; index < 1_000; index++) fixture.process.emit("output_available")
+			await vi.advanceTimersByTimeAsync(1_500)
+			expect(getOutputPreview).toHaveBeenCalledOnce()
+			await fixture.finishProcess()
+			await evidencePublished
+			expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+			expect(fixture.process.listenerCount("output_available")).toBe(0)
+			const messageCount = vi.mocked(fixture.task.say).mock.calls.length
+			releaseUi()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(fixture.task.say).mock.calls).toHaveLength(messageCount)
+		} finally {
+			releaseUi()
+			fixture.releaseProcess()
+		}
+	})
+
 	it.each(["explore", "review"] as const)(
 		"records an inherited-permission %s's shared-workspace command changes",
 		async (role) => {

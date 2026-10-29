@@ -14,7 +14,7 @@ import { sanitizeToolUseId } from "../../utils/tool-id"
 /** Ordered assistant history items, retaining provider reasoning metadata until provider projection. */
 export type CanonicalAssistantHistoryItem =
 	| CanonicalAssistantTextHistoryItem
-	| Anthropic.ToolUseBlockParam
+	| CanonicalAssistantToolUseHistoryItem
 	| Anthropic.RedactedThinkingBlockParam
 	| { type: "reasoning"; text: string; signature?: string; outputIndex?: number }
 	| CanonicalEncryptedReasoningHistoryItem
@@ -23,6 +23,9 @@ export type CanonicalAssistantHistoryItem =
 
 /** Persisted source metadata is stripped only when projecting to a provider without message phases. */
 export type CanonicalAssistantTextHistoryItem = Anthropic.TextBlockParam & AssistantMessageMetadata
+
+/** Raw rejected arguments are replay evidence; object-only transports retain the safe input projection. */
+export type CanonicalAssistantToolUseHistoryItem = Anthropic.ToolUseBlockParam & { rawArguments?: string }
 
 function canMergeText(
 	previous: CanonicalAssistantTextHistoryItem,
@@ -64,8 +67,10 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 			if (item.text || Object.keys(metadata).length > 0) {
 				const current = { type: "text" as const, text: item.text, ...metadata }
 				const previous = items.at(-1)
-				if (previous?.type === "text" && canMergeText(previous, current)) previous.text += item.text
-				else items.push(current)
+				if (previous?.type === "text" && canMergeText(previous, current)) {
+					previous.text += item.text
+					if (current.memoryCitation) previous.memoryCitation = current.memoryCitation
+				} else items.push(current)
 			}
 			continue
 		}
@@ -123,7 +128,15 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 		const id = sanitizeToolUseId(item.id)
 		if (!id || seenToolUseIds.has(id)) continue
 		seenToolUseIds.add(id)
-		items.push({ type: "tool_use", id, name: item.name, input: item.arguments })
+		items.push({
+			type: "tool_use",
+			id,
+			name: item.name,
+			input: item.arguments,
+			...(item.argumentParseError !== undefined && item.rawArguments !== undefined
+				? { rawArguments: item.rawArguments }
+				: {}),
+		})
 	}
 
 	return items

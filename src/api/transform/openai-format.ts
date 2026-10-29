@@ -2,7 +2,7 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
 
-import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { normalizeToolHistory, toToolArgumentsString } from "./tool-history"
 
 /**
  * Options for converting Anthropic messages to OpenAI format.
@@ -260,7 +260,7 @@ export function convertToOpenAiMessages(
 					function: {
 						name: toolMessage.name,
 						// json string
-						arguments: JSON.stringify(toFunctionToolInput(toolMessage.name, toolMessage.input)),
+						arguments: toToolArgumentsString(toolMessage),
 					},
 				}))
 

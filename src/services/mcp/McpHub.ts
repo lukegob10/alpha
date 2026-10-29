@@ -6,9 +6,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { createMcpOAuthFetch } from "./McpOAuth"
 import ReconnectingEventSource from "reconnecting-eventsource"
 import {
 	CallToolResultSchema,
+	ElicitRequestSchema,
 	ListResourcesResultSchema,
 	ListResourceTemplatesResultSchema,
 	ListToolsResultSchema,
@@ -44,6 +46,7 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import { sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
 import { getProjectMcpConfigPath } from "../config-paths"
 import { collectPaginatedCatalog, MAX_MCP_CATALOG_ITEMS, validateMcpPaginationCursor } from "./pagination"
+import { McpElicitationRouter, type McpElicitationOwner } from "./elicitation"
 
 // Discriminated union for connection states
 export type ConnectedMcpConnection = {
@@ -224,6 +227,7 @@ export class McpHub {
 		{ controller: AbortController; full: boolean }
 	>()
 	private connectionAttempts = new Map<string, AbortController>()
+	private readonly elicitationRouters = new WeakMap<Client, McpElicitationRouter>()
 	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
 	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
@@ -863,6 +867,8 @@ export class McpHub {
 		let connectingConnection: ConnectedMcpConnection | undefined
 		let provisionalClient: Client | undefined
 		let provisionalTransport: ConnectedMcpConnection["transport"] | undefined
+		const lifecycleController = new AbortController()
+		const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
 		try {
 			const client = new Client(
 				{
@@ -870,10 +876,15 @@ export class McpHub {
 					version: this.getProvider()?.context.extension?.packageJSON?.version ?? "1.0.0",
 				},
 				{
-					capabilities: {},
+					capabilities: { elicitation: { form: {} } },
 				},
 			)
 			provisionalClient = client
+			const elicitationRouter = new McpElicitationRouter()
+			this.elicitationRouters.set(client, elicitationRouter)
+			client.setRequestHandler?.(ElicitRequestSchema, (request, extra) =>
+				elicitationRouter.handle(request, extra.signal),
+			)
 
 			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
 
@@ -977,7 +988,23 @@ export class McpHub {
 				}
 			} else if (configInjected.type === "streamable-http") {
 				// Streamable HTTP connection
+				const serverUrl = new URL(configInjected.url)
+				const secrets = this.getProvider()?.context.secrets
+				const configuredAuthorization = new Headers(configInjected.headers).has("authorization")
+				const oauthEligible =
+					serverUrl.protocol === "https:" ||
+					(serverUrl.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(serverUrl.hostname))
 				transport = new StreamableHTTPClientTransport(new URL(configInjected.url), {
+					...(secrets && !configuredAuthorization && oauthEligible
+						? {
+								fetch: createMcpOAuthFetch(
+									serverUrl,
+									`${source}:${source === "project" ? (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "") : ""}:${name}`,
+									secrets,
+									connectionSignal,
+								),
+							}
+						: {}),
 					requestInit: {
 						headers: configInjected.headers,
 					},
@@ -1079,9 +1106,7 @@ export class McpHub {
 			}
 			this.connections.push(connection)
 			connectingConnection = connection
-			const lifecycleController = new AbortController()
 			this.connectionControllers.set(connection, lifecycleController)
-			const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
 			// The SDK owns transport callbacks after connect; forward lifecycle events through the client.
 			client.onclose = transport.onclose
 			client.onerror = (error) => {
@@ -2164,6 +2189,20 @@ export class McpHub {
 		)
 		this.assertConnectionCurrent(connection, requestSignal)
 		return response
+	}
+
+	async withElicitation<T>(
+		serverName: string,
+		source: "global" | "project" | undefined,
+		owner: McpElicitationOwner,
+		dispatch: () => Promise<T>,
+	): Promise<T> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") throw new Error("MCP connection unavailable")
+		const signal = this.getConnectionSignal(connection, owner.signal)
+		const router = this.elicitationRouters.get(connection.client)
+		if (!router) return dispatch()
+		return router.run({ ...owner, signal }, dispatch)
 	}
 
 	async callTool(

@@ -307,7 +307,7 @@ describe("agent lifecycle tools", () => {
 		const { provider, task, callbacks, pushToolResult } = harness()
 
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
-		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
+		await reportProgressTool.execute({ message: "x".repeat(32_769) }, task, callbacks)
 		await waitAgentTool.execute({ timeout_ms: 3_600_001 }, task, callbacks)
 		await waitAgentTool.execute({ target: "/root/review" }, task, callbacks)
 
@@ -316,7 +316,7 @@ describe("agent lifecycle tools", () => {
 		expect(provider.waitForAgent).not.toHaveBeenCalled()
 		expect(task.recordToolError).toHaveBeenCalledTimes(4)
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("canonical agent path"))
-		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2,000 characters"))
+		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("32,768 characters"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("timeout_ms"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("until_terminal"))
 		expect(task.didToolFailInCurrentTurn).toBe(true)

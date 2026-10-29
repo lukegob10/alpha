@@ -51,6 +51,97 @@ const completed: ApiStreamChunk = {
 }
 
 describe("isolated summary requests", () => {
+	it("retries an oversized summary with fewer complete steps before falling back", async () => {
+		const { options, handler } = fixture([])
+		const createMessage = vi.mocked(handler.createMessage)
+		createMessage.mockImplementationOnce(async function* () {
+			yield { type: "text", text: "Discarded partial summary." }
+			throw new Error("maximum context length exceeded")
+		})
+		createMessage.mockImplementationOnce(async function* () {
+			yield { type: "text", text: "Recovered summary." }
+			yield completed
+		})
+		const before = structuredClone(options.messages)
+		const result = await summarizeConversation(options)
+		expect(result.status).toBe("reduced")
+		expect(result.summary).not.toContain("Discarded partial summary")
+		expect(createMessage).toHaveBeenCalledTimes(2)
+		const retryInput = JSON.stringify(createMessage.mock.calls[1][1])
+		expect(retryInput).not.toContain("Original task.")
+		expect(retryInput).not.toContain("Previous work.")
+		expect(retryInput).toContain("Continue the work.")
+		expect(options.messages).toEqual(before)
+	})
+
+	it("bounds overflow recovery to three attempts and accounts for discarded requests", async () => {
+		const { options, handler } = fixture([])
+		const observeCost = vi.fn()
+		const messages: ApiMessage[] = Array.from({ length: 8 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" : "assistant",
+			content: `Step ${index}. `.repeat(200),
+			ts: index + 1,
+		}))
+		vi.mocked(handler.createMessage).mockImplementation(async function* () {
+			yield { type: "usage", inputTokens: 1, outputTokens: 0, totalCost: 0.25 }
+			yield { type: "error", error: "context_length_exceeded", message: "maximum context length exceeded" }
+		})
+		const result = await summarizeConversation({ ...options, messages, observeCost })
+		expect(result.status).toBe("no_progress")
+		expect(handler.createMessage).toHaveBeenCalledTimes(3)
+		expect(result.cost).toBe(0.75)
+		expect(observeCost.mock.calls.map(([cost]) => cost)).toEqual([0.25, 0.5, 0.75])
+	})
+
+	it("removes whole tool transactions from retry input without changing the exact recent tail", async () => {
+		const { options, handler } = fixture([])
+		const tail: ApiMessage[] = [
+			{ role: "user", content: "Recent instruction", ts: 5 },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "recent", signature: "tail-signature" },
+					{ type: "text", text: "Recent response" },
+				],
+				ts: 6,
+			},
+		]
+		const messages: ApiMessage[] = [
+			options.messages[0],
+			{
+				role: "assistant",
+				content: [{ type: "tool_use", id: "old-call", name: "read_file", input: { path: "old.ts" } }],
+				ts: 2,
+			},
+			{
+				role: "user",
+				content: [{ type: "tool_result", tool_use_id: "old-call", content: "Old tool evidence" }],
+				ts: 3,
+			},
+			{ role: "assistant", content: "Older completed response. ".repeat(200), ts: 4 },
+			{ role: "user", content: "Intermediate instruction. ".repeat(200), ts: 4.5 },
+			{ role: "assistant", content: "Intermediate response.", ts: 4.6 },
+			...tail,
+		]
+		vi.mocked(handler.createMessage)
+			.mockImplementationOnce(async function* () {
+				yield { type: "text", text: "Discarded partial summary." }
+				throw new Error("maximum context length exceeded")
+			})
+			.mockImplementationOnce(async function* () {
+				yield { type: "text", text: "Recovered summary." }
+				yield completed
+			})
+		const result = await summarizeConversation({ ...options, messages, recentTailTokenBudget: 500 })
+		expect(result.status).toBe("reduced")
+		expect(handler.createMessage).toHaveBeenCalledTimes(2)
+		const retryInput = JSON.stringify(vi.mocked(handler.createMessage).mock.calls[1][1])
+		expect(retryInput).not.toContain("old-call")
+		expect(retryInput).not.toContain("Old tool evidence")
+		expect(getEffectiveApiHistory(result.messages).slice(-2)).toEqual(tail)
+		expect(JSON.stringify(result.messages)).toContain("omitted from summary input")
+	})
+
 	it.each([{ isAutomaticTrigger: false }, { isAutomaticTrigger: true }, { forceCompaction: true }])(
 		"preserves durable route replay revocation through compaction (%j)",
 		async (trigger) => {

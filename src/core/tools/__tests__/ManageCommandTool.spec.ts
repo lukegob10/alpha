@@ -50,14 +50,26 @@ afterEach(() => {
 	vi.useRealTimers()
 })
 
-it("waits inside the host for output, then removes listeners", async () => {
+it.each([false, true])("collects chatty output until the wait deadline (buffered initially: %s)", async (buffered) => {
+	vi.useFakeTimers()
 	const { process } = harness()
-	const waiting = waitForCommand(process, 30_000)
-	expect(process.listenerCount("output_available")).toBe(1)
-	process.emit("output_available")
+	process.hasUnretrievedOutput = vi.fn(() => buffered)
+	let returned = false
+	const waiting = waitForCommand(process, 30_000).then(() => {
+		returned = true
+	})
+	for (let elapsed = 0; elapsed < 30_000; elapsed += 1_000) {
+		process.emit("output_available")
+		await vi.advanceTimersByTimeAsync(999)
+		expect(returned).toBe(false)
+		await vi.advanceTimersByTimeAsync(1)
+	}
 	await waiting
-	expect(process.listenerCount("output_available")).toBe(0)
+	expect(returned).toBe(true)
+	expect(process.isSettled).toBe(false)
 	expect(process.listenerCount("completed")).toBe(0)
+	expect(process.listenerCount("error")).toBe(0)
+	expect(vi.getTimerCount()).toBe(0)
 })
 
 it.each(["timeout", "cancel", "completed", "error"])("cleans up a %s wait", async (cause) => {
@@ -138,6 +150,68 @@ it("formats a completed native wait with its exit code", async () => {
 	)
 })
 
+it.each(["deadline", "completion"] as const)(
+	"keeps native session output flowing until %s without returning a result for each chunk",
+	async (outcome) => {
+		vi.useFakeTimers()
+		const { task, callbacks, process, terminal, commandEvidence } = harness()
+		let output = "buffered progress\n"
+		process.hasUnretrievedOutput = vi.fn(() => output.length > 0)
+		const commit = vi.fn(() => {
+			output = ""
+		})
+		process.captureUnretrievedOutput = vi.fn(() => ({ output, commit, release: vi.fn() }))
+		const backgroundOutput = vi.fn()
+		process.on("output_available", backgroundOutput)
+		const sessionId = commandSessionRegistry.register(task, process)
+		const poll = new ToolRegistry().resolve("write_stdin")!.execute({
+			task,
+			call: {
+				type: "tool_use",
+				id: "chatty-poll",
+				name: "write_stdin",
+				params: {},
+				partial: false,
+				nativeArgs: { session_id: sessionId, yield_time_ms: 30_000 },
+			},
+			callbacks,
+		})
+		for (let chunk = 1; chunk <= 3; chunk++) {
+			await vi.advanceTimersByTimeAsync(1_000)
+			output += `progress ${chunk}\n`
+			process.emit("output_available")
+			await vi.advanceTimersByTimeAsync(0)
+			expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+		}
+		if (outcome === "completion") {
+			process.isSettled = true
+			terminal.running = false
+			commandEvidence.status = "succeeded"
+			commandEvidence.exitCode = 0
+			process.emit("completed", output)
+		} else await vi.advanceTimersByTimeAsync(27_000)
+		await poll
+
+		expect(backgroundOutput).toHaveBeenCalledTimes(3)
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("buffered progress\nprogress 1\nprogress 2\nprogress 3\n"),
+		)
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(
+			expect.stringContaining(
+				outcome === "completion"
+					? "Process exited with code 0"
+					: `Process running with session ID ${sessionId}`,
+			),
+		)
+		expect(commandSessionRegistry.resolve(task, sessionId)).toEqual(
+			outcome === "completion" ? undefined : expect.objectContaining({ process }),
+		)
+		expect(commit).toHaveBeenCalledOnce()
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+	},
+)
+
 it("delegates artifact reads through the manage command host", async () => {
 	const { task, callbacks } = harness()
 	const read = vi.spyOn(readCommandOutputTool, "execute").mockResolvedValue(undefined)
@@ -189,9 +263,18 @@ it("rejects null optional artifact read fields before dispatch", async () => {
 })
 
 it("accepts long managed-command waits within the host limit", async () => {
+	vi.useFakeTimers()
 	const { task, callbacks, process } = harness()
 	process.hasUnretrievedOutput = vi.fn(() => true)
-	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 300_000 }, task, callbacks)
+	const waiting = manageCommandTool.execute(
+		{ execution_id: "execution", action: "wait", timeout_ms: 300_000 },
+		task,
+		callbacks,
+	)
+	await vi.advanceTimersByTimeAsync(299_999)
+	expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+	await vi.advanceTimersByTimeAsync(1)
+	await waiting
 	expect(callbacks.handleError).not.toHaveBeenCalled()
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining('"status":"running"'))
 })
@@ -299,6 +382,7 @@ it("preserves denied input and sends only literal approved input", async () => {
 })
 
 it("uses the numeric exec session to poll and send approved input through the tool registry", async () => {
+	vi.useFakeTimers()
 	const { task, callbacks, process } = harness()
 	process.hasUnretrievedOutput = vi.fn(() => true)
 	const sessionId = commandSessionRegistry.register(task, process)
@@ -312,13 +396,17 @@ it("uses the numeric exec session to poll and send approved input through the to
 		nativeArgs: { session_id: sessionId, ...(chars === undefined ? {} : { chars }), yield_time_ms: 0 },
 	})
 
-	await descriptor.execute({ task, call: call(), callbacks })
+	const poll = descriptor.execute({ task, call: call(), callbacks })
+	await vi.advanceTimersByTimeAsync(5_000)
+	await poll
 	expect(callbacks.askApproval).not.toHaveBeenCalled()
 	expect(callbacks.pushToolResult).toHaveBeenCalledWith(
 		expect.stringContaining(`Process running with session ID ${sessionId}`),
 	)
 
-	await descriptor.execute({ task, call: call("yes\n"), callbacks })
+	const input = descriptor.execute({ task, call: call("yes\n"), callbacks })
+	await vi.advanceTimersByTimeAsync(250)
+	await input
 	expect(callbacks.askApproval).toHaveBeenCalledWith("command", "input command execution\nyes\n")
 	expect(process.writeInput).toHaveBeenCalledExactlyOnceWith("yes\n")
 	expect(callbacks.handleError).not.toHaveBeenCalled()

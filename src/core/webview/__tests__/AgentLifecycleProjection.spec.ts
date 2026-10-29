@@ -118,6 +118,34 @@ describe("AgentLifecycleProjector", () => {
 		expect(projector.getSnapshot(ids.taskId)).toMatchObject({ phase: "waiting", lastSequence: 3 })
 	})
 
+	it("ignores a delayed same-turn snapshot without publishing an older projection", () => {
+		const published: AgentLifecycleSnapshot[] = []
+		const projector = new AgentLifecycleProjector({
+			onSnapshotUpdated: (snapshot) => void published.push(snapshot),
+		})
+		projector.ingestEvent(phaseEvent("event-1", 1, "planning"))
+		const delayed = projector.getSnapshot(ids.taskId)!
+		projector.ingestEvent(phaseEvent("event-2", 2, "working"))
+		const current = projector.getSnapshot(ids.taskId)
+		const publishedCount = published.length
+
+		expect(projector.ingestSnapshot(delayed).kind).toBe("ignored")
+		expect(projector.getSnapshot(ids.taskId)).toEqual(current)
+		expect(published).toHaveLength(publishedCount)
+	})
+
+	it("accepts a trusted new-turn snapshot when an earlier terminal packet was missed", () => {
+		const projector = new AgentLifecycleProjector()
+		projector.ingestEvent(phaseEvent("event-1", 1))
+		projector.ingestEvent(phaseEvent("event-2", 2))
+		const nextTurn = emptySnapshot({ runId: "opaque-run", turnId: "opaque-turn", phase: "planning" })
+
+		// Full snapshots recover a missed terminal packet. Neither opaque IDs nor
+		// the lower, restarted sequence establish that this authoritative turn is stale.
+		expect(projector.ingestSnapshot(nextTurn).kind).toBe("snapshot_applied")
+		expect(projector.getSnapshot(ids.taskId)).toEqual(nextTurn)
+	})
+
 	it.each([false, true])("initializes the first event after a terminal turn: %s", (hasPreviousTurn) => {
 		const projector = new AgentLifecycleProjector()
 		if (hasPreviousTurn) {

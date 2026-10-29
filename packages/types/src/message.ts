@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { agentCanonicalPathSchema } from "./agent-control.js"
 
 import {
 	exactCommandApprovalAmendmentSchema,
@@ -320,7 +321,7 @@ export const subagentSpawnHandleSchema = z.object({
 	runId: subagentIdentifierSchema,
 	groupId: subagentIdentifierSchema,
 	parentTaskId: subagentIdentifierSchema,
-	path: z.string().regex(/^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/),
+	path: agentCanonicalPathSchema,
 	nickname: z.string().min(1),
 	role: subagentRoleSchema,
 	status: z.enum(["pending", "running"]),

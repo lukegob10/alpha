@@ -1,9 +1,40 @@
 import { describe, expect, it } from "vitest"
 
 import { globalSettingsSchema } from "../global-settings.js"
-import { DEFAULT_MEMORY_SETTINGS, memorySettingsSchema, taskMemoryStateSchema } from "../memory.js"
+import {
+	DEFAULT_MEMORY_SETTINGS,
+	memoryCitationSchema,
+	memorySettingsSchema,
+	taskMemoryStateSchema,
+} from "../memory.js"
 
 describe("memory settings", () => {
+	it("round-trips bounded citation provenance and rejects unsafe locations or ranges", () => {
+		const citation = {
+			entries: [{ path: "rollout_summaries/source-1.md", lineStart: 2, lineEnd: 8, note: "evidence" }],
+			rolloutIds: ["source-1"],
+		}
+		expect(memoryCitationSchema.parse(JSON.parse(JSON.stringify(citation)))).toEqual(citation)
+		for (const path of [
+			"../outside.md",
+			"/private.md",
+			"file:///private",
+			"command:run",
+			"rollout_summaries/a/b.md",
+		]) {
+			expect(
+				memoryCitationSchema.safeParse({ ...citation, entries: [{ ...citation.entries[0], path }] }).success,
+			).toBe(false)
+		}
+		expect(
+			memoryCitationSchema.safeParse({ ...citation, entries: [{ ...citation.entries[0], lineEnd: 1 }] }).success,
+		).toBe(false)
+		expect(
+			memoryCitationSchema.safeParse({ ...citation, rolloutIds: Array.from({ length: 129 }, () => "source") })
+				.success,
+		).toBe(false)
+	})
+
 	it("keeps the feature opt-in and reading independent from generation", () => {
 		expect(memorySettingsSchema.parse({})).toEqual(DEFAULT_MEMORY_SETTINGS)
 		expect(DEFAULT_MEMORY_SETTINGS).toMatchObject({

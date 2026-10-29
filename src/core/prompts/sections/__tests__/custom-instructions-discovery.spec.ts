@@ -10,7 +10,12 @@ vi.mock("os", async (importOriginal) => {
 })
 
 import { executeRipgrep } from "../../../../services/search/file-search"
-import { addCustomInstructions, loadRuleFiles } from "../custom-instructions"
+import {
+	addCustomInstructionParts,
+	addCustomInstructions,
+	loadApplicableAgentInstructionSources,
+	loadRuleFiles,
+} from "../custom-instructions"
 
 describe("custom instruction assembly discovery", () => {
 	let fixture: string
@@ -82,6 +87,31 @@ describe("custom instruction assembly discovery", () => {
 		await write("workspace/new/AGENTS.md", "updated new agent")
 		expect(await assemble()).toContain("updated new agent")
 		expect(executeRipgrep).toHaveBeenCalledTimes(3)
+	})
+
+	it("shares one project budget with personal and optional descendant instructions in both assembly paths", async () => {
+		const rootText = "R".repeat(32 * 1_024 - 12)
+		await write("workspace/AGENTS.md", rootText)
+		await write("workspace/AGENTS.local.md", "LLLL")
+		await write("workspace/a/AGENT.md", "😀".repeat(10_000))
+		await write("workspace/z/AGENTS.local.md", "must not bypass the budget")
+		const sources = await loadApplicableAgentInstructionSources(cwd, true)
+		expect(sources.map(({ text }) => text)).toEqual([rootText, "LLLL", "😀😀"])
+		expect(sources.reduce((total, source) => total + Buffer.byteLength(source.text, "utf8"), 0)).toBe(32 * 1_024)
+
+		const parts = await addCustomInstructionParts("", "", cwd, "code", {
+			settings: {
+				enableSubfolderRules: true,
+				useAgentRules: true,
+				todoListEnabled: false,
+				newTaskRequireTodos: false,
+			},
+		})
+		const agentRules = parts.find(({ origin }) => origin === "agent-rules")!.content
+		expect(agentRules).toContain(rootText)
+		expect(agentRules).toContain("LLLL")
+		expect(agentRules.match(/😀/gu)).toHaveLength(2)
+		expect(agentRules).not.toContain("must not bypass the budget")
 	})
 
 	it("does no recursive discovery when disabled", async () => {

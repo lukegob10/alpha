@@ -147,8 +147,33 @@ describe("configured project instruction discovery", () => {
 			projectDocFallbackFilenames: ["WORKFLOW.md"],
 		})
 
-		expect(sources.map(({ text }) => text)).toEqual([rootText, "a", "Alpha local compatibility"])
+		expect(sources.map(({ text }) => text)).toEqual([rootText, "a"])
 		expect(sources.map(({ text }) => text).join("\n")).not.toContain("�")
+	})
+
+	it.each(["AGENTS.local.md", "AGENTS.override.md"])(
+		"bounds a large %s within the shared budget",
+		async (filename) => {
+			await fs.unlink(path.join(cwd, "AGENTS.md"))
+			await fs.writeFile(path.join(cwd, filename), "😀".repeat(10_000))
+			const sources = await loadApplicableAgentInstructionSources(cwd, false, { projectRootMarkers: [] })
+
+			expect(sources).toEqual([{ kind: "agents", ref: path.join(cwd, filename), text: "😀".repeat(8_192) }])
+			expect(Buffer.byteLength(sources[0].text, "utf8")).toBe(32 * 1_024)
+		},
+	)
+
+	it("keeps override and personal precedence while sharing the remaining ancestor budget", async () => {
+		const rootText = "R".repeat(32 * 1_024 - 8)
+		await fs.writeFile(path.join(configuredRoot, "AGENTS.override.md"), rootText)
+		await fs.writeFile(path.join(configuredRoot, "AGENTS.local.md"), "😀".repeat(10_000))
+		const sources = await loadApplicableAgentInstructionSources(cwd, false, {
+			projectRootMarkers: [".alpha-root"],
+			projectDocFallbackFilenames: ["WORKFLOW.md"],
+		})
+
+		expect(sources.map(({ text }) => text)).toEqual([rootText, "😀😀"])
+		expect(sources.map(({ ref }) => path.basename(ref))).toEqual(["AGENTS.override.md", "AGENTS.local.md"])
 	})
 
 	it("loads AGENTS.local.md once when it is also a configured fallback", async () => {

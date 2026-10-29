@@ -1,4 +1,7 @@
 {
+	"mcpElicitation": {
+		"question": "MCP server {{serverName}} requests information: {{message}}\nReply with a JSON object matching this form, or cancel to withhold the information:\n{{schema}}"
+	},
 	"approvalDetails": "{{toolName}}: review the complete action in the tool details ({{length}} characters).",
 	"customToolMissingMode": "Custom tools require a captured task mode.",
 	"commandOutputSearch": {

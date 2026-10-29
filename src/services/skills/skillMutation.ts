@@ -5,6 +5,7 @@ import matter from "gray-matter"
 import { WorkspaceMutationGate } from "../../core/task/WorkspaceMutationGate"
 import { withFileLock } from "../../core/task-persistence/atomicWrite"
 import { t } from "../../i18n"
+import { parseImportedSkillDocument } from "./skillDocument"
 
 // Settings mutations have no Task owner. Share the existing gate across catalogs,
 // and the file lease across extension windows, using the resolved skill identity.
@@ -66,7 +67,7 @@ export async function updateSkillModesInDocument(
 				throw conflict()
 			}
 
-			const parsed = matter(originalText)
+			const parsed = parseImportedSkillDocument(originalText)
 			const frontmatter: Record<string, unknown> = { ...parsed.data, modeSlugs }
 			delete frontmatter.mode
 			// Strip stringify's synthetic empty-body newline and edit only the header.

@@ -456,6 +456,30 @@ describe("ApplyPatchTool", () => {
 		},
 	)
 
+	it.each(["first.txt", "nested/../first.txt"])(
+		"rejects duplicate resolved targets before effects: %s",
+		async (duplicate) => {
+			const task = createTask()
+			const callbacks = createCallbacks()
+			mockedFs.readFile.mockResolvedValue("old\n")
+			await new ApplyPatchTool().execute(
+				{
+					patch: `*** Begin Patch\n*** Update File: first.txt\n@@\n-old\n+new\n*** Update File: ${duplicate}\n@@\n-old\n+other\n*** End Patch`,
+				},
+				task,
+				callbacks,
+			)
+			expect(callbacks.askApproval).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockedFs.unlink).not.toHaveBeenCalled()
+			expect(callbacks.handleError).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({ message: expect.stringMatching(/multiple operations target/i) }),
+			)
+		},
+	)
+
 	it.each(["mismatch", "ignored"])("reports every path after %s preflight failure", async (failure) => {
 		const task = createTask((filePath) => failure !== "ignored" || filePath !== "second.txt")
 		const callbacks = createCallbacks()

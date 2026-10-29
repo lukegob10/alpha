@@ -36,6 +36,7 @@ export function filterNonAnthropicBlocks(
 				id: _messageId,
 				messageId: _sourceMessageId,
 				phase: _phase,
+				memoryCitation: _memoryCitation,
 				agentResponseItems: _responseItems,
 				agentResponseOutcome: _responseOutcome,
 				...wireMessage
@@ -43,6 +44,7 @@ export function filterNonAnthropicBlocks(
 				id?: unknown
 				messageId?: unknown
 				phase?: unknown
+				memoryCitation?: unknown
 				agentResponseItems?: unknown
 				agentResponseOutcome?: unknown
 			}
@@ -62,11 +64,13 @@ export function filterNonAnthropicBlocks(
 							id: _id,
 							phase: _phase,
 							outputIndex: _outputIndex,
+							memoryCitation: _memoryCitation,
 							...fields
 						} = block as Anthropic.TextBlockParam & {
 							id?: unknown
 							phase?: unknown
 							outputIndex?: unknown
+							memoryCitation?: unknown
 						}
 						return fields
 					}
@@ -75,11 +79,13 @@ export function filterNonAnthropicBlocks(
 						tool_call_id: _legacyId,
 						function: _legacyFunction,
 						arguments: _legacyArguments,
+						rawArguments: _rawArguments,
 						...fields
 					} = block as Anthropic.ToolUseBlockParam & {
 						tool_call_id?: unknown
 						function?: unknown
 						arguments?: unknown
+						rawArguments?: unknown
 					}
 					return { ...fields, input: toFunctionToolInput(block.name, block.input) }
 				})

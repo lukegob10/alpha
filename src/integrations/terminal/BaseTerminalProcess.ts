@@ -169,10 +169,14 @@ export abstract class BaseTerminalProcess
 		return this.outputTranscript.parts()
 	}
 
-	protected getOutputTranscript(): string {
+	protected getOutputTranscript(_final = true): string {
 		return this.getOutputTranscriptParts()
 			.map((part) => part.output)
 			.join("")
+	}
+
+	public getOutputPreview(): string {
+		return terminalOutputSuffix(this.getOutputTranscript(false), 100_000)
 	}
 
 	public hasActiveOutputReceipt(): boolean {

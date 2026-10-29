@@ -12,6 +12,7 @@ import { focusPanel } from "../utils/focusPanel"
 import { handleNewTask } from "./handleTask"
 import { t } from "../i18n"
 import { manageTaskGoal } from "./goalCommands"
+import { recoverTaskHistory } from "./recoverTaskHistory"
 import { generateErrorDiagnostics } from "../core/webview/diagnosticsHandler"
 
 /**
@@ -180,6 +181,7 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		const visibleProvider = getVisibleProviderOrLog(outputChannel, surface === "sidebar" ? provider : undefined)
 		if (visibleProvider) await manageTaskGoal(visibleProvider)
 	},
+	recoverTaskHistory: () => recoverTaskHistory(provider),
 	setCustomStoragePath: async () => {
 		const { promptForCustomStoragePath } = await import("../utils/storage")
 		await promptForCustomStoragePath()

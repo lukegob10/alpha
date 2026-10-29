@@ -34,6 +34,7 @@ export type {
 
 import {
 	agentCanonicalPathSchema,
+	resolveAgentPathReference,
 	agentControlStateSchema,
 	agentRuntimeOwnerIdSchema,
 	type AgentCanonicalPath,
@@ -2047,6 +2048,45 @@ export class AgentControlStore {
 		return resolved && !resolved.closed ? resolved.record : undefined
 	}
 
+	/** Codex b75d1e8 V2 resolves relative names from the caller; authority is checked by the host afterward. */
+	resolveAgentReference(callerTaskId: string, target: string, rootTaskId?: string): AgentRecord | undefined {
+		this.assertInitialized()
+		const caller = this.getAgent(callerTaskId, rootTaskId)
+		if (!caller) return undefined
+		const byId = this.state.agents.find(
+			(record) => record.taskId === target && record.rootTaskId === caller.rootTaskId,
+		)
+		if (byId) return clone(byId)
+		let canonical: string
+		try {
+			canonical = resolveAgentPathReference(caller.path, target)
+		} catch {
+			// Legacy callsigns and saved IDs need not use V2's lowercase path syntax.
+			return target.includes("/") ? undefined : this.getAgent(target, caller.rootTaskId)
+		}
+		const exact = this.getAgent(canonical, caller.rootTaskId)
+		if (exact) return exact
+		const segments = canonical.split("/").slice(2)
+		const records = new Map(this.state.agents.map((record) => [record.taskId, record]))
+		const aliases = this.state.agents.filter((record) => {
+			if (record.rootTaskId !== caller.rootTaskId) return false
+			let current: AgentRecord | undefined = record
+			const seen = new Set<string>()
+			for (let index = segments.length - 1; index >= 0; index--) {
+				if (!current?.parentTaskId || seen.has(current.taskId)) return false
+				seen.add(current.taskId)
+				const persistedName = current.path.split("/").at(-1)
+				if (segments[index] !== persistedName && segments[index] !== current.nickname) return false
+				current = records.get(current.parentTaskId)
+			}
+			return current?.taskId === caller.rootTaskId
+		})
+		if (aliases.length > 1)
+			throw new Error(`Agent reference ${target} is ambiguous; provide a task ID or canonical path`)
+		if (aliases[0]) return clone(aliases[0])
+		return target.includes("/") ? undefined : this.getAgent(target, caller.rootTaskId)
+	}
+
 	listAgents(options: ListAgentsOptions = {}): AgentRecord[] {
 		this.assertInitialized()
 		const statuses = options.statuses ? new Set(options.statuses) : undefined
@@ -3865,6 +3905,7 @@ export class AgentControlStore {
 	}
 
 	private pathSegment(nickname: string): string {
+		if (!nickname.includes("/") && agentCanonicalPathSchema.safeParse(`/root/${nickname}`).success) return nickname
 		return (
 			nickname
 				.normalize("NFKD")

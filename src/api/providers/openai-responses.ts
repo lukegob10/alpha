@@ -3,7 +3,7 @@ import type OpenAI from "openai"
 import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
 
 import type { ApiInstructionFragment } from "../index"
-import { normalizeToolHistory, toFunctionToolInput } from "../transform/tool-history"
+import { normalizeToolHistory, toToolArgumentsString } from "../transform/tool-history"
 import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 import { t } from "../../i18n"
 
@@ -207,18 +207,20 @@ export function buildOpenAiResponsesInput(
 			callNames.set(block.id, block.name)
 			if (block.name === "apply_patch" && freeformApplyPatch) {
 				const patch =
-					typeof block.input === "string"
-						? block.input
-						: isRecord(block.input) && typeof block.input.patch === "string"
-							? block.input.patch
-							: JSON.stringify(block.input)
+					typeof block.rawArguments === "string"
+						? block.rawArguments
+						: typeof block.input === "string"
+							? block.input
+							: isRecord(block.input) && typeof block.input.patch === "string"
+								? block.input.patch
+								: JSON.stringify(block.input)
 				input.push({ type: "custom_tool_call", call_id: block.id, name: block.name, input: patch })
 			} else {
 				input.push({
 					type: "function_call",
 					call_id: block.id,
 					name: block.name,
-					arguments: JSON.stringify(toFunctionToolInput(block.name, block.input)),
+					arguments: toToolArgumentsString(block),
 				})
 			}
 		}
@@ -329,7 +331,9 @@ function isToolResult(value: unknown): value is { type: "tool_result"; tool_use_
 	return isRecord(value) && value.type === "tool_result" && typeof value.tool_use_id === "string"
 }
 
-function isToolUse(value: unknown): value is { type: "tool_use"; id: string; name: string; input: unknown } {
+function isToolUse(
+	value: unknown,
+): value is { type: "tool_use"; id: string; name: string; input: unknown; rawArguments?: unknown } {
 	return (
 		isRecord(value) && value.type === "tool_use" && typeof value.id === "string" && typeof value.name === "string"
 	)

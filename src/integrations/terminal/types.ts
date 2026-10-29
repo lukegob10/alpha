@@ -78,6 +78,8 @@ export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessE
 	cancelPendingOutputWrite?: () => void
 	readonly outputCancellationSignal?: AbortSignal
 	hasActiveOutputReceipt?: () => boolean
+	/** Non-consuming, provider-sanitized bounded transcript for command progress. */
+	getOutputPreview?: () => string
 	command: string
 	isHot: boolean
 	/** True only after the process emitted its terminal completed/error event. */

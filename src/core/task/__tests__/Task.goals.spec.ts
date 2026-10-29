@@ -449,7 +449,7 @@ describe("Task goal integration through the shared turn engine", () => {
 	it("persists disjoint elapsed receipts when response billing fails before replay", async () => {
 		const { task, controller } = fixture()
 		await controller.create({ objective: "Finish the objective." }, "user")
-		const clock = vi.spyOn(Date, "now").mockReturnValue(900)
+		const clock = vi.spyOn(performance, "now").mockReturnValue(900)
 		const step = (await task["beginGoalStep"]())!
 		vi.spyOn(controller, "recordUsage").mockRejectedValueOnce(new Error("usage write failed"))
 		clock.mockReturnValue(1_000)
@@ -982,7 +982,7 @@ describe("Task goal integration through the shared turn engine", () => {
 		"accounts early failed %s sampling using its admitted mode",
 		async (mode) => {
 			let now = 100
-			vi.spyOn(Date, "now").mockImplementation(() => now)
+			vi.spyOn(performance, "now").mockImplementation(() => now)
 			const { task, controller } = fixture()
 			await controller.create({ objective: "Finish." }, "user")
 			Object.assign(task, { _taskMode: mode })

@@ -7,12 +7,29 @@ import {
 	createApiStreamOutcome,
 	createLinkedAbortController,
 	isApiStreamAbortError,
+	isApiStreamSemanticChunk,
 	type ApiStream,
+	type ApiStreamOutcomeChunk,
 } from "../transform/stream"
 import { ChatGptAuthService } from "../../services/chatgpt/ChatGptAuthService"
 import { OpenAiNativeHandler } from "./openai-native"
 
 const TOOL_NAMESPACE = "alpha"
+const PERMANENT_ADMISSION_CODES = new Set([
+	"subscription_sharing_user_not_eligible",
+	"subscription_sharing_usage_limit_exceeded",
+	"subscription_sharing_unsupported_capability",
+	"subscription_sharing_route_not_supported",
+	"subscription_sharing_invalid_user",
+	"chatpass_v2_scope_not_authorized",
+	"chatpass_v2_invalid_authorization_context",
+])
+
+function canRecoverUnauthorized(error: unknown): boolean {
+	if (!(error instanceof Error)) return false
+	const source = error as Error & { code?: string; status?: number }
+	return source.status === 401 && !PERMANENT_ADMISSION_CODES.has(source.code ?? "")
+}
 
 function requestError(error: unknown): unknown {
 	if (!(error instanceof Error)) return error
@@ -21,15 +38,7 @@ function requestError(error: unknown): unknown {
 		source.status === 400 ||
 		source.status === 401 ||
 		source.status === 403 ||
-		[
-			"subscription_sharing_user_not_eligible",
-			"subscription_sharing_usage_limit_exceeded",
-			"subscription_sharing_unsupported_capability",
-			"subscription_sharing_route_not_supported",
-			"subscription_sharing_invalid_user",
-			"chatpass_v2_scope_not_authorized",
-			"chatpass_v2_invalid_authorization_context",
-		].includes(source.code ?? "")
+		PERMANENT_ADMISSION_CODES.has(source.code ?? "")
 	return permanent ? Object.assign(error, { retryable: false }) : error
 }
 
@@ -108,20 +117,66 @@ export class OpenAiCodexHandler extends OpenAiNativeHandler {
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
 		const control = createLinkedAbortController(metadata)
-		let started = false
+		let signal = control.signal
+		let semanticOutputObserved = false
+		let outcomeObserved = false
 		try {
 			control.signal.throwIfAborted()
-			const authorized = await ChatGptAuthService.getInstance().authorizeRequest(control.signal)
-			const signal = AbortSignal.any([control.signal, authorized.signal])
-			signal.throwIfAborted()
-			this.client.apiKey = authorized.accessToken
-			started = true
-			yield* super.createMessage(systemPrompt, messages, { taskId: "", ...metadata, signal, store: false })
+			const auth = ChatGptAuthService.getInstance()
+			let authorized = await auth.authorizeRequest(control.signal)
+			for (let attempt = 0; ; attempt++) {
+				signal = AbortSignal.any([control.signal, authorized.signal])
+				signal.throwIfAborted()
+				this.client.apiKey = authorized.accessToken
+				let pendingOutcome: ApiStreamOutcomeChunk | undefined
+				try {
+					for await (const chunk of super.createMessage(systemPrompt, messages, {
+						taskId: "",
+						...metadata,
+						signal,
+						store: false,
+					})) {
+						// A provisional admission failure must not finalize the task before
+						// bounded credential recovery decides whether this request can resume.
+						if (chunk.type === "outcome") pendingOutcome = chunk
+						else {
+							semanticOutputObserved ||= isApiStreamSemanticChunk(chunk)
+							yield chunk
+						}
+					}
+					if (pendingOutcome) {
+						outcomeObserved = true
+						yield pendingOutcome
+					}
+					return
+				} catch (error) {
+					// Match Codex b75d1e8 client.rs unauthorized recovery without retrying
+					// semantic output or using its private first-party authentication route.
+					if (
+						attempt === 0 &&
+						!semanticOutputObserved &&
+						!pendingOutcome?.semanticOutputObserved &&
+						!signal.aborted &&
+						canRecoverUnauthorized(error)
+					) {
+						const recovered = await auth.recoverUnauthorizedRequest(authorized, control.signal)
+						if (recovered.accessToken !== authorized.accessToken) {
+							authorized = recovered
+							continue
+						}
+					}
+					if (pendingOutcome) {
+						outcomeObserved = true
+						yield pendingOutcome
+					}
+					throw error
+				}
+			}
 		} catch (error) {
-			if (!started) {
+			if (!outcomeObserved) {
 				yield createApiStreamOutcome({
-					status: isApiStreamAbortError(error, control.signal) ? "cancelled" : "failed",
-					semanticOutputObserved: false,
+					status: isApiStreamAbortError(error, signal) ? "cancelled" : "failed",
+					semanticOutputObserved,
 				})
 			}
 			throw requestError(error)

@@ -57,26 +57,36 @@ describe("AgentResponseAccumulator", () => {
 		expect(response.toolCalls).toHaveLength(1)
 	})
 
-	it("returns a structured error for malformed tool arguments", async () => {
+	it("retains a correlated rejected call for malformed tool arguments without failing independent calls", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {
 				yield { type: "tool_call", id: "call-1", name: "read_file", arguments: "not-json" } as const
+				yield { type: "tool_call", id: "call-2", name: "read_file", arguments: '{"path":"a.ts"}' } as const
 			})(),
 		)
 
-		expect(response.toolCalls).toHaveLength(0)
-		expect(response.items).toContainEqual({
-			type: "error",
-			message: 'Unable to parse arguments for tool call "read_file" (call-1).',
-			callId: "call-1",
-			toolName: "read_file",
-			retryable: false,
-		})
-		expect(response.outcome).toEqual({
-			status: "failed",
-			reason: 'Unable to parse arguments for tool call "read_file" (call-1).',
-			retryable: false,
-		})
+		expect(response.toolCalls).toEqual([
+			{
+				type: "tool_call",
+				id: "call-1",
+				name: "read_file",
+				arguments: {},
+				argumentParseError: 'Unable to parse arguments for tool call "read_file" (call-1).',
+				rawArguments: "not-json",
+			},
+			{ type: "tool_call", id: "call-2", name: "read_file", arguments: { path: "a.ts" } },
+		])
+		expect(response.items.some((item) => item.type === "error")).toBe(false)
+		expect(response.outcome).toBeUndefined()
+	})
+
+	it("bounds malformed payload evidence without exposing it as executable arguments", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "tool_call", id: "bad", name: "read_file", arguments: "x".repeat(20_000) })
+		const response = await accumulator.finish()
+		expect(response.toolCalls[0]).toMatchObject({ id: "bad", arguments: {}, rawArguments: "x".repeat(8_192) })
+		expect(response.toolCalls[0].argumentParseError).not.toContain("xxxxxxxx")
+		expect(response.outcome).toBeUndefined()
 	})
 })
 
@@ -193,7 +203,7 @@ describe("AgentTurnEngine", () => {
 		expect(host.runStep).toHaveBeenNthCalledWith(2, "second")
 	})
 
-	it("does not run effects or complete when a successful stream hides malformed tool arguments", async () => {
+	it("settles malformed tool receipts before allowing a successful response to continue", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {
 				yield { type: "text", text: "Finished." } as const
@@ -203,20 +213,24 @@ describe("AgentTurnEngine", () => {
 		)
 		const host: AgentTurnStagedHost<string> = {
 			shouldAbort: () => false,
-			sampleStep: async () => ({ response }),
+			sampleStep: async (input) => ({
+				response: input === "first" ? response : { ...emptyResponse(), text: "Recovered." },
+			}),
 			commitResponse: vi.fn(),
 			executeEffects: vi.fn(),
-			selectContinuation: vi.fn(async () => ({ nextInput: "complete" as const })),
+			selectContinuation: vi.fn(async (_sample, step) => ({
+				nextInput: step === 1 ? "tool-result" : "complete",
+			})),
 			releaseStep: vi.fn(),
 		}
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toMatchObject({ status: "failed", steps: 1 })
-		expect(host.commitResponse).toHaveBeenCalledOnce()
-		expect(host.executeEffects).not.toHaveBeenCalled()
-		expect(host.selectContinuation).not.toHaveBeenCalled()
-		expect(host.releaseStep).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ status: "completed", steps: 2 })
+		expect(host.commitResponse).toHaveBeenCalledTimes(2)
+		expect(host.executeEffects).toHaveBeenCalledTimes(2)
+		expect(host.selectContinuation).toHaveBeenCalledTimes(2)
+		expect(host.releaseStep).toHaveBeenCalledTimes(2)
 	})
 
 	it("preserves cancellation received while the final step releases its runtime ownership", async () => {

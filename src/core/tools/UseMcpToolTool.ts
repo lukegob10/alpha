@@ -431,13 +431,46 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			if (!mcpHub) {
 				throw new Error("No MCP hub is available")
 			}
-			const toolResult = await (source === undefined
-				? signal === undefined
-					? mcpHub.callTool(serverName, toolName, parsedArguments)
-					: mcpHub.callTool(serverName, toolName, parsedArguments, undefined, signal)
-				: signal === undefined
-					? mcpHub.callTool(serverName, toolName, parsedArguments, source)
-					: mcpHub.callTool(serverName, toolName, parsedArguments, source, signal))
+			const dispatch = () =>
+				source === undefined
+					? signal === undefined
+						? mcpHub.callTool(serverName, toolName, parsedArguments)
+						: mcpHub.callTool(serverName, toolName, parsedArguments, undefined, signal)
+					: signal === undefined
+						? mcpHub.callTool(serverName, toolName, parsedArguments, source)
+						: mcpHub.callTool(serverName, toolName, parsedArguments, source, signal)
+			const toolResult =
+				task.taskKind === "primary" && mcpHub.withElicitation
+					? await mcpHub.withElicitation(
+							serverName,
+							source,
+							{
+								signal: signal ?? task.getTaskLifetimeCancellationSignal(),
+								ask: async (message, schema, questionSignal) => {
+									const answer = await task.ask(
+										"followup",
+										JSON.stringify({
+											question: t("tools:mcpElicitation.question", {
+												serverName,
+												message,
+												schema: JSON.stringify(schema),
+											}),
+											suggest: [],
+										}),
+										false,
+										undefined,
+										undefined,
+										undefined,
+										undefined,
+										undefined,
+										questionSignal,
+									)
+									return answer.response === "messageResponse" ? answer.text : undefined
+								},
+							},
+							dispatch,
+						)
+					: await dispatch()
 			signal?.throwIfAborted()
 
 			if (!toolResult) {

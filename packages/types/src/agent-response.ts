@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { memoryCitationSchema } from "./memory.js"
 
 /** Message meaning reported by the provider; absence remains "phase unknown". */
 export const assistantMessagePhaseSchema = z.enum(["commentary", "partial_answer", "final_answer"])
@@ -9,6 +10,7 @@ export const assistantMessageMetadataSchema = z.object({
 	id: z.string().min(1).optional(),
 	phase: assistantMessagePhaseSchema.optional(),
 	outputIndex: z.number().int().nonnegative().safe().optional(),
+	memoryCitation: memoryCitationSchema.optional(),
 })
 export type AssistantMessageMetadata = z.infer<typeof assistantMessageMetadataSchema>
 
@@ -20,6 +22,7 @@ export function normalizeAssistantMessageMetadata(value: unknown): AssistantMess
 	if (!value || typeof value !== "object") return {}
 	const source = value as Record<string, unknown>
 	const phase = source.phase
+	const memoryCitation = memoryCitationSchema.safeParse(source.memoryCitation)
 	return {
 		...(typeof source.id === "string" && source.id.length > 0 ? { id: source.id } : {}),
 		...(phase === "commentary" || phase === "partial_answer" || phase === "final_answer" ? { phase } : {}),
@@ -28,5 +31,6 @@ export function normalizeAssistantMessageMetadata(value: unknown): AssistantMess
 		source.outputIndex >= 0
 			? { outputIndex: source.outputIndex }
 			: {}),
+		...(memoryCitation.success ? { memoryCitation: memoryCitation.data } : {}),
 	}
 }

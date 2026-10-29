@@ -510,10 +510,19 @@ function closeVsCodeLmResponseIterator(iterator: AsyncIterator<unknown> | undefi
 type VsCodeLmUsage = {
 	inputTokens: number
 	outputTokens: number
+	cacheReadTokens?: number
+	cacheWriteTokens?: number
+	reasoningTokens?: number
 }
 
 function getFiniteUsageValue(value: unknown): number | undefined {
 	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : undefined
+}
+
+function getVsCodeLmUsageDetail(details: unknown, key: string): number | undefined {
+	return details && typeof details === "object" && !Array.isArray(details)
+		? getFiniteUsageValue((details as Record<string, unknown>)[key])
+		: undefined
 }
 
 function getVsCodeLmUsage(chunk: unknown): VsCodeLmUsage | undefined {
@@ -535,7 +544,19 @@ function getVsCodeLmUsage(chunk: unknown): VsCodeLmUsage | undefined {
 			parsed.completion_tokens ?? parsed.output_tokens ?? parsed.completionTokens ?? parsed.outputTokens,
 		)
 
-		return inputTokens !== undefined && outputTokens !== undefined ? { inputTokens, outputTokens } : undefined
+		if (inputTokens === undefined || outputTokens === undefined) return undefined
+		// VS Code 1.138.0 / bundled Copilot 0.66.0 forwards normalized chat-completions
+		// usage through its external LM bridge (verified 2026-10-29). Details are optional.
+		const cacheReadTokens = getVsCodeLmUsageDetail(parsed.prompt_tokens_details, "cached_tokens")
+		const cacheWriteTokens = getVsCodeLmUsageDetail(parsed.prompt_tokens_details, "cache_creation_input_tokens")
+		const reasoningTokens = getVsCodeLmUsageDetail(parsed.completion_tokens_details, "reasoning_tokens")
+		return {
+			inputTokens,
+			outputTokens,
+			...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+			...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
+			...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+		}
 	} catch {
 		return undefined
 	}
@@ -1432,8 +1453,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			yield {
 				type: "usage",
 				usageSource: reportedUsage ? "provider" : "estimate",
-				inputTokens: reportedUsage?.inputTokens ?? estimateVsCodeLmInputTokens(vsCodeLmMessages, tools),
-				outputTokens: reportedUsage?.outputTokens ?? estimateTokens(accumulatedText.join("")),
+				...(reportedUsage ?? {
+					inputTokens: estimateVsCodeLmInputTokens(vsCodeLmMessages, tools),
+					outputTokens: estimateTokens(accumulatedText.join("")),
+				}),
 			}
 		} catch (error: unknown) {
 			if (requestControl.signal.aborted) {

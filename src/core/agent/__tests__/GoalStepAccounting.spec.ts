@@ -32,6 +32,36 @@ const response = createAgentResponse([
 afterEach(() => vi.useRealTimers())
 
 describe("goal receipts from existing provider usage", () => {
+	it.each([86_400_000, -86_400_000])("ignores a wall-clock jump of %s ms during a live step", async (jump) => {
+		vi.useFakeTimers()
+		vi.setSystemTime(1_000)
+		const controller = new GoalController({ taskId: "root", store: new MemoryStore(), newId: () => "goal" })
+		await controller.create({ objective: "Finish." }, "user")
+		let monotonic = 100
+		const step: GoalStepAccounting = {
+			controller,
+			goalId: "goal",
+			goalTaskId: "root",
+			controlVersion: 1,
+			requestGeneration: 1,
+			eventId: "clock-jump",
+			startedAt: 1_000,
+			monotonicStartedAt: monotonic,
+			monotonicNow: () => monotonic,
+			accountElapsed: true,
+		}
+		monotonic += 100
+		vi.setSystemTime(1_100 + jump)
+		await accountGoalResponse(step, response)
+		expect(step.usageReceipt?.timeMs).toBe(100)
+		monotonic += 200
+		vi.setSystemTime(1_300 - jump)
+		await finishGoalStep(step)
+		await finishGoalStep(step)
+		expect(await controller.get()).toMatchObject({ tokensUsed: 70, timeUsedMs: 300 })
+		expect(step.startedAt).toBe(1_000)
+	})
+
 	it("charges noncached input and output once when input already includes cache", () => {
 		expect(goalResponseTokens(response)).toBe(70)
 	})
