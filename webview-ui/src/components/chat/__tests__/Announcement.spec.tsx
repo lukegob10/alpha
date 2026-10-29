@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.16",
+		version: "3.2.17",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.16" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.17" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.16")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.17")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.16 fixes reasoning availability and incorrect next-step indicators."),
+			screen.getByText("Alpha v3.2.17 expands GitHub Copilot model choices and preserves reasoning settings."),
 		).toBeInTheDocument()
 	})
 
@@ -52,15 +52,11 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Copilot chats retain their model's resolved reasoning capabilities."),
+			screen.getByText("Choose Grok 4.6, Grok 4.7, and Claude Haiku 5.5 in GitHub Copilot."),
 		).toBeInTheDocument()
+		expect(screen.getByText("Use each model's supported reasoning levels for delegated work.")).toBeInTheDocument()
 		expect(
-			screen.getByText("See next step only when the applied reasoning settings change during a request."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Restore each task's saved reasoning choice without replacing it with the new-chat default.",
-			),
+			screen.getByText("Select the full GPT-5.6 family, GPT-6 Astra, Luna and Sol, and GPT-6.1 Terra and Sol."),
 		).toBeInTheDocument()
 	})
 
@@ -68,7 +64,7 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.16 fixes reasoning availability and incorrect next-step indicators."),
+			screen.getByText("Alpha v3.2.17 expands GitHub Copilot model choices and preserves reasoning settings."),
 		).toBeInTheDocument()
 		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
 	})

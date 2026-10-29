@@ -3,6 +3,7 @@ import { VERTEX_1M_CONTEXT_MODEL_IDS, vertexDefaultModelId, vertexModels } from 
 import {
 	getVscodeLlmCatalogModels,
 	getVscodeLlmExtendedContextSize,
+	getVscodeLlmExactModelId,
 	getVscodeLlmModelId,
 	getVscodeLlmModelInfo,
 	mergeVscodeLlmModels,
@@ -50,6 +51,28 @@ describe("supported provider model catalogs", () => {
 	})
 
 	describe("VS Code LM / GitHub Copilot", () => {
+		it.each([
+			"grok-4.6",
+			"grok-4.7",
+			"claude-haiku-5.5",
+			"gpt-5.6-luna",
+			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"gpt-6-astra",
+			"gpt-6-luna",
+			"gpt-6-sol",
+			"gpt-6.1-sol",
+			"gpt-6.1-terra",
+		])("offers %s in setup and preserves its live routing identity", (family) => {
+			const choice = getVscodeLlmCatalogModels().find((model) => model.family === family)
+			expect(choice).toMatchObject({ vendor: "copilot", family })
+			expect(getVscodeLlmExactModelId(choice!)).toBe(family)
+			const liveModel = { vendor: "copilot", id: "opaque-route", name: choice!.name }
+			expect(getVscodeLlmExactModelId(liveModel)).toBe(family)
+			expect(getVscodeLlmModelInfo(liveModel)).toBe(getVscodeLlmModelInfo(choice!))
+			expect(mergeVscodeLlmModels([liveModel])).toEqual([liveModel])
+		})
+
 		const currentCopilotModelIds = [
 			"gpt-5-mini",
 			"gpt-5.3-codex",
@@ -220,9 +243,15 @@ describe("supported provider model catalogs", () => {
 				"gpt-5.6-sol",
 				"gpt-5.6-terra",
 				"gpt-6-astra",
+				"gpt-6-luna",
+				"gpt-6-sol",
 				"gpt-6.1-sol",
+				"gpt-6.1-terra",
+				"claude-haiku-5.5",
 				"claude-sonnet-5.5",
 				"claude-opus-5.5",
+				"grok-4.6",
+				"grok-4.7",
 			])
 			expect(new Set(catalogIds).size).toBe(catalog.length)
 			expect(catalogIds).toContain(vscodeLlmDefaultModelId)

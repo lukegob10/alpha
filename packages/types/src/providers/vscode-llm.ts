@@ -26,12 +26,18 @@ export const vscodeLlmDefaultModelId: VscodeLlmModelId = "gpt-6.1-sol"
 
 const selectableCopilotFamilies = new Set([
 	"gpt-6-astra",
+	"gpt-6-luna",
+	"gpt-6-sol",
 	"gpt-6.1-sol",
+	"gpt-6.1-terra",
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",
 	"gpt-5.6-luna",
 	"claude-opus-5.5",
 	"claude-sonnet-5.5",
+	"claude-haiku-5.5",
+	"grok-4.6",
+	"grok-4.7",
 ])
 
 const COPILOT_DEFAULT_CONTEXT_WINDOW = 128_000
@@ -122,6 +128,7 @@ function copilotModel({
 // Setup uses these definitions immediately; request admission resolves availability and routing
 // through vscode.lm.selectChatModels() for the current VS Code window.
 // https://docs.github.com/en/copilot/reference/ai-models/supported-models
+// Selectable families reviewed 2026-10-29. Astra's published ID remains gpt-6-astra.
 export const vscodeLlmModels = {
 	"gpt-5-mini": copilotModel({
 		name: "GPT-5 mini",
@@ -230,6 +237,13 @@ export const vscodeLlmModels = {
 		contextWindow: COPILOT_GPT_6_1_SOL_INPUT_CEILING,
 		supportsImages: true,
 		supportsReasoningEffort: COPILOT_GPT_6_REASONING_EFFORTS,
+	}),
+	// Availability: https://github.blog/changelog/2026-10-26-gpt-6-1-terra-in-github-copilot/
+	// Keep conservative defaults until Copilot-specific capability limits are verified;
+	// the live host supplies the request's input ceiling.
+	"gpt-6.1-terra": copilotModel({
+		name: "GPT-6.1 Terra",
+		family: "gpt-6.1-terra",
 	}),
 	"claude-fable-5": copilotModel({
 		name: "Claude Fable 5",
@@ -448,6 +462,12 @@ export const vscodeLlmModels = {
 		supportsContextWindowConfiguration: true,
 		extendedContextSize: COPILOT_GROK_EXTENDED_CONTEXT_SIZE,
 	}),
+	// Availability: https://github.blog/changelog/2026-09-21-grok-4-7-is-now-available-in-github-copilot/
+	// Do not infer Copilot-specific context or reasoning controls from the direct xAI API.
+	"grok-4.7": copilotModel({
+		name: "Grok 4.7",
+		family: "grok-4.7",
+	}),
 	"gpt-4.1": copilotModel({
 		name: "GPT-4.1",
 		family: "gpt-4.1",
@@ -466,11 +486,17 @@ export const vscodeLlmModels = {
 } as const satisfies Record<string, VscodeLlmModelInfo>
 
 const vscodeLlmModelAliases: Partial<Record<VscodeLlmModelId, readonly string[]>> = {
+	"gpt-5.6-luna": ["gpt-5.6-luna", "gpt-5.6 luna", "gpt 5.6 luna"],
+	"gpt-5.6-sol": ["gpt-5.6-sol", "gpt-5.6 sol", "gpt 5.6 sol"],
+	"gpt-5.6-terra": ["gpt-5.6-terra", "gpt-5.6 terra", "gpt 5.6 terra"],
 	// The first alias is also the broad catalog family; retain the canonical selector.
 	"gpt-6-astra": ["gpt-6-astra", "gpt-6 astra", "gpt 6 astra"],
 	"gpt-6-luna": ["gpt-6-luna", "gpt-6 luna", "gpt 6 luna"],
 	"gpt-6-sol": ["gpt-6-sol", "gpt-6 sol", "gpt 6 sol"],
 	"gpt-6.1-sol": ["gpt-6.1-sol", "gpt-6.1 sol", "gpt 6.1 sol"],
+	"gpt-6.1-terra": ["gpt-6.1-terra", "gpt-6.1 terra", "gpt 6.1 terra"],
+	"grok-4.6": ["grok-4.6", "grok 4.6"],
+	"grok-4.7": ["grok-4.7", "grok 4.7"],
 	"claude-haiku-5.5": ["claude-haiku-5.5", "claude-haiku-5-5", "claude haiku 5.5"],
 	"claude-sonnet-5.5": ["claude-sonnet-5.5", "claude-sonnet-5-5", "claude sonnet 5.5"],
 	"claude-opus-5.5": ["claude-opus-5.5", "claude-opus-5-5", "claude opus 5.5"],

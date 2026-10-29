@@ -1167,7 +1167,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.16-reasoning-state"
+	public readonly latestAnnouncementId = "october-2026-v3.2.17-copilot-models"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
