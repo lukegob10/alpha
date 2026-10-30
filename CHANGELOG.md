@@ -6,6 +6,7 @@
 
 - Complete stopped sub-agent runs even when their terminal event is missing, release execution capacity, and prevent duplicate result publication. Add regression coverage for twelve children across repeated waves.
 - Align sub-agent context inheritance, named-agent defaults, follow-up identity, and fork selection more closely with Codex CLI while preserving Alpha's approval and workspace protections.
+- Apply one shared 32 KiB budget to discovered AGENTS instruction files, including personal and descendant files, while preserving source order and UTF-8 boundaries. Global custom instructions remain separate.
 - Run new sub-agents in the parent's shared workspace with inherited permissions; preserve review and recovery for saved isolated Worker changes.
 - Show each sub-agent's captured model and effective reasoning level in task rows, links, and headers without borrowing current parent settings.
 - Strengthen interrupted transcript recovery, provider reasoning continuity, tool-result persistence, command cleanup, and completion checks.

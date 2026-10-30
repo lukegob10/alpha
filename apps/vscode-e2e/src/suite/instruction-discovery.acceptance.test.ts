@@ -42,7 +42,7 @@ class InstructionDiscoveryScriptedAI {
 suite("Alpha project instruction discovery acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
-	test("loads ancestor AGENTS.override before its standard file and includes cwd guidance on VS Code 1.138.0", async () => {
+	const assertInstructionDiscovery = async (localFits: boolean) => {
 		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
@@ -51,7 +51,12 @@ suite("Alpha project instruction discovery acceptance", function () {
 		const workspacePath = path.resolve(workspace)
 		const ownedRoot = path.dirname(workspacePath)
 		const projectInstructionLimit = 32 * 1024
-		const ancestorOverridePrefix = "R".repeat(projectInstructionLimit - 6)
+		const localGuidance = "LOCAL😀guidance"
+		// Codex agents_md.rs at e9854c0a shares the project byte budget. Alpha's
+		// personal compatibility file also consumes it, as the loader unit tests require.
+		const ancestorOverridePrefix = "R".repeat(
+			projectInstructionLimit - 6 - (localFits ? Buffer.byteLength(localGuidance, "utf8") : 0),
+		)
 		assert.equal(path.basename(workspacePath), "workspace", "This test requires the disposable E2E workspace")
 		const ownership = JSON.parse(await fs.readFile(path.join(ownedRoot, ".alpha-e2e-owned.json"), "utf8")) as {
 			schemaVersion?: number
@@ -89,7 +94,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 			}
 			await fs.writeFile(ancestorStandard, "STALE ancestor standard guidance")
 			await fs.writeFile(ancestorOverride, ancestorOverridePrefix)
-			await fs.writeFile(ancestorLocal, "Alpha local guidance")
+			await fs.writeFile(ancestorLocal, localGuidance)
 			await fs.writeFile(workspaceInstructions, "CWD😀tail")
 
 			const model = new InstructionDiscoveryScriptedAI()
@@ -135,11 +140,17 @@ suite("Alpha project instruction discovery acceptance", function () {
 					renderedRequest.includes(ancestorOverridePrefix),
 					"The bounded ancestor override must reach the model",
 				)
-				assert.ok(
-					renderedRequest.includes("Alpha local guidance"),
-					"Alpha local instructions must survive the project cap",
+				assert.ok(renderedRequest.includes("LOCAL"), "Personal guidance must use the remaining project budget")
+				assert.equal(
+					renderedRequest.includes(localGuidance),
+					localFits,
+					"Personal guidance must be complete only when it fits the shared project byte budget",
 				)
-				assert.ok(renderedRequest.includes("CWD"), "The remaining project budget must reach cwd guidance")
+				assert.equal(
+					renderedRequest.includes("CWD"),
+					localFits,
+					"Cwd guidance must load only when the preceding project and personal files leave budget",
+				)
 				assert.ok(
 					!renderedRequest.includes("CWD😀tail"),
 					"The cwd instruction must truncate at the project byte cap",
@@ -154,13 +165,20 @@ suite("Alpha project instruction discovery acceptance", function () {
 					"Alpha global instructions must retain their existing precedence before project rules",
 				)
 				assert.ok(
-					renderedRequest.indexOf(ancestorOverridePrefix) < renderedRequest.indexOf("Alpha local guidance"),
+					renderedRequest.indexOf(ancestorOverridePrefix) < renderedRequest.indexOf("LOCAL"),
 					"Project instruction sources must be ordered from root to cwd",
 				)
-				assert.ok(
-					renderedRequest.indexOf("Alpha local guidance") < renderedRequest.indexOf("CWD"),
-					"Alpha local instructions must retain their position before cwd guidance",
-				)
+				if (localFits) {
+					assert.ok(
+						renderedRequest.indexOf(localGuidance) < renderedRequest.indexOf("CWD"),
+						"Alpha local instructions must retain their position before cwd guidance",
+					)
+				} else {
+					assert.ok(
+						!renderedRequest.includes("😀"),
+						"Personal guidance must truncate before a split UTF-8 code point",
+					)
+				}
 				await waitFor(
 					() =>
 						provider
@@ -185,5 +203,10 @@ suite("Alpha project instruction discovery acceptance", function () {
 			}
 			if (createdGitMarker) await fs.rm(gitMarker, { force: true })
 		}
-	})
+	}
+
+	for (const localFits of [true, false]) {
+		test(`loads ancestor override and ${localFits ? "includes bounded cwd guidance" : "caps personal guidance"} on VS Code 1.138.0`, () =>
+			assertInstructionDiscovery(localFits))
+	}
 })
