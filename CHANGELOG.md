@@ -10,6 +10,7 @@
 - Run new sub-agents in the parent's shared workspace with inherited permissions; preserve review and recovery for saved isolated Worker changes.
 - Show each sub-agent's captured model and effective reasoning level in task rows, links, and headers without borrowing current parent settings.
 - Strengthen interrupted transcript recovery, provider reasoning continuity, tool-result persistence, command cleanup, and completion checks.
+- Preserve malformed completed tool calls as correlated error results so the model can correct its response without executing the rejected tool.
 - Improve native tool parsing, managed-agent addressing, skill discovery, and OAuth authorization for supported MCP servers.
 - Refresh Alpha's wolf icons and welcome artwork, clarify agent navigation, and improve Markdown table readability, keyboard scrolling, and theme support.
 - Update the extension version and in-app announcement together for Alpha 3.2.18. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.

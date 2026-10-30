@@ -46,7 +46,7 @@ const FINAL = "BOUNDARY_FINAL_TEXT"
 const INCOMPLETE_REASON = "Fixture ended before provider completion"
 const expectedStatus = {
 	continuation: "completed",
-	"malformed-call": "failed",
+	"malformed-call": "completed",
 	"incomplete-output": "interrupted",
 } as const
 class BoundaryAI {
@@ -65,13 +65,21 @@ class BoundaryAI {
 	set removeFromCache(value: (() => void) | undefined) {
 		observations.get(this)!.removeFromCache = value
 	}
-	async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+	async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
 		const observation = observations.get(this)!
 		assert.ok(metadata?.taskId)
 		observation.task = this.resolveTask(metadata.taskId)
 		const request = ++observation.requests
-		assert.ok(request <= (this.scenario === "continuation" ? 2 : 1), "No synthetic repair request is expected")
+		assert.ok(request <= (this.scenario === "incomplete-output" ? 1 : 2), "Only one continuation is expected")
 		if (request === 2) {
+			if (this.scenario === "malformed-call") {
+				// Completed malformed calls return correlated errors before the model
+				// corrects its response, matching AgentResponseAccumulator's contract.
+				assert.deepEqual(inspectToolTransactions(messages).errors, [])
+				const rejected = resultFor(messages, "malformed-call")
+				assert.equal(rejected.is_error, true)
+				assert.match(JSON.stringify(rejected.content), /argument|parse|invalid/i)
+			}
 			yield { type: "text" as const, text: FINAL }
 			return
 		}
@@ -232,7 +240,7 @@ suite("Core response boundary contracts", function () {
 					() => {
 						const task = observation.task
 						if (!task) return false
-						if (scenario === "continuation") return completions === 1
+						if (scenario !== "incomplete-output") return completions === 1
 						assert.equal(task.didComplete, false, "An invalid or incomplete response must not complete")
 						return (
 							provider.getAgentLifecycleSnapshot(task.taskId)?.status === expectedStatus[scenario] &&
@@ -247,7 +255,7 @@ suite("Core response boundary contracts", function () {
 					{ description: `${scenario} terminal turn and published recovery boundary`, timeout: 30_000 },
 				)
 				const task = observation.task!
-				if (scenario === "continuation") await task.waitForTermination()
+				if (scenario !== "incomplete-output") await task.waitForTermination()
 				await task.flushApiConversationHistoryPersistence()
 				const { taskDirPath } = await provider.getTaskWithId(task.taskId)
 				const history = await readBoundedJson(path.join(taskDirPath, "api_conversation_history.json"))
@@ -259,9 +267,10 @@ suite("Core response boundary contracts", function () {
 				const projected = state.liveTasksById?.[task.taskId]
 				const recoveryAsks = task.alphaMessages.filter((message) => message.ask === "resume_task")
 				assert.ok(snapshot, "Every tested terminal outcome must have canonical lifecycle state")
-				assert.deepEqual(snapshot.acceptedToolCallIds, [])
+				const expectedCallIds = scenario === "malformed-call" ? ["malformed-call"] : []
+				assert.deepEqual(snapshot.acceptedToolCallIds, expectedCallIds)
 				assert.deepEqual(snapshot.effectStartedToolCallIds, [], "These responses must not start a tool effect")
-				assert.deepEqual(snapshot.terminalToolCallIds, [])
+				assert.deepEqual(snapshot.terminalToolCallIds, expectedCallIds)
 				await fs.writeFile(
 					path.join(artifacts, `core-boundary-${scenario}.json`),
 					JSON.stringify(
@@ -289,8 +298,8 @@ suite("Core response boundary contracts", function () {
 				)
 				assert.deepEqual(transactions.errors, [])
 				assert.deepEqual(lifecycle.errors, [])
-				assert.equal(transactions.callCount, 0)
-				assert.equal(transactions.resultCount, 0)
+				assert.equal(transactions.callCount, expectedCallIds.length)
+				assert.equal(transactions.resultCount, expectedCallIds.length)
 				assert.equal(snapshot.status, expectedStatus[scenario])
 				assert.ok(Array.isArray(events))
 				const terminalEvents = events
@@ -310,7 +319,7 @@ suite("Core response boundary contracts", function () {
 				)
 				assert.equal(projected.isTurnActive, false)
 				assert.equal(projected.canInterrupt, false)
-				if (scenario === "continuation") {
+				if (scenario !== "incomplete-output") {
 					assert.equal(observation.requests, 2)
 					assert.equal(completions, 1)
 					assert.equal(task.didComplete, true)
@@ -322,17 +331,18 @@ suite("Core response boundary contracts", function () {
 					assert.equal(projected.isWaitingForInput, false)
 					assert.equal(recoveryAsks.length, 0)
 					assert.ok(task.alphaMessages.some((message) => !message.partial && message.text === FINAL))
-					assert.ok(
-						!task.alphaMessages.some(
-							(message) => message.say === "error" || message.ask === "api_req_failed",
-						),
-					)
+					assert.ok(!task.alphaMessages.some((message) => message.ask === "api_req_failed"))
+					if (scenario === "continuation") {
+						assert.ok(!task.alphaMessages.some((message) => message.say === "error"))
+					} else {
+						assert.equal(resultFor(history, "malformed-call").is_error, true)
+					}
 				} else {
 					assert.equal(observation.requests, 1)
 					assert.equal(completions, 0)
 					assert.equal(task.didComplete, false)
 					assert.equal(lifecycle.completedTurns, 0)
-					assert.equal(lifecycle.failedTurns, scenario === "malformed-call" ? 1 : 0)
+					assert.equal(lifecycle.failedTurns, 0)
 					// The journal inspector groups interrupted turns under cancellation; the exact status is above.
 					assert.equal(lifecycle.cancelledTurns, scenario === "incomplete-output" ? 1 : 0)
 					assert.equal(projected.lifecycle, TaskLifecycleState.Waiting)
