@@ -13,6 +13,7 @@
 - Preserve malformed completed tool calls as correlated error results so the model can correct its response without executing the rejected tool.
 - Improve native tool parsing, managed-agent addressing, skill discovery, and OAuth authorization for supported MCP servers.
 - Refresh Alpha's wolf icons and welcome artwork, clarify agent navigation, and improve Markdown table readability, keyboard scrolling, and theme support.
+- Build macOS ARM64 releases on GitHub's supported macOS 15 runner as the macOS 14 image retires.
 - Update the extension version and in-app announcement together for Alpha 3.2.18. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
 
 ## 3.2.17

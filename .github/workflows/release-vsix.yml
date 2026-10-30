@@ -131,7 +131,9 @@ jobs:
                     - os: windows-11-arm
                       target: win32-arm64
                       native_index: true
-                    - os: macos-14
+                    # macos-14 retires November 2; use GitHub's supported arm64 replacement.
+                    # https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/
+                    - os: macos-15
                       target: darwin-arm64
                       native_index: true
                     # LanceDB 0.27.2 has no Intel macOS native package; core features remain supported.

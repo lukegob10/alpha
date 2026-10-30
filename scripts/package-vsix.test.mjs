@@ -23,7 +23,7 @@ const releaseSha = "0123456789abcdef0123456789abcdef01234567"
 const releasePlatforms = [
 	{ os: "windows-latest", target: "win32-x64", native_index: true },
 	{ os: "windows-11-arm", target: "win32-arm64", native_index: true },
-	{ os: "macos-14", target: "darwin-arm64", native_index: true },
+	{ os: "macos-15", target: "darwin-arm64", native_index: true },
 	{ os: "macos-15-intel", target: "darwin-x64", native_index: false },
 	{ os: "ubuntu-latest", target: "linux-x64", native_index: true },
 	{ os: "ubuntu-24.04-arm", target: "linux-arm64", native_index: true },
