@@ -8,7 +8,7 @@ export const followup_task = {
 	function: {
 		name: "followup_task",
 		description:
-			"Give a retained child agent a follow-up objective and start its next turn. Use this for an idle, interrupted, or completed agent whose prior context should be preserved.",
+			"Give a retained child agent a follow-up task using its existing context. An idle agent starts a turn; a running agent receives the instruction at a model-step boundary after its current tools settle.",
 		strict: true,
 		parameters: {
 			type: "object",

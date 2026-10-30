@@ -1,4 +1,5 @@
 import { EventEmitter } from "events"
+import path from "path"
 
 import type { SubagentGroupState } from "@alpha-code/types"
 
@@ -6,6 +7,36 @@ import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistr
 import { Task, getSubagentAllowedToolNames } from "../Task"
 
 describe("sub-agent task authority", () => {
+	it("does not remap historical workspace paths into a shared worker's write scope", () => {
+		const workspacePath = process.cwd()
+		const historyWorkspacePath = path.dirname(workspacePath)
+		const child = Object.assign(Object.create(Task.prototype), {
+			taskKind: "subagent",
+			subagentRole: "worker",
+			workspacePath,
+			historyWorkspacePath,
+			subagentWriteScope: ["."],
+			subagentContextManifest: {
+				skills: [],
+				runtimePolicy: {
+					authorityModel: "parent",
+					sharedWorkspace: true,
+					allowedTools: ["apply_patch"],
+					mutate: true,
+				},
+			},
+		}) as Task
+		const patchFor = (file: string) => `*** Begin Patch\n*** Add File: ${file}\n+value\n*** End Patch`
+		expect(
+			child.getTaskToolDenialReason("apply_patch", { patch: patchFor(path.join(workspacePath, "new.ts")) }),
+		).toBeUndefined()
+		expect(
+			child.getTaskToolDenialReason("apply_patch", {
+				patch: patchFor(path.join(historyWorkspacePath, "outside.ts")),
+			}),
+		).toContain("outside")
+	})
+
 	it.each(["explore", "review", "worker"] as const)(
 		"permits trusted audited reads while retaining the %s shell ceiling",
 		(role) => {

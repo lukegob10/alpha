@@ -110,6 +110,8 @@ export interface CaptureSubagentContextInput {
 		finalAssistantMessageIndexes?: readonly number[]
 		/** Host proof of a reusable context baseline captured at this same boundary; route equality alone is insufficient. */
 		contextBaselineVerified?: boolean
+		/** Current MAv2 full forks retain compatible model history, independently of prompt-baseline reuse. */
+		preservePrefix?: boolean
 	}
 	instructions: {
 		/** The exact effective instruction text applied at the capture boundary. */
@@ -163,6 +165,8 @@ export type SubagentHistoryFork =
 			digest: string
 			/** Defaults to rebuilding. Reuse requires an all-history fork, a compatible route and verified host baseline. */
 			requiresContextRebuild: boolean
+			/** Absent on legacy conversation-only seeds. Parent runtime receipts are never inherited. */
+			preservePrefix?: true
 	  }
 
 function uniqueSorted(values: readonly string[]): string[] {
@@ -689,6 +693,244 @@ interface NativeConversationTurn {
 	entries: { sourceMessageIndex: number; message: ApiMessage }[]
 }
 
+const PREFIX_MESSAGE_KEYS = new Set([
+	"role",
+	"content",
+	"type",
+	"summary",
+	"encrypted_content",
+	"text",
+	"reasoning_details",
+	"reasoning_content",
+	"provider_state_scope",
+	"provider_state_replay_disabled",
+	"messageId",
+	"phase",
+	"ts",
+	"isSummary",
+	"condenseId",
+	"internal_chat_message_metadata_passthrough",
+	"input_origin",
+	"id",
+	"vscodeLmStatefulMarker",
+])
+
+function startsPrefixTurn(message: ApiMessage): boolean {
+	return (
+		message.role === "user" &&
+		message.isSummary !== true &&
+		(typeof message.content === "string" ||
+			(Array.isArray(message.content) && message.content.some((block) => getToolResultId(block) === undefined)))
+	)
+}
+
+/** Keep a completed protocol prefix; the invoking spawn itself may still be waiting for its result. */
+function completedPrefixLength(messages: readonly ApiMessage[]): number {
+	const calls = new Set<string>()
+	const pending = new Set<string>()
+	let completeLength = 0
+	for (const [index, message] of messages.entries()) {
+		if (Array.isArray(message.content)) {
+			for (const block of message.content) {
+				const call = getToolCallId(block)
+				const result = getToolResultId(block)
+				if (call !== undefined) {
+					if (message.role !== "assistant" || calls.has(call)) {
+						throw new Error("Cannot fork duplicate or misplaced parent tool calls")
+					}
+					calls.add(call)
+					pending.add(call)
+				}
+				if (result !== undefined && (message.role !== "user" || !pending.delete(result))) {
+					throw new Error("Cannot fork orphaned, duplicate or out-of-order parent tool results")
+				}
+			}
+		}
+		if (pending.size === 0) completeLength = index + 1
+	}
+	return completeLength
+}
+
+function prefixTurns(
+	parentTaskId: string,
+	messages: readonly ApiMessage[],
+	sourceIndexes: readonly number[],
+): CapturedSubagentTurn[] {
+	const turns: { indexes: number[]; messages: ApiMessage[] }[] = []
+	for (const [index, message] of messages.entries()) {
+		if (startsPrefixTurn(message)) turns.push({ indexes: [], messages: [] })
+		const turn = turns.at(-1)
+		if (!turn) continue
+		turn.indexes.push(sourceIndexes[index])
+		turn.messages.push(message)
+	}
+	return turns.map((turn, ordinal) => {
+		const digest = digestValue(turn.messages)
+		return {
+			ref: createTurnRef(parentTaskId, ordinal, digest),
+			ordinal,
+			digest,
+			sourceMessageIndexes: turn.indexes,
+			messages: turn.messages.map((message, index) => ({
+				role: message.role === "user" ? ("user" as const) : ("assistant" as const),
+				sourceMessageIndex: turn.indexes[index],
+				text:
+					typeof message.content === "string"
+						? message.content
+						: Array.isArray(message.content)
+							? message.content
+									.flatMap((block) => (block.type === "text" ? [block.text] : []))
+									.join("\n\n")
+							: "",
+			})),
+		}
+	})
+}
+
+function redactPrefixToolInput(value: unknown): unknown {
+	if (typeof value === "string") return redactCredentialText(value)
+	if (Array.isArray(value)) return value.map(redactPrefixToolInput)
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, nested]) => [
+				key,
+				typeof nested === "string" && redactCredentialText(`${key}=${nested}`).includes(REDACTED_CREDENTIAL)
+					? REDACTED_CREDENTIAL
+					: redactPrefixToolInput(nested),
+			]),
+		)
+	}
+	return value
+}
+
+function redactPrefixArguments(value: unknown): unknown {
+	if (typeof value !== "string") return redactPrefixToolInput(value)
+	try {
+		const parsed: unknown = JSON.parse(value)
+		if (parsed && typeof parsed === "object") {
+			const redacted = redactPrefixToolInput(parsed)
+			return JSON.stringify(redacted) === JSON.stringify(parsed) ? value : JSON.stringify(redacted)
+		}
+	} catch (error) {
+		if (!(error instanceof SyntaxError)) throw error
+		// Freeform tools use ordinary text rather than encoded JSON arguments.
+	}
+	return redactCredentialText(value)
+}
+
+function redactLegacyPrefixTool(block: Record<string, unknown>): Record<string, unknown> {
+	const redacted = { ...block }
+	for (const key of ["input", "arguments"]) {
+		if (Object.hasOwn(redacted, key)) redacted[key] = redactPrefixArguments(redacted[key])
+	}
+	if (redacted.function && typeof redacted.function === "object" && !Array.isArray(redacted.function)) {
+		redacted.function = redactLegacyPrefixTool(redacted.function as Record<string, unknown>)
+	}
+	return redacted
+}
+
+function redactPrefixContent(message: ApiMessage): void {
+	if (typeof message.reasoning_content === "string") {
+		message.reasoning_content = redactCredentialText(message.reasoning_content)
+	}
+	if (typeof message.text === "string" && message.encrypted_content === undefined) {
+		message.text = redactCredentialText(message.text)
+	}
+	if (typeof message.content === "string") {
+		message.content = redactCredentialText(message.content)
+		return
+	}
+	if (!Array.isArray(message.content)) return
+	message.content = message.content.map((block) => {
+		if (block.type === "text") return { ...block, text: redactCredentialText(block.text) }
+		if (block.type === "tool_use") return { ...block, input: redactPrefixToolInput(block.input) }
+		if (getToolCallId(block) !== undefined)
+			return redactLegacyPrefixTool(block as unknown as Record<string, unknown>)
+		if (block.type === "tool_result") {
+			return {
+				...block,
+				content:
+					typeof block.content === "string"
+						? redactCredentialText(block.content)
+						: block.content?.map((nested) =>
+								nested.type === "text"
+									? { ...nested, text: redactCredentialText(nested.text) }
+									: nested,
+							),
+			}
+		}
+		if (block.type === "image" || block.type === "document") return cloneNativeMedia(block)
+		// Signed reasoning and binary provider state must remain byte-for-byte replayable.
+		return block
+	}) as ApiMessage["content"]
+}
+
+function omitRebuiltPrefixEnvironment(message: ApiMessage): ApiMessage | undefined {
+	if (message.role !== "user") return message
+	const isHostEnvironment = (text: string) => {
+		const trimmed = text.trim()
+		return (
+			ENVIRONMENT_DETAILS_RECORD_PATTERN.test(trimmed) &&
+			/^<environment_details>\r?\n# Environment (?:Snapshot|Changes)\r?\n/.test(trimmed)
+		)
+	}
+	if (typeof message.content === "string") {
+		return isHostEnvironment(message.content) ? undefined : message
+	}
+	if (!Array.isArray(message.content)) return message
+	const content = message.content
+	const indexes = content.flatMap((block, index) =>
+		block.type === "text" && isHostEnvironment(block.text) ? [] : [index],
+	)
+	if (indexes.length === content.length) return message
+	if (indexes.length === 0) return undefined
+	return {
+		...message,
+		content: indexes.map((index) => content[index]),
+		...cloneConversationAnnotations(message, true, indexes),
+	}
+}
+
+function captureNativePrefix(input: CaptureSubagentContextInput): {
+	historyFork: Extract<SubagentHistoryFork, { kind: "native" }>
+	selectedTurns: CapturedSubagentTurn[]
+} {
+	// Codex 184c9c555ec7b30bacde5a5bdfa92ff156315aa3 agent/history.rs preserves the
+	// MAv2 full-fork prefix by default. Alpha reuses its transcript format and keeps
+	// only completed transactions; host receipts and response-chain ownership stay local.
+	const length = completedPrefixLength(input.history)
+	const requiresContextRebuild = input.historyInheritance?.contextBaselineVerified !== true
+	const sourceIndexes: number[] = []
+	const messages = input.history.slice(0, length).flatMap((message, sourceIndex) => {
+		if (message.isTruncationMarker) return []
+		// Alpha supplies fresh host environment context when rebuilding the child.
+		// Whole runtime records are replaced; inline and human-envelope quotations remain evidence.
+		const source = requiresContextRebuild ? omitRebuiltPrefixEnvironment(message) : message
+		if (!source) return []
+		const inherited = Object.fromEntries(
+			Object.entries(source).filter(
+				([key]) => PREFIX_MESSAGE_KEYS.has(key) && (key !== "id" || message.type === "reasoning"),
+			),
+		) as ApiMessage
+		inherited.input_origin = "agent"
+		const cloned = structuredClone(inherited)
+		redactPrefixContent(cloned)
+		sourceIndexes.push(sourceIndex)
+		return [cloned]
+	})
+	return {
+		historyFork: {
+			kind: "native",
+			parentTaskId: input.parentTaskId,
+			messages,
+			digest: digestValue(messages),
+			preservePrefix: true,
+			requiresContextRebuild,
+		},
+		selectedTurns: prefixTurns(input.parentTaskId, messages, sourceIndexes),
+	}
+}
+
 function captureNativeConversation(input: CaptureSubagentContextInput): {
 	historyFork: Extract<SubagentHistoryFork, { kind: "native" }>
 	selectedTurns: CapturedSubagentTurn[]
@@ -703,6 +945,9 @@ function captureNativeConversation(input: CaptureSubagentContextInput): {
 		throw new Error("Native sub-agent capture requires effective parent history without archived messages")
 	}
 	const compatibleRoute = isCompatibleHistoryRoute(input)
+	if (input.forkTurns === "all" && compatibleRoute && input.historyInheritance?.preservePrefix === true) {
+		return captureNativePrefix(input)
+	}
 	const finalIndexes = new Set(input.historyInheritance?.finalAssistantMessageIndexes ?? [])
 	for (const index of finalIndexes) {
 		if (!Number.isSafeInteger(index) || index < 0 || index >= input.history.length) {
@@ -819,16 +1064,48 @@ export function assertSubagentHistoryFork(
 		typeof fork.requiresContextRebuild !== "boolean" ||
 		(!fork.requiresContextRebuild && manifest.requestedForkTurns !== "all") ||
 		Object.keys(fork).some(
-			(key) => !["kind", "parentTaskId", "messages", "digest", "requiresContextRebuild"].includes(key),
+			(key) =>
+				!["kind", "parentTaskId", "messages", "digest", "requiresContextRebuild", "preservePrefix"].includes(
+					key,
+				),
 		) ||
+		(fork.preservePrefix !== undefined &&
+			(fork.preservePrefix !== true || manifest.requestedForkTurns !== "all")) ||
 		invalidPersistedApiMessages(fork.messages) ||
-		!nativeConversationMessagesSchema.safeParse(fork.messages).success
+		(fork.preservePrefix !== true && !nativeConversationMessagesSchema.safeParse(fork.messages).success)
 	) {
 		throw new Error("Managed child history fork failed integrity validation")
 	}
 	const messages = fork.messages as ApiMessage[]
 	if (digestValue(messages) !== fork.digest)
 		throw new Error("Managed child history fork digest does not match its seed")
+	if (fork.preservePrefix === true) {
+		if (
+			messages.some(
+				(message) =>
+					message.input_origin !== "agent" ||
+					(message.id !== undefined && message.type !== "reasoning") ||
+					Object.keys(message).some((key) => !PREFIX_MESSAGE_KEYS.has(key)),
+			)
+		) {
+			throw new Error("Managed child history fork failed integrity validation")
+		}
+		if (completedPrefixLength(messages) !== messages.length) {
+			throw new Error("Managed child history fork contains incomplete tool transactions")
+		}
+		const turns = prefixTurns(
+			manifest.parentTaskId,
+			messages,
+			messages.map((_, index) => index),
+		)
+		if (
+			turns.length !== manifest.selectedUserTurns.count ||
+			turns.some((turn, index) => turn.digest !== manifest.selectedUserTurns.refs[index].digest)
+		) {
+			throw new Error("Managed child history fork does not match the selected parent turns")
+		}
+		return
+	}
 	const turnDigests: string[] = []
 	let currentTurn: ApiMessage[] | undefined
 	for (const [index, message] of messages.entries()) {
@@ -987,6 +1264,7 @@ function sanitizeModelRoute(route: SubagentModelRouteState): SubagentModelRouteS
 		unboundProfile: input.unboundProfile,
 		provider: input.provider,
 		modelId: input.modelId,
+		effectiveReasoning: input.effectiveReasoning,
 		reasoningConfiguration: input.reasoningConfiguration,
 		requestedModelId: input.requestedModelId,
 		requestedReasoningEffort: input.requestedReasoningEffort,
@@ -1041,6 +1319,7 @@ function buildRuntimePolicy(input: RuntimePolicyInput): SubagentContextRuntimePo
 	const withoutDigest = {
 		role: input.role,
 		...(input.authorityModel ? { authorityModel: input.authorityModel } : {}),
+		...(input.sharedWorkspace !== undefined ? { sharedWorkspace: input.sharedWorkspace } : {}),
 		...(input.mode ? { mode: input.mode } : {}),
 		read: input.read,
 		execute: input.execute,

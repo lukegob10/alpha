@@ -41,11 +41,14 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 					: provider.waitForAgent(task, timeoutMs),
 			(result) => {
 				if (typeof result !== "object" || result === null) return
+				// Codex MultiAgentV2 wait.rs (retrieved 2026-10-29) treats steering as
+				// a successful wake, distinct from cancellation of the tool itself.
+				const steered = "reason" in result && result.reason === "steered_input"
 				// This is the in-process lifecycle host's envelope, never parsed model/MCP text.
 				// Timeout means a bounded blocking wait elapsed; an empty fast path is idle.
 				if (
 					("cancelled" in result && result.cancelled === true) ||
-					("interrupted" in result && result.interrupted === true)
+					("interrupted" in result && result.interrupted === true && !steered)
 				) {
 					callbacks.setResultMetadata?.({ status: "cancelled" })
 					return
@@ -61,7 +64,7 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 				const timedOut = "timedOut" in result && result.timedOut === true
 				callbacks.setResultMetadata?.({
 					status: "success",
-					waitOutcome: !idle && (timedOut || activity) ? "active" : "idle",
+					waitOutcome: !idle && (timedOut || activity || steered) ? "active" : "idle",
 				})
 				if (typeof claimId !== "string" || claimId.length === 0) return
 				if (!callbacks.toolCallId) {

@@ -1167,7 +1167,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.17-copilot-models"
+	public readonly latestAnnouncementId = "october-2026-v3.2.18-subagents-and-ux"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -5163,6 +5163,10 @@ export class AlphaProvider
 					? { kind: "input" as const, label: "Waiting for user input" }
 					: undefined
 			const phase = boundedManagedAgentText(record.snapshot?.phase, 100) || undefined
+			const modelRoute =
+				record.snapshot?.contextManifest?.modelRoute ??
+				preparedAgent?.modelRoute ??
+				this.taskHistoryStore.get(record.taskId)?.subagentModelRoute
 
 			return {
 				taskId: record.taskId,
@@ -5182,6 +5186,7 @@ export class AlphaProvider
 				),
 				status: record.status,
 				phase,
+				...(record.role !== "root" && modelRoute ? { modelRoute: structuredClone(modelRoute) } : {}),
 				createdAt: record.createdAt,
 				updatedAt: record.updatedAt,
 				startedAt: record.startedAt,
@@ -8974,8 +8979,8 @@ export class AlphaProvider
 						externalSideEffects: false,
 						requireApproval: true,
 					},
-			// Every descendant of a Worker is rooted in that Worker's live private
-			// checkout. A nested Worker may only inherit the owning Worker's frozen
+			// Every descendant of a Worker is rooted in that Worker's live workspace.
+			// A nested Worker may only inherit the owning Worker's frozen
 			// write scope; legacy manifests without exact-file metadata are treated
 			// conservatively as exact-only rather than widening authority on reload.
 			workspaceRoots: isManagedWorkerParent ? [parent.cwd] : (captured?.workspaceRoots ?? [parent.cwd]),
@@ -9078,8 +9083,14 @@ export class AlphaProvider
 			? undefined
 			: normalizeSpawnAgentRequest(drafts)
 		const authorityModel = spawnRequest?.source === "codex-v2" ? ("parent" as const) : undefined
+		// Codex child_config.rs inherits the invoking cwd (retrieved 2026-10-29).
+		// Keep the marker explicit so retained isolated Worker manifests preserve their execution identity.
+		const sharedWorkspace = authorityModel === "parent"
 		const configuredTypes = subagentAgentTypesSchema.parse(settings.subagentAgentTypes ?? {})
-		const typeName = spawnRequest?.source === "codex-v2" ? (spawnRequest.agent_type ?? "default") : undefined
+		const typeName =
+			spawnRequest?.source === "codex-v2"
+				? (spawnRequest.agent_type ?? (spawnRequest.fork_turns === "all" ? undefined : "default"))
+				: undefined
 		const typeDefinition =
 			typeName && Object.hasOwn(configuredTypes, typeName) ? configuredTypes[typeName] : undefined
 		if (typeName && !typeDefinition && !["default", "explorer", "explore", "review", "worker"].includes(typeName)) {
@@ -9248,21 +9259,15 @@ export class AlphaProvider
 		const validatedScopes = await runReserved(() =>
 			Promise.all(
 				normalizedDrafts.map((draft) =>
-					draft.agent_kind === "worker"
-						? spawnRequest?.source === "codex-v2" &&
-							draft.write_scope.length === 1 &&
-							draft.write_scope[0] === "."
-							? managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope, {
-									allowWorkspaceRoot: true,
-								})
-							: managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope)
+					draft.agent_kind === "worker" && !sharedWorkspace
+						? managedSubagentWorktreeService.validateScope(parent.cwd, draft.write_scope)
 						: Promise.resolve(undefined),
 				),
 			),
 		)
 		const workerWriteScopes = normalizedDrafts.map((draft, index) =>
 			draft.agent_kind === "worker"
-				? [...validatedScopes[index]!.writeScope]
+				? [...(validatedScopes[index]?.writeScope ?? draft.write_scope)]
 				: authorityModel && effectivePolicies[index].mutate
 					? [...(inheritedWriteScope ?? ["."])]
 					: undefined,
@@ -9294,6 +9299,8 @@ export class AlphaProvider
 							const state = await this.resolveReasoningCapabilities(configuration, { kind: "default" })
 							return state.effective.kind === "effort" ? state.effective.effort : undefined
 						},
+						resolveEffectiveReasoning: async (configuration, preference) =>
+							(await this.resolveReasoningCapabilities(configuration, preference)).effective,
 						resolveReasoningCapabilities: (configuration) =>
 							this.resolveLaunchReasoningCapabilities(
 								configuration,
@@ -9385,6 +9392,7 @@ export class AlphaProvider
 								historyInheritance: {
 									parentModelRoute: invocation.modelRoute,
 									finalAssistantMessageIndexes: invocation.finalAssistantMessageIndexes,
+									...(authorityModel === "parent" ? { preservePrefix: true } : {}),
 								},
 							}
 						: {}),
@@ -9396,6 +9404,7 @@ export class AlphaProvider
 					orchestration: orchestrations[index],
 					runtimePolicy: {
 						role,
+						sharedWorkspace: sharedWorkspace || role !== "worker",
 						...(authorityModel ? { authorityModel, mode: parentMode as "code" | "architect" } : {}),
 						...effectivePolicy,
 						allowedTools,
@@ -9445,7 +9454,7 @@ export class AlphaProvider
 					allowedPaths: workerWriteScopes[index],
 					parentAllowedPaths: parentAuthority.allowedPaths,
 					parentFileAllowedPaths: parentAuthority.fileAllowedPaths,
-					sharedWorkspace: draft.agent_kind !== "worker",
+					sharedWorkspace: sharedWorkspace || draft.agent_kind !== "worker",
 					contextRefs: capturedContext.manifest.contextRefs,
 					skillIds: capturedContext.manifest.skills.map((skill) => skill.name),
 					availableSkills: capturedContext.manifest.skills.map((skill) => ({
@@ -13079,7 +13088,7 @@ export class AlphaProvider
 			throw new Error(`Worker agent ${record.path} has no retained write scope`)
 		}
 		const validatedScope =
-			agent.role === "worker"
+			agent.role === "worker" && contextManifest.runtimePolicy.sharedWorkspace !== true
 				? await managedSubagentWorktreeService.validateScope(parent.cwd, agent.writeScope!, {
 						allowWorkspaceRoot: agent.writeScope?.length === 1 && agent.writeScope[0] === ".",
 					})
@@ -13112,7 +13121,7 @@ export class AlphaProvider
 			allowedPaths: capturedPolicy.writeScope ?? (agent.role === "worker" ? agent.writeScope : undefined),
 			parentAllowedPaths: parentAuthority.allowedPaths,
 			parentFileAllowedPaths: parentAuthority.fileAllowedPaths,
-			sharedWorkspace: agent.role !== "worker",
+			sharedWorkspace: contextManifest.runtimePolicy.sharedWorkspace ?? agent.role !== "worker",
 			contextRefs: contextManifest.contextRefs,
 			skillIds: contextManifest.skills.map((skill) => skill.name),
 			availableSkills: contextManifest.skills.map((skill) => ({
@@ -13775,7 +13784,7 @@ export class AlphaProvider
 		const startedAt =
 			this.preparedSubagentGroups.get(groupId)?.group.agents.find((agent) => agent.taskId === envelope.id)
 				?.startedAt ?? Date.now()
-		if (role === "worker") {
+		if (role === "worker" && !envelope.scope.sharedWorkspace) {
 			if (!descriptor.validatedScope) throw new Error("Worker scope preflight was not prepared")
 			try {
 				descriptor.managedWorktree = await managedSubagentWorktreeService.create(
@@ -13805,6 +13814,7 @@ export class AlphaProvider
 			depth: ancestry.depth,
 			maxDepth: ancestry.maxDepth,
 			authorityModel: finalizedManifest.data.runtimePolicy.authorityModel,
+			sharedWorkspace: envelope.scope.sharedWorkspace,
 		})
 		const inheritedSkillCatalog = renderInheritedSkillCatalog(
 			finalizedManifest.data.skills.map(({ name, description, path, allowImplicitInvocation }) => ({
@@ -13861,7 +13871,9 @@ export class AlphaProvider
 							role,
 							logicalWorkspace: parent.historyWorkspacePath,
 							writeScope: descriptor.writeScope ?? [],
-							fileWriteScope: descriptor.validatedScope?.fileWriteScope,
+							fileWriteScope:
+								descriptor.validatedScope?.fileWriteScope ??
+								finalizedManifest.data.runtimePolicy.fileWriteScope,
 							approvalProvenance: descriptor.approvalProvenance,
 						}
 					: {
@@ -13966,7 +13978,8 @@ export class AlphaProvider
 
 		const requestPacingAtStart = this.getTaskRequestPacingMetrics(child)
 		const sharedWorkspaceChangedFiles = (): string[] => {
-			if (role === "worker" || finalizedManifest.data.runtimePolicy.authorityModel !== "parent") return []
+			if (!envelope.scope.sharedWorkspace || finalizedManifest.data.runtimePolicy.authorityModel !== "parent")
+				return []
 			const files = this.agentControlStore.getAgent(envelope.id, ancestry.rootTaskId)?.snapshot?.metadata
 				?.sharedWorkspaceChangedFiles
 			return Array.isArray(files) ? files.filter((file): file is string => typeof file === "string") : []
@@ -14171,7 +14184,14 @@ export class AlphaProvider
 						)
 					const observeTermination = (lifecycle: Promise<void>) => {
 						void lifecycle.then(() => {
-							if (!settled && !signal.aborted && !child.abort && !child.abandoned) {
+							if (!settled && !signal.aborted) {
+								// Codex agent/status.rs at e9854c0a (2026-10-29) makes aborted
+								// turns observable. A settled Task owner is also a terminal
+								// boundary when its separate TaskAborted event was not emitted.
+								if (child.abort || child.abandoned) {
+									onAborted()
+									return
+								}
 								if (child.isCompleted?.()) {
 									finish(child.subagentCompletionOutcome === "blocked" ? "blocked" : "completed")
 								} else if (!child.hasPendingAsk?.() && !child.taskAsk) {

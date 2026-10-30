@@ -11,10 +11,16 @@ export type TaskPathContext = {
 	cwd: string
 	historyWorkspacePath?: string
 	subagentPrivateWorkspaceRoot?: string
+	subagentContextManifest?: { runtimePolicy: { sharedWorkspace?: boolean } }
 }
 
-function isManagedWorker(task: TaskPathContext): boolean {
-	return task.taskKind === "subagent" && task.subagentRole === "worker"
+function isIsolatedWorker(task: TaskPathContext): boolean {
+	// Saved isolated Workers predate this marker; new shared agents keep real parent paths.
+	return (
+		task.taskKind === "subagent" &&
+		task.subagentRole === "worker" &&
+		task.subagentContextManifest?.runtimePolicy.sharedWorkspace !== true
+	)
 }
 
 function isWithin(root: string, candidate: string): boolean {
@@ -26,7 +32,7 @@ function isWithin(root: string, candidate: string): boolean {
  * an execution detail and must never become part of the persisted transcript.
  */
 export function getTaskReadablePath(task: TaskPathContext, relPath?: string): string {
-	if (isManagedWorker(task) && relPath !== undefined) {
+	if (isIsolatedWorker(task) && relPath !== undefined) {
 		const absolutePath = resolveTaskWorkspacePath(task, relPath)
 		if (isWithin(task.cwd, absolutePath)) {
 			const relative = path.relative(task.cwd, absolutePath)
@@ -45,7 +51,7 @@ export function getTaskReadablePath(task: TaskPathContext, relPath?: string): st
 export function resolveTaskWorkspacePath(task: TaskPathContext, candidate: string): string {
 	const absolutePath = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(task.cwd, candidate)
 	if (
-		isManagedWorker(task) &&
+		isIsolatedWorker(task) &&
 		task.historyWorkspacePath &&
 		isWithin(task.historyWorkspacePath, absolutePath) &&
 		!isWithin(task.cwd, absolutePath)
@@ -102,7 +108,7 @@ export function normalizeTaskToolArguments(
 				: { timeout: args.yield_time_ms / 1_000 }),
 		}
 	}
-	if (!isManagedWorker(task) || !task.historyWorkspacePath || typeof task.cwd !== "string" || !task.cwd) {
+	if (!isIsolatedWorker(task) || !task.historyWorkspacePath || typeof task.cwd !== "string" || !task.cwd) {
 		return args
 	}
 
@@ -181,7 +187,7 @@ export function isWorkerWritePathAllowed(
 
 /** Map a private worktree path to the corresponding user-workspace path for UI navigation. */
 export function getTaskDisplayPath(task: TaskPathContext, absolutePath: string): string {
-	if (isManagedWorker(task) && task.historyWorkspacePath && isWithin(task.cwd, absolutePath)) {
+	if (isIsolatedWorker(task) && task.historyWorkspacePath && isWithin(task.cwd, absolutePath)) {
 		return path.resolve(task.historyWorkspacePath, path.relative(task.cwd, absolutePath))
 	}
 	return absolutePath
@@ -195,7 +201,7 @@ function replaceLiteral(value: string, search: string, replacement: string): str
 
 /** Defense in depth for errors and command output that may contain an execution-only path. */
 export function redactTaskPrivatePaths(task: TaskPathContext, value: string): string {
-	if (!isManagedWorker(task)) return value
+	if (!isIsolatedWorker(task)) return value
 
 	const variants = new Set<string>()
 	for (const privatePath of [task.cwd, task.subagentPrivateWorkspaceRoot]) {

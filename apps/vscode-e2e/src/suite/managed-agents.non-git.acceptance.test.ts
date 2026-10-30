@@ -59,7 +59,7 @@ interface Observation {
 	rootRequests: number
 	waitCalls: number
 	children: Map<string, { index: number; role: string; isolated: boolean }>
-	privateWorkspaces: Set<string>
+	workspaces: Set<string>
 	completed: Map<string, number>
 	childrenEntered: ReturnType<typeof deferred>
 	childrenCompleted: ReturnType<typeof deferred>
@@ -97,12 +97,11 @@ class NonGitAgentsAI {
 			const index = Number(/NON_GIT_AGENT_(\d+)/u.exec(task.metadata.task)?.[1])
 			assert.ok(index >= 1 && index <= CHILD_COUNT)
 			assert.equal(observation.children.has(task.taskId), false, "Each child needs one request")
-			const relative = path.relative(observation.workspace, task.cwd)
-			const isolated = path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep)
-			assert.equal(isolated, true, "Workers must keep their private workspace isolation")
-			const privateWorkspace = process.platform === "win32" ? task.cwd.toLowerCase() : task.cwd
-			assert.equal(observation.privateWorkspaces.has(privateWorkspace), false, "Workers need separate workspaces")
-			observation.privateWorkspaces.add(privateWorkspace)
+			// Codex child_config.rs inherits the live parent cwd (retrieved 2026-10-29).
+			assert.equal(path.relative(observation.workspace, task.cwd), "", "Default agents must share the parent cwd")
+			const isolated = false
+			const workspace = process.platform === "win32" ? task.cwd.toLowerCase() : task.cwd
+			observation.workspaces.add(workspace)
 			observation.children.set(task.taskId, { index, role: task.subagentRole, isolated })
 			if (observation.children.size === CHILD_COUNT) observation.childrenEntered.resolve()
 			await observation.childrenEntered.promise
@@ -140,7 +139,7 @@ class NonGitAgentsAI {
 		)
 		if (request === 2 || missingReplies.length > 0) {
 			await observation.childrenCompleted.promise
-			// Task completion precedes Worker capture and mailbox publication. A
+			// Task completion precedes durable result publication. A
 			// native wait returns the first available batch, so collect any remaining reply.
 			observation.waitCalls++
 			assert.ok(observation.waitCalls <= CHILD_COUNT, "Every wait must make bounded result-collection progress")
@@ -183,7 +182,7 @@ async function assertNonGitWorkspace(workspace: string): Promise<void> {
 
 suite("Managed agents in a plain folder", function () {
 	this.timeout(120_000)
-	test("runs two native default agents without creating source Git metadata or replacing the parent", async () => {
+	test("runs two native default agents in the parent directory without creating Git metadata or replacing the parent", async () => {
 		assert.equal(vscode.version, "1.138.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
@@ -200,7 +199,7 @@ suite("Managed agents in a plain folder", function () {
 			rootRequests: 0,
 			waitCalls: 0,
 			children: new Map(),
-			privateWorkspaces: new Set(),
+			workspaces: new Set(),
 			completed: new Map(),
 			childrenEntered: deferred(),
 			childrenCompleted: deferred(),
@@ -283,7 +282,8 @@ suite("Managed agents in a plain folder", function () {
 						rootRequests: observation.rootRequests,
 						waitCalls: observation.waitCalls,
 						children: [...observation.children],
-						privateWorkspaceCount: observation.privateWorkspaces.size,
+						workspaceCount: observation.workspaces.size,
+						sharedParentWorkspace: true,
 						completionCounts: [...observation.completed],
 						sourceGitMetadataCreated: false,
 						failures,
@@ -299,7 +299,14 @@ suite("Managed agents in a plain folder", function () {
 			assert.ok(observation.rootRequests >= 3 && observation.rootRequests <= MAX_ROOT_REQUESTS)
 			assert.equal(observation.rootRequests, observation.waitCalls + 2)
 			assert.equal(observation.children.size, CHILD_COUNT)
-			assert.equal(observation.privateWorkspaces.size, CHILD_COUNT)
+			assert.equal(observation.workspaces.size, 1)
+			assert.ok([...observation.children.values()].every(({ isolated }) => !isolated))
+			assert.ok(
+				root.alphaMessages.every(
+					(message) => message.subagentGroup?.agents.every((agent) => !agent.changeSet) ?? true,
+				),
+				"Shared agents must not create isolated Worker proposals",
+			)
 			assert.equal(observation.completed.size, CHILD_COUNT + 1)
 			assert.ok([...observation.completed.values()].every((count) => count === 1))
 			assert.equal(tree.rootTaskId, rootId)

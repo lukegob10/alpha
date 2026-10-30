@@ -1,7 +1,8 @@
 import { render, screen } from "@/utils/test-utils"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 
 import MarkdownBlock from "../MarkdownBlock"
-import { fireEvent } from "@testing-library/react"
+import { fireEvent, within } from "@testing-library/react"
 import { vscode } from "@src/utils/vscode"
 
 vi.mock("@src/utils/vscode", () => ({
@@ -17,7 +18,39 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 }))
 
 describe("MarkdownBlock", () => {
+	let restoreFocus: () => void
+	beforeAll(() => {
+		restoreFocus = installNativeTestFocus()
+	})
+	afterAll(() => restoreFocus())
 	beforeEach(() => vi.clearAllMocks())
+
+	it("keeps table semantics, column alignment, and inline content inside a keyboard-accessible scroller", () => {
+		render(
+			<MarkdownBlock
+				markdown={[
+					"| Feature | Status | Count |",
+					"| :--- | :---: | ---: |",
+					"| **Tables** | `ready` | 12 |",
+					"| [Source](./table.ts) | Pending | 3 |",
+				].join("\n")}
+			/>,
+		)
+
+		const scroller = screen.getByRole("group", { name: "Table (scroll horizontally to see more)" })
+		expect(scroller).toHaveAttribute("tabindex", "0")
+		scroller.focus()
+		expect(scroller).toHaveFocus()
+		const table = within(scroller).getByRole("table")
+		expect(within(table).getAllByRole("row")).toHaveLength(3)
+		const headers = within(table).getAllByRole("columnheader")
+		expect(headers.map((header) => header.style.textAlign)).toEqual(["left", "center", "right"])
+		expect(within(table).getByRole("cell", { name: "12" })).toHaveStyle({ textAlign: "right" })
+		expect(within(table).getByText("Tables").tagName).toBe("STRONG")
+		expect(within(table).getByText("ready").tagName).toBe("CODE")
+		fireEvent.click(within(table).getByRole("link", { name: "Source" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "openFile", text: "./table.ts", values: undefined })
+	})
 
 	it.each([
 		["package.json:12", "./package.json"],

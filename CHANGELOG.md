@@ -1,5 +1,18 @@
 # Changelog
 
+## 3.2.18
+
+### Patch Changes
+
+- Complete stopped sub-agent runs even when their terminal event is missing, release execution capacity, and prevent duplicate result publication. Add regression coverage for twelve children across repeated waves.
+- Align sub-agent context inheritance, named-agent defaults, follow-up identity, and fork selection more closely with Codex CLI while preserving Alpha's approval and workspace protections.
+- Run new sub-agents in the parent's shared workspace with inherited permissions; preserve review and recovery for saved isolated Worker changes.
+- Show each sub-agent's captured model and effective reasoning level in task rows, links, and headers without borrowing current parent settings.
+- Strengthen interrupted transcript recovery, provider reasoning continuity, tool-result persistence, command cleanup, and completion checks.
+- Improve native tool parsing, managed-agent addressing, skill discovery, and OAuth authorization for supported MCP servers.
+- Refresh Alpha's wolf icons and welcome artwork, clarify agent navigation, and improve Markdown table readability, keyboard scrolling, and theme support.
+- Update the extension version and in-app announcement together for Alpha 3.2.18. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
 ## 3.2.17
 
 ### Patch Changes

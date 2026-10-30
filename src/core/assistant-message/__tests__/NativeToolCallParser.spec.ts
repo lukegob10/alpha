@@ -517,10 +517,29 @@ describe("NativeToolCallParser", () => {
 				}
 			})
 
+			it.each(["01", " +2 ", " ALL "])(
+				"accepts a V2 full-history alias without rewriting wire arguments: %s",
+				(forkTurns) => {
+					const result = NativeToolCallParser.parseToolCall({
+						id: "normalized-v2-spawn",
+						name: "spawn_agent",
+						arguments: JSON.stringify({
+							task_name: "parser_review",
+							message: "Inspect the parser.",
+							fork_turns: forkTurns,
+						}),
+					})
+					expect(result?.type).toBe("tool_use")
+					if (result?.type === "tool_use") {
+						expect(result.nativeArgs).toMatchObject({ fork_turns: forkTurns })
+					}
+				},
+			)
+
 			it.each([
 				{ model: " " },
 				{ reasoning_effort: "unsupported" },
-				{ fork_turns: "01" },
+				{ fork_turns: "0" },
 				{ agent_type: "root admin" },
 				{ write_scope: ["src"] },
 				{ fork_context: true },

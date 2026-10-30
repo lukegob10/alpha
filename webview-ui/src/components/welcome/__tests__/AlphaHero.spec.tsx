@@ -20,16 +20,21 @@ describe("AlphaHero", () => {
 		expect(container.firstChild).toHaveAttribute("aria-hidden", "true")
 		expect(screen.queryByText("alpha")).not.toBeInTheDocument()
 		expect(screen.getByTestId("alpha-wolf-icon")).toHaveClass("brand-mark-watermark", "h-24", "w-24")
+		expect(screen.getByTestId("alpha-wolf-icon")).toHaveAttribute("src", "/alpha-wolf-watermark.svg")
 		expect(screen.queryByRole("img")).not.toBeInTheDocument()
 	})
 
-	it("loads the wolf from the host-provided image directory", () => {
+	it.each([
+		["compact", "alpha-wolf-logo.svg"],
+		["welcome", "alpha-wolf-logo.svg"],
+		["watermark", "alpha-wolf-watermark.svg"],
+	] as const)("loads the %s wolf from the host-provided image directory", (variant, filename) => {
 		vi.stubGlobal("IMAGES_BASE_URI", "https://alpha-assets.test/images/")
-		render(<AlphaHero />)
+		render(<AlphaHero variant={variant} />)
 
 		expect(screen.getByTestId("alpha-wolf-icon")).toHaveAttribute(
 			"src",
-			"https://alpha-assets.test/images/alpha-wolf-logo.svg",
+			`https://alpha-assets.test/images/${filename}`,
 		)
 	})
 })

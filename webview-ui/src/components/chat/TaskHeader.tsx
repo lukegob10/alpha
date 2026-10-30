@@ -6,6 +6,7 @@ import type { HistoryItem, LiveTaskMetadata, ProviderSettings, TodoItem } from "
 
 import { StandardTooltip, Button, Popover, PopoverTrigger, PopoverContent } from "@src/components/ui"
 import { vscode } from "@src/utils/vscode"
+import { SubagentModelStamp } from "@/components/agents/SubagentModelStamp"
 
 import { TodoListDisplay } from "./TodoListDisplay"
 import { LucideIconButton } from "./LucideIconButton"
@@ -90,14 +91,6 @@ const TaskHeader = ({
 				: currentTaskItem.subagentChangeSet.status === "discarded"
 					? "discarded change set"
 					: "captured worker result"
-		: "isolated worktree"
-	const subagentModelLabel = subagentModelRoute
-		? [
-				subagentModelRoute.profileName,
-				[subagentModelRoute.provider, subagentModelRoute.modelId].filter(Boolean).join(" · "),
-			]
-				.filter(Boolean)
-				.join(" · ")
 		: undefined
 
 	const contextTooltip = <ContextUsageTooltip usage={usage} />
@@ -186,14 +179,18 @@ const TaskHeader = ({
 						<div className="mt-1 space-y-1 px-2 text-xs text-vscode-descriptionForeground">
 							<div className="font-medium text-vscode-foreground">{subagentIdentityLabel}</div>
 							<div>
-								{isWorkerSubagent
+								{isWorkerSubagent && workerLifecycleLabel
 									? `Parent-managed editing worker · ${workerLifecycleLabel}`
-									: "Parent-managed read-only sub-agent"}
+									: t("chat:subagentRow.inheritedPermissions")}
 							</div>
 							{isWorkerSubagent && currentTaskItem?.subagentWriteScope && (
 								<div>Write scope: {currentTaskItem.subagentWriteScope.join(", ")}</div>
 							)}
-							{subagentModelLabel && <div>{subagentModelLabel}</div>}
+							{subagentModelRoute && (
+								<div>
+									<SubagentModelStamp modelRoute={subagentModelRoute} includeProfile />
+								</div>
+							)}
 							{subagentModelRoute?.resolution === "fallback" && (
 								<div
 									className="flex items-start gap-1 text-vscode-editorWarning-foreground"

@@ -19,6 +19,15 @@ function MermaidLoading() {
 	return <div role="status">{t("common:mermaid.loading")}</div>
 }
 
+function MarkdownTable({ children, node: _node, ...props }: React.ComponentProps<"table"> & { node?: unknown }) {
+	const { t } = useAppTranslation()
+	return (
+		<div className="table-wrapper" role="group" aria-label={t("common:markdown.table")} tabIndex={0}>
+			<table {...props}>{children}</table>
+		</div>
+	)
+}
+
 interface MarkdownBlockProps {
 	markdown?: string
 	partial?: boolean
@@ -219,40 +228,46 @@ const StyledMarkdown = styled.div`
 
 	/* Table styles for remark-gfm */
 	table {
-		border-collapse: collapse;
-		margin: 1em 0;
-		width: auto;
-		min-width: 50%;
-		max-width: 100%;
-		table-layout: fixed;
+		border-collapse: separate;
+		border-spacing: 0;
+		width: 100%;
+		line-height: 1.55;
 	}
 
 	/* Table wrapper for horizontal scrolling */
 	.table-wrapper {
 		overflow-x: auto;
 		margin: 1em 0;
+		border: 1px solid var(--border-subtle, var(--vscode-panel-border));
+		border-radius: 8px;
+
+		&:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 2px;
+		}
 	}
 
 	th,
 	td {
-		border: 1px solid var(--vscode-panel-border);
-		padding: 8px 12px;
+		padding: 10px 14px;
 		text-align: left;
-		word-wrap: break-word;
-		overflow-wrap: break-word;
+		vertical-align: top;
+		overflow-wrap: anywhere;
+		min-width: 6em;
 	}
 
 	th {
-		background-color: var(--vscode-editor-background);
+		background-color: var(--surface-raised, var(--vscode-editor-background));
+		border-bottom: 1px solid var(--border-subtle, var(--vscode-panel-border));
 		font-weight: 600;
 		color: var(--vscode-foreground);
 	}
 
-	tr:nth-child(even) {
-		background-color: var(--vscode-editor-inactiveSelectionBackground);
+	tbody tr + tr td {
+		border-top: 1px solid var(--border-subtle, var(--vscode-panel-border));
 	}
 
-	tr:hover {
+	tbody tr:hover {
 		background-color: var(--vscode-list-hoverBackground);
 	}
 `
@@ -260,13 +275,7 @@ const StyledMarkdown = styled.div`
 const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) => {
 	const components = useMemo(
 		() => ({
-			table: ({ children, ...props }: any) => {
-				return (
-					<div className="table-wrapper">
-						<table {...props}>{children}</table>
-					</div>
-				)
-			},
+			table: MarkdownTable,
 			a: ({ href, children, ...props }: any) => {
 				const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
 					if (!href) {

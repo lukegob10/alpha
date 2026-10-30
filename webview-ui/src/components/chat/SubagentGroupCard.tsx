@@ -471,6 +471,7 @@ export const SubagentGroupCard = memo((props: SubagentGroupCardProps) => {
 										<SubagentTaskLink
 											name={agent.nickname}
 											status={agent.status}
+											modelRoute={agent.modelRoute}
 											attention={
 												attentionKey
 													? t(attentionKey)

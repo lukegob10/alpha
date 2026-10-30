@@ -2,6 +2,7 @@ import type {
 	LiveTaskMetadata,
 	ManagedAgentTreeProjection,
 	SubagentGroupState,
+	SubagentModelRouteState,
 	SubagentRole,
 	SubagentRunState,
 	SubagentStopReason,
@@ -19,6 +20,7 @@ export interface ManagedAgentNode {
 	stopReason?: SubagentStopReason
 	depth: number
 	attention?: string
+	modelRoute?: SubagentModelRouteState
 }
 
 export interface ManagedAgentTreeAdapterInput {
@@ -172,6 +174,7 @@ const buildProjectedTreeModel = (
 						stopReason: node.stopReason,
 						depth: node.depth,
 						attention: node.attention?.label,
+						modelRoute: node.modelRoute,
 					},
 				],
 	),
@@ -196,6 +199,7 @@ export function buildManagedAgentTreeModel(input: ManagedAgentTreeAdapterInput):
 			role: agent.role,
 			status: agent.status,
 			stopReason: agent.stopReason,
+			modelRoute: agent.modelRoute,
 			depth: depthFor(agent.taskId, parents, input.rootTaskId),
 			attention: agent.pendingApproval
 				? `Waiting for approval: ${agent.pendingApproval.operation}`

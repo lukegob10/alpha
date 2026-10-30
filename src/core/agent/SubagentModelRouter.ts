@@ -15,6 +15,7 @@ import {
 	type SubagentModelRouteState,
 	type TaskReasoningCapabilities,
 	type TaskReasoningPreference,
+	type TaskReasoningState,
 } from "@alpha-code/types"
 import { isDeepStrictEqual } from "util"
 import { ProviderProfileUnavailableError } from "../config/ProviderProfileUnavailableError"
@@ -54,6 +55,10 @@ export interface ResolveSubagentModelRouteOptions {
 	agentReasoningEffort?: ReasoningEffortExtended
 	resolveModelDefaultReasoningEffort?(configuration: ProviderSettings): Promise<ReasoningEffortExtended | undefined>
 	resolveReasoningCapabilities?(configuration: ProviderSettings): Promise<TaskReasoningCapabilities>
+	resolveEffectiveReasoning?(
+		configuration: ProviderSettings,
+		preference: TaskReasoningPreference,
+	): Promise<TaskReasoningState["effective"]>
 }
 
 export interface ResolvedSubagentModelRoute {
@@ -546,7 +551,14 @@ export async function resolveSubagentModelRoute(
 	// layering the role, then validates the resulting role model and effort.
 	if (hasLaunchSelection) assertCuratedModelRouteSupported(selected.apiConfiguration)
 	await validateEffort(selected, requestedReasoningEffort)
-	if (options.agentModelId && !options.agentReasoningEffort && !selected.apiConfiguration.reasoningEffort) {
+	// Codex child_config.rs (retrieved 2026-10-29) retains the resolved effort
+	// when only a custom agent's model changes. Disabled reasoning is resolved too.
+	if (
+		options.agentModelId &&
+		!options.agentReasoningEffort &&
+		!selected.apiConfiguration.reasoningEffort &&
+		selected.apiConfiguration.enableReasoningEffort !== false
+	) {
 		const effort = await options.resolveModelDefaultReasoningEffort?.(selected.apiConfiguration)
 		if (effort) {
 			selected.apiConfiguration.reasoningEffort = effort
@@ -582,5 +594,19 @@ export async function resolveSubagentModelRoute(
 			? { reasoningEffort: resolved.apiConfiguration.reasoningEffort }
 			: {}),
 	}
+	const configuration = resolved.apiConfiguration
+	const provider = configuration.apiProvider
+	const modelId =
+		getSubagentRouteModelId(configuration) ??
+		(isCuratedProvider(provider) ? getProviderDefaultModelId(provider) : undefined)
+	const modelInfo = isCuratedProvider(provider) && modelId ? getCuratedModelInfo(provider, modelId.trim()) : undefined
+	const effectiveReasoning = options.resolveEffectiveReasoning
+		? await options.resolveEffectiveReasoning(configuration, preference ?? { kind: "default" })
+		: modelInfo && modelId
+			? resolveTaskReasoning(configuration, preference, { id: modelId, info: modelInfo }).state.effective
+			: undefined
+	// The display stamp describes resolved launch behavior, independently of the
+	// requested effort and persisted provider flags. Unknown historical routes stay unstamped.
+	if (effectiveReasoning) resolved.route.effectiveReasoning = structuredClone(effectiveReasoning)
 	return resolved
 }

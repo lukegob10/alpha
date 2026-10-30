@@ -457,9 +457,10 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "outer_worker",
-						message: OUTER_OBJECTIVE,
+						objective: OUTER_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [WORKER_DIR],
 					},
 				},
 				{
@@ -473,18 +474,20 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "discard_worker",
-						message: DISCARD_OBJECTIVE,
+						objective: DISCARD_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [DISCARD_PATH],
 					},
 				},
 				{
 					name: "spawn_agent",
 					arguments: {
 						task_name: INTERRUPT_TASK_NAME,
-						message: INTERRUPT_OBJECTIVE,
+						objective: INTERRUPT_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [WORKER_DIR],
 					},
 				},
 				{
@@ -503,9 +506,10 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "nested_writer",
-						message: NESTED_OBJECTIVE,
+						objective: NESTED_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [`${WORKER_DIR}/nested`],
 					},
 				},
 				{

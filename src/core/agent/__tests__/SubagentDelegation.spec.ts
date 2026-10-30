@@ -19,7 +19,22 @@ describe("buildSubagentPrompt", () => {
 			authorityModel: "parent",
 		})
 		expect(prompt).toContain("parent's approval policy")
+		expect(prompt).toContain("share the parent's working directory")
+		expect(prompt).not.toContain("isolated Git worktree")
 		expect(prompt).not.toMatch(/Do not commit|Do not stage|Do not edit files|Do not.*access the network or MCP/)
+	})
+	it("retains isolated workspace guidance for a restored worker", () => {
+		const prompt = buildSubagentPrompt({
+			nickname: "Maple",
+			role: "worker",
+			objective: "Complete the retained fix",
+			expectedOutput: [],
+			writeScope: ["src"],
+			authorityModel: "parent",
+			sharedWorkspace: false,
+		})
+		expect(prompt).toContain("isolated Git worktree")
+		expect(prompt).not.toContain("share the parent's working directory")
 	})
 	it.each([
 		["explore" as const, "Map dependency boundaries", []],
@@ -289,7 +304,7 @@ describe("normalizeSpawnAgentRequest", () => {
 		{ model: " " },
 		{ reasoning_effort: "disable" },
 		{ reasoning_effort: "unsupported" },
-		{ fork_turns: "01" },
+		{ fork_turns: "0" },
 		{ agent_type: "root admin" },
 		{ write_scope: ["src"] },
 		{ fork_context: true },
@@ -300,6 +315,17 @@ describe("normalizeSpawnAgentRequest", () => {
 				message: "Trace the task lifecycle.",
 				...overrides,
 			}),
+		).toThrow("spawn_agent")
+	})
+	it.each(["01", "+1", "  ALL  ", "3"])("normalizes the V2 full-history alias %j", (fork_turns) => {
+		expect(
+			normalizeSpawnAgentRequest({ task_name: "inspect", message: "Inspect the parser", fork_turns }),
+		).toMatchObject({ source: "codex-v2", fork_turns: "all" })
+	})
+
+	it("continues rejecting noncanonical numeric history in legacy requests", () => {
+		expect(() =>
+			normalizeSpawnAgentRequest({ objective: "Inspect the parser", agent_kind: "review", fork_turns: "01" }),
 		).toThrow("spawn_agent")
 	})
 

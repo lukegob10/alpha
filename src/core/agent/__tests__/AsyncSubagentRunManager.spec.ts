@@ -1,4 +1,4 @@
-import { AsyncSubagentRunManager } from "../AsyncSubagentRunManager"
+import { AsyncSubagentRunManager, type AsyncSubagentLaunchOptions } from "../AsyncSubagentRunManager"
 import { BoundedDelegationManager, type InternalTaskResult } from "../BoundedDelegationManager"
 import { buildInternalTaskEnvelope, type InternalTaskPolicy } from "../InternalTaskEnvelope"
 
@@ -315,6 +315,32 @@ describe("AsyncSubagentRunManager", () => {
 		expect(reloadedHandle.runId).not.toBe(firstHandle.runId)
 		expect(reloadedEventIds.every((eventId) => !firstEventIds.has(eventId))).toBe(true)
 	})
+
+	it.each(["parent", "path", "role", "nickname"] as const)(
+		"rejects a follow-up that changes the retained agent's %s without losing its result",
+		async (field) => {
+			const runner = vi.fn(async (item) => result(item.id))
+			const manager = new AsyncSubagentRunManager(runner)
+			const first = manager.launch(envelope("child-1"), launchOptions)
+			await manager.waitForResult(first.taskId)
+			const events = manager.getEvents(first.taskId)
+			const nextEnvelope = { ...envelope(first.taskId) }
+			const nextOptions: AsyncSubagentLaunchOptions = { ...launchOptions }
+			if (field === "parent") nextEnvelope.parentTaskId = "different-parent"
+			if (field === "path") nextOptions.path = "/root/different"
+			if (field === "role") {
+				nextEnvelope.agentKind = "review"
+				nextOptions.role = "review"
+			}
+			if (field === "nickname") nextOptions.nickname = "Different"
+
+			expect(() => manager.relaunch(nextEnvelope, nextOptions)).toThrow("cannot change retained agent identity")
+			expect(manager.getRunId(first.taskId)).toBe(first.runId)
+			expect(manager.getEvents(first.taskId)).toEqual(events)
+			await expect(manager.waitForResult(first.taskId)).resolves.toMatchObject({ status: "completed" })
+			expect(runner).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("never reuses a stable task ID, including after its retained result is forgotten", async () => {
 		const runner = vi.fn(async (item) => result(item.id))

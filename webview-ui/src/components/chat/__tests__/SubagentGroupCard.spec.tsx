@@ -106,6 +106,18 @@ const openActions = async (user: ReturnType<typeof userEvent.setup>, nickname: s
 }
 
 describe("SubagentGroupCard", () => {
+	it("stamps the frozen child model and reasoning in a compact dock row", () => {
+		const group = makeGroup()
+		group.agents[0].modelRoute = {
+			source: "spawn",
+			resolution: "selected",
+			profileName: "Captured",
+			modelId: "child-model",
+			effectiveReasoning: { kind: "effort", effort: "high" },
+		}
+		render(<SubagentGroupCard group={group} parentTaskId="parent-1" presentation="dock" />)
+		expect(screen.getByText("child-model · Reasoning: high")).toBeVisible()
+	})
 	beforeAll(async () => {
 		await i18next
 			.use(initReactI18next)

@@ -137,6 +137,20 @@ describe("ManagedAgentTree", () => {
 			.init({ lng: "en", resources: { en: { chat: { subagentRow: chat.subagentRow } } } })
 	})
 	beforeEach(() => vi.mocked(vscode.postMessage).mockClear())
+	it("shows the restored child's frozen model and reasoning in its compact row", () => {
+		const projection = hierarchyProjection()
+		projection.nodes[1].modelRoute = {
+			source: "parent",
+			resolution: "selected",
+			profileName: "Captured",
+			modelId: "restored-child-model",
+			effectiveReasoning: { kind: "effort", effort: "xhigh" },
+		}
+		render(
+			<ManagedAgentTree rootTaskId="root-1" projection={projection} onShowTask={vi.fn()} presentation="dock" />,
+		)
+		expect(screen.getByText("restored-child-model · Reasoning: xhigh")).toBeVisible()
+	})
 	it.each(["pending", "failed"] as const)("does not turn advisory %s evidence into required attention", (status) => {
 		const agent = makeAgent({
 			status: "completed",

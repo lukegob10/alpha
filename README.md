@@ -20,6 +20,11 @@ The exact development and release reference host is VS Code **1.138.0**; it does
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
 policy or workspace protections.
 
+Subagents share the parent task's working directory and inherit its approval policy, permissions, and workspace scope.
+Their file changes are immediately visible to the parent and other agents, so assign separate files when delegating
+editing work in parallel. Agent roles describe their assignments; they do not grant additional permissions. Separate
+chats can still use an explicitly selected Git worktree. Saved isolated worker changes remain available for review.
+
 Streamable HTTP MCP servers supporting OAuth dynamic registration can request browser authorization. Alpha stores
 their credentials in VS Code SecretStorage. Servers with configured authorization headers and SSE servers retain
 their configured authentication.

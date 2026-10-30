@@ -273,6 +273,8 @@ interface SubagentPromptOptions {
 	depth?: number
 	maxDepth?: number | null
 	authorityModel?: "parent"
+	/** Captured workspace ownership; false retains guidance for historical isolated workers. */
+	sharedWorkspace?: boolean
 }
 
 export const SUBAGENT_REPORT_WORD_BUDGET = 900
@@ -289,6 +291,7 @@ export function buildSubagentPrompt({
 	depth,
 	maxDepth,
 	authorityModel,
+	sharedWorkspace = true,
 }: SubagentPromptOptions): string {
 	const roleLabel = role === "explore" ? "Explorer" : role === "review" ? "Reviewer" : "Worker"
 	const deliverables = expectedOutput.length
@@ -308,9 +311,10 @@ export function buildSubagentPrompt({
 			`You are ${nickname}, an Alpha ${roleLabel} sub-agent managed by a parent task.`,
 			`Objective: ${objective}`,
 			"You inherit the parent's approval policy and captured tool permissions. Your role describes the assigned work; it does not grant additional authority or impose a separate Git, command, network, or MCP prohibition. Use only the supplied tools within the assigned objective and host-enforced scope. Full Access does not override explicit command denials or protected-file and workspace checks.",
-			role === "worker"
-				? "Work in the supplied isolated Git worktree. Use its working directory for repository commands and file edits; do not expose its private path in your report."
-				: "Inspect the assigned evidence independently and report findings. Make changes only when needed for the authorized objective.",
+			// Codex child_config.rs (retrieved 2026-10-29) inherits cwd independently of role.
+			sharedWorkspace
+				? "You share the parent's working directory with other agents. Coordinate edits within the assigned objective, preserve concurrent changes, and never revert another agent's work."
+				: "Work in the supplied isolated Git worktree. Use its working directory for repository commands and file edits; do not expose its private path in your report.",
 			writeScope?.length
 				? `Authorized write scope:\n${writeScope.map((item) => `- ${item}`).join("\n")}`
 				: "Follow the inherited read-only execution policy.",

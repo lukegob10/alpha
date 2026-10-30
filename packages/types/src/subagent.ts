@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { reasoningEffortExtendedSchema, reasoningEffortSettingSchema } from "./model.js"
 import { modelSelectionParamsSchema } from "./model-selection.js"
+import { taskReasoningPreferenceSchema } from "./task-reasoning.js"
 
 const SUBAGENT_TASK_NAME_PATTERN = /^[a-z][a-z0-9_]{0,31}$/
 const SUBAGENT_FORK_TURNS_PATTERN = /^[1-9]\d*$/
@@ -44,6 +45,26 @@ const nonEmptySubagentTextSchema = z.string().trim().min(1)
 const subagentExpectedOutputSchema = z.array(nonEmptySubagentTextSchema).max(12)
 const subagentWriteScopeSchema = z.array(nonEmptySubagentTextSchema).min(1).max(12)
 
+// Codex V2 spawn.rs (retrieved 2026-10-29) trims fork selection, accepts case-insensitive
+// names, and treats positive usize aliases as full-history forks. Bound parser input
+// and compare integer strings exactly rather than rounding through JavaScript numbers.
+const subagentSpawnV2ForkTurnsSchema = z
+	.string()
+	.max(128)
+	.transform((value, context) => {
+		const selection = value.trim().toLowerCase() || "all"
+		if (selection === "none" || selection === "all") return selection
+		if (/^\+?\d+$/.test(selection)) {
+			const integer = BigInt(selection)
+			if (integer > 0n && integer <= 18_446_744_073_709_551_615n) return "all" as const
+		}
+		context.addIssue({
+			code: z.ZodIssueCode.custom,
+			message: "fork_turns must be none, all or a positive integer alias",
+		})
+		return z.NEVER
+	})
+
 /**
  * Current model-facing spawn_agent contract. Role resolution and authority are
  * host decisions; these arguments only express the requested task and route.
@@ -53,7 +74,7 @@ export const subagentSpawnAgentV2ArgsSchema = z
 		task_name: subagentTaskNameSchema,
 		message: nonEmptySubagentTextSchema,
 		agent_type: subagentSpawnAgentTypeSchema.optional(),
-		fork_turns: subagentSpawnForkTurnsSchema.optional(),
+		fork_turns: subagentSpawnV2ForkTurnsSchema.optional(),
 		...modelSelectionParamsSchema.shape,
 	})
 	.strict()
@@ -105,6 +126,8 @@ const subagentModelRouteStateObjectSchema = z.object({
 	unboundProfile: z.literal(true).optional(),
 	provider: z.string().optional(),
 	modelId: z.string().optional(),
+	/** Effective child reasoning captured after model resolution; absent in historical routes. */
+	effectiveReasoning: taskReasoningPreferenceSchema.optional(),
 	/** An empty captured object clears saved profile flags without claiming an explicit effort request. */
 	reasoningConfiguration: z
 		.object({

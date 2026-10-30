@@ -20,6 +20,7 @@ import {
 	type ApprovalMode,
 	type ProviderSettings,
 	type SubagentGroupState,
+	type SubagentSpawnHandle,
 } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
@@ -374,59 +375,76 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		expect(createTask).not.toHaveBeenCalled()
 	})
 
-	it("publishes durable changed-file metadata for an inherited-permission Review result", async () => {
-		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-shared-review-result-"))
-		try {
-			const provider = makeProviderHarness(2, { approvalMode: "bypass" })
-			Reflect.set(provider, "context", { globalStorageUri: { fsPath: workspace } })
-			const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
-			const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
-				task_name: "shared_correction",
-				agent_type: "review",
-				message: "Implement the authorized source correction",
-			})
-			await Reflect.get(provider, "ensurePreparedSubagentControlRecords").call(provider, parent, prepared)
-			Reflect.set(
-				provider,
-				"createTask",
-				vi.fn(async (_text: string, _images: unknown, _parent: unknown, options: Record<string, unknown>) => {
-					const child = Object.assign(new EventEmitter(), options, {
-						taskId: prepared.envelopes[0].id,
-						cwd: workspace,
-						alphaMessages: [{ type: "say", say: "completion_result", text: "Corrected the source." }],
-						getTokenUsage: () => ({ totalTokensIn: 1, totalTokensOut: 1 }),
-						getTaskLifetimeCancellationSignal: () => new AbortController().signal,
-						persistFrozenSubagentInstructions: vi.fn(async () => undefined),
-						finalizeSubagentHistory: vi.fn(async () => undefined),
-						start: () => {
-							void (async () => {
-								await provider.reservePrimaryMutation(child as unknown as Task, "review-edit")
-								await fs.writeFile(path.join(workspace, "value.ts"), "export const value = 2\n")
-								await provider.recordPrimaryMutation(
-									child as unknown as Task,
-									await captureVerificationContent(workspace, ["value.ts"]),
-									false,
-									"review-edit",
-								)
-								child.emit(AlphaCodeEventName.TaskCompleted, child.taskId, child.getTokenUsage())
-							})().catch((error: unknown) => child.emit("error", error))
+	it.each(["review", "worker"] as const)(
+		"publishes durable changed-file metadata for a shared %s result",
+		async (role) => {
+			const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-shared-review-result-"))
+			const validateScope = vi.spyOn(managedSubagentWorktreeService, "validateScope")
+			const createWorktree = vi.spyOn(managedSubagentWorktreeService, "create")
+			try {
+				const provider = makeProviderHarness(2, { approvalMode: "bypass" })
+				Reflect.set(provider, "context", { globalStorageUri: { fsPath: workspace } })
+				const parent = { ...makeParent(), cwd: workspace, historyWorkspacePath: workspace }
+				const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, {
+					task_name: "shared_correction",
+					agent_type: role,
+					message: "Implement the authorized source correction",
+				})
+				await Reflect.get(provider, "ensurePreparedSubagentControlRecords").call(provider, parent, prepared)
+				Reflect.set(
+					provider,
+					"createTask",
+					vi.fn(
+						async (_text: string, _images: unknown, _parent: unknown, options: Record<string, unknown>) => {
+							expect(options.workspacePath).toBe(workspace)
+							expect(options.subagentPrivateWorkspaceRoot).toBeUndefined()
+							const child = Object.assign(new EventEmitter(), options, {
+								taskId: prepared.envelopes[0].id,
+								cwd: workspace,
+								alphaMessages: [
+									{ type: "say", say: "completion_result", text: "Corrected the source." },
+								],
+								getTokenUsage: () => ({ totalTokensIn: 1, totalTokensOut: 1 }),
+								getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+								persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+								finalizeSubagentHistory: vi.fn(async () => undefined),
+								start: () => {
+									void (async () => {
+										await provider.reservePrimaryMutation(child as unknown as Task, "review-edit")
+										await fs.writeFile(path.join(workspace, "value.ts"), "export const value = 2\n")
+										await provider.recordPrimaryMutation(
+											child as unknown as Task,
+											await captureVerificationContent(workspace, ["value.ts"]),
+											false,
+											"review-edit",
+										)
+										child.emit(
+											AlphaCodeEventName.TaskCompleted,
+											child.taskId,
+											child.getTokenUsage(),
+										)
+									})().catch((error: unknown) => child.emit("error", error))
+								},
+							})
+							return child
 						},
-					})
-					return child
-				}),
-			)
-			const result = await Reflect.get(provider, "runSubagentEnvelope").call(
-				provider,
-				prepared.envelopes[0],
-				new AbortController().signal,
-			)
-			expect(result).toMatchObject({ status: "completed", changedFiles: ["value.ts"] })
-			expect(prepared.group.agents[0].changedFiles).toEqual(["value.ts"])
-			expect(prepared.group.agents[0].requiresParentVerification).toBe(true)
-		} finally {
-			await fs.rm(workspace, { recursive: true, force: true })
-		}
-	})
+					),
+				)
+				const result = await Reflect.get(provider, "runSubagentEnvelope").call(
+					provider,
+					prepared.envelopes[0],
+					new AbortController().signal,
+				)
+				expect(result).toMatchObject({ status: "completed", changedFiles: ["value.ts"] })
+				expect(prepared.group.agents[0].changedFiles).toEqual(["value.ts"])
+				expect(prepared.group.agents[0].requiresParentVerification).toBe(true)
+				expect(validateScope).not.toHaveBeenCalled()
+				expect(createWorktree).not.toHaveBeenCalled()
+			} finally {
+				await fs.rm(workspace, { recursive: true, force: true })
+			}
+		},
+	)
 
 	it.each(["explorer", "review"])(
 		"allows an inherited-permission %s to delegate a Worker within its captured authority",
@@ -784,6 +802,34 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		expect(prepared.requiresExplicitApproval).toBe(true)
 	})
 
+	it.each(["none", "all"] as const)(
+		"applies the configured default agent only to fresh %s context",
+		async (forkTurns) => {
+			const provider = makeProviderHarness(2, {
+				subagentAgentTypes: {
+					default: {
+						description: "Configured default",
+						role: "review",
+						model: "configured-model",
+						developerInstructions: "Use the configured default instructions.",
+					},
+				},
+			})
+			const prepared = await provider.prepareSubagentGroup(makeParent() as any, {
+				task_name: "default_inheritance",
+				message: "Continue the assigned task",
+				fork_turns: forkTurns,
+			})
+			const descriptor = Reflect.get(provider, "subagentDescriptors").get(prepared.envelopes[0].id)
+			expect(descriptor.modelRoute.apiConfiguration.openAiModelId).toBe(
+				forkTurns === "all" ? "alpha-model" : "configured-model",
+			)
+			expect(descriptor.inheritedInstructions.includes("Use the configured default instructions.")).toBe(
+				forkTurns === "none",
+			)
+		},
+	)
+
 	it("does not freeze unavailable parent reasoning as an explicit custom agent override", async () => {
 		const provider = makeProviderHarness(2, {
 			subagentAgentTypes: {
@@ -984,7 +1030,8 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			reasoning_effort: "high",
 		})
 
-		expect(validateScope).toHaveBeenCalledWith(parent.cwd, ["."], { allowWorkspaceRoot: true })
+		expect(validateScope).not.toHaveBeenCalled()
+		expect(prepared.envelopes[0].scope.sharedWorkspace).toBe(true)
 		expect(prepared.group.agents[0]).toMatchObject({
 			role: "worker",
 			writeScope: ["."],
@@ -1024,7 +1071,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 				expect(prepared.envelopes[0].scope).toMatchObject({
 					workspaceRoots: [path.resolve(workspace)],
 					allowedPaths: [path.resolve(workspace)],
-					sharedWorkspace: false,
+					sharedWorkspace: true,
 				})
 			}
 			expect(await fs.readdir(workspace)).toEqual([])
@@ -1061,6 +1108,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 			)
 			expect(restored.group.agents[0]).toMatchObject({ role: "worker", writeScope: ["."] })
 			expect(restored.envelopes[0].scope.allowedPaths).toEqual([path.resolve(workspace)])
+			expect(restored.envelopes[0].scope.sharedWorkspace).toBe(true)
 			expect(await fs.readdir(workspace)).toEqual([])
 		} finally {
 			await fs.rm(workspace, { recursive: true, force: true })
@@ -2394,6 +2442,107 @@ If complete, use attempt_completion.
 		},
 	)
 
+	it("settles twelve children across six waves including missing terminal events and releases capacity", async () => {
+		const provider = makeProviderHarness(2, { maxConcurrentSubagents: 2 })
+		// Retain all twelve histories while limiting execution to two at a time.
+		;(provider as any).taskSessions = new TaskSessionRegistry(16)
+		const parent = makeParent()
+		const children = new Map<string, Task>()
+		const stops = new Map<string, () => void>()
+		;(provider as any).taskSessions.getTask = (taskId: string) =>
+			taskId === parent.taskId ? parent : children.get(taskId)
+		;(provider as any).createTask = vi.fn(
+			async (_prompt: string, _images: unknown, _parent: unknown, options: { taskId: string }) => {
+				const index = children.size
+				let stop!: () => void
+				const lifecycle = new Promise<void>((resolve) => (stop = resolve))
+				const child = Object.assign(new EventEmitter(), {
+					taskId: options.taskId,
+					alphaMessages: [],
+					abort: false,
+					getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+					persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+					finalizeSubagentHistory: vi.fn(async () => undefined),
+					cancelCurrentRequest: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+					waitForTermination: () => lifecycle,
+					isCompleted: () => index < 2,
+					start: vi.fn(),
+				})
+				children.set(options.taskId, child as unknown as Task)
+				stops.set(options.taskId, () => {
+					// Two completed children omit their event; two later children abort
+					// silently. The remaining eight publish normal completion events.
+					if (index === 3 || index === 7) child.abort = true
+					else if (index >= 2)
+						child.emit(AlphaCodeEventName.TaskCompleted, options.taskId, child.getTokenUsage())
+					stop()
+				})
+				return child
+			},
+		)
+		const bounded = new BoundedDelegationManager(
+			(envelope, signal) => (provider as any).runSubagentEnvelope(envelope, signal),
+			2,
+		)
+		const runs = new AsyncSubagentRunManager(bounded)
+		;(provider as any).boundedDelegationManager = bounded
+		;(provider as any).asyncSubagentRunManager = runs
+		const controller = new AbortController()
+		try {
+			for (let wave = 0; wave < 6; wave++) {
+				const handles: SubagentSpawnHandle[] = []
+				for (let slot = 0; slot < 2; slot++) {
+					const prepared = await provider.prepareSubagentGroup(parent as any, [
+						{
+							task_name: `ticket_${wave}_${slot}`,
+							objective: "Inspect a child ticket",
+							agent_kind: "review",
+						},
+					])
+					handles.push(await provider.launchPreparedSubagentGroup(parent as any, prepared, controller.signal))
+				}
+				await vi.waitFor(() => {
+					for (const handle of handles) expect(children.get(handle.taskId)?.start).toHaveBeenCalledOnce()
+				})
+				for (const handle of handles) stops.get(handle.taskId)!()
+				await vi.waitFor(() => {
+					for (const handle of handles) {
+						expect(runs.getSnapshot(handle.taskId)?.status).toBe(
+							children.get(handle.taskId)!.abort ? "cancelled" : "completed",
+						)
+					}
+				})
+				await vi.waitFor(() => expect((provider as any).subagentRunFinalizations.size).toBe(0))
+			}
+			expect(children.size).toBe(12)
+			const store = (provider as any).agentControlStore as AgentControlStore
+			const results = store.readMailbox(parent.taskId, {
+				rootTaskId: parent.taskId,
+				includeDelivered: true,
+				kinds: ["result"],
+				limit: 1_000,
+			}).entries
+			for (const child of children.values()) {
+				child.emit(AlphaCodeEventName.TaskCompleted, child.taskId, child.getTokenUsage(), {})
+				child.emit(AlphaCodeEventName.TaskAborted)
+				expect(child.finalizeSubagentHistory).toHaveBeenCalledOnce()
+				expect(results.filter((entry) => entry.payload?.taskId === child.taskId)).toHaveLength(1)
+				expect(child.listenerCount(AlphaCodeEventName.Message)).toBe(0)
+				expect(child.listenerCount(AlphaCodeEventName.TaskCompleted)).toBe(0)
+				expect(child.listenerCount(AlphaCodeEventName.TaskAborted)).toBe(0)
+				expect((provider as any).agentControlStore.getAgent(child.taskId, parent.taskId)?.status).toBe(
+					child.abort ? "cancelled" : "completed",
+				)
+			}
+			expect((provider as any).subagentGroupControllers.size).toBe(0)
+		} finally {
+			controller.abort()
+			await Promise.all([...children.keys()].map((taskId) => runs.waitForResult(taskId)))
+		}
+	})
+
 	it.each(["async", "blocking"] as const)(
 		"preserves failed child shutdown through the public %s delegation path",
 		async (executionMode) => {
@@ -3282,7 +3431,7 @@ If complete, use attempt_completion.
 		}
 	})
 
-	it("captures configured Worker routing before an awaited workspace-scope check", async () => {
+	it("captures configured Worker routing before awaiting the parent profile", async () => {
 		const settings = { subagentDefaultModel: "captured-model" }
 		const provider = makeProviderHarness(2, settings, [
 			{ id: "captured-worker", name: "Captured Worker", apiProvider: "openai", openAiModelId: "captured-model" },
@@ -3293,18 +3442,10 @@ If complete, use attempt_completion.
 		const checkingScope = new Promise<void>((resolve) => (entered = resolve))
 		let release!: () => void
 		const pendingScope = new Promise<void>((resolve) => (release = resolve))
-		vi.spyOn(managedSubagentWorktreeService, "validateScope").mockImplementation(async () => {
+		parent.getTaskApiConfigName.mockImplementation(async () => {
 			entered()
 			await pendingScope
-			return {
-				gitRoot: parent.cwd,
-				logicalWorkspace: parent.cwd,
-				logicalWorkspaceFromRoot: "",
-				writeScope: ["."],
-				gitRelativeScope: ["."],
-				fileWriteScope: [],
-				gitRelativeFileScope: [],
-			}
+			return "Parent"
 		})
 		const preparing = provider.prepareSubagentGroup(parent as any, {
 			task_name: "frozen_worker_route",
@@ -3734,6 +3875,45 @@ If complete, use attempt_completion.
 			})
 			return { provider, prepared, taskId }
 		}
+
+		it.each(["aborted", "streaming_failed", "abandoned"] as const)(
+			"settles a fulfilled %s continuation even without a TaskAborted event",
+			async (outcome) => {
+				const { provider, prepared, taskId } = await setupRetainedRun()
+				const child = Object.assign(new EventEmitter(), {
+					taskId,
+					alphaMessages: [],
+					getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+					getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+					finalizeSubagentHistory: vi.fn(async () => undefined),
+					cancelCurrentRequest: vi.fn(),
+					abortTask: vi.fn(async () => undefined),
+					abort: outcome !== "abandoned",
+					abandoned: outcome === "abandoned",
+					abortReason: outcome === "streaming_failed" ? "streaming_failed" : "user_cancelled",
+					resumeSubagentFollowup: vi.fn(async () => undefined),
+				})
+				;(provider as any).createTaskWithHistoryItem = vi.fn(async () => child)
+				const controller = new AbortController()
+				vi.useFakeTimers()
+				const run = (provider as any).runSubagentEnvelope(prepared.envelopes[0], controller.signal)
+				try {
+					await vi.advanceTimersByTimeAsync(0)
+					const status = outcome === "streaming_failed" ? "failed" : "cancelled"
+					expect(child.finalizeSubagentHistory).toHaveBeenCalledWith(status, expect.any(String), status)
+					await expect(run).resolves.toMatchObject({ status, stopReason: status })
+					child.emit(AlphaCodeEventName.TaskAborted)
+					expect(child.finalizeSubagentHistory).toHaveBeenCalledOnce()
+					expect(child.listenerCount(AlphaCodeEventName.TaskCompleted)).toBe(0)
+					expect(child.listenerCount(AlphaCodeEventName.TaskAborted)).toBe(0)
+					expect(child.listenerCount(AlphaCodeEventName.Message)).toBe(0)
+				} finally {
+					controller.abort()
+					await run
+					vi.useRealTimers()
+				}
+			},
+		)
 
 		it.each(["failed", "incomplete", "exhausted"] as const)(
 			"settles a fulfilled %s continuation without a terminal Task event",
@@ -6320,6 +6500,10 @@ If complete, use attempt_completion.
 		await (provider as any).agentControlStore.updateAgentStatus(child.taskId, "running", {}, root.rootTaskId)
 		const directManifest = (provider as any).subagentDescriptors.get(child.taskId).contextManifest
 		const nestedManifest = structuredClone(directManifest)
+		nestedManifest.modelRoute = {
+			...nestedManifest.modelRoute,
+			effectiveReasoning: { kind: "effort", effort: "high" },
+		}
 		nestedManifest.parentTaskId = child.taskId
 		nestedManifest.orchestration.ancestry.parentTaskId = child.taskId
 		nestedManifest.orchestration.ancestry.depth = 2
@@ -6379,6 +6563,7 @@ If complete, use attempt_completion.
 				taskId: grandchild.taskId,
 				parentTaskId: child.taskId,
 				path: "/root/durable_parent/nested-review",
+				modelRoute: expect.objectContaining({ effectiveReasoning: { kind: "effort", effort: "high" } }),
 				depth: 2,
 				stopReason: "root_cost_budget",
 				usage: expect.objectContaining({ inputTokens: 120, outputTokens: 30, cost: 0.75, durationMs: 0 }),

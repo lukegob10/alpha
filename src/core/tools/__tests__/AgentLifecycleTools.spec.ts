@@ -246,7 +246,8 @@ describe("agent lifecycle tools", () => {
 	})
 
 	it.each([
-		[{ timedOut: false, interrupted: true, reason: "steered_input" }, "cancelled"],
+		[{ timedOut: false, interrupted: true, reason: "steered_input" }, "success"],
+		[{ timedOut: false, interrupted: true, reason: "cancelled" }, "cancelled"],
 		[{ timedOut: false, cancelled: true, events: [] }, "cancelled"],
 		[{ timedOut: true, events: [] }, "success"],
 	] as const)("keeps wait termination outcome %j distinct in its result", async (outcome, status) => {
@@ -257,16 +258,16 @@ describe("agent lifecycle tools", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status }))
 	})
 
-	it("presents a steered wait with the existing cancellation state", async () => {
+	it("completes a steered wait successfully without presenting it as cancellation", async () => {
 		const { provider, task, say, callbacks } = harness()
 		provider.waitForAgent.mockResolvedValueOnce({ timedOut: false, interrupted: true, reason: "steered_input" })
 
 		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
 
-		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "cancelled" })
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success", waitOutcome: "active" })
 		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
 			lifecycleStatus: "completed",
-			cancelled: true,
+			cancelled: false,
 			timedOut: false,
 		})
 	})

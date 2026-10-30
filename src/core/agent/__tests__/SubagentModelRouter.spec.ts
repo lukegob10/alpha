@@ -5,6 +5,7 @@ import {
 	type ProviderSettingsWithId,
 	type TaskReasoningCapabilities,
 	type TaskReasoningPreference,
+	type TaskReasoningState,
 } from "@alpha-code/types"
 
 import { resolveSubagentModelRoute } from "../SubagentModelRouter"
@@ -44,6 +45,75 @@ const loader = {
 }
 
 const parentApiConfiguration = profiles[0]
+
+describe("resolved subagent reasoning stamp", () => {
+	it.each([
+		{ kind: "effort", effort: "high" },
+		{ kind: "effort", effort: "none" },
+		{ kind: "on" },
+		{ kind: "off" },
+		{ kind: "custom", value: "captured_custom" },
+		{ kind: "default" },
+	] satisfies TaskReasoningState["effective"][])("captures effective $kind reasoning", async (effective) => {
+		const resolveEffectiveReasoning = vi.fn(async () => effective)
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			parentReasoningPreference: { kind: "effort", effort: "high" },
+			profileLoader: loader,
+			resolveEffectiveReasoning,
+		})
+
+		expect(resolveEffectiveReasoning).toHaveBeenCalledExactlyOnceWith(result.apiConfiguration, {
+			kind: "effort",
+			effort: "high",
+		})
+		expect(result.route.effectiveReasoning).toEqual(effective)
+		expect(result.route.effectiveReasoning).not.toBe(effective)
+		expect(result.route.requestedReasoningEffort).toBeUndefined()
+	})
+
+	it("resolves the selected model default before stamping without changing request flags", async () => {
+		const resolveEffectiveReasoning = vi.fn(async () => ({ kind: "effort", effort: "medium" }) as const)
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			parentReasoningPreference: { kind: "effort", effort: "high" },
+			profileLoader: loader,
+			requestedModelId: "child-model",
+			resolveEffectiveReasoning,
+		})
+		expect(resolveEffectiveReasoning).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ openAiModelId: "child-model" }),
+			{ kind: "default" },
+		)
+		expect(result.route.effectiveReasoning).toEqual({ kind: "effort", effort: "medium" })
+		expect(result.route.requestedReasoningEffort).toBeUndefined()
+		expect(result.route.reasoningConfiguration).toEqual({})
+	})
+
+	it("uses curated metadata to capture a model's actual default effort", async () => {
+		const configuration = { apiProvider: "openai-codex", apiModelId: "gpt-6.1-sol" } as const
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: configuration,
+			profileLoader: loader,
+		})
+		expect(result.route.effectiveReasoning).toMatchObject({ kind: "effort" })
+		expect(result.route.requestedReasoningEffort).toBeUndefined()
+	})
+
+	it("keeps an unknown route unstamped instead of presenting requested effort as effective", async () => {
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration,
+			profileLoader: loader,
+			requestedReasoningEffort: "high",
+		})
+		expect(result.route.requestedReasoningEffort).toBe("high")
+		expect(result.route.effectiveReasoning).toBeUndefined()
+	})
+})
 
 describe("resolveSubagentModelRoute", () => {
 	it("directs a ChatGPT child with an unsupported model to saved-profile discovery", async () => {
@@ -329,6 +399,25 @@ describe("resolveSubagentModelRoute", () => {
 		expect(resolveDefault.mock.calls[0]?.[0]).toMatchObject({ openAiModelId: "default-model" })
 		expect(result.apiConfiguration).toMatchObject({ openAiModelId: "custom-model", reasoningEffort: "medium" })
 		expect(parentApiConfiguration.reasoningEffort).toBeUndefined()
+	})
+
+	it("preserves disabled reasoning when a custom agent changes only the model", async () => {
+		const resolveDefault = vi.fn(async () => "medium" as const)
+		const result = await resolveSubagentModelRoute({
+			role: "worker",
+			parentApiConfiguration: { ...parentApiConfiguration, enableReasoningEffort: false },
+			profileLoader: loader,
+			agentModelId: "custom-model",
+			resolveModelDefaultReasoningEffort: resolveDefault,
+		})
+
+		expect(result.apiConfiguration).toMatchObject({
+			openAiModelId: "custom-model",
+			enableReasoningEffort: false,
+		})
+		expect(result.apiConfiguration.reasoningEffort).toBeUndefined()
+		expect(result.route.reasoningConfiguration).toEqual({ enableReasoningEffort: false })
+		expect(resolveDefault).not.toHaveBeenCalled()
 	})
 
 	it("resolves custom agent overrides after spawn, defaults, and parent settings", async () => {

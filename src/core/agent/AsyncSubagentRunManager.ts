@@ -176,6 +176,16 @@ export class AsyncSubagentRunManager {
 		if (!previous || !isTerminalStatus(previous.state.status)) {
 			throw new Error(`Sub-agent task is not available for follow-up: ${envelope.id}`)
 		}
+		// Codex follow-ups address an existing thread (control/resume.rs, retrieved 2026-10-29).
+		// A new execution generation must retain that thread's ancestry and identity.
+		if (
+			previous.handle.parentTaskId !== envelope.parentTaskId ||
+			previous.handle.path !== options.path ||
+			previous.handle.role !== options.role ||
+			previous.handle.nickname !== options.nickname.trim()
+		) {
+			throw new Error(`Sub-agent follow-up cannot change retained agent identity: ${envelope.id}`)
+		}
 
 		previous.detachParentSignal?.()
 		this.runs.delete(envelope.id)

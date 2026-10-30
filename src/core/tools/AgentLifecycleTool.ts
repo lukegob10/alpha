@@ -153,7 +153,10 @@ function lifecyclePresentation(
 							: 0,
 					timedOut: optionalBoolean(record, "timedOut"),
 					alreadyDelivered: optionalBoolean(record, "alreadyDelivered"),
-					cancelled: record.interrupted === true ? true : optionalBoolean(record, "cancelled"),
+					cancelled:
+						record.interrupted === true
+							? record.cancelled === true || record.reason !== "steered_input"
+							: optionalBoolean(record, "cancelled"),
 					noActiveAgents: optionalBoolean(record, "noActiveAgents"),
 				}),
 	}

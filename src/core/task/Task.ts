@@ -10706,6 +10706,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				cwd: this.cwd,
 				historyWorkspacePath: this.historyWorkspacePath,
 				subagentPrivateWorkspaceRoot: this.subagentPrivateWorkspaceRoot,
+				subagentContextManifest: this.subagentContextManifest,
 				subagentWriteScope: this.subagentWriteScope ?? this.subagentContextManifest?.runtimePolicy.writeScope,
 				subagentAuthority:
 					this.subagentContextManifest?.runtimePolicy.authorityModel === "parent"

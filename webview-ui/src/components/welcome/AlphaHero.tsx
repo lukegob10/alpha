@@ -8,6 +8,7 @@ type AlphaHeroProps = {
 
 type AlphaWolfIconProps = {
 	className?: string
+	variant?: "primary" | "watermark"
 }
 
 const getImagesBaseUri = () => {
@@ -18,9 +19,10 @@ const getImagesBaseUri = () => {
 	return ((window as Window & { IMAGES_BASE_URI?: string }).IMAGES_BASE_URI || "").replace(/\/$/, "")
 }
 
-const AlphaWolfIcon = ({ className }: AlphaWolfIconProps) => {
+const AlphaWolfIcon = ({ className, variant = "primary" }: AlphaWolfIconProps) => {
 	const imagesBaseUri = getImagesBaseUri()
-	const logoSrc = imagesBaseUri ? `${imagesBaseUri}/alpha-wolf-logo.svg` : "/alpha-wolf-logo.svg"
+	const filename = variant === "watermark" ? "alpha-wolf-watermark.svg" : "alpha-wolf-logo.svg"
+	const logoSrc = `${imagesBaseUri}/${filename}`
 
 	return (
 		<img
@@ -42,7 +44,10 @@ const AlphaHero = ({ variant = "compact", className }: AlphaHeroProps) => {
 			<div
 				aria-hidden="true"
 				className={cn("flex w-full items-center justify-center forced-color-adjust-none", className)}>
-				<AlphaWolfIcon className="brand-mark brand-mark-watermark h-24 w-24 min-[400px]:h-32 min-[400px]:w-32" />
+				<AlphaWolfIcon
+					variant="watermark"
+					className="brand-mark brand-mark-watermark h-24 w-24 min-[400px]:h-32 min-[400px]:w-32"
+				/>
 			</div>
 		)
 	}

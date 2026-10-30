@@ -76,7 +76,7 @@ describe("AlphaProvider primary verification", () => {
 
 	const primaryObligation = () => store.getVerificationObligations({ parentTaskId: parent.taskId })[0]!
 
-	it.each(["explore", "review"] as const)("settles a shared %s mutation in its parent's ledger", async (role) => {
+	it.each(["explore", "review", "worker"] as const)("tracks shared %s mutations", async (role) => {
 		const child = {
 			taskId: "shared-child",
 			taskKind: "subagent",
@@ -84,7 +84,7 @@ describe("AlphaProvider primary verification", () => {
 			cwd: workspace,
 			subagentContextManifest: {
 				parentTaskId: parent.taskId,
-				runtimePolicy: { role, authorityModel: "parent", mutate: true },
+				runtimePolicy: { role, authorityModel: "parent", mutate: true, sharedWorkspace: true },
 			},
 			getTaskLifetimeCancellationSignal: () => new AbortController().signal,
 		} as Task

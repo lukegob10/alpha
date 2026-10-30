@@ -175,11 +175,21 @@ class AutoApplyFanoutAI {
 		assert.ok(request <= 16, "Parent must not enter an unbounded agent-result loop")
 		if (request === 1) {
 			for (let child = 1; child <= CHILD_COUNT; child++) {
+				// This fixture retains the legacy isolated-proposal integration contract.
+				// Normal V2 shared-workspace spawning is covered by the non-Git fixture.
 				yield toolCall(`auto-apply-spawn-${child}`, "spawn_agent", {
 					task_name: `auto_apply_child_${child}`,
 					fork_turns: "none",
-					agent_type: child === 1 ? "worker" : child === 2 ? "explorer" : "review",
-					message: `AUTO_APPLY_CHILD_${child}: ${child === 1 ? `Change ${STATE_PATH} owner from baseline to worker.` : "Review the fixture read-only and return your findings."}`,
+					...(child === 1
+						? {
+								agent_kind: "worker",
+								objective: `AUTO_APPLY_CHILD_${child}: Change ${STATE_PATH} owner from baseline to worker.`,
+								write_scope: [STATE_PATH],
+							}
+						: {
+								agent_type: child === 2 ? "explorer" : "review",
+								message: `AUTO_APPLY_CHILD_${child}: Review the fixture read-only and return your findings.`,
+							}),
 				})
 			}
 			return
