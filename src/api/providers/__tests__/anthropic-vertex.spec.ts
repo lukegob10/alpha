@@ -17,6 +17,7 @@ vitest.mock("@anthropic-ai/vertex-sdk", () => ({
 						return {
 							id: "test-completion",
 							content: [{ type: "text", text: "Test response" }],
+							stop_reason: "end_turn",
 							role: "assistant",
 							model: options.model,
 							usage: {
@@ -268,7 +269,7 @@ describe("VertexHandler", () => {
 			const mockCreate = vitest
 				.fn()
 				.mockImplementation(async (request: { stream?: boolean }, options?: Anthropic.RequestOptions) => {
-					expect(options?.signal).toBe(controller.signal)
+					expect(options?.signal?.aborted).toBe(false)
 					if (request.stream) {
 						return { async *[Symbol.asyncIterator]() {} }
 					}
@@ -285,7 +286,7 @@ describe("VertexHandler", () => {
 			}
 
 			expect(mockCreate).toHaveBeenCalledOnce()
-			expect(mockCreate.mock.calls[0]?.[1]).toEqual({ signal: controller.signal })
+			expect(mockCreate.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) })
 		})
 
 		it("does not retry an aborted gateway request as an authentication failure", async () => {
@@ -310,8 +311,8 @@ describe("VertexHandler", () => {
 			const mockCreate = vitest
 				.fn()
 				.mockImplementation(async (_request: unknown, options?: Anthropic.RequestOptions) => {
-					expect(options?.signal).toBe(controller.signal)
-					controller.abort()
+					expect(options?.signal?.aborted).toBe(false)
+					controller.abort(abortedAuthError)
 					throw abortedAuthError
 				})
 			setGatewayClientCreate(handler, mockCreate)
@@ -444,7 +445,7 @@ describe("VertexHandler", () => {
 					tools: expect.any(Array),
 					tool_choice: expect.any(Object),
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -483,7 +484,7 @@ describe("VertexHandler", () => {
 				expect.objectContaining({
 					stream: false,
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 			expect(chunks).toEqual([
 				{
@@ -716,7 +717,7 @@ describe("VertexHandler", () => {
 						}),
 					],
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1180,6 +1181,7 @@ describe("VertexHandler", () => {
 
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "image" }],
+				stop_reason: "end_turn",
 			})
 			setDirectClientCreate(handler, mockCreate)
 
@@ -1196,6 +1198,7 @@ describe("VertexHandler", () => {
 
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "text", text: "" }],
+				stop_reason: "end_turn",
 			})
 			setDirectClientCreate(handler, mockCreate)
 
@@ -1258,7 +1261,7 @@ describe("VertexHandler", () => {
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({ model: unknownModelId, thinking: undefined }),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1504,7 +1507,7 @@ describe("VertexHandler", () => {
 			}
 
 			// Verify the API was called without the beta header
-			expect(mockCreate).toHaveBeenCalledWith(expect.anything(), undefined)
+			expect(mockCreate).toHaveBeenCalledWith(expect.anything(), { signal: expect.any(AbortSignal) })
 		})
 	})
 
@@ -1547,7 +1550,7 @@ describe("VertexHandler", () => {
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({ model: "claude-sonnet-5", thinking: undefined }),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1624,7 +1627,7 @@ describe("VertexHandler", () => {
 					thinking: { type: "enabled", budget_tokens: 4096 },
 					temperature: 1.0, // Thinking requires temperature 1.0
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 	})
@@ -1711,7 +1714,7 @@ describe("VertexHandler", () => {
 					]),
 					tool_choice: { type: "auto", disable_parallel_tool_use: false },
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1816,7 +1819,7 @@ describe("VertexHandler", () => {
 						}),
 					]),
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 

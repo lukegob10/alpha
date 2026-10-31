@@ -20,6 +20,8 @@ export interface SystemPromptSettings {
 	isStealthModel?: boolean
 	/** Effective approval mode captured for this model step. */
 	approvalMode?: ApprovalMode
+	/** Persisted host-owned origin of a user-authorized independent-chat handoff. Never inferred from message text. */
+	orchestrationParentTaskId?: string
 	/** Shell selected by exec_command for this model step. */
 	commandShell?: string
 	/** Whether the captured primary tool surface exposes spawn_agent to this prompt. */

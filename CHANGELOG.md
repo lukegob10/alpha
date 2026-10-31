@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.2.19
+
+### Patch Changes
+
+- Keep reasoning controls available in blank chats when background lifecycle updates omit reasoning metadata. Preserve explicit unavailable results and reset the projection when the model, provider, or profile changes.
+- Give independent chats host-attributed task-assignment context while preserving agent-message provenance, approval requirements, and workspace limits. Restore the same context after reload.
+- Strengthen managed-agent close, cancellation, follow-up, and queued-steering ownership while retaining Codex-aligned turn completion.
+- Protect transcript persistence and interrupted-history repair against concurrent edits and stale runtime owners.
+- Improve MCP pagination and approval isolation, custom-tool validation, patch boundaries, and subprocess cleanup.
+- Reduce repeated prompt/catalog and token-counting work, bound retained terminal resources, and improve streaming transcript, composer, and agent-navigation updates.
+- Harden Ticket and scheduled-task storage against malformed saved data and concurrent updates; extend deterministic lifecycle, stress, and performance-audit coverage.
+- Update the extension and in-app announcement together for Alpha 3.2.19. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
+### Validation Notes
+
+- Local exact VS Code 1.138.0 smoke tests and focused reasoning/handoff regressions pass. Local minimum-host startup is blocked by a Windows editor-update mutex; the release workflow verifies VS Code 1.125.0 on a clean runner before publication.
+- The supplemental rendered reasoning fixture passes its reasoning scenarios, then stops at a Windows send-and-steer shortcut assertion. This full fixture remains unverified; the required rendered release gate covers composer, transcript, input, and managed-agent interactions separately.
+
 ## 3.2.18
 
 ### Patch Changes

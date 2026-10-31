@@ -8,6 +8,7 @@
 	"scripts": {
 		"harness": "node scripts/harness/run.mjs",
 		"harness:matrix": "node scripts/harness/run.mjs matrix",
+		"harness:audit": "node scripts/harness/run.mjs audit",
 		"harness:acceptance": "node scripts/harness/local-acceptance.mjs",
 		"harness:stress": "node scripts/harness/host-probes.mjs stress",
 		"preinstall": "node scripts/bootstrap.mjs",

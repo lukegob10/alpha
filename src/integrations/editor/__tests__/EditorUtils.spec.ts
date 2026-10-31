@@ -1,6 +1,7 @@
 // npx vitest src/integrations/editor/__tests__/EditorUtils.spec.ts
 
 import * as vscode from "vscode"
+import * as path from "path"
 
 import { EditorUtils } from "../EditorUtils"
 
@@ -123,7 +124,7 @@ describe("EditorUtils", () => {
 	})
 
 	describe("getFilePath", () => {
-		it("should return relative path when in workspace", () => {
+		it("should return absolute path when in workspace", () => {
 			const mockWorkspaceFolder = {
 				uri: { fsPath: "/test" },
 				name: "test",
@@ -133,7 +134,7 @@ describe("EditorUtils", () => {
 
 			const result = EditorUtils.getFilePath(mockDocument)
 
-			expect(result).toBe("file.ts")
+			expect(result).toBe("/test/file.ts")
 		})
 
 		it("should return absolute path when not in workspace", () => {
@@ -142,6 +143,48 @@ describe("EditorUtils", () => {
 			const result = EditorUtils.getFilePath(mockDocument)
 
 			expect(result).toBe("/test/file.ts")
+		})
+
+		it("keeps same-named files in different workspace roots unambiguous", () => {
+			const workspacePaths = [path.resolve("workspace-a"), path.resolve("workspace-b")]
+			const documents = workspacePaths.map((workspacePath) => ({
+				...mockDocument,
+				uri: { fsPath: path.join(workspacePath, "src", "index.ts") },
+			}))
+			vi.mocked(vscode.workspace.getWorkspaceFolder).mockImplementation((uri) => {
+				const index = documents.findIndex((document) => document.uri === uri)
+				return {
+					uri: { fsPath: workspacePaths[index] },
+					name: `workspace-${index}`,
+					index,
+				} as vscode.WorkspaceFolder
+			})
+
+			expect(documents.map((document) => EditorUtils.getFilePath(document))).toEqual(
+				documents.map((document) => document.uri.fsPath),
+			)
+		})
+	})
+
+	describe("getEditorContext", () => {
+		it("preserves the source file when its context is added to a task in another workspace root", () => {
+			const taskWorkspace = path.resolve("workspace-a")
+			const documentWorkspace = path.resolve("workspace-b")
+			const documentPath = path.join(documentWorkspace, "src", "index.ts")
+			mockDocument.uri = { fsPath: documentPath }
+			mockDocument.getText.mockReturnValue("const source = 'workspace-b'")
+			vi.mocked(vscode.workspace.getWorkspaceFolder).mockReturnValue({
+				uri: { fsPath: documentWorkspace },
+				name: "workspace-b",
+				index: 1,
+			} as vscode.WorkspaceFolder)
+			const selection = new vscode.Range(new vscode.Position(0, 0), new vscode.Position(0, 28))
+			const editor = { document: mockDocument, selection } as vscode.TextEditor
+
+			const context = EditorUtils.getEditorContext(editor)
+
+			expect(context).toMatchObject({ filePath: documentPath, selectedText: "const source = 'workspace-b'" })
+			expect(path.resolve(taskWorkspace, context!.filePath)).toBe(documentPath)
 		})
 	})
 })

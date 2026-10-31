@@ -25,6 +25,73 @@ export interface SubagentDockProps {
 	isVisible?: boolean
 }
 
+interface SubagentDockBodyProps extends SubagentDockProps {
+	projectedNodesByTaskId: ReadonlyMap<string, ManagedAgentTreeNodeProjection>
+	groupedTaskIds: ReadonlySet<string>
+	inputTaskIds: ReadonlySet<string>
+	approvalTaskIds: ReadonlySet<string>
+	isVisible: boolean
+}
+
+const SubagentDockBody = memo(
+	function SubagentDockBody({
+		groups,
+		parentTaskId,
+		projection,
+		liveTasksById,
+		onShowTask,
+		projectedNodesByTaskId,
+		groupedTaskIds,
+		inputTaskIds,
+		approvalTaskIds,
+		isVisible,
+	}: SubagentDockBodyProps) {
+		const attentionIdsForGroup = (group: SubagentGroupState, taskIds: ReadonlySet<string>) =>
+			new Set(
+				group.agents
+					.filter((agent) => {
+						const node = projectedNodesByTaskId.get(agent.taskId)
+						return (
+							taskIds.has(agent.taskId) &&
+							(!node || (node.groupId === group.groupId && node.parentTaskId === group.parentTaskId))
+						)
+					})
+					.map((agent) => agent.taskId),
+			)
+
+		return (
+			<>
+				{groups.map((group) => (
+					<SubagentGroupCard
+						key={group.groupId}
+						group={group}
+						parentTaskId={group.parentTaskId}
+						inputTaskIds={attentionIdsForGroup(group, inputTaskIds)}
+						approvalTaskIds={attentionIdsForGroup(group, approvalTaskIds)}
+						onShowTask={onShowTask}
+						presentation="dock"
+						isVisible={isVisible}
+					/>
+				))}
+				{projection?.rootTaskId === parentTaskId && (
+					<ManagedAgentTree
+						rootTaskId={parentTaskId}
+						projection={projection}
+						excludeTaskIds={groupedTaskIds}
+						liveTasksById={liveTasksById}
+						onShowTask={onShowTask}
+						isVisible={isVisible}
+						presentation="dock"
+					/>
+				)}
+			</>
+		)
+	},
+	// Hidden cards retain drafts and pending-reply listeners. The summary updates
+	// outside this boundary; reopening supplies every card with the latest props.
+	(previous, next) => !previous.isVisible && !next.isVisible && previous.parentTaskId === next.parentTaskId,
+)
+
 /** Presentation of the existing managed-agent snapshots; actions remain owned by their group cards. */
 export const SubagentDock = memo(function SubagentDock({
 	groups,
@@ -178,18 +245,6 @@ export const SubagentDock = memo(function SubagentDock({
 						? t("subagentDock.input", { count: inputCount })
 						: undefined
 	const count = new Set([...model.nodes.map((node) => node.taskId), ...groupedTaskIds]).size
-	const attentionIdsForGroup = (group: SubagentGroupState, taskIds: ReadonlySet<string>) =>
-		new Set(
-			group.agents
-				.filter((agent) => {
-					const node = projectedNodesByTaskId.get(agent.taskId)
-					return (
-						taskIds.has(agent.taskId) &&
-						(!node || (node.groupId === group.groupId && node.parentTaskId === group.parentTaskId))
-					)
-				})
-				.map((agent) => agent.taskId),
-		)
 	if (count === 0) return null
 
 	return (
@@ -202,29 +257,19 @@ export const SubagentDock = memo(function SubagentDock({
 				id={rowsId}
 				hidden={!expanded}
 				className="max-h-[min(240px,32vh)] min-w-0 space-y-0.5 overflow-x-hidden overflow-y-auto pb-1">
-				{displayGroups.map((group) => (
-					<SubagentGroupCard
-						key={group.groupId}
-						group={group}
-						parentTaskId={group.parentTaskId}
-						inputTaskIds={attentionIdsForGroup(group, inputTaskIds)}
-						approvalTaskIds={attentionIdsForGroup(group, approvalTaskIds)}
-						onShowTask={onShowTask}
-						presentation="dock"
-						isVisible={isVisible && expanded}
-					/>
-				))}
-				{projection?.rootTaskId === parentTaskId && (
-					<ManagedAgentTree
-						rootTaskId={parentTaskId}
-						projection={projection}
-						excludeTaskIds={groupedTaskIds}
-						liveTasksById={liveTasksById}
-						onShowTask={onShowTask}
-						isVisible={isVisible && expanded}
-						presentation="dock"
-					/>
-				)}
+				<SubagentDockBody
+					key={parentTaskId}
+					groups={displayGroups}
+					parentTaskId={parentTaskId}
+					projection={projection}
+					liveTasksById={liveTasksById}
+					onShowTask={onShowTask}
+					projectedNodesByTaskId={projectedNodesByTaskId}
+					groupedTaskIds={groupedTaskIds}
+					inputTaskIds={inputTaskIds}
+					approvalTaskIds={approvalTaskIds}
+					isVisible={isVisible && expanded}
+				/>
 			</div>
 			<button
 				type="button"

@@ -6,7 +6,6 @@ exports[`Native Protocol snapshots > should generate correct native definition f
     "description": "Cached tool",
     "name": "cached",
     "parameters": {
-      "additionalProperties": false,
       "properties": {},
       "required": [],
       "type": "object",
@@ -23,7 +22,6 @@ exports[`Native Protocol snapshots > should generate correct native definition f
     "description": "Legacy tool using args",
     "name": "legacy",
     "parameters": {
-      "additionalProperties": false,
       "properties": {
         "input": {
           "description": "The input string",
@@ -47,7 +45,6 @@ exports[`Native Protocol snapshots > should generate correct native definition f
     "description": "Valid",
     "name": "mixed_validTool",
     "parameters": {
-      "additionalProperties": false,
       "properties": {},
       "required": [],
       "type": "object",
@@ -64,7 +61,6 @@ exports[`Native Protocol snapshots > should generate correct native definition f
     "description": "Simple tool",
     "name": "simple",
     "parameters": {
-      "additionalProperties": false,
       "properties": {
         "value": {
           "description": "The input value",
@@ -89,7 +85,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Simple tool",
       "name": "simple",
       "parameters": {
-        "additionalProperties": false,
         "properties": {
           "value": {
             "description": "The input value",
@@ -110,7 +105,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Cached tool",
       "name": "cached",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",
@@ -124,7 +118,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Legacy tool using args",
       "name": "legacy",
       "parameters": {
-        "additionalProperties": false,
         "properties": {
           "input": {
             "description": "The input string",
@@ -145,7 +138,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Tool A",
       "name": "multi_toolA",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",
@@ -159,7 +151,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Tool B",
       "name": "multi_toolB",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",
@@ -173,7 +164,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Valid",
       "name": "mixed_validTool",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",
@@ -192,7 +182,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Tool A",
       "name": "multi_toolA",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",
@@ -206,7 +195,6 @@ exports[`Native Protocol snapshots > should generate correct native definitions 
       "description": "Tool B",
       "name": "multi_toolB",
       "parameters": {
-        "additionalProperties": false,
         "properties": {},
         "required": [],
         "type": "object",

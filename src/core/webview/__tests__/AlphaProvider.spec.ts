@@ -1471,9 +1471,45 @@ describe("AlphaProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
+	test("launches the new-chat sidebar while saved-history recovery is held", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const startup = provider as unknown as {
+			taskHistoryStoreReady: Promise<void>
+			taskHistoryStoreInitialized: boolean
+		}
+		await startup.taskHistoryStoreReady
+		const ready = startup.taskHistoryStoreReady
+		let finishRecovery!: () => void
+		startup.taskHistoryStoreReady = new Promise<void>((resolve) => (finishRecovery = resolve))
+		startup.taskHistoryStoreInitialized = false
+		mockPostMessage.mockClear()
+		const receive = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		const launching = receive({ type: "webviewDidLaunch" })
+		try {
+			await vi.waitFor(() => expect(provider.viewLaunched).toBe(true))
+			const initialState = (mockPostMessage.mock.calls as [ExtensionMessage][]).find(
+				([message]) => message.type === "state",
+			)?.[0].state
+			expect(initialState).toMatchObject({ currentView: { type: "newTaskDraft" } })
+			expect(initialState).not.toHaveProperty("taskHistory")
+		} finally {
+			finishRecovery()
+			await launching
+			startup.taskHistoryStoreReady = ready
+			startup.taskHistoryStoreInitialized = true
+		}
+		await vi.waitFor(() =>
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "state",
+				state: expect.objectContaining({ taskHistory: expect.any(Array) }),
+			}),
+		)
+	})
+
 	test.each(["enabled", "disabled", "unset", undefined] as const)(
-		"initializes %s telemetry without assembling a second startup state",
+		"initializes %s telemetry without assembling a second warm-startup state",
 		async (telemetrySetting) => {
+			await (provider as unknown as { taskHistoryStoreReady: Promise<void> }).taskHistoryStoreReady
 			await provider.contextProxy.setValue("telemetrySetting", telemetrySetting)
 			await provider.resolveWebviewView(mockWebviewView)
 			const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]

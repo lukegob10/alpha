@@ -13,6 +13,7 @@ import {
 } from "./renderedDialogFocus"
 
 const RENDERED_CONTROL_TIMEOUT_MS = 15_000
+const dockToggle = "d.querySelector('.subagent-dock > button[aria-expanded]')"
 
 interface RenderedControlPosition {
 	x: number
@@ -169,6 +170,27 @@ export function createRenderedAcceptanceControls(
 	return { evaluate, check, hover, click }
 }
 
+export async function revealRenderedReviewActions(
+	controls: Pick<ReturnType<typeof createRenderedAcceptanceControls>, "evaluate" | "check" | "click">,
+	nickname: string,
+): Promise<string> {
+	// Collapsed dock bodies can defer new rows; open the public disclosure before looking inside.
+	if (
+		(await controls.evaluate<boolean>(`!!(${dockToggle})`)) &&
+		(await controls.evaluate<boolean>(`(${dockToggle}).getAttribute('aria-expanded')==='false'`))
+	) {
+		await controls.click(dockToggle)
+	}
+	const action = `[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${javascriptLiteral(`Actions for ${nickname}`)})`
+	await controls.check(`!!(${action})`)
+	if (await controls.evaluate<boolean>(`!!(${action}).closest('[hidden]')`)) {
+		await controls.click(
+			`[...d.querySelectorAll('button[aria-controls]')].find(e=>e.getAttribute('aria-controls')===(${action}).closest('[hidden]').id)`,
+		)
+	}
+	return action
+}
+
 /** Drives rendered controls only; the existing EH fixture verifies authoritative settings, files and task state. */
 export async function exerciseRenderedAcceptance(
 	cdp: CdpConnection,
@@ -254,7 +276,6 @@ export async function exerciseRenderedAcceptance(
 		)
 		await fs.writeFile(path.join(directory, `ui-${name}.png`), Buffer.from(screenshot.data, "base64"))
 	}
-	const dockToggle = "d.querySelector('.subagent-dock > button[aria-expanded]')"
 	const openDock = async () => {
 		await check(`!!(${dockToggle})`)
 		if (await evaluate<boolean>(`(${dockToggle}).getAttribute('aria-expanded')==='false'`)) {
@@ -426,13 +447,7 @@ export async function exerciseRenderedAcceptance(
 			await check(`!(${outputPreview})`)
 		} else if (stage.endsWith("-apply") || stage === "discard-discard") {
 			assert.ok(detail?.nickname)
-			const action = `[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${javascriptLiteral(`Actions for ${detail.nickname}`)})`
-			await check(`!!(${action})`)
-			if (await evaluate<boolean>(`!!(${action}).closest('[hidden]')`)) {
-				await click(
-					`[...d.querySelectorAll('button[aria-controls]')].find(e=>e.getAttribute('aria-controls')===(${action}).closest('[hidden]').id)`,
-				)
-			}
+			const action = await revealRenderedReviewActions({ evaluate, check, click }, detail.nickname)
 			await activate("button", `Actions for ${detail.nickname}`)
 			await check(
 				"[...d.querySelectorAll('[role=menuitem]')].some(e=>e.textContent.includes('Open task'))&&[...d.querySelectorAll('[role=menuitem]')].some(e=>e.textContent.includes('Open diff'))",

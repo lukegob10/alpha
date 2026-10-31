@@ -774,6 +774,9 @@ describe("Task cancellation after accepted output reaches EOF", () => {
 			fixture.releaseProvider()
 			await fixture.boundaryEntered
 			const replacement = fixture.makeReplacement()
+			replacement.apiConversationHistory = await replacement["getSavedApiConversationHistory"]({
+				hydrateOnly: true,
+			})
 			expect(
 				await replacement["addToApiConversationHistory"]({ role: "user", content: "Replacement input" }),
 			).toBe(true)

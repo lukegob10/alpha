@@ -25,6 +25,7 @@ import {
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task, type ToolApprovalReviewer } from "../Task"
+import type { ApiInstructionFragment } from "../../../api"
 import { AskIgnoredError } from "../AskIgnoredError"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
@@ -515,6 +516,46 @@ describe("Alpha", () => {
 	})
 
 	describe("constructor", () => {
+		it.each([false, true])(
+			"retains host-owned assignment context after construction (cold reload=%s)",
+			async (reload) => {
+				const origin = "handoff-origin"
+				const identity = {
+					id: "assigned-task",
+					orchestrationParentTaskId: origin,
+					number: 1,
+					ts: 1,
+					task: "Implement the assigned ticket",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				}
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					...(reload
+						? { historyItem: identity }
+						: { taskId: identity.id, task: identity.task, orchestrationParentTaskId: origin }),
+					startTask: false,
+					enableCheckpoints: false,
+				})
+				vi.spyOn(mockProvider, "getSkillsManager").mockResolvedValue(undefined)
+				let fragments: readonly ApiInstructionFragment[] = []
+				const state = { ...(await mockProvider.getState()), mcpEnabled: false }
+				const prompt = await task["getSystemPrompt"](state, undefined, undefined, "code", (parts) => {
+					fragments = parts
+				})
+
+				expect(task.orchestrationParentTaskId).toBe(origin)
+				const assignment = fragments.find(({ origin }) => origin === "alpha-task-assignment")
+				expect(assignment).toMatchObject({ role: "developer" })
+				expect(assignment?.content).toContain(JSON.stringify(origin))
+				expect(prompt).toContain(assignment?.content)
+				// Reopening the chat preserves provenance without manufacturing fresh human authorization.
+				expect(task["getUserRequestTextForCatalog"]()).toBeUndefined()
+			},
+		)
+
 		it("restores bounded diagnostic-session authority from persisted history", () => {
 			const alphaTask = new Task({
 				provider: mockProvider,

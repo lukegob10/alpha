@@ -169,7 +169,7 @@ export function convertToR1Format(
 			if (Array.isArray(message.content)) {
 				const textParts: string[] = []
 				const toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = []
-				let extractedReasoning: string | undefined
+				const reasoningParts: string[] = []
 
 				for (const part of message.content) {
 					if (part.type === "text") {
@@ -185,12 +185,12 @@ export function convertToR1Format(
 						})
 					} else if ((part as any).type === "reasoning" && (part as any).text) {
 						// Extract reasoning from content blocks (Task stores it this way)
-						extractedReasoning = (part as any).text
+						reasoningParts.push((part as any).text)
 					}
 				}
 
 				// Use reasoning from content blocks if not provided at top level
-				const finalReasoning = reasoningContent || extractedReasoning
+				const finalReasoning = reasoningContent || reasoningParts.join("")
 
 				const assistantMessage: DeepSeekAssistantMessage = {
 					role: "assistant",
@@ -212,7 +212,9 @@ export function convertToR1Format(
 					}
 					// Preserve reasoning_content from the new message if present
 					if (finalReasoning) {
-						;(lastMessage as DeepSeekAssistantMessage).reasoning_content = finalReasoning
+						const previousReasoning = (lastMessage as DeepSeekAssistantMessage).reasoning_content ?? ""
+						;(lastMessage as DeepSeekAssistantMessage).reasoning_content =
+							previousReasoning + finalReasoning
 					}
 				} else {
 					result.push(assistantMessage)
@@ -228,7 +230,9 @@ export function convertToR1Format(
 					}
 					// Preserve reasoning_content from the new message if present
 					if (reasoningContent) {
-						;(lastMessage as DeepSeekAssistantMessage).reasoning_content = reasoningContent
+						const previousReasoning = (lastMessage as DeepSeekAssistantMessage).reasoning_content ?? ""
+						;(lastMessage as DeepSeekAssistantMessage).reasoning_content =
+							previousReasoning + reasoningContent
 					}
 				} else {
 					const assistantMessage: DeepSeekAssistantMessage = {

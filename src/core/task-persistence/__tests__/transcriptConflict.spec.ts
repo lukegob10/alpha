@@ -3,7 +3,7 @@ import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
 
-import { saveApiMessages, type ApiMessage, type ApiMessagesCommitReceipt } from "../apiMessages"
+import { readApiMessages, saveApiMessages, type ApiMessage, type ApiMessagesCommitReceipt } from "../apiMessages"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { ProviderTranscriptStore, type ProviderTranscriptCommitReceipt } from "../ProviderTranscriptStore"
 
@@ -110,6 +110,125 @@ afterEach(async () => {
 })
 
 describe("transcript conflict preservation", () => {
+	it.each(["same-size", "different-size"])("fences an unobserved %s conflict before a stale save", async (size) => {
+		const fixture = await createReceiptFixture()
+		const originalBytes = await fs.readFile(fixture.legacyPath)
+		const conflictBytes =
+			size === "same-size"
+				? mutateByte(originalBytes, 0x01)
+				: Buffer.concat([originalBytes, Buffer.from("external")])
+		const sidecarBefore = await fs.readFile(fixture.sidecarPath)
+		await fs.writeFile(fixture.legacyPath, conflictBytes)
+
+		await expect(
+			saveApiMessages({
+				messages: simpleMessages("stale-local-save"),
+				taskId,
+				globalStoragePath: storagePath,
+				precondition: fixture.legacyReceipt,
+			}),
+		).rejects.toMatchObject({ code: "digest_mismatch" })
+
+		expect(await fs.readFile(fixture.legacyPath)).toEqual(conflictBytes)
+		expect(await fs.readFile(conflictPath(fixture.legacyPath, conflictBytes))).toEqual(conflictBytes)
+		expect(await fs.readFile(fixture.sidecarPath)).toEqual(sidecarBefore)
+	})
+
+	it("captures exact loaded legacy bytes as the next write precondition", async () => {
+		const fixture = await createReceiptFixture()
+		const messages = simpleMessages("pretty-printed-legacy-history")
+		const contents = `${JSON.stringify(messages, null, "\t")}\n`
+		await fs.writeFile(fixture.legacyPath, contents)
+		const onRead = vi.fn()
+		expect(await readApiMessages({ taskId, globalStoragePath: storagePath, onRead })).toEqual(messages)
+		expect(onRead).toHaveBeenCalledWith({
+			digest: sha256(Buffer.from(contents)),
+			byteLength: Buffer.byteLength(contents),
+		})
+		await expect(
+			saveApiMessages({
+				messages: simpleMessages("next-local-save"),
+				taskId,
+				globalStoragePath: storagePath,
+				precondition: onRead.mock.calls[0][0],
+			}),
+		).resolves.toHaveProperty("commitId")
+	})
+
+	it("rejects a new authority that appeared after a missing-history read", async () => {
+		const onRead = vi.fn()
+		expect(await readApiMessages({ taskId, globalStoragePath: storagePath, onRead })).toEqual([])
+		expect(onRead).toHaveBeenCalledWith({ missing: true })
+		const filePath = path.join(storagePath, "tasks", taskId, GlobalFileNames.apiConversationHistory)
+		const externalBytes = Buffer.from(canonicalJson(simpleMessages("new-external-authority")))
+		await fs.writeFile(filePath, externalBytes)
+		await expect(
+			saveApiMessages({
+				messages: simpleMessages("stale-empty-owner"),
+				taskId,
+				globalStoragePath: storagePath,
+				precondition: onRead.mock.calls[0][0],
+			}),
+		).rejects.toMatchObject({ code: "read_failed" })
+		expect(await fs.readFile(filePath)).toEqual(externalBytes)
+	})
+
+	it("accepts successive writer receipts while sidecar acknowledgement is pending", async () => {
+		const fixture = await createReceiptFixture()
+		const next = await saveApiMessages({
+			messages: simpleMessages("next-owner-snapshot"),
+			taskId,
+			globalStoragePath: storagePath,
+			precondition: fixture.legacyReceipt,
+		})
+		const last = await saveApiMessages({
+			messages: simpleMessages("last-owner-snapshot"),
+			taskId,
+			globalStoragePath: storagePath,
+			precondition: next,
+		})
+		const receipt = await fixture.store.commitAuthoritativeTranscript(last)
+		await expect(fixture.store.assertCommitReceipt(receipt)).resolves.toBeUndefined()
+	})
+
+	it("binds one conflict drain to its original receipt without renewal by repeated verification", async () => {
+		const fixture = await createReceiptFixture()
+		const conflictBytes = mutateByte(await fs.readFile(fixture.legacyPath), 0x01)
+		await preserveConflict(fixture, conflictBytes)
+		await expect(
+			fixture.store.takePreservedConflictForTerminalDrain({
+				...fixture.commitReceipt,
+				revision: fixture.commitReceipt.revision + 1,
+			}),
+		).rejects.toMatchObject({ code: "receipt_mismatch" })
+		await expect(fixture.store.takePreservedConflictForTerminalDrain(fixture.commitReceipt)).resolves.toEqual({
+			digest: sha256(conflictBytes),
+			byteLength: conflictBytes.byteLength,
+		})
+		await expect(fixture.store.assertCommitReceipt(fixture.commitReceipt)).rejects.toMatchObject({
+			code: "digest_mismatch",
+		})
+		await expect(
+			fixture.store.takePreservedConflictForTerminalDrain(fixture.commitReceipt),
+		).resolves.toBeUndefined()
+	})
+
+	it("consumes a failed drain without replacing tampered conflict evidence", async () => {
+		const fixture = await createReceiptFixture()
+		const conflictBytes = mutateByte(await fs.readFile(fixture.legacyPath), 0x01)
+		const evidencePath = await preserveConflict(fixture, conflictBytes)
+		const changedEvidence = Buffer.from("changed conflict evidence")
+		await fs.writeFile(evidencePath, changedEvidence)
+		await expect(fixture.store.takePreservedConflictForTerminalDrain(fixture.commitReceipt)).rejects.toMatchObject({
+			code: "repair_failed",
+		})
+		await expect(
+			fixture.store.takePreservedConflictForTerminalDrain(fixture.commitReceipt),
+		).resolves.toBeUndefined()
+		expect(await fs.readFile(fixture.legacyPath)).toEqual(conflictBytes)
+		expect(await fs.readFile(evidencePath)).toEqual(changedEvidence)
+	})
+
 	it("preserves exact same-size evidence before a later save replaces active legacy bytes", async () => {
 		const fixture = await createReceiptFixture()
 		const originalBytes = await fs.readFile(fixture.legacyPath)

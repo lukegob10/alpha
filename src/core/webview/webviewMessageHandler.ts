@@ -186,7 +186,11 @@ export const webviewMessageHandler = async (
 	provider: AlphaProvider,
 	message: WebviewMessage,
 	marketplaceManager?: MarketplaceManager,
-	options?: { ticketSearch?: { signal: AbortSignal; cwd: string }; isCurrentWebview?: () => boolean },
+	options?: {
+		ticketSearch?: { signal: AbortSignal; cwd: string }
+		fileSearch?: { signal: AbortSignal; cwd: string }
+		isCurrentWebview?: () => boolean
+	},
 ) => {
 	// Utility functions provided for concise get/update of global state via contextProxy API.
 	const getGlobalState = <K extends keyof GlobalState>(key: K) => provider.contextProxy.getValue(key)
@@ -643,7 +647,7 @@ export const webviewMessageHandler = async (
 			await updateGlobalState("customModes", customModes)
 			if (!isCurrentWebview()) break
 
-			await provider.postStateToWebview()
+			await provider.postStateToWebview({ deferTaskHistory: true })
 			if (!isCurrentWebview()) break
 			if (process.env.ALPHA_TASK_OBSERVABILITY === "1") {
 				provider.log(
@@ -2108,7 +2112,12 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "searchFiles": {
-			const workspacePath = getCurrentCwd()
+			const signal = options?.fileSearch?.signal
+			const workspacePath = options?.fileSearch?.cwd ?? getCurrentCwd()
+			const isCurrent = () => !signal?.aborted && (options?.isCurrentWebview?.() ?? true)
+			if (!isCurrent()) break
+			// Navigation can change the foreground task while discovery is pending.
+			const currentTask = message.taskId ? provider.getLiveTask(message.taskId) : provider.getCurrentTask()
 
 			if (!workspacePath) {
 				// Handle case where workspace path is not available
@@ -2120,18 +2129,19 @@ export const webviewMessageHandler = async (
 				})
 				break
 			}
+			let tempController: AlphaIgnoreController | undefined
 			try {
 				// Call file search service with query from message
 				const results = await searchWorkspaceFiles(
 					message.query || "",
 					workspacePath,
 					20, // Use default limit, as filtering is now done in the backend
+					signal,
 				)
+				if (!isCurrent()) break
 
 				// Get the AlphaIgnoreController from the current task, or create a new one
-				const currentTask = provider.getCurrentTask()
 				let alphaIgnoreController = currentTask?.alphaIgnoreController
-				let tempController: AlphaIgnoreController | undefined
 
 				// If no current task or no controller, create a temporary one
 				if (!alphaIgnoreController) {
@@ -2139,29 +2149,27 @@ export const webviewMessageHandler = async (
 					await tempController.initialize()
 					alphaIgnoreController = tempController
 				}
+				if (!isCurrent()) break
 
-				try {
-					// Get showAlphaIgnoredFiles setting from state
-					const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
+				// Get showAlphaIgnoredFiles setting from state
+				const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
+				if (!isCurrent()) break
 
-					// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
-					let filteredResults = results
-					if (!showAlphaIgnoredFiles && alphaIgnoreController) {
-						const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
-						filteredResults = results.filter((r) => allowedPaths.includes(r.path))
-					}
-
-					// Send results back to webview
-					await provider.postMessageToWebview({
-						type: "fileSearchResults",
-						results: filteredResults,
-						requestId: message.requestId,
-					})
-				} finally {
-					// Dispose temporary controller to prevent resource leak
-					tempController?.dispose()
+				// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
+				let filteredResults = results
+				if (!showAlphaIgnoredFiles && alphaIgnoreController) {
+					const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
+					filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 				}
+
+				// Send results back to webview
+				await provider.postMessageToWebview({
+					type: "fileSearchResults",
+					results: filteredResults,
+					requestId: message.requestId,
+				})
 			} catch (error) {
+				if (!isCurrent()) break
 				const errorMessage = error instanceof Error ? error.message : String(error)
 
 				// Send error response to webview
@@ -2171,6 +2179,8 @@ export const webviewMessageHandler = async (
 					error: errorMessage,
 					requestId: message.requestId,
 				})
+			} finally {
+				tempController?.dispose()
 			}
 			break
 		}

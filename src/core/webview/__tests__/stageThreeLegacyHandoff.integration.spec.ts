@@ -339,6 +339,38 @@ describe("Stage Three legacy delegated handoff integration", () => {
 		vi.restoreAllMocks()
 	})
 
+	it.each([false, true])(
+		"restores a dormant parent's captured source preimage (external edit: %s)",
+		async (externalEdit) => {
+			const harness = await setup()
+			const { apiConversationHistoryFilePath } = await harness.provider.getTaskWithId(PARENT_ID)
+			const externalBytes = Buffer.from(JSON.stringify([{ role: "user", content: "newer external parent work" }]))
+			harness.createParent.mockImplementationOnce(async () => {
+				const parent = await harness.stageParent()
+				parent.apiConversationHistory = []
+				Reflect.set(parent, "apiConversationHistoryWritePrecondition", "unobserved")
+				if (externalEdit) await fs.writeFile(apiConversationHistoryFilePath, externalBytes)
+				return parent
+			})
+			const operation = observe(harness.handoff())
+			if (externalEdit) {
+				expect(await operation).toMatchObject({ status: "rejected" })
+				expect(await fs.readFile(apiConversationHistoryFilePath)).toEqual(externalBytes)
+				expect(harness.provider.getLiveTask(CHILD_ID)).toBe(harness.child)
+				expect(harness.child.abortTask).not.toHaveBeenCalled()
+				// The rejected boundary has drained; disposal must not rethrow its expected failure.
+				vi.spyOn(harness.parent, "flushApiConversationHistoryPersistence").mockResolvedValue(undefined)
+			} else {
+				expect(await operation).toMatchObject({ status: "fulfilled" })
+				const transcripts = await harness.parentTranscripts()
+				expect(transcripts.api.at(-1)?.content).toEqual([
+					expect.objectContaining({ type: "tool_result", tool_use_id: "delegate-call" }),
+				])
+				expect(transcripts.sidecar.messages).toEqual(transcripts.api)
+			}
+		},
+	)
+
 	it.each(["parent staging", "parent API persistence"] as const)(
 		"commits when optional process evidence arrives during %s",
 		async (boundary) => {

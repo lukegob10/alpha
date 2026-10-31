@@ -20,6 +20,23 @@ export interface TaskSessionApprovalIdentity {
 }
 
 const grants = new Map<string, string>()
+const authorityIdentities = new WeakMap<object, number>()
+let nextAuthorityIdentity = 0
+
+/** Bind in-memory grants to captured executors without retaining or serializing their live objects. */
+export function captureTaskSessionApprovalAuthority(references: readonly object[], revision: unknown): string {
+	const identities = references.map((reference) => {
+		let identity = authorityIdentities.get(reference)
+		if (identity === undefined) {
+			identity = ++nextAuthorityIdentity
+			authorityIdentities.set(reference, identity)
+		}
+		return identity
+	})
+	return createHash("sha256")
+		.update(stringify([identities, revision]) ?? "")
+		.digest("hex")
+}
 
 function reviewedArguments(identity: TaskSessionApprovalIdentity): unknown {
 	const value = identity.argumentsValue

@@ -11,7 +11,8 @@ export function serializeCustomTool({
 	return {
 		name,
 		description,
-		parameters: parameters ? parametersSchema.toJSONSchema(parameters) : undefined,
+		// The model supplies parser input; local transforms and defaults produce executor output.
+		parameters: parameters ? parametersSchema.toJSONSchema(parameters, { io: "input" }) : undefined,
 		source,
 	}
 }

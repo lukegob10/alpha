@@ -1,5 +1,7 @@
 import { AlphaMessage, HistoryItem } from "@alpha-code/types"
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+
+export type RestoreHistoryDraft = (taskId: string | undefined, recalledPrompt: string, originalDraft: string) => void
 
 interface UsePromptHistoryProps {
 	taskId?: string
@@ -9,6 +11,7 @@ interface UsePromptHistoryProps {
 	inputValue: string
 	setInputValue: (value: string) => void
 	isInTask?: boolean
+	onRestoreHistoryDraft?: RestoreHistoryDraft
 }
 
 export interface UsePromptHistoryReturn {
@@ -34,6 +37,7 @@ export const usePromptHistory = ({
 	inputValue,
 	setInputValue,
 	isInTask,
+	onRestoreHistoryDraft,
 }: UsePromptHistoryProps): UsePromptHistoryReturn => {
 	// Maximum number of prompts to keep in history for memory management
 	const MAX_PROMPT_HISTORY_SIZE = 100
@@ -41,6 +45,17 @@ export const usePromptHistory = ({
 	// Prompt history navigation state
 	const [historyIndex, setHistoryIndex] = useState(-1)
 	const [tempInput, setTempInput] = useState("")
+	const recalledDraft = useRef<{
+		taskId?: string
+		originalDraft: string
+		recalledPrompt: string
+		restore?: RestoreHistoryDraft
+	}>()
+	const restoreRecalledDraft = useCallback(() => {
+		const draft = recalledDraft.current
+		recalledDraft.current = undefined
+		draft?.restore?.(draft.taskId, draft.recalledPrompt, draft.originalDraft)
+	}, [])
 
 	// Initialize prompt history with hybrid approach: conversation messages if in task, otherwise task history
 	const filteredPromptHistory = useMemo(() => {
@@ -71,19 +86,22 @@ export const usePromptHistory = ({
 			.map((item) => item.task)
 			.slice(0, MAX_PROMPT_HISTORY_SIZE)
 	}, [alphaMessages, isInTask, taskHistory, cwd])
-	const filteredPromptHistoryKey = JSON.stringify(filteredPromptHistory)
+	const filteredPromptHistoryKey = useMemo(() => JSON.stringify(filteredPromptHistory), [filteredPromptHistory])
 
 	// Reset navigation only when the actual prompts change, not on unrelated streamed messages.
 	useEffect(() => {
 		setHistoryIndex(-1)
 		setTempInput("")
-	}, [filteredPromptHistoryKey, taskId, cwd])
+		// Restore through the captured owner, never the setter that now follows another chat.
+		return restoreRecalledDraft
+	}, [filteredPromptHistoryKey, taskId, cwd, restoreRecalledDraft])
 
 	const promptHistory = filteredPromptHistory
 
 	// Reset history navigation when user types (but not when we're setting it programmatically)
 	const resetOnInputChange = useCallback(() => {
 		if (historyIndex !== -1) {
+			recalledDraft.current = undefined
 			setHistoryIndex(-1)
 			setTempInput("")
 		}
@@ -114,19 +132,27 @@ export const usePromptHistory = ({
 			const historicalPrompt = promptHistory[newIndex]
 			if (!historicalPrompt) return false
 
+			recalledDraft.current = {
+				taskId,
+				originalDraft: recalledDraft.current?.originalDraft ?? inputValue,
+				recalledPrompt: historicalPrompt,
+				restore: onRestoreHistoryDraft,
+			}
 			setHistoryIndex(newIndex)
 			setInputValue(historicalPrompt)
 			setCursorPosition(textarea, cursorPos, historicalPrompt.length)
 
 			return true
 		},
-		[promptHistory, setInputValue, setCursorPosition],
+		[promptHistory, taskId, inputValue, onRestoreHistoryDraft, setInputValue, setCursorPosition],
 	)
 
 	// Helper to return to current input
 	const returnToCurrentInput = useCallback(
 		(textarea: HTMLTextAreaElement, cursorPos: "start" | "end" = "end") => {
+			recalledDraft.current = undefined
 			setHistoryIndex(-1)
+			setTempInput("")
 			setInputValue(tempInput)
 			setCursorPosition(textarea, cursorPos, tempInput.length)
 		},
@@ -175,6 +201,7 @@ export const usePromptHistory = ({
 	)
 
 	const resetHistoryNavigation = useCallback(() => {
+		recalledDraft.current = undefined
 		setHistoryIndex(-1)
 		setTempInput("")
 	}, [])

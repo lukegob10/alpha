@@ -1202,6 +1202,40 @@ describe("native sub-agent conversation forks", () => {
 })
 
 describe("sub-agent context capture", () => {
+	it.each([false, true])("does not inspect unselected history for a none fork (native=%s)", (native) => {
+		const readContent = vi.fn(() => "Unselected parent transcript evidence")
+		const parentHistory: ApiMessage[] = Array.from({ length: 100 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" : "assistant",
+			get content() {
+				return readContent()
+			},
+		}))
+		const input: CaptureSubagentContextInput = {
+			parentTaskId: "parent-task",
+			capturedAt: 1_700_000_000_000,
+			forkTurns: "none",
+			history: parentHistory,
+			...(native ? { historyInheritance: { parentModelRoute: route, preservePrefix: true } } : {}),
+			instructions: {
+				effectiveText: "Frozen instructions",
+				sources: [{ kind: "user", ref: "parent:user", text: "Frozen instructions" }],
+			},
+			skills: [{ name: "review", path: "/skills/review/SKILL.md", content: "Frozen skill instructions" }],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy,
+		}
+		const captured = captureSubagentContext(input)
+
+		expect(readContent).not.toHaveBeenCalled()
+		expect(captured).toEqual(captureSubagentContext({ ...input, history: [] }))
+		expect(captured.historyFork).toEqual({ kind: "none" })
+		expect(captured.selectedTurns).toEqual([])
+		expect(captured.inheritedTurnContext).toBe("")
+		expect(isValidSubagentContextManifest(captured.manifest)).toBe(true)
+	})
+
 	it("binds workspace ownership into policy integrity without changing legacy manifests", () => {
 		// Codex child_config.rs (retrieved 2026-10-29) inherits the parent's cwd.
 		// Keep absence distinct so retained isolated Workers resume in their original checkout.

@@ -447,7 +447,9 @@ export class TicketStore {
 	}
 
 	async read(id: string, signal?: AbortSignal): Promise<Ticket> {
-		return this.inspect(async () => (await this.locate(await this.resolveId(id, signal))).ticket, signal)
+		const [result] = await this.readMany([id], signal)
+		if ("error" in result) throw result.error
+		return result.ticket
 	}
 	/** Resolve one attachment batch without rescanning the project for every reference. */
 	async readMany(locators: readonly string[], signal?: AbortSignal): Promise<TicketReadResult[]> {

@@ -302,14 +302,22 @@ describe("ApplyPatchTool", () => {
 		expect(callbacks.askApproval).toHaveBeenCalledOnce()
 		expect(JSON.parse(callbacks.askApproval.mock.calls[0][1]).content).toContain("Move destination: moved.txt")
 		if (direct) {
-			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledWith("moved.txt", "old\n", false, true, 0, {
-				exists: false,
-			})
+			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				"moved.txt",
+				"old\n",
+				false,
+				true,
+				0,
+				{ exists: false },
+				expect.any(Function),
+			)
 		} else {
-			expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(true, 0, {
-				relPath: "moved.txt",
-				expectedFileState: { exists: false },
-			})
+			expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(
+				true,
+				0,
+				{ relPath: "moved.txt", expectedFileState: { exists: false } },
+				expect.any(Function),
+			)
 		}
 		expect(mockedFs.unlink).toHaveBeenCalledWith(path.resolve(task.cwd, "source.txt"))
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
@@ -761,10 +769,12 @@ describe("ApplyPatchTool", () => {
 		])
 		expect(mockedFs.writeFile).not.toHaveBeenCalled()
 		expect(mockedFs.unlink).not.toHaveBeenCalled()
-		expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(true, 0, {
-			relPath: "moved.txt",
-			expectedFileState: { exists: true, content: "destination\n" },
-		})
+		expect(task.diffViewProvider.saveChanges).toHaveBeenCalledWith(
+			true,
+			0,
+			{ relPath: "moved.txt", expectedFileState: { exists: true, content: "destination\n" } },
+			expect.any(Function),
+		)
 	})
 
 	it("rejects a dirty destination document before a normal move approval", async () => {
@@ -877,6 +887,92 @@ describe("ApplyPatchTool", () => {
 		expect(callbacks.handleError).not.toHaveBeenCalled()
 	})
 
+	it.each(
+		[true, false].flatMap((direct) =>
+			["source.txt", "moved.txt"].flatMap((heldPath) =>
+				["source.txt", "moved.txt"].map((deniedPath) => ({ direct, heldPath, deniedPath })),
+			),
+		),
+	)(
+		"writes no move destination when $deniedPath is ignored during held $heldPath validation (direct: $direct)",
+		async ({ direct, heldPath, deniedPath }) => {
+			vi.mocked(experiments.isEnabled).mockReturnValue(direct)
+			const files = new Map([["source.txt", "old\n"]])
+			let signalEntered!: () => void
+			let release!: () => void
+			const entered = new Promise<void>((resolve) => (signalEntered = resolve))
+			const resumed = new Promise<void>((resolve) => (release = resolve))
+			let approved = false
+			let held = false
+			mockedFs.readFile.mockImplementation(async (filePath) => {
+				const name = path.basename(String(filePath))
+				if (approved && !held && name === heldPath) {
+					held = true
+					signalEntered()
+					await resumed
+				}
+				const content = files.get(name)
+				if (content === undefined) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+				return content
+			})
+			mockedFs.writeFile.mockImplementation(async (filePath, content) => {
+				files.set(path.basename(String(filePath)), String(content))
+			})
+			mockedFs.unlink.mockImplementation(async (filePath) => {
+				files.delete(path.basename(String(filePath)))
+			})
+			const task = createTask(() => true, { diagnosticsEnabled: false, writeDelayMs: 0 })
+			const provider = new DiffViewProvider(task.cwd, task)
+			task.diffViewProvider = provider
+			if (!direct) {
+				vi.spyOn(provider, "open").mockImplementation(async (relPath, expectedFileState) => {
+					Object.assign(provider, { relPath, expectedFileState, originalContent: "old\n", isEditing: true })
+				})
+				vi.spyOn(provider, "update").mockImplementation(async (content) => {
+					Object.assign(provider, {
+						newContent: content,
+						activeDiffEditor: { document: { getText: () => content, version: 1 } },
+					})
+				})
+				vi.spyOn(provider, "scrollToFirstDiff").mockImplementation(() => {})
+			}
+			const callbacks = createCallbacks()
+			callbacks.askApproval.mockImplementation(async () => {
+				approved = true
+				return true
+			})
+			const execution = new ApplyPatchTool().execute(
+				{
+					patch: "*** Begin Patch\n*** Update File: source.txt\n*** Move to: moved.txt\n@@\n-old\n+new\n*** End Patch",
+				},
+				task,
+				callbacks,
+			)
+			await Promise.race([
+				entered,
+				execution.then(() => {
+					throw new Error("Move finished before reaching held validation")
+				}),
+			])
+			expect(mockedFs.writeFile).not.toHaveBeenCalled()
+			vi.mocked(task.alphaIgnoreController!.validateAccess).mockImplementation(
+				(filePath) => filePath !== deniedPath,
+			)
+			release()
+			await execution
+
+			expect(files.get("source.txt")).toBe("old\n")
+			expect(files.has("moved.txt")).toBe(false)
+			expect(mockedFs.writeFile).not.toHaveBeenCalled()
+			expect(mockedFs.unlink).not.toHaveBeenCalled()
+			expect(task.didEditFile).toBe(false)
+			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
+			expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+				{ path: "source.txt", status: "error", reason: expect.stringContaining(".alphaignore") },
+			])
+		},
+	)
+
 	it.each([true, false])("reports a committed destination when source cleanup fails (direct: %s)", async (direct) => {
 		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
 		mockedFs.unlink.mockRejectedValueOnce(new Error("locked"))
@@ -962,6 +1058,60 @@ describe("ApplyPatchTool", () => {
 			expect(task.recordToolUsage).not.toHaveBeenCalled()
 		},
 	)
+
+	it.each([
+		{ direct: true, revokeAt: "destination save" },
+		{ direct: false, revokeAt: "destination save" },
+		{ direct: true, revokeAt: "source validation" },
+		{ direct: false, revokeAt: "source validation" },
+	])("preserves an ignored move source after $revokeAt (direct: $direct)", async ({ direct, revokeAt }) => {
+		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
+		const files = new Map([["source.txt", "old\n"]])
+		mockedFs.readFile.mockImplementation(async (filePath) => {
+			const content = files.get(path.basename(String(filePath)))
+			if (content === undefined) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+			return content
+		})
+		mockedFs.unlink.mockImplementation(async (filePath) => {
+			files.delete(path.basename(String(filePath)))
+		})
+		const task = createTask()
+		const revokeSourceAccess = () => {
+			vi.mocked(task.alphaIgnoreController!.validateAccess).mockImplementation(
+				(filePath) => filePath !== "source.txt",
+			)
+		}
+		const saveDestination = async () => {
+			files.set("moved.txt", "new\n")
+			if (revokeAt === "destination save") revokeSourceAccess()
+			return { newProblemsMessage: undefined, userEdits: undefined, finalContent: "new\n" }
+		}
+		vi.mocked(task.diffViewProvider.saveDirectly).mockImplementation(saveDestination)
+		vi.mocked(task.diffViewProvider.saveChanges).mockImplementation(saveDestination)
+		const validateSource = vi.mocked(task.diffViewProvider.assertExpectedFileState).getMockImplementation()
+		if (!validateSource) throw new Error("Missing file-state validation fixture")
+		vi.mocked(task.diffViewProvider.assertExpectedFileState).mockImplementation(async (...args) => {
+			await validateSource(...args)
+			if (revokeAt === "source validation" && args[1] === "source.txt" && files.has("moved.txt")) {
+				revokeSourceAccess()
+			}
+		})
+		const callbacks = createCallbacks()
+		const patch =
+			"*** Begin Patch\n*** Update File: source.txt\n*** Move to: moved.txt\n@@\n-old\n+new\n*** End Patch"
+
+		await new ApplyPatchTool().execute({ patch }, task, callbacks)
+
+		expect(files.get("source.txt")).toBe("old\n")
+		expect(files.get("moved.txt")).toBe("new\n")
+		expect(mockedFs.unlink).not.toHaveBeenCalled()
+		expect(task.didEditFile).toBe(true)
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
+		expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
+		expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).files).toMatchObject([
+			{ path: "source.txt", status: "applied", reason: expect.stringContaining(".alphaignore") },
+		])
+	})
 
 	it.each([true, false])("reports a committed destination when the source changes (direct: %s)", async (direct) => {
 		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
@@ -1140,6 +1290,31 @@ describe("ApplyPatchTool deletion protection", () => {
 		)
 		expect(task.didEditFile).toBe(true)
 		expect(task.recordToolUsage).toHaveBeenCalledExactlyOnceWith("apply_patch")
+	})
+
+	it("preserves a file ignored while deletion approval is pending", async () => {
+		const approve = await waitForApproval()
+		vi.mocked(task.alphaIgnoreController!.validateAccess).mockReturnValue(false)
+		await approve()
+
+		expectNoDeletion()
+		expect(await realFs.readFile(target, "utf8")).toBe("approved content\n")
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(".alphaignore"))
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "error" })
+	})
+
+	it("preserves a file ignored during the final deletion validation", async () => {
+		const approve = await waitForApproval()
+		mockedFs.lstat.mockImplementationOnce(async (...args: Parameters<typeof fs.lstat>) => {
+			const stat = await realFs.lstat(...args)
+			vi.mocked(task.alphaIgnoreController!.validateAccess).mockReturnValue(false)
+			return stat
+		})
+		await approve()
+
+		expectNoDeletion()
+		expect(await realFs.readFile(target, "utf8")).toBe("approved content\n")
+		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining(".alphaignore"))
 	})
 
 	it("reports a missing file without requesting approval", async () => {

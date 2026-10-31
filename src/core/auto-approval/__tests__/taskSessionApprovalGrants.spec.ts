@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
 	clearTaskSessionApprovalGrants,
+	captureTaskSessionApprovalAuthority,
 	createTaskSessionApprovalKey,
 	grantTaskSessionApproval,
 	hasTaskSessionApproval,
@@ -18,6 +19,19 @@ const identity = (overrides: Partial<Parameters<typeof createTaskSessionApproval
 })
 
 describe("task-scoped exact approval grants", () => {
+	it("captures opaque executor identity without inspecting live connection fields", () => {
+		const connection = {
+			get config() {
+				throw new Error("Connection configuration must not be serialized")
+			},
+		}
+		const first = captureTaskSessionApprovalAuthority([connection], ["schema", 1])
+		expect(first).toMatch(/^[a-f0-9]{64}$/)
+		expect(captureTaskSessionApprovalAuthority([connection], ["schema", 1])).toBe(first)
+		expect(captureTaskSessionApprovalAuthority([{}], ["schema", 1])).not.toBe(first)
+		expect(captureTaskSessionApprovalAuthority([connection], ["schema", 2])).not.toBe(first)
+	})
+
 	it("uses the native command's resolved workdir without dropping unknown authority fields", () => {
 		const native = identity({
 			toolName: "exec_command",

@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.18",
+		version: "3.2.19",
 	},
 }))
 
@@ -37,13 +37,13 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.18" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.19" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.18")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.19")).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Alpha v3.2.18 improves sub-agent reliability, conversation continuity, and the chat experience.",
+				"Alpha v3.2.19 improves reasoning controls, task handoffs, and reliability during long-running work.",
 			),
 		).toBeInTheDocument()
 	})
@@ -53,23 +53,21 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
+			screen.getByText("Keep chats and sub-agents responsive through cancellation, completion, and reloads."),
+		).toBeInTheDocument()
+		expect(
 			screen.getByText(
-				"Recover interrupted work and finish sub-agent runs without leaving stale running indicators.",
+				"Improve provider streaming, tool-result persistence, MCP discovery, and command cleanup.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Preserve provider history, reasoning settings, and tool results through recovery and follow-ups.",
+				"Give new chats clear work assignments while preserving inherited approvals and workspace limits.",
 			),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Delegate in the shared workspace with inherited permissions and visible model and reasoning labels.",
-			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText(
-				"Enjoy refreshed Alpha branding, clearer agent navigation, and more readable Markdown tables.",
+				"Preserve reasoning selections during background updates and improve typing, transcripts, and agent navigation.",
 			),
 		).toBeInTheDocument()
 	})
@@ -79,13 +77,11 @@ describe("Announcement", () => {
 
 		expect(
 			screen.getByText(
-				"Alpha v3.2.18 improves sub-agent reliability, conversation continuity, and the chat experience.",
+				"Alpha v3.2.19 improves reasoning controls, task handoffs, and reliability during long-running work.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Recover interrupted work and finish sub-agent runs without leaving stale running indicators.",
-			),
+			screen.getByText("Keep chats and sub-agents responsive through cancellation, completion, and reloads."),
 		).toBeInTheDocument()
 	})
 })

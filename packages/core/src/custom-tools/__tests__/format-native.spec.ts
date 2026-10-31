@@ -82,7 +82,7 @@ describe("formatNative", () => {
 			},
 		})
 		expect(result.function.parameters?.required).toEqual(["name"])
-		expect(result.function.parameters?.additionalProperties).toBe(false)
+		expect(result.function.parameters).not.toHaveProperty("additionalProperties")
 	})
 
 	it("should convert a tool with optional args", () => {
@@ -134,7 +134,6 @@ describe("formatNative", () => {
 				description: "Required input",
 			},
 			options: {
-				additionalProperties: false,
 				properties: {},
 				type: "object",
 				description: "Optional config",

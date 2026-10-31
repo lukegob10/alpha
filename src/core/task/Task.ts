@@ -371,6 +371,7 @@ import {
 	ProviderTranscriptStoreError,
 	type ProviderTranscriptCommitReceipt,
 } from "../task-persistence/ProviderTranscriptStore"
+import type { ApiMessagesWritePrecondition } from "../task-persistence/apiMessages"
 import { captureEnvironmentDetails } from "../environment/getEnvironmentDetails"
 import { EnvironmentContext, type EnvironmentCapture } from "../environment/EnvironmentContext"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
@@ -1061,6 +1062,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 */
 	private readonly providerTranscriptStore: ProviderTranscriptStore
 	private apiConversationHistorySaveQueue: Promise<void> = Promise.resolve()
+	private apiConversationHistoryWritePrecondition: ApiMessagesWritePrecondition | "unobserved" = { missing: true }
+	private terminalConflictDrainReceipt?: ProviderTranscriptCommitReceipt
 	private providerTranscriptCommitReceipt?: ProviderTranscriptCommitReceipt
 	private providerTranscriptSidecarFailure?: ProviderTranscriptStoreError
 	private apiConversationHistoryFailureGeneration = 0
@@ -1958,6 +1961,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? false
 				: undefined
 		this.lifecycleHookStartSource = historyItem ? "resume" : "startup"
+		if (historyItem) this.apiConversationHistoryWritePrecondition = "unobserved"
 		this.diagnosticSession = (historyItem?.diagnosticSession ?? diagnosticSession) === true
 		const incidentId = historyItem?.diagnosticIncidentId ?? diagnosticIncidentId
 		const sourceTaskId = historyItem?.diagnosticSourceTaskId ?? diagnosticSourceTaskId
@@ -2762,7 +2766,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async getSavedApiConversationHistory({ hydrateOnly = false } = {}): Promise<ApiMessage[]> {
 		let messages: ApiMessage[]
 		try {
-			messages = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
+			messages = await readApiMessages({
+				taskId: this.taskId,
+				globalStoragePath: this.globalStoragePath,
+				onRead: (precondition) => {
+					this.apiConversationHistoryWritePrecondition = precondition
+				},
+			})
 		} catch (error) {
 			this.recordProviderTranscriptSidecarFailure(error)
 			throw error
@@ -2797,6 +2807,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const latestMessages = await readApiMessages({
 					taskId: this.taskId,
 					globalStoragePath: this.globalStoragePath,
+					onRead: (precondition) => {
+						this.apiConversationHistoryWritePrecondition = precondition
+					},
 				}).catch((error) => {
 					legacyReadFailed = true
 					throw error
@@ -3514,6 +3527,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async finishConversationRewind(store: TaskRewindStore): Promise<void> {
 		const record = this.conversationRewindRecord
 		if (!record?.pending) return
+		await this.initializeApiConversationHistoryWritePrecondition()
 		if ((await this.overwriteAlphaMessages(structuredClone(record.pending.uiMessages))) !== true) {
 			throw new TaskPersistenceError("Conversation rewind UI history could not be durably saved.")
 		}
@@ -3538,11 +3552,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	async overwriteApiConversationHistory(
 		newHistory: ApiMessage[],
 		guard?: CanonicalLifecycleEventGuard,
+		sourcePrecondition?: ApiMessagesWritePrecondition,
 	): Promise<boolean> {
 		if (guard && !guard()) return false
 		// The provider verifies wait receipts from the saved transcript. Join earlier
 		// saves before deleting queue evidence or asking it to settle those receipts.
 		await this.flushApiConversationHistoryPersistence()
+		if (guard && !guard()) return false
+		await this.initializeApiConversationHistoryWritePrecondition(sourcePrecondition)
 		if (guard && !guard()) return false
 		// Persist deletion before a rewind/compaction can remove the transcript receipt
 		// that otherwise suppresses replay after a crash between input commit and ACK.
@@ -3572,6 +3589,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return guard ? this.saveApiConversationHistory(guard) : this.saveApiConversationHistory()
 	}
 
+	/** Cold saved tasks may recover before normal hydration; observed baselines never refresh here. */
+	private async initializeApiConversationHistoryWritePrecondition(
+		sourcePrecondition?: ApiMessagesWritePrecondition,
+	): Promise<void> {
+		if (this.apiConversationHistoryWritePrecondition !== "unobserved") return
+		if (sourcePrecondition) {
+			// A delegated parent replacement was derived from these exact earlier bytes.
+			this.apiConversationHistoryWritePrecondition = { ...sourcePrecondition }
+			return
+		}
+		this.apiConversationHistory = await this.getSavedApiConversationHistory({ hydrateOnly: true })
+	}
+
 	/**
 	 * Flush any pending tool results to the API conversation history.
 	 *
@@ -3588,7 +3618,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * So we usually only need to flush the pending user message with tool_results.
 	 */
 	public async flushPendingToolResultsToHistory(
-		options: { allowAborted?: boolean; guard?: CanonicalLifecycleEventGuard } = {},
+		options: {
+			allowAborted?: boolean
+			guard?: CanonicalLifecycleEventGuard
+			drainPreservedConflict?: boolean
+		} = {},
 	): Promise<boolean> {
 		const guard = options.guard
 		if (guard && !guard()) return false
@@ -3665,7 +3699,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		this.apiConversationHistory.push(userMessageWithTs as ApiMessage)
 
-		const saved = await (guard ? this.saveApiConversationHistory(guard) : this.saveApiConversationHistory())
+		const saved = options.drainPreservedConflict
+			? await this.saveApiConversationHistory(guard, undefined, true)
+			: await (guard ? this.saveApiConversationHistory(guard) : this.saveApiConversationHistory())
 		// An admitted transcript transaction finishes coherently, but its pending
 		// content and queue/mailbox acknowledgements still belong to this step.
 		if (guard && !guard()) return false
@@ -4279,6 +4315,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async saveApiConversationHistory(
 		guard?: CanonicalLifecycleEventGuard,
 		stagedMessages?: readonly ApiMessage[],
+		drainPreservedConflict = false,
 	): Promise<boolean> {
 		if (guard && !guard()) return false
 		if (
@@ -4309,13 +4346,45 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			let legacyReceipt: Awaited<ReturnType<typeof saveApiMessages>>
 			try {
+				if (this.apiConversationHistoryWritePrecondition === "unobserved") {
+					throw new ProviderTranscriptStoreError(
+						"receipt_mismatch",
+						"Saved task history must be loaded before saving its continuation",
+						this.taskId,
+					)
+				}
+				let precondition = this.apiConversationHistoryWritePrecondition
+				if (drainPreservedConflict) {
+					const claimed = this.terminalConflictDrainReceipt
+					const receipt = claimed ?? this.providerTranscriptCommitReceipt
+					if (receipt?.version === 2) {
+						// Claim consumption precedes archive I/O; retain its identity even
+						// when that validation fails before returning a precondition.
+						this.terminalConflictDrainReceipt = receipt
+						const preserved = await this.providerTranscriptStore.takePreservedConflictForTerminalDrain(
+							receipt,
+							claimed !== undefined,
+						)
+						if (preserved) {
+							precondition = preserved
+						} else this.terminalConflictDrainReceipt = undefined
+					}
+					if ((guard && !guard()) || !this.isCurrentApiConversationHistoryOwner()) return false
+				}
 				// Keep this write first: api_conversation_history.json remains the
 				// provider/runtime source of truth throughout the migration.
 				legacyReceipt = await saveApiMessages({
 					messages,
 					taskId: this.taskId,
 					globalStoragePath: this.globalStoragePath,
+					precondition,
 				})
+				// The queue's next save follows these exact bytes even when sidecar
+				// acknowledgement fails. Capture this at execution time, not admission.
+				this.apiConversationHistoryWritePrecondition = legacyReceipt
+				// A failed atomic write may retry only the same claimed preimage. Once
+				// committed, subsequent saves follow this owner's new authority instead.
+				this.terminalConflictDrainReceipt = undefined
 			} catch (error) {
 				// Do not create or advance the sidecar when the authoritative write
 				// failed. Returning false keeps callers from executing effects or
@@ -4887,6 +4956,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.userMessageContentReady = true
 			const persisted = await this.flushPendingToolResultsToHistory({
 				allowAborted: true,
+				drainPreservedConflict: true,
 				...(hookInvocation ? { guard: ownsHookBoundary } : {}),
 			})
 			assertHookBoundary()
@@ -5168,6 +5238,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Persist that exact batch before the failed turn can terminate.
 				const persisted = await this.flushPendingToolResultsToHistory({
 					allowAborted: true,
+					...(outcome.failure?.kind === "effect_fence" ? { drainPreservedConflict: true } : {}),
 					...(hookInvocation ? { guard: ownsHookBoundary } : {}),
 				})
 				assertHookBoundary()
@@ -7448,6 +7519,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onCommandApproved?: (commandExecutionId: string) => void,
 		signal?: AbortSignal,
 	): Promise<{ response: AlphaAskResponse; text?: string; images?: string[]; queuedMessageIds?: string[] }> {
+		// Host resume/recovery asks have no tool signal, but Stop must still release their preflight waits.
+		signal ??= this.taskCancellationController?.signal
 		const capturedAutoApprovalTimeoutRevision = this.autoApprovalTimeoutRevision ?? 0
 		const capturedTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
 		const addMessage = (message: AlphaMessage) =>
@@ -10386,7 +10459,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				})
 
 				try {
-					await Promise.race([Promise.all([Promise.resolve(process.abort()), settled]), timedOut])
+					await Promise.race([
+						Promise.all([
+							Promise.resolve(process.terminate ? process.terminate() : process.abort()),
+							settled,
+						]),
+						timedOut,
+					])
 				} finally {
 					if (timeout) clearTimeout(timeout)
 					process.removeListener(finishEvent, finish)
@@ -16349,13 +16428,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				]
 				if (currentItem.queuedMessageIds.length) currentItem.inputOrigin = "human"
 				this.captureInputBlockOrigins(currentUserContent, "agent")
-				const inputHookOutcome = await this.inspectLifecycleHookInput(
-					[...precedingMessages.flatMap((message) => message.content), ...currentUserContent],
-					stepInterruptionSignal,
-					lifecycleInputInvocation,
-				)
-				this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-				this.throwIfStepInterrupted(stepInterruptionSignal)
+				let inputHookOutcome: LifecycleHookOutcome
+				try {
+					inputHookOutcome = await this.inspectLifecycleHookInput(
+						[...precedingMessages.flatMap((message) => message.content), ...currentUserContent],
+						stepInterruptionSignal,
+						lifecycleInputInvocation,
+					)
+					this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
+					this.throwIfStepInterrupted(stepInterruptionSignal)
+				} catch (error) {
+					this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
+					if (this.pendingSteerMessage && error instanceof SteerRequestInterruptError) {
+						// Hook admission has not committed this input. Retain its identities and receipts for steering.
+						stack.push({ ...currentItem, userContent: currentUserContent, retryAttempt: 0 })
+						continue
+					}
+					throw error
+				}
 				if (inputHookOutcome.shouldStop) {
 					await this.persistLifecycleHookContexts(lifecycleInputInvocation.guard, stepInterruptionSignal)
 					const provenance = inputHookOutcome.stopProvenance
@@ -19349,6 +19439,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						.get<boolean>("newTaskRequireTodos", false),
 					isStealthModel: modelInfo?.isStealthModel,
 					approvalMode: approvalModeOverride ?? migrateApprovalMode(state),
+					orchestrationParentTaskId: !isSubagent ? this.orchestrationParentTaskId : undefined,
 					commandShell: getCommandShell(
 						(isSubagent &&
 							(this.subagentRole === "worker" || this.subagentContextManifest?.runtimePolicy.execute)) ||

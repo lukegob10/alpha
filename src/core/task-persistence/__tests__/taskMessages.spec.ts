@@ -73,6 +73,68 @@ describe("taskMessages.saveTaskMessages", () => {
 })
 
 describe("taskMessages.readTaskMessages", () => {
+	it.each([
+		"[null]",
+		"[42]",
+		"[[]]",
+		"[{}]",
+		'[{"ts":null,"type":"say"}]',
+		'[{"ts":1e999,"type":"say"}]',
+		'[{"ts":1,"type":"unknown"}]',
+		'[{"ts":1,"type":"say","text":42}]',
+		'[{"ts":1,"type":"say","partial":"true"}]',
+		'[{"ts":1,"type":"say","text":"Saved answer"},null]',
+	])("rejects malformed rows during strict reopen without replacing bytes: %s", async (contents) => {
+		const taskId = "strict-invalid-row"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const filePath = path.join(taskDir, "ui_messages.json")
+		await fs.writeFile(filePath, contents, "utf8")
+
+		await expect(
+			readTaskMessages({ taskId, globalStoragePath: tmpBaseDir, requireExisting: true }),
+		).rejects.toMatchObject({ name: "TaskMessagesReadError", kind: "invalid" })
+		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+		expect(hoisted.safeWriteJsonMock).not.toHaveBeenCalled()
+	})
+
+	it("preserves legacy and unknown message variants and metadata during strict reopen", async () => {
+		const taskId = "strict-compatible-rows"
+		const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+		await fs.mkdir(taskDir, { recursive: true })
+		const filePath = path.join(taskDir, "ui_messages.json")
+		const messages = [
+			{ ts: 1, type: "say", say: "legacy_message", text: "Saved answer", futureMetadata: { value: "keep" } },
+			{ ts: 2, type: "ask", ask: "future_confirmation", partial: false, legacyMetadata: ["keep"] },
+			{ ts: 3, type: "say" },
+		]
+		const contents = JSON.stringify(messages)
+		await fs.writeFile(filePath, contents, "utf8")
+
+		await expect(
+			readTaskMessages({ taskId, globalStoragePath: tmpBaseDir, requireExisting: true }),
+		).resolves.toEqual(messages)
+		expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+		expect(hoisted.safeWriteJsonMock).not.toHaveBeenCalled()
+	})
+
+	it.each(["[null]", '[{"ts":1,"type":"say","text":42}]'])(
+		"retains the lenient reader's existing treatment of array rows: %s",
+		async (contents) => {
+			const taskId = "lenient-invalid-row"
+			const taskDir = path.join(tmpBaseDir, "tasks", taskId)
+			await fs.mkdir(taskDir, { recursive: true })
+			const filePath = path.join(taskDir, "ui_messages.json")
+			await fs.writeFile(filePath, contents, "utf8")
+
+			await expect(readTaskMessages({ taskId, globalStoragePath: tmpBaseDir })).resolves.toEqual(
+				JSON.parse(contents),
+			)
+			expect(await fs.readFile(filePath, "utf8")).toBe(contents)
+			expect(hoisted.safeWriteJsonMock).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each(["{broken json", '"not an array"'])(
 		"preserves invalid bytes during strict reopen: %s",
 		async (contents) => {

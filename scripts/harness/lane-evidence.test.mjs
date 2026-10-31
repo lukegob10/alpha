@@ -7,9 +7,87 @@ import { fileURLToPath } from "node:url"
 import { normalizeVitestEvidence } from "./execution-evidence.mjs"
 import { configureLaneEvidence } from "./lane-evidence.mjs"
 import { hostReceipt } from "./fixtures/evidence.mjs"
+import { benchmarkReceipt } from "./fixtures/audit.mjs"
+import { lanes } from "./catalog.mjs"
 
 const root = fileURLToPath(new URL("../../", import.meta.url))
 const prefix = "alpha-vitest-diagnostics-"
+
+for (const [name, finalIndex, descriptor] of [
+	["rendered", 1, { runner: "extension-host", suite: "rendered" }],
+	["stress", 2, { runner: "extension-host", suite: "stress" }],
+	["outcomes", 1, { runner: "task-outcomes" }],
+]) {
+	test(`${name} retains host evidence on the final command after canonical bundle preparation`, async () => {
+		const lane = lanes[name]
+		assert.equal(lane.commands.length, finalIndex + 1)
+		assert.equal(lane.receipts.length, lane.commands.length)
+		assert.deepEqual(lane.receipts, [...Array(finalIndex).fill(null), descriptor])
+		const temporaryRoot = await realpath(os.tmpdir())
+		const directory = await mkdtemp(path.join(temporaryRoot, "alpha-prepared-hosts-"))
+		try {
+			const collector = await configureLaneEvidence({
+				lane,
+				name,
+				root,
+				directory,
+				id: `${name}-prepared-control`,
+			})
+			for (let index = 0; index < finalIndex; index++)
+				assert.equal(collector.environment(index).ALPHA_HARNESS_EVIDENCE_DIR, undefined)
+			assert.equal(
+				collector.environment(finalIndex).ALPHA_HARNESS_EVIDENCE_DIR,
+				path.join(directory, `step-${finalIndex}-hosts`),
+			)
+			assert.deepEqual(
+				collector.commands[finalIndex].slice(0, lane.commands[finalIndex].length),
+				lane.commands[finalIndex],
+			)
+			if (name === "outcomes") {
+				assert.deepEqual(collector.commands[finalIndex].slice(-5), [
+					"--root",
+					collector.campaignRoot,
+					"--init-root",
+					"--id",
+					`${name}-prepared-control`,
+				])
+			}
+		} finally {
+			assert.equal(path.dirname(directory), temporaryRoot)
+			assert.ok(path.basename(directory).startsWith("alpha-prepared-hosts-"))
+			await rm(directory, { recursive: true, force: true })
+		}
+	})
+}
+
+test("benchmark evidence admits retained observations through the existing lane collector", async () => {
+	const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "alpha-benchmark-evidence-"))
+	try {
+		const collector = await configureLaneEvidence({
+			lane: lanes.benchmarks,
+			name: "benchmarks",
+			root,
+			directory,
+			id: "fixture",
+		})
+		const output = collector.environment(1).ALPHA_HARNESS_BENCHMARK_FILE
+		const receipt = await benchmarkReceipt(root)
+		await writeFile(output, JSON.stringify(receipt))
+		assert.equal(
+			(await collector.verify({ index: 1, args: lanes.benchmarks.commands[1], step: {} })).status,
+			"passed",
+		)
+		receipt.workloads[1].measurements.observations[2].contentReads = 1
+		await writeFile(output, JSON.stringify(receipt))
+		assert.equal(
+			(await collector.verify({ index: 1, args: lanes.benchmarks.commands[1], step: {} })).status,
+			"failed",
+		)
+	} finally {
+		assert.ok(path.basename(directory).startsWith("alpha-benchmark-evidence-"))
+		await rm(directory, { recursive: true, force: true })
+	}
+})
 
 async function verifyRaw(raw, runner = "vitest") {
 	const temporaryRoot = await realpath(os.tmpdir())

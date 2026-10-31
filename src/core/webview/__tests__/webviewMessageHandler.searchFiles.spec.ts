@@ -294,4 +294,68 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		// Verify the prototype dispose was also not called
 		expect(mockDispose).not.toHaveBeenCalled()
 	})
+
+	it("passes captured project scope and cancellation to discovery and suppresses a late result", async () => {
+		let finish!: (results: Awaited<ReturnType<typeof searchWorkspaceFiles>>) => void
+		mockSearchWorkspaceFiles.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)))
+		const controller = new AbortController()
+		const running = webviewMessageHandler(
+			mockAlphaProvider,
+			{ type: "searchFiles", query: "source", requestId: "superseded" },
+			undefined,
+			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" } },
+		)
+		controller.abort()
+		finish([{ path: "source.ts", type: "file" }])
+		await running
+
+		expect(mockSearchWorkspaceFiles).toHaveBeenCalledWith("source", "/captured/project", 20, controller.signal)
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		expect(AlphaIgnoreController.prototype.initialize).not.toHaveBeenCalled()
+	})
+
+	it("disposes a temporary ignore controller when cancellation arrives during initialization", async () => {
+		let finish!: () => void
+		const initializing = new Promise<void>((resolve) => (finish = resolve))
+		const started = new Promise<void>((resolve) => {
+			;(AlphaIgnoreController.prototype as any).initialize = vi.fn(() => {
+				resolve()
+				return initializing
+			})
+		})
+		mockSearchWorkspaceFiles.mockResolvedValueOnce([])
+		const controller = new AbortController()
+		const running = webviewMessageHandler(
+			mockAlphaProvider,
+			{ type: "searchFiles", query: "source", requestId: "cancelled" },
+			undefined,
+			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" } },
+		)
+		await started
+		controller.abort()
+		finish()
+		await running
+
+		expect(mockDispose).toHaveBeenCalledOnce()
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it("does not publish a result to a replacement webview after loading settings", async () => {
+		mockSearchWorkspaceFiles.mockResolvedValueOnce([])
+		let current = true
+		;(mockAlphaProvider.getState as Mock).mockImplementationOnce(async () => {
+			current = false
+			return {}
+		})
+		const controller = new AbortController()
+		await webviewMessageHandler(
+			mockAlphaProvider,
+			{ type: "searchFiles", query: "source", requestId: "old-view" },
+			undefined,
+			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" }, isCurrentWebview: () => current },
+		)
+
+		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
+		expect(mockDispose).toHaveBeenCalledOnce()
+	})
 })

@@ -93,6 +93,7 @@ vi.mock("../../task-persistence/ProviderTranscriptStore", () => ({
 	digestProviderTranscript: vi.fn(() => "0".repeat(64)),
 	serializeProviderTranscript: (messages: unknown) => JSON.stringify(messages),
 	assertAuthoritativeTranscriptReplacementAllowed: vi.fn(),
+	assertAuthoritativeTranscriptPreimage: vi.fn().mockResolvedValue(undefined),
 	withLegacyTranscriptMigration: (_path: string, _taskId: string, operation: () => Promise<unknown>) => operation(),
 }))
 

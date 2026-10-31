@@ -2468,8 +2468,14 @@ export class ToolScheduler {
 							"An approval request cannot run in an approval-free parallel lane.",
 						)
 					}
-					const [, partialMessage, originalProgressStatus, requestedForceApproval, callRequiresExplicit] =
-						args
+					const [
+						,
+						partialMessage,
+						originalProgressStatus,
+						requestedForceApproval,
+						callRequiresExplicit,
+						callApprovalAuthority,
+					] = args
 					const forceApproval =
 						requestedForceApproval === true ||
 						(type === "command" && prepared.protectedCommandWrite === true)
@@ -2508,7 +2514,10 @@ export class ToolScheduler {
 									argumentsValue: approvalArguments,
 									cwd: this.executionHost.cwd,
 									policyDigest: this.options.policy?.digest,
-									authorityValue: type === "command" ? prepared.commandPathApproval : undefined,
+									authorityValue:
+										type === "command"
+											? prepared.commandPathApproval
+											: (callApprovalAuthority ?? prepared.descriptor?.sessionApprovalAuthority),
 								})
 							: undefined
 					const proposedAmendment: ToolApprovalRequest["proposedAmendment"] =

@@ -165,6 +165,20 @@ The `extended` lane covers instructions, HTML previews, storage recovery, and sc
 broader core gate. Offline evaluator checks use `pnpm test:evals:offline`; the
 [evaluator guide](packages/evals/README.md) covers service-backed checks and fixture authoring.
 
+Use `pnpm --config.verify-deps-before-run=false harness:audit --plan` to inspect the repeatable repository audit, then
+the same command without `--plan` to run its
+static, unused-file, unit, tooling, offline evaluator, deterministic performance, exact 1.138.0, managed-agent and
+minimum 1.125.0 gates sequentially. `--profile offline` excludes editor hosts; `--profile performance` selects the
+bounded performance fixtures and existing benchmark workloads. `--expensive` adds rendered, stress, confidence,
+outcome and VSIX checks; dedicated test services and Docker additionally require `--services` and `--infrastructure`.
+The default deadline is 180 minutes (`--timeout-minutes 1..240`). A failed or cancelled lane leaves later lanes unstarted.
+
+Optional evidence inputs require absolute paths: `--codex-root` checks a clean external checkout at the pinned audit
+SHA without fetching it, `--reports` validates exactly `01.json` through `30.json`, and `--baseline` compares a prior
+`step-N.benchmark.json` from the benchmarks lane with the same runtime and workload. Audit summaries are saved under
+`artifacts/harness/.audits/`, with links to the existing lane receipts. Timings remain diagnostic; source references
+and review reports do not establish behavioral equivalence or general speed improvements. Unselected coverage stays explicit.
+
 ### Reviewed improvement loop
 
 Run `pnpm --filter @alpha-code/evals benchmark:improve --help` for the evidence and feedback workflow. The

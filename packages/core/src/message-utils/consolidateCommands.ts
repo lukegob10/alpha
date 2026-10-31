@@ -4,6 +4,41 @@ import { safeJsonParse } from "./safeJsonParse.js"
 
 export const COMMAND_OUTPUT_STRING = "Output:"
 
+const completedCommands = new WeakMap<
+	AlphaMessage,
+	{ source: AlphaMessage; outputText: string | undefined; message: AlphaMessage; projected: AlphaMessage }
+>()
+
+function sameMessageFields(message: AlphaMessage, snapshot: AlphaMessage): boolean {
+	const fields = Object.keys(message) as (keyof AlphaMessage)[]
+	return fields.length === Object.keys(snapshot).length && fields.every((field) => message[field] === snapshot[field])
+}
+
+function projectCommand(
+	source: AlphaMessage,
+	outputText: string | undefined,
+	create: () => AlphaMessage,
+	hasPartialOutput = false,
+): AlphaMessage {
+	if (source.partial === true || hasPartialOutput) {
+		completedCommands.delete(source)
+		return create()
+	}
+	const cached = completedCommands.get(source)
+	if (
+		cached &&
+		cached.outputText === outputText &&
+		sameMessageFields(source, cached.source) &&
+		sameMessageFields(cached.message, cached.projected)
+	) {
+		return cached.message
+	}
+	const message = create()
+	// One projection per live source identity; legacy callers may mutate any copied source field.
+	completedCommands.set(source, { source: { ...source }, outputText, message, projected: { ...message } })
+	return message
+}
+
 /**
  * Consolidates sequences of command and command_output messages in an array of AlphaMessage objects.
  * Also consolidates sequences of use_mcp_server and mcp_server_response messages.
@@ -47,6 +82,7 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 		if (msg.type === "ask" && msg.ask === "use_mcp_server") {
 			// Look ahead for MCP responses
 			const responses: string[] = []
+			let hasPartialOutput = false
 			let j = i + 1
 
 			while (j < messages.length) {
@@ -57,6 +93,7 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 				}
 				if (nextMsg.say === "mcp_server_response") {
 					responses.push(nextMsg.text || "")
+					hasPartialOutput ||= nextMsg.partial === true
 					processedIndices.add(j)
 					j++
 				} else if (nextMsg.type === "ask" && nextMsg.ask === "use_mcp_server") {
@@ -67,29 +104,42 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 				}
 			}
 
-			if (responses.length > 0) {
-				const parsed: unknown = safeJsonParse(msg.text)
-				const request = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
-				const consolidatedText = JSON.stringify({ ...request, response: responses.join("\n") })
-
-				consolidatedMessages.set(msg.ts, { ...msg, text: consolidatedText })
-			} else {
-				// If there's no response, just keep the original message
-				consolidatedMessages.set(msg.ts, { ...msg })
-			}
+			const response = responses.length > 0 ? responses.join("\n") : undefined
+			consolidatedMessages.set(
+				msg.ts,
+				projectCommand(
+					msg,
+					response,
+					() => {
+						if (response === undefined) return { ...msg }
+						const parsed: unknown = safeJsonParse(msg.text)
+						const request =
+							parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+						return { ...msg, text: JSON.stringify({ ...request, response }) }
+					},
+					hasPartialOutput,
+				),
+			)
 		}
 		// Handle command sequences
 		else if (msg.type === "ask" && msg.ask === "command") {
 			const outputs = commandOutputs.get(msg.ts.toString())
 			if (outputs) {
-				consolidatedMessages.set(msg.ts, {
-					...msg,
-					text: `${msg.text || ""}\n${COMMAND_OUTPUT_STRING}${outputs.map(({ message }) => message.text || "").join("\n")}`,
-				})
+				const text = `${msg.text || ""}\n${COMMAND_OUTPUT_STRING}${outputs.map(({ message }) => message.text || "").join("\n")}`
+				consolidatedMessages.set(
+					msg.ts,
+					projectCommand(
+						msg,
+						text,
+						() => ({ ...msg, text }),
+						outputs.some(({ message }) => message.partial === true),
+					),
+				)
 				for (const { index } of outputs) processedIndices.add(index)
 				continue
 			}
 			let consolidatedText = msg.text || ""
+			let hasPartialOutput = false
 			let j = i + 1
 			let previous: { type: "ask" | "say"; text: string } | undefined
 
@@ -106,6 +156,7 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 				}
 
 				if ((ask === "command_output" || say === "command_output") && !currentMsg.commandExecutionId) {
+					hasPartialOutput ||= currentMsg.partial === true
 					if (!previous) {
 						consolidatedText += `\n${COMMAND_OUTPUT_STRING}`
 					}
@@ -131,7 +182,10 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 				j++
 			}
 
-			consolidatedMessages.set(msg.ts, { ...msg, text: consolidatedText })
+			consolidatedMessages.set(
+				msg.ts,
+				projectCommand(msg, consolidatedText, () => ({ ...msg, text: consolidatedText }), hasPartialOutput),
+			)
 		}
 	}
 

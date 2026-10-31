@@ -3,8 +3,94 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
 import { consolidateTokenUsage, hasTokenUsageChanged, hasToolUsageChanged } from "../consolidateTokenUsage.js"
+import { consolidateApiRequests } from "../consolidateApiRequests.js"
+import { consolidateCommands } from "../consolidateCommands.js"
 
 describe("consolidateTokenUsage", () => {
+	it("reuses completed payload parsing through tail updates without changing totals or context ordering", () => {
+		const first: AlphaMessage = {
+			ts: 1,
+			type: "say",
+			say: "api_req_started",
+			text: '{\r\n"tokensIn":10,"tokensOut":2,"cost":1\r\n}',
+		}
+		const second: AlphaMessage = { ...first, ts: 2, text: JSON.stringify({ tokensIn: 20, tokensOut: 3, cost: 2 }) }
+		const parse = vi.spyOn(JSON, "parse")
+		try {
+			const expected = consolidateTokenUsage([first, second])
+			parse.mockClear()
+			for (let frame = 0; frame < 20; frame++) {
+				expect(
+					consolidateTokenUsage([
+						first,
+						second,
+						{ ts: 3, type: "say", say: "text", text: `tail ${frame}`, partial: true },
+					]),
+				).toEqual(expected)
+			}
+			expect(parse.mock.calls).toHaveLength(0)
+			expect(consolidateTokenUsage([second, first])).toMatchObject({ totalTokensIn: 30, contextTokens: 12 })
+			first.text = JSON.stringify({ tokensIn: 30, tokensOut: 4, cost: 3 })
+			expect(consolidateTokenUsage([first, second])).toMatchObject({ totalTokensIn: 50, totalCost: 5 })
+			expect(parse).toHaveBeenCalledWith(first.text)
+			const reloaded = JSON.parse(JSON.stringify([first, second])) as AlphaMessage[]
+			parse.mockClear()
+			expect(consolidateTokenUsage(reloaded)).toEqual(consolidateTokenUsage([first, second]))
+			expect(parse.mock.calls).toHaveLength(2)
+			parse.mockClear()
+			second.partial = true
+			consolidateTokenUsage([first, second])
+			consolidateTokenUsage([first, second])
+			expect(parse.mock.calls.filter(([text]) => text === second.text)).toHaveLength(4)
+		} finally {
+			parse.mockRestore()
+		}
+	})
+
+	it.each([false, true])(
+		"keeps completed consolidation payload work bounded while the tail streams (legacy=%s)",
+		(legacy) => {
+			const messages: AlphaMessage[] = []
+			for (let index = 0; index < 100; index++) {
+				const ts = index * 10
+				messages.push(
+					{
+						ts,
+						type: "say",
+						say: "api_req_started",
+						text: JSON.stringify({ tokensIn: 10, tokensOut: 2, cost: 1 }),
+					},
+					{ ts: ts + 1, type: "ask", ask: "use_mcp_server", text: '{"server":"fixture"}', isAnswered: true },
+					{ ts: ts + 2, type: "say", say: "mcp_server_response", text: "result\r\ncontent" },
+				)
+				if (legacy) messages.push({ ts: ts + 3, type: "say", say: "api_req_finished", text: '{"cost":2}' })
+			}
+			const project = (history: AlphaMessage[]) =>
+				consolidateTokenUsage(consolidateApiRequests(consolidateCommands(history)))
+			const expected = project(messages)
+			expect(expected).toMatchObject({
+				totalTokensIn: 1_000,
+				totalTokensOut: 200,
+				totalCost: legacy ? 200 : 100,
+				contextTokens: 12,
+			})
+			const parse = vi.spyOn(JSON, "parse")
+			try {
+				for (let frame = 0; frame < 60; frame++) {
+					expect(
+						project([
+							...messages,
+							{ ts: 2000, type: "say", say: "text", text: `tail ${frame}`, partial: true },
+						]),
+					).toEqual(expected)
+				}
+				expect(parse.mock.calls).toHaveLength(0)
+			} finally {
+				parse.mockRestore()
+			}
+		},
+	)
+
 	it("counts synopsis usage without changing the agent context window size", () => {
 		const result = consolidateTokenUsage([
 			{ ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 1000, tokensOut: 100 }) },

@@ -9,6 +9,27 @@ export type ParsedApiReqStartedTextType = {
 	apiProtocol?: "anthropic" | "openai"
 }
 
+const completedUsage = new WeakMap<AlphaMessage, { text: string; value: ParsedApiReqStartedTextType }>()
+
+function parseApiRequestUsage(message: AlphaMessage): ParsedApiReqStartedTextType {
+	const text = message.text ?? ""
+	const cached = message.partial === true ? undefined : completedUsage.get(message)
+	if (cached && cached.text === text) return cached.value
+	const parsed: ParsedApiReqStartedTextType = JSON.parse(text)
+	const { tokensIn, tokensOut, cacheWrites, cacheReads, cost } = parsed
+	const value = { tokensIn, tokensOut, cacheWrites, cacheReads, cost }
+	// Retain only numeric usage fields from the parsed payload, excluding provider request bodies.
+	if (
+		message.partial !== true &&
+		Object.values(value).every((field) => field === undefined || typeof field === "number")
+	) {
+		completedUsage.set(message, { text, value })
+	} else {
+		completedUsage.delete(message)
+	}
+	return value
+}
+
 /**
  * Consolidates token usage metrics from an array of AlphaMessage objects.
  *
@@ -58,7 +79,7 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 		}
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
-				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)
+				const parsedText = parseApiRequestUsage(message)
 				const { tokensIn, tokensOut, cacheWrites, cacheReads, cost } = parsedText
 
 				if (typeof tokensIn === "number") {
@@ -97,7 +118,7 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
-				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)
+				const parsedText = parseApiRequestUsage(message)
 				const { tokensIn, tokensOut } = parsedText
 
 				// Since tokensIn now stores TOTAL input tokens (including cache tokens),

@@ -1,5 +1,15 @@
 import type { AlphaMessage } from "@alpha-code/types"
 
+const completedRequests = new WeakMap<
+	AlphaMessage,
+	{ source: AlphaMessage; finishText: string | undefined; message: AlphaMessage; projected: AlphaMessage }
+>()
+
+function sameMessageFields(message: AlphaMessage, snapshot: AlphaMessage): boolean {
+	const fields = Object.keys(message) as (keyof AlphaMessage)[]
+	return fields.length === Object.keys(snapshot).length && fields.every((field) => message[field] === snapshot[field])
+}
+
 /**
  * Consolidates API request start and finish messages in an array of AlphaMessage objects.
  *
@@ -24,6 +34,7 @@ export function consolidateApiRequests(messages: AlphaMessage[]): AlphaMessage[]
 	}
 
 	if (messages.length === 1) {
+		completedRequests.delete(messages[0]!)
 		return messages
 	}
 
@@ -62,6 +73,17 @@ export function consolidateApiRequests(messages: AlphaMessage[]): AlphaMessage[]
 		if (startIndex !== undefined) {
 			const startMessage = result[startIndex]
 			if (!startMessage) continue
+			const canCache = startMessage.partial !== true && message.partial !== true
+			const cached = canCache ? completedRequests.get(startMessage) : undefined
+			if (
+				cached &&
+				cached.finishText === message.text &&
+				sameMessageFields(startMessage, cached.source) &&
+				sameMessageFields(cached.message, cached.projected)
+			) {
+				result[startIndex] = cached.message
+				continue
+			}
 
 			let startData = {}
 			let finishData = {}
@@ -83,8 +105,20 @@ export function consolidateApiRequests(messages: AlphaMessage[]): AlphaMessage[]
 			}
 
 			result[startIndex] = { ...startMessage, text: JSON.stringify({ ...startData, ...finishData }) }
+			if (canCache) {
+				completedRequests.set(startMessage, {
+					source: { ...startMessage },
+					finishText: message.text,
+					message: result[startIndex],
+					projected: { ...result[startIndex] },
+				})
+			} else {
+				completedRequests.delete(startMessage)
+			}
 		}
 	}
+	// A removed or not-yet-published finish must not retain an obsolete merged projection.
+	for (const index of startedIndices) completedRequests.delete(result[index]!)
 
 	return result
 }

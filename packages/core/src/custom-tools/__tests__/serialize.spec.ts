@@ -20,6 +20,36 @@ const fixtureTools = {
 }
 
 describe("serializeCustomTool", () => {
+	it("serializes the accepted input of a transformed parameter", () => {
+		const parameters = z.object({ value: z.string().transform((value) => value.length) })
+		const tool = defineCustomTool({
+			name: "transformed_input",
+			description: "Accepts text and transforms it locally",
+			parameters,
+			async execute() {
+				return "done"
+			},
+		})
+
+		expect(serializeCustomTool(tool).parameters?.properties?.value).toEqual({ type: "string" })
+		expect(parameters.parse({ value: "text" })).toEqual({ value: 4 })
+	})
+
+	it("preserves strict input object restrictions", () => {
+		const parameters = z.strictObject({ value: z.string() })
+		const tool = defineCustomTool({
+			name: "strict_input",
+			description: "Rejects unrecognized input fields",
+			parameters,
+			async execute() {
+				return "done"
+			},
+		})
+
+		expect(serializeCustomTool(tool).parameters?.additionalProperties).toBe(false)
+		expect(parameters.safeParse({ value: "text", extra: "rejected" }).success).toBe(false)
+	})
+
 	it("should serialize a tool without parameters", () => {
 		const tool = defineCustomTool({
 			name: "simple_tool",
@@ -120,7 +150,6 @@ describe("serializeCustomTool", () => {
 			type: "boolean",
 		})
 		expect(result.parameters?.properties?.obj).toEqual({
-			additionalProperties: false,
 			description: "An object",
 			properties: {},
 			type: "object",
@@ -163,7 +192,8 @@ describe("serializeCustomTool", () => {
 
 		const result = serializeCustomTool(tool)
 
-		expect(result.parameters?.required).toEqual(["count"])
+		expect(result.parameters?.required ?? []).toEqual([])
+		expect(tool.parameters?.parse({})).toEqual({ count: 10 })
 	})
 })
 

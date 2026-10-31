@@ -324,6 +324,22 @@ describe("AgentTurnEngine", () => {
 		expect(host.runStep).toHaveBeenCalledOnce()
 	})
 
+	it("does not invent continuation work after a staged acknowledgement-only response", async () => {
+		// Codex 8801b9a8 (2026-10-30), core/src/session/turn.rs: only pending input,
+		// provider continuation, or an explicit host hook keeps a completed sample running.
+		const response = { ...emptyResponse(), text: "Ready. What should I work on?" }
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => false,
+			sampleStep: vi.fn(async () => ({ response })),
+			selectContinuation: vi.fn(async () => ({ nextInput: "synthetic-recovery" })),
+		}
+
+		const result = await new AgentTurnEngine(host).run("Work on the parent ticket and all five children")
+
+		expect(result).toEqual({ status: "completed", steps: 1, completionReason: "assistant", response })
+		expect(host.sampleStep).toHaveBeenCalledOnce()
+	})
+
 	it("continues after a normally completed response requires another step despite final-answer text", async () => {
 		const firstResponse = await collectAgentResponse(
 			(async function* () {

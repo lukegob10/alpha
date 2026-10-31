@@ -563,11 +563,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves sub-agent reliability, conversation continuity, and the chat experience.",
-			"taskContinuity": "Recover interrupted work and finish sub-agent runs without leaving stale running indicators.",
-			"toolsAndProviders": "Preserve provider history, reasoning settings, and tool results through recovery and follow-ups.",
-			"delegation": "Delegate in the shared workspace with inherited permissions and visible model and reasoning labels.",
-			"workspaceExperience": "Enjoy refreshed Alpha branding, clearer agent navigation, and more readable Markdown tables."
+			"welcome": "Alpha v{{version}} improves reasoning controls, task handoffs, and reliability during long-running work.",
+			"taskContinuity": "Keep chats and sub-agents responsive through cancellation, completion, and reloads.",
+			"toolsAndProviders": "Improve provider streaming, tool-result persistence, MCP discovery, and command cleanup.",
+			"delegation": "Give new chats clear work assignments while preserving inherited approvals and workspace limits.",
+			"workspaceExperience": "Preserve reasoning selections during background updates and improve typing, transcripts, and agent navigation."
 		}
 	},
 	"crossTasks": {

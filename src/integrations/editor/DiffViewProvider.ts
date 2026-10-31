@@ -154,6 +154,7 @@ export class DiffViewProvider {
 		diagnosticsEnabled: boolean = true,
 		writeDelayMs: number = DEFAULT_WRITE_DELAY_MS,
 		saveTo?: { relPath: string; expectedFileState: ExpectedFileState },
+		validateBeforeWrite?: () => void,
 	): Promise<{
 		newProblemsMessage: string | undefined
 		userEdits: string | undefined
@@ -173,6 +174,7 @@ export class DiffViewProvider {
 			if (document.version !== approvedVersion || document.getText() !== editedContent) {
 				throw new Error(t("tools:diffView.previewChangedAfterApproval"))
 			}
+			validateBeforeWrite?.()
 		}
 
 		// A move must validate both the source and the destination. Ordinary saves
@@ -516,12 +518,19 @@ export class DiffViewProvider {
 		const absolutePath = path.resolve(this.cwd, relPath)
 		const expectedState = expectedFileState
 		const generation = this.editGeneration
-		const signal = this.taskRef.deref()?.getTaskCancellationSignal()
+		const task = this.taskRef.deref()
+		const signal = task?.getTaskCancellationSignal()
 		const assertActiveEdit = () => {
 			this.assertEditingGeneration(generation)
 			signal?.throwIfAborted()
 		}
+		const assertAccessAllowed = () => {
+			if (task?.alphaIgnoreController?.validateAccess(relPath) === false) {
+				throw new Error(formatResponse.alphaIgnoreError(relPath))
+			}
+		}
 		assertActiveEdit()
+		assertAccessAllowed()
 
 		// Get diagnostics before editing the file
 		if (!this.isEditing) this.preDiagnostics = vscode.languages.getDiagnostics()
@@ -536,6 +545,9 @@ export class DiffViewProvider {
 		// the task and edit generation that began this operation.
 		assertActiveEdit()
 		validateBeforeWrite?.()
+		// Approval and filesystem validation can yield while .alphaignore reloads.
+		// Recheck at the shared commit boundary for both preview and direct saves.
+		assertAccessAllowed()
 
 		try {
 			// An expected-missing file must never be replaced if it appeared after

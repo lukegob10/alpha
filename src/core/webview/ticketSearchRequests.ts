@@ -1,5 +1,5 @@
-const MAX_TICKET_SEARCH_LANES_PER_PROVIDER = 8
-const DRAFT_SEARCH_KEY = Symbol("draft-ticket-search")
+const MAX_SEARCH_LANES_PER_KIND = 8
+const DRAFT_SEARCH_KEY = Symbol("draft-picker-search")
 
 interface PendingSearch {
 	run: (signal: AbortSignal) => Promise<void>
@@ -12,7 +12,10 @@ interface SearchLane {
 	pending?: PendingSearch
 }
 
-const searchesByProvider = new WeakMap<object, Map<string | symbol, SearchLane>>()
+type SearchLanes = Map<string | symbol, SearchLane>
+type SearchKind = "ticket" | "file"
+
+const searchesByProvider = new WeakMap<object, Record<SearchKind, SearchLanes>>()
 
 /** Read-only picker work bypasses command queues, with one reader and one latest query per conversation. */
 export function enqueueTicketSearch(
@@ -20,15 +23,34 @@ export function enqueueTicketSearch(
 	taskId: string | undefined,
 	run: PendingSearch["run"],
 ): Promise<void> {
-	let searches = searchesByProvider.get(provider)
-	if (!searches) {
-		searches = new Map()
-		searchesByProvider.set(provider, searches)
+	return enqueueSearch(provider, "ticket", taskId, run)
+}
+
+export function enqueueFileSearch(
+	provider: object,
+	taskId: string | undefined,
+	run: PendingSearch["run"],
+): Promise<void> {
+	return enqueueSearch(provider, "file", taskId, run)
+}
+
+function enqueueSearch(
+	provider: object,
+	kind: SearchKind,
+	taskId: string | undefined,
+	run: PendingSearch["run"],
+): Promise<void> {
+	let scopes = searchesByProvider.get(provider)
+	if (!scopes) {
+		scopes = { ticket: new Map(), file: new Map() }
+		searchesByProvider.set(provider, scopes)
 	}
+	// Each picker retains its existing admission capacity and cannot supersede another kind's reader.
+	const searches = scopes[kind]
 	const key = taskId ?? DRAFT_SEARCH_KEY
 	const existing = searches.get(key)
-	if (!existing && searches.size >= MAX_TICKET_SEARCH_LANES_PER_PROVIDER) {
-		return Promise.reject(new Error("Too many concurrent ticket searches"))
+	if (!existing && searches.size >= MAX_SEARCH_LANES_PER_KIND) {
+		return Promise.reject(new Error(`Too many concurrent ${kind} searches`))
 	}
 	const lane = existing ?? { controller: new AbortController() }
 	searches.set(key, lane)
@@ -45,7 +67,7 @@ export function enqueueTicketSearch(
 }
 
 async function drainSearches(
-	searches: Map<string | symbol, SearchLane>,
+	searches: SearchLanes,
 	key: string | symbol,
 	lane: SearchLane,
 	first: PendingSearch,
@@ -65,12 +87,16 @@ async function drainSearches(
 	if (searches.get(key) === lane) searches.delete(key)
 }
 
-/** Cancel before joining provider disposal; shared store indexing retains its own lifecycle. */
+/** Both picker kinds use this existing view/disposal hook; store indexing retains its own lifecycle. */
 export function cancelTicketSearches(provider: object): void {
-	for (const lane of searchesByProvider.get(provider)?.values() ?? []) {
-		lane.controller.abort()
-		lane.pending?.resolve()
-		lane.pending = undefined
+	const scopes = searchesByProvider.get(provider)
+	if (!scopes) return
+	for (const searches of Object.values(scopes)) {
+		for (const lane of searches.values()) {
+			lane.controller.abort()
+			lane.pending?.resolve()
+			lane.pending = undefined
+		}
 	}
 	searchesByProvider.delete(provider)
 }

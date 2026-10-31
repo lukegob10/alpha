@@ -219,6 +219,79 @@ describe("ScheduledTaskStore", () => {
 		})
 	})
 
+	it("finalizes an owned running run after its workspace closes without restoring admission", async () => {
+		const workspace = path.join(tmpDir, "repo-a")
+		const roots = [workspace]
+		const ownerId = "26ecc491-458a-480e-9f69-737fef9739d8"
+		await store.upsertTask(makeTask({ workspace }))
+		const scoped = new ScheduledTaskStore(tmpDir, () => roots)
+		await scoped.initialize()
+		const claimed = await scoped.claimRun("task-1", 1_000, "schedule", (current) => ({
+			task: { ...current, nextRunAt: undefined },
+			run: makeRun({ workspace, ownerId }),
+		}))
+		expect(claimed).toBeDefined()
+		const running = { ...claimed!.run, status: "running" as const }
+		expect(await scoped.projectRunStatus(running)).toBe(true)
+		roots.length = 0
+
+		expect(scoped.getState()).toEqual({ tasks: [], runs: [] })
+		const build = vi.fn()
+		expect(await scoped.claimRun("task-1", 2_000, "manual", build)).toBeUndefined()
+		expect(build).not.toHaveBeenCalled()
+		expect(await scoped.projectRunStatus(running)).toBe(false)
+		const succeeded = { ...running, status: "succeeded" as const, finishedAt: 2_000 }
+		expect(await scoped.completeRun(succeeded)).toMatchObject({
+			task: { workspace, lastRunStatus: "succeeded" },
+			run: succeeded,
+		})
+		expect(await scoped.completeRun(succeeded)).toBeUndefined()
+		expect(scoped.getState()).toEqual({ tasks: [], runs: [] })
+
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getRunsForTask("task-1")).toMatchObject([succeeded])
+		expect(reloaded.getTask("task-1")?.lastRunStatus).toBe("succeeded")
+	})
+
+	it.each([
+		{ label: "ownerless", storedOwnerId: undefined, callerOwnerId: undefined, status: "running" as const },
+		{
+			label: "missing caller owner",
+			storedOwnerId: "26ecc491-458a-480e-9f69-737fef9739d8",
+			callerOwnerId: undefined,
+			status: "running" as const,
+		},
+		{
+			label: "different owner",
+			storedOwnerId: "26ecc491-458a-480e-9f69-737fef9739d8",
+			callerOwnerId: "a2a213e0-b2da-4771-a6af-97861dc171a8",
+			status: "running" as const,
+		},
+		{
+			label: "not admitted",
+			storedOwnerId: "26ecc491-458a-480e-9f69-737fef9739d8",
+			callerOwnerId: "26ecc491-458a-480e-9f69-737fef9739d8",
+			status: "queued" as const,
+		},
+	])("does not finalize a hidden $label run", async ({ storedOwnerId, callerOwnerId, status }) => {
+		const workspace = path.join(tmpDir, "repo-a")
+		await store.upsertTask(makeTask({ workspace }))
+		const run = makeRun({ workspace, ownerId: storedOwnerId, status })
+		await store.upsertRun(run)
+		const scoped = new ScheduledTaskStore(tmpDir, () => [])
+		await scoped.initialize()
+
+		expect(
+			await scoped.completeRun({ ...run, ownerId: callerOwnerId, status: "succeeded", finishedAt: 2_000 }),
+		).toBeUndefined()
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		const persisted = reloaded.getRunsForTask("task-1")[0]
+		expect(persisted).toMatchObject({ id: run.id, status, workspace })
+		expect(persisted?.ownerId).toBe(storedOwnerId)
+	})
+
 	it("persists independent reasoning preferences on schedules and queued runs", async () => {
 		const reasoningPreference = { kind: "effort" as const, effort: "high" as const }
 		const task = makeTask({ reasoningPreference })

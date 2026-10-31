@@ -1,10 +1,58 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
 import { test } from "node:test"
 import { readFileSync } from "node:fs"
 import { glob } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
 import { expectedTestFiles } from "./lane-evidence.mjs"
+
+test(
+	"canonical bundle prepares one cached webview build without duplicate host preparation",
+	{ timeout: 25_000 },
+	() => {
+		const root = fileURLToPath(new URL("../../", import.meta.url))
+		const require = createRequire(import.meta.url)
+		const manifest = (file) => JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"))
+		assert.match(manifest("package.json").scripts.bundle, /^turbo bundle --filter=\.\/src(?:\s|$)/u)
+		const graph = JSON.parse(
+			execFileSync(
+				process.execPath,
+				[require.resolve("turbo/bin/turbo"), "run", "bundle", "--filter=./src", "--dry=json"],
+				{
+					cwd: root,
+					encoding: "utf8",
+					timeout: 20_000,
+					maxBuffer: 4 * 1024 * 1024,
+					windowsHide: true,
+					env: { ...process.env, TURBO_TELEMETRY_DISABLED: "1", DO_NOT_TRACK: "1" },
+				},
+			),
+		)
+		const webview = manifest("webview-ui/package.json")
+		const webviewTasks = graph.tasks.filter((task) => task.taskId === `${webview.name}#build`)
+		assert.equal(webviewTasks.length, 1, "The actual Turbo graph must build the webview exactly once")
+		assert.equal(webviewTasks[0].command, webview.scripts.build)
+		assert.deepEqual(webviewTasks[0].outputs, ["../src/webview-ui/build/**"])
+		const bundle = graph.tasks.find((task) => task.taskId === `${manifest("src/package.json").name}#bundle`)
+		assert.ok(bundle?.dependencies.includes(webviewTasks[0].taskId), "Bundle must await its cached webview output")
+		const redundantBuild = "pnpm --filter @alpha-code/vscode-webview build"
+		for (const [name, command] of Object.entries(manifest("apps/vscode-e2e/package.json").scripts)) {
+			const steps = command.split(" && ")
+			if (steps[0] === "pnpm -w bundle")
+				assert.notEqual(steps[1], redundantBuild, `${name} must use the bundle's prepared webview`)
+		}
+		for (const [name, lane] of Object.entries(lanes)) {
+			if (lane.commands[0]?.[0] === "bundle")
+				assert.notDeepEqual(
+					lane.commands[1],
+					["--filter", webview.name, "build"],
+					`${name} repeats webview preparation`,
+				)
+		}
+	},
+)
 
 test("tooling execution includes every Node test in its script owners", async () => {
 	const root = fileURLToPath(new URL("../../", import.meta.url))
@@ -48,6 +96,14 @@ test("the VS Code 1.125 minimum is independent from the exact 1.138 reference ho
 test("every lane delegates to an existing package command", () => {
 	for (const lane of Object.values(lanes)) {
 		for (const args of lane.commands) {
+			if (args[0] === "exec") {
+				assert.equal(args[1], "node")
+				assert.ok(
+					["scripts/harness/audit-benchmarks.mjs", "scripts/verify-vsix-contents.mjs"].includes(args[2]),
+				)
+				assert.ok(readFileSync(new URL(`../../${args[2]}`, import.meta.url)).length)
+				continue
+			}
 			const packagePath =
 				args[0] === "--dir"
 					? `${args[1]}/package.json`
@@ -100,8 +156,8 @@ test("hard offline and host lanes require explicit execution receipts", () => {
 	assert.ok(lanes.unit.receipts.some((receipt) => receipt?.packageDir === "packages/telemetry"))
 	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.host.receipts[0].runner, "extension-host")
-	assert.equal(lanes.outcomes.receipts[2].runner, "task-outcomes")
-	assert.ok(lanes.outcomes.commands[2].includes("scripted"))
+	assert.equal(lanes.outcomes.receipts[1].runner, "task-outcomes")
+	assert.ok(lanes.outcomes.commands[1].includes("scripted"))
 	assert.deepEqual(
 		lanes.services.receipts.slice(2).map(({ config }) => config),
 		["integration", "services"],

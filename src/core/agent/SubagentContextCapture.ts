@@ -1384,7 +1384,7 @@ export function captureSubagentContext(input: CaptureSubagentContextInput): Capt
 	const historyFork: SubagentHistoryFork =
 		native?.historyFork ?? (forkTurns === "none" ? { kind: "none" } : { kind: "text", reason: "legacy_capture" })
 	const selectedTurns =
-		native?.selectedTurns ??
+		(forkTurns === "none" ? [] : native?.selectedTurns) ??
 		boundCapturedTurns(
 			input.parentTaskId,
 			selectCapturedTurns(captureUserLedTurns(input.parentTaskId, input.history), forkTurns),

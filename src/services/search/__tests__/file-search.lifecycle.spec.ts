@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events"
 import path from "node:path"
 import { PassThrough } from "node:stream"
 
-import { executeRipgrep } from "../file-search"
+import { executeRipgrep, executeRipgrepForFiles, searchWorkspaceFiles } from "../file-search"
 
 const { spawn, getBinPath, executeWithRipgrepFallback } = vi.hoisted(() => ({
 	spawn: vi.fn(),
@@ -199,6 +199,46 @@ describe("file-search ripgrep process lifecycle", () => {
 			undefined,
 			controller.signal,
 		)
+	})
+
+	it.each([
+		["file discovery", (signal: AbortSignal) => executeRipgrepForFiles(workspacePath, 20, signal)],
+		["picker search", (signal: AbortSignal) => searchWorkspaceFiles("source", workspacePath, 20, signal)],
+	] as const)("propagates %s cancellation and joins the child without returning empty success", async (_, run) => {
+		const controller = new AbortController()
+		const reason = new Error("superseded picker query")
+		const running = run(controller.signal).catch((error: unknown) => error)
+		const settled = vi.fn()
+		void running.then(settled)
+		await started
+		controller.abort(reason)
+		await endStdout(path.join(workspacePath, "source.ts"))
+		const settledBeforeClose = settled.mock.calls.length
+		child.emit("close", null, "SIGTERM")
+
+		expect(await running).toBe(reason)
+		expect(settledBeforeClose).toBe(0)
+		expect(spawn).toHaveBeenCalledWith("/owned/rg", expect.any(Array), {
+			signal: controller.signal,
+			windowsHide: true,
+		})
+	})
+
+	it("does not start a picker subprocess if its query is cancelled while resolving ripgrep", async () => {
+		let resolveBinary!: (value: string) => void
+		getBinPath.mockImplementationOnce(() => new Promise<string>((resolve) => (resolveBinary = resolve)))
+		const controller = new AbortController()
+		const reason = new Error("picker dismissed")
+		const running = searchWorkspaceFiles("source", workspacePath, 20, controller.signal).catch(
+			(error: unknown) => error,
+		)
+		controller.abort(reason)
+		resolveBinary("/owned/rg")
+		await new Promise<void>((resolve) => setImmediate(resolve))
+		if (spawn.mock.calls.length) child.emit("close", 0, null)
+
+		expect(await running).toBe(reason)
+		expect(spawn).not.toHaveBeenCalled()
 	})
 
 	it.each(["stdout", "stderr"] as const)("stops and joins the child when %s fails", async (stream) => {

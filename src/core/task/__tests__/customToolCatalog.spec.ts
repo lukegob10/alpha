@@ -1,3 +1,7 @@
+import * as fs from "fs/promises"
+import os from "os"
+import path from "path"
+
 import { customToolRegistry, type CatalogLoadResult } from "@alpha-code/core"
 import { parametersSchema as z, type CustomToolDefinition, type McpServer } from "@alpha-code/types"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -49,7 +53,7 @@ function options(): BuildToolsOptions {
 	}
 }
 
-async function invoke(descriptor: ToolDescriptor) {
+async function invoke(descriptor: ToolDescriptor, nativeArgs: Record<string, unknown> = {}) {
 	const outputs: unknown[] = []
 	await descriptor.execute({
 		task: { getTaskMode: async () => "code" } as Task,
@@ -60,7 +64,7 @@ async function invoke(descriptor: ToolDescriptor) {
 			name: "custom_tool",
 			params: {},
 			partial: false,
-			nativeArgs: {},
+			nativeArgs,
 		} as ToolUse,
 		callbacks: {
 			askApproval: async () => true,
@@ -71,6 +75,86 @@ async function invoke(descriptor: ToolDescriptor) {
 }
 
 describe("custom tool catalog names", () => {
+	it("advertises custom transform inputs and executes their parsed values", async () => {
+		const execute = vi.fn(async ({ value }: { value: string }) => value)
+		customToolRegistry.register({
+			name: "transform_input",
+			description: "Accepts a string before applying a local transform",
+			parameters: z.object({ value: z.string().transform((value) => value.toUpperCase()) }),
+			execute,
+		})
+
+		const result = await buildNativeToolsArrayWithRestrictions(options())
+		const descriptor = result.surface?.resolve("transform_input")
+		expect(descriptor?.schema).toMatchObject({
+			function: { parameters: { properties: { value: { type: "string" } } } },
+		})
+		expect(await invoke(descriptor!, { value: "accepted input" })).toEqual(["ACCEPTED INPUT"])
+		expect(execute).toHaveBeenCalledWith({ value: "ACCEPTED INPUT" }, expect.objectContaining({ mode: "code" }))
+		expect(result.surface?.resolve("exec_command")).toBeDefined()
+	})
+
+	it.each(["exec_command", "mcp--server--read", "disabled_custom"])(
+		"filters unavailable custom name %s before inspecting its schema",
+		async (name) => {
+			const readParameters = vi.fn((): CustomToolDefinition["parameters"] => {
+				throw new Error("An unavailable custom schema must not be evaluated")
+			})
+			const definition: CustomToolDefinition = {
+				name,
+				description: "Unavailable custom definition",
+				get parameters() {
+					return readParameters()
+				},
+				execute: vi.fn(async () => "must not execute"),
+			}
+			vi.spyOn(customToolRegistry, "loadFromDirectoriesIfStale").mockResolvedValue({
+				loaded: [name],
+				failed: [],
+				catalog: [definition],
+			})
+
+			const result = await buildNativeToolsArrayWithRestrictions({
+				...options(),
+				disabledTools: ["disabled_custom"],
+			})
+			expect(readParameters).not.toHaveBeenCalled()
+			expect(result.surface?.resolve("exec_command")).toBeDefined()
+			expect(result.surface?.resolve("list_tickets")).toBeDefined()
+			expect(result.surface?.resolve("disabled_custom")).toBeUndefined()
+			expect(
+				result.tools.filter(
+					(tool) => tool.type === "function" && tool.function.description === definition.description,
+				),
+			).toEqual([])
+		},
+	)
+
+	it("keeps native and valid custom tools available when a loaded schema is rejected", async () => {
+		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-custom-catalog-input-"))
+		try {
+			const directory = path.join(workspace, ".alpha", "tools")
+			await fs.mkdir(directory, { recursive: true })
+			await fs.writeFile(path.join(directory, "package.json"), JSON.stringify({ type: "module" }))
+			await fs.writeFile(
+				path.join(directory, "invalid.js"),
+				'export default { name: "invalid_input", description: "Malformed schema", parameters: { _def: {} }, execute: async () => "unused" }',
+			)
+			await fs.writeFile(
+				path.join(directory, "valid.js"),
+				'export default { name: "valid_sibling", description: "Valid sibling", execute: async () => "available" }',
+			)
+
+			const result = await buildNativeToolsArrayWithRestrictions({ ...options(), cwd: workspace })
+			expect(result.surface?.resolve("invalid_input")).toBeUndefined()
+			expect(result.surface?.resolve("exec_command")).toBeDefined()
+			expect(result.surface?.resolve("list_tickets")).toBeDefined()
+			expect(await invoke(result.surface!.resolve("valid_sibling")!)).toEqual(["available"])
+		} finally {
+			await fs.rm(workspace, { recursive: true, force: true })
+		}
+	})
+
 	it("captures each overlapping workspace load's owned definitions", async () => {
 		const definitionA: CustomToolDefinition = {
 			name: "workspace_a_tool",

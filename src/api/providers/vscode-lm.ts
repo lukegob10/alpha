@@ -989,7 +989,13 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			throw getAbortSignalReason(metadata.signal)
 		}
 
-		const [message] = convertToVsCodeLmMessages([{ role: "user", content }])
+		// This content-only interface also receives assistant tool calls during
+		// compaction. The User projection omits tool_use blocks, so count their
+		// complete JSON instead; generation still replays native ordered parts.
+		const countableContent = content.map((block) =>
+			block.type === "tool_use" ? { type: "text" as const, text: JSON.stringify(block) } : block,
+		)
+		const [message] = convertToVsCodeLmMessages([{ role: "user", content: countableContent }])
 		// A text fallback can be estimated locally. Media token cost depends on its
 		// dimensions, so a failed provider count uses the full selected context as
 		// a safety floor rather than silently undercounting and overrunning it.

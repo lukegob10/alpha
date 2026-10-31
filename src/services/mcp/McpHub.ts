@@ -216,6 +216,7 @@ export class McpHub {
 	isConnecting: boolean = false
 	private refCount: number = 0 // Reference counter for active clients
 	private configChangeDebounceTimers: Map<string, NodeJS.Timeout> = new Map()
+	private pendingConfigChanges = new Map<string, { filePath: string; source: "global" | "project" }>()
 	private isProgrammaticUpdate: boolean = false
 	private flagResetTimer?: NodeJS.Timeout
 	private pendingConfigUpdates = 0
@@ -232,6 +233,7 @@ export class McpHub {
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
 	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
 	private catalogRevisions = new WeakMap<ConnectedMcpConnection, number>()
+	private declaredServerConfigs = new WeakMap<McpConnection, z.infer<typeof ServerConfigSchema>>()
 
 	constructor(
 		provider: AlphaProvider,
@@ -449,22 +451,28 @@ export class McpHub {
 	 * Debounced wrapper for handling config file changes
 	 */
 	private debounceConfigChange(filePath: string, source: "global" | "project"): void {
-		// Skip processing if this is a programmatic update to prevent unnecessary server restarts
-		if (this.isDisposed || this.isProgrammaticUpdate) {
+		if (this.isDisposed) {
 			return
 		}
 
 		const key = `${source}-${filePath}`
+		this.pendingConfigChanges.set(key, { filePath, source })
 
 		// Clear existing timer if any
 		const existingTimer = this.configChangeDebounceTimers.get(key)
 		if (existingTimer) {
 			clearTimeout(existingTimer)
+			this.configChangeDebounceTimers.delete(key)
 		}
+		// A watcher cannot distinguish our write from an external edit or a different
+		// source's revocation. Retain its latest event until the write window closes.
+		if (this.isProgrammaticUpdate) return
 
 		// Set new timer
 		const timer = setTimeout(async () => {
 			this.configChangeDebounceTimers.delete(key)
+			if (this.isDisposed || this.isProgrammaticUpdate) return
+			this.pendingConfigChanges.delete(key)
 			await this.handleConfigFileChange(filePath, source)
 		}, 500) // 500ms debounce
 
@@ -773,7 +781,7 @@ export class McpHub {
 		source: "global" | "project",
 		reason: DisableReason,
 	): DisconnectedMcpConnection {
-		return {
+		const connection: DisconnectedMcpConnection = {
 			type: "disconnected",
 			server: {
 				name,
@@ -787,6 +795,8 @@ export class McpHub {
 			client: null,
 			transport: null,
 		}
+		this.declaredServerConfigs.set(connection, config)
+		return connection
 	}
 
 	/**
@@ -1105,6 +1115,7 @@ export class McpHub {
 				transport,
 			}
 			this.connections.push(connection)
+			this.declaredServerConfigs.set(connection, config)
 			connectingConnection = connection
 			this.connectionControllers.set(connection, lifecycleController)
 			// The SDK owns transport callbacks after connect; forward lifecycle events through the client.
@@ -1583,7 +1594,12 @@ export class McpHub {
 				} catch (error) {
 					this.showErrorMessage(`Failed to connect to new MCP server ${name}`, error)
 				}
-			} else if (!deepEqual(JSON.parse(currentConnection.server.config), config)) {
+			} else if (
+				!deepEqual(
+					this.declaredServerConfigs.get(currentConnection) ?? JSON.parse(currentConnection.server.config),
+					validatedConfig,
+				)
+			) {
 				// Existing server with changed config
 				try {
 					await this.deleteConnection(name, source)
@@ -2000,6 +2016,15 @@ export class McpHub {
 			committedConfig = updated
 		})
 		if (!committedConfig) throw new Error(`Server ${serverName} configuration was not updated`)
+		const currentConnection = this.findConnection(serverName, source)
+		const declared = currentConnection && this.declaredServerConfigs.get(currentConnection)
+		if (currentConnection && declared) {
+			// Project only our intentional change. An external edit merged by the write
+			// lease must still differ during watcher reconciliation, even if it is in our saved bytes.
+			const projected =
+				typeof configUpdate === "function" ? configUpdate(declared) : { ...declared, ...configUpdate }
+			this.declaredServerConfigs.set(currentConnection, ServerConfigSchema.parse(projected))
+		}
 		return committedConfig
 	}
 
@@ -2032,6 +2057,9 @@ export class McpHub {
 				this.flagResetTimer = setTimeout(() => {
 					this.isProgrammaticUpdate = false
 					this.flagResetTimer = undefined
+					for (const { filePath, source } of this.pendingConfigChanges.values()) {
+						this.debounceConfigChange(filePath, source)
+					}
 				}, 600)
 			}
 		}
@@ -2411,6 +2439,7 @@ export class McpHub {
 		}
 
 		this.configChangeDebounceTimers.clear()
+		this.pendingConfigChanges.clear()
 
 		// Clear flag reset timer and reset programmatic update flag
 		if (this.flagResetTimer) {

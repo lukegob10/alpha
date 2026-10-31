@@ -5,6 +5,7 @@ import { createRequire } from "module"
 import { fileURLToPath } from "url"
 import process from "node:process"
 import * as console from "node:console"
+import { createHash } from "node:crypto"
 
 import { copyPaths, copyWasms, copyLocales, setupLocaleWatcher } from "@alpha-code/build"
 import { resolveLanceDbNativeDependencies } from "./lancedb-native.mjs"
@@ -153,9 +154,15 @@ async function cleanDistDir(distDir) {
 	}
 }
 
-function copyLanceDbNativeBindings(distDir, nativeBindings) {
+async function copyLanceDbNativeBindings(distDir, nativeBindings) {
 	if (nativeBindings.length === 0) {
 		return
+	}
+
+	const fileHash = async (file) => {
+		const hash = createHash("sha256")
+		for await (const chunk of fs.createReadStream(file)) hash.update(chunk)
+		return hash.digest("hex")
 	}
 
 	fs.mkdirSync(distDir, { recursive: true })
@@ -169,6 +176,22 @@ function copyLanceDbNativeBindings(distDir, nativeBindings) {
 				(error?.code === "EBUSY" || error?.code === "EPERM") &&
 				fs.existsSync(target)
 			) {
+				// A running host can hold an older dependency at the same native filename.
+				let identical
+				try {
+					identical = (await fileHash(nativeBinding)) === (await fileHash(target))
+				} catch (verificationError) {
+					throw new Error(
+						"Cannot verify the locked LanceDB native binding. Close Alpha Extension Development Hosts and retry the build.",
+						{ cause: verificationError },
+					)
+				}
+				if (!identical) {
+					throw new Error(
+						"The locked LanceDB native binding does not match the installed dependency. Close Alpha Extension Development Hosts and retry the build.",
+						{ cause: error },
+					)
+				}
 				console.warn(`[copyLanceDbNativeBindings] Reusing locked native binding at ${target}`)
 				continue
 			}
@@ -261,9 +284,9 @@ async function main() {
 		{
 			name: "copyLanceDbNativeBindings",
 			setup(build) {
-				build.onEnd((result) => {
+				build.onEnd(async (result) => {
 					if (result.errors.length === 0) {
-						copyLanceDbNativeBindings(distDir, lanceDbNative.bindings)
+						await copyLanceDbNativeBindings(distDir, lanceDbNative.bindings)
 						copyBundledRipgrepDependencies(distDir)
 					}
 				})

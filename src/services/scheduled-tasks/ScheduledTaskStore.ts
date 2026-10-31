@@ -228,7 +228,11 @@ export class ScheduledTaskStore {
 		}
 		return this.withLock(async () => {
 			const currentRun = this.runs.get(run.id)
-			const task = currentRun && this.getTaskForRun(currentRun)
+			let task = currentRun && this.getTaskForRun(currentRun)
+			if (!task && currentRun?.status === "running" && currentRun.ownerId && currentRun.ownerId === run.ownerId) {
+				// Closing a workspace revokes admission, but its running owner must still settle durable history.
+				task = this.tasks.get(currentRun.taskId)
+			}
 			if (
 				!currentRun ||
 				!task ||

@@ -208,6 +208,23 @@ describe("scheduled profiles and skills", () => {
 		})
 	})
 
+	it("durably completes a running task after its workspace closes and releases completed task tracking", async () => {
+		const task = await service.createTask(payload())
+		const running = await runNow(task.id)
+		Object.assign(vscode.workspace, { workspaceFolders: [] })
+		expect(service.getState()).toEqual({ tasks: [], runs: [] })
+		const completions = provider.listeners(AlphaCodeEventName.TaskCompleted)
+		expect(completions).toHaveLength(1)
+		await completions[0]("alpha-task")
+		await service.dispose()
+
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(reloaded.getState().runs.find((run) => run.id === running.id)?.status).toBe("succeeded")
+		expect(reloaded.getTask(task.id)?.lastRunStatus).toBe("succeeded")
+		expect(provider.removeTaskFromStack).not.toHaveBeenCalled()
+	})
+
 	it("does not mark an occurrence missed while it is within the normal tick interval", async () => {
 		const task = await service.createTask(payload())
 		const editor = new ScheduledTaskStore(tmpDir)

@@ -15,6 +15,7 @@ import { customToolRegistry, formatNative, serializeCustomTool } from "@alpha-co
 
 import type { AlphaProvider } from "../webview/AlphaProvider"
 import { getConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
+import { captureTaskSessionApprovalAuthority } from "../auto-approval/taskSessionApprovalGrants"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 import { planModeSlug } from "../../shared/modes"
 import { expandLegacyThreadToolDisables } from "../../shared/tools"
@@ -259,6 +260,7 @@ function captureMcpAvailability(
 			client: unknown
 			catalogRevision: number | undefined
 			schemaDigest: string
+			sessionApprovalAuthority: string
 		}
 	>()
 	for (const server of servers) {
@@ -270,6 +272,7 @@ function captureMcpAvailability(
 			const name = canonicalizeToolName(buildMcpToolName(server.name, tool.name))
 			const schema = schemasByName.get(name)
 			if (!schema || tool.enabledForPrompt === false || captured.has(name)) continue
+			const schemaDigest = digestValue(schema)
 			captured.set(name, {
 				serverName: server.name,
 				toolName: tool.name,
@@ -278,7 +281,16 @@ function captureMcpAvailability(
 				connection,
 				client: connection?.client,
 				catalogRevision,
-				schemaDigest: digestValue(schema),
+				schemaDigest,
+				// The session grant must follow the same executor boundary as isCurrent below.
+				sessionApprovalAuthority: captureTaskSessionApprovalAuthority(
+					[
+						...(mcpHub ? [mcpHub] : []),
+						...(connection ? [connection] : [server]),
+						...(connection?.client ? [connection.client] : []),
+					],
+					[server.name, server.source, tool.name, catalogRevision, schemaDigest],
+				),
 			})
 		}
 	}
@@ -427,13 +439,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const toolDirs = getConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		const catalog = await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
-		customTools = catalog.catalog
+		const disabledCustomTools = new Set(disabledTools)
+		customTools = availableCustomTools(catalog.catalog)
+			.filter((definition) => !disabledCustomTools.has(canonicalizeToolName(definition.name)))
 			.map((definition) => ({ definition, schema: formatNative(serializeCustomTool(definition)) }))
 			.sort((a, b) =>
 				a.definition.name < b.definition.name ? -1 : a.definition.name > b.definition.name ? 1 : 0,
 			)
 	}
-	customTools = availableCustomTools(customTools)
 	if (!diagnosticSession) {
 		const hub = provider.getMcpHub()
 		if (hub?.awaitCatalogReady) await awaitCatalogInput(hub.awaitCatalogReady(options.signal), options.signal)

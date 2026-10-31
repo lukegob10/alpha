@@ -321,6 +321,7 @@ function createProvider(options: {
 	sourceDirty: boolean
 	diskExists?: boolean
 	includeSource?: boolean
+	preventFocusDisruption?: boolean
 }) {
 	testState.diskExists = options.diskExists ?? true
 	testState.diskContent = options.diskContent
@@ -357,7 +358,7 @@ function createProvider(options: {
 					diagnosticsEnabled: false,
 					includeDiagnosticMessages: true,
 					maxDiagnosticMessages: 50,
-					experiments: {},
+					experiments: { preventFocusDisruption: options.preventFocusDisruption ?? false },
 				}),
 			}),
 		},
@@ -477,6 +478,66 @@ describe("DiffViewProvider ownership at the default diff editor boundary", () =>
 		expect(sourceDocument.save).not.toHaveBeenCalled()
 		expect(testState.diskContent).toBe("alpha replacement\n")
 		expect(task.didEditFile).toBe(true)
+	})
+
+	it.each([false, true])("rejects access revoked during edit approval (background=%s)", async (background) => {
+		const diskContent = "disk old\n"
+		const { sourceDocument, task } = createProvider({
+			diskContent,
+			sourceContent: diskContent,
+			sourceDirty: false,
+			preventFocusDisruption: background,
+		})
+		const callbacks = {
+			askApproval: vi.fn(async () => {
+				task.alphaIgnoreController.validateAccess.mockReturnValue(false)
+				return true
+			}),
+			handleError: vi.fn(),
+			pushToolResult: vi.fn(),
+		}
+
+		await editTool.execute(
+			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+			task as any,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(callbacks.handleError).toHaveBeenCalledWith(
+			"edit",
+			expect.objectContaining({ message: expect.stringContaining(".alphaignore") }),
+		)
+		expect(targetWriteCalls()).toHaveLength(0)
+		expect(sourceDocument.save).not.toHaveBeenCalled()
+		expect(testState.diskContent).toBe(diskContent)
+		expect(task.didEditFile).toBe(false)
+	})
+
+	it.each([false, true])("retains explicit protected edit approval (background=%s)", async (background) => {
+		const { task } = createProvider({
+			diskContent: "disk old\n",
+			sourceContent: "disk old\n",
+			sourceDirty: false,
+			preventFocusDisruption: background,
+		})
+		task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+		const callbacks = {
+			askApproval: vi.fn().mockResolvedValue(true),
+			handleError: vi.fn(),
+			pushToolResult: vi.fn(),
+		}
+
+		await editTool.execute(
+			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+			task as any,
+			callbacks,
+		)
+
+		expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(targetWriteCalls()).toHaveLength(1)
+		expect(testState.diskContent).toBe("alpha replacement\n")
 	})
 
 	it("reports an initially dirty source through EditTool without saving or replacing it", async () => {

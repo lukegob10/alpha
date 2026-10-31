@@ -21,6 +21,7 @@ vi.mock("../../../services/code-index/manager", () => ({
 import { createAgentResponse, type AgentToolCall } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
 import { createToolPolicySnapshot } from "../../agent/ToolPolicy"
+import { clearTaskSessionApprovalGrants } from "../../auto-approval/taskSessionApprovalGrants"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import type { TaskToolSurface } from "../../tools/TaskToolSurface"
 import { getEffectiveApiHistory } from "../../condense"
@@ -101,7 +102,13 @@ function host(): ToolExecutionHost {
 async function execute(
 	surface: TaskToolSurface,
 	calls: AgentToolCall[],
-	input: { signal?: AbortSignal; mode?: string; executionHost?: ToolExecutionHost; failFence?: boolean } = {},
+	input: {
+		signal?: AbortSignal
+		mode?: string
+		executionHost?: ToolExecutionHost
+		failFence?: boolean
+		experiments?: Record<string, boolean>
+	} = {},
 ) {
 	const executionHost = input.executionHost ?? host()
 	const fence = vi.fn(() => {
@@ -112,6 +119,7 @@ async function execute(
 		registry: surface.registry,
 		policy: surface.policy,
 		mode: input.mode ?? "code",
+		experiments: input.experiments,
 		signal: input.signal,
 		preserveAbortedResults: true,
 		beforeEffect: fence,
@@ -812,6 +820,77 @@ describe("TaskToolCatalogCache", () => {
 			const result = await execute(loaded, [call(target, { query: "today" })], { executionHost })
 			expect(result.outcome.results[0].status).toBe("error")
 			expect(effect).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["unchanged", "client", "connection", "catalog", "schema", "unrelated"] as const)(
+		"binds an MCP session approval to its captured authority after %s changes",
+		async (change) => {
+			const { options, server, connection, hub } = fixture(2)
+			let catalogRevision = 1
+			Object.assign(hub, { getServerCatalogRevision: () => catalogRevision })
+			const taskId = `catalog-session-authority-${change}`
+			const requestToolApproval = vi.fn(async () => ({ decision: "approve_session" as const }))
+			const effect = mockMcpEffect()
+			const run = async (id: string) => {
+				const executionHost = { ...host(), taskId, requestToolApproval }
+				const result = await execute(await capture(options), [call(target, { query: "today" }, id)], {
+					executionHost,
+				})
+				expect(result.outcome.results[0].status).toBe("success")
+			}
+			try {
+				await run("first")
+				if (change === "unchanged") options.catalogCache = new TaskToolCatalogCache()
+				if (change === "client") connection.client = {}
+				if (change === "connection") hub.connections = [{ ...connection }]
+				if (change === "catalog") catalogRevision++
+				if (change === "schema") server.tools![0].inputSchema = { type: "object", properties: {} }
+				if (change === "unrelated") server.tools![1].description += " Updated."
+				await run("second")
+				expect(effect).toHaveBeenCalledTimes(2)
+				expect(requestToolApproval).toHaveBeenCalledTimes(
+					change === "unchanged" || change === "unrelated" ? 1 : 2,
+				)
+			} finally {
+				clearTaskSessionApprovalGrants(taskId)
+			}
+		},
+	)
+
+	it.each([false, true])(
+		"binds a custom session approval to its captured callback (replaced=%s)",
+		async (replaced) => {
+			const { options } = fixture(1)
+			options.experiments = { customTools: true }
+			const definition: CustomToolDefinition = {
+				name: "session_authority_fixture",
+				description: "Fixture custom effect",
+				execute: vi.fn(async () => "First implementation"),
+			}
+			vi.spyOn(customToolRegistry, "loadFromDirectoriesIfStale").mockImplementation(async () => ({
+				loaded: [definition.name],
+				failed: [],
+				catalog: [definition],
+			}))
+			const taskId = `catalog-custom-session-authority-${replaced}`
+			const requestToolApproval = vi.fn(async () => ({ decision: "approve_session" as const }))
+			const run = async (id: string) => {
+				const result = await execute(await capture(options), [call(definition.name, {}, id)], {
+					executionHost: { ...host(), taskId, requestToolApproval },
+					experiments: options.experiments,
+				})
+				expect(result.outcome.results[0].status).toBe("success")
+			}
+			try {
+				await run("first")
+				if (replaced) definition.execute = vi.fn(async () => "Replacement implementation")
+				else options.catalogCache = new TaskToolCatalogCache()
+				await run("second")
+				expect(requestToolApproval).toHaveBeenCalledTimes(replaced ? 2 : 1)
+			} finally {
+				clearTaskSessionApprovalGrants(taskId)
+			}
 		},
 	)
 

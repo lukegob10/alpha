@@ -49,7 +49,7 @@ import { ChatReasoningControl } from "../reasoning/ChatReasoningControl"
 import { MAX_IMAGES_PER_MESSAGE } from "./ChatView"
 import ContextMenu from "./ContextMenu"
 import { IndexingStatusBadge } from "./IndexingStatusBadge"
-import { usePromptHistory } from "./hooks/usePromptHistory"
+import { usePromptHistory, type RestoreHistoryDraft } from "./hooks/usePromptHistory"
 import { useTicketSearch } from "./hooks/useTicketSearch"
 
 interface ChatTextAreaProps {
@@ -84,6 +84,7 @@ interface ChatTextAreaProps {
 	isTaskDraft?: boolean
 	draftApprovalMode?: ApprovalMode
 	onDraftApprovalModeChange?: (mode: ApprovalMode) => void
+	onRestoreHistoryDraft?: RestoreHistoryDraft
 }
 
 export const ChatTextArea = memo(
@@ -118,6 +119,7 @@ export const ChatTextArea = memo(
 				isTaskDraft = false,
 				draftApprovalMode,
 				onDraftApprovalModeChange,
+				onRestoreHistoryDraft,
 			},
 			ref,
 		) => {
@@ -315,6 +317,7 @@ export const ChatTextArea = memo(
 				inputValue,
 				setInputValue,
 				isInTask: conversationAlphaMessages !== undefined ? isInTask : undefined,
+				onRestoreHistoryDraft,
 			})
 
 			// Fetch git commits when Git is selected or when typing a hash.
@@ -356,8 +359,9 @@ export const ChatTextArea = memo(
 
 			const handleSend = useCallback(() => {
 				cancelPendingEnhancement()
+				resetHistoryNavigation()
 				onSend()
-			}, [cancelPendingEnhancement, onSend])
+			}, [cancelPendingEnhancement, resetHistoryNavigation, onSend])
 			const handleStop = useCallback(() => {
 				cancelPendingEnhancement()
 				onStop?.()
@@ -580,7 +584,9 @@ export const ChatTextArea = memo(
 
 			const handleKeyDown = useCallback(
 				(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-					if (event.key === "Escape" && !event.nativeEvent?.isComposing && pendingEnhancementRef.current) {
+					const isComposing = event.nativeEvent?.isComposing ?? false
+					if (isComposing) return
+					if (event.key === "Escape" && pendingEnhancementRef.current) {
 						event.preventDefault()
 						cancelPendingEnhancement()
 						return
@@ -651,7 +657,6 @@ export const ChatTextArea = memo(
 						}
 					}
 
-					const isComposing = event.nativeEvent?.isComposing ?? false
 					if (
 						!event.defaultPrevented &&
 						!showContextMenu &&
@@ -684,7 +689,6 @@ export const ChatTextArea = memo(
 						if (shouldSubmit) {
 							event.preventDefault()
 							if (!sendDisabled) {
-								resetHistoryNavigation()
 								handleSend()
 							}
 						}
@@ -747,7 +751,6 @@ export const ChatTextArea = memo(
 					justDeletedSpaceAfterMention,
 					contextMenuOptions,
 					handleHistoryNavigation,
-					resetHistoryNavigation,
 					enterBehavior,
 					isEditMode,
 					modeSwitchDisabled,

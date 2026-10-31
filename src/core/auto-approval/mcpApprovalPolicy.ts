@@ -1,7 +1,5 @@
 import type { McpServer, McpServerUse } from "@alpha-code/types"
 
-import { getMcpToolApprovalGrant } from "./mcp"
-
 export type McpToolApprovalDecision = "approve" | "ask"
 
 export interface McpToolApprovalGrant {
@@ -62,18 +60,26 @@ export function captureMcpApprovalPolicy(enabled: boolean, mcpServers?: McpServe
 	}
 	const grants: McpToolApprovalGrant[] = []
 	for (const [serverName, servers] of serversByName) {
-		const toolNames = new Set(servers.flatMap((server) => server.tools?.map((tool) => tool.name) ?? []))
-		const sources = new Set(servers.map((server) => server.source))
-		for (const toolName of toolNames) {
-			for (const source of sources) {
-				const use: McpServerUse = {
-					type: "use_mcp_tool",
-					serverName,
-					toolName,
-					...(source === undefined ? {} : { source }),
+		const selected = new Map<McpServer["source"], McpServer>()
+		for (const server of servers) {
+			if (!selected.has(server.source)) {
+				// Source-less requests select the first same-name server, even when a later legacy server exists.
+				selected.set(server.source, server.source === undefined ? servers[0] : server)
+			}
+		}
+		for (const server of new Set(selected.values())) {
+			const seenTools = new Set<string>()
+			for (const tool of server.tools ?? []) {
+				const toolName = tool.name
+				if (seenTools.has(toolName)) continue
+				seenTools.add(toolName)
+				if (tool.alwaysAllow) {
+					grants.push({
+						serverName,
+						toolName,
+						...(server.source === undefined ? {} : { source: server.source }),
+					})
 				}
-				const grant = getMcpToolApprovalGrant(use, servers)
-				if (grant) grants.push(grant)
 			}
 		}
 	}

@@ -90,6 +90,7 @@ import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
 import { waitAgentTool } from "./WaitAgentTool"
 import { writeToFileTool } from "./WriteToFileTool"
+import { captureTaskSessionApprovalAuthority } from "../auto-approval/taskSessionApprovalGrants"
 import {
 	clickElementTool,
 	dragElementTool,
@@ -160,6 +161,8 @@ export interface PreparedCommandRead {
 
 export interface ToolDescriptor {
 	name: string
+	/** Opaque captured executor authority; session grants cannot transfer to a replacement executor. */
+	sessionApprovalAuthority?: string
 	/** Handler metadata owns execution status when result text is opaque external data. */
 	statusSource?: "handler" | "structured_output"
 	/** Alternate model-facing names. All entries resolve to `name`. */
@@ -202,7 +205,13 @@ export interface ToolRegistryOptions {
 	/** Original targets owned by the same captured schemas, including sanitized-name collisions. */
 	mcpToolTargets?: ReadonlyMap<
 		string,
-		{ serverName: string; toolName: string; source?: "global" | "project"; parallelRead?: boolean }
+		{
+			serverName: string
+			toolName: string
+			source?: "global" | "project"
+			parallelRead?: boolean
+			sessionApprovalAuthority?: string
+		}
 	>
 	includeCustomTools?: boolean
 	/** Captured custom definitions and schemas from one catalog boundary. */
@@ -1136,6 +1145,7 @@ export class ToolRegistry {
 			this.register({
 				name,
 				aliases: [],
+				sessionApprovalAuthority: capturedTarget?.sessionApprovalAuthority,
 				schema: canonicalizeSchema(schema),
 				capabilities: {
 					...getToolCapabilities(name),
@@ -1211,6 +1221,10 @@ export class ToolRegistry {
 				this.register({
 					name: customTool.name,
 					aliases: [],
+					sessionApprovalAuthority: captureTaskSessionApprovalAuthority(
+						[execute, ...(parameters ? [parameters] : [])],
+						schema,
+					),
 					schema,
 					capabilities: getToolCapabilities("custom_tool"),
 					statusSource: "handler",

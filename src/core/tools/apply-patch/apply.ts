@@ -106,7 +106,7 @@ function computeReplacements(
 
 /**
  * Apply replacements to the original lines, returning the modified content.
- * Replacements must be applied in reverse order to preserve indices.
+ * Replacements are sorted and do not overlap in the original source.
  */
 type SourceLine = { text: string; ending: string }
 
@@ -115,15 +115,17 @@ function applyReplacements(
 	replacements: Array<[number, number, string[]]>,
 	preferredEnding: string,
 ): SourceLine[] {
-	const result = [...lines]
+	const result: SourceLine[] = []
+	let sourceIndex = 0
 
-	// Apply in reverse order so earlier replacements don't shift later indices
-	for (let i = replacements.length - 1; i >= 0; i--) {
-		const [startIdx, oldLen, newSegment] = replacements[i]!
-
-		// Remove old lines
-		result.splice(startIdx, oldLen, ...newSegment.map((text) => ({ text, ending: preferredEnding })))
+	// Codex 5a7353f0401b rebuilds from source-ordered replacements. This avoids
+	// repeated tail shifts and the argument limit of spreading a large segment.
+	for (const [startIdx, oldLen, newSegment] of replacements) {
+		for (; sourceIndex < startIdx; sourceIndex++) result.push(lines[sourceIndex]!)
+		for (const text of newSegment) result.push({ text, ending: preferredEnding })
+		sourceIndex = startIdx + oldLen
 	}
+	for (; sourceIndex < lines.length; sourceIndex++) result.push(lines[sourceIndex]!)
 
 	return result
 }

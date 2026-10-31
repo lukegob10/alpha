@@ -354,7 +354,7 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 		let usePromptCache = supportsPromptCache
 
 		while (true) {
-			const requestContext = await this.getRequestContext(id)
+			const requestContext = await this.getRequestContext(id, metadata)
 
 			/**
 			 * Vertex API has specific limitations for prompt caching:

@@ -4,6 +4,8 @@ import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
 
 export class ExecaTerminal extends BaseTerminal {
+	private readonly pendingProcesses = new Set<ExecaTerminalProcess>()
+
 	constructor(
 		id: number,
 		cwd: string,
@@ -19,6 +21,18 @@ export class ExecaTerminal extends BaseTerminal {
 		return false
 	}
 
+	/** Shell exit may clear process before completion observers and archival finish. */
+	public canPruneIdle(): boolean {
+		return (
+			this.taskId === undefined &&
+			!this.busy &&
+			!this.running &&
+			!this.process &&
+			this.pendingProcesses.size === 0 &&
+			this.completedProcesses.length === 0
+		)
+	}
+
 	public override runCommand(
 		command: string,
 		callbacks: AlphaTerminalCallbacks,
@@ -29,6 +43,8 @@ export class ExecaTerminal extends BaseTerminal {
 		const process = new ExecaTerminalProcess(this)
 		process.command = command
 		this.process = process
+		this.pendingProcesses.add(process)
+		process.once("finalized", () => this.pendingProcesses.delete(process))
 		if (callbacks.onOutput) process.setOutputWriter((chunk, signal) => callbacks.onOutput!(chunk, process, signal))
 		if (callbacks.onOutputClosed) process.setOutputFinalizer(() => callbacks.onOutputClosed!(process))
 		try {

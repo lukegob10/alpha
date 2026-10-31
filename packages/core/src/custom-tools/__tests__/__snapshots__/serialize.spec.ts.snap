@@ -7,7 +7,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "simple",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {
         "value": {
           "description": "The input value",
@@ -26,7 +25,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "cached",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {},
       "type": "object",
     },
@@ -37,7 +35,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "legacy",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {
         "input": {
           "description": "The input string",
@@ -56,7 +53,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "multi_toolA",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {},
       "type": "object",
     },
@@ -67,7 +63,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "multi_toolB",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {},
       "type": "object",
     },
@@ -78,7 +73,6 @@ exports[`Serialization snapshots > should correctly serialize all fixtures 1`] =
     "name": "mixed_validTool",
     "parameters": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
-      "additionalProperties": false,
       "properties": {},
       "type": "object",
     },
@@ -93,7 +87,6 @@ exports[`Serialization snapshots > should correctly serialize cached tool 1`] = 
   "name": "cached",
   "parameters": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
     "properties": {},
     "type": "object",
   },
@@ -107,7 +100,6 @@ exports[`Serialization snapshots > should correctly serialize legacy tool (using
   "name": "legacy",
   "parameters": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
     "properties": {
       "input": {
         "description": "The input string",
@@ -129,7 +121,6 @@ exports[`Serialization snapshots > should correctly serialize simple tool 1`] = 
   "name": "simple",
   "parameters": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "additionalProperties": false,
     "properties": {
       "value": {
         "description": "The input value",

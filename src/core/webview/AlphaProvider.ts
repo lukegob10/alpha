@@ -294,6 +294,7 @@ import {
 	TaskHistoryStore,
 } from "../task-persistence"
 import { readTaskMessages } from "../task-persistence/taskMessages"
+import type { ApiMessagesWritePrecondition } from "../task-persistence/apiMessages"
 import { resolveWorkerArtifactRecoveryTarget } from "../task-persistence/workerArtifactRecovery"
 import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
@@ -328,7 +329,7 @@ import {
 } from "./AgentLifecycleProjection"
 import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
 import { cancelPromptEnhancements } from "./promptEnhancementRequests"
-import { cancelTicketSearches, enqueueTicketSearch } from "./ticketSearchRequests"
+import { cancelTicketSearches, enqueueFileSearch, enqueueTicketSearch } from "./ticketSearchRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
 import { compactSubagentCommandApprovalCeilings, createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
@@ -584,7 +585,7 @@ export class AlphaProvider
 	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
 	/** A waiting parent receives the child's result through wait_task, so no second message is needed. */
 	private readonly independentTaskWaiters = new Map<string, number>()
-	/** Serialize retained relaunches before reading or changing the agent's lifecycle. */
+	/** Serialize retained relaunches and closes before reading or changing the agent's lifecycle. */
 	private readonly agentFollowupAdmissions = new Map<string, Promise<unknown>>()
 	private readonly subagentRunFinalizations = new Map<string, SubagentFinalizationRecord>()
 	private subagentResidencyPrune?: Promise<void>
@@ -1167,7 +1168,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.18-subagents-and-ux"
+	public readonly latestAnnouncementId = "october-2026-v3.2.19-harness-and-reasoning"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1405,12 +1406,12 @@ export class AlphaProvider
 				compactTaskHistoryForGlobalState(this.taskHistoryStore.getAll()),
 			)
 
-			this.taskHistoryStoreInitialized = true
 			await this.taskSessions.runStartupRecovery(async (hasTaskOwner) => {
 				await this.recoverManagedWorkerArtifacts(hasTaskOwner)
 				await this.reconcileInterruptedSubagentState()
 				await this.reconcileIndependentTaskCompletions()
 			})
+			this.taskHistoryStoreInitialized = true
 		} catch (error) {
 			this.log(`[initializeTaskHistoryStore] Error: ${error instanceof Error ? error.message : String(error)}`)
 			throw error
@@ -2542,6 +2543,11 @@ export class AlphaProvider
 	 * @param webview A reference to the extension webview
 	 */
 	private setWebviewMessageListener(webview: vscode.Webview, isCurrentWebview = () => !this._disposed) {
+		const selectionControlTypes = new Set<WebviewMessage["type"]>([
+			"mode",
+			"loadApiConfiguration",
+			"loadApiConfigurationById",
+		])
 		const taskControlTypes = new Set<WebviewMessage["type"]>([
 			"queueMessage",
 			"sendAndSteer",
@@ -2636,6 +2642,39 @@ export class AlphaProvider
 				}
 				return
 			}
+			if (messageType === "searchFiles") {
+				if (message.taskId !== undefined && (typeof message.taskId !== "string" || !message.taskId)) return
+				const taskId = message.taskId ?? this.getActiveTaskId()
+				const task = taskId ? this.getLiveTask(taskId) : undefined
+				if (taskId && !task) {
+					return this.postMessageToWebview({
+						type: "fileSearchResults",
+						results: [],
+						requestId: message.requestId,
+					})
+				}
+				const cwd = task?.cwd ?? this.cwd
+				const scopedMessage = taskId ? { ...message, taskId } : message
+				const processing = enqueueFileSearch(this, taskId, (signal) =>
+					webviewMessageHandler(this, scopedMessage, this.marketplaceManager, {
+						fileSearch: { signal, cwd },
+						isCurrentWebview,
+					}),
+				)
+				const tracked = processing.catch(async (error) => {
+					if (!isCurrentWebview()) return
+					logFailure(message, error)
+					await this.postMessageToWebview({
+						type: "fileSearchResults",
+						results: [],
+						requestId: message.requestId,
+						error: error instanceof Error ? error.message : String(error),
+					})
+				})
+				this.immediateWebviewOperations.add(tracked)
+				void tracked.finally(() => this.immediateWebviewOperations.delete(tracked))
+				return tracked
+			}
 			if (messageType === "searchTickets") {
 				const request = ticketSearchRequestSchema.safeParse(message)
 				if (!request.success) return
@@ -2688,7 +2727,28 @@ export class AlphaProvider
 				return tracked
 			}
 
-			const processing = this.webviewMessageQueue.then(() => run(message))
+			const selection =
+				messageType && selectionControlTypes.has(messageType)
+					? {
+							currentView: this.currentView,
+							navigationGeneration: this.taskNavigationGeneration,
+							task: this.getCurrentTask(),
+						}
+					: undefined
+			const processing = this.webviewMessageQueue.then(async () => {
+				// A queued selector click belongs to its receipt-time task or draft.
+				// Navigation and same-ID runtime replacement cannot retarget its authority.
+				if (
+					selection &&
+					(selection.currentView !== this.currentView ||
+						selection.navigationGeneration !== this.taskNavigationGeneration ||
+						selection.task !== this.getCurrentTask())
+				) {
+					await this.postTaskStateToWebview()
+					return
+				}
+				await run(message)
+			})
 			this.webviewMessageQueue = processing.catch((error) => logFailure(message, error))
 			return this.webviewMessageQueue
 		}
@@ -3833,20 +3893,34 @@ export class AlphaProvider
 		await this.postStateToWebview()
 	}
 
-	async postStateToWebview() {
+	async postStateToWebview(options: { deferTaskHistory?: boolean } = {}) {
 		const navigationGeneration = this.taskNavigationGeneration
 		const currentView = this.currentView
+		const webview = this.view
+		const deferTaskHistory =
+			options.deferTaskHistory === true &&
+			!this.taskHistoryStoreInitialized &&
+			currentView.type === "newTaskDraft"
 		const visibleTaskId = currentView.type === "task" ? currentView.taskId : undefined
 		const transcriptRevision = visibleTaskId ? this.taskSessions.markTranscriptChanged(visibleTaskId) : undefined
 		const alphaMessagesSeq = ++this.alphaMessagesSeq
 		const taskStateSeq = ++this.taskStateSeq
 		const messageQueueSeq = ++this.messageQueueSeq
 		const currentTaskTodosSeq = ++this.currentTaskTodosSeq
-		const state = await this.getStateToPostToWebview()
+		const state = await this.getStateToPostToWebview(deferTaskHistory ? { includeTaskHistory: false } : {})
 		Object.assign(state, { alphaMessagesSeq, taskStateSeq, messageQueueSeq, currentTaskTodosSeq })
 		const selectionIsCurrent =
 			navigationGeneration === this.taskNavigationGeneration && currentView === this.currentView
-		const publications = selectionIsCurrent ? [this.postMessageToWebview({ type: "state", state })] : []
+		// A cold draft can hydrate its composer without publishing unrecovered history.
+		// Omit the field rather than clearing history cached by an existing renderer.
+		let publishedState: Partial<ExtensionState> = state
+		if (deferTaskHistory) {
+			const { taskHistory: _history, ...rest } = state
+			publishedState = rest
+		}
+		const publications = selectionIsCurrent
+			? [this.postMessageToWebview({ type: "state", state: publishedState })]
+			: []
 		// Save, import, and reset all refresh here. Propagate only the global submission
 		// preference so another composer cannot retain steering after it is disabled.
 		// Dispatch every view before awaiting transport; a late send cannot defer peers.
@@ -3867,6 +3941,24 @@ export class AlphaProvider
 			navigationGeneration,
 			currentView,
 		)
+		if (deferTaskHistory) {
+			void this.taskHistoryStoreReady
+				.then(async () => {
+					if (
+						this._disposed ||
+						this.view !== webview ||
+						this.taskNavigationGeneration !== navigationGeneration ||
+						this.currentView !== currentView
+					)
+						return
+					await this.postStateToWebview()
+				})
+				.catch((error) => {
+					this.log(
+						`Failed to finish chat history hydration: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
+		}
 	}
 
 	/**
@@ -5268,9 +5360,11 @@ export class AlphaProvider
 	}
 
 	async getStateToPostToWebview(options: { includeTaskHistory?: boolean } = {}): Promise<ExtensionState> {
-		// Wait for file loading, migration, and managed-agent recovery. Awaiting only
-		// TaskHistoryStore.initialized exposes a stale pre-migration/recovery state.
-		await this.taskHistoryStoreReady
+		// History and saved-task projections require completed migration/recovery.
+		// A new draft that omits history reads no saved task state and can render first.
+		if (options.includeTaskHistory !== false || this.currentView.type !== "newTaskDraft") {
+			await this.taskHistoryStoreReady
+		}
 
 		// Capture history once after asynchronous projections, and skip its scan
 		// entirely for transports that omit it.
@@ -5364,6 +5458,11 @@ export class AlphaProvider
 		const mergedAllowedCommands = this.mergeAllowedCommands(allowedCommands)
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
+		// Configuration I/O may yield to navigation into a saved task. Preserve its
+		// recovery barrier even when this projection began as a lightweight draft.
+		if (options.includeTaskHistory === false && this.currentView.type !== "newTaskDraft") {
+			await this.taskHistoryStoreReady
+		}
 		const currentView = this.currentView
 		const newTaskDraftMode = this.newTaskDraftMode
 		const activeTaskId = this.getActiveTaskId()
@@ -12569,40 +12668,99 @@ export class AlphaProvider
 		const owner = this.getTaskOwner(parent.taskId)
 		if (owner && owner !== this) return owner.closeAgent(parent, target)
 		const record = await this.requireControlledAgent(parent, target)
+		const previous = this.agentFollowupAdmissions.get(record.taskId) ?? Promise.resolve()
+		const closing = previous.catch(() => undefined).then(() => this.closeControlledAgent(parent, record))
+		this.agentFollowupAdmissions.set(record.taskId, closing)
+		try {
+			return await closing
+		} finally {
+			if (this.agentFollowupAdmissions.get(record.taskId) === closing)
+				this.agentFollowupAdmissions.delete(record.taskId)
+		}
+	}
+
+	private async closeControlledAgent(parent: Task, record: AgentRecord): Promise<unknown> {
 		await this.subagentRunFinalizations.get(record.taskId)?.promise.catch(() => undefined)
 		// Explicit close owns the cleanup retry when an earlier eviction failed.
 		await this.subagentResidencyEvictions.get(record.taskId)?.catch(() => undefined)
 		await this.synchronizeParentVerificationObligations(parent)
-		const tombstone = await this.agentControlStore.closeAgent(
-			record.taskId,
-			record.rootTaskId,
-			this.getSubagentTaskBudgetUsage(record.taskId, record),
-			this.findFrozenRootOrchestration(record.rootTaskId),
-		)
-		const parentVerification = this.agentControlStore.getWorkerVerificationSummary(record.taskId, record.rootTaskId)
-		try {
-			await this.agentControlStore.appendEvent({
-				rootTaskId: record.rootTaskId,
-				sender: parent.taskId,
-				recipient: parent.taskId,
-				kind: "control",
-				name: "agent_closed",
-				payload: { taskId: record.taskId, path: record.path, status: record.status },
-			})
-		} catch (error) {
-			// The durable tombstone is authoritative; a notification failure must not
-			// make a successful close look reversible to the caller.
-			this.log(`Failed to publish close notification for ${record.taskId}: ${String(error)}`)
-		}
-		if (this.getLiveTask(record.taskId)) {
-			await this.removeTaskFromStack({ taskId: record.taskId })
-		}
-		const runId = this.asyncSubagentRunManager.getRunId(record.taskId)
-		if (runId) this.asyncSubagentRunManager.unload(record.taskId, runId)
-		this.subagentResidencyEvictions.delete(record.taskId)
-		this.subagentRunFinalizations.delete(record.taskId)
-		if (record.groupId) this.releaseSubagentGroup(record.groupId)
-		return { ...tombstone, parentVerification }
+		return this.taskSessions.runOwnershipOperation(record.taskId, async () => {
+			const latest = await this.requireControlledAgent(parent, record.taskId)
+			// The store validates these again at commit. Preflight before releasing
+			// resources so an invalid close cannot dispose an active parent or child.
+			if (!["completed", "blocked", "failed", "cancelled", "timed_out", "interrupted"].includes(latest.status)) {
+				throw new Error(`Agent ${latest.path} cannot be closed while status is ${latest.status}`)
+			}
+			if (this.agentControlStore.listChildren(latest.taskId, latest.rootTaskId).length > 0) {
+				throw new Error(`Agent ${latest.path} cannot be closed while it has retained children`)
+			}
+			const budgetUsage = this.getSubagentTaskBudgetUsage(latest.taskId, latest)
+			const orchestration = this.findFrozenRootOrchestration(latest.rootTaskId)
+			const task = this.getLiveTask(latest.taskId)
+			if (task) {
+				// Already hold the shared identity queue; the public remover acquires it.
+				const taskOwner = this.getTaskOwner(latest.taskId) ?? this
+				await taskOwner.removeOwnedTaskFromStack(task, { taskId: latest.taskId })
+			}
+			if (!this.agentLifecycleJournals.has(latest.taskId) && this.taskHistoryStore.get(latest.taskId)) {
+				await this.getAgentLifecycleJournal(latest.taskId)
+			}
+			for (const provider of this.getHostProviders()) {
+				const journal = provider.agentLifecycleJournals.get(latest.taskId)
+				if (journal) {
+					try {
+						await (await journal).close()
+					} catch (error) {
+						// Journal.close retains its rejection. Reopen durable evidence on
+						// the next explicit retry instead of retaining a failed close forever.
+						if (provider.agentLifecycleJournals.get(latest.taskId) === journal)
+							provider.agentLifecycleJournals.delete(latest.taskId)
+						throw error
+					}
+				}
+			}
+			for (const provider of this.getHostProviders()) {
+				provider.agentLifecycleJournals.delete(latest.taskId)
+				provider.agentLifecycleProjector.clear(latest.taskId)
+				provider.agentLifecycleDegradedSignals.delete(latest.taskId)
+				provider.publishedTaskTranscriptRevisions.delete(latest.taskId)
+			}
+			this.taskSessions.clearLifecycleSnapshot(latest.taskId)
+			this.taskSessions.clearLifecycleDegraded(latest.taskId)
+			this.pendingManagedTaskCompletions.delete(latest.taskId)
+			// Codex control/residency.rs at 5a7353f (2026-10-30) retains exact runtime
+			// ownership until teardown settles. Keep Alpha's control identity open too:
+			// cleanup or durable-close failure must leave an addressable retry target.
+			const tombstone = await this.agentControlStore.closeAgent(
+				latest.taskId,
+				latest.rootTaskId,
+				budgetUsage,
+				orchestration,
+			)
+			const parentVerification = this.agentControlStore.getWorkerVerificationSummary(
+				latest.taskId,
+				latest.rootTaskId,
+			)
+			try {
+				await this.agentControlStore.appendEvent({
+					rootTaskId: latest.rootTaskId,
+					sender: parent.taskId,
+					recipient: parent.taskId,
+					kind: "control",
+					name: "agent_closed",
+					payload: { taskId: latest.taskId, path: latest.path, status: latest.status },
+				})
+			} catch (error) {
+				// The durable tombstone is authoritative; notification failure cannot undo it.
+				this.log(`Failed to publish close notification for ${latest.taskId}: ${String(error)}`)
+			}
+			const runId = this.asyncSubagentRunManager.getRunId(latest.taskId)
+			if (runId) this.asyncSubagentRunManager.unload(latest.taskId, runId)
+			this.subagentResidencyEvictions.delete(latest.taskId)
+			this.subagentRunFinalizations.delete(latest.taskId)
+			if (latest.groupId) this.releaseSubagentGroup(latest.groupId)
+			return { ...tombstone, parentVerification }
+		})
 	}
 
 	private normalizeAgentInstruction(message: string, label: string): string {
@@ -15933,6 +16091,7 @@ export class AlphaProvider
 
 		let originalUiMessages: AlphaMessage[] | undefined
 		let originalApiMessages: any[] | undefined
+		let originalApiPrecondition: ApiMessagesWritePrecondition | undefined
 		let parentUiMessages: AlphaMessage[] | undefined
 		let parentApiMessages: any[] | undefined
 		let transcriptsTouched = false
@@ -15941,9 +16100,18 @@ export class AlphaProvider
 		let parentInstance: Task | undefined
 		let childRemoved = false
 
-		const readRequiredArray = async (filePath: string, label: string): Promise<any[]> => {
-			const parsed = JSON.parse(await fs.readFile(filePath, "utf8"))
+		const readRequiredArray = async (
+			filePath: string,
+			label: string,
+			onRead?: (precondition: ApiMessagesWritePrecondition) => void,
+		): Promise<any[]> => {
+			const contents = await fs.readFile(filePath)
+			const parsed = JSON.parse(contents.toString("utf8"))
 			if (!Array.isArray(parsed)) throw new Error(`${label} is not an array`)
+			onRead?.({
+				digest: crypto.createHash("sha256").update(contents).digest("hex"),
+				byteLength: Buffer.byteLength(contents),
+			})
 			return parsed
 		}
 		const restoreTranscripts = async (): Promise<void> => {
@@ -15983,8 +16151,20 @@ export class AlphaProvider
 						: await readTaskMessages({ taskId: parentTaskId, globalStoragePath })
 				) as AlphaMessage[]
 				parentApiMessages = apiConversationHistoryFilePath
-					? await readRequiredArray(apiConversationHistoryFilePath, `Parent API history for ${parentTaskId}`)
-					: await readApiMessages({ taskId: parentTaskId, globalStoragePath })
+					? await readRequiredArray(
+							apiConversationHistoryFilePath,
+							`Parent API history for ${parentTaskId}`,
+							(precondition) => {
+								originalApiPrecondition = precondition
+							},
+						)
+					: await readApiMessages({
+							taskId: parentTaskId,
+							globalStoragePath,
+							onRead: (precondition) => {
+								originalApiPrecondition = precondition
+							},
+						})
 				originalUiMessages = structuredClone(parentUiMessages)
 				originalApiMessages = structuredClone(parentApiMessages)
 
@@ -16083,7 +16263,11 @@ export class AlphaProvider
 						// boundary. Directly writing api_conversation_history.json here
 						// would bypass its receipt and could leave the replacement Task
 						// with a stale provider transcript if the sidecar write fails.
-						const saved = await parentInstance.overwriteApiConversationHistory(parentApiMessages as any)
+						const saved = await parentInstance.overwriteApiConversationHistory(
+							parentApiMessages as any,
+							undefined,
+							originalApiPrecondition,
+						)
 						if (saved === false) {
 							throw new Error(`Unable to persist delegated parent ${parentTaskId} API history`)
 						}

@@ -333,12 +333,25 @@ export class TerminalRegistry {
 				terminal.taskId = undefined
 			}
 		})
+		this.pruneIdleExecaTerminals()
+	}
+
+	private static pruneIdleExecaTerminals(): void {
+		const idle = this.terminals.filter(
+			(terminal): terminal is ExecaTerminal => terminal instanceof ExecaTerminal && terminal.canPruneIdle(),
+		)
+		// Reuse the command retention bound for released, output-free adapters.
+		// Owned commands, finalizers, receipts, and user terminals are never candidates.
+		for (const terminal of idle.slice(0, Math.max(0, idle.length - MAX_RETAINED_TERMINAL_PROCESSES))) {
+			this.removeTerminal(terminal.id)
+		}
 	}
 
 	private static getAllTerminals(): AlphaTerminal[] {
 		for (const terminal of this.terminals) {
 			if (terminal.isClosed()) this.removeTerminal(terminal.id)
 		}
+		this.pruneIdleExecaTerminals()
 		return this.terminals.filter((terminal) => !this.removingTerminalIds.has(terminal.id))
 	}
 

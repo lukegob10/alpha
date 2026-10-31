@@ -163,6 +163,8 @@ export async function exerciseRenderedReasoning(
 		"reasoning-high",
 		"reasoning-model-switch",
 		"reasoning-reload",
+		"reasoning-draft",
+		"reasoning-draft-lifecycle",
 		"reasoning-fallback",
 		"reasoning-editor",
 		...(process.platform === "win32"
@@ -466,7 +468,45 @@ export async function exerciseRenderedReasoning(
 				editorSession = sessionId
 			}
 			await focus("[data-testid=reasoning-trigger]")
-			if (stage === "reasoning-high") {
+			if (stage === "reasoning-draft") {
+				await check(
+					"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
+				)
+				await evaluate(`(()=>{
+					const w=d.defaultView;
+					w.__alphaReasoningDraftSequence=0;
+					w.__alphaReasoningDraftListener=event=>{
+						const state=event.data?.type==='state'?event.data.state:undefined;
+						if(state?.currentView?.type!=='newTaskDraft'||'taskReasoning' in state||'apiConfiguration' in state)return;
+						w.requestAnimationFrame(()=>w.requestAnimationFrame(()=>{
+							w.__alphaReasoningDraftSequence=state.taskStateSeq;
+						}));
+					};
+					w.addEventListener('message',w.__alphaReasoningDraftListener);
+					return true;
+				})()`)
+				await capture(stage)
+			} else if (stage === "reasoning-draft-lifecycle") {
+				try {
+					const receipt = JSON.parse(
+						await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"),
+					)
+					assert.equal(typeof receipt.taskStateSeq, "number")
+					await check(`d.defaultView.__alphaReasoningDraftSequence>=${receipt.taskStateSeq}`)
+					await check(
+						"d.querySelector('[data-testid=reasoning-trigger]')?.getAttribute('aria-label')==='Reasoning: High'",
+					)
+					await capture(stage)
+				} finally {
+					await evaluate(`(()=>{
+						const w=d.defaultView;
+						w.removeEventListener('message',w.__alphaReasoningDraftListener);
+						delete w.__alphaReasoningDraftListener;
+						delete w.__alphaReasoningDraftSequence;
+						return true;
+					})()`)
+				}
+			} else if (stage === "reasoning-high") {
 				if (process.platform === "win32") {
 					await focus("textarea")
 					await key(".", "Period", 190, 1)

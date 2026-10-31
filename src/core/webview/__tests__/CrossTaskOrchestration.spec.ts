@@ -646,6 +646,37 @@ describe("Cross-task orchestration host", () => {
 		expect(parent.apiConversationHistory).toHaveLength(3)
 	})
 
+	it("hands off parent-and-children scope with the existing delegation authorization", async () => {
+		const { provider, internals, tasks } = createProviderFixture()
+		const parent = createTask({
+			metadata: { task: "Launch a new thread for the parent ticket and its children; use subagents as needed." },
+			subagentDelegationPolicy: "explicit-only",
+			subagentDelegationExplicitlyEnabled: true,
+		})
+		const objective =
+			"Read Alpha parent ticket ALPHA-42 and all five child tickets; implement and verify their success criteria. Use subagents as needed."
+		const child = createTask({ taskId: "ticket-worker", metadata: { task: objective } })
+		tasks.set(parent.taskId, parent)
+		internals.createTask = vi.fn(async () => child)
+
+		await provider.createIndependentTask(parent as unknown as Task, objective, "shared", undefined, {
+			notifyOnCompletion: false,
+		})
+
+		expect(internals.createTask).toHaveBeenCalledWith(
+			objective,
+			undefined,
+			undefined,
+			expect.objectContaining({
+				startTask: false,
+				subagentDelegationPolicy: "explicit-only",
+				subagentDelegationExplicitlyEnabled: true,
+				orchestrationNotifyCompletion: false,
+			}),
+		)
+		expect(child.start).toHaveBeenCalledOnce()
+	})
+
 	it.each(["caller", "source", "saved"])(
 		"preserves presentation-call suppression from the %s in a cold fork's history",
 		async (source) => {

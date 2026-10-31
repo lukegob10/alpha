@@ -47,6 +47,8 @@ export async function executeSteps({
 						VITEST_MAX_THREADS: "2",
 						VITEST_MIN_THREADS: "1",
 						...environment(index),
+						// pnpm 11 must not reinstall dependencies while a build or host owns its lease.
+						npm_config_verify_deps_before_run: "false",
 					},
 				},
 				{ output: "inherit", signal },

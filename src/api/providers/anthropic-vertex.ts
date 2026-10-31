@@ -22,6 +22,7 @@ import { getModelParams } from "../transform/model-params"
 import { AnthropicMessageHandler, type AnthropicRequestContext } from "./anthropic-messages"
 import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadata } from "../index"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
+import { createLinkedAbortController, iterateApiStreamWithAbort, type ApiStream } from "../transform/stream"
 import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
@@ -66,6 +67,7 @@ const UNKNOWN_VERTEX_CLAUDE_MODEL_INFO: ModelInfo = {
 
 // https://docs.anthropic.com/en/api/claude-on-vertex-ai
 export class AnthropicVertexHandler extends AnthropicMessageHandler {
+	override readonly streamCapabilities = { lifecycle: true, cancellation: true } as const
 	private client?: AnthropicVertex
 	private directClient?: AnthropicVertex
 	private readonly vertexGatewaySettings?: VertexGatewaySettings
@@ -457,7 +459,13 @@ export class AnthropicVertexHandler extends AnthropicMessageHandler {
 			).then(() => undefined)
 		}
 
-		await this.gatewayTransportSetupPromise
+		const transportSetup = this.gatewayTransportSetupPromise
+		try {
+			await transportSetup
+		} catch (error) {
+			if (this.gatewayTransportSetupPromise === transportSetup) this.gatewayTransportSetupPromise = undefined
+			throw error
+		}
 	}
 
 	private async ensureGatewayAccessToken(forceRefresh: boolean): Promise<string> {
@@ -547,6 +555,35 @@ export class AnthropicVertexHandler extends AnthropicMessageHandler {
 
 	protected override getCompletionError(error: Error): Error {
 		return new Error(`Vertex completion error: ${error.message}`)
+	}
+
+	protected override getCompletionText(response: Anthropic.Messages.Message): string {
+		if (response.stop_reason !== "end_turn" && response.stop_reason !== "stop_sequence") {
+			throw new Error("Vertex Claude completion did not finish with a complete text response.")
+		}
+		return super.getCompletionText(response)
+	}
+
+	override async *createMessage(
+		systemPrompt: string,
+		messages: Anthropic.Messages.MessageParam[],
+		metadata?: ApiHandlerCreateMessageMetadata,
+	): ApiStream {
+		const control = createLinkedAbortController(metadata)
+		try {
+			control.signal.throwIfAborted()
+			yield* iterateApiStreamWithAbort(
+				super.createMessage(systemPrompt, messages, {
+					...metadata,
+					taskId: metadata?.taskId ?? "",
+					signal: control.signal,
+				}),
+				control.signal,
+			)
+			control.signal.throwIfAborted()
+		} finally {
+			control.dispose()
+		}
 	}
 
 	override getModel() {

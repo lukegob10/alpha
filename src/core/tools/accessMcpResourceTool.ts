@@ -6,6 +6,7 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
+import { captureMcpResourceAuthority } from "./McpResourceTools"
 
 interface AccessMcpResourceParams {
 	server_name: string
@@ -50,20 +51,27 @@ export class AccessMcpResourceTool extends BaseTool<"access_mcp_resource"> {
 						candidate.name === server_name && !candidate.disabled && candidate.status === "connected",
 				)
 			if (!server) throw new Error(`MCP server "${server_name}" is not connected or enabled`)
+			const authority = captureMcpResourceAuthority(task, mcpHub, server)
 			const assertCurrentServer = () => {
 				signal?.throwIfAborted()
-				if (!mcpHub.getServers().includes(server) || server.disabled || server.status !== "connected") {
-					throw new Error(`MCP server "${server_name}" changed during resource read`)
-				}
+				authority.assertCurrent()
 			}
 
 			const completeMessage = JSON.stringify({
 				type: "access_mcp_resource",
 				serverName: server_name,
+				source: server.source,
 				uri,
 			} satisfies AlphaAskUseMcpServer)
 
-			const didApprove = await askApproval("use_mcp_server", completeMessage)
+			const didApprove = await askApproval(
+				"use_mcp_server",
+				completeMessage,
+				undefined,
+				undefined,
+				undefined,
+				authority.sessionApprovalAuthority,
+			)
 
 			if (!didApprove) {
 				pushToolResult(formatResponse.toolDenied())

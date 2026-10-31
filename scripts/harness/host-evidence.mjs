@@ -43,13 +43,23 @@ export const renderedHostFiles = [
 	"managed-agents.acceptance.test",
 ]
 export const stressHostFiles = ["managed-agents.cancellation.acceptance.test", "managed-agents.budget.acceptance.test"]
+export const managedHostFiles = [
+	"managed-agents.acceptance.test",
+	"long-context-fanout.test",
+	"managed-agents.non-git.acceptance.test",
+	"managed-agents.auto-apply.acceptance.test",
+]
+export const minimumHostFiles = ["extension.test", "modes.test", "storage-recovery.test", "vscode-lm-contract.test"]
 export const hostSuites = {
 	smoke: smokeHostFiles,
 	confidence: confidenceHostFiles,
 	extended: extendedHostFiles,
 	rendered: renderedHostFiles,
 	stress: stressHostFiles,
+	managed: managedHostFiles,
+	minimum: minimumHostFiles,
 }
+const suiteVersion = (suite) => (suite === "minimum" ? "1.125.0" : "1.138.0")
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
 const integer = (value) => Number.isSafeInteger(value) && value >= 0
@@ -66,7 +76,7 @@ const completeSelection = (receipt) =>
 	receipt.testSelection.grep === null &&
 	receipt.testSelection.forbidOnly === true
 
-function observedHostClosed(value) {
+function observedHostClosed(value, version = "1.138.0") {
 	return !(
 		value?.schemaVersion !== 1 ||
 		value.kind !== "alpha-extension-test-run" ||
@@ -78,8 +88,8 @@ function observedHostClosed(value) {
 		!Number.isFinite(Date.parse(value.startedAt)) ||
 		!Number.isFinite(Date.parse(value.completedAt)) ||
 		Date.parse(value.completedAt) < Date.parse(value.startedAt) ||
-		value.requestedHostVersion !== "1.138.0" ||
-		value.actualHostVersion !== "1.138.0" ||
+		value.requestedHostVersion !== version ||
+		value.actualHostVersion !== version ||
 		!["scripted", "vscode-lm-fixture"].includes(value.providerMode) ||
 		value.execution !== "extension-host" ||
 		value.hostExitObserved !== true ||
@@ -92,10 +102,11 @@ function observedHostClosed(value) {
 	)
 }
 
-export function validateHostReceipt(value) {
+export function validateHostReceipt(value, version = "1.138.0") {
+	if (!["1.125.0", "1.138.0"].includes(version)) throw new Error("Unknown exact host version")
 	const counts = value?.testCounts
 	if (
-		!observedHostClosed(value) ||
+		!observedHostClosed(value, version) ||
 		value.status !== "passed" ||
 		value.exitCode !== 0 ||
 		value.requireAllTests !== true ||
@@ -115,7 +126,7 @@ export function validateHostReceipt(value) {
 	return {
 		schemaVersion: 1,
 		kind: "alpha-extension-test-run",
-		requestedHostVersion: "1.138.0",
+		requestedHostVersion: version,
 		status: "passed",
 		exitCode: 0,
 		hostExitObserved: true,
@@ -168,7 +179,7 @@ async function readHostReceiptValues(directory, startedAt) {
 }
 
 export async function readHostReceipts(directory, startedAt) {
-	return (await readHostReceiptValues(directory, startedAt)).map(validateHostReceipt)
+	return (await readHostReceiptValues(directory, startedAt)).map((value) => validateHostReceipt(value))
 }
 
 /** Acceptance and process closure are separate: an assertion failure still leaves a verifiably closed host. */
@@ -177,7 +188,7 @@ export function hostSuiteCleanupVerified(receipts, suite, commandExitCode) {
 		!Object.hasOwn(hostSuites, suite) ||
 		!Array.isArray(receipts) ||
 		!receipts.length ||
-		receipts.some((receipt) => !observedHostClosed(receipt)) ||
+		receipts.some((receipt) => !observedHostClosed(receipt, suiteVersion(suite))) ||
 		new Set(receipts.map((receipt) => receipt.runId)).size !== receipts.length
 	)
 		return false
@@ -219,7 +230,7 @@ export async function readHostExecutionEvidence(directory, startedAt, suite, com
 export function hostSuiteVerdict(receipts, suite) {
 	if (!Object.hasOwn(hostSuites, suite)) return { status: "failed", reason: "unknown_host_suite" }
 	try {
-		receipts = receipts.map(validateHostReceipt)
+		receipts = receipts.map((value) => validateHostReceipt(value, suiteVersion(suite)))
 	} catch {
 		return { status: "failed", reason: "invalid_host_receipt" }
 	}
@@ -251,7 +262,7 @@ export function hostSuiteVerdict(receipts, suite) {
 /** Reuse the smoke campaign's independently asserted repository outcomes, not its controller unit tests. */
 export function outcomeCampaignVerdict(report, receipts, expectedId) {
 	try {
-		receipts = receipts.map(validateHostReceipt)
+		receipts = receipts.map((value) => validateHostReceipt(value))
 	} catch {
 		return { status: "failed", reason: "invalid_host_receipt" }
 	}

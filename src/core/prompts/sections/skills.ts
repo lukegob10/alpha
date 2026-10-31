@@ -94,7 +94,7 @@ function renderBoundedSkillMetadata(skills: readonly SkillCatalogEntry[], option
 	const cost = (text: string) => costFromCounts(Array.from(text).length, Buffer.byteLength(text, "utf8"))
 	const lines = skills.map((skill) => {
 		const minimum = renderSkillMetadata(skill, "")
-		const description = Array.from(skill.description).slice(0, 1_024).map(escapeXml)
+		const description: string[] = []
 		return {
 			skill,
 			minimum,
@@ -104,18 +104,22 @@ function renderBoundedSkillMetadata(skills: readonly SkillCatalogEntry[], option
 			allocated: 0,
 		}
 	})
-	const fullLines: string[] = []
-	let fullCost = 0
-	for (const line of lines) {
-		const full = renderSkillMetadata(line.skill, line.description.join(""))
-		fullCost += cost(`${full}\n`)
-		if (fullCost > budget.limit) break
-		fullLines.push(full)
-	}
-	if (fullLines.length === lines.length) return fullLines.join("\n")
-
 	let used = lines.reduce((total, line) => total + costFromCounts(line.characters, line.bytes), 0)
 	if (used <= budget.limit) {
+		// Only expand descriptions if every identity fits; omitted text must not block prompt preparation.
+		for (const line of lines) {
+			line.description = Array.from(line.skill.description).slice(0, 1_024).map(escapeXml)
+		}
+		const fullLines: string[] = []
+		let fullCost = 0
+		for (const line of lines) {
+			const full = renderSkillMetadata(line.skill, line.description.join(""))
+			fullCost += cost(`${full}\n`)
+			if (fullCost > budget.limit) break
+			fullLines.push(full)
+		}
+		if (fullLines.length === lines.length) return fullLines.join("\n")
+
 		// Share description space fairly, retaining every identity before any description.
 		let changed: boolean
 		do {

@@ -7,6 +7,7 @@ import {
 	AlphaCodeEventName,
 	type ProviderSettings,
 	type TaskReasoningProjection,
+	type TaskReasoningPreference,
 	type CreateTaskOptions,
 	type ExtensionMessage,
 	type AlphaMessage,
@@ -29,6 +30,7 @@ interface ReasoningTask {
 }
 interface ReasoningHost {
 	viewLaunched: boolean
+	readonly taskStateSeq: number
 	contextProxy: {
 		getValue(key: "autoSteer"): boolean | undefined
 		setValue(key: "autoSteer", value: boolean | undefined): Promise<void>
@@ -39,6 +41,12 @@ interface ReasoningHost {
 	getLiveTask(id: string): ReasoningTask | undefined
 	showTaskWithId(id: string): Promise<void>
 	postStateToWebview(): Promise<void>
+	setTaskReasoningPreference(
+		taskId: string | undefined,
+		preference: TaskReasoningPreference,
+	): Promise<TaskReasoningProjection>
+	postTaskSessionStateToWebview(options: { includeManagedAgentTree: false }): Promise<void>
+	startBlankTask(): Promise<void>
 	postMessageToWebview(message: ExtensionMessage): Promise<unknown>
 	getActiveTaskId(): string | undefined
 	createTask(text: string, images?: string[], parent?: undefined, options?: CreateTaskOptions): Promise<ReasoningTask>
@@ -228,6 +236,14 @@ suite("Rendered reasoning controls", function () {
 				.getConfiguration("workbench")
 				.update("colorTheme", "Default Light Modern", vscode.ConfigurationTarget.Global)
 			await uiFixtureBarrier("reasoning-reload")
+			await provider.startBlankTask()
+			await provider.setTaskReasoningPreference(undefined, { kind: "effort", effort: "high" })
+			await provider.postStateToWebview()
+			await uiFixtureBarrier("reasoning-draft")
+			// Exercise the real compact publication used by background usage/lifecycle events.
+			await provider.postTaskSessionStateToWebview({ includeManagedAgentTree: false })
+			await uiFixtureBarrier("reasoning-draft-lifecycle", { taskStateSeq: provider.taskStateSeq })
+			await provider.showTaskWithId(taskId)
 			provider.getLiveTask(taskId)!.updateApiConfiguration({
 				...configuration,
 				openAiModelId: "unknown-fixture",

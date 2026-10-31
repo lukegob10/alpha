@@ -1,5 +1,4 @@
 import * as vscode from "vscode"
-import * as path from "path"
 
 /**
  * Represents an effective range in a document along with the corresponding text.
@@ -34,7 +33,7 @@ export interface DiagnosticData {
  * Contextual information for a VSCode text editor.
  */
 export interface EditorContext {
-	/** The file path of the current document. */
+	/** The source document's filesystem path, independent of the destination task's workspace. */
 	filePath: string
 	/** The effective text selected or derived from the document. */
 	selectedText: string
@@ -50,9 +49,6 @@ export interface EditorContext {
  * Utility class providing helper methods for working with VSCode editors and documents.
  */
 export class EditorUtils {
-	/** Cache mapping text documents to their computed file paths. */
-	private static readonly filePathCache = new WeakMap<vscode.TextDocument, string>()
-
 	/**
 	 * Computes the effective range of text from the given document based on the user's selection.
 	 * If the selection is non-empty, returns that directly.
@@ -96,34 +92,10 @@ export class EditorUtils {
 	}
 
 	/**
-	 * Retrieves the file path of a given text document.
-	 * Utilizes an internal cache to avoid redundant computations.
-	 * If the document belongs to a workspace, attempts to compute a relative path; otherwise, returns the absolute fsPath.
-	 *
-	 * @param document - The text document for which to retrieve the file path.
-	 * @returns The file path as a string.
+	 * Preserve the source filesystem path when editor context enters a task rooted in another workspace folder.
 	 */
 	static getFilePath(document: vscode.TextDocument): string {
-		let filePath = this.filePathCache.get(document)
-		if (filePath) {
-			return filePath
-		}
-
-		try {
-			const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)
-			if (!workspaceFolder) {
-				filePath = document.uri.fsPath
-			} else {
-				const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath)
-				filePath = !relativePath || relativePath.startsWith("..") ? document.uri.fsPath : relativePath
-			}
-
-			this.filePathCache.set(document, filePath)
-			return filePath
-		} catch (error) {
-			console.error("Error getting file path:", error)
-			return document.uri.fsPath
-		}
+		return document.uri.fsPath
 	}
 
 	/**

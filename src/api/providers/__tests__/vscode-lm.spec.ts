@@ -3518,6 +3518,60 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
+		it.each(["1.125.0", "1.138.0"])(
+			"counts complete assistant tool arguments during context measurement on VS Code %s",
+			async (version) => {
+				mockVsCodeVersion.value = version
+				const history = (patch: string): ApiMessage[] => [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "large-patch", name: "apply_patch", input: { patch } }],
+						ts: 1,
+					},
+				]
+				const largePatch = "x".repeat(50_000)
+				const largeHistory = history(largePatch)
+				const before = structuredClone(largeHistory)
+				mockLanguageModelChat.countTokens.mockImplementation(async (message) => JSON.stringify(message).length)
+				try {
+					const smallCount = await countContextTokens(history("x"), handler, "Instructions")
+					const largeCount = await countContextTokens(largeHistory, handler, "Instructions")
+					const countedInput = JSON.stringify(mockLanguageModelChat.countTokens.mock.calls)
+
+					expect(largeCount).toBeGreaterThan(smallCount + 40_000)
+					expect(countedInput).toContain("large-patch")
+					expect(countedInput).toContain("apply_patch")
+					expect(countedInput).toContain(largePatch)
+					expect(largeHistory).toEqual(before)
+				} finally {
+					mockLanguageModelChat.countTokens.mockReset()
+				}
+			},
+		)
+
+		it.each(["no client", "failed tokenizer"])(
+			"keeps complete tool arguments in the conservative token fallback with %s",
+			async (failure) => {
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+				const patch = "🛠️".repeat(10_000)
+				const content: Anthropic.Messages.ContentBlockParam[] = [
+					{ type: "tool_use", id: "fallback-patch", name: "apply_patch", input: { patch } },
+				]
+				if (failure === "no client") handler["client"] = null
+				else mockLanguageModelChat.countTokens.mockRejectedValueOnce(new Error("Tokenizer unavailable"))
+				try {
+					const count = await handler.countTokens(content)
+
+					expect(count).toBeGreaterThan(new TextEncoder().encode(patch).byteLength)
+					if (failure === "no client") expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
+					else expect(mockLanguageModelChat.countTokens).toHaveBeenCalledOnce()
+				} finally {
+					warnSpy.mockRestore()
+					mockLanguageModelChat.countTokens.mockReset()
+				}
+			},
+		)
+
 		it("should count tokens when called during an active request", async () => {
 			// Simulate an active request with a cancellation token
 			const mockCancellation = {

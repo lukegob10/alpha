@@ -257,6 +257,10 @@ export const mergeExtensionState = (
 	)
 	if (taskStateIsStale || patchHasNoTaskStateSequence) {
 		rest.currentTaskId = prevState.currentTaskId
+		// These controls describe the accepted task, just like its identity and reasoning.
+		rest.mode = prevState.mode
+		rest.currentApiConfigName = prevState.currentApiConfigName
+		rest.currentTaskApprovalMode = prevState.currentTaskApprovalMode
 		rest.taskReasoning = prevState.taskReasoning
 		rest.currentTaskItem = prevState.currentTaskItem
 		rest.currentView = prevState.currentView
@@ -301,7 +305,7 @@ export const mergeExtensionState = (
 	if (
 		acceptedTaskSnapshot &&
 		"currentTaskId" in newState &&
-		newState.currentTaskId !== prevState.currentTaskId &&
+		(newState.currentTaskId ?? undefined) !== prevState.currentTaskId &&
 		!("taskReasoning" in newState)
 	) {
 		rest.taskReasoning = undefined
@@ -327,7 +331,16 @@ export const mergeExtensionState = (
 		if (!("activeTaskId" in newState) || newState.activeTaskId == null) {
 			rest.activeTaskId = undefined
 		}
-		if (!("taskReasoning" in newState)) {
+		// Codex 67f0994b models-manager preserves same-identity snapshots on non-authoritative refreshes.
+		// Compact lifecycle patches refresh membership, not the draft's model configuration or reasoning.
+		const retainsDraftReasoning =
+			prevState.currentView?.type === "newTaskDraft" &&
+			prevState.currentTaskId === undefined &&
+			newState.currentTaskId == null &&
+			prevState.taskReasoning?.taskId === undefined &&
+			!("apiConfiguration" in newState) &&
+			!("currentApiConfigName" in newState)
+		if (!("taskReasoning" in newState) && !retainsDraftReasoning) {
 			rest.taskReasoning = undefined
 		}
 	}
@@ -351,7 +364,10 @@ export const mergeExtensionState = (
 	// with new ones since the state that is broadcast is the entire objects so merging is not necessary.
 	const mergedState = {
 		...rest,
-		apiConfiguration: apiConfiguration ?? prevState.apiConfiguration,
+		apiConfiguration:
+			taskStateIsStale || patchHasNoTaskStateSequence
+				? prevState.apiConfiguration
+				: (apiConfiguration ?? prevState.apiConfiguration),
 		customModePrompts,
 		customSupportPrompts: customSupportPrompts ?? prevState.customSupportPrompts,
 		experiments,

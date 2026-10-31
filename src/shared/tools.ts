@@ -70,6 +70,8 @@ export type AskApproval = (
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
 	requiresExplicitApproval?: boolean,
+	/** Opaque authority captured by the host handler; never supplied by model arguments. */
+	sessionApprovalAuthority?: string,
 ) => Promise<boolean>
 
 export type HandleError = (action: string, error: Error) => Promise<void>

@@ -29,6 +29,42 @@ describe("consolidateApiRequests", () => {
 		text,
 	})
 
+	it("reuses completed pairs and invalidates late finishes, mutable fields, pairing and reload", () => {
+		const start = createApiReqStarted(1000, { tokensIn: 10 })
+		const firstFinish = createApiReqFinished(1001, { cost: 1 })
+		const secondFinish = createApiReqFinished(1002, { cost: 2 })
+		expect(consolidateApiRequests([start])[0]).toBe(start)
+		const first = consolidateApiRequests([start, firstFinish])[0]!
+		expect(consolidateApiRequests([start, firstFinish, createTextMessage(1003, "tail")])[0]).toBe(first)
+		expect(JSON.parse(consolidateApiRequests([start, secondFinish])[0]!.text!).cost).toBe(2)
+		firstFinish.text = JSON.stringify({ cost: 3 })
+		start.text = JSON.stringify({ tokensIn: 20 })
+		start.isAnswered = true
+		const changed = consolidateApiRequests([start, firstFinish])[0]!
+		expect(JSON.parse(changed.text!)).toEqual({ tokensIn: 20, cost: 3 })
+		expect(changed.isAnswered).toBe(true)
+		delete start.isAnswered
+		expect(consolidateApiRequests([start, firstFinish])[0]).not.toHaveProperty("isAnswered")
+		const secondStart = createApiReqStarted(1004, { tokensIn: 40 })
+		const paired = consolidateApiRequests([start, secondStart, firstFinish, secondFinish])
+		expect(paired.map((message) => JSON.parse(message.text!))).toEqual([
+			{ tokensIn: 20, cost: 2 },
+			{ tokensIn: 40, cost: 3 },
+		])
+		const reloaded = JSON.parse(JSON.stringify([start, firstFinish])) as AlphaMessage[]
+		expect(consolidateApiRequests(reloaded)).toEqual(consolidateApiRequests([start, firstFinish]))
+		expect(consolidateApiRequests(reloaded)[0]).not.toBe(consolidateApiRequests([start, firstFinish])[0])
+		const exposed = consolidateApiRequests([start, firstFinish])[0]!
+		exposed.text = "caller edit"
+		exposed.isAnswered = true
+		expect(JSON.parse(consolidateApiRequests([start, firstFinish])[0]!.text!)).toEqual({ tokensIn: 20, cost: 3 })
+		expect(consolidateApiRequests([start, firstFinish])[0]).not.toHaveProperty("isAnswered")
+		firstFinish.partial = true
+		expect(consolidateApiRequests([start, firstFinish])[0]).not.toBe(
+			consolidateApiRequests([start, firstFinish])[0],
+		)
+	})
+
 	it("should consolidate a matching pair of api_req_started and api_req_finished messages", () => {
 		const messages: AlphaMessage[] = [
 			createApiReqStarted(1000, { request: "GET /api/data" }),

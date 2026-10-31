@@ -22,10 +22,11 @@ const drain = () => new Promise<void>((resolve) => setImmediate(resolve))
 
 function fixture() {
 	const getActiveTaskId = vi.fn<() => string | undefined>(() => "task-one")
-	const getLiveTask = vi.fn((taskId: string): { taskId: string; cwd: string } | undefined => ({
-		taskId,
-		cwd: `/workspace/${taskId}`,
-	}))
+	const tasks = new Map<string, { taskId: string; cwd: string }>()
+	const getLiveTask = vi.fn((taskId: string): { taskId: string; cwd: string } | undefined => {
+		if (!tasks.has(taskId)) tasks.set(taskId, { taskId, cwd: `/workspace/${taskId}` })
+		return tasks.get(taskId)
+	})
 	let cwd = "/workspace"
 	const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
 		taskSessions: { getOwnedTasks: () => [] },
@@ -36,7 +37,10 @@ function fixture() {
 		immediateWebviewOperations: new Set(),
 		webviewDisposables: [],
 		getActiveTaskId,
-		getCurrentTask: () => ({ taskId: getActiveTaskId(), cwd: `/workspace/${getActiveTaskId()}` }),
+		getCurrentTask: () => {
+			const taskId = getActiveTaskId()
+			return taskId ? getLiveTask(taskId) : undefined
+		},
 		getLiveTask,
 		clearWebviewResources: vi.fn(),
 		postMessageToWebview: vi.fn().mockResolvedValue(undefined),

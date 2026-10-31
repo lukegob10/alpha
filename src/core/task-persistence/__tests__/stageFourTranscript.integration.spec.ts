@@ -657,4 +657,144 @@ describe("Stage Four real Task transcript persistence", () => {
 		expect((await new ProviderTranscriptStore(TASK_ID, harness.storagePath).read()).messages).toEqual(reloaded)
 		expect(executed).toEqual(["read-1"])
 	})
+
+	it.each(["second external edit", "new owner"] as const)(
+		"retains accepted results when a conflict drain is superseded by a %s",
+		async (supersession) => {
+			const harness = await setup()
+			const task = await seedTask(harness)
+			const response = await persistAssistant(task, responseWithCalls(2))
+			const store = task["providerTranscriptStore"]
+			const priorReceipt = task["providerTranscriptCommitReceipt"]!
+			const take = store.takePreservedConflictForTerminalDrain.bind(store)
+			let firstExternal = ""
+			let currentExternal = ""
+			let replacement: Task | undefined
+			vi.spyOn(store, "takePreservedConflictForTerminalDrain").mockImplementationOnce(async (receipt) => {
+				const precondition = await take(receipt)
+				expect(precondition).toBeDefined()
+				if (supersession === "second external edit") {
+					currentExternal = firstExternal.replace(EXTERNAL_TEXT, "LEGACY-VALUE-C")
+					await fs.writeFile(harness.legacyPath, currentExternal)
+				} else {
+					replacement = harness.makeTask()
+					replacement.apiConversationHistory = [{ role: "user", content: "replacement-owned history" }]
+				}
+				return precondition
+			})
+			const executed: string[] = []
+			const surface = serialReadSurface(async ({ call, callbacks }) => {
+				executed.push(call.id!)
+				callbacks.pushToolResult(`completed:${call.id}`)
+				if (call.id === "read-1") currentExternal = firstExternal = await tamperLegacy(harness, "in-place")
+			})
+			const outcome = await boundaries(task).executeCanonicalToolCalls(
+				response,
+				surface,
+				"code",
+				undefined,
+				new AbortController().signal,
+			)
+			expect(outcome).toMatchObject({
+				status: "failed",
+				failure: { kind: "effect_fence", callId: "read-2" },
+				results: [
+					{ callId: "read-1", status: "success" },
+					{ callId: "read-2", status: "error" },
+				],
+			})
+			expect(executed).toEqual(["read-1"])
+			expect(task.userMessageContent).toEqual([
+				expect.objectContaining({
+					type: "tool_result",
+					tool_use_id: "read-1",
+					content: "completed:read-1",
+					is_error: false,
+				}),
+				expect.objectContaining({ type: "tool_result", tool_use_id: "read-2", is_error: true }),
+			])
+			expect(await fs.readFile(harness.legacyPath, "utf8")).toBe(currentExternal)
+			const prefix = `${GlobalFileNames.apiConversationHistory}.conflict_`
+			const evidence = (await fs.readdir(path.dirname(harness.legacyPath))).filter((name) =>
+				name.startsWith(prefix),
+			)
+			const archived = await Promise.all(
+				evidence.map((name) => fs.readFile(path.join(path.dirname(harness.legacyPath), name), "utf8")),
+			)
+			expect(archived).toContain(firstExternal)
+			if (supersession === "second external edit") {
+				expect(archived).toContain(currentExternal)
+				await expect(store.assertCommitReceipt(priorReceipt)).rejects.toMatchObject({ code: "digest_mismatch" })
+				await expect(store.takePreservedConflictForTerminalDrain(priorReceipt)).resolves.toBeUndefined()
+				expect(
+					await task.flushPendingToolResultsToHistory({ allowAborted: true, drainPreservedConflict: true }),
+				).toBe(false)
+				expect(task.userMessageContent).toHaveLength(2)
+				expect(await fs.readFile(harness.legacyPath, "utf8")).toBe(currentExternal)
+				await harness.expectFlushFailure(task, "digest_mismatch")
+			} else {
+				expect(replacement?.apiConversationHistory).toEqual([
+					{ role: "user", content: "replacement-owned history" },
+				])
+			}
+		},
+	)
+
+	it.each(["atomic write", "claim validation"] as const)(
+		"retries the same conflict after failed %s",
+		async (boundary) => {
+			const harness = await setup()
+			const task = await seedTask(harness)
+			const response = await persistAssistant(task, responseWithCalls(2))
+			const store = task["providerTranscriptStore"]
+			const takeClaim = store.takePreservedConflictForTerminalDrain.bind(store)
+			const take = vi.spyOn(store, "takePreservedConflictForTerminalDrain")
+			if (boundary === "claim validation") {
+				take.mockImplementationOnce(async (...args) => {
+					vi.spyOn(store, "getFilePath").mockRejectedValueOnce(new Error("injected claim validation failure"))
+					return takeClaim(...args)
+				})
+			}
+			let conflictingContents = ""
+			const surface = serialReadSurface(async ({ call, callbacks }) => {
+				callbacks.pushToolResult(`completed:${call.id}`)
+				if (call.id === "read-1") {
+					conflictingContents = await tamperLegacy(harness, "in-place")
+					if (boundary === "atomic write") {
+						io.beforeRename = async (_source, destination) => {
+							if (String(destination) === harness.legacyPath)
+								throw Object.assign(new Error("injected terminal write failure"), { code: "EIO" })
+						}
+					}
+				}
+			})
+			const outcome = await boundaries(task).executeCanonicalToolCalls(
+				response,
+				surface,
+				"code",
+				undefined,
+				new AbortController().signal,
+			)
+			expect(outcome).toMatchObject({
+				status: "failed",
+				results: [
+					{ callId: "read-1", status: "success" },
+					{ callId: "read-2", status: "error" },
+				],
+			})
+			expect(task.userMessageContent).toHaveLength(2)
+			expect(await fs.readFile(harness.legacyPath, "utf8")).toBe(conflictingContents)
+			io.beforeRename = undefined
+			expect(
+				await task.flushPendingToolResultsToHistory({ allowAborted: true, drainPreservedConflict: true }),
+			).toBe(true)
+			expect(take.mock.calls.map((call) => call[1])).toEqual([false, true])
+			expect(task.userMessageContent).toEqual([])
+			expect(toolResults(await harness.readLegacy())).toEqual([
+				expect.objectContaining({ tool_use_id: "read-1", content: "completed:read-1", is_error: false }),
+				expect.objectContaining({ tool_use_id: "read-2", is_error: true }),
+			])
+			expect((await store.read()).messages).toEqual(await harness.readLegacy())
+		},
+	)
 })

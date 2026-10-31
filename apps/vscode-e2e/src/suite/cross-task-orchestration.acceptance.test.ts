@@ -16,6 +16,7 @@ import {
 
 import { waitFor, waitUntilCompleted } from "./utils"
 import { setDefaultSuiteTimeout } from "./test-utils"
+import { assertFeatureTicketListResult } from "../scenarios/featureWorkflowFixture"
 
 import {
 	COLLECT_CHILD_RESULTS,
@@ -231,6 +232,11 @@ class CrossTaskAcceptanceAI {
 	}
 }
 
+const TICKET_HANDOFF_PROMPT =
+	"Read Alpha parent ticket ALPHA-42 and all five child tickets; implement and verify their success criteria. Use subagents as needed."
+const TICKET_HANDOFF_ACK = "Ready. What should I work on?"
+const LAUNCHER_ONLY_NOTE = "HANDOFF_LAUNCHER_ONLY"
+
 class CompletingChildAI {
 	readonly id = "cross-task-completion-e2e"
 	private rootTaskId?: string
@@ -241,15 +247,25 @@ class CompletingChildAI {
 	})
 	childTaskId?: string
 	sawChildResult = false
+	childRequests = 0
+	constructor(private readonly performLookup = false) {}
+
+	get childResult(): string {
+		return this.performLookup ? "Completed the assigned ticket lookup." : TICKET_HANDOFF_ACK
+	}
 
 	releaseChild(): void {
 		this.releaseChildRequest()
 	}
 
 	async *createMessage(
-		_system: string,
+		system: string,
 		messages: unknown[],
-		metadata?: { taskId?: string; tools?: Array<{ type?: string; function?: { name?: string } }> },
+		metadata?: {
+			taskId?: string
+			tools?: Array<{ type?: string; function?: { name?: string } }>
+			instructionFragments?: readonly { role: string; origin?: string; content: string }[]
+		},
 	): AsyncGenerator<ScriptChunk> {
 		const taskId = metadata?.taskId
 		assert.ok(taskId)
@@ -257,16 +273,59 @@ class CompletingChildAI {
 		const turn = this.turns.get(taskId) ?? 0
 		this.turns.set(taskId, turn + 1)
 		if (taskId !== this.rootTaskId) {
-			assert.equal(turn, 0)
+			this.childRequests++
+			assert.equal(turn, this.performLookup ? this.childRequests - 1 : 0)
+			const assignment = metadata?.instructionFragments?.find(({ origin }) => origin === "alpha-task-assignment")
+			assert.ok(assignment, "A created independent task must receive host-owned assignment context")
+			assert.equal(assignment?.role, "developer", "The host must distinguish assigned work from ordinary mail")
+			assert.ok(
+				assignment.content.includes(JSON.stringify(this.rootTaskId)),
+				"The handoff must retain its host-owned origin",
+			)
+			assert.ok(
+				system.includes(assignment.content),
+				"Flattened provider instructions must retain the same handoff",
+			)
+			const transcript = JSON.stringify(messages)
+			assert.ok(
+				transcript.includes(TICKET_HANDOFF_PROMPT),
+				"The first request must retain the entire ticket assignment",
+			)
+			assert.ok(
+				!transcript.includes(LAUNCHER_ONLY_NOTE),
+				"A fresh thread must not copy the launcher's conversation",
+			)
+			for (const name of ["read_ticket", "spawn_agent"]) {
+				assert.ok(
+					metadata?.tools?.some((tool) => tool.function?.name === name),
+					`${name} must remain available`,
+				)
+			}
 			await this.childMayFinish
-			yield { type: "text", text: "Child test completed." }
+			if (this.performLookup) {
+				if (turn === 0) {
+					yield {
+						type: "tool_call",
+						id: `${taskId}-assigned-lookup`,
+						name: "list_tickets",
+						arguments: "{}",
+					}
+					yield { type: "usage", inputTokens: 10, outputTokens: 5, totalCost: 0 }
+					return
+				}
+				assert.equal(turn, 1, "Assigned work must run once and complete without another wake")
+				assertFeatureTicketListResult(messages, `${taskId}-assigned-lookup`)
+			}
+			// Codex 8801b9a8 (2026-10-30), core/src/session/turn.rs: an ordinary
+			// response with no continuation may end its turn even when it is only an acknowledgement.
+			yield { type: "text", text: this.childResult }
 		} else if (turn === 0) {
 			assert.ok(metadata?.tools?.some((tool) => tool.function?.name === "create_thread"))
 			yield {
 				type: "tool_call",
 				id: `${taskId}-create-child`,
 				name: "create_thread",
-				arguments: JSON.stringify({ prompt: "Complete the test and report back" }),
+				arguments: JSON.stringify({ prompt: TICKET_HANDOFF_PROMPT, title: "Parent ticket and children" }),
 			}
 		} else if (turn === 1) {
 			this.childTaskId = (JSON.parse(findLatestToolResult(messages)) as { threadId: string }).threadId
@@ -277,12 +336,9 @@ class CompletingChildAI {
 				arguments: JSON.stringify({ targets: [{ threadId: this.childTaskId }], timeoutMs: 30_000 }),
 			}
 		} else if (turn === 2) {
-			assert.ok(
-				JSON.stringify(messages).includes("Child test completed."),
-				"The child result must reach the parent",
-			)
+			assert.ok(JSON.stringify(messages).includes(this.childResult), "The child result must reach the parent")
 			this.sawChildResult = true
-			yield { type: "text", text: "Integrated the child result." }
+			yield { type: "text", text: "Observed the child turn result." }
 		} else {
 			throw new Error(`Unexpected parent model turn ${turn + 1}`)
 		}
@@ -1020,57 +1076,92 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 		}
 	})
 
-	test("wait_threads returns a child result without automatically starting another parent turn", async () => {
-		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-		const api = globalThis.api
-		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
-		assert.ok(provider)
-		const scripted = new CompletingChildAI()
-		const completions: string[] = []
-		let rootTaskId: string | undefined
-		const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
-			if (
-				event.message.type === "ask" &&
-				(event.message.ask === "tool" || event.message.ask === "completion_result")
-			) {
-				queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
-			}
-		}
-		const onCompleted = (taskId: string) => completions.push(taskId)
-		api.on(AlphaCodeEventName.Message, onMessage)
-		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
-		try {
-			const configuration: AlphaCodeSettings = {
-				...api.getConfiguration(),
-				apiProvider: "fake-ai",
-				fakeAi: scripted,
-				mode: "code",
-				autoApprovalEnabled: false,
-				requestDelaySeconds: 0,
-				writeDelayMs: 0,
-				enableCheckpoints: false,
-			}
-			rootTaskId = await api.startNewTask({ configuration, text: "can you launch a test thread" })
-			await waitFor(() => scripted.childTaskId !== undefined, {
-				description: "canonical child creation to finish",
-			})
-			scripted.releaseChild()
-			await waitFor(
-				() => completions.filter((taskId) => taskId === rootTaskId).length === 1 && scripted.sawChildResult,
-				{ timeout: 60_000, description: "explicit thread wait to return the child result and complete once" },
-			)
-			assert.equal(completions.filter((taskId) => taskId === scripted.childTaskId).length, 1)
-			const root = provider.getLiveTask(rootTaskId)
-			assert.ok(root)
-			await root.waitForTermination()
-			assert.equal(completions.filter((taskId) => taskId === rootTaskId).length, 1)
-		} finally {
-			scripted.releaseChild()
-			api.off(AlphaCodeEventName.Message, onMessage)
-			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
-			if (rootTaskId && !provider.getLiveTask(rootTaskId)?.didComplete) {
-				await api.cancelCurrentTask().catch(() => undefined)
-			}
-		}
-	})
+	for (const performLookup of [false, true]) {
+		test(
+			performLookup
+				? "starts permitted ticket work from an agent assignment without another human prompt"
+				: "preserves a ticket handoff and returns an acknowledgement without automatically restarting either task",
+			async () => {
+				assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+				const api = globalThis.api
+				const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
+				assert.ok(provider)
+				const scripted = new CompletingChildAI(performLookup)
+				const completions: string[] = []
+				let rootTaskId: string | undefined
+				const onMessage = (event: { taskId: string; message: AlphaMessage }) => {
+					if (
+						event.message.type === "ask" &&
+						(event.message.ask === "tool" || event.message.ask === "completion_result")
+					) {
+						queueMicrotask(() => provider.getLiveTask(event.taskId)?.approveAsk())
+					}
+				}
+				const onCompleted = (taskId: string) => completions.push(taskId)
+				api.on(AlphaCodeEventName.Message, onMessage)
+				api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+				try {
+					const configuration: AlphaCodeSettings = {
+						...api.getConfiguration(),
+						apiProvider: "fake-ai",
+						fakeAi: scripted,
+						mode: "code",
+						autoApprovalEnabled: false,
+						requestDelaySeconds: 0,
+						writeDelayMs: 0,
+						enableCheckpoints: false,
+						subagentsEnabled: true,
+					}
+					rootTaskId = await api.startNewTask({
+						configuration,
+						text: `Launch a new thread for Alpha parent ticket ALPHA-42 and all five children. Use subagents as needed. ${LAUNCHER_ONLY_NOTE}`,
+					})
+					await waitFor(() => scripted.childTaskId !== undefined, {
+						description: "canonical child creation to finish",
+					})
+					scripted.releaseChild()
+					await waitFor(
+						() =>
+							completions.filter((taskId) => taskId === rootTaskId).length === 1 &&
+							scripted.sawChildResult,
+						{
+							timeout: 60_000,
+							description: "explicit thread wait to return the child result and complete once",
+						},
+					)
+					assert.equal(completions.filter((taskId) => taskId === scripted.childTaskId).length, 1)
+					const root = provider.getLiveTask(rootTaskId)
+					assert.ok(root)
+					await root.waitForTermination()
+					assert.equal(completions.filter((taskId) => taskId === rootTaskId).length, 1)
+					assert.equal(
+						scripted.childRequests,
+						performLookup ? 2 : 1,
+						"Only the tool result may continue the child",
+					)
+					const saved = await provider.getTaskWithId(scripted.childTaskId!)
+					assert.equal(
+						saved.historyItem.task,
+						TICKET_HANDOFF_PROMPT,
+						"A display title must not replace the objective",
+					)
+					assert.equal((saved.apiConversationHistory[0] as { input_origin?: string })?.input_origin, "agent")
+					assert.equal(saved.historyItem.orchestrationParentTaskId, rootTaskId)
+					if (performLookup) {
+						assertFeatureTicketListResult(
+							saved.apiConversationHistory,
+							`${scripted.childTaskId}-assigned-lookup`,
+						)
+					}
+				} finally {
+					scripted.releaseChild()
+					api.off(AlphaCodeEventName.Message, onMessage)
+					api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+					if (rootTaskId && !provider.getLiveTask(rootTaskId)?.didComplete) {
+						await api.cancelCurrentTask().catch(() => undefined)
+					}
+				}
+			},
+		)
+	}
 })

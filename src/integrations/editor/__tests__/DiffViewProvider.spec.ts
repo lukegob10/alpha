@@ -3,6 +3,7 @@ import * as vscode from "vscode"
 import * as path from "path"
 import delay from "delay"
 import * as fs from "fs/promises"
+import { createDirectoriesForFile } from "../../../utils/fs"
 
 vi.mock("../../../i18n", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../../../i18n")>()
@@ -155,6 +156,7 @@ describe("DiffViewProvider", () => {
 		// Create a mock Task instance
 		mockTask = {
 			getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
+			alphaIgnoreController: { validateAccess: vi.fn().mockReturnValue(true) },
 			providerRef: {
 				deref: vi.fn().mockReturnValue({
 					getState: vi.fn().mockResolvedValue({
@@ -486,6 +488,43 @@ describe("DiffViewProvider", () => {
 			expect(fs.writeFile).toHaveBeenCalledOnce()
 			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
 			expect(vscode.workspace.openTextDocument).not.toHaveBeenCalled()
+		})
+
+		it("rejects ignored saves before creating directories or reading the target", async () => {
+			mockTask.alphaIgnoreController.validateAccess.mockReturnValue(false)
+
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "replacement", false, false, 0, {
+					exists: true,
+					content: "file content",
+				}),
+			).rejects.toThrow(".alphaignore")
+
+			expect(createDirectoriesForFile).not.toHaveBeenCalled()
+			expect(fs.readFile).not.toHaveBeenCalled()
+			expect(fs.writeFile).not.toHaveBeenCalled()
+		})
+
+		it.each([false, true])("rejects access revoked during baseline validation (exists=%s)", async (exists) => {
+			vi.mocked(fs.readFile).mockImplementationOnce(async () => {
+				mockTask.alphaIgnoreController.validateAccess.mockReturnValue(false)
+				if (!exists) throw Object.assign(new Error("missing"), { code: "ENOENT" })
+				return "file content"
+			})
+
+			await expect(
+				diffViewProvider.saveDirectly(
+					"test.ts",
+					"replacement",
+					false,
+					false,
+					0,
+					exists ? { exists: true, content: "file content" } : { exists: false },
+				),
+			).rejects.toThrow(".alphaignore")
+
+			expect(fs.writeFile).not.toHaveBeenCalled()
+			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
 		})
 
 		it("retains the cancellation signal captured before a background save begins", async () => {

@@ -223,6 +223,30 @@ describe("apply-patch apply", () => {
 			expect(result).toBe("a\nB\nc\nd\nE\nf\n")
 		})
 
+		it("applies a replacement larger than the JavaScript argument limit", () => {
+			const lineCount = 150_000
+			const result = applyChunksToContent("old\n", "test.txt", [
+				{
+					changeContext: null,
+					oldLines: ["old"],
+					newLines: Array.from({ length: lineCount }, () => "x"),
+					isEndOfFile: false,
+				},
+			])
+
+			expect(result.length).toBe(lineCount * 2)
+			expect(result === "x\n".repeat(lineCount)).toBe(true)
+		})
+
+		it("retains source order for multiple additions at the same position", () => {
+			const result = applyChunksToContent("old\n", "test.txt", [
+				{ changeContext: null, oldLines: [], newLines: ["first"], isEndOfFile: false },
+				{ changeContext: null, oldLines: [], newLines: ["second"], isEndOfFile: false },
+			])
+
+			expect(result).toBe("old\nfirst\nsecond\n")
+		})
+
 		it("preserves the absence of a trailing newline", () => {
 			const original = "foo\nbar"
 			const chunks: UpdateFileChunk[] = [

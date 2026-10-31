@@ -48,6 +48,12 @@ function isPatchCancelled(task: Task, callbacks: ToolCallbacks): boolean {
 	return !!(callbacks.signal?.aborted || task.abort || task.abandoned)
 }
 
+function assertPatchPathAccess(task: Task, relPath: string): void {
+	if (task.alphaIgnoreController?.validateAccess(relPath) === false) {
+		throw new Error(formatResponse.alphaIgnoreError(relPath))
+	}
+}
+
 export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 	readonly name = "apply_patch" as const
 
@@ -479,6 +485,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		const isCancelled = () => signal?.aborted || task.abort || task.abandoned
 		const assertCanDelete = () => {
 			if (isCancelled()) throw new Error(t("tools:applyPatch.deleteCancelled"))
+			assertPatchPathAccess(task, relPath)
 
 			// Deletion never owns an editor buffer, including a previous managed diff.
 			if (
@@ -535,6 +542,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				return { status: "denied", result: "Delete operation was rejected by the user." }
 			}
 
+			assertCanDelete()
 			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedState)
 			const currentStat = await fs.lstat(absolutePath, { bigint: true })
 			// Content alone cannot distinguish a replacement containing the same text.
@@ -708,6 +716,12 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		// Handle file move if specified and distinct from the source path.
 		if (effectiveMovePath && moveAbsolutePath && expectedMoveFileState) {
+			// Either baseline read can yield; both paths must remain allowed at commit.
+			const validateMoveAccess = () => {
+				assertPatchPathAccess(task, relPath)
+				assertPatchPathAccess(task, effectiveMovePath)
+			}
+			validateMoveAccess()
 			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
 
 			// Save new content to the new path
@@ -719,12 +733,15 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					diagnosticsEnabled,
 					writeDelayMs,
 					expectedMoveFileState,
+					validateMoveAccess,
 				)
 			} else {
-				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs, {
-					relPath: effectiveMovePath,
-					expectedFileState: expectedMoveFileState,
-				})
+				await task.diffViewProvider.saveChanges(
+					diagnosticsEnabled,
+					writeDelayMs,
+					{ relPath: effectiveMovePath, expectedFileState: expectedMoveFileState },
+					validateMoveAccess,
+				)
 			}
 
 			// The destination is committed even if cancellation or source cleanup
@@ -747,7 +764,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			// Re-check immediately before removing the source. If it changed after
 			// the destination write, report the partial move and preserve the source.
 			try {
+				assertPatchPathAccess(task, relPath)
 				await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
+				assertPatchPathAccess(task, relPath)
 			} catch (error) {
 				if (isPatchCancelled(task, callbacks)) return cancelledMove()
 				task.consecutiveMistakeCount++

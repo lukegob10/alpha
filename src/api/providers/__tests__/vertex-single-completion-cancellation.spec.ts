@@ -91,7 +91,7 @@ const providers = [
 				apiModelId: "claude-sonnet-4-6",
 			}),
 		request: mocks.anthropicRequest,
-		response: { content: [{ type: "text", text: "answer" }] },
+		response: { content: [{ type: "text", text: "answer" }], stop_reason: "end_turn" },
 		signal: (request: Mock): AbortSignal | undefined => request.mock.calls[0]?.[1]?.signal,
 	},
 ]
