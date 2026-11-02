@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import { EventEmitter } from "node:events"
+import nock from "nock"
 
 import { TelemetryService } from "@alpha-code/telemetry"
 import type { ProviderSettings } from "@alpha-code/types"
@@ -9,6 +10,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { buildApiHandler, type ApiHandler } from "../../../api"
 import { getApiRequestTimeout } from "../../../api/providers/utils/timeout-config"
+import { OpenAiNativeHandler } from "../../../api/providers/openai-native"
+import { OpenAiHandler } from "../../../api/providers/openai"
+import { AnthropicHandler } from "../../../api/providers/anthropic"
 import {
 	ApiStreamDeadlineError,
 	createApiStreamError,
@@ -109,6 +113,7 @@ type TaskHooks = {
 	flushAgentTurnEvents: Task["flushAgentTurnEvents"]
 	waitForRetryDecision: Task["waitForRetryDecision"]
 	persistAssistantResponseBeforeEffects: Task["persistAssistantResponseBeforeEffects"]
+	handleContextWindowExceededError: Task["handleContextWindowExceededError"]
 }
 const fixtures: Array<{ cleanup: () => Promise<void> }> = []
 
@@ -122,6 +127,7 @@ async function harness(
 		onReadEffect?: () => void
 		finalizeEarlyRead?: (callId: string) => Promise<void>
 		malformedCompletionCall?: boolean
+		handler?: ApiHandler
 	} = {},
 ) {
 	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
@@ -230,12 +236,13 @@ async function harness(
 	}
 	let task!: Task
 	let attempts = 0
-	const createMessage = vi.fn<ApiHandler["createMessage"]>(async function* () {
+	const createMessage = vi.fn<ApiHandler["createMessage"]>(async function* (...request) {
 		const step = task["currentAgentStep"]!
 		const snapshot = step.snapshot
 		snapshots.push({ context: snapshot.context, digests: snapshot.digests })
 		capturedRequests.push(step)
-		yield* script(++attempts, task)
+		const attempt = ++attempts
+		yield* options.handler ? options.handler.createMessage(...request) : script(attempt, task)
 	})
 	const originalDispose = vi.fn()
 	const replacementDispose = vi.fn()
@@ -381,7 +388,313 @@ async function harness(
 beforeEach(() => vi.clearAllMocks())
 afterEach(async () => {
 	for (const fixture of fixtures.splice(0)) await fixture.cleanup()
+	nock.cleanAll()
 	vi.restoreAllMocks()
+})
+
+describe("Task recovery through provider adapters", () => {
+	const sse = (...events: Array<{ type: string } & Record<string, unknown>>) =>
+		events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")
+	const nativeAnswer = sse({
+		type: "response.completed",
+		response: {
+			id: "resp_adapter_recovered",
+			status: "completed",
+			output: [
+				{
+					type: "message",
+					id: "msg_adapter_recovered",
+					role: "assistant",
+					status: "completed",
+					content: [{ type: "output_text", text: "Recovered through the adapter.", annotations: [] }],
+				},
+			],
+			usage: { input_tokens: 8, output_tokens: 4 },
+		},
+	})
+
+	it.each(["request failure", "stream truncation"])("recovers native OpenAI %s", async (failure) => {
+		const scope = nock("https://api.openai.com")
+		const firstRequest = scope.post("/v1/responses")
+		if (failure === "request failure") {
+			firstRequest.reply(503, { error: { message: "Temporary upstream outage.", type: "server_error" } })
+		} else {
+			firstRequest.reply(
+				200,
+				sse({
+					type: "response.output_text.delta",
+					item_id: "msg_adapter_partial",
+					output_index: 0,
+					content_index: 0,
+					delta: partialText,
+				}),
+				{ "Content-Type": "text/event-stream" },
+			)
+		}
+		const recovered = nock("https://api.openai.com")
+			.post("/v1/responses")
+			.reply(200, nativeAnswer, { "Content-Type": "text/event-stream" })
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new OpenAiNativeHandler({ apiModelId: "gpt-6.1-sol", openAiNativeApiKey: "fixture-key" }),
+				apiProvider: "openai-native",
+			},
+		)
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(1)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		if (failure === "stream truncation") {
+			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain(partialText)
+			expect(
+				(await fixture.history()).filter((message) => message.agentResponseOutcome?.status === "failed"),
+			).toHaveLength(1)
+		}
+		expect(scope.isDone()).toBe(true)
+		expect(recovered.isDone()).toBe(true)
+	})
+
+	it.each([false, true])("recovers compatible Chat EOF (partial text=%s)", async (hasText) => {
+		const scope = nock("https://api.openai.com")
+			.post("/v1/chat/completions")
+			.reply(
+				200,
+				`data: ${JSON.stringify({ choices: [{ index: 0, delta: hasText ? { content: partialText } : {}, finish_reason: null }] })}\n\n`,
+				{
+					"Content-Type": "text/event-stream",
+				},
+			)
+			.post("/v1/chat/completions")
+			.reply(
+				200,
+				`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: "Recovered after compatible EOF." }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`,
+				{
+					"Content-Type": "text/event-stream",
+				},
+			)
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new OpenAiHandler({ openAiApiKey: "fixture-key", openAiModelId: "gpt-4o" }),
+			},
+		)
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(1)
+		if (hasText) expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain(partialText)
+		expect(
+			(await fixture.history()).filter((message) => message.agentResponseOutcome?.status === "incomplete"),
+		).toHaveLength(hasText ? 1 : 0)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		expect(scope.isDone()).toBe(true)
+	})
+
+	it.each([false, true])("recovers Anthropic EOF (partial text=%s)", async (hasText) => {
+		const textEvents = [
+			{ type: "message_start", message: { usage: { input_tokens: 8, output_tokens: 0 } } },
+			{ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+			{ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: partialText } },
+			{ type: "content_block_stop", index: 0 },
+		]
+		const scope = nock("https://api.anthropic.com")
+			.post("/v1/messages")
+			.reply(200, sse(...(hasText ? textEvents : textEvents.slice(0, 1))), {
+				"Content-Type": "text/event-stream",
+			})
+			.post("/v1/messages")
+			.reply(
+				200,
+				sse(
+					...textEvents,
+					{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } },
+					{ type: "message_stop" },
+				),
+				{ "Content-Type": "text/event-stream" },
+			)
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new AnthropicHandler({ apiKey: "fixture-key" }),
+				apiProvider: "anthropic",
+			},
+		)
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(1)
+		if (hasText) expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain(partialText)
+		expect(
+			(await fixture.history()).filter((message) => message.agentResponseOutcome?.status === "incomplete"),
+		).toHaveLength(hasText ? 1 : 0)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		expect(scope.isDone()).toBe(true)
+	})
+
+	it.each(["maximum context length exceeded", "prompt is too long"])(
+		"admits context recovery for a message-only native HTTP400: %s",
+		async (message) => {
+			const scope = nock("https://api.openai.com")
+				.post("/v1/responses")
+				.reply(400, { error: { message } })
+				.post("/v1/responses")
+				.reply(200, nativeAnswer, { "Content-Type": "text/event-stream" })
+			const fixture = await harness(
+				async function* () {},
+				{},
+				{
+					handler: new OpenAiNativeHandler({ apiModelId: "gpt-6.1-sol", openAiNativeApiKey: "fixture-key" }),
+					apiProvider: "openai-native",
+				},
+			)
+			const recover = vi.spyOn(fixture.hooks, "handleContextWindowExceededError").mockResolvedValue(undefined)
+
+			await fixture.run()
+
+			expect(recover).toHaveBeenCalledOnce()
+			expect(recover.mock.calls[0][1]).toBe(fixture.capturedRequests[0])
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(fixture.events).toContainEqual({ type: "compaction_completed", action: "summary" })
+			expect(fixture.events).toContainEqual(
+				expect.objectContaining({ type: "retry", reason: expect.stringContaining(message) }),
+			)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			expect(scope.isDone()).toBe(true)
+		},
+	)
+
+	it.each(["authentication", "quota", "output limit"])(
+		"does not replay native OpenAI %s failures",
+		async (failure) => {
+			const scope = nock("https://api.openai.com")
+			const request = scope.post("/v1/responses")
+			if (failure === "authentication") {
+				request.reply(401, { error: { message: "Invalid credentials.", code: "invalid_api_key" } })
+			} else {
+				request.reply(
+					200,
+					sse(
+						failure === "quota"
+							? {
+									type: "response.failed",
+									response: {
+										id: "resp_permanent",
+										status: "failed",
+										error: { code: "insufficient_quota", message: "Quota exhausted." },
+									},
+								}
+							: {
+									type: "response.incomplete",
+									response: {
+										id: "resp_limited",
+										status: "incomplete",
+										incomplete_details: { reason: "max_output_tokens" },
+										output: [],
+									},
+								},
+					),
+					{ "Content-Type": "text/event-stream" },
+				)
+			}
+			const fixture = await harness(
+				async function* () {},
+				{},
+				{
+					handler: new OpenAiNativeHandler({ apiModelId: "gpt-6.1-sol", openAiNativeApiKey: "fixture-key" }),
+					apiProvider: "openai-native",
+				},
+			)
+
+			await fixture.run()
+
+			expect(fixture.task.isCompleted()).toBe(false)
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.task.ask).toHaveBeenCalledWith("resume_task")
+			expect(scope.isDone()).toBe(true)
+		},
+	)
+
+	it("bounds automatic native request recovery by the shared retry policy", async () => {
+		const scope = nock("https://api.openai.com")
+			.post("/v1/responses")
+			.times(2)
+			.reply(503, { error: { message: "Temporary upstream outage.", type: "server_error" } })
+		const fixture = await harness(
+			async function* () {},
+			{ maxAttempts: 2 },
+			{
+				handler: new OpenAiNativeHandler({ apiModelId: "gpt-6.1-sol", openAiNativeApiKey: "fixture-key" }),
+				apiProvider: "openai-native",
+			},
+		)
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(false)
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(1)
+		expect(fixture.events).toContainEqual(
+			expect.objectContaining({
+				type: "turn_failed",
+				reason: "Provider retry budget exhausted (attempts).",
+			}),
+		)
+		expect(fixture.task.ask).toHaveBeenCalledWith("resume_task")
+		expect(scope.isDone()).toBe(true)
+	})
+
+	it("does not replay a mutation accepted before native stream truncation", async () => {
+		const scope = nock("https://api.openai.com")
+			.post("/v1/responses")
+			.reply(
+				200,
+				sse({
+					type: "response.output_item.done",
+					output_index: 0,
+					item: {
+						type: "function_call",
+						id: "fc_mutation",
+						call_id: "call_mutation",
+						name: "apply_patch",
+						arguments: "{}",
+					},
+				}),
+				{ "Content-Type": "text/event-stream" },
+			)
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new OpenAiNativeHandler({ apiModelId: "gpt-6.1-sol", openAiNativeApiKey: "fixture-key" }),
+				apiProvider: "openai-native",
+			},
+		)
+
+		await fixture.run()
+
+		expect(fixture.task.isCompleted()).toBe(false)
+		expect(fixture.createMessage).toHaveBeenCalledOnce()
+		expect(fixture.effect).not.toHaveBeenCalled()
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		const history = await fixture.history()
+		expect(history.flatMap((message) => (Array.isArray(message.content) ? message.content : []))).toContainEqual(
+			expect.objectContaining({ type: "tool_result", tool_use_id: "call_mutation", is_error: true }),
+		)
+		expect(scope.isDone()).toBe(true)
+	})
 })
 
 describe("Task canonical response admission", () => {
@@ -439,7 +752,7 @@ describe("Task canonical response admission", () => {
 	]
 
 	it.each(reasoningCases)(
-		"commits completed $name before continuing the real Task turn",
+		"commits completed $name before an explicitly requested continuation of the real Task turn",
 		async ({ chunk, taskKind, apiProvider }) => {
 			let fixture!: Awaited<ReturnType<typeof harness>>
 			fixture = await harness(
@@ -448,6 +761,7 @@ describe("Task canonical response admission", () => {
 						yield chunk
 						yield createApiStreamOutcome({
 							status: "completed",
+							requiresContinuation: true,
 							semanticOutputObserved: chunk.text.length > 0,
 						})
 						return
@@ -470,7 +784,7 @@ describe("Task canonical response admission", () => {
 			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
 			expect(assistant).toHaveLength(2)
 			expect(assistant[0].agentResponseItems).toEqual([chunk])
-			expect(assistant[0].agentResponseOutcome).toEqual({ status: "completed" })
+			expect(assistant[0].agentResponseOutcome).toEqual({ status: "completed", requiresContinuation: true })
 			expect(fixture.createMessage.mock.calls[1][1].filter((message) => message.role === "user")).toHaveLength(1)
 			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).not.toContain("You did not use a tool")
 			if (chunk.vscodeLmThinking || chunk.geminiResponse) {
@@ -488,6 +802,238 @@ describe("Task canonical response admission", () => {
 			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
 		},
 	)
+
+	it.each(
+		reasoningCases.flatMap((reasoning) => [
+			{ ...reasoning, boundary: "omitted", requiresContinuation: undefined },
+			{ ...reasoning, boundary: "false", requiresContinuation: false },
+		]),
+	)(
+		"ends a completed $name response with continuation flag $boundary after saving its replay state",
+		async ({ chunk, taskKind, apiProvider, requiresContinuation }) => {
+			const fixture = await harness(
+				async function* (attempt) {
+					if (attempt === 1) {
+						yield chunk
+						yield createApiStreamOutcome({ status: "completed", requiresContinuation })
+						return
+					}
+					yield { type: "text", text: "An unnecessary continuation occurred." }
+					yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				},
+				{},
+				{ taskKind, apiProvider },
+			)
+			const completionTrace: string[] = []
+			vi.mocked(fixture.task.waitForCompletionGateDecision).mockImplementation(async () => {
+				completionTrace.push("gate")
+				return { allowed: true, modelCanResolveRejection: true }
+			})
+			const completionHooks = vi.spyOn(fixture.task, "evaluateCompletionHooks").mockImplementation(async () => {
+				completionTrace.push("stop")
+				return {}
+			})
+			vi.mocked(fixture.task.presentCompletionResult).mockImplementation(async () => {
+				completionTrace.push("present")
+			})
+			vi.mocked(fixture.task.finalizeTaskCompletion).mockImplementation(async () => {
+				completionTrace.push("finalize")
+				fixture.task.markCompleted()
+				return true
+			})
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			expect(fixture.effect).not.toHaveBeenCalled()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant).toHaveLength(1)
+			expect(assistant[0].agentResponseItems).toEqual([chunk])
+			expect(assistant[0].agentResponseOutcome).toEqual({
+				status: "completed",
+				requiresContinuation: false,
+			})
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.events.filter((event) => event.type === "response_terminal")).toEqual([
+				{ type: "response_terminal", status: "completed" },
+			])
+			expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+			expect(fixture.task.waitForCompletionGateDecision).toHaveBeenCalledTimes(2)
+			expect(completionHooks).toHaveBeenCalledOnce()
+			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+			expect(completionTrace).toEqual(["gate", "stop", "present", "gate", "finalize"])
+		},
+	)
+
+	it.each(["Inspecting the requested module.", ""])(
+		"retains host thinking and continues when the adapter has no terminal outcome (text=%j)",
+		async (text) => {
+			const chunk = { type: "reasoning" as const, text, vscodeLmThinking: thinking }
+			const fixture = await harness(
+				async function* (attempt) {
+					if (attempt === 1) {
+						yield chunk
+						return
+					}
+					yield { type: "text", text: "The answer after retained host thinking." }
+				},
+				{},
+				{ apiProvider: "vscode-lm" },
+			)
+			Object.defineProperty(fixture.original, "streamCapabilities", { value: { cancellation: true } })
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant).toHaveLength(2)
+			expect(assistant[0].agentResponseItems).toEqual([chunk])
+			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain("retained-signature")
+			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).not.toContain("You did not use a tool")
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each([
+		{ name: "default fallback allowance", policy: {}, allowedSamples: 2 },
+		{ name: "lower overall allowance", policy: { maxAttempts: 1 }, allowedSamples: 1 },
+		{
+			name: "lower empty-response allowance",
+			policy: { maxAttempts: 3, maxAttemptsByCategory: { "empty-response": 1 } },
+			allowedSamples: 1,
+		},
+	])(
+		"exhausts unsignalled host thinking at the $name without repeating effects",
+		async ({ policy, allowedSamples }) => {
+			const retained: ApiStreamChunk[] = []
+			const fixture = await harness(
+				async function* (attempt) {
+					if (attempt <= allowedSamples) {
+						const chunk = {
+							type: "reasoning" as const,
+							text: "",
+							vscodeLmThinking: {
+								...thinking,
+								id: `thinking-${attempt}`,
+								metadata: { ...thinking.metadata, signature: `retained-signature-${attempt}` },
+							},
+						}
+						retained.push(chunk)
+						yield chunk
+						return
+					}
+					yield { type: "text", text: "An unnecessary continuation exceeded the fallback allowance." }
+				},
+				policy,
+				{ apiProvider: "vscode-lm" },
+			)
+			Object.defineProperty(fixture.original, "streamCapabilities", { value: { cancellation: true } })
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledTimes(allowedSamples)
+			expect(fixture.task.isCompleted()).toBe(false)
+			expect(fixture.task.ask).toHaveBeenCalledWith("resume_task")
+			expect(fixture.effect).not.toHaveBeenCalled()
+			expect(fixture.task.finalizeTaskCompletion).not.toHaveBeenCalled()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant.map((message) => message.agentResponseItems)).toEqual(retained.map((chunk) => [chunk]))
+			expect(JSON.stringify(await fixture.history())).not.toContain("You did not use a tool")
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(0)
+			expect(fixture.events.filter((event) => event.type === "turn_failed")).toHaveLength(1)
+		},
+	)
+
+	it("keeps explicit provider continuation outside the unknown-outcome fallback allowance", async () => {
+		const fixture = await harness(
+			async function* (attempt) {
+				if (attempt <= 3) {
+					yield { type: "reasoning", text: "", vscodeLmThinking: thinking }
+					yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
+					return
+				}
+				yield { type: "text", text: "The explicitly requested continuation completed." }
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+			},
+			{ maxAttempts: 1 },
+		)
+
+		await fixture.run()
+
+		expect(fixture.createMessage).toHaveBeenCalledTimes(4)
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		expect(fixture.effect).not.toHaveBeenCalled()
+		const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+		expect(assistant).toHaveLength(4)
+		expect(assistant.slice(0, 3).map((message) => message.agentResponseOutcome)).toEqual(
+			Array.from({ length: 3 }, () => ({ status: "completed", requiresContinuation: true })),
+		)
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+		expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+	})
+
+	it.each([true, false])(
+		"consumes queued human input after reasoning before completing (terminal=%j)",
+		async (terminal) => {
+			let fixture!: Awaited<ReturnType<typeof harness>>
+			fixture = await harness(async function* (attempt, task) {
+				if (attempt === 1) {
+					yield { type: "reasoning", text: "", vscodeLmThinking: thinking }
+					task.messageQueueService.addMessage("Preserve the existing public API.")
+					if (terminal) yield createApiStreamOutcome({ status: "completed", requiresContinuation: false })
+					return
+				}
+				yield { type: "text", text: "The public API is preserved." }
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+			})
+			if (!terminal)
+				Object.defineProperty(fixture.original, "streamCapabilities", { value: { cancellation: true } })
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain(
+				"Preserve the existing public API.",
+			)
+			expect(fixture.task.messageQueueService.hasUnconsumedInput()).toBe(false)
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("consumes blocking Stop feedback after terminal reasoning before completing", async () => {
+		const fixture = await harness(async function* (attempt) {
+			if (attempt === 1) {
+				yield { type: "reasoning", text: "", vscodeLmThinking: thinking }
+				yield createApiStreamOutcome({ status: "completed", requiresContinuation: false })
+				return
+			}
+			yield { type: "text", text: "The Stop feedback has been addressed." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		const completionHooks = vi
+			.spyOn(fixture.task, "evaluateCompletionHooks")
+			.mockResolvedValueOnce({ prompt: "Explain the compatibility check." })
+			.mockResolvedValue({})
+
+		await fixture.run()
+
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(JSON.stringify(fixture.createMessage.mock.calls[1][1])).toContain("Explain the compatibility check.")
+		expect(completionHooks).toHaveBeenCalledTimes(2)
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+	})
 
 	it("commits a successful continuation-only boundary without empty-response recovery", async () => {
 		const fixture = await harness(async function* (attempt) {

@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.19",
+		version: "3.2.20",
 	},
 }))
 
@@ -37,14 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.19" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.20" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.19")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.20")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Alpha v3.2.19 improves reasoning controls, task handoffs, and reliability during long-running work.",
-			),
+			screen.getByText("Alpha v3.2.20 improves task reliability, lifecycle hooks, and Alpha Tickets."),
 		).toBeInTheDocument()
 	})
 
@@ -53,21 +51,19 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Keep chats and sub-agents responsive through cancellation, completion, and reloads."),
+			screen.getByText("Keep task completion, cancellation, and recovery consistent during long-running work."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Improve provider streaming, tool-result persistence, MCP discovery, and command cleanup.",
+				"Use command and MCP lifecycle hooks with Alpha's native approval and workspace protections.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Give new chats clear work assignments while preserving inherited approvals and workspace limits.",
-			),
+			screen.getByText("Keep sub-agent permissions and task handoffs consistent with the parent chat."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Preserve reasoning selections during background updates and improve typing, transcripts, and agent navigation.",
+				"Track ticket progress, import and export ticket bundles, and delete selected tickets with one approval.",
 			),
 		).toBeInTheDocument()
 	})
@@ -76,12 +72,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText(
-				"Alpha v3.2.19 improves reasoning controls, task handoffs, and reliability during long-running work.",
-			),
+			screen.getByText("Alpha v3.2.20 improves task reliability, lifecycle hooks, and Alpha Tickets."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep chats and sub-agents responsive through cancellation, completion, and reloads."),
+			screen.getByText("Keep task completion, cancellation, and recovery consistent during long-running work."),
 		).toBeInTheDocument()
 	})
 })

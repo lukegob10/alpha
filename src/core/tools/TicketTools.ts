@@ -4,6 +4,7 @@ import {
 	createTicketSchema,
 	updateTicketSchema,
 	deleteTicketSchema,
+	deleteTicketsSchema,
 	listTicketsSchema,
 	ticketLocatorSchema,
 	type AlphaSayTool,
@@ -14,7 +15,15 @@ import {
 import type { ToolExecutionContext } from "./ToolRegistry"
 import { TicketStore } from "../../services/tickets/TicketStore"
 import type { TrustedToolProgressObservation } from "./BaseTool"
-import { reserveTicketMutationReceipt, serializeTicketFailure, serializeTicketResult } from "./serializeTicketResult"
+import { t } from "../../i18n"
+import {
+	reserveTicketBatchMutationReceipt,
+	reserveTicketMutationReceipt,
+	serializeTicketBatchDeletionResult,
+	serializeTicketFailure,
+	serializeTicketResult,
+} from "./serializeTicketResult"
+import { normalizeTicketToolArguments } from "./normalizeTicketToolArguments"
 
 const fingerprint = (value: unknown) =>
 	createHash("sha256")
@@ -58,6 +67,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 	try {
 		signal?.throwIfAborted()
 		if (task.abort) throw new Error("Ticket operation cancelled")
+		const args = normalizeTicketToolArguments(call.name, call.nativeArgs)
 		// A private checkout changes file execution paths, not the inherited Tickets project.
 		const ticketWorkspace = task.taskKind === "subagent" ? task.historyWorkspacePath : task.cwd
 		const store = await TicketStore.forWorkspace(ticketWorkspace, undefined, signal)
@@ -66,7 +76,9 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 			name: string,
 			reference?: string,
 		): Promise<boolean> => {
-			reserveTicketMutationReceipt(callbacks.getRemainingOutputChars?.())
+			const reserveReceipt =
+				call.name === "delete_tickets" ? reserveTicketBatchMutationReceipt : reserveTicketMutationReceipt
+			reserveReceipt(callbacks.getRemainingOutputChars?.())
 			const approved = await callbacks.askApproval(
 				"tool",
 				JSON.stringify({
@@ -88,7 +100,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 			if (!task.canMutateWorkspace()) throw new Error("Ticket operation cancelled")
 			// Approval feedback consumes the same scheduler budget as the final result.
 			// Reserve only after it settles, before the store can commit any mutation.
-			reserveTicketMutationReceipt(callbacks.getRemainingOutputChars?.())
+			reserveReceipt(callbacks.getRemainingOutputChars?.())
 			return true
 		}
 		signal?.throwIfAborted()
@@ -97,20 +109,20 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 		let previousStateFingerprint: string | undefined
 		switch (call.name) {
 			case "list_tickets":
-				result = await store.list(listTicketsSchema.parse(call.nativeArgs), signal)
+				result = await store.list(listTicketsSchema.parse(args), signal)
 				break
 			case "read_ticket":
-				result = await store.read(ticketLocatorSchema.parse((call.nativeArgs as { id?: unknown })?.id), signal)
+				result = await store.read(ticketLocatorSchema.parse((args as { id?: unknown })?.id), signal)
 				break
 			case "create_ticket": {
-				const input = createTicketSchema.parse(call.nativeArgs)
+				const input = createTicketSchema.parse(args)
 				if (!(await approveMutation("create", input.name))) return
 				result = await store.create(input, signal)
 				previousStateFingerprint = fingerprint(null)
 				break
 			}
 			case "update_ticket": {
-				const input = updateTicketSchema.parse(call.nativeArgs)
+				const input = updateTicketSchema.parse(args)
 				const before = await store.read(input.id, signal)
 				const name = input.name ?? before.name
 				if (!(await approveMutation("update", name))) return
@@ -121,12 +133,51 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 				break
 			}
 			case "delete_ticket": {
-				const input = deleteTicketSchema.parse(call.nativeArgs)
+				const input = deleteTicketSchema.parse(args)
 				const ticket = await store.read(input.id, signal)
 				if (!(await approveMutation("delete", ticket.name, ticket.reference))) return
 				result = await store.delete(input, signal)
 				previousStateFingerprint = ticketState(result)
 				break
+			}
+			case "delete_tickets": {
+				const input = deleteTicketsSchema.parse(args)
+				const current = await store.readMany(
+					input.tickets.map(({ id }) => id),
+					signal,
+				)
+				const tickets = current.map((entry) => {
+					if ("error" in entry) throw entry.error
+					return entry.ticket
+				})
+				const references = tickets.slice(0, 3).map((ticket) => ticket.reference ?? ticket.id)
+				const summary = t("common:ticketTools.deleteBatchSummary", {
+					count: tickets.length,
+					references: `${references.join(", ")}${tickets.length > 3 ? ", …" : ""}`,
+				}).slice(0, 200)
+				if (!(await approveMutation("delete", summary))) return
+				const deleted = await store.deleteMany(input, signal)
+				await publish({ operation: "delete", state: "success", name: summary })
+				const response = serializeTicketBatchDeletionResult(
+					deleted.length,
+					callbacks.getRemainingOutputChars?.(),
+				)
+				callbacks.setResultMetadata?.({
+					status: "success",
+					trustedProgress: {
+						kind: "mutation",
+						scope: fingerprint(["tickets", store.projectId, input.tickets.map(({ id }) => id).sort()]),
+						previousStateFingerprint: fingerprint(
+							deleted
+								.map((ticket) => [ticket.id, ticketState(ticket)])
+								.sort(([left], [right]) => left.localeCompare(right)),
+						),
+						stateFingerprint: fingerprint(null),
+					} satisfies TrustedToolProgressObservation,
+					...(response.truncated ? { truncated: true } : {}),
+				})
+				callbacks.pushToolResult(response.content)
+				return
 			}
 			default:
 				throw new Error(`Unknown ticket tool: ${call.name}`)
@@ -135,7 +186,7 @@ export async function executeTicketTool({ task, call, callbacks, signal }: ToolE
 			await publish({
 				operation: "list",
 				state: "success",
-				query: listTicketsSchema.parse(call.nativeArgs).query,
+				query: listTicketsSchema.parse(args).query,
 				total: result.total,
 				matches: result.tickets
 					.slice(0, 3)

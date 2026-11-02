@@ -189,19 +189,13 @@ describe("OpenAI Responses completed text fidelity", () => {
 
 	it.each(
 		(["output_text", "refusal"] as const).flatMap((kind) =>
-			["done", "repeated_done", "completed", "completed_only"].map((source) => ({ kind, source })),
+			["done", "repeated_done", "completed_only"].map((source) => ({ kind, source })),
 		),
 	)("appends the missing $kind suffix first supplied by $source once", async ({ kind, source }) => {
 		const partial = message("Hello", kind)
 		const full = message("Hello world", kind)
 		const receipts =
-			source === "done"
-				? [done(full)]
-				: source === "repeated_done"
-					? [done(partial), done(full), done(full)]
-					: source === "completed"
-						? [done(partial)]
-						: []
+			source === "done" ? [done(full)] : source === "repeated_done" ? [done(partial), done(full), done(full)] : []
 		mockStream(delta("Hel", kind), delta("lo", kind), ...receipts, completed([full]))
 
 		const { chunks, failure, canonical, handler } = await consume()
@@ -224,6 +218,22 @@ describe("OpenAI Responses completed text fidelity", () => {
 		expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
 		expect(handler.getResponseId()).toBe("resp_fidelity")
 	})
+
+	it.each(["output_text", "refusal"] as const)(
+		"preserves the item-done %s receipt when the terminal envelope adds a suffix",
+		async (kind) => {
+			mockStream(delta("Hello", kind), done(message("Hello", kind)), completed([message("Hello world", kind)]))
+			const { chunks, failure, canonical, handler } = await consume()
+
+			expect(failure).toBeUndefined()
+			expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(["Hello"])
+			expect(canonical.items.filter((item) => item.type === "text")).toEqual([
+				{ type: "text", text: "Hello", id: "msg_fidelity", phase: "final_answer", outputIndex: 0 },
+			])
+			expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
+			expect(handler.getResponseId()).toBe("resp_fidelity")
+		},
+	)
 
 	it.each(["output_text", "refusal"] as const)("does not duplicate identical completed %s", async (kind) => {
 		const item = message("Complete.", kind)
@@ -248,7 +258,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 	})
 
 	it.each(
-		["done", "repeated_done", "completed", "completed_only"].flatMap((source) =>
+		["done", "repeated_done", "completed_only"].flatMap((source) =>
 			[
 				{ label: "replacement", final: message("Changed") },
 				{ label: "shorter text", final: message("Hell") },
@@ -259,19 +269,31 @@ describe("OpenAI Responses completed text fidelity", () => {
 	)("rejects $label at $source instead of silently accepting incompatible content", async ({ source, final }) => {
 		const partial = message("Hello")
 		const receipts =
-			source === "done"
-				? [done(final)]
-				: source === "repeated_done"
-					? [done(partial), done(final)]
-					: source === "completed"
-						? [done(partial)]
-						: []
+			source === "done" ? [done(final)] : source === "repeated_done" ? [done(partial), done(final)] : []
 		mockStream(delta("Hello"), ...receipts, completed([final]))
 		const { chunks, failure, canonical } = await consume()
 		expect(failure).toMatchObject({ message: expect.stringContaining("did not match its final content") })
 		expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(["Hello"])
 		expect(canonical.outcome?.status).toBe("failed")
 		expect(chunks.some((chunk) => chunk.type === "outcome")).toBe(false)
+	})
+
+	it.each([
+		{ label: "replacement", final: message("Changed") },
+		{ label: "shorter text", final: message("Hell") },
+		{ label: "changed part type", final: message("Hello", "refusal") },
+		{ label: "removed part", final: { ...message(""), content: [] } },
+	])("preserves original item-done content despite a terminal $label", async ({ final }) => {
+		mockStream(delta("Hello"), done(message("Hello")), completed([final]))
+		const { chunks, failure, canonical, handler } = await consume()
+
+		expect(failure).toBeUndefined()
+		expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(["Hello"])
+		expect(canonical.items.filter((item) => item.type === "text")).toEqual([
+			{ type: "text", text: "Hello", id: "msg_fidelity", phase: "final_answer", outputIndex: 0 },
+		])
+		expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
+		expect(handler.getResponseId()).toBe("resp_fidelity")
 	})
 
 	it("reconciles ordered text parts separately", async () => {

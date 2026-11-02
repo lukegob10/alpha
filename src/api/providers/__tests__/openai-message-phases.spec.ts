@@ -97,8 +97,8 @@ describe("OpenAI Responses assistant message metadata", () => {
 		},
 	)
 
-	it.each(["done", "completed", "repeated_done"])(
-		"attaches phase first supplied by $phaseSource without duplicate text",
+	it.each(["done", "completed_only", "repeated_done"])(
+		"attaches phase first supplied by %s without duplicate text",
 		async (phaseSource) => {
 			const finalItem = message("msg_late", "partial_answer", "Stable answer.")
 			const phaseLessItem = message("msg_late", undefined, "Stable answer.")
@@ -111,10 +111,12 @@ describe("OpenAI Responses assistant message metadata", () => {
 						content_index: 0,
 						delta: "Stable answer.",
 					}
-					yield {
-						type: "response.output_item.done",
-						output_index: 0,
-						item: phaseSource === "done" ? finalItem : phaseLessItem,
+					if (phaseSource !== "completed_only") {
+						yield {
+							type: "response.output_item.done",
+							output_index: 0,
+							item: phaseSource === "done" ? finalItem : phaseLessItem,
+						}
 					}
 					if (phaseSource === "repeated_done") {
 						yield { type: "response.output_item.done", output_index: 0, item: finalItem }
@@ -175,7 +177,7 @@ describe("OpenAI Responses assistant message metadata", () => {
 		])
 	})
 
-	it.each(["delta", "done", "completed"])("rejects a source message whose ID changes in $stage", async (stage) => {
+	it.each(["delta", "done", "completed_only"])("rejects a source message whose ID changes in %s", async (stage) => {
 		responsesCreate.mockResolvedValueOnce(
 			(async function* () {
 				yield {
@@ -199,11 +201,6 @@ describe("OpenAI Responses assistant message metadata", () => {
 					}
 				} else {
 					yield {
-						type: "response.output_item.done",
-						output_index: 0,
-						item: message("msg_original", "commentary", "Original."),
-					}
-					yield {
 						type: "response.completed",
 						response: {
 							id: "resp_changed",
@@ -218,15 +215,13 @@ describe("OpenAI Responses assistant message metadata", () => {
 		await expect(collect(provider())).rejects.toThrow("streamed message changed identity")
 	})
 
-	it("retains an original message ID first attached by response completion", async () => {
+	it.each(["done", "completed_only"])("retains an original message ID first attached by %s", async (source) => {
 		const finalItem = message("msg_late_id", "final_answer", "Answer.")
 		responsesCreate.mockResolvedValueOnce(
 			(async function* () {
 				yield { type: "response.output_text.delta", output_index: 0, content_index: 0, delta: "Answer." }
-				yield {
-					type: "response.output_item.done",
-					output_index: 0,
-					item: message(undefined, undefined, "Answer."),
+				if (source === "done") {
+					yield { type: "response.output_item.done", output_index: 0, item: finalItem }
 				}
 				yield {
 					type: "response.completed",
@@ -250,6 +245,43 @@ describe("OpenAI Responses assistant message metadata", () => {
 			{ type: "text", text: "Answer.", id: "msg_late_id", phase: "final_answer", outputIndex: 0 },
 		])
 	})
+
+	it.each([
+		{ id: "msg_original", phase: "commentary" },
+		{ id: undefined, phase: undefined },
+	])(
+		"retains item-done metadata (id=$id, phase=$phase) despite a changed terminal envelope",
+		async ({ id, phase }) => {
+			const original = message(id, phase, "Original answer.")
+			const metadata = { ...(id ? { id } : {}), ...(phase ? { phase } : {}), outputIndex: 0 }
+			responsesCreate.mockResolvedValueOnce(
+				(async function* () {
+					yield { type: "response.output_item.done", output_index: 0, item: original }
+					yield {
+						type: "response.completed",
+						response: {
+							id: "resp_original",
+							status: "completed",
+							output: [message("msg_changed", "final_answer", "Replacement answer.")],
+							usage: null,
+						},
+					}
+				})(),
+			)
+			const handler = provider()
+			const chunks = await collect(handler)
+			const accumulator = new AgentResponseAccumulator()
+			for (const chunk of chunks) await accumulator.add(chunk)
+
+			expect(chunks.filter((chunk) => chunk.type === "message_metadata")).toEqual([
+				{ type: "message_metadata", ...metadata },
+			])
+			expect((await accumulator.finish()).items.filter((item) => item.type === "text")).toEqual([
+				{ type: "text", text: "Original answer.", ...metadata },
+			])
+			expect(handler.getResponseId()).toBe("resp_original")
+		},
+	)
 
 	it.each([-1, 0.5, "0"])("rejects an invalid message output index %s before accepting text", async (index) => {
 		responsesCreate.mockResolvedValueOnce(

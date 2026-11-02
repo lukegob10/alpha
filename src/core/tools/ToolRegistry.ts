@@ -43,7 +43,7 @@ import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
 import { requestUserInputTool } from "./RequestUserInputTool"
 import { requestUserInputAsyncTool } from "./RequestUserInputAsyncTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
-import { BaseTool, formatCommandToolResult, type ToolCallbacks } from "./BaseTool"
+import { BaseTool, formatCommandToolResult, type PostToolUseInvocation, type ToolCallbacks } from "./BaseTool"
 import { createToolFailure } from "./ToolFailure"
 import { cancelAgentTool } from "./CancelAgentTool"
 import { closeAgentTool } from "./CloseAgentTool"
@@ -306,7 +306,31 @@ class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
 
 	async execute(params: NativeToolArgs["exec_command"], task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const invocation = normalizeExecCommandInvocation(params as unknown as Record<string, unknown>, callbacks)
-		await this.legacyTool.execute(invocation.params, task, invocation.callbacks)
+		if (!callbacks.capturePostToolUse) return this.legacyTool.execute(invocation.params, task, invocation.callbacks)
+		const origin: PostToolUseInvocation | undefined = callbacks.toolCallId
+			? { callId: callbacks.toolCallId, name: this.name, arguments: structuredClone(params) }
+			: undefined
+		let sessionId: number | undefined
+		let completedOrigin: PostToolUseInvocation | undefined
+		await this.legacyTool.execute(invocation.params, task, {
+			...invocation.callbacks,
+			setResultMetadata: (metadata) => {
+				if (origin && typeof metadata.commandResult?.session_id === "number") {
+					sessionId = metadata.commandResult.session_id
+					commandSessionRegistry.bindPostToolUse(task, sessionId, origin)
+				}
+				if (
+					origin &&
+					metadata.status === "success" &&
+					metadata.executionStatus !== "running" &&
+					typeof metadata.exitCode === "number"
+				) {
+					completedOrigin ??=
+						sessionId === undefined ? origin : commandSessionRegistry.takePostToolUse(task, sessionId)
+				}
+				invocation.callbacks.setResultMetadata?.({ ...metadata, postToolUse: completedOrigin ?? null })
+			},
+		})
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"exec_command">): Promise<void> {
@@ -450,6 +474,7 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 				: Math.max(5_000, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
 		const boundedCallbacks = withMaxOutputTokens(callbacks, maxOutputTokens, true)
 		let returnedResult = false
+		let completedOrigin: PostToolUseInvocation | undefined
 		await manageCommandTool.execute(
 			{
 				execution_id: session.executionId,
@@ -460,6 +485,20 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 			task,
 			{
 				...boundedCallbacks,
+				setResultMetadata: (metadata) => {
+					if (!callbacks.capturePostToolUse) {
+						boundedCallbacks.setResultMetadata?.(metadata)
+						return
+					}
+					if (
+						metadata.status === "success" &&
+						metadata.executionStatus !== "running" &&
+						typeof metadata.exitCode === "number"
+					) {
+						completedOrigin ??= commandSessionRegistry.takePostToolUse(task, params.session_id)
+					}
+					boundedCallbacks.setResultMetadata?.({ ...metadata, postToolUse: completedOrigin ?? null })
+				},
 				pushToolResult: (content) => {
 					boundedCallbacks.pushToolResult(content)
 					returnedResult = true
@@ -722,6 +761,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 				: name === "create_ticket" ||
 					  name === "update_ticket" ||
 					  name === "delete_ticket" ||
+					  name === "delete_tickets" ||
 					  name === "memories_add_ad_hoc_note" ||
 					  name === "use_mcp_tool" ||
 					  name.startsWith("mcp") ||

@@ -14,8 +14,22 @@ import {
 
 const gpt6ModelPrompts = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"] as const
 const defaultCollaborationSha256 = "c1ed5ce0a3a49ba35b9eeba9774e0bd8ebd10eddec13b2dac564e7170513356c"
+const terraDefaultCollaborationSha256 = "fe48388213363ce4658ab312cf36b2d32bac04b4fb285124dc694553910751d0"
 
 describe("pinned Codex runtime instructions", () => {
+	it("selects Terra's catalog collaboration guidance without changing the other GPT-6 variants", () => {
+		const result = resolveCodexRuntimeInstructions("gpt-6.1-terra", "default", "root")
+		const instructions = result.collaborationModeInstructions ?? ""
+
+		expect(createHash("sha256").update(instructions, "utf8").digest("hex")).toBe(terraDefaultCollaborationSha256)
+		expect(instructions).toContain("strongly prefer making reasonable assumptions and executing the user's request")
+		expect(CODEX_RUNTIME_PROMPT_SHA256.terraDefaultCollaboration).toBe(terraDefaultCollaborationSha256)
+		expect(result.multiAgentRoleInstructions).toBe(
+			resolveCodexRuntimeInstructions("gpt-6-astra", "default", "root").multiAgentRoleInstructions,
+		)
+		expect(resolveCodexRuntimeInstructions("gpt-6.1-terra", "plan").collaborationModeInstructions).toBeUndefined()
+	})
+
 	it("records the upstream source provenance", () => {
 		expect(CODEX_RUNTIME_PROMPT_SOURCE_COMMIT).toBe("4994306e9f80448bde85e770a0b0c93d3fee5665")
 		expect(CODEX_RUNTIME_PROMPT_SOURCE_PATH).toBe("codex-rs/models-manager/models.json")

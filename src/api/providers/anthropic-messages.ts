@@ -164,7 +164,7 @@ function createAnthropicOutcome(
 		status: reason ? "incomplete" : "completed",
 		terminal,
 		semanticOutputObserved,
-		...(reason ? { reason, retryable: !terminal && !semanticOutputObserved } : {}),
+		...(reason ? { reason, retryable: !terminal } : {}),
 		...(!reason && stopReason === "pause_turn" ? { requiresContinuation: true } : {}),
 		requestId: metadata?.requestId,
 		attemptId: metadata?.attemptId,

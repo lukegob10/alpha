@@ -1,19 +1,24 @@
 import { spawn } from "node:child_process"
 import crypto from "node:crypto"
-import * as path from "node:path"
-import * as vscode from "vscode"
 import { t } from "../../i18n"
 import { terminateProcessTree } from "../../utils/processTree"
 import type { LifecycleHookTarget } from "./LifecycleHookTargets"
+import { MAX_HOOK_OUTPUT_BYTES, preserveHookOutput } from "./HookOutput"
+import {
+	DEFAULT_HOOK_TIMEOUT_MS,
+	selectLifecycleHookCommands,
+	type CompletionHookCommand,
+	type CompletionHookConfig,
+	type CompletionHookMcp,
+	type LifecycleHookHandler,
+} from "./LifecycleHookConfig"
 
 export type { LifecycleHookTarget } from "./LifecycleHookTargets"
+export { readCompletionHookConfig } from "./LifecycleHookConfig"
+export type { CompletionHookCommand, CompletionHookConfig } from "./LifecycleHookConfig"
 
 const MAX_HOOKS = 8
 const MAX_CONCURRENT_HOOKS = 4
-const MAX_OUTPUT_BYTES = 16_384
-const MAX_PROMPT_CHARS = 4_000
-const DEFAULT_TIMEOUT_MS = 5_000
-const MAX_TIMEOUT_MS = 30_000
 // Join the shared helper's bounded discovery/termination and the owned pipe close.
 const PROCESS_CLOSE_TIMEOUT_MS = 11_000
 
@@ -29,27 +34,6 @@ export class HookCommandCleanupError extends Error {
 }
 
 export type CompletionHookTarget = "Stop" | "SubagentStop"
-
-export interface CompletionHookCommand {
-	command: string
-	args?: string[]
-	timeoutMs?: number
-}
-
-export interface CompletionHookConfig {
-	stop: CompletionHookCommand[]
-	subagentStop: CompletionHookCommand[]
-	sessionStart?: CompletionHookCommand[]
-	subagentStart?: CompletionHookCommand[]
-	userPromptSubmit?: CompletionHookCommand[]
-	preToolUse?: CompletionHookCommand[]
-	postToolUse?: CompletionHookCommand[]
-	permissionRequest?: CompletionHookCommand[]
-	preCompact?: CompletionHookCommand[]
-	postCompact?: CompletionHookCommand[]
-	interrupt?: CompletionHookCommand[]
-	sessionEnd?: CompletionHookCommand[]
-}
 
 type LifecycleHookBaseRequest = Omit<
 	CompletionHookRequest,
@@ -82,6 +66,10 @@ export type LifecycleHookPayload =
 	  }
 
 export type LifecycleHookRequest = CompletionHookRequest | (LifecycleHookBaseRequest & LifecycleHookPayload)
+
+function isCompletionHookRequest(request: LifecycleHookRequest): request is CompletionHookRequest {
+	return request.hook_event_name === "Stop" || request.hook_event_name === "SubagentStop"
+}
 
 export interface LifecycleHookOutcome {
 	warnings: string[]
@@ -130,66 +118,29 @@ export interface CompletionHookPromptProvenance {
 	fragments: CompletionHookPromptFragment[]
 }
 
-function parseCommands(value: unknown): CompletionHookCommand[] {
-	if (!Array.isArray(value)) return []
-	return value.slice(0, MAX_HOOKS).flatMap((item): CompletionHookCommand[] => {
-		if (!item || typeof item !== "object" || Array.isArray(item)) return []
-		const candidate = item as Record<string, unknown>
-		if (typeof candidate.command !== "string" || !path.isAbsolute(candidate.command)) return []
-		if (
-			candidate.args !== undefined &&
-			(!Array.isArray(candidate.args) || !candidate.args.every((arg) => typeof arg === "string"))
-		)
-			return []
-		if (
-			candidate.timeoutMs !== undefined &&
-			(typeof candidate.timeoutMs !== "number" ||
-				!Number.isInteger(candidate.timeoutMs) ||
-				candidate.timeoutMs < 100 ||
-				candidate.timeoutMs > MAX_TIMEOUT_MS)
-		)
-			return []
-		return [
-			{
-				command: candidate.command,
-				args: candidate.args === undefined ? undefined : [...(candidate.args as string[])],
-				timeoutMs: candidate.timeoutMs as number | undefined,
-			},
-		]
-	})
+export interface CompletionHookRuntimeOptions {
+	/** Background hooks can report context and warnings, but cannot steer live control flow. */
+	advisory?: boolean
+	executeMcp?: (
+		hook: CompletionHookMcp,
+		request: LifecycleHookRequest,
+		signal: AbortSignal,
+	) => Promise<HookCommandResult>
+	scheduleAsync?: (event: LifecycleHookTarget, run: (signal: AbortSignal) => Promise<LifecycleHookOutcome>) => boolean
 }
 
-/** Machine-scoped VS Code settings are explicitly user-owned; workspace content cannot install executable hooks. */
-export function readCompletionHookConfig(): CompletionHookConfig {
-	const inspected = vscode.workspace.getConfiguration("alpha").inspect?.<unknown>("completionHooks")
-	const raw = inspected?.globalValue ?? inspected?.defaultValue
-	const value = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {}
-	const config: CompletionHookConfig = {
-		stop: parseCommands(value.stop),
-		subagentStop: parseCommands(value.subagentStop),
-	}
-	for (const key of [
-		"sessionStart",
-		"subagentStart",
-		"userPromptSubmit",
-		"preToolUse",
-		"postToolUse",
-		"permissionRequest",
-		"preCompact",
-		"postCompact",
-		"interrupt",
-		"sessionEnd",
-	] as const) {
-		if (value[key] !== undefined) config[key] = parseCommands(value[key])
-	}
-	return config
+export interface HookCommandResult {
+	exitCode: number | null
+	stdout: string
+	stderr: string
+	failure?: string
 }
 
 async function runCommand(
 	hook: CompletionHookCommand,
 	request: LifecycleHookRequest,
 	signal: AbortSignal,
-): Promise<{ exitCode: number | null; stdout: string; stderr: string; failure?: string }> {
+): Promise<HookCommandResult> {
 	if (signal.aborted) return { exitCode: null, stdout: "", stderr: "", failure: "cancelled" }
 	let input: string
 	try {
@@ -312,12 +263,12 @@ async function runCommand(
 		const cancel = () => stop("cancelled")
 		const timeout = setTimeout(() => {
 			stop("timed out")
-		}, hook.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+		}, hook.timeoutMs ?? DEFAULT_HOOK_TIMEOUT_MS)
 		signal.addEventListener("abort", cancel, { once: true })
 		const collect = (chunks: Buffer[], chunk: Buffer) => {
 			// Latch failure before termination: Windows taskkill may still be pending or starting.
 			if (settled || failure !== undefined || terminating || chunk.length === 0) return
-			if (chunk.length > MAX_OUTPUT_BYTES - outputBytes) {
+			if (chunk.length > MAX_HOOK_OUTPUT_BYTES - outputBytes) {
 				stop("output limit exceeded")
 				return
 			}
@@ -353,14 +304,29 @@ async function runCommand(
 }
 
 async function runHookCommands(
-	commands: CompletionHookCommand[],
+	commands: LifecycleHookHandler[],
 	request: LifecycleHookRequest,
 	signal: AbortSignal,
-): Promise<Array<(Awaited<ReturnType<typeof runCommand>> & { runId: string; completionOrder: number }) | undefined>> {
+	options: CompletionHookRuntimeOptions,
+): Promise<
+	Array<
+		| (Awaited<ReturnType<typeof runCommand>> & {
+				runId: string
+				completionOrder: number
+				additionalContextLimit?: number
+		  })
+		| undefined
+	>
+> {
 	// Configuration and direct callers share the same hard process limit.
 	commands = commands.slice(0, MAX_HOOKS)
 	const results: Array<
-		(Awaited<ReturnType<typeof runCommand>> & { runId: string; completionOrder: number }) | undefined
+		| (Awaited<ReturnType<typeof runCommand>> & {
+				runId: string
+				completionOrder: number
+				additionalContextLimit?: number
+		  })
+		| undefined
 	> = new Array(commands.length)
 	let nextIndex = 0
 	let completionOrder = 0
@@ -372,8 +338,44 @@ async function runHookCommands(
 				const index = nextIndex++
 				const runId = crypto.randomUUID()
 				try {
-					const result = await runCommand(commands[index], request, commandSignal)
-					results[index] = { ...result, runId, completionOrder: completionOrder++ }
+					const handler = commands[index]
+					let result: HookCommandResult
+					if (handler.type === "mcp_tool") {
+						result = options.executeMcp
+							? await options.executeMcp(handler, request, commandSignal)
+							: {
+									exitCode: null,
+									stdout: "",
+									stderr: "",
+									failure: t("common:lifecycleHooks.mcpUnavailable"),
+								}
+					} else if (handler.async && request.hook_event_name !== "SessionEnd" && !options.advisory) {
+						const captured = structuredClone(request)
+						const config: CompletionHookConfig = { stop: [], subagentStop: [] }
+						const key = (captured.hook_event_name[0].toLowerCase() +
+							captured.hook_event_name.slice(1)) as keyof CompletionHookConfig
+						config[key] = [{ ...handler, async: false }]
+						const admitted = options.scheduleAsync?.(captured.hook_event_name, (asyncSignal) => {
+							const advisory = { ...options, advisory: true }
+							return isCompletionHookRequest(captured)
+								? runCompletionHooks(config, captured, asyncSignal, advisory)
+								: runLifecycleHooks(config, captured, asyncSignal, advisory)
+						})
+						result = {
+							exitCode: admitted ? 0 : null,
+							stdout: "",
+							stderr: "",
+							...(admitted ? {} : { failure: t("common:lifecycleHooks.asyncUnavailable") }),
+						}
+					} else {
+						result = await runCommand(handler, request, commandSignal)
+					}
+					results[index] = {
+						...result,
+						runId,
+						completionOrder: completionOrder++,
+						additionalContextLimit: commands[index].additionalContextLimit,
+					}
 				} catch (error) {
 					// Join sibling cleanup before returning an unconfirmed physical outcome.
 					failedCleanup.abort(error)
@@ -392,9 +394,10 @@ export async function runCompletionHooks(
 	config: CompletionHookConfig,
 	request: CompletionHookRequest,
 	signal: AbortSignal,
+	options: CompletionHookRuntimeOptions = {},
 ): Promise<CompletionHookOutcome> {
-	const commands = request.hook_event_name === "Stop" ? config.stop : config.subagentStop
-	const results = await runHookCommands(commands, request, signal)
+	const commands = selectLifecycleHookCommands(config, request)
+	const results = await runHookCommands(commands, request, signal, options)
 	const warnings: string[] = []
 	const fragments: CompletionHookPromptFragment[] = []
 	let stopReason: string | undefined
@@ -406,21 +409,38 @@ export async function runCompletionHooks(
 			continue
 		}
 		let reason: string | undefined
-		if (result.exitCode === 2) reason = result.stderr.trim()
+		if (result.exitCode === 2 && !options.advisory) reason = result.stderr.trim()
 		else if (result.exitCode === 0 && result.stdout.trim()) {
 			try {
 				const output: unknown = JSON.parse(result.stdout)
 				if (!output || typeof output !== "object" || Array.isArray(output)) throw new Error("invalid output")
 				const parsed = output as Record<string, unknown>
+				if (
+					Object.keys(parsed).some(
+						(key) =>
+							![
+								"continue",
+								"stopReason",
+								"systemMessage",
+								"suppressOutput",
+								"decision",
+								"reason",
+							].includes(key),
+					)
+				)
+					throw new Error("unknown output field")
 				if (parsed.continue !== undefined && typeof parsed.continue !== "boolean")
 					throw new Error("invalid continue")
-				if (parsed.stopReason !== undefined && typeof parsed.stopReason !== "string")
+				if (parsed.stopReason != null && typeof parsed.stopReason !== "string")
 					throw new Error("invalid stopReason")
-				if (parsed.systemMessage !== undefined && typeof parsed.systemMessage !== "string")
+				if (parsed.systemMessage != null && typeof parsed.systemMessage !== "string")
 					throw new Error("invalid systemMessage")
 				if (parsed.suppressOutput !== undefined && typeof parsed.suppressOutput !== "boolean")
 					throw new Error("invalid suppressOutput")
+				if (parsed.reason != null && typeof parsed.reason !== "string") throw new Error("invalid reason")
+				if (parsed.decision != null && parsed.decision !== "block") throw new Error("invalid decision")
 				if (parsed.systemMessage) warnings.push(parsed.systemMessage)
+				if (options.advisory) continue
 				if (parsed.continue === false) {
 					shouldStop = true
 					stopReason ??= parsed.stopReason?.trim() || undefined
@@ -430,7 +450,7 @@ export async function runCompletionHooks(
 				if (decision === "block") {
 					const value = parsed.reason
 					reason = typeof value === "string" ? value.trim() : ""
-				} else if (decision !== undefined && decision !== "allow") throw new Error("invalid decision")
+				}
 			} catch {
 				warnings.push("Completion hook returned invalid JSON output.")
 			}
@@ -441,13 +461,11 @@ export async function runCompletionHooks(
 		}
 	}
 	if (shouldStop) return { shouldStop, ...(stopReason ? { stopReason } : {}), warnings }
-	let remaining = MAX_PROMPT_CHARS
-	const boundedFragments = fragments.flatMap(({ hook_run_id, text }) => {
-		if (remaining <= 0) return []
-		const bounded = text.slice(0, remaining)
-		remaining -= bounded.length + 2
-		return [{ hook_run_id, text: bounded }]
-	})
+	const boundedFragments: CompletionHookPromptFragment[] = []
+	for (const fragment of fragments) {
+		boundedFragments.push({ ...fragment, text: await preserveHookOutput(fragment.text) })
+	}
+	if (signal.aborted) return { warnings }
 	const prompt = boundedFragments.map(({ text }) => text).join("\n\n")
 	return { ...(prompt ? { prompt, fragments: boundedFragments } : {}), warnings }
 }
@@ -456,31 +474,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 }
 
+function assertKnownOutputKeys(value: Record<string, unknown>, keys: readonly string[]): void {
+	if (Object.keys(value).some((key) => !keys.includes(key))) throw new Error("unknown output field")
+}
+
 /** Lifecycle hooks use the same bounded command executor as Stop hooks. They never grant tool authority. */
 export async function runLifecycleHooks(
 	config: CompletionHookConfig,
 	request: Exclude<LifecycleHookRequest, CompletionHookRequest>,
 	signal: AbortSignal,
+	options: CompletionHookRuntimeOptions = {},
 ): Promise<LifecycleHookOutcome> {
-	const configKeys = {
-		SessionStart: "sessionStart",
-		SubagentStart: "subagentStart",
-		UserPromptSubmit: "userPromptSubmit",
-		PreToolUse: "preToolUse",
-		PostToolUse: "postToolUse",
-		PermissionRequest: "permissionRequest",
-		PreCompact: "preCompact",
-		PostCompact: "postCompact",
-		Interrupt: "interrupt",
-		SessionEnd: "sessionEnd",
-	} as const
 	const event = request.hook_event_name
 	const cleanupEvent = event === "SessionEnd" || event === "Interrupt"
 	if (cleanupEvent) signal = AbortSignal.any([signal, AbortSignal.timeout(3_000)])
-	const commands = (config[configKeys[event]] ?? []).map((command) =>
+	const commands = selectLifecycleHookCommands(config, request).map((command) =>
 		cleanupEvent ? { ...command, timeoutMs: Math.min(command.timeoutMs ?? 1_000, 3_000) } : command,
 	)
-	const results = await runHookCommands(commands, request, signal)
+	const results = await runHookCommands(commands, request, signal, options)
 	const outcome: LifecycleHookOutcome = { warnings: [] }
 	if (signal.aborted) return outcome
 	const contexts: CompletionHookPromptFragment[] = []
@@ -495,14 +506,13 @@ export async function runLifecycleHooks(
 		}
 		const stop = (reason: string | undefined) => {
 			outcome.shouldStop = true
-			outcome.stopReason ??= reason?.trim().slice(0, MAX_PROMPT_CHARS) || undefined
+			outcome.stopReason ??= reason?.trim() || undefined
 			outcome.stopProvenance ??= {
 				event,
 				fragments: [
 					{
 						hook_run_id: result.runId,
-						text:
-							reason?.trim().slice(0, MAX_PROMPT_CHARS) || t("common:lifecycleHooks.stopped", { event }),
+						text: reason?.trim() || t("common:lifecycleHooks.stopped", { event }),
 					},
 				],
 			}
@@ -516,11 +526,12 @@ export async function runLifecycleHooks(
 				stop(reason)
 			} else if (event === "PreToolUse" || event === "PostToolUse" || event === "PermissionRequest") {
 				outcome.shouldBlock = true
-				outcome.blockReason ??= reason.trim().slice(0, MAX_PROMPT_CHARS)
+				outcome.blockReason ??= reason.trim()
 				if (event === "PostToolUse") feedback.push(reason.trim())
 			}
 		}
 		if (
+			!options.advisory &&
 			result.exitCode === 2 &&
 			(event === "UserPromptSubmit" ||
 				event === "PreToolUse" ||
@@ -549,45 +560,104 @@ export async function runLifecycleHooks(
 		try {
 			const parsed: unknown = JSON.parse(text)
 			if (!isRecord(parsed)) throw new Error("invalid output")
+			// Mirror the supported event wire shapes (Codex 67f0994 schema.rs).
+			// Unknown fields fail parsing even for advisory hooks; recognized but
+			// unsupported control fields are ignored only by advisory execution.
+			const outerKeys =
+				event === "Interrupt"
+					? ["systemMessage"]
+					: ["continue", "stopReason", "systemMessage", "suppressOutput"]
+			if (event === "PreToolUse" || event === "PostToolUse" || event === "UserPromptSubmit")
+				outerKeys.push("decision", "reason")
+			if (event !== "PreCompact" && event !== "PostCompact" && event !== "Interrupt")
+				outerKeys.push("hookSpecificOutput")
+			assertKnownOutputKeys(parsed, outerKeys)
 			for (const key of ["continue", "suppressOutput"] as const) {
 				if (parsed[key] !== undefined && typeof parsed[key] !== "boolean") throw new Error(`invalid ${key}`)
 			}
 			for (const key of ["stopReason", "systemMessage", "reason"] as const) {
-				if (parsed[key] !== undefined && typeof parsed[key] !== "string") throw new Error(`invalid ${key}`)
+				if (parsed[key] != null && typeof parsed[key] !== "string") throw new Error(`invalid ${key}`)
 			}
+			if (
+				parsed.decision != null &&
+				parsed.decision !== "block" &&
+				!(event === "PreToolUse" && parsed.decision === "approve")
+			)
+				throw new Error("invalid decision")
 			const specific = parsed.hookSpecificOutput
 			if (
-				specific !== undefined &&
+				specific != null &&
 				(!isRecord(specific) ||
 					specific.hookEventName !== event ||
-					(specific.additionalContext !== undefined && typeof specific.additionalContext !== "string"))
+					(specific.additionalContext != null && typeof specific.additionalContext !== "string"))
 			)
 				throw new Error("invalid hookSpecificOutput")
 			const details = isRecord(specific) ? specific : {}
-			if ((event === "PreCompact" || event === "PostCompact") && specific !== undefined) {
-				throw new Error("unsupported stateless compact output")
+			const detailKeys = ["hookEventName"]
+			if (event === "PermissionRequest") detailKeys.push("decision")
+			else detailKeys.push("additionalContext")
+			if (event === "PreToolUse")
+				detailKeys.push("permissionDecision", "permissionDecisionReason", "updatedInput")
+			if (event === "PostToolUse") detailKeys.push("updatedMCPToolOutput")
+			assertKnownOutputKeys(details, detailKeys)
+			if (event === "PreToolUse") {
+				if (
+					details.permissionDecision != null &&
+					(typeof details.permissionDecision !== "string" ||
+						!["allow", "deny", "ask"].includes(details.permissionDecision))
+				)
+					throw new Error("invalid permission decision")
+				if (details.permissionDecisionReason != null && typeof details.permissionDecisionReason !== "string")
+					throw new Error("invalid permission decision reason")
+			}
+			if (event === "PermissionRequest" && details.decision != null) {
+				if (!isRecord(details.decision)) throw new Error("invalid permission decision")
+				const decision = details.decision
+				assertKnownOutputKeys(decision, [
+					"behavior",
+					"message",
+					"updatedInput",
+					"updatedPermissions",
+					"interrupt",
+				])
+				if (decision.behavior !== "allow" && decision.behavior !== "deny")
+					throw new Error("invalid permission behavior")
+				if (decision.message != null && typeof decision.message !== "string")
+					throw new Error("invalid permission message")
+				if (decision.interrupt !== undefined && typeof decision.interrupt !== "boolean")
+					throw new Error("invalid permission interrupt")
 			}
 			if (typeof parsed.systemMessage === "string" && parsed.systemMessage.trim()) {
-				outcome.warnings.push(parsed.systemMessage.slice(0, MAX_PROMPT_CHARS))
+				outcome.warnings.push(parsed.systemMessage)
 			}
 			if (event === "Interrupt") continue
+			if (options.advisory) {
+				if (typeof details.additionalContext === "string" && details.additionalContext.trim())
+					contexts.push({ hook_run_id: result.runId, text: details.additionalContext.trim() })
+				continue
+			}
+			let contextAllowed = !(
+				(event === "PostToolUse" || event === "UserPromptSubmit") &&
+				parsed.decision === "block" &&
+				(typeof parsed.reason !== "string" || !parsed.reason.trim())
+			)
 			if (event === "PermissionRequest") {
 				if (
 					parsed.continue === false ||
-					parsed.stopReason !== undefined ||
+					parsed.stopReason != null ||
 					parsed.suppressOutput === true ||
-					details.additionalContext !== undefined
+					details.additionalContext != null
 				) {
 					throw new Error("unsupported permission output")
 				}
 				const decision = details.decision
-				if (decision !== undefined) {
+				if (decision != null) {
 					if (
 						!isRecord(decision) ||
-						decision.updatedInput !== undefined ||
-						decision.updatedPermissions !== undefined ||
+						decision.updatedInput != null ||
+						decision.updatedPermissions != null ||
 						decision.interrupt === true ||
-						(decision.message !== undefined && typeof decision.message !== "string")
+						(decision.message != null && typeof decision.message !== "string")
 					)
 						throw new Error("unsupported permission decision")
 					if (decision.behavior === "deny")
@@ -601,18 +671,16 @@ export async function runLifecycleHooks(
 					else throw new Error("invalid permission decision")
 				}
 			} else if (event === "PreToolUse") {
-				if (parsed.continue === false || parsed.stopReason !== undefined || parsed.suppressOutput === true) {
+				if (parsed.continue === false || parsed.stopReason != null || parsed.suppressOutput === true) {
 					throw new Error("unsupported universal pre-tool output")
 				}
 				const decision = details.permissionDecision
 				const usesSpecificDecision =
-					decision !== undefined ||
-					details.permissionDecisionReason !== undefined ||
-					details.updatedInput !== undefined
+					decision != null || details.permissionDecisionReason != null || details.updatedInput != null
 				if (usesSpecificDecision) {
 					if (decision === "deny") {
 						if (
-							details.updatedInput !== undefined ||
+							details.updatedInput != null ||
 							typeof details.permissionDecisionReason !== "string" ||
 							!details.permissionDecisionReason.trim()
 						) {
@@ -628,13 +696,14 @@ export async function runLifecycleHooks(
 					} else throw new Error("unsupported permission decision")
 				} else if (parsed.decision === "block") {
 					block(typeof parsed.reason === "string" ? parsed.reason : undefined)
-				} else if (parsed.decision !== undefined || parsed.reason !== undefined) {
+				} else if (parsed.decision != null || parsed.reason != null) {
 					throw new Error("unsupported legacy decision")
 				}
 			} else if (event === "PostToolUse") {
-				if (parsed.suppressOutput === true || details.updatedMCPToolOutput !== undefined) {
-					throw new Error("unsupported post-tool output")
-				}
+				const unsupported = parsed.suppressOutput === true || details.updatedMCPToolOutput != null
+				const invalidBlock =
+					parsed.decision === "block" && (typeof parsed.reason !== "string" || !parsed.reason.trim())
+				contextAllowed = !unsupported && !invalidBlock
 				if (parsed.continue === false) {
 					const reason = typeof parsed.reason === "string" ? parsed.reason.trim() : ""
 					feedback.push(
@@ -643,19 +712,22 @@ export async function runLifecycleHooks(
 								? parsed.stopReason
 								: t("common:lifecycleHooks.postToolStopped")),
 					)
+				} else if (unsupported) {
+					throw new Error("unsupported post-tool output")
 				} else if (parsed.decision === "block") {
 					block(typeof parsed.reason === "string" ? parsed.reason : undefined)
-				} else if (parsed.decision !== undefined || parsed.reason !== undefined) {
+				} else if (parsed.decision != null || parsed.reason != null) {
 					throw new Error("unsupported decision")
 				}
 			} else if (event !== "SubagentStart" && parsed.continue === false) {
 				stop(typeof parsed.stopReason === "string" ? parsed.stopReason : undefined)
 			} else if (event === "UserPromptSubmit") {
-				if (parsed.decision === "block") block(typeof parsed.reason === "string" ? parsed.reason : undefined)
-				else if (parsed.decision !== undefined || parsed.reason !== undefined)
-					throw new Error("unsupported decision")
+				if (parsed.decision === "block") {
+					contextAllowed = typeof parsed.reason === "string" && Boolean(parsed.reason.trim())
+					block(typeof parsed.reason === "string" ? parsed.reason : undefined)
+				}
 			}
-			if (typeof details.additionalContext === "string" && details.additionalContext.trim()) {
+			if (contextAllowed && typeof details.additionalContext === "string" && details.additionalContext.trim()) {
 				contexts.push({ hook_run_id: result.runId, text: details.additionalContext.trim() })
 			}
 		} catch {
@@ -663,14 +735,18 @@ export async function runLifecycleHooks(
 		}
 	}
 	if (outcome.shouldBlock) delete outcome.updatedInput
-	if (feedback.length > 0) outcome.feedbackMessage = feedback.join("\n\n").slice(0, MAX_PROMPT_CHARS)
-	let remaining = MAX_PROMPT_CHARS
-	const boundedContexts = contexts.flatMap((fragment) => {
-		if (remaining <= 0) return []
-		const text = fragment.text.slice(0, remaining)
-		remaining -= text.length + 2
-		return [{ ...fragment, text }]
-	})
+	if (feedback.length > 0) outcome.feedbackMessage = await preserveHookOutput(feedback.join("\n\n"))
+	if (outcome.stopReason) outcome.stopReason = await preserveHookOutput(outcome.stopReason)
+	if (outcome.blockReason) outcome.blockReason = await preserveHookOutput(outcome.blockReason)
+	if (outcome.stopProvenance) {
+		for (const fragment of outcome.stopProvenance.fragments) fragment.text = await preserveHookOutput(fragment.text)
+	}
+	const boundedContexts: CompletionHookPromptFragment[] = []
+	for (const fragment of contexts) {
+		const limit = results.find((result) => result?.runId === fragment.hook_run_id)?.additionalContextLimit
+		boundedContexts.push({ ...fragment, text: await preserveHookOutput(fragment.text, limit) })
+	}
+	if (signal.aborted) return { warnings: [] }
 	if (boundedContexts.length > 0) outcome.additionalContext = boundedContexts
 	return outcome
 }

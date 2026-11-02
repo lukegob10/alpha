@@ -4,6 +4,7 @@ import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from
 
 import type { ApiInstructionFragment } from "../index"
 import { normalizeToolHistory, toToolArgumentsString } from "../transform/tool-history"
+import { getLifecycleHookDeveloperContext } from "../transform/lifecycle-hook-context"
 import { getNativeOpenAiModelCapabilities } from "./utils/openai-model-capabilities"
 import { t } from "../../i18n"
 
@@ -106,6 +107,11 @@ export function buildOpenAiResponsesInput(
 	const callNames = new Map<string, string>()
 	for (const candidate of normalizeToolHistory(messages)) {
 		if (!isRecord(candidate)) continue
+		const hookContext = getLifecycleHookDeveloperContext(candidate)
+		if (hookContext !== undefined) {
+			input.push({ role: "developer", content: hookContext })
+			continue
+		}
 		if (candidate.type === "reasoning") {
 			const item = toReasoningInput(candidate, store, options.preserveReasoningIds)
 			if (item) input.push(item)

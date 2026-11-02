@@ -2,6 +2,7 @@ import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import { MAX_RETAINED_TERMINAL_PROCESSES } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import type { Task } from "../task/Task"
+import type { PostToolUseInvocation } from "./BaseTool"
 
 export interface CommandSession {
 	readonly executionId: string
@@ -44,6 +45,8 @@ type RetainedCommandSession = CommandSession & {
 	pollPublished: boolean
 	pollReleased: boolean
 	output?: TrackedTaskCommandOutput
+	postToolUse?: PostToolUseInvocation
+	postToolUseClaimed?: boolean
 }
 
 type CommandExecutionOwnership = {
@@ -346,6 +349,25 @@ export class CommandSessionRegistry {
 	getExpiredReceipt(task: Task, sessionId: number): ExpiredCommandSessionReceipt | undefined {
 		if (!Number.isSafeInteger(sessionId) || sessionId < 1) return undefined
 		return this.expired.get(task)?.get(sessionId)
+	}
+
+	/** Keep the original invocation with its physical session, never a task-global current command. */
+	bindPostToolUse(task: Task, sessionId: number, invocation: PostToolUseInvocation): void {
+		const session = this.sessions.get(task)?.records.get(sessionId)
+		if (!session || this.resolve(task, sessionId) !== session || session.postToolUseClaimed || session.postToolUse)
+			return
+		session.postToolUse = structuredClone(invocation)
+	}
+
+	/** A completed process emits its original post hook once, even when output needs several polls. */
+	takePostToolUse(task: Task, sessionId: number): PostToolUseInvocation | undefined {
+		const session = this.sessions.get(task)?.records.get(sessionId)
+		if (!session || this.resolve(task, sessionId) !== session || !session.process.isSettled) return undefined
+		const invocation = session.postToolUse
+		if (!invocation || session.postToolUseClaimed) return undefined
+		session.postToolUseClaimed = true
+		delete session.postToolUse
+		return invocation
 	}
 
 	/** Explicit session polls own stdout until their final receipt is delivered. */

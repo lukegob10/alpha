@@ -744,11 +744,12 @@ describe("budgeted truncation and cancellation", () => {
 			forceCompaction: true,
 		})
 		expect(provider.createMessage).toHaveBeenCalledTimes(1)
-		expect(result.status).toBe("exhausted")
+		expect(result.status).toBe("no_progress")
 		expect(result.messages).toBe(messages)
 		expect(result.condenseId).toBeUndefined()
 		expect(result.truncationId).toBeUndefined()
-		expect(result.newContextTokensAfterTruncation).toBe(
+		expect(result.newContextTokensAfterTruncation).toBeUndefined()
+		expect(result.prevContextTokens).toBe(
 			await countContextTokens(messages, provider, options(messages).systemPrompt),
 		)
 	})

@@ -1,4 +1,5 @@
 import { OpenAiNativeHandler } from "../openai-native"
+import { APIConnectionError, APIConnectionTimeoutError } from "openai/error"
 import { buildOpenAiResponsesInput } from "../openai-responses"
 import type { ApiStream, ApiStreamChunk } from "../../transform/stream"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
@@ -273,7 +274,126 @@ describe("native OpenAI provider", () => {
 		expect(handler.getModel().reasoning).toEqual({ reasoning_effort: "medium" })
 	})
 
-	it("rejects truncated streams with one failed outcome", async () => {
+	it.each([false, true])("keeps a transport interruption nonterminal (partial output=%s)", async (partialOutput) => {
+		const transportError = Object.assign(new Error("Connection interrupted"), {
+			status: 503,
+			retryable: true,
+			retryCategory: "transport",
+		})
+		mocks.create.mockResolvedValueOnce(
+			(async function* () {
+				if (partialOutput)
+					yield {
+						type: "response.output_text.delta",
+						item_id: "msg",
+						output_index: 0,
+						content_index: 0,
+						delta: "part",
+					}
+				throw transportError
+			})(),
+		)
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", []))
+					chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ status: 503, retryable: true, retryCategory: "transport" })
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "failed", terminal: false, semanticOutputObserved: partialOutput }),
+		])
+		expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(
+			partialOutput ? ["part"] : [],
+		)
+	})
+
+	it.each([APIConnectionError, APIConnectionTimeoutError])(
+		"classifies typed SDK connection failure %s as recoverable after partial text",
+		async (ConnectionFailure) => {
+			mocks.create.mockResolvedValueOnce(
+				(async function* () {
+					yield {
+						type: "response.output_text.delta",
+						item_id: "msg",
+						output_index: 0,
+						content_index: 0,
+						delta: "part",
+					}
+					throw new ConnectionFailure({})
+				})(),
+			)
+			const chunks: ApiStreamChunk[] = []
+			await expect(
+				(async () => {
+					for await (const chunk of new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage(
+						"",
+						[],
+					))
+						chunks.push(chunk)
+				})(),
+			).rejects.toMatchObject({ retryable: true, retryCategory: "transport" })
+			expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+				expect.objectContaining({ status: "failed", terminal: false, semanticOutputObserved: true }),
+			])
+		},
+	)
+
+	it.each([400, 401, 403, 404, 422])("marks HTTP %s request rejection nonretryable", async (status) => {
+		mocks.create.mockRejectedValueOnce(Object.assign(new Error("Request rejected"), { status }))
+		await expect(
+			collect(new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", [])),
+		).rejects.toMatchObject({ status, retryable: false })
+	})
+
+	it.each([401, 403])("keeps HTTP %s auth rejection permanent despite context-looking text", async (status) => {
+		mocks.create.mockRejectedValueOnce(
+			Object.assign(new Error("Account token limit exceeds the maximum context length"), { status }),
+		)
+		await expect(
+			collect(new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", [])),
+		).rejects.toMatchObject({ status, retryable: false })
+	})
+
+	it("does not retry quota exhaustion reported with HTTP 429", async () => {
+		mocks.create.mockRejectedValueOnce(
+			Object.assign(new Error("Account exhausted"), { status: 429, code: "insufficient_quota" }),
+		)
+		await expect(
+			collect(new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", [])),
+		).rejects.toMatchObject({ status: 429, code: "insufficient_quota", retryable: false })
+	})
+
+	it("retains HTTP context-window recovery despite the request's 400 status", async () => {
+		mocks.create.mockRejectedValueOnce(
+			Object.assign(new Error("Context rejected"), { status: 400, code: "context_length_exceeded" }),
+		)
+		let failure: unknown
+		try {
+			await collect(new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", []))
+		} catch (error) {
+			failure = error
+		}
+		expect(failure).toMatchObject({ status: 400, code: "context_length_exceeded" })
+		expect(failure).not.toHaveProperty("retryable", false)
+	})
+
+	it.each(["maximum context length exceeded", "prompt is too long"])(
+		"retains HTTP 400 context recovery for message-only %s errors",
+		async (message) => {
+			mocks.create.mockRejectedValueOnce(Object.assign(new Error(message), { status: 400 }))
+			let failure: unknown
+			try {
+				await collect(new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", []))
+			} catch (error) {
+				failure = error
+			}
+			expect(failure).toMatchObject({ status: 400, message: expect.stringContaining(message) })
+			expect(failure).not.toHaveProperty("retryable", false)
+		},
+	)
+
+	it("rejects truncated streams with one nonterminal failure outcome", async () => {
 		mocks.create.mockResolvedValueOnce(
 			(async function* () {
 				yield {
@@ -295,9 +415,42 @@ describe("native OpenAI provider", () => {
 					chunks.push(chunk)
 				}
 			})(),
-		).rejects.toThrow("without a terminal event")
+		).rejects.toMatchObject({
+			message: expect.stringContaining("without a terminal event"),
+			retryable: true,
+			retryCategory: "transport",
+		})
 		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
-			expect.objectContaining({ status: "failed" }),
+			expect.objectContaining({ status: "failed", terminal: false, semanticOutputObserved: true }),
+		])
+	})
+
+	it.each([
+		{ code: "context_length_exceeded", retryCategory: "context", retryable: undefined },
+		{ code: "rate_limit_exceeded", retryCategory: "rate-limit", retryable: true },
+		{ code: "insufficient_quota", retryCategory: "transport", retryable: false },
+	])("preserves $code recovery classification on failed responses", async ({ code, retryCategory, retryable }) => {
+		mocks.create.mockResolvedValueOnce(
+			(async function* () {
+				yield {
+					type: "response.failed",
+					response: { id: "resp_rejected", error: { code, message: "Request rejected" } },
+				}
+			})(),
+		)
+		const chunks: ApiStreamChunk[] = []
+		let failure: unknown
+		try {
+			for await (const chunk of new OpenAiNativeHandler({ openAiNativeApiKey: "key" }).createMessage("", []))
+				chunks.push(chunk)
+		} catch (error) {
+			failure = error
+		}
+		expect(failure).toMatchObject({ code, retryCategory })
+		if (retryable === undefined) expect(failure).not.toHaveProperty("retryable", false)
+		else expect(failure).toMatchObject({ retryable })
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "failed", terminal: false, semanticOutputObserved: false }),
 		])
 	})
 

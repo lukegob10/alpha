@@ -334,7 +334,7 @@ describe("native lifecycle hook contracts", () => {
 		expect(outcome.warnings.length).toBeGreaterThan(0)
 	})
 
-	it("bounds total injected context and keeps configured fragment order", async () => {
+	it("budgets each handler separately and keeps every configured fragment in order", async () => {
 		const pending = runLifecycleHooks(
 			config({ sessionStart: [command, command] }),
 			{ ...baseRequest, hook_event_name: "SessionStart", source: "startup" },
@@ -344,7 +344,34 @@ describe("native lifecycle hook contracts", () => {
 		finish(children[0], "A".repeat(3_000))
 		const outcome = await pending
 		expect(outcome.additionalContext?.[0].text).toBe("A".repeat(3_000))
-		expect(outcome.additionalContext?.map(({ text }) => text).join("\n\n").length).toBeLessThanOrEqual(4_000)
+		expect(outcome.additionalContext?.[1].text).toBe("B".repeat(3_000))
+	})
+
+	it("retains background context while ignoring unsupported live tool-control effects", async () => {
+		const pending = runLifecycleHooks(
+			config({ preToolUse: [command] }),
+			{
+				...baseRequest,
+				hook_event_name: "PreToolUse",
+				tool_name: "read_file",
+				tool_use_id: "background-call",
+				tool_input: { path: "file.ts" },
+			},
+			new AbortController().signal,
+			{ advisory: true },
+		)
+		finish(children[0], {
+			continue: false,
+			hookSpecificOutput: {
+				hookEventName: "PreToolUse",
+				permissionDecision: "ask",
+				additionalContext: "Background audit completed.",
+			},
+		})
+		expect(await pending).toEqual({
+			warnings: [],
+			additionalContext: [{ hook_run_id: expect.any(String), text: "Background audit completed." }],
+		})
 	})
 
 	it("honors cancellation before spawn and drops late hook output after cancellation", async () => {

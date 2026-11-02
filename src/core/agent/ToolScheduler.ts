@@ -95,7 +95,7 @@ export interface ToolSchedulerOptions {
 		call: Readonly<AgentToolCall>,
 		signal: AbortSignal,
 	) => Promise<{ denied?: string; updatedInput?: Record<string, unknown> }>
-	/** Runs after successful terminal output; it cannot change the completed execution outcome. */
+	/** Runs after completed tool output, including nonzero command exits; execution outcomes stay intact. */
 	postToolUse?: (
 		call: Readonly<AgentToolCall>,
 		result: Readonly<ToolSchedulerResult>,
@@ -235,6 +235,7 @@ export interface ToolSchedulerResult {
 	executionStatus?: ToolResultMetadata["executionStatus"]
 	exitCode?: number
 	commandResult?: ToolResultMetadata["commandResult"]
+	postToolUse?: ToolResultMetadata["postToolUse"]
 	truncated?: boolean
 	timedOut?: boolean
 	/** Trusted progress-only observation; never verification evidence. */
@@ -847,6 +848,7 @@ export class ToolScheduler {
 	private async applyPreToolHook(item: PreparedCall): Promise<PreparedCall> {
 		if (
 			!this.options.preToolUse ||
+			(item.toolCall?.name === "write_stdin" && typeof item.toolCall.nativeArgs?.session_id === "number") ||
 			this.preHookCompleted.has(item.call.id) ||
 			item.validationError ||
 			!item.descriptor ||
@@ -906,9 +908,11 @@ export class ToolScheduler {
 			!this.options.postToolUse ||
 			this.postHookCompleted.has(item.call.id) ||
 			this.isCancelled() ||
+			result.postToolUse === null ||
 			result.status !== "success" ||
-			(result.executionStatus !== undefined && result.executionStatus !== "success") ||
-			(result.exitCode !== undefined && result.exitCode !== 0)
+			(result.executionStatus !== undefined &&
+				result.executionStatus !== "success" &&
+				!(result.executionStatus === "error" && typeof result.exitCode === "number"))
 		)
 			return result
 		this.postHookCompleted.add(item.call.id)
@@ -916,11 +920,18 @@ export class ToolScheduler {
 		let adapterFailed = false
 		try {
 			outcome = await this.options.postToolUse(
-				{
-					...item.call,
-					name: item.toolCall?.name ?? item.call.name,
-					arguments: structuredClone(item.toolCall?.nativeArgs ?? {}),
-				},
+				result.postToolUse
+					? {
+							type: "tool_call",
+							id: result.postToolUse.callId,
+							name: result.postToolUse.name,
+							arguments: structuredClone(result.postToolUse.arguments),
+						}
+					: {
+							...item.call,
+							name: item.toolCall?.name ?? item.call.name,
+							arguments: structuredClone(item.toolCall?.nativeArgs ?? {}),
+						},
 				{ ...result, content: structuredClone(result.content) },
 				this.executionSignal,
 			)
@@ -3041,6 +3052,7 @@ export class ToolScheduler {
 				return startEffect()
 			},
 			toolCallId: prepared.call.id,
+			capturePostToolUse: this.options.postToolUse !== undefined,
 			signal: this.executionSignal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
@@ -3235,6 +3247,7 @@ export class ToolScheduler {
 			executionStatus,
 			exitCode: metadata.exitCode,
 			...(metadata.commandResult ? { commandResult: metadata.commandResult } : {}),
+			...(metadata.postToolUse !== undefined ? { postToolUse: structuredClone(metadata.postToolUse) } : {}),
 			truncated: collector.isTruncated(),
 			timedOut: metadata.timedOut,
 			...(trustedExploration ? { trustedExploration } : {}),

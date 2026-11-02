@@ -1,4 +1,11 @@
-import type { CreateTicket, UpdateTicket, DeleteTicket, TicketStatus, TicketType } from "@alpha-code/types"
+import type {
+	CreateTicket,
+	UpdateTicket,
+	DeleteTicket,
+	DeleteTickets,
+	TicketStatus,
+	TicketType,
+} from "@alpha-code/types"
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import type {
@@ -362,7 +369,14 @@ export type NativeToolArgs = BrowserToolArgs & {
 		cursor?: string | null
 	}
 	search_files: SearchFilesParams
-	list_tickets: { query?: string; status?: TicketStatus; type?: TicketType | null; offset?: number; limit?: number }
+	list_tickets: {
+		query?: string | null
+		status?: TicketStatus | null
+		typeFilter?: TicketType | "untagged" | null
+		type?: TicketType | null
+		offset?: number | null
+		limit?: number | null
+	}
 	read_ticket: { id: string }
 	memories_list: { path?: string; cursor?: string; max_results?: number }
 	memories_read: { path: string; line_offset?: number; max_lines?: number }
@@ -380,6 +394,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
+	delete_tickets: DeleteTickets
 	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	update_plan: {
 		explanation?: string | null
@@ -621,6 +636,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	create_ticket: "create a ticket",
 	update_ticket: "update a ticket",
 	delete_ticket: "delete a ticket",
+	delete_tickets: "delete tickets",
 	update_todo_list: "update todo list",
 	update_plan: "update plan",
 	run_slash_command: "run slash command",
@@ -664,6 +680,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"create_ticket",
 			"update_ticket",
 			"delete_ticket",
+			"delete_tickets",
 			"memories_add_ad_hoc_note",
 			"create_goal",
 			"update_goal",

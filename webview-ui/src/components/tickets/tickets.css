@@ -86,6 +86,17 @@
 	gap: 10px;
 	flex-wrap: wrap;
 }
+.tickets-view-tabs {
+	display: flex;
+	gap: 8px;
+	padding: 8px clamp(16px, 3vw, 32px);
+	border-bottom: 1px solid var(--ticket-divider);
+}
+.tickets-app .tickets-view-tabs button[aria-pressed="true"] {
+	color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+	border-bottom-color: var(--vscode-focusBorder);
+	background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+}
 .tickets-page {
 	flex: 1;
 	min-height: 0;

@@ -1681,6 +1681,58 @@ describe("McpHub", () => {
 	})
 
 	describe("callTool", () => {
+		async function transportTimeoutConnection(): Promise<ConnectedMcpConnection> {
+			const { Client } = await import("@modelcontextprotocol/sdk/client/index.js")
+			const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js")
+			const client = new Client({ name: "hook-fixture", version: "1.0.0" })
+			client.request = vi.fn().mockResolvedValue({ content: [] })
+			return {
+				type: "connected",
+				server: {
+					name: "hook-server",
+					config: JSON.stringify({ type: "stdio", command: "fixture", timeout: 1 }),
+					status: "connected",
+				},
+				client,
+				transport: new StdioClientTransport({ command: "fixture" }),
+			}
+		}
+
+		it("permits an owned hook SDK watchdog while preserving ordinary configured deadlines", async () => {
+			const connection = await transportTimeoutConnection()
+			mcpHub.connections = [connection]
+			await mcpHub.callTool("hook-server", "scan", {}, undefined, new AbortController().signal, {
+				transportTimeoutMs: 2_147_483_647,
+			})
+			await mcpHub.callTool("hook-server", "scan", {})
+			expect(vi.mocked(connection.client.request).mock.calls.map((call) => call[2]?.timeout)).toEqual([
+				2_147_483_647, 1_000,
+			])
+		})
+
+		it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
+			"rejects an unsafe SDK timeout override %s before dispatch",
+			async (transportTimeoutMs) => {
+				const connection = await transportTimeoutConnection()
+				mcpHub.connections = [connection]
+				await expect(
+					mcpHub.callTool("hook-server", "scan", {}, undefined, new AbortController().signal, {
+						transportTimeoutMs,
+					}),
+				).rejects.toThrow("valid interval")
+				expect(connection.client.request).not.toHaveBeenCalled()
+			},
+		)
+
+		it("requires a cancellation owner for an SDK timeout override", async () => {
+			const connection = await transportTimeoutConnection()
+			mcpHub.connections = [connection]
+			await expect(
+				mcpHub.callTool("hook-server", "scan", {}, undefined, undefined, { transportTimeoutMs: 1_000 }),
+			).rejects.toThrow("cancellation signal")
+			expect(connection.client.request).not.toHaveBeenCalled()
+		})
+
 		it("should execute tool successfully", async () => {
 			// Mock the connection with a minimal client implementation
 			const mockConnection: ConnectedMcpConnection = {

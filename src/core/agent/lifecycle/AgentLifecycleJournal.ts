@@ -6,6 +6,7 @@ import {
 	agentLifecycleSnapshotSchema,
 	type AgentLifecycleEvent,
 	type AgentLifecycleSnapshot,
+	type AgentLifecycleToolResultItem,
 } from "@alpha-code/types"
 
 import {
@@ -290,7 +291,7 @@ export class AgentLifecycleJournal {
 				const event = validateAndRedactEvent(candidate, this.taskId, this.maxValueLength)
 
 				if (existingEvent) {
-					if (fingerprintAgentLifecycleEvent(existingEvent) !== fingerprintAgentLifecycleEvent(event)) {
+					if (replayEventFingerprint(existingEvent) !== replayEventFingerprint(event)) {
 						throw new AgentLifecycleRecoveryError(
 							"duplicate_event_conflict",
 							`Lifecycle event ID ${event.eventId} was already persisted with different content`,
@@ -727,7 +728,7 @@ function snapshotFromEvent(event: AgentLifecycleEvent): AgentLifecycleSnapshot {
 }
 
 function validateAndRedactEvent(value: unknown, taskId: string, maxValueLength: number): AgentLifecycleEvent {
-	const redacted = redactLifecycleValue(value, maxValueLength)
+	const redacted = redactLifecycleValue(value, maxValueLength, new WeakSet(), undefined, "event")
 	// Reduce the same value that JSONL will retain, including omission of
 	// undefined properties and null conversion inside unknown tool payloads.
 	const persisted: unknown = JSON.parse(JSON.stringify(redacted))
@@ -757,9 +758,37 @@ export function redactAgentLifecycleEvent(
 	event: AgentLifecycleEvent,
 	maxValueLength = MAX_VALUE_LENGTH,
 ): AgentLifecycleEvent {
-	const result = agentLifecycleEventSchema.safeParse(redactLifecycleValue(event, maxValueLength))
+	const result = agentLifecycleEventSchema.safeParse(
+		redactLifecycleValue(event, maxValueLength, new WeakSet(), undefined, "event"),
+	)
 	if (!result.success) throw result.error
 	return result.data
+}
+
+/**
+ * Codex a0981298 replays canonical response items; journal previews must remain explicit during Alpha recovery.
+ * Marker-only journals predate the typed truncation receipt.
+ */
+export function isAgentLifecycleToolResultOutputTruncated(item: AgentLifecycleToolResultItem): boolean {
+	return item.outputTruncated ?? hasLegacyTruncationMarker(item.output ?? item.result)
+}
+
+function hasLegacyTruncationMarker(value: unknown, seen = new WeakSet<object>()): boolean {
+	if (typeof value === "string") return value.endsWith("\n[truncated]")
+	if (!value || typeof value !== "object" || seen.has(value)) return false
+	seen.add(value)
+	return Object.values(value).some((entry) => hasLegacyTruncationMarker(entry, seen))
+}
+
+function replayEventFingerprint(event: AgentLifecycleEvent): string {
+	const comparable = cloneEvent(event)
+	if ("item" in comparable.payload) {
+		const item = comparable.payload.item
+		if (item.type === "tool_result" && isAgentLifecycleToolResultOutputTruncated(item)) {
+			item.outputTruncated = true
+		}
+	}
+	return fingerprintAgentLifecycleEvent(comparable)
 }
 
 function wrapRecoveryError(error: unknown, taskId: string, event?: AgentLifecycleEvent): AgentLifecycleRecoveryError {
@@ -1095,11 +1124,14 @@ function redactLifecycleValue(
 	maxValueLength: number,
 	seen = new WeakSet<object>(),
 	key?: string,
+	location?: "event" | "payload" | "item",
+	onTruncation?: () => void,
 ): unknown {
 	if (key && SECRET_KEY_PATTERN.test(key)) return REDACTED_VALUE
 	if (typeof value === "string") {
 		const redacted = redactAgentCredentialText(value)
 		if (redacted.length <= maxValueLength) return redacted
+		onTruncation?.()
 		const suffix = "\n[truncated]"
 		return `${redacted.slice(0, Math.max(0, maxValueLength - suffix.length))}${suffix}`
 	}
@@ -1110,21 +1142,47 @@ function redactLifecycleValue(
 	if (value instanceof Error) {
 		return {
 			name: value.name,
-			message: redactLifecycleValue(value.message, maxValueLength),
-			...(value.stack ? { stack: redactLifecycleValue(value.stack, maxValueLength) } : {}),
+			message: redactLifecycleValue(value.message, maxValueLength, seen, undefined, undefined, onTruncation),
+			...(value.stack
+				? { stack: redactLifecycleValue(value.stack, maxValueLength, seen, undefined, undefined, onTruncation) }
+				: {}),
 		}
 	}
 	if (value instanceof Date) return value.toISOString()
 	if (seen.has(value)) return "[circular]"
 	seen.add(value)
+	const toolResult = location === "item" && (value as Record<string, unknown>).type === "tool_result"
+	let outputTruncated = false
 	const result = Array.isArray(value)
-		? value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen))
+		? value.map((entry) => redactLifecycleValue(entry, maxValueLength, seen, undefined, undefined, onTruncation))
 		: Object.fromEntries(
-				Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => [
-					entryKey,
-					redactLifecycleValue(entryValue, maxValueLength, seen, entryKey),
-				]),
+				Object.entries(value as Record<string, unknown>).map(([entryKey, entryValue]) => {
+					const childLocation =
+						location === "event" && entryKey === "payload"
+							? "payload"
+							: location === "payload" && entryKey === "item"
+								? "item"
+								: undefined
+					const observeTruncation =
+						toolResult && (entryKey === "output" || entryKey === "result")
+							? () => {
+									outputTruncated = true
+								}
+							: onTruncation
+					return [
+						entryKey,
+						redactLifecycleValue(
+							entryValue,
+							maxValueLength,
+							seen,
+							entryKey,
+							childLocation,
+							observeTruncation,
+						),
+					]
+				}),
 			)
+	if (toolResult && outputTruncated && !Array.isArray(result)) result.outputTruncated = true
 	seen.delete(value)
 	return result
 }

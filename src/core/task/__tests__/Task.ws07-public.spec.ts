@@ -724,7 +724,7 @@ describe("Alpha", () => {
 							hookSpecificOutput: {
 								hookEventName: "PreToolUse",
 								permissionDecision: "allow",
-								updatedInput: { cmd: afterReadCommand },
+								updatedInput: { command: afterReadCommand },
 							},
 						}
 					: request.hook_event_name === "PostToolUse"
@@ -768,16 +768,10 @@ describe("Alpha", () => {
 				"PermissionRequest",
 				"PostToolUse",
 			])
-			expect(hookProcess.calls.map((request) => request.tool_name)).toEqual([
-				"exec_command",
-				"exec_command",
-				"exec_command",
-			])
-			expect(hookProcess.calls[0].tool_input).toMatchObject({
-				cmd: beforeReadCommand,
-				command: beforeReadCommand,
-			})
-			expect(hookProcess.calls[1].tool_input).toMatchObject({ cmd: afterReadCommand, command: afterReadCommand })
+			// Codex a0981298 tools/hook_names.rs (2026-11-02): hook identity is separate from native cmd input.
+			expect(hookProcess.calls.map((request) => request.tool_name)).toEqual(["Bash", "Bash", "Bash"])
+			expect(hookProcess.calls[0].tool_input).toEqual({ command: beforeReadCommand })
+			expect(hookProcess.calls[1].tool_input).toEqual({ command: afterReadCommand })
 			expect(nativeApproval).toHaveBeenCalledOnce()
 			expect(nativeApproval.mock.calls[0][1]).toBe(afterReadCommand)
 			expect(JSON.stringify([...task.apiConversationHistory, task.userMessageContent])).toContain(
@@ -821,8 +815,8 @@ describe("Alpha", () => {
 			})
 			expect(hookProcess.calls.map((request) => request.hook_event_name)).toEqual(["PermissionRequest"])
 			expect(hookProcess.calls[0]).toMatchObject({
-				tool_name: "exec_command",
-				tool_input: { cmd: beforeReadCommand, command: beforeReadCommand },
+				tool_name: "Bash",
+				tool_input: { command: beforeReadCommand },
 			})
 			expect(effects).toEqual([])
 			expect(nativeApproval).not.toHaveBeenCalled()

@@ -2,6 +2,7 @@ import fs from "node:fs/promises"
 import { randomUUID } from "node:crypto"
 import os from "node:os"
 import path from "node:path"
+import type Anthropic from "@anthropic-ai/sdk"
 import { describe, expect, it, vi } from "vitest"
 
 import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
@@ -198,6 +199,109 @@ describe("completed provider tool-call receipts", () => {
 			await fixture.close()
 		}
 	})
+
+	for (const boundary of ["canonical repair", "legacy resume"] as const) {
+		it.each([
+			{ label: "typed clipping receipt", output: "Diagnostic fragment", outputTruncated: true, incomplete: true },
+			{ label: "legacy clipping marker", output: "Diagnostic fragment\n[truncated]", incomplete: true },
+			{
+				label: "joined output beyond the recovery limit",
+				output: Array.from({ length: 3 }, () => ({ type: "text", text: "x".repeat(6_100) })),
+				incomplete: true,
+			},
+			{
+				label: "mixed text and non-text output",
+				output: [
+					{ type: "text", text: "Screenshot captured." },
+					{ type: "image", source: { type: "base64", media_type: "image/png", data: "fixture-image" } },
+				],
+				incomplete: true,
+			},
+			{
+				label: "non-text-only output",
+				output: [{ type: "image", source: { type: "base64", media_type: "image/png", data: "fixture-image" } }],
+				incomplete: true,
+			},
+			{ label: "intact small output", output: "File was updated.", incomplete: false },
+		])(`keeps $label explicit at ${boundary} without replaying a mutation`, async (scenario) => {
+			const fixture = await createFixture()
+			const effects = vi.spyOn(ToolScheduler.prototype, "run")
+			try {
+				const call = await recordJournalMutationResult(
+					fixture,
+					scenario.output,
+					"outputTruncated" in scenario ? scenario.outputTruncated : undefined,
+				)
+				let recovered: Anthropic.Messages.ToolResultBlockParam | undefined
+				if (boundary === "canonical repair") {
+					const overwrite = vi.fn(async (history: typeof fixture.task.apiConversationHistory) => {
+						fixture.task.apiConversationHistory = history
+						return true
+					})
+					fixture.task.overwriteApiConversationHistory = overwrite
+					await fixture.task.recoverIncompleteCanonicalToolCallsForResume()
+					recovered = fixture.task.apiConversationHistory.at(-1)?.content[0]
+					await fixture.task.recoverIncompleteCanonicalToolCallsForResume()
+					expect(overwrite).toHaveBeenCalledOnce()
+				} else {
+					const initiate = prepareLegacyResume(fixture)
+					await fixture.task.resumeTaskFromHistory("Resume safely", undefined, undefined, {
+						reuseRetainedHistory: true,
+					})
+					recovered = initiate.mock.calls[0]?.[0].find((block) => block.type === "tool_result")
+				}
+				expect(recovered).toMatchObject({
+					type: "tool_result",
+					tool_use_id: call.id,
+					is_error: scenario.incomplete,
+				})
+				if (scenario.incomplete) {
+					expect(recovered?.content).toEqual(expect.stringMatching(/incomplete|unavailable|truncated/i))
+					expect(recovered?.content).toEqual(expect.stringMatching(/verify|inspect|check/i))
+				} else expect(recovered?.content).toBe(scenario.output)
+				expect(effects).not.toHaveBeenCalled()
+				expect(fixture.journal.getSnapshot()).toMatchObject({
+					acceptedToolCallIds: [call.id],
+					effectStartedToolCallIds: [call.id],
+					terminalToolCallIds: [call.id],
+				})
+			} finally {
+				effects.mockRestore()
+				await fixture.close()
+			}
+		})
+
+		it(`prefers the full canonical receipt over its journal preview at ${boundary}`, async () => {
+			const fixture = await createFixture()
+			try {
+				const call = await recordJournalMutationResult(fixture, "Diagnostic fragment", true)
+				const fullOutput = `Full retained output ${"x".repeat(30_000)}`
+				const receipt: Anthropic.Messages.ToolResultBlockParam = {
+					type: "tool_result",
+					tool_use_id: call.id,
+					content: fullOutput,
+					is_error: false,
+				}
+				fixture.task.apiConversationHistory.push({ role: "user", content: [receipt] })
+				const originalHistory = structuredClone(fixture.task.apiConversationHistory)
+				const overwrite = vi.fn()
+				fixture.task.overwriteApiConversationHistory = overwrite
+				if (boundary === "canonical repair") await fixture.task.recoverIncompleteCanonicalToolCallsForResume()
+				else {
+					const initiate = prepareLegacyResume(fixture)
+					await fixture.task.resumeTaskFromHistory("Resume safely", undefined, undefined, {
+						reuseRetainedHistory: true,
+					})
+					expect(initiate.mock.calls[0]?.[0].filter((block) => block.type === "tool_result")).toEqual([])
+				}
+				expect(fixture.task.apiConversationHistory).toEqual(originalHistory)
+				expect(fixture.task.apiConversationHistory.at(-1)?.content[0]).toEqual(receipt)
+				expect(overwrite).not.toHaveBeenCalled()
+			} finally {
+				await fixture.close()
+			}
+		})
+	}
 	it.each([
 		{ legacyCall: false, failed: false },
 		{ legacyCall: false, failed: true },
@@ -422,6 +526,62 @@ describe("completed provider tool-call receipts", () => {
 		}
 	})
 })
+
+async function recordJournalMutationResult(
+	fixture: Awaited<ReturnType<typeof createFixture>>,
+	output: unknown,
+	outputTruncated?: boolean,
+) {
+	const call = { id: "journal-mutation", name: "write_to_file", arguments: { path: "state.txt", content: "updated" } }
+	await fixture.task.publishCompletedCanonicalToolCall(call, { stepId: fixture.stepId })
+	await fixture.task.enqueueCanonicalLifecycleEvent(
+		"tool_effect_started",
+		{ toolCallId: call.id },
+		fixture.stepId,
+		undefined,
+		{ durable: true, required: true },
+	)
+	await fixture.task.enqueueCanonicalLifecycleEvent(
+		"tool_result_recorded",
+		{
+			item: {
+				itemId: `${fixture.stepId}:tool-result-${call.id}`,
+				stepId: fixture.stepId,
+				type: "tool_result",
+				toolCallId: call.id,
+				status: "success",
+				output,
+				...(outputTruncated === undefined ? {} : { outputTruncated }),
+			},
+		},
+		fixture.stepId,
+		undefined,
+		{ durable: true, required: true },
+	)
+	fixture.task.apiConversationHistory = [
+		{ role: "user", content: [{ type: "text", text: "Update state.txt" }] },
+		{ role: "assistant", content: [{ type: "tool_use", id: call.id, name: call.name, input: call.arguments }] },
+	]
+	return call
+}
+
+function prepareLegacyResume(fixture: Awaited<ReturnType<typeof createFixture>>) {
+	const initiate = vi.fn(async (_content: Anthropic.Messages.ContentBlockParam[]) => {})
+	Object.assign(fixture.task, {
+		taskKind: "primary",
+		alphaMessages: [],
+		backgroundUsageDrainEpoch: 0,
+		flushApiConversationHistoryPersistence: async () => {},
+		recoverConversationRewind: async () => {},
+		reconcileGoalUsageFromHistory: async () => {},
+		// Isolate the legacy tail repair, which is still required for histories
+		// outside the accepted-call ledger handled by the earlier repair pass.
+		recoverIncompleteCanonicalToolCallsForResume: async () => {},
+		sayOpeningInput: async () => 2,
+		initiateTaskLoop: initiate,
+	})
+	return initiate
+}
 
 async function createFixture() {
 	const storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-completed-call-"))

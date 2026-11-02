@@ -20,6 +20,17 @@ The exact development and release reference host is VS Code **1.138.0**; it does
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
 policy or workspace protections.
 
+In **Alpha Tickets**, use **Overview** for the completion ring and progress chart, or **Tickets** to browse and select
+work. **Export** saves selected tickets, all filtered matches, or the project as one ZIP of readable Markdown files;
+child tickets can be included. **Import** accepts one or more bundles or original ticket Markdown files and previews
+the changes before adding copies or updating matching IDs. Copies receive fresh local references, preserve relationships
+within the import, and start in backlog by default. Conversations are not included. The chart records observed daily
+counts from first use; parent tickets are not counted again as work, and canceled tickets are excluded from scope.
+
+In chat, ask Alpha to list or delete tickets directly. A group deletion uses one approval and the revisions returned by
+the ticket list; it preserves linked conversations and rejects stale or incomplete parent/child selections before
+deleting anything.
+
 Subagents share the parent task's working directory and inherit its approval policy, permissions, and workspace scope.
 Their file changes are immediately visible to the parent and other agents, so assign separate files when delegating
 editing work in parallel. Agent roles describe their assignments; they do not grant additional permissions. Separate
@@ -32,6 +43,29 @@ their configured authentication.
 Use **Alpha: Recover Task History** from the Command Palette to inspect malformed records in an inactive saved task.
 Recovery requires explicit confirmation, preserves the original history, and does not resume the task automatically.
 Incomplete JSON and uncertain tool transactions remain blocked.
+
+Configure lifecycle hooks through `alpha.completionHooks` in VS Code user settings. Existing camelCase event arrays
+remain supported; Codex event names and matcher groups are also accepted:
+
+```json
+"alpha.completionHooks": {
+  "PostToolUse": [{
+    "matcher": "^Bash$",
+    "hooks": [{ "type": "mcp_tool", "server": "checks", "tool": "review", "input": { "command": "${tool_input.command}" } }]
+  }],
+  "Stop": [{ "command": "/absolute/path/to/validator", "args": [], "timeout": 600 }]
+}
+```
+
+Command hooks use absolute executable paths and argument arrays without a shell. Most hooks default to 600 seconds;
+`Interrupt` and `SessionEnd` default to one second, with a three-second maximum. Commands can use `async: true` to
+deliver advisory output at a later model boundary; `SessionEnd` always runs synchronously. `PostToolUse` observes
+completed commands, including nonzero exits, under the `Bash` name with `tool_input.command`. Deferred command completion
+uses the original call identity. A `Stop` response with `decision: "block"` and a nonempty `reason` continues the same
+turn; `continue: false` takes precedence. Large hook output includes a path to the full text. Hooks retain Alpha's
+bounded execution and native approval protections; workspace configuration cannot install hooks. Declared acceptance
+checks record advisory evidence rather than requiring an exact passing command before completion.
+To accept completion, exit successfully with no output or `{}`; `decision: "allow"` is not a supported Stop output.
 
 Default Windows keyboard shortcuts:
 

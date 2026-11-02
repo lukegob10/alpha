@@ -11,6 +11,16 @@ describe("formatResponse.noToolsUsed", () => {
 		expect(reminder).toContain("If you require additional information from the user, ask them directly.")
 		expect(reminder).not.toContain("ask_followup_question")
 	})
+
+	it("recovers an empty response without making a tool call a prerequisite for completion", () => {
+		const reminder = formatResponse.noToolsUsed()
+
+		expect(reminder).toContain("did not contain visible assistant text or a tool call")
+		expect(reminder).toContain("If you have completed the user's task, give a concise final answer.")
+		expect(reminder).not.toContain("[ERROR]")
+		expect(reminder).not.toContain("must contain")
+		expect(reminder).not.toContain("Retry with a valid tool call")
+	})
 })
 import { AlphaIgnoreController, LOCK_TEXT_SYMBOL } from "../../ignore/AlphaIgnoreController"
 import { Stats } from "fs"

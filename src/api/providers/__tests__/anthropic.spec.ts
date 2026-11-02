@@ -297,7 +297,34 @@ describe("native Anthropic adapter", () => {
 		expect((await collect(new AnthropicHandler({ apiKey: "key" }))).at(-1)).toMatchObject({
 			type: "outcome",
 			status: "incomplete",
+			terminal: !!stopReason,
+			retryable: !stopReason,
 		})
+	})
+
+	it.each([false, true])("does not seal unsigned thinking when interrupted (terminal=%s)", async (terminal) => {
+		mocks.create.mockResolvedValue(
+			stream([
+				{
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "thinking", thinking: "Unsealed thought", signature: "" },
+				},
+				{ type: "content_block_stop", index: 0 },
+				...(terminal
+					? [
+							{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+							{ type: "message_stop" },
+						]
+					: []),
+			]),
+		)
+		const handler = new AnthropicHandler({ apiKey: "key" })
+		const chunks = await collect(handler)
+		expect(chunks).toContainEqual(expect.objectContaining({ type: "reasoning", text: "Unsealed thought" }))
+		expect(chunks.some((chunk) => chunk.type === "thinking_complete")).toBe(false)
+		expect(handler.getThoughtSignature()).toBeUndefined()
+		expect(chunks.at(-1)).toMatchObject({ type: "outcome", status: "incomplete", terminal, retryable: !terminal })
 	})
 
 	it("rejects cancellation while an SDK iterator is stalled and aborts the transport", async () => {

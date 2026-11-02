@@ -23,9 +23,9 @@ function fixture(
 		callbacks.pushToolResult("Completed")
 	},
 	readOnly = false,
+	name = readOnly ? "fixture_read" : "write_to_file",
 ) {
 	const cwd = process.cwd()
-	const name = readOnly ? "fixture_read" : "write_to_file"
 	const content: Anthropic.ToolResultBlockParam[] = []
 	const state = {
 		cwd,
@@ -458,6 +458,78 @@ describe("scheduler lifecycle hooks preserve policy and completed effects", () =
 		})
 		expect(outcome.results[0]).not.toHaveProperty("trustedProgress")
 		expect(postToolUse).toHaveBeenCalledOnce()
+	})
+
+	it("runs post-tool verification for a completed command with a nonzero process exit", async () => {
+		const postToolUse = vi.fn(async () => ({ feedback: "Repair the failing assertion" }))
+		const { scheduler, call } = fixture({ postToolUse }, async ({ callbacks }) => {
+			callbacks.setResultMetadata?.({ status: "success", executionStatus: "error", exitCode: 1 })
+			callbacks.pushToolResult("One test failed")
+		})
+		const outcome = await scheduler.run([call()])
+
+		expect(postToolUse).toHaveBeenCalledOnce()
+		expect(postToolUse).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ executionStatus: "error", exitCode: 1, content: "One test failed" }),
+			expect.any(AbortSignal),
+		)
+		expect(outcome.results[0]).toMatchObject({
+			status: "success",
+			executionStatus: "error",
+			exitCode: 1,
+			content: "Repair the failing assertion",
+		})
+	})
+
+	it("attributes a deferred command post hook to its original invocation without changing the poll receipt", async () => {
+		const postToolUse = vi.fn(async () => ({ feedback: "Inspect the failed command" }))
+		const original = { callId: "launch", name: "exec_command", arguments: { cmd: "pnpm test" } }
+		const { scheduler, call } = fixture({ postToolUse }, async ({ callbacks }) => {
+			callbacks.setResultMetadata?.({
+				status: "success",
+				executionStatus: "error",
+				exitCode: 2,
+				postToolUse: original,
+			})
+			callbacks.pushToolResult("Final command output")
+		})
+		const outcome = await scheduler.run([call("poll")])
+		expect(postToolUse).toHaveBeenCalledWith(
+			{ type: "tool_call", id: "launch", name: "exec_command", arguments: { cmd: "pnpm test" } },
+			expect.objectContaining({ callId: "poll", exitCode: 2 }),
+			expect.any(AbortSignal),
+		)
+		expect(outcome.results[0]).toMatchObject({ callId: "poll", executionStatus: "error", exitCode: 2 })
+	})
+
+	it("suppresses a command post hook whose final result has already been observed", async () => {
+		const postToolUse = vi.fn(async () => ({}))
+		const { scheduler, call } = fixture({ postToolUse }, async ({ callbacks }) => {
+			callbacks.setResultMetadata?.({
+				status: "success",
+				executionStatus: "success",
+				exitCode: 0,
+				postToolUse: null,
+			})
+			callbacks.pushToolResult("Remaining output")
+		})
+		await scheduler.run([call()])
+		expect(postToolUse).not.toHaveBeenCalled()
+	})
+
+	it("does not repeat pre-tool hooks for an existing command's stdin transport", async () => {
+		const preToolUse = vi.fn(async () => ({}))
+		const { scheduler, call } = fixture({ preToolUse }, undefined, true, "write_stdin")
+		await scheduler.run([call("poll", { session_id: 7, chars: "", yield_time_ms: 5_000 })])
+		expect(preToolUse).not.toHaveBeenCalled()
+	})
+
+	it("keeps artifact reads on the ordinary function-tool hook path", async () => {
+		const preToolUse = vi.fn(async () => ({}))
+		const { scheduler, call } = fixture({ preToolUse }, undefined, true, "write_stdin")
+		await scheduler.run([call("read", { artifact_id: "command-output.txt" })])
+		expect(preToolUse).toHaveBeenCalledOnce()
 	})
 
 	it("distinguishes a rejected post-tool result from a tool that never executed", async () => {

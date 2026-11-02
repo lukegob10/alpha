@@ -38,6 +38,22 @@ describe("agent lifecycle contracts", () => {
 		expect(agentLifecyclePhaseSchema.safeParse("provider_internal_state").success).toBe(false)
 	})
 
+	it("accepts legacy tool results and typed output truncation without changing execution status", () => {
+		const result = {
+			itemId: "result-item",
+			type: "tool_result",
+			toolCallId: "call-1",
+			status: "success",
+			output: "A retained preview",
+		}
+		expect(agentLifecycleToolResultItemSchema.parse(result)).toEqual(result)
+		expect(agentLifecycleToolResultItemSchema.parse({ ...result, outputTruncated: true })).toEqual({
+			...result,
+			outputTruncated: true,
+		})
+		expect(agentLifecycleItemSchema.safeParse({ ...result, outputTruncated: "true" }).success).toBe(false)
+	})
+
 	it("accepts normalized assistant reasoning but rejects provider payloads", () => {
 		expect(
 			agentLifecycleAssistantReasoningItemSchema.safeParse({

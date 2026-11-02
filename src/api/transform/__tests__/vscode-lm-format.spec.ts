@@ -117,6 +117,26 @@ vitest.mock("vscode", () => {
 })
 
 describe("convertToVsCodeLmMessages", () => {
+	it("keeps lifecycle hook context ordered through the host's user-role fallback", () => {
+		const messages = [
+			{ role: "user", content: "Original request" },
+			{ role: "assistant", content: "Progress" },
+			{
+				role: "user",
+				input_origin: "agent",
+				content: "Hook context",
+				hook_prompt: {
+					event: "PostToolUse",
+					fragments: [{ hook_run_id: "hook-run", text: "Hook context" }],
+				},
+			},
+		] as Anthropic.Messages.MessageParam[]
+
+		const result = convertToVsCodeLmMessages(messages)
+		expect(result.map(({ role }) => role)).toEqual(["user", "assistant", "user"])
+		expect(result[2].content).toEqual([new vscode.LanguageModelTextPart("Hook context")])
+	})
+
 	afterEach(() => {
 		thinkingPartMock.enabled = true
 	})

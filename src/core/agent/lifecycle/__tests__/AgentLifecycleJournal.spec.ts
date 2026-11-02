@@ -15,7 +15,13 @@ vi.mock("../../../../utils/storage", () => ({
 }))
 
 import { GlobalFileNames } from "../../../../shared/globalFileNames"
-import { AgentLifecycleJournal, AgentLifecycleRecoveryError, readAgentLifecycleEvents } from "../index.js"
+import {
+	AgentLifecycleJournal,
+	AgentLifecycleRecoveryError,
+	isAgentLifecycleToolResultOutputTruncated,
+	readAgentLifecycleEvents,
+	redactAgentLifecycleEvent,
+} from "../index.js"
 
 const ids = { taskId: "task-journal", runId: "run-1", turnId: "turn-1" }
 
@@ -144,6 +150,94 @@ describe("AgentLifecycleJournal", () => {
 			effectStartedToolCallIds: [],
 		})
 		await recovered.close()
+	})
+
+	it("replays a marker-only legacy result without changing its durable event", async () => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { maxValueLength: 128 })
+		await journal.append({
+			...phaseEvent("call-accepted"),
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					itemId: "call-item",
+					type: "tool_call",
+					toolCallId: "call-1",
+					name: "read_file",
+					arguments: {},
+					status: "accepted",
+				},
+			},
+		})
+		const event = {
+			...phaseEvent("result-recorded"),
+			type: "tool_result_recorded" as const,
+			payload: {
+				item: {
+					itemId: "result-item",
+					type: "tool_result" as const,
+					toolCallId: "call-1",
+					status: "success" as const,
+					output: "x".repeat(512),
+				},
+			},
+		}
+		await journal.append(event)
+		await journal.close()
+		const eventsPath = await journal.getEventsFilePath()
+		const records = (await readAgentLifecycleEvents(ids.taskId, storagePath)).map((record) => {
+			if ("item" in record.payload && record.payload.item.type === "tool_result")
+				delete record.payload.item.outputTruncated
+			return JSON.stringify(record)
+		})
+		const legacyBytes = `${records.join("\n")}\n`
+		await fs.writeFile(eventsPath, legacyBytes)
+		await fs.rm(await journal.getSnapshotFilePath())
+
+		const recovered = await AgentLifecycleJournal.open(ids.taskId, storagePath, { maxValueLength: 128 })
+		const result = recovered.getSnapshot()?.items.find((item) => item.type === "tool_result")
+		expect(result?.type === "tool_result" && isAgentLifecycleToolResultOutputTruncated(result)).toBe(true)
+		expect(await recovered.append(event)).toMatchObject({ sequence: 2, replayed: true })
+		expect(await fs.readFile(eventsPath, "utf8")).toBe(legacyBytes)
+		await recovered.close()
+	})
+
+	it("keeps complete and already-redacted outputs distinct from journal clipping", () => {
+		const event: AgentLifecycleEvent = {
+			...phaseEvent("result-recorded"),
+			sequence: 1,
+			type: "tool_result_recorded",
+			payload: {
+				item: {
+					itemId: "result-item",
+					type: "tool_result",
+					toolCallId: "call-1",
+					status: "success",
+					output: { password: "private-secret", text: "Complete result" },
+				},
+			},
+		}
+		const redacted = redactAgentLifecycleEvent(event)
+		expect(redacted.payload).toMatchObject({
+			item: { status: "success", output: { password: "[redacted]", text: "Complete result" } },
+		})
+		if (!("item" in redacted.payload) || redacted.payload.item.type !== "tool_result")
+			throw new Error("Expected a tool result")
+		expect(isAgentLifecycleToolResultOutputTruncated(redacted.payload.item)).toBe(false)
+		expect(redacted.payload.item).not.toHaveProperty("outputTruncated")
+		expect(event.payload).toMatchObject({ item: { output: { password: "private-secret" } } })
+	})
+
+	it("honors an explicit complete receipt when its output contains a literal legacy marker", () => {
+		expect(
+			isAgentLifecycleToolResultOutputTruncated({
+				itemId: "result-item",
+				type: "tool_result",
+				toolCallId: "call-1",
+				status: "success",
+				output: "Literal marker:\n[truncated]",
+				outputTruncated: false,
+			}),
+		).toBe(false)
 	})
 
 	it("waits for the durable effect-start file sync before acknowledging intent", async () => {
@@ -309,6 +403,55 @@ describe("AgentLifecycleJournal", () => {
 		expect(contents).not.toContain("do-not-persist")
 		expect(contents).toContain("[redacted]")
 		await journal.close()
+	})
+
+	it.each([
+		{ field: "output", value: "x".repeat(512) },
+		{ field: "output", value: [{ type: "text", text: "x".repeat(512) }] },
+		{ field: "result", value: { nested: ["x".repeat(512)] } },
+	] as const)("marks clipped $field for incomplete-output recovery", async ({ field, value }) => {
+		const journal = new AgentLifecycleJournal(ids.taskId, storagePath, { maxValueLength: 128 })
+		await journal.append({
+			...phaseEvent("call-accepted"),
+			type: "tool_call_accepted",
+			payload: {
+				item: {
+					itemId: "call-item",
+					type: "tool_call",
+					toolCallId: "call-1",
+					name: "read_file",
+					arguments: {},
+					status: "accepted",
+				},
+			},
+		})
+		const event = {
+			...phaseEvent("result-recorded"),
+			type: "tool_result_recorded" as const,
+			payload: {
+				item: {
+					itemId: "result-item",
+					type: "tool_result" as const,
+					toolCallId: "call-1",
+					status: "success" as const,
+					output: field === "output" ? value : undefined,
+					result: field === "result" ? value : undefined,
+				},
+			},
+		}
+		const receipt = await journal.append(event)
+		expect(receipt.event.payload).toMatchObject({ item: { outputTruncated: true, status: "success" } })
+		expect(JSON.stringify(receipt.event)).not.toContain("x".repeat(129))
+		expect(event.payload.item).not.toHaveProperty("outputTruncated")
+		await journal.close()
+
+		const recovered = await AgentLifecycleJournal.open(ids.taskId, storagePath, { maxValueLength: 128 })
+		expect(recovered.getSnapshot()?.items.find((item) => item.type === "tool_result")).toMatchObject({
+			outputTruncated: true,
+			status: "success",
+		})
+		expect(await recovered.append(event)).toMatchObject({ sequence: 2, replayed: true })
+		await recovered.close()
 	})
 
 	it("persists repeated sibling argument values and redacts actual cycles", async () => {

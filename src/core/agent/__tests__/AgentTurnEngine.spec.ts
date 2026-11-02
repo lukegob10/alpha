@@ -91,6 +91,38 @@ describe("AgentResponseAccumulator", () => {
 })
 
 describe("AgentTurnEngine", () => {
+	it.each(["legacy", "staged"] as const)("authoritatively completes a reasoning-only %s response", async (kind) => {
+		const response = await collectAgentResponse(
+			(async function* () {
+				yield { type: "reasoning", text: "", signature: "retained-state" } as const
+				yield createApiStreamOutcome({ status: "completed", requiresContinuation: false })
+			})(),
+		)
+		const sample = vi.fn().mockResolvedValueOnce({ response }).mockRejectedValue(new Error("Unexpected follow-up"))
+		const admitCompletion = vi.fn()
+		const common = { shouldAbort: () => false, admitCompletion }
+		const engine =
+			kind === "staged"
+				? new AgentTurnEngine<string>({
+						...common,
+						sampleStep: sample,
+						selectContinuation: async () => ({ nextInput: "follow-up" }),
+					})
+				: new AgentTurnEngine<string>({
+						...common,
+						runStep: async (input) => ({ ...(await sample(input)), nextInput: "follow-up" }),
+					})
+
+		expect(await engine.run("request")).toMatchObject({
+			status: "completed",
+			steps: 1,
+			completionReason: "assistant",
+			response,
+		})
+		expect(sample).toHaveBeenCalledOnce()
+		expect(admitCompletion).toHaveBeenCalledOnce()
+	})
+
 	it("runs pending tools and the follow-up step even when assistant text declares a final answer", async () => {
 		const firstResponse = await collectAgentResponse(
 			(async function* () {

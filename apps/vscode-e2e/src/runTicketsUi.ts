@@ -281,6 +281,259 @@ export async function runTicketsUi(executable: string, output: string) {
 			)
 			await fs.writeFile(path.join(directory, `${name}.png`), Buffer.from(screenshot.data, "base64"))
 		}
+		const exerciseSelection = async (stage: string) => {
+			const selector = "d.querySelector('.ticket-row .ticket-selection')"
+			const metrics = () =>
+				evaluate<{
+					opacity: string
+					pointerEvents: string
+					appearance: string
+					background: string
+					checked: boolean
+					hovered: boolean
+					focused: boolean
+					left: number
+					top: number
+					width: number
+					height: number
+					nameLeft: number
+					fine: boolean
+					coarse: boolean
+					noHover: boolean
+				}>(
+					`(()=>{const input=${selector};const style=d.defaultView.getComputedStyle(input);const row=input.closest('.ticket-row');const rect=input.getBoundingClientRect();return {opacity:style.opacity,pointerEvents:style.pointerEvents,appearance:style.appearance,background:style.backgroundColor,checked:input.checked,hovered:row.matches(':hover'),focused:row.matches(':focus-within'),left:rect.left,top:rect.top,width:rect.width,height:rect.height,nameLeft:row.querySelector('.ticket-row-name').getBoundingClientRect().left,fine:d.defaultView.matchMedia('(hover:hover) and (pointer:fine)').matches,coarse:d.defaultView.matchMedia('(any-pointer:coarse)').matches,noHover:d.defaultView.matchMedia('(hover:none)').matches}})()`,
+				)
+			const moveAway = async () => {
+				await evaluate("d.querySelector('.tickets-search input').focus()")
+				const owner = await frameOwner()
+				const search = await evaluate<{ x: number; y: number }>(
+					"(()=>{const r=d.querySelector('.tickets-search input').getBoundingClientRect();const frame=document.getElementById('active-frame')?.getBoundingClientRect();return {x:r.left+r.width/2+(frame?.left??0),y:r.top+r.height/2+(frame?.top??0)}})()",
+				)
+				await connection.request(
+					"Input.dispatchMouseEvent",
+					{ type: "mouseMoved", x: owner.x + search.x, y: owner.y + search.y },
+					pageSession,
+				)
+			}
+			const frameOwner = async () => {
+				const { frameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
+					"Page.getFrameTree",
+					{},
+					webviewSession,
+				)
+				const { backendNodeId } = await connection.request<{ backendNodeId: number }>(
+					"DOM.getFrameOwner",
+					{ frameId: frameTree.frame.id },
+					pageSession,
+				)
+				const { model } = await connection.request<{ model: { content: number[] } }>(
+					"DOM.getBoxModel",
+					{ backendNodeId },
+					pageSession,
+				)
+				return { x: model.content[0]!, y: model.content[1]! }
+			}
+			await moveAway()
+			const idle = await metrics()
+			await capture(`${stage}-selection-idle`)
+			await fs.copyFile(
+				path.join(directory, `${stage}-selection-idle.png`),
+				path.join(output, `${runId}-${stage}-selection-idle.png`),
+			)
+			await fs.writeFile(
+				path.join(output, `${runId}-${stage}-selection-idle.json`),
+				JSON.stringify({ directory, idle }, null, 2),
+			)
+			assert.equal(idle.fine, true, "Desktop fixture must exercise a hover-capable fine pointer")
+			assert.equal(idle.checked, false)
+			assert.equal(idle.hovered || idle.focused, false, "Idle row must not be hovered or focused")
+			assert.equal(idle.opacity, "0", "Idle unchecked selection control must be hidden")
+			assert.equal(idle.pointerEvents, "none", "Hidden selection control must not intercept pointer input")
+
+			const origin = await frameOwner()
+			const inner = await evaluate<{ left: number; top: number }>(
+				"(()=>{const r=document.getElementById('active-frame')?.getBoundingClientRect();return {left:r?.left??0,top:r?.top??0}})()",
+			)
+			const pointer = {
+				x: origin.x + inner.left + idle.left + idle.width / 2,
+				y: origin.y + inner.top + idle.top + idle.height / 2,
+			}
+			await connection.request("Input.dispatchMouseEvent", { type: "mouseMoved", ...pointer }, pageSession)
+			await check(`d.defaultView.getComputedStyle(${selector}).opacity==='1'`, `${stage}_selection_hover`)
+			const hovered = await metrics()
+			assert.equal(hovered.hovered, true, "Native pointer input must hover the actual ticket row")
+			assert.equal(hovered.appearance, "none", "Muted checkbox uses theme styling, not the native white face")
+			if (stage !== "tickets-light") assert.notEqual(hovered.background, "rgb(255, 255, 255)")
+			assert.deepEqual(
+				[hovered.left, hovered.top, hovered.width, hovered.height, hovered.nameLeft],
+				[idle.left, idle.top, idle.width, idle.height, idle.nameLeft],
+				"Revealing selection must not shift the row or ticket title",
+			)
+			await capture(`${stage}-selection-hover`)
+			await moveAway()
+			await check(`d.defaultView.getComputedStyle(${selector}).opacity==='0'`, `${stage}_selection_after_hover`)
+			await evaluate(
+				`${selector}.closest('tbody').previousElementSibling.querySelector('.ticket-group-toggle').focus()`,
+			)
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{ type, key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+					webviewSession,
+				)
+			assert.equal(
+				await evaluate(`d.activeElement===${selector}`),
+				true,
+				"Native Tab reaches the hidden checkbox",
+			)
+			await check(
+				`d.defaultView.getComputedStyle(${selector}).opacity==='1'`,
+				`${stage}_selection_keyboard_focus`,
+			)
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{ type, key: " ", code: "Space", windowsVirtualKeyCode: 32 },
+					webviewSession,
+				)
+			await check(
+				`${selector}.checked && !!d.querySelector('.tickets-list') && !d.querySelector('#ticket-heading')`,
+				`${stage}_selection_does_not_open_detail`,
+			)
+			await moveAway()
+			await check(`d.defaultView.getComputedStyle(${selector}).opacity==='1'`, `${stage}_checked_persists`)
+			const selected = await metrics()
+			assert.equal(selected.hovered || selected.focused, false)
+			assert.equal(selected.checked, true)
+			await capture(`${stage}-selection-checked`)
+			// Clear using the same keyboard path before checking touch/no-hover fallback.
+			await evaluate(`${selector}.focus()`)
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{ type, key: " ", code: "Space", windowsVirtualKeyCode: 32 },
+					webviewSession,
+				)
+			await check(`!${selector}.checked`, `${stage}_selection_cleared`)
+			await moveAway()
+			for (const type of ["mouseMoved", "mousePressed", "mouseReleased"] as const)
+				await connection.request(
+					"Input.dispatchMouseEvent",
+					{
+						type,
+						...pointer,
+						button: type === "mouseMoved" ? "none" : "left",
+						clickCount: type === "mouseMoved" ? 0 : 1,
+					},
+					pageSession,
+				)
+			await check(
+				`${selector}.checked && !!d.querySelector('.tickets-list') && !d.querySelector('#ticket-heading')`,
+				`${stage}_native_mouse_selection`,
+			)
+			await evaluate(`${selector}.focus()`)
+			for (const type of ["keyDown", "keyUp"])
+				await connection.request(
+					"Input.dispatchKeyEvent",
+					{ type, key: " ", code: "Space", windowsVirtualKeyCode: 32 },
+					webviewSession,
+				)
+			await check(`!${selector}.checked`, `${stage}_mouse_selection_cleared`)
+			await moveAway()
+			await connection.request(
+				"Emulation.setTouchEmulationEnabled",
+				{ enabled: true, maxTouchPoints: 1 },
+				webviewSession,
+			)
+			let touch
+			try {
+				await check(
+					"d.defaultView.matchMedia('(any-pointer:coarse)').matches && d.defaultView.matchMedia('(hover:none)').matches",
+					`${stage}_real_touch_media`,
+				)
+				await check(
+					`d.defaultView.getComputedStyle(${selector}).opacity==='1'`,
+					`${stage}_touch_selection_visible`,
+				)
+				touch = await metrics()
+				assert.equal(touch.pointerEvents, "auto", "Touch users can reach unchecked selection without hover")
+				await capture(`${stage}-selection-touch`)
+				const touchPoint = {
+					x: origin.x + inner.left + touch.left + touch.width / 2,
+					y: origin.y + inner.top + touch.top + touch.height / 2,
+				}
+				await evaluate(
+					"(()=>{const types=['touchstart','touchend','touchcancel','pointerdown','pointerup','pointercancel','click'];const events=[];const record=e=>{if(events.length>=12)return;const entry={type:e.type,checkbox:e.target.matches('.ticket-selection'),prevented:e.defaultPrevented};events.push(entry);d.defaultView.queueMicrotask(()=>entry.prevented=e.defaultPrevented)};for(const type of types)d.addEventListener(type,record,true);d.defaultView.__ticketTouchEvidence={events,dispose:()=>{for(const type of types)d.removeEventListener(type,record,true)}}})()",
+				)
+				await connection.request(
+					"Input.synthesizeTapGesture",
+					{ ...touchPoint, gestureSourceType: "touch", tapCount: 1, duration: 50 },
+					pageSession,
+				)
+				try {
+					await check(
+						"['pointerdown','touchstart','pointerup','touchend'].every(type=>d.defaultView.__ticketTouchEvidence.events.some(e=>e.type===type&&e.checkbox&&!e.prevented))",
+						`${stage}_native_touch_reaches_checkbox`,
+					)
+					assert.equal(
+						await evaluate("!!d.querySelector('.tickets-list') && !d.querySelector('#ticket-heading')"),
+						true,
+						"Native touch on selection does not navigate to detail",
+					)
+					// This host's synthetic touch does not produce compatibility clicks, even on an unchanged native control.
+					// Assert the complete unprevented touch path; native mouse and keyboard activation are checked above.
+					assert.equal(
+						await evaluate(`${selector}.checked`),
+						await evaluate(
+							"d.defaultView.__ticketTouchEvidence.events.some(e=>e.type==='click'&&e.checkbox)",
+						),
+					)
+				} finally {
+					const touchEvidence = await evaluate(
+						"(()=>{const evidence=d.defaultView.__ticketTouchEvidence;const result={events:evidence.events,active:d.activeElement.tagName};evidence.dispose();delete d.defaultView.__ticketTouchEvidence;return result})()",
+					)
+					await fs.writeFile(
+						path.join(output, `${runId}-${stage}-touch-events.json`),
+						JSON.stringify({ touchPoint, origin, inner, touch, touchEvidence }, null, 2),
+					)
+				}
+				if (await evaluate<boolean>(`${selector}.checked`)) {
+					await evaluate(`${selector}.focus()`)
+					for (const type of ["keyDown", "keyUp"])
+						await connection.request(
+							"Input.dispatchKeyEvent",
+							{ type, key: " ", code: "Space", windowsVirtualKeyCode: 32 },
+							webviewSession,
+						)
+				}
+				await check(`!${selector}.checked`, `${stage}_touch_selection_cleared`)
+				await moveAway()
+			} finally {
+				await connection.request("Emulation.setTouchEmulationEnabled", { enabled: false }, webviewSession)
+			}
+			await connection.request(
+				"Emulation.setEmulatedMedia",
+				{ features: [{ name: "forced-colors", value: "active" }] },
+				webviewSession,
+			)
+			let forcedColors
+			try {
+				await check(
+					"d.defaultView.matchMedia('(forced-colors:active)').matches",
+					`${stage}_forced_colors_media`,
+				)
+				forcedColors = await metrics()
+				assert.equal(forcedColors.appearance, "auto", "Forced colors retains the native accessible checkbox")
+				await evaluate(`${selector}.focus()`)
+				await capture(`${stage}-selection-forced-colors`)
+			} finally {
+				await connection.request("Emulation.setEmulatedMedia", { features: [] }, webviewSession)
+			}
+			await fs.writeFile(
+				path.join(directory, `${stage}-selection-metrics.json`),
+				JSON.stringify({ idle, hovered, selected, touch, forcedColors }, null, 2),
+			)
+		}
 		const changeProperty = async (id: string, key: string, value: string) => {
 			await evaluate(`d.getElementById(${javascriptLiteral(id)}).focus()`)
 			for (const type of ["keyDown", "keyUp"])
@@ -309,6 +562,13 @@ export async function runTicketsUi(executable: string, output: string) {
 			["tickets-contrast", "vscode-high-contrast"],
 		] as const) {
 			if (stage !== "tickets-dark") await ready(stage)
+			if (stage === "tickets-dark") {
+				await check("!!d.querySelector('.tickets-view-tabs')", "tickets_navigation_ready")
+				await evaluate(
+					"[...d.querySelectorAll('.tickets-view-tabs button')].find(b=>b.textContent==='Tickets').focus()",
+				)
+				await pressEnter()
+			}
 			await check(
 				`d.body.classList.contains(${javascriptLiteral(themeClass)}) && !!d.querySelector('.tickets-list') && d.querySelectorAll('.ticket-row-open').length === ${fixtures.length}`,
 				`${stage}_list`,
@@ -372,6 +632,7 @@ export async function runTicketsUi(executable: string, output: string) {
 			}
 			await fs.writeFile(path.join(directory, `${stage}-metrics.json`), JSON.stringify(listMetrics, null, 2))
 			await capture(`${stage}-list`)
+			await exerciseSelection(stage)
 
 			const selectedName = fixtures[0]!.name
 			assert.equal(

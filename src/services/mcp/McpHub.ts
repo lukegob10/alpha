@@ -2239,6 +2239,7 @@ export class McpHub {
 		toolArguments?: Record<string, unknown>,
 		source?: "global" | "project",
 		signal?: AbortSignal,
+		options?: { transportTimeoutMs?: number },
 	): Promise<McpToolCallResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
@@ -2258,6 +2259,15 @@ export class McpHub {
 			console.error("Failed to parse server config for timeout:", error)
 			// Default to 60 seconds if parsing fails
 			timeout = 60 * 1000
+		}
+		if (options?.transportTimeoutMs !== undefined) {
+			// Lifecycle hooks own a bounded active-time deadline which pauses for
+			// elicitation. Their SDK watchdog must not charge human response time.
+			const override = options.transportTimeoutMs
+			if (!signal || !Number.isInteger(override) || override < 1 || override > 2_147_483_647) {
+				throw new Error("An MCP transport timeout override requires a cancellation signal and a valid interval")
+			}
+			timeout = override
 		}
 		const requestSignal = this.getConnectionSignal(connection, signal)
 

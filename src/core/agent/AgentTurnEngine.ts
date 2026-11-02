@@ -252,7 +252,10 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 	): boolean {
 		return (
 			response.toolCalls.length === 0 &&
-			response.text.trim().length > 0 &&
+			(response.text.trim().length > 0 ||
+				(response.outcome?.status === "completed" &&
+					response.outcome.requiresContinuation === false &&
+					response.items.some((item) => item.type === "reasoning"))) &&
 			!requiresContinuation &&
 			!response.outcome?.requiresContinuation &&
 			(this.host.canCompleteWithoutTools?.(response, step) ?? true)

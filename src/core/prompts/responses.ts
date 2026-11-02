@@ -44,7 +44,7 @@ export const formatResponse = {
 	noToolsUsed: () => {
 		const instructions = getToolInstructionsReminder()
 
-		return `[ERROR] You did not use a tool in your previous response. Do not narrate, restate a plan, or claim work is in progress. Retry with a valid tool call.
+		return `Your previous response did not contain visible assistant text or a tool call. Continue the task using the available context and tools.
 
 ${instructions}
 
@@ -52,7 +52,7 @@ ${instructions}
 
 If you have completed the user's task, give a concise final answer.
 If you require additional information from the user, ask them directly.
-Otherwise, if work remains and no input is missing, your next response must contain the concrete tool call that performs the next step.
+Otherwise, continue the remaining work.
 (This is an automated message, so do not respond to it conversationally.)`
 	},
 

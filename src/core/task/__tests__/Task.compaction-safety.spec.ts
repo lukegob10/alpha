@@ -2591,6 +2591,56 @@ describe("Task context recovery admission", () => {
 			text: task.taskId,
 		})
 	})
+	it.each(["automatic", "forced"] as const)(
+		"keeps human corrections installed after actual failed %s compaction",
+		async (trigger) => {
+			const { task, api, save, history, provider } = harness()
+			const { TelemetryService } = await import("@alpha-code/telemetry")
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const actualContext =
+				await vi.importActual<typeof import("../../context-management")>("../../context-management")
+			const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")
+			vi.mocked(manageContext).mockImplementation(actualContext.manageContext)
+			vi.mocked(summarizeConversation).mockImplementation(actualCondense.summarizeConversation)
+			provider.getState.mockResolvedValue({ autoCondenseContext: true, autoCondenseContextPercent: 80 })
+			vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 200_000 } as ReturnType<
+				Task["getTokenUsage"]
+			>)
+			history.splice(
+				0,
+				history.length,
+				{ role: "user", content: "Original request", input_origin: "human", ts: 1 },
+				{ role: "assistant", content: "Initial implementation.", ts: 2 },
+				{ role: "user", content: "Preserve the existing public API.", input_origin: "human", ts: 3 },
+				{ role: "assistant", content: "Implementation details. ".repeat(30_000), ts: 4 },
+				{ role: "user", content: "Continue.", input_origin: "human", ts: 5 },
+			)
+			const before = structuredClone(history)
+			api.countTokens.mockImplementation(async (blocks) => Math.ceil(JSON.stringify(blocks).length / 4))
+			api.createMessage.mockImplementation(async function* () {
+				yield { type: "usage", inputTokens: 1, outputTokens: 1, totalCost: 0.01 }
+				throw new Error("Summary provider unavailable")
+			})
+
+			await expect(runRecovery(task, trigger)).rejects.toMatchObject({
+				name: "ContextRecoveryExhaustedError",
+				retryCategory: "context",
+				retryable: false,
+			})
+			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(save).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(history)
+			expect(history).toEqual(before)
+			expect(getEffectiveApiHistory(history)).toContainEqual(
+				expect.objectContaining({ role: "user", content: "Preserve the existing public API." }),
+			)
+			const result = await vi.mocked(manageContext).mock.results[0].value
+			expect(result.status).toBe("no_progress")
+			expect(result.truncationId).toBeUndefined()
+			expect(result.errorDetails).toContain("Summary provider unavailable")
+		},
+	)
+
 	it.each([60_000, 200_000])(
 		"dispatches after actual proactive summary failure with reported usage %s",
 		async (contextTokens) => {

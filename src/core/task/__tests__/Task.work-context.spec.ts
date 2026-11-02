@@ -75,11 +75,10 @@ describe("Task working record integration", () => {
 			expect(task.getCommandExecutionEvidence()[0].status).toBe("cancelled")
 		},
 	)
-	it("persists running evidence before launch and rejects missing, failed, and changed evidence", async () => {
+	it("reports fresh acceptance inputs while keeping settled evidence advisory", async () => {
 		await task.updateWorkPlan(plan)
 		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			reasonCode: "verification_missing",
+			allowed: true,
 		})
 		await task.admitCommandExecution("first", "physical-1", "node app.js", root)
 		expect(save).toHaveBeenLastCalledWith("acceptance check admission")
@@ -88,20 +87,26 @@ describe("Task working record integration", () => {
 		task.completeCommandExecution("first", { exitCode: 1 }, "physical-1")
 		await task.getWorkContext()
 		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			reasonCode: "verification_missing",
+			allowed: true,
 		})
+		expect(await task.getWorkContext()).toContain('"status":"failed"')
 		await task.admitCommandExecution("repair", "physical-2", "node app.js", root)
 		task.completeCommandExecution("repair", { exitCode: 0 }, "physical-2")
 		await task.getWorkContext()
 		expect(save).toHaveBeenLastCalledWith("acceptance evidence")
+		expect(await task.getWorkContext()).toContain('"status":"passed"')
 		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
 		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
 		await fs.writeFile(path.join(root, "app.js"), "changed")
-		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			message: expect.stringContaining("inputs changed"),
-		})
+		const savedExecutions = save.mock.calls.length
+		expect(await task.getWorkContext()).toContain('"status":"stale"')
+		expect(task.workContext?.receipts[0].status).toBe("passed")
+		expect(save).toHaveBeenCalledTimes(savedExecutions)
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
+		Object.assign(task, { alphaIgnoreController: { validateAccess: () => false } })
+		expect(await task.getWorkContext()).toContain('"status":"unavailable"')
+		expect(task.workContext?.receipts[0].status).toBe("passed")
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true })
 	})
 	it("prioritizes a command admitted while the completion snapshot is being read", async () => {
 		await task.updateWorkPlan(plan)
@@ -124,8 +129,7 @@ describe("Task working record integration", () => {
 		await task.getWorkContext()
 		expect(task.workContext?.receipts).toEqual([])
 		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			reasonCode: "verification_missing",
+			allowed: true,
 		})
 
 		await task.admitCommandExecution("fresh", "physical-fresh", "node app.js", root)

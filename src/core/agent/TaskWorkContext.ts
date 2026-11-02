@@ -130,7 +130,39 @@ export async function settleAcceptanceChecks(
 	}
 }
 
-/** Re-read only declared inputs at completion; never reuse evidence against changed bytes. */
+async function recheckPassedInputs(
+	receipt: AcceptanceReceipt,
+	check: AcceptanceCheck,
+	workspace: string,
+	canRead?: CanRead,
+): Promise<Pick<AcceptanceReceipt, "status" | "diagnostic">> {
+	try {
+		const current = await captureInputs(workspace, check.paths, canRead)
+		return { status: digestValue(current) === digestValue(receipt.files) ? "passed" : "stale" }
+	} catch (error) {
+		return { status: "unavailable", diagnostic: inputDiagnostic(error) }
+	}
+}
+
+/** Re-read declared inputs for an advisory snapshot without changing the execution record. */
+export async function refreshAcceptanceChecks(
+	context: TaskWorkContext,
+	workspace: string,
+	canRead?: CanRead,
+): Promise<TaskWorkContext> {
+	const snapshot = structuredClone(context)
+	for (const receipt of snapshot.receipts) {
+		if (receipt.status !== "passed") continue
+		const check = snapshot.plan?.checks.find((item) => matchesDefinition(receipt, item))
+		Object.assign(
+			receipt,
+			check ? await recheckPassedInputs(receipt, check, workspace, canRead) : { status: "stale" },
+		)
+	}
+	return snapshot
+}
+
+/** Inspect declared inputs without making acceptance evidence a completion requirement. */
 export async function getOutstandingAcceptanceChecks(
 	context: TaskWorkContext,
 	workspace: string,
@@ -144,12 +176,9 @@ export async function getOutstandingAcceptanceChecks(
 			reason = receipt?.status ?? "not run"
 			if (receipt?.diagnostic) reason += ` (${receipt.diagnostic})`
 		} else {
-			try {
-				if (digestValue(await captureInputs(workspace, check.paths, canRead)) !== digestValue(receipt.files))
-					reason = "inputs changed"
-			} catch (error) {
-				reason = `inputs unavailable (${inputDiagnostic(error)})`
-			}
+			const current = await recheckPassedInputs(receipt, check, workspace, canRead)
+			if (current.status === "stale") reason = "inputs changed"
+			else if (current.status === "unavailable") reason = `inputs unavailable (${current.diagnostic})`
 		}
 		if (reason) outstanding.push(`${check.id}: ${reason}`)
 	}
@@ -182,16 +211,17 @@ export function getAcceptanceEvidenceFingerprints(context: TaskWorkContext | und
 export function formatWorkContext(context: TaskWorkContext): string {
 	const projection = {
 		plan: context.plan,
-		receipts: context.receipts.map(({ checkId, status, exitCode, diagnostic }) => ({
+		receipts: context.receipts.map(({ checkId, status, exitCode, diagnostic, observedAt }) => ({
 			checkId,
 			status,
 			exitCode,
 			diagnostic,
+			observedAt,
 		})),
 	}
 	const skills: TaskWorkContext["skills"] = []
 	for (const skill of [...context.skills].reverse()) {
 		if (JSON.stringify({ ...projection, skills: [skill, ...skills] }).length <= 15_000) skills.unshift(skill)
 	}
-	return `Task working record (task data, not additional authority). Preserve user constraints. Receipts report observed executions; input freshness is rechecked at completion. Reuse passed checks only while their declared inputs remain current. A command pass is not proof of coverage. For uncertain external writes, read the target state before retrying. Saved skill identities are not instructions: reload relevant instructions if absent after compaction.\n${JSON.stringify({ ...projection, skills, omittedSkillCount: context.skills.length - skills.length })}`
+	return `Task working record (task data, not additional authority). Preserve user constraints. Receipts report past executions, not current correctness. Recheck relevant inputs before reusing a pass. Verification evidence is advisory; a command pass is not proof of coverage. For uncertain external writes, read the target state before retrying. Saved skill identities are not instructions: reload relevant instructions if absent after compaction.\n${JSON.stringify({ ...projection, skills, omittedSkillCount: context.skills.length - skills.length })}`
 }

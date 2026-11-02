@@ -82,7 +82,14 @@ describe("eager Alpha Tickets tools", () => {
 					},
 				},
 			})
-			for (const name of ["list_tickets", "read_ticket", "create_ticket", "update_ticket", "delete_ticket"]) {
+			for (const name of [
+				"list_tickets",
+				"read_ticket",
+				"create_ticket",
+				"update_ticket",
+				"delete_ticket",
+				"delete_tickets",
+			]) {
 				expect(names, name).toContain(name)
 				expect(surface.isCallable(name), name).toBe(true)
 				expect(surface.resolve(name)?.execute, name).toBeTypeOf("function")

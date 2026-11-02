@@ -1168,7 +1168,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "october-2026-v3.2.19-harness-and-reasoning"
+	public readonly latestAnnouncementId = "november-2026-v3.2.20-harness-and-tickets"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

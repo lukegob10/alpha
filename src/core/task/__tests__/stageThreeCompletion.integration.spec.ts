@@ -6,6 +6,8 @@ import * as vscode from "vscode"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { AlphaCodeEventName, agentControlStateSchema, type TaskWorkPlan } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
+import type { AlphaTerminal } from "../../../integrations/terminal/types"
 
 import { AgentControlStore, FileAgentControlPersistence } from "../../agent/AgentControlStore"
 import { createAgentResponse } from "../../agent/AgentResponse"
@@ -448,7 +450,7 @@ describe("Stage Three durable completion integration", () => {
 			command: process.execPath,
 			args: [
 				"-e",
-				"let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const request=JSON.parse(input);process.stdout.write(JSON.stringify(request.stop_hook_active?{decision:'allow'}:{decision:'block',reason:'Check the final result again.'}))})",
+				"let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const request=JSON.parse(input);process.stdout.write(JSON.stringify(request.stop_hook_active?{}:{decision:'block',reason:'Check the final result again.'}))})",
 			],
 		}
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
@@ -461,7 +463,9 @@ describe("Stage Three durable completion integration", () => {
 							: undefined,
 				}) as any,
 		)
+		const evaluate = vi.spyOn(harness.task, "evaluateCompletionHooks")
 		await harness.run()
+		expect(evaluate).toHaveBeenCalledTimes(2)
 		expect(harness.requests).toHaveLength(2)
 		expect(JSON.stringify(harness.requests[1])).toContain("Check the final result again.")
 		expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
@@ -541,7 +545,7 @@ describe("Stage Three durable completion integration", () => {
 			command: process.execPath,
 			args: [
 				"-e",
-				"let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const request=JSON.parse(input);if(request.hook_event_name!=='SubagentStop'||request.session_id!=='stage-three-completion'||request.agent_id!=='completion-worker'||request.agent_transcript_path!==null)process.exit(3);process.stdout.write(JSON.stringify(request.stop_hook_active?{decision:'allow'}:{decision:'block',reason:'Child needs another pass.'}))})",
+				"let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{const request=JSON.parse(input);if(request.hook_event_name!=='SubagentStop'||request.session_id!=='stage-three-completion'||request.agent_id!=='completion-worker'||request.agent_transcript_path!==null)process.exit(3);process.stdout.write(JSON.stringify(request.stop_hook_active?{}:{decision:'block',reason:'Child needs another pass.'}))})",
 			],
 		}
 		vi.spyOn(vscode.workspace, "getConfiguration").mockImplementation(
@@ -554,7 +558,9 @@ describe("Stage Three durable completion integration", () => {
 							: undefined,
 				}) as any,
 		)
+		const evaluate = vi.spyOn(harness.task, "evaluateCompletionHooks")
 		await harness.run()
+		expect(evaluate).toHaveBeenCalledTimes(2)
 		expect(harness.requests).toHaveLength(2)
 		expect(JSON.stringify(harness.requests[1])).toContain("Child needs another pass.")
 		expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
@@ -865,15 +871,22 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 	})
 
-	it("pauses completion after bounded observation while preserving a healthy command and its obligations", async () => {
+	it("waits for a healthy command beyond the observation window and completes after its receipt settles", async () => {
 		const harness = await setup(true)
 		harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+		vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([
+			{
+				taskId: harness.task.taskId,
+				running: true,
+				process: { executionId: "physical-running-check", isSettled: false },
+			} as unknown as AlphaTerminal,
+		])
 		const { running } = await observePendingCandidate(harness)
 		try {
 			await vi.advanceTimersByTimeAsync(60_000)
 			harness.assertNotCompleted()
 			expect(harness.requests).toHaveLength(1)
-			expect(harness.ask).toHaveBeenCalledWith("resume_task")
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
 			expect(harness.task.consecutiveMistakeCount).toBe(0)
 			expect(harness.task.hasActiveCommandExecutions()).toBe(true)
 		} finally {
@@ -881,7 +894,7 @@ describe("Stage Three durable completion integration", () => {
 			await vi.advanceTimersByTimeAsync(1_000)
 			await running
 		}
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(0)
+		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
 		expect(harness.requests).toHaveLength(1)
 	})
 

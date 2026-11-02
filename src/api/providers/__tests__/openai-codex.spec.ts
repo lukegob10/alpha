@@ -78,6 +78,22 @@ beforeEach(() => {
 })
 
 describe("Sign in with ChatGPT provider", () => {
+	it("keeps credential-transport interruption nonterminal for the shared retry policy", async () => {
+		mocks.authorize.mockRejectedValueOnce(
+			Object.assign(new Error("Authorization connection interrupted"), { status: 503, retryable: true }),
+		)
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({}).createMessage("", [])) chunks.push(chunk)
+			})(),
+		).rejects.toMatchObject({ status: 503, retryable: true })
+		expect(chunks.filter((chunk) => chunk.type === "outcome")).toEqual([
+			expect.objectContaining({ status: "failed", terminal: false, semanticOutputObserved: false }),
+		])
+		expect(mocks.create).not.toHaveBeenCalled()
+	})
+
 	it("recovers an admission 401 once without publishing the provisional failed outcome", async () => {
 		mocks.create.mockRejectedValueOnce(Object.assign(new Error("expired credential"), { status: 401 }))
 		const chunks = await collect(new OpenAiCodexHandler({}).createMessage("", []))

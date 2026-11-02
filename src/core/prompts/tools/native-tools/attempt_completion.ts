@@ -1,6 +1,8 @@
 import type OpenAI from "openai"
 
-const BASE_DESCRIPTION = `Deliver a final report of completed work or a blocked handoff. Report completion when the user's intended outcome has been handled end to end with verification proportionate to the task and all required checks satisfied. Rely on harness results; separate user confirmation of each intermediate tool is not required. Optional polish is not a completion blocker. Do not explore, configure, or improve adjacent state without a task-relevant reason.`
+// Reporting guidance follows the model catalog at Codex 67f0994b (2026-10-31).
+// Alpha retains this legacy action; current task surfaces also accept visible final answers.
+const BASE_DESCRIPTION = `Deliver a final report of completed work or a blocked handoff. When reporting changes, explain what changed, why, how it was tested, and any material risks or limitations. Rely on harness results; separate user confirmation of each intermediate tool is not required. Do not explore, configure, or improve adjacent state without a task-relevant reason.`
 
 const PRIMARY_DESCRIPTION = `${BASE_DESCRIPTION}
 
@@ -10,14 +12,14 @@ Parameters:
 - result: (required) The result of the task. Formulate this result in a way that is final and does not require further input from the user. Don't end your result with questions or offers for further assistance.
 - outcome: Use blocked to hand off work when further progress or required validation is unavailable. Report what was done and the remaining constraint. This does not mark the task completed or satisfy outstanding verification.
 
-If a specific answer from the user would unblock progress, use ask_followup_question with a focused question instead. Otherwise, report the blocked outcome once; do not repeat checks without new information or a concrete way to resolve the blocker.
+If a specific answer from the user would unblock progress, ask a focused question instead. Otherwise, report the blocked outcome once; do not repeat checks without new information or a concrete way to resolve the blocker.
 
 Example: Completing after updating CSS
 { "result": "I've updated the CSS to use flexbox layout for better responsiveness" }`
 
 const SUBAGENT_DESCRIPTION = `${BASE_DESCRIPTION}
 
-For a managed subagent, this tool is the required durable handoff when the assigned objective is completed or blocked.
+For a managed subagent, a visible ordinary assistant answer also reports the assigned objective to its parent when no tool call or continuation is needed.
 
 Parameters:
 - result: (required) A concise, self-contained report of the assigned objective and evidence.

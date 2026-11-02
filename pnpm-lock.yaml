@@ -458,6 +458,9 @@ importers:
       fastest-levenshtein:
         specifier: ^1.0.16
         version: 1.0.16
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
       fzf:
         specifier: ^0.5.2
         version: 0.5.2

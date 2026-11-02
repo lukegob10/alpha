@@ -7,6 +7,70 @@
 	padding: 24px clamp(12px, 2.5vw, 32px) 48px;
 }
 
+.tickets-list input.ticket-selection {
+	appearance: none;
+	display: grid;
+	place-content: center;
+	width: 14px;
+	height: 14px;
+	padding: 0;
+	margin: 0 6px 0 0;
+	flex: none;
+	border: 1px solid var(--vscode-checkbox-border, var(--ticket-muted));
+	border-radius: 3px;
+	background: transparent;
+	color: var(--vscode-checkbox-foreground, var(--vscode-foreground));
+	cursor: pointer;
+}
+
+.tickets-list input.ticket-selection:checked {
+	background: var(--vscode-checkbox-background, var(--vscode-input-background));
+}
+
+.tickets-list input.ticket-selection:checked::after {
+	content: "";
+	width: 7px;
+	height: 4px;
+	border-inline-start: 1.5px solid currentColor;
+	border-bottom: 1.5px solid currentColor;
+	transform: translateY(-1px) rotate(-45deg);
+}
+
+.tickets-list input.ticket-selection:disabled {
+	cursor: default;
+}
+
+@media (hover: hover) and (pointer: fine) {
+	.tickets-list input.ticket-selection:not(:checked) {
+		opacity: 0;
+		pointer-events: none;
+	}
+
+	.tickets-list .ticket-row:hover input.ticket-selection,
+	.tickets-list .ticket-row:focus-within input.ticket-selection {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+/* Hybrid devices must also allow selection without first producing a mouse hover. */
+@media (any-pointer: coarse) {
+	.tickets-list .ticket-row input.ticket-selection {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+@media (forced-colors: active) {
+	.tickets-list input.ticket-selection {
+		appearance: auto;
+	}
+
+	.tickets-list input.ticket-selection::after {
+		display: none;
+	}
+}
+
 .tickets-list-toolbar {
 	display: flex;
 	align-items: center;

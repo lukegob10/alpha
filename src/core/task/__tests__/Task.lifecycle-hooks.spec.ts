@@ -6,6 +6,7 @@ import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import {
 	readCompletionHookConfig,
 	runLifecycleHooks,
+	HookCommandCleanupError,
 	type CompletionHookConfig,
 	type CompletionHookPromptProvenance,
 	type LifecycleHookOutcome,
@@ -98,6 +99,140 @@ afterEach(() => {
 })
 
 describe("task lifecycle hook admission and provenance", () => {
+	it("retains each hook preview and output artifact reference beyond the former shared text cap", async () => {
+		const { task, history } = fixture()
+		const first = { hook_run_id: "large-first", text: "x".repeat(16_000) }
+		const second = { hook_run_id: "large-second", text: "Full hook output saved to: /private/hook-output.txt" }
+		task["queueLifecycleHookContext"]("SessionStart", [first, second])
+		await task["persistLifecycleHookContexts"]()
+		expect(history[0].hook_prompt?.fragments).toEqual([first, second])
+	})
+
+	it("delivers background context at the current boundary with its original hook provenance", async () => {
+		const drain = vi.fn(() => [
+			{
+				event: "PostToolUse" as const,
+				outcome: {
+					warnings: ["Background warning"],
+					additionalContext: [{ hook_run_id: "earlier-step-run", text: "Background evidence" }],
+				},
+			},
+		])
+		const { task, history } = fixture({ asyncLifecycleHooks: { drain } })
+		await task["drainAsyncLifecycleHooks"](new AbortController().signal)
+		await task["persistLifecycleHookContexts"]()
+		expect(drain).toHaveBeenCalledOnce()
+		expect(history[0]).toMatchObject({
+			input_origin: "agent",
+			hook_prompt: {
+				event: "PostToolUse",
+				fragments: [{ hook_run_id: "earlier-step-run", text: "Background evidence" }],
+			},
+		})
+		expect(task["publishLifecycleHookMessage"]).toHaveBeenCalledWith(
+			"Warning: Background warning",
+			expect.anything(),
+			expect.anything(),
+		)
+	})
+
+	it("injects the captured MCP connection and task-owned async dispatcher into lifecycle hooks", async () => {
+		const getServers = vi.fn(() => [])
+		const getMcpHub = vi.fn(() => ({ getServers }))
+		const { task } = fixture({ providerRef: { deref: () => ({ getMcpHub }) } })
+		await task["runTaskLifecycleHook"](
+			{ hook_event_name: "SessionStart", source: "startup" },
+			new AbortController().signal,
+		)
+		const [, request, , runtime] = vi.mocked(runLifecycleHooks).mock.calls[0]
+		expect(runtime?.scheduleAsync).toBeTypeOf("function")
+		expect(
+			await runtime?.executeMcp?.(
+				{ type: "mcp_tool", server: "missing", tool: "check" },
+				request,
+				new AbortController().signal,
+			),
+		).toMatchObject({ exitCode: null })
+		expect(getMcpHub).toHaveBeenCalledOnce()
+		expect(getServers).toHaveBeenCalledOnce()
+	})
+
+	it("persists the complete async batch before steering can interrupt a warning publication", async () => {
+		let entered!: () => void
+		let release!: () => void
+		const warningEntered = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const warningReleased = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const { task, history } = fixture({
+			asyncLifecycleHooks: {
+				drain: () => [
+					{
+						event: "PostToolUse",
+						outcome: {
+							warnings: ["Advisory"],
+							additionalContext: [{ hook_run_id: "first", text: "First context" }],
+						},
+					},
+					{
+						event: "PostToolUse",
+						outcome: {
+							warnings: [],
+							additionalContext: [{ hook_run_id: "second", text: "Second context" }],
+						},
+					},
+				],
+			},
+			publishLifecycleHookMessage: vi.fn(async () => {
+				entered()
+				await warningReleased
+			}),
+		})
+		const interruption = new AbortController()
+		const draining = task["drainAsyncLifecycleHooks"](interruption.signal)
+		await warningEntered
+		interruption.abort()
+		release()
+		await draining
+		expect(history.map((message) => message.hook_prompt?.fragments[0].hook_run_id)).toEqual(["first", "second"])
+	})
+
+	it("joins sibling async cleanup before surfacing an unconfirmed hook process", async () => {
+		const failure = new HookCommandCleanupError("PostToolUse", async () => undefined, new Error("Unconfirmed"))
+		let entered!: () => void
+		let release!: () => void
+		const started = new Promise<void>((resolve) => {
+			entered = resolve
+		})
+		const stopped = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const { task } = fixture({
+			asyncLifecycleHooks: {
+				drain: () => {
+					throw failure
+				},
+				shutdown: async () => {
+					entered()
+					await stopped
+				},
+			},
+		})
+		const settled = vi.fn()
+		const draining = task["drainAsyncLifecycleHooks"](new AbortController().signal)
+		const observed = draining.catch((error: unknown) => {
+			settled()
+			return error
+		})
+		await started
+		expect(settled).not.toHaveBeenCalled()
+		release()
+		expect(await observed).toBe(failure)
+		expect(task["pendingHookCleanupFailures"]?.has(failure)).toBe(true)
+	})
+
 	it("runs SessionStart before the first human submit, then deduplicates retained retry blocks", async () => {
 		const { task } = fixture()
 		const block = human(task, "Original human request")
@@ -302,24 +437,17 @@ describe("task lifecycle hook admission and provenance", () => {
 		expect(runLifecycleHooks).not.toHaveBeenCalled()
 	})
 
-	it("persists bounded hook context only after tool receipts with explicit agent provenance", async () => {
+	it("persists all admitted hook previews after tool receipts with explicit agent provenance", async () => {
 		const { task, history, order } = fixture()
 		for (let index = 0; index < 20; index++) {
 			task["queueLifecycleHookContext"]("PostToolUse", [{ hook_run_id: `run-${index}`, text: "X".repeat(2_000) }])
 		}
 		await task["persistLifecycleHookContexts"]()
 
-		expect(history.length).toBeLessThanOrEqual(16)
-		expect(
-			history.reduce(
-				(total, message) =>
-					total +
-					(typeof message.content === "string"
-						? message.content.length
-						: JSON.stringify(message.content).length),
-				0,
-			),
-		).toBeLessThan(17_000)
+		expect(history).toHaveLength(20)
+		expect(history.map((message) => message.hook_prompt?.fragments[0])).toEqual(
+			Array.from({ length: 20 }, (_, index) => ({ hook_run_id: `run-${index}`, text: "X".repeat(2_000) })),
+		)
 		expect(order[0]).toBe("tool-receipts")
 		expect(order.at(-1)).toBe("save-context")
 		for (const message of history) {
@@ -331,6 +459,20 @@ describe("task lifecycle hook admission and provenance", () => {
 		}
 		await task["persistLifecycleHookContexts"]()
 		expect(task["saveApiConversationHistory"]).toHaveBeenCalledOnce()
+	})
+
+	it("rejects excessive pending contexts explicitly and preserves already admitted feedback", async () => {
+		const { task, history } = fixture()
+		for (let index = 0; index < 64; index++)
+			task["queueLifecycleHookContext"]("PostToolUse", [{ hook_run_id: `run-${index}`, text: `${index}` }])
+		expect(() =>
+			task["queueLifecycleHookContext"]("PostToolUse", [{ hook_run_id: "overflow", text: "later" }]),
+		).toThrow()
+		await task["persistLifecycleHookContexts"]()
+		expect(history).toHaveLength(64)
+		task["queueLifecycleHookContext"]("PostToolUse", [{ hook_run_id: "retry", text: "retained later" }])
+		await task["persistLifecycleHookContexts"]()
+		expect(history).toHaveLength(65)
 	})
 
 	it("fails closed before staging when tool receipts cannot persist", async () => {
@@ -724,7 +866,12 @@ describe("task lifecycle hook admission and provenance", () => {
 		})
 		const { task } = fixture({
 			interruptHookPending: true,
-			completionHookConfig: { stop: [], subagentStop: [], interrupt: [command], sessionEnd: [command] },
+			completionHookConfig: {
+				stop: [],
+				subagentStop: [],
+				interrupt: [{ ...command, timeoutMs: 3_000 }],
+				sessionEnd: [command],
+			},
 		})
 		vi.mocked(runLifecycleHooks).mockImplementation(async (_config, _request, signal) => {
 			if (!signal.aborted)
@@ -736,7 +883,9 @@ describe("task lifecycle hook admission and provenance", () => {
 			settled = true
 		})
 		try {
-			await vi.advanceTimersByTimeAsync(3_000)
+			await vi.advanceTimersByTimeAsync(1_500)
+			expect(vi.mocked(runLifecycleHooks).mock.calls[0][2].aborted).toBe(false)
+			await vi.advanceTimersByTimeAsync(1_500)
 			expect(settled).toBe(true)
 		} finally {
 			await vi.advanceTimersByTimeAsync(3_000)

@@ -1,8 +1,8 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI, { AzureOpenAI } from "openai"
+import { APIConnectionError } from "openai/error"
 import type { ResponseCreateParamsBase } from "openai/resources/responses/responses"
 import axios from "axios"
-import { isDeepStrictEqual } from "node:util"
 
 import {
 	type ModelInfo,
@@ -25,6 +25,7 @@ import type { ApiHandlerOptions } from "../../shared/api"
 import { TagMatcher } from "../../utils/tag-matcher"
 import type { AgentRetryCategory } from "../../core/agent/AgentRetryPolicy"
 import { readRetryAfterMs } from "../../core/agent/RequestPacing"
+import { checkContextWindowExceededError } from "../../core/context/context-management/context-error-handling"
 
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { convertToR1Format } from "../transform/r1-format"
@@ -86,6 +87,20 @@ function hasOpenAiResponsesUsage(usage: unknown): boolean {
 	)
 }
 
+const PERMANENT_OPENAI_ERROR_CODES = new Set([
+	"insufficient_quota",
+	"credit_balance_exhausted",
+	"organization_spend_limit_exceeded",
+	"project_spend_limit_exceeded",
+	"usage_not_included",
+	"cyber_policy",
+	"bio_policy",
+	"misalignment_policy_violation",
+	"invalid_prompt",
+	"invalid_request_error",
+	"flex_unavailable",
+])
+
 /** Normalize native SSE failures before the generic provider wrapper sees them. */
 function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Responses request failed") {
 	const envelope = providerRecord(error)
@@ -95,21 +110,7 @@ function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Re
 	const rateLimited = code === "rate_limit_exceeded" || code === "slow_down"
 	const capacityUnavailable = code === "server_is_overloaded" || code === "policy_capacity_unavailable"
 	const contextExceeded = code === "context_length_exceeded"
-	const permanent =
-		code !== undefined &&
-		[
-			"insufficient_quota",
-			"credit_balance_exhausted",
-			"organization_spend_limit_exceeded",
-			"project_spend_limit_exceeded",
-			"usage_not_included",
-			"cyber_policy",
-			"bio_policy",
-			"misalignment_policy_violation",
-			"invalid_prompt",
-			"invalid_request_error",
-			"flex_unavailable",
-		].includes(code)
+	const permanent = code !== undefined && PERMANENT_OPENAI_ERROR_CODES.has(code)
 	let retryAfterMs = readRetryAfterMs(source?.headers)
 	// Only a native rate-limit code authorizes plaintext delay advice.
 	if (retryAfterMs === undefined && rateLimited) {
@@ -456,7 +457,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved })
 			}
 		} catch (error) {
-			const cancelled = isApiStreamAbortError(error, control?.signal ?? metadata?.signal)
+			const signal = control?.signal ?? metadata?.signal
+			const connectionFailure = error instanceof APIConnectionError
+			const cancelled = signal?.aborted === true || (!connectionFailure && isApiStreamAbortError(error, signal))
 			// The abort iterator closes its source without entering the source's catch.
 			// Retain received Chat billing here; consumer return still emits nothing.
 			if (pendingChatUsage) {
@@ -467,12 +470,33 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (reportsLifecycle && !terminalOutcomeObserved) {
 				yield createApiStreamOutcome({
 					status: cancelled ? "cancelled" : "failed",
+					// No terminal provider event was observed; Task owns bounded exception recovery.
+					// Codex 67f0994b, core/src/session/turn.rs (2026-11-01).
+					terminal: cancelled,
 					semanticOutputObserved,
 				})
 			}
 			if (cancelled) throw error
 			// Request admission and asynchronous stream iteration share one metadata-preserving boundary.
-			throw handleOpenAIError(error, this.providerName)
+			const failure = handleOpenAIError(error, this.providerName)
+			const details = providerRecord(failure)
+			if (details?.retryable === undefined) {
+				if (connectionFailure) {
+					Object.assign(failure, { retryable: true, retryCategory: "transport" })
+				} else if (
+					(typeof details?.code === "string" && PERMANENT_OPENAI_ERROR_CODES.has(details.code)) ||
+					(typeof details?.status === "number" &&
+						details.status >= 400 &&
+						details.status < 500 &&
+						![408, 409, 425, 429].includes(details.status) &&
+						details.code !== "context_length_exceeded" &&
+						details.retryCategory !== "context" &&
+						(details.status !== 400 || !checkContextWindowExceededError(failure)))
+				) {
+					Object.assign(failure, { retryable: false })
+				}
+			}
+			throw failure
 		} finally {
 			control?.controller.abort()
 			control?.dispose()
@@ -1017,7 +1041,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (receivedTerminalEvent) return
 		}
 
-		if (!receivedTerminalEvent) throw new Error("OpenAI Responses stream ended without a terminal event")
+		if (!receivedTerminalEvent) {
+			throw Object.assign(new Error("OpenAI Responses stream ended without a terminal event"), {
+				retryable: true,
+				retryCategory: "transport",
+			})
+		}
 	}
 
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
@@ -1073,7 +1102,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (!terminalEvent && !interrupted && response.output === undefined) {
 			throw new Error("OpenAI Responses result did not include output")
 		}
-		const output = response.output ?? []
+		// Codex 67f0994b, codex-api/src/sse/responses.rs (2026-10-31): item-done
+		// receipts own streamed output; the terminal envelope only finalizes metadata.
+		// Keep the full-output fallback for nonstreaming and terminal-only endpoints.
+		const output =
+			terminalEvent && (handledOutputIdentities.size > 0 || toolCalls.size > 0) ? [] : (response.output ?? [])
 		if (
 			!interrupted &&
 			(incompleteOutputItemObserved || output.some((item) => "status" in item && item.status === "incomplete"))
@@ -1088,15 +1121,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			)
 			return
 		}
-		// A minimal completion can omit output; otherwise its items must agree with streamed receipts.
-		if (response.output !== undefined) {
-			for (const [index, identity] of handledOutputIdentities) {
-				const item = output[index]
-				if (!item && interrupted) continue
-				if (!item || openAiResponsesOutputIdentity(item) !== identity) {
-					throw new Error("OpenAI Responses completed item did not match its final output")
-				}
-			}
+		if (handledOutputIdentities.size === 0 && response.output !== undefined) {
 			for (const index of messageText.keys()) {
 				if (!output[index] && interrupted) continue
 				if (output[index]?.type !== "message") {
@@ -1109,21 +1134,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (
 				interrupted &&
 				(item.type === "function_call" || item.type === "custom_tool_call") &&
-				!handledOutputIdentities.has(index) &&
 				(!("status" in item) || item.status !== "completed")
 			) {
 				continue
-			}
-			if (handledOutputIdentities.has(index) && item.type !== "message") {
-				if (item.type !== "reasoning" || !item.encrypted_content) continue
-				const streamed = this.responsesReasoningItems.get(index)
-				if (
-					streamed?.encrypted_content === item.encrypted_content &&
-					streamed.id === item.id &&
-					isDeepStrictEqual(streamed.summary, item.summary)
-				) {
-					continue
-				}
 			}
 			yield* this.emitOpenAiResponsesOutputItem(
 				item,
@@ -1138,7 +1151,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
 		}
 
-		this.captureOpenAiResponsesState(response)
+		this.captureOpenAiResponsesState({ ...response, output })
 		if (!interrupted) yield this.processOpenAiResponsesUsage(response.usage)
 		// Codex can finish this response while requesting another model step.
 		if (interrupted || response.end_turn === false) {

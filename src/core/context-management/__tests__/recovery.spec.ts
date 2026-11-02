@@ -217,37 +217,106 @@ describe("bounded context recovery policy", () => {
 		expect(hasToolCallResultIntegrity(result.messages)).toBe(true)
 	})
 
-	it("falls back to one bounded truncation when summarization fails", async () => {
-		const handler = createCountingHandler()
-		;(handler.createMessage as import("vitest").Mock).mockImplementation(() => {
-			throw new Error("summary unavailable")
-		})
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "One" },
-			{ role: "assistant", content: "Two" },
-			{ role: "user", content: "Three".repeat(200) },
-			{ role: "assistant", content: "Four" },
-			{ role: "user", content: "Five" },
-		]
+	it.each(
+		[false, true].flatMap((forceCompaction) =>
+			(["transport", "incomplete"] as const).map((failure) => ({ forceCompaction, failure })),
+		),
+	)(
+		"preserves user corrections after failed required compaction ($failure, forced=$forceCompaction)",
+		async ({ forceCompaction, failure }) => {
+			const handler = createCountingHandler()
+			vi.mocked(handler.createMessage).mockImplementation(async function* () {
+				yield { type: "usage", inputTokens: 1, outputTokens: 1, totalCost: 0.01 }
+				if (failure === "transport") throw new Error("summary unavailable")
+				yield { type: "text", text: "DISCARDED_INCOMPLETE_SUMMARY" }
+				yield {
+					type: "outcome",
+					status: "incomplete",
+					terminal: true,
+					semanticOutputObserved: true,
+					reason: "max_output_tokens",
+				}
+			})
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Implement the feature." },
+				{ role: "assistant", content: "Initial work." },
+				{ role: "user", input_origin: "human", content: "Preserve the existing public API.".repeat(40) },
+				{ role: "assistant", content: "Latest work.", reasoning_content: "opaque provider state" },
+				{ role: "user", content: "Continue." },
+			]
+			const before = structuredClone(messages)
+			const beforeCompact = vi.fn(async () => {})
+			const result = await manageContext({
+				messages,
+				totalTokens: 901,
+				contextWindow: 1000,
+				maxTokens: 100,
+				apiHandler: handler,
+				autoCondenseContext: true,
+				autoCondenseContextPercent: 50,
+				systemPrompt: "System",
+				taskId: "required-compaction-failure",
+				beforeCompact,
+				forceCompaction,
+			})
 
-		const result = await manageContext({
-			messages,
-			totalTokens: 901,
-			contextWindow: 1000,
-			maxTokens: 100,
-			apiHandler: handler,
-			autoCondenseContext: true,
-			autoCondenseContextPercent: 50,
-			systemPrompt: "System",
-			taskId: "task-1",
-			profileThresholds: {},
-			currentProfileId: "default",
-		})
+			expect(result.status).toBe("no_progress")
+			expect(result.messages).toBe(messages)
+			expect(result.messages).toEqual(before)
+			expect(result.truncationId).toBeUndefined()
+			expect(result.messagesRemoved).toBeUndefined()
+			expect(result.summary).toBe("")
+			expect(result.error).toBeDefined()
+			expect(result.cost).toBe(0.01)
+			expect(handler.createMessage).toHaveBeenCalledOnce()
+			expect(beforeCompact).toHaveBeenCalledOnce()
+		},
+	)
 
-		expect(result.messagesRemoved).toBe(2)
-		expect(result.status).toBe("reduced")
-		expect(result.error).toBeDefined()
-	})
+	it.each([900, 700])(
+		"preserves user corrections when summary output misses the input target (%s tokens)",
+		async (newContextTokens) => {
+			const handler = createCountingHandler()
+			const messages: ApiMessage[] = [
+				{ role: "user", content: "Implement the feature." },
+				{ role: "assistant", content: "Initial work." },
+				{ role: "user", input_origin: "human", content: "Preserve the existing public API.".repeat(40) },
+				{ role: "assistant", content: "Latest work." },
+				{ role: "user", content: "Continue." },
+			]
+			const before = structuredClone(messages)
+			const summarizer = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
+				messages: [{ role: "user", isSummary: true, content: "Uninstalled summary." }],
+				summary: "Uninstalled summary.",
+				cost: 0.01,
+				prevContextTokens: 900,
+				newContextTokens,
+			})
+			try {
+				const result = await manageContext({
+					messages,
+					totalTokens: 901,
+					contextWindow: 1000,
+					maxTokens: 100,
+					apiHandler: handler,
+					autoCondenseContext: true,
+					autoCondenseContextPercent: 50,
+					systemPrompt: "System",
+					taskId: "insufficient-summary",
+				})
+
+				expect(result.status).toBe("no_progress")
+				expect(result.messages).toBe(messages)
+				expect(result.messages).toEqual(before)
+				expect(result.truncationId).toBeUndefined()
+				expect(result.messagesRemoved).toBeUndefined()
+				expect(result.summary).toBe("")
+				expect(result.cost).toBe(0.01)
+			} finally {
+				summarizer.mockRestore()
+			}
+		},
+	)
 
 	it("preserves history when proactive summarization fails below the input limit", async () => {
 		const handler = createCountingHandler()
@@ -355,7 +424,7 @@ describe("bounded context recovery policy", () => {
 		},
 	)
 
-	it("reduces actual over-limit input after summary failure despite a stale low estimate", async () => {
+	it("preserves actual over-limit input after summary failure despite a stale low estimate", async () => {
 		const handler = createCountingHandler()
 		vi.mocked(handler.createMessage).mockImplementation(async function* () {
 			yield { type: "usage" as const, inputTokens: 0, outputTokens: 0, totalCost: 0 }
@@ -377,13 +446,12 @@ describe("bounded context recovery policy", () => {
 			systemPrompt: "System",
 			taskId: "actual-over-limit",
 		})
-		expect(result.status).not.toBe("unchanged")
-		if (result.status === "reduced") {
-			expect(result.newContextTokensAfterTruncation).toBeLessThan(result.prevContextTokens)
-			expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
-		} else {
-			expect(["exhausted", "no_progress"]).toContain(result.status)
-		}
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(result.messagesRemoved).toBeUndefined()
+		expect(result.truncationId).toBeUndefined()
+		expect(result.prevContextTokens).toBeGreaterThan(800)
+		expect(result.error).toBeDefined()
 		expect(handler.createMessage).toHaveBeenCalledOnce()
 	})
 

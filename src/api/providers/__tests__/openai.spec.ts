@@ -631,15 +631,9 @@ describe("OpenAiHandler", () => {
 			])
 		})
 
-		it.each([
-			{ outputIndex: "0", finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: -1, finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: 0.5, finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: 1, finalCallId: "call-1", reason: "final output" },
-			{ outputIndex: 0, finalCallId: "different-call", reason: "final output" },
-		])(
-			"rejects mismatched output identity at $outputIndex ($finalCallId)",
-			async ({ outputIndex, finalCallId, reason }) => {
+		it.each(["0", -1, 0.5])(
+			"rejects an invalid output index %s before accepting its receipt",
+			async (outputIndex) => {
 				const call = {
 					id: "tool-item",
 					type: "function_call",
@@ -655,7 +649,7 @@ describe("OpenAiHandler", () => {
 							response: {
 								id: "mismatched-response",
 								status: "completed",
-								output: [{ ...call, call_id: finalCallId }],
+								output: [call],
 								usage: null,
 							},
 						}
@@ -671,7 +665,7 @@ describe("OpenAiHandler", () => {
 					})) {
 						chunks.push(chunk)
 					}
-				}).rejects.toThrow(reason)
+				}).rejects.toThrow("invalid index")
 				expect(chunks.filter((chunk) => chunk.type === "tool_call_end").length).toBeLessThanOrEqual(1)
 				expect(chunks.some((chunk) => chunk.type === "usage")).toBe(false)
 			},

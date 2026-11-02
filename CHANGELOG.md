@@ -1,5 +1,23 @@
 # Changelog
 
+## 3.2.20
+
+### Patch Changes
+
+- Align task completion with provider turn signals, bound reasoning-only compatibility continuations, and recover transient streaming interruptions without replaying accepted mutations.
+- Preserve conversation history when required compaction fails, and mark incomplete tool output explicitly during interrupted-task recovery.
+- Expand command, MCP, and asynchronous lifecycle hooks with Codex-compatible event names, matcher groups, retained output, and same-turn Stop feedback. Keep rewritten command aliases consistent while preserving Alpha's native approvals and workspace protections.
+- Consume ready asynchronous hook feedback before completion; honor Stop decisions before optional compaction or automatic continuation.
+- Let healthy verification commands follow their execution budget while keeping lost-process and stalled-receipt recovery bounded. Refresh advisory verification evidence before presenting it to the model.
+- Select the matching retained instructions and collaboration guidance for GPT-6.1 Terra.
+- Add the Alpha Tickets overview and observed progress chart, previewed ZIP/Markdown import and export, and revision-checked batch deletion with one approval.
+- Update the extension, VSIX, and in-app release announcement together for Alpha 3.2.20. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
+### Validation Notes
+
+- Harness changes have deterministic regression, shared-type, managed-agent certification, and exact VS Code 1.138.0 coverage. Local minimum-host startup remains blocked by a Windows editor-update mutex.
+- GitHub publication requires the release workflow's clean-runner validation, including exact VS Code 1.125.0 compatibility and verified packages for all six supported platform targets.
+
 ## 3.2.19
 
 ### Patch Changes

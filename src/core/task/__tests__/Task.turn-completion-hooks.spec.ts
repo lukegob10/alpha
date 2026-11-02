@@ -2,10 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AgentLifecycleEvent, AgentLifecycleSnapshot } from "@alpha-code/types"
 
 import { createAgentResponse } from "../../agent/AgentResponse"
+import { AsyncLifecycleHooks } from "../../agent/AsyncLifecycleHooks"
 import { readCompletionHookConfig, runCompletionHooks, type CompletionHookTarget } from "../../agent/CompletionHooks"
 import type { AgentLifecycleEventInput } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { createAgentLifecycleSnapshot, reduceAgentLifecycleEvent } from "../../agent/lifecycle/reducer"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
+import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { Task } from "../Task"
 
 vi.mock("../../agent/CompletionHooks", async (original) => ({
@@ -108,6 +110,31 @@ afterEach(() => vi.restoreAllMocks())
 
 describe("completion hooks inside the canonical turn", () => {
 	it.each(["Stop", "SubagentStop"] as const)(
+		"honors %s stops before optional compaction and automatic goal continuation",
+		async (target) => {
+			for (const stopReason of [undefined, "Stop after this response."]) {
+				const { task, events } = fixture(target)
+				const admitGoalContinuation = vi.fn(async () => undefined)
+				Object.assign(task, {
+					isGoalIdleBoundary: () => true,
+					admitGoalContinuation,
+				})
+				vi.mocked(runCompletionHooks).mockResolvedValue({ shouldStop: true, stopReason, warnings: [] })
+
+				await task["initiateTaskLoop"]([{ type: "text", text: "Finish this response." }])
+
+				expect(task.isCompleted()).toBe(true)
+				expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
+				expect(task["maybeCompactAfterTurn"]).not.toHaveBeenCalled()
+				expect(admitGoalContinuation).not.toHaveBeenCalled()
+				expect(task["finalizeTaskCompletion"]).toHaveBeenCalledOnce()
+				expect(events.filter(({ type }) => type === "turn_terminal")).toHaveLength(1)
+				vi.clearAllMocks()
+			}
+		},
+	)
+
+	it.each(["Stop", "SubagentStop"] as const)(
 		"keeps repeated %s repairs in one open turn and publishes completion only after acceptance",
 		async (target) => {
 			const { task, events, trace, snapshot } = fixture(target)
@@ -195,9 +222,35 @@ describe("completion hooks inside the canonical turn", () => {
 	})
 
 	it("assigns a fresh identity to a subsequent human turn after hooks accepted the prior turn", async () => {
-		const { task, events } = fixture()
+		const { task, events, trace } = fixture()
+		const history: ApiMessage[] = []
+		const context = { hook_run_id: "first-human-turn-background", text: "Evidence from the first turn." }
+		Object.assign(task, {
+			apiConversationHistory: history,
+			asyncLifecycleHooks: {
+				drain: vi
+					.fn()
+					.mockReturnValueOnce([
+						{ event: "PostToolUse", outcome: { warnings: [], additionalContext: [context] } },
+					])
+					.mockReturnValue([]),
+			},
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			stageApiUserMessage: vi.fn((message: ApiMessage) => history.push(message)),
+			saveApiConversationHistory: vi.fn(async () => {
+				trace.push("save-async-context")
+				return true
+			}),
+		})
 		vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
 		await task["initiateTaskLoop"]([{ type: "text", text: "First request." }])
+		expect(history).toEqual([
+			expect.objectContaining({
+				input_origin: "agent",
+				hook_prompt: { event: "PostToolUse", fragments: [context] },
+			}),
+		])
+		expect(trace.indexOf("save-async-context")).toBeLessThan(trace.indexOf("lifecycle:turn_terminal"))
 		task["didComplete"] = false
 		task["didEmitTaskCompleted"] = false
 		await task["initiateTaskLoop"]([{ type: "text", text: "Second request." }])
@@ -210,6 +263,201 @@ describe("completion hooks inside the canonical turn", () => {
 			false,
 		])
 		expect(task.isCompleted()).toBe(true)
+		expect(history).toHaveLength(1)
+	})
+
+	it.each(["Stop", "SubagentStop"] as const)(
+		"consumes ready asynchronous feedback before %s accepts the final answer",
+		async (target) => {
+			const { task, events, trace } = fixture(target)
+			const history: ApiMessage[] = []
+			const context = { hook_run_id: "ready-review", text: "The checker found an unresolved issue." }
+			const sampledTurns: Array<string | undefined> = []
+			Object.assign(task, {
+				apiConversationHistory: history,
+				asyncLifecycleHooks: {
+					drain: vi
+						.fn()
+						.mockReturnValueOnce([
+							{ event: "PostToolUse", outcome: { warnings: [], additionalContext: [context] } },
+						])
+						.mockReturnValue([]),
+				},
+				flushPendingToolResultsToHistory: vi.fn(async () => true),
+				stageApiUserMessage: vi.fn((message: ApiMessage) => history.push(message)),
+				saveApiConversationHistory: vi.fn(async () => {
+					trace.push("save-async-context")
+					return true
+				}),
+			})
+			vi.mocked(task["runAgentRequests"]).mockImplementation(async () => {
+				const invocation = sampledTurns.push(task["agentTurnId"])
+				trace.push(`sample:${invocation}`)
+				if (invocation === 2) {
+					expect(history).toEqual([
+						expect.objectContaining({
+							input_origin: "agent",
+							hook_prompt: { event: "PostToolUse", fragments: [context] },
+						}),
+					])
+				}
+				return {
+					status: "completed",
+					response: createAgentResponse([
+						{ type: "text", text: invocation === 1 ? "Unchecked answer." : "Revised answer." },
+					]),
+				}
+			})
+			vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+
+			await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+
+			expect(task.isCompleted()).toBe(true)
+			expect(task["runAgentRequests"]).toHaveBeenCalledTimes(2)
+			expect(vi.mocked(task["runAgentRequests"]).mock.calls[1][0]).toEqual([])
+			expect(new Set(sampledTurns).size).toBe(1)
+			expect(history).toHaveLength(1)
+			expect(runCompletionHooks).toHaveBeenCalledOnce()
+			expect(vi.mocked(runCompletionHooks).mock.calls[0][1].last_assistant_message).toBe("Revised answer.")
+			expect(trace.indexOf("save-async-context")).toBeLessThan(trace.indexOf("sample:2"))
+			expect(events.filter(({ type }) => type === "turn_started")).toHaveLength(1)
+			expect(events.filter(({ type }) => type === "turn_terminal")).toHaveLength(1)
+			expect(task["finalizeTaskCompletion"]).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each([false, true])(
+		"does not resample for asynchronous warnings without context (empty array: %s)",
+		async (empty) => {
+			const { task } = fixture()
+			Object.assign(task, {
+				asyncLifecycleHooks: {
+					drain: vi
+						.fn()
+						.mockReturnValueOnce([
+							{
+								event: "PostToolUse",
+								outcome: {
+									warnings: ["Advisory warning"],
+									...(empty ? { additionalContext: [] } : {}),
+								},
+							},
+						])
+						.mockReturnValue([]),
+				},
+			})
+			vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+
+			await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+
+			expect(task.isCompleted()).toBe(true)
+			expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
+			expect(task["publishLifecycleHookMessage"]).toHaveBeenCalledWith(
+				"Warning: Advisory warning",
+				expect.anything(),
+				expect.anything(),
+			)
+		},
+	)
+
+	it("does not wake an idle task when background context becomes ready after its final boundary", async () => {
+		const { task, controller } = fixture()
+		const hooks = new AsyncLifecycleHooks()
+		const release = deferred()
+		const outcome = { warnings: [], additionalContext: [{ hook_run_id: "idle", text: "For the next prompt" }] }
+		hooks.schedule(
+			"PostToolUse",
+			async () => {
+				await release.promise
+				return outcome
+			},
+			controller.signal,
+		)
+		Object.assign(task, { asyncLifecycleHooks: hooks })
+		vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+		await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+		expect(task.isCompleted()).toBe(true)
+		expect(task.hasPendingAsyncLifecycleHookContext()).toBe(false)
+
+		release.resolve()
+		await Promise.all([...hooks["active"].values()])
+
+		expect(task.hasPendingAsyncLifecycleHookContext()).toBe(true)
+		expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
+		expect(task.apiConversationHistory).toEqual([])
+		expect(hooks.drain()).toEqual([{ event: "PostToolUse", outcome }])
+		await hooks.shutdown()
+	})
+
+	it("does not add a redundant step when ready context is consumed before the prompt", async () => {
+		const { task } = fixture()
+		const history: ApiMessage[] = []
+		const context = { hook_run_id: "before-prompt", text: "Already available to the current model request." }
+		Object.assign(task, {
+			apiConversationHistory: history,
+			inputBlockOrigins: new WeakMap(),
+			asyncLifecycleHooks: {
+				drain: vi
+					.fn()
+					.mockReturnValueOnce([
+						{ event: "PostToolUse", outcome: { warnings: [], additionalContext: [context] } },
+					])
+					.mockReturnValue([]),
+			},
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			stageApiUserMessage: vi.fn((message: ApiMessage) => history.push(message)),
+			saveApiConversationHistory: vi.fn(async () => true),
+		})
+		vi.mocked(task["runAgentRequests"]).mockImplementationOnce(async (content) => {
+			await task["inspectLifecycleHookInput"](content, task.getTaskLifetimeCancellationSignal())
+			expect(history[0].hook_prompt?.fragments).toEqual([context])
+			return { status: "completed", response: createAgentResponse([{ type: "text", text: "Checked answer." }]) }
+		})
+		vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+
+		await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+
+		expect(task.isCompleted()).toBe(true)
+		expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
+		expect(runCompletionHooks).toHaveBeenCalledOnce()
+		expect(history).toHaveLength(1)
+	})
+
+	it("defers a staged completion if hook feedback arrives during the final persistence gate", async () => {
+		const { task } = fixture()
+		const entered = deferred()
+		const release = deferred()
+		let readyContext = false
+		const provider = task.providerRef.deref()!
+		const rollback = vi.fn(async () => undefined)
+		Object.assign(provider, {
+			prepareTaskCompletionLifecycle: vi.fn(async () => undefined),
+			rollbackTaskCompletionLifecycle: rollback,
+		})
+		Object.assign(task, {
+			asyncLifecycleHooks: { hasPendingContext: () => readyContext },
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			flushApiConversationHistoryPersistence: vi.fn(async () => undefined),
+			getCompletionGateDecision: vi.fn(async () => {
+				entered.resolve()
+				await release.promise
+				return { allowed: true, modelCanResolveRejection: true }
+			}),
+			rollbackPersistedToolResult: vi.fn(async () => true),
+			retractCompletionResult: vi.fn(async () => undefined),
+		})
+
+		const finalizing = Task.prototype.finalizeTaskCompletion.call(task, "pending-completion")
+		await entered.promise
+		readyContext = true
+		release.resolve()
+
+		expect(await finalizing).toBe(false)
+		expect(task.isCompleted()).toBe(false)
+		expect(task["didEmitTaskCompleted"]).toBe(false)
+		expect(task.rollbackPersistedToolResult).toHaveBeenCalledExactlyOnceWith("pending-completion")
+		expect(rollback).toHaveBeenCalledExactlyOnceWith(task.taskId)
+		expect(task["retractCompletionResult"]).toHaveBeenCalledOnce()
 	})
 
 	it.each(["Stop", "SubagentStop"] as const)(
@@ -268,11 +516,29 @@ describe("completion hooks inside the canonical turn", () => {
 		expect(task.isCompleted()).toBe(false)
 	})
 
-	it("admits an active-goal continuation before running Stop hooks on its terminal candidate", async () => {
+	it.each([false, true])("runs goal Stop hooks before idle continuation (repair first: %s)", async (repairFirst) => {
 		const { task, events, trace } = fixture()
 		const goal = { goalId: "active-goal", controlVersion: 1, status: "active", objective: "Finish the goal." }
+		const finalSample = repairFirst ? 3 : 2
+		const lastSample = finalSample + 1
 		let sample = 0
+		const history: ApiMessage[] = []
+		const context = { hook_run_id: "goal-progress-background", text: "Evidence from the completed goal step." }
 		Object.assign(task, {
+			apiConversationHistory: history,
+			asyncLifecycleHooks: {
+				drain: vi.fn(() =>
+					sample === finalSample - 1
+						? [{ event: "PostToolUse", outcome: { warnings: [], additionalContext: [context] } }]
+						: [],
+				),
+			},
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			stageApiUserMessage: vi.fn((message: ApiMessage) => history.push(message)),
+			saveApiConversationHistory: vi.fn(async () => {
+				trace.push("save-async-context")
+				return true
+			}),
 			getGoal: vi.fn(async () => goal),
 			beginGoalStep: vi.fn(async () => ({
 				controller: { get: async () => goal },
@@ -294,28 +560,48 @@ describe("completion hooks inside the canonical turn", () => {
 		vi.mocked(task["runAgentRequests"]).mockImplementation(async () => {
 			sample++
 			trace.push(`sample:${sample}`)
-			if (sample === 2) {
+			if (sample === finalSample) {
+				expect(history).toEqual([
+					expect.objectContaining({
+						input_origin: "agent",
+						hook_prompt: { event: "PostToolUse", fragments: [context] },
+					}),
+				])
+				expect(trace.indexOf("save-async-context")).toBeLessThan(trace.indexOf(`sample:${finalSample}`))
+			}
+			if (sample === lastSample) {
 				goal.status = "complete"
 				task["goalTurnCompletionText"] = "The goal is complete."
 			}
 			return {
 				status: "completed",
-				response: createAgentResponse([{ type: "text", text: sample === 1 ? "Progress." : "Final answer." }]),
+				response: createAgentResponse([
+					{ type: "text", text: sample === lastSample ? "Final answer." : "Progress." },
+				]),
 			}
 		})
 		vi.mocked(runCompletionHooks).mockImplementation(async (_config, request) => {
 			trace.push("hook")
-			expect(sample).toBe(2)
-			expect(request.last_assistant_message).toBe("The goal is complete.")
+			expect(request.last_assistant_message).toBe(sample === lastSample ? "The goal is complete." : "Progress.")
+			if (repairFirst && sample === 1) {
+				return {
+					prompt: "Repair the current goal step.",
+					fragments: [{ hook_run_id: "goal-repair", text: "Repair the current goal step." }],
+					warnings: [],
+				}
+			}
 			return { warnings: [] }
 		})
 
 		await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
 
 		expect(task.isCompleted()).toBe(true)
-		expect(task["runAgentRequests"]).toHaveBeenCalledTimes(2)
-		expect(runCompletionHooks).toHaveBeenCalledOnce()
-		expect(trace.indexOf("hook")).toBeGreaterThan(trace.indexOf("sample:2"))
+		expect(task["runAgentRequests"]).toHaveBeenCalledTimes(lastSample)
+		expect(runCompletionHooks).toHaveBeenCalledTimes(finalSample)
+		expect(trace.indexOf("hook")).toBeLessThan(trace.indexOf(`sample:${lastSample}`))
+		expect(vi.mocked(runCompletionHooks).mock.calls.map(([, request]) => request.stop_hook_active)).toEqual(
+			repairFirst ? [false, true, false] : [false, false],
+		)
 		const starts = events.filter(({ type }) => type === "turn_started")
 		expect(starts).toHaveLength(2)
 		expect(starts[1].turnId).not.toBe(starts[0].turnId)

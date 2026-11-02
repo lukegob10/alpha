@@ -36,6 +36,8 @@ interface TicketListViewProps {
 	onQueryChange: (query: string) => void
 	onPageChange: (offset: number) => void
 	onOpen: (id: string) => void
+	selectedIds?: readonly string[]
+	onSelectionChange?: (ids: string[]) => void
 }
 
 const statusIcons = { backlog: Circle, "in-progress": CircleDot, complete: CircleCheck, canceled: Ban }
@@ -55,6 +57,8 @@ export function TicketListView({
 	onQueryChange,
 	onPageChange,
 	onOpen,
+	selectedIds = [],
+	onSelectionChange,
 }: TicketListViewProps) {
 	const { t } = useTranslation("tickets")
 	const [collapsedParents, setCollapsedParents] = useState<string[]>([])
@@ -107,6 +111,25 @@ export function TicketListView({
 					}}>
 					<td className="ticket-cell">
 						<div className="ticket-row-main" style={{ paddingInlineStart: `${Math.min(depth, 8) * 18}px` }}>
+							{onSelectionChange && (
+								<input
+									className="ticket-selection"
+									type="checkbox"
+									aria-label={t("transfer.selectTicket", {
+										ticket: item.reference ? `${item.reference} · ${item.name}` : item.name,
+									})}
+									checked={selectedIds.includes(item.id)}
+									disabled={busy || (!selectedIds.includes(item.id) && selectedIds.length >= 1000)}
+									onClick={(event) => event.stopPropagation()}
+									onChange={(event) =>
+										onSelectionChange(
+											event.target.checked
+												? [...selectedIds, item.id]
+												: selectedIds.filter((id) => id !== item.id),
+										)
+									}
+								/>
+							)}
 							{depth > 0 && <span className="ticket-row-branch" aria-hidden="true" />}
 							{childTickets.length > 0 ? (
 								<button
@@ -196,6 +219,11 @@ export function TicketListView({
 				<div className="tickets-list-title">
 					<h1 id="tickets-heading">{t("allTickets")}</h1>
 					<span className="ticket-count">{list.total}</span>
+					{onSelectionChange && selectedIds.length > 0 && (
+						<button type="button" disabled={busy} onClick={() => onSelectionChange([])}>
+							{t("transfer.clearSelection", { count: selectedIds.length })}
+						</button>
+					)}
 				</div>
 				<div className="tickets-list-filters">
 					<select

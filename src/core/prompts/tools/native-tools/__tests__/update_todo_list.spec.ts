@@ -9,6 +9,8 @@ describe("update_todo_list native tool", () => {
 		expect(description).toContain("not a prerequisite")
 		expect(description).toContain("requested coverage or a concrete dependency")
 		expect(description).toContain("successful shell call")
+		expect(description).toContain("advisory evidence")
+		expect(description).not.toContain("Failed or stale declared checks prevent a completed outcome")
 		expect(description).not.toContain("execute_command")
 		expect(description).not.toContain("Add new actionable items as they're discovered")
 	})

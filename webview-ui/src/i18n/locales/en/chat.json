@@ -563,11 +563,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves reasoning controls, task handoffs, and reliability during long-running work.",
-			"taskContinuity": "Keep chats and sub-agents responsive through cancellation, completion, and reloads.",
-			"toolsAndProviders": "Improve provider streaming, tool-result persistence, MCP discovery, and command cleanup.",
-			"delegation": "Give new chats clear work assignments while preserving inherited approvals and workspace limits.",
-			"workspaceExperience": "Preserve reasoning selections during background updates and improve typing, transcripts, and agent navigation."
+			"welcome": "Alpha v{{version}} improves task reliability, lifecycle hooks, and Alpha Tickets.",
+			"taskContinuity": "Keep task completion, cancellation, and recovery consistent during long-running work.",
+			"toolsAndProviders": "Use command and MCP lifecycle hooks with Alpha's native approval and workspace protections.",
+			"delegation": "Keep sub-agent permissions and task handoffs consistent with the parent chat.",
+			"workspaceExperience": "Track ticket progress, import and export ticket bundles, and delete selected tickets with one approval."
 		}
 	},
 	"crossTasks": {

@@ -2,6 +2,7 @@ import { snapshotGeminiResponse, snapshotVscodeLmThinking, taskGoalUsageReceipts
 
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
 import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
+import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
 import { providerStateScopeSchema } from "./providerStateScope"
 
 /**
@@ -165,7 +166,7 @@ function invalidReasoningRecord(value: Record<string, unknown>, requireEncrypted
 	return undefined
 }
 
-function isHookPromptProvenance(value: unknown): boolean {
+export function isHookPromptProvenance(value: unknown): value is CompletionHookPromptProvenance {
 	if (!isRecord(value) || !isLifecycleHookTarget(value.event)) return false
 	if (!Array.isArray(value.fragments) || value.fragments.length === 0) return false
 	return value.fragments.every(

@@ -241,6 +241,7 @@ describe("configured completion hook continuations", () => {
 					...(target === "SubagentStop" ? { agent_type: "worker" } : {}),
 				}),
 				expect.any(AbortSignal),
+				expect.objectContaining({ executeMcp: expect.any(Function), scheduleAsync: expect.any(Function) }),
 			)
 		},
 	)

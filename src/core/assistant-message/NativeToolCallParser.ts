@@ -1536,6 +1536,7 @@ export class NativeToolCallParser {
 				case "create_ticket":
 				case "update_ticket":
 				case "delete_ticket":
+				case "delete_tickets":
 					nativeArgs = args as NativeArgsFor<TName>
 					break
 

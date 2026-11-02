@@ -174,8 +174,10 @@ export class OpenAiCodexHandler extends OpenAiNativeHandler {
 			}
 		} catch (error) {
 			if (!outcomeObserved) {
+				const cancelled = isApiStreamAbortError(error, signal)
 				yield createApiStreamOutcome({
-					status: isApiStreamAbortError(error, signal) ? "cancelled" : "failed",
+					status: cancelled ? "cancelled" : "failed",
+					terminal: cancelled,
 					semanticOutputObserved,
 				})
 			}

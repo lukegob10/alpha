@@ -162,6 +162,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 				"apply_patch",
 				"codebase_search",
 				"exec_command",
@@ -338,6 +339,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 			]) {
 				expect(names).not.toContain(name)
 			}
@@ -537,6 +539,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 				"memories_add_ad_hoc_note",
 				"create_goal",
 				"update_goal",

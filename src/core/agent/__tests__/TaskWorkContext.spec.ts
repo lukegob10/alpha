@@ -12,6 +12,7 @@ import {
 	restoreWorkContext,
 	formatWorkContext,
 	getAcceptanceEvidenceFingerprints,
+	refreshAcceptanceChecks,
 } from "../TaskWorkContext"
 
 describe("task acceptance evidence", () => {
@@ -52,6 +53,14 @@ describe("task acceptance evidence", () => {
 		expect(await getOutstandingAcceptanceChecks(restored, root)).toEqual([])
 		expect(await getOutstandingAcceptanceChecks(restored, root)).toEqual([])
 		expect(formatWorkContext(restored)).toContain("Preserve input files")
+	})
+	it("presents receipts as past observations without promising a completion freshness check", async () => {
+		const context = await run()
+		await fs.writeFile(path.join(root, "app.py"), "changed after the check")
+		const prompt = formatWorkContext(context)
+		expect(prompt).toContain("Receipts report past executions")
+		expect(prompt).not.toContain("input freshness is rechecked at completion")
+		expect(prompt).toContain(`"observedAt":${context.receipts[0].observedAt}`)
 	})
 	it("keeps failure explicit and a later successful repair replaces it", async () => {
 		const failed = await run(false)
@@ -133,6 +142,79 @@ describe("task acceptance evidence", () => {
 		const context = await run()
 		await fs.writeFile(path.join(root, file), "changed")
 		expect(await getOutstandingAcceptanceChecks(context, root)).toEqual(["behavior: inputs changed"])
+	})
+	it("projects a changed input as stale while retaining the original execution receipt", async () => {
+		const context = await run()
+		const original = structuredClone(context)
+		await fs.writeFile(path.join(root, "app.py"), "changed after the check")
+		const snapshot = await refreshAcceptanceChecks(context, root)
+		expect(snapshot.receipts[0]).toMatchObject({ status: "stale", executionId: "execution" })
+		expect(formatWorkContext(snapshot)).toContain('"status":"stale"')
+		expect(context).toEqual(original)
+	})
+	it("keeps unchanged and legacy evidence passed without executing another check", async () => {
+		const context = await run()
+		context.receipts[0].definitionDigest = digestValue(plan.checks[0])
+		const snapshot = await refreshAcceptanceChecks(context, root)
+		expect(snapshot).toEqual(context)
+		expect(snapshot).not.toBe(context)
+		expect(snapshot.receipts[0]).not.toBe(context.receipts[0])
+	})
+	it.each(["running", "failed", "stale", "unavailable"] as const)(
+		"preserves %s observations without rereading their inputs",
+		async (status) => {
+			const context = await run()
+			context.receipts[0].status = status
+			const capture = vi.spyOn(verificationScope, "captureVerificationContent")
+			expect(await refreshAcceptanceChecks(context, root)).toEqual(context)
+			expect(capture).not.toHaveBeenCalled()
+		},
+	)
+	it("marks ignored inputs unavailable in the projection without widening read authority", async () => {
+		const context = await run()
+		const capture = vi.spyOn(verificationScope, "captureVerificationContent")
+		const snapshot = await refreshAcceptanceChecks(context, root, () => false)
+		expect(snapshot.receipts[0]).toMatchObject({ status: "unavailable", diagnostic: "Check input is ignored" })
+		expect(capture).not.toHaveBeenCalled()
+		expect(context.receipts[0].status).toBe("passed")
+	})
+	it("keeps raw filesystem failures out of a refreshed projection", async () => {
+		const context = await run()
+		vi.spyOn(verificationScope, "captureVerificationContent").mockRejectedValueOnce(
+			new Error("EACCES: private path and file contents"),
+		)
+		const snapshot = await refreshAcceptanceChecks(context, root)
+		expect(snapshot.receipts[0]).toMatchObject({
+			status: "unavailable",
+			diagnostic: "Check inputs could not be read",
+		})
+		expect(formatWorkContext(snapshot)).not.toContain("private path")
+		expect(context.receipts[0].status).toBe("passed")
+	})
+	it("does not present an obsolete check definition as a current pass", async () => {
+		const context = await run()
+		context.plan!.checks[0].command = "python different.py"
+		const capture = vi.spyOn(verificationScope, "captureVerificationContent")
+		expect((await refreshAcceptanceChecks(context, root)).receipts[0].status).toBe("stale")
+		expect(capture).not.toHaveBeenCalled()
+	})
+	it("captures an isolated record before asynchronous input reads", async () => {
+		const context = await run()
+		const initial = structuredClone(context)
+		const read = verificationScope.captureVerificationContent
+		let finishRead!: () => void
+		const barrier = new Promise<void>((resolve) => (finishRead = resolve))
+		vi.spyOn(verificationScope, "captureVerificationContent").mockImplementationOnce(async (...args) => {
+			await barrier
+			return read(...args)
+		})
+		const refreshing = refreshAcceptanceChecks(context, root)
+		context.receipts[0].status = "running"
+		context.plan!.checks[0].paths = ["missing.py"]
+		finishRead()
+		expect(await refreshing).toEqual(initial)
+		expect(context.receipts[0].status).toBe("running")
+		expect(context.plan!.checks[0].paths).toEqual(["missing.py"])
 	})
 	it("does not invalidate evidence for an unrelated edit", async () => {
 		const context = await run()

@@ -13,7 +13,15 @@ vi.mock("../../../services/code-index/manager", () => ({
 }))
 
 const claudeFamilies = ["claude-sonnet-4.6", "claude-opus-4.7", "claude-haiku-4.5"] as const
-const mutations = ["apply_patch", "edit", "write_to_file", "create_ticket", "update_ticket", "delete_ticket"]
+const mutations = [
+	"apply_patch",
+	"edit",
+	"write_to_file",
+	"create_ticket",
+	"update_ticket",
+	"delete_ticket",
+	"delete_tickets",
+]
 
 function options(modelId: string, mode: string = "code"): BuildToolsOptions {
 	const hub = { getServers: () => [] }

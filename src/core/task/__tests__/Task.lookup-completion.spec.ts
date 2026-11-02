@@ -128,16 +128,16 @@ describe("lookup-class completion gate", () => {
 		})
 	})
 
-	it("does not complete a mutation with a declared check on ordinary text", async () => {
+	it("accepts ordinary text after mutation settlement even when declared check evidence is missing", async () => {
 		const task = taskWith({
 			history: implementHistory,
 			plan,
 			allowed: true,
 		})
 		expect(await task.getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			classification: "repairable",
-			reasonCode: "verification_missing",
+			allowed: true,
+			classification: "ready",
+			reasonCode: "ready",
 		})
 	})
 })

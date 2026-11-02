@@ -1842,7 +1842,7 @@ describe("sub-agent context capture", () => {
 
 		expect(turns).toHaveLength(1)
 		expect(turns[0]?.messages[0]?.text).toContain(literal)
-		expect(turns[0]?.messages[0]?.text).toContain("You did not use a tool in your previous response")
+		expect(turns[0]?.messages[0]?.text).toContain(generatedErrorLiteral)
 		expect(turns[0]?.messages[0]?.text).toContain("quoted, not delivered")
 		expect(turns[0]?.messages[0]?.text).toContain(environmentLiteral)
 	})
@@ -1896,7 +1896,7 @@ describe("sub-agent context capture", () => {
 
 		expect(turns).toHaveLength(1)
 		expect(turns[0]?.sourceMessageIndexes).toEqual([0, 1])
-		expect(turns[0]?.messages[1]?.text).toContain("You did not use a tool in your previous response")
+		expect(turns[0]?.messages[1]?.text).toContain(generatedErrorLiteral)
 		expect(turns[0]?.messages[1]?.text).toContain(pacingLiteral)
 		expect(turns[0]?.messages[1]?.text).toContain("assistant quotation")
 		expect(turns[0]?.messages[1]?.text).toContain(environmentLiteral)

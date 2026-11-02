@@ -349,14 +349,15 @@ export function willManageContext({
  * Context Management: Conditionally manages the conversation context when approaching limits.
  *
  * Attempts intelligent condensation of prior messages when thresholds are reached.
- * Falls back to sliding window truncation if condensation is unavailable or fails.
+ * Preserves the original history when condensation fails or misses its target.
+ * Sliding window truncation remains available when condensation is disabled.
  *
  * @param {ContextManagementOptions} options - The options for truncation/condensation
  * @returns {Promise<ApiMessage[]>} The original, condensed, or truncated conversation messages.
  */
 
 export type ContextManagementOptions = {
-	/** One host admission for a summary attempt and any following truncation fallback. */
+	/** One host admission for summarization or explicit sliding-window truncation. */
 	beforeCompact?: () => Promise<void>
 	messages: ApiMessage[]
 	totalTokens: number
@@ -413,7 +414,7 @@ export type ContextManagementResult = SummarizeResponse & {
 }
 
 /**
- * Conditionally manages conversation context (condense and fallback truncation).
+ * Conditionally summarizes context or applies explicit sliding-window truncation.
  *
  * @param {ContextManagementOptions} options - The options for truncation/condensation
  * @returns {Promise<ApiMessage[]>} The original, condensed, or truncated conversation messages.
@@ -469,11 +470,9 @@ export async function manageContext({
 		metadata = { taskId, ...metadata, tools, tool_choice, parallelToolCalls, allowedFunctionNames }
 		prepareTools = undefined
 	}
-	let error: string | undefined
-	let errorDetails: string | undefined
 	let diagnostic: SummarizeResponse["diagnostic"]
 	let cost = 0
-	let forceTruncation = forceCompaction
+	const forceTruncation = forceCompaction
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS
 	const threshold = resolveCondenseThreshold(autoCondenseContextPercent)
@@ -575,16 +574,13 @@ export async function manageContext({
 				return { ...result, prevContextTokens, targetContextTokens }
 			}
 			if (result.error) {
-				error = result.error
-				errorDetails = result.errorDetails
 				// Preserve a fitting history when summarization fails for reasons
-				// unrelated to input size. Forced recovery and a provider-reported
-				// context-window error still require a bounded reduction.
+				// unrelated to input size. Required recovery must stop without replacing
+				// human instructions with an unsummarized sliding window.
 				const isContextWindowError = checkContextWindowExceededError(
 					new Error([result.error, result.errorDetails].filter(Boolean).join("\n\n")),
 				)
-				forceTruncation ||= isContextWindowError
-				if (!forceTruncation) {
+				if (!forceCompaction && !isContextWindowError) {
 					// A proactive summary failure is not context exhaustion. Recount the
 					// retained input, including fixed overhead, before allowing a normal
 					// request above the preferred trigger but within the safe input limit.
@@ -612,6 +608,15 @@ export async function manageContext({
 						}
 					}
 				}
+				// Codex 67f0994b, core/src/compact.rs (2026-11-01): failed compaction
+				// leaves installed history intact so a later turn can retry safely.
+				return {
+					...result,
+					messages,
+					prevContextTokens,
+					status: result.status === "exhausted" ? "exhausted" : "no_progress",
+					targetContextTokens,
+				}
 			} else {
 				const progress = evaluateCompactionProgress({
 					beforeTokens: prevContextTokens,
@@ -634,10 +639,18 @@ export async function manageContext({
 					}
 				}
 
-				// A successful API call is not enough: if it did not produce a
-				// measurable reduction, continue to the one bounded truncation
-				// fallback below instead of silently accepting unchanged input.
-				forceTruncation = true
+				// A successful response cannot replace failed compaction with raw
+				// truncation: the uninstalled summary may be the only representation
+				// of human corrections outside the retained tail.
+				return {
+					...result,
+					messages,
+					summary: "",
+					prevContextTokens,
+					status: "no_progress",
+					targetContextTokens,
+					reductionPercent: progress.reductionPercent,
+				}
 			}
 		}
 	}
@@ -675,8 +688,6 @@ export async function manageContext({
 				cost,
 				prevContextTokens,
 				newContextTokens: prevContextTokens,
-				error,
-				errorDetails,
 				diagnostic,
 				status: "unchanged",
 				targetContextTokens: allowedTokens,
@@ -728,8 +739,6 @@ export async function manageContext({
 			prevContextTokens,
 			summary: "",
 			cost,
-			error,
-			errorDetails,
 			truncationId: truncationResult.messagesRemoved > 0 ? truncationResult.truncationId : undefined,
 			diagnostic,
 			messagesRemoved: truncationResult.messagesRemoved,
@@ -740,5 +749,5 @@ export async function manageContext({
 		}
 	}
 	// No truncation or condensation needed
-	return { messages, summary: "", cost, prevContextTokens, error, errorDetails }
+	return { messages, summary: "", cost, prevContextTokens }
 }

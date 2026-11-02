@@ -3,7 +3,6 @@ import type { HistoryItem } from "@alpha-code/types"
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import type { ToolUse } from "../../shared/tools"
-import { t } from "../../i18n"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 
@@ -48,15 +47,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			return
 		}
 
-		// Prevent attempt_completion if any tool failed in the current turn
-		if (task.didToolFailInCurrentTurn) {
-			const errorMsg = t("common:errors.attempt_completion_tool_failed")
-
-			await task.say("error", errorMsg)
-			pushToolResult(formatResponse.toolError(errorMsg))
-			return
-		}
-
 		try {
 			if (!result) {
 				task.consecutiveMistakeCount++
@@ -65,6 +55,15 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				return
 			}
 			if (await this.rejectCompletionWithPendingParentVerification(task, pushToolResult, toolCallId)) return
+			if (task.hasPendingAsyncLifecycleHookContext?.()) {
+				pushToolResult(JSON.stringify({ status: "success", requiresContinuation: true }))
+				return
+			}
+			// Goal progress finishes through the staged turn boundary, which owns its Stop hooks.
+			if (await task.completeGoalTurn?.(result)) {
+				pushToolResult(JSON.stringify({ status: "success", goalContinues: true }))
+				return
+			}
 			const hookOutcome = await task.evaluateCompletionHooks(result)
 			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
 			if (hookOutcome.prompt) {
@@ -73,11 +72,6 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			}
 
 			task.consecutiveMistakeCount = 0
-
-			if (await task.completeGoalTurn?.(result)) {
-				pushToolResult(JSON.stringify({ status: "success", goalContinues: true }))
-				return
-			}
 
 			await task.presentCompletionResult(result, undefined, false)
 			if (task.abort || task.getTaskLifetimeCancellationSignal().aborted) return
@@ -325,6 +319,10 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 					pushToolResult(
 						formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
 					)
+					return false
+				}
+				if (task.hasPendingAsyncLifecycleHookContext?.()) {
+					pushToolResult(JSON.stringify({ status: "success", requiresContinuation: true }))
 					return false
 				}
 				pushToolResult(formatResponse.toolError("Task completion was not verified and remains incomplete."))

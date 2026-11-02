@@ -1,27 +1,34 @@
 import type OpenAI from "openai"
 
+// Codex 67f0994b, core/src/tools/handlers/plan_spec.rs (2026-10-31).
 export default {
 	type: "function",
 	function: {
 		name: "update_plan",
-		description:
-			"Updates the task plan. Provide the complete plan with each step's current status. At most one step may be in_progress.",
+		description: `Updates the task plan.
+Provide an optional explanation and a list of plan items, each with a step and status.
+At most one step can be in_progress at a time.
+`,
 		strict: false,
 		parameters: {
 			type: "object",
 			properties: {
 				explanation: {
 					type: "string",
-					description: "Optional brief explanation of the plan update.",
+					description: "Optional explanation for this plan update.",
 				},
 				plan: {
 					type: "array",
-					description: "The full task plan in execution order.",
+					description: "The list of steps",
 					items: {
 						type: "object",
 						properties: {
-							step: { type: "string", minLength: 1 },
-							status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+							step: { type: "string", minLength: 1, description: "Task step text." },
+							status: {
+								type: "string",
+								enum: ["pending", "in_progress", "completed"],
+								description: "Step status.",
+							},
 						},
 						required: ["step", "status"],
 						additionalProperties: false,

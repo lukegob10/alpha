@@ -13,6 +13,22 @@
 	"diagnostics": {
 		"noTask": "Open an Alpha chat before exporting its diagnostics."
 	},
+	"ticketTools": {
+		"deleteBatchSummary": "{{count}} tickets ({{references}})"
+	},
+	"ticketTransfer": {
+		"busy": "Another ticket transfer is in progress.",
+		"projectChanged": "The ticket project changed. Start the transfer again.",
+		"files": "Alpha ticket ZIP or Markdown files",
+		"archive": "Alpha ticket bundle",
+		"importTitle": "Import Alpha Tickets",
+		"exportTitle": "Export Alpha Tickets",
+		"tooManyFiles": "Import at most 1,000 tickets at a time.",
+		"tooLarge": "The import exceeds 1,000 tickets, 16 MiB of ticket content, or 20 MiB of input files.",
+		"localFiles": "Select a file on this extension host's filesystem.",
+		"expired": "The import preview expired or was already used. Select the files again.",
+		"emptyExport": "There are no tickets to export."
+	},
 	"editorChatRestore": {
 		"missing": "This editor chat was saved before tab identity was supported. Open Alpha task history to select the chat; its saved data has been retained.",
 		"invalid": "This editor chat has an unsupported saved tab identity. Open Alpha task history to select the chat; its saved data has been retained.",
@@ -22,6 +38,17 @@
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
 	},
 	"lifecycleHooks": {
+		"contextCapacity": "Lifecycle hook context exceeded its pending delivery capacity. Resume after the current results are saved.",
+		"asyncUnavailable": "asynchronous hook capacity is unavailable",
+		"mcpUnavailable": "MCP execution is unavailable",
+		"mcpSessionEnd": "does not support MCP tools for SessionEnd",
+		"mcpToolUnavailable": "MCP server or tool is unavailable",
+		"mcpInputInvalid": "received an invalid MCP input template",
+		"mcpToolError": "MCP tool returned an error",
+		"mcpCallFailed": "MCP call failed",
+		"outputSavedTo": "Full hook output saved to: {{path}}",
+		"outputUnavailable": "Full hook output could not be saved.",
+		"outputTruncated": "...{{tokens}} tokens truncated...",
 		"issue": "{{event}} hook {{failure}}.",
 		"failed": "{{event}} hook failed.",
 		"invalidOutput": "{{event}} hook returned invalid or unsupported JSON output.",
