@@ -477,16 +477,27 @@ suite("Alpha native compaction acceptance", function () {
 					assert.equal(task.isTaskLoopActive, false)
 				}
 				const summaries = model.requests.filter(({ summary }) => summary)
+				// Budget-aware complete-step pruning reaches a fitting suffix in one retry;
+				// the previous one-step-at-a-time path needed two.
 				assert.equal(
 					summaries.length,
-					automatic ? 3 : 0,
-					"Overflow recovery permits at most two reduced-input retries",
+					automatic ? 2 : 0,
+					"Budget-aware overflow recovery must finish after one reduced-input retry",
+				)
+				assert.ok(summaries.length <= 3, "Overflow recovery permits at most two reduced-input retries")
+				assert.equal(
+					model.requests.filter(({ summary }) => !summary).length,
+					5,
+					"Each completed turn must use one normal model request without hidden retries",
 				)
 				if (automatic) {
 					assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
 					assert.ok(summaries[1]!.tokens < summaries[0]!.tokens, "The first retry must shrink summary input")
-					assert.ok(summaries[2]!.tokens < summaries[1]!.tokens, "The second retry must shrink summary input")
-					assert.equal(summaries[2]!.rejected, false, "The reduced summary must fit the provider window")
+					assert.equal(summaries[1]!.rejected, false, "The reduced summary must fit the provider window")
+					assert.ok(
+						summaries[1]!.tokens <= 200_000,
+						"The reduced summary must fit the exact 200k input limit",
+					)
 				}
 				const task = provider.getLiveTask(taskId)!
 				assert.equal(
