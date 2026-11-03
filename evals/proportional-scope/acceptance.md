@@ -77,7 +77,7 @@ pnpm exec eslint --config src/eslint.config.mjs scripts/benchmarks/nor36-request
 
 Set `ALPHA_NOR36_PREFLIGHT_REPORT` to an output JSON filename outside the measured checkout. Set `ALPHA_SCOPE_REPORT_DIR`
 to a separate output directory for each engine invocation. Commit measurement source before final baseline/candidate
-runs. Retain full source and harness identities. Run the exact VS Code 1.138.0 reference gate and affected
+runs. Retain full source and harness identities. Run the exact VS Code 1.141.0 reference gate and affected
 context/completion suites after implementation; host adapter changes also require the 1.125.0 compatibility gate.
 
 Live strategy evidence requires an authorized configured provider through a documented Alpha interface and a declared

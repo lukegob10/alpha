@@ -9,7 +9,7 @@ vi.mock("vscode", () => {
 	const showTextDocument = vi.fn().mockResolvedValue(undefined)
 
 	return {
-		version: "1.138.0",
+		version: "1.141.0",
 		window: {
 			showErrorMessage,
 			showTextDocument,
@@ -320,7 +320,7 @@ describe("generateErrorDiagnostics", () => {
 		const text = String(vi.mocked(fs.writeFile).mock.calls[0][1])
 		expect(text).toContain('"version": "2.1.18"')
 		expect(text).toContain('"manifestVersion": "2.1.28"')
-		expect(text).toContain('"vscodeVersion": "1.138.0"')
+		expect(text).toContain('"vscodeVersion": "1.141.0"')
 		expect(text).not.toContain("do not export")
 	})
 

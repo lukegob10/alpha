@@ -61,7 +61,7 @@ jobs:
             - name: Check evaluator types
               run: pnpm --filter @alpha-code/evals check-types
 
-            - name: Run exact VS Code 1.138.0 release gate
+            - name: Run exact VS Code 1.141.0 release gate
               run: pnpm harness run host
 
             - name: Verify VS Code 1.125.0 minimum-host compatibility
@@ -87,7 +87,7 @@ jobs:
               run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes --require rendered --require stress
 
             - name: Verify command auto-approval and outside-path review
-              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
+              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1410:run
 
             - name: Retain release validation evidence
               if: always()

@@ -56,7 +56,7 @@ export async function runLiveCopilotPreflight(
 		)
 	}
 	if (!api.probeModel) return unavailable()
-	// VS Code 1.138.0 returns true from canSendRequest without checking consent.
+	// VS Code 1.141.0 returns true from canSendRequest without checking consent.
 	// Only Alpha's own bounded request can establish its access and actual readiness.
 	// Interactive setup reaches this path solely from the explicit Continue action.
 	const probe = await api.probeModel(dependencies?.signal)

@@ -106,7 +106,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("offers all Ticket tools immediately and executes a real list with paired history", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: TicketHost }).sidebarProvider
@@ -148,7 +148,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 	})
 
 	test("deletes an owned parent and tagged children with one nullable lookup and one batch", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
@@ -275,7 +275,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 	})
 
 	test("links a Ticket repair to a real skill task, rejects stale completion, reloads and preserves cancelled edits", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

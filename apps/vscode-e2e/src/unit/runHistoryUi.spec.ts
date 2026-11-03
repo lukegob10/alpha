@@ -12,7 +12,7 @@ const verifiedHost = {
 	ownershipGate: "verified",
 	captureComplete: true,
 	hostExitObserved: true,
-	actualVSCodeVersion: "1.138.0",
+	actualVSCodeVersion: "1.141.0",
 } as const
 
 function pointerDocumentFixture() {

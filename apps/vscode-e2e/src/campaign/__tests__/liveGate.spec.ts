@@ -123,7 +123,7 @@ test("gate covers the whole registered matrix on the reference host", () => {
 	assert.equal(result.status, "passed")
 	assert.equal(result.scope, "single-host-only")
 	assert.equal(result.cells.length, plan.scenarioIds.length)
-	plan.hosts = [{ version: "1.138.0" }]
+	plan.hosts = [{ version: "1.141.0" }]
 	assert.equal(evaluateLiveGate(plan, completeReport(plan)).scope, "single-host-only")
 })
 
@@ -429,9 +429,9 @@ test("core preparation includes the targeted loop regressions before optional ho
 		)
 		assert.deepEqual(scripts, [
 			"test:unit",
-			"test:smoke:1380",
+			"test:smoke:1410",
 			"test:core:regressions",
-			...(coverage === "full" ? ["test:core:1380:run"] : []),
+			...(coverage === "full" ? ["test:core:1410:run"] : []),
 		])
 	}
 })

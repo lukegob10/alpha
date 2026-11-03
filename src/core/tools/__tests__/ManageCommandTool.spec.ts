@@ -449,7 +449,95 @@ it.each(["released", "reused"] as const)(
 	},
 )
 
-it("rejects input to a settled session before approval", async () => {
+it.each(
+	(["before control", "during approval", "inside mutation gate"] as const).flatMap((phase) =>
+		[
+			{ input: "stdin", chars: "yes\n" },
+			{ input: "Ctrl-C", chars: "\x03" },
+		].map((input) => ({ phase, ...input })),
+	),
+)("collects the confirmed exit when $input arrives $phase", async ({ phase, chars }) => {
+	const { task, callbacks, process, terminal, commandEvidence } = harness()
+	const interrupt = vi.fn()
+	process.interrupt = interrupt
+	const sessionId = commandSessionRegistry.register(task, process)
+	const finish = () => {
+		process.isSettled = true
+		terminal.running = false
+		commandEvidence.status = "succeeded"
+		commandEvidence.exitCode = 0
+	}
+	if (phase === "before control") finish()
+	callbacks.askApproval.mockImplementation(async () => {
+		if (phase === "during approval") finish()
+		return true
+	})
+	const mutate = vi.fn(async (_task: unknown, _label: string, run: () => Promise<void>) => {
+		if (phase === "inside mutation gate") finish()
+		await run()
+	})
+	vi.spyOn(task.providerRef, "deref").mockReturnValue({ runWorkspaceMutation: mutate } as never)
+
+	await new ToolRegistry().resolve("write_stdin")!.execute({
+		task,
+		call: {
+			type: "tool_use",
+			id: "exit-racing-input",
+			name: "write_stdin",
+			params: {},
+			partial: false,
+			nativeArgs: { session_id: sessionId, chars, yield_time_ms: 0 },
+		},
+		callbacks,
+	})
+
+	expect(callbacks.handleError).not.toHaveBeenCalled()
+	expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+		expect.stringContaining("Process exited with code 0"),
+	)
+	expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("ready at http://localhost:1234"))
+	expect(callbacks.askApproval).toHaveBeenCalledTimes(phase === "before control" ? 0 : 1)
+	expect(mutate).toHaveBeenCalledTimes(phase === "inside mutation gate" ? 1 : 0)
+	expect(process.writeInput).not.toHaveBeenCalled()
+	expect(interrupt).not.toHaveBeenCalled()
+	expect(process.abort).not.toHaveBeenCalled()
+	expect(commandSessionRegistry.resolve(task, sessionId)).toBeUndefined()
+})
+
+it.each(["released", "reused"] as const)(
+	"collects the original confirmed exit for an interrupt after its terminal was %s",
+	async (state) => {
+		const { task, callbacks, process, terminal, commandEvidence } = harness()
+		const sessionId = commandSessionRegistry.register(task, process)
+		process.isSettled = true
+		commandEvidence.status = "succeeded"
+		commandEvidence.exitCode = 0
+		terminal.running = false
+		terminal.process = state === "released" ? (undefined as never) : ({ executionId: "replacement" } as never)
+		await new ToolRegistry().resolve("write_stdin")!.execute({
+			task,
+			call: {
+				type: "tool_use",
+				id: "finished-interrupt",
+				name: "write_stdin",
+				params: {},
+				partial: false,
+				nativeArgs: { session_id: sessionId, chars: "\x03", yield_time_ms: 0 },
+			},
+			callbacks,
+		})
+
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+			expect.stringContaining("Process exited with code 0"),
+		)
+		expect(callbacks.askApproval).not.toHaveBeenCalled()
+		expect(process.writeInput).not.toHaveBeenCalled()
+		expect(process.abort).not.toHaveBeenCalled()
+	},
+)
+
+it("rejects input to a settled session without a confirmed exit before approval", async () => {
 	const { task, callbacks, process, terminal, commandEvidence } = harness()
 	const sessionId = commandSessionRegistry.register(task, process)
 	process.isSettled = true
@@ -475,6 +563,88 @@ it("rejects input to a settled session before approval", async () => {
 	)
 	expect(process.writeInput).not.toHaveBeenCalled()
 })
+
+it.each([undefined, null])("rejects missing input %s even after a confirmed exit", async (input) => {
+	const { task, callbacks, process, terminal, commandEvidence } = harness()
+	process.isSettled = true
+	terminal.running = false
+	commandEvidence.status = "succeeded"
+	commandEvidence.exitCode = 0
+	await manageCommandTool.execute({ execution_id: "execution", action: "input", input }, task, callbacks)
+
+	expect(callbacks.handleError).toHaveBeenCalledExactlyOnceWith(
+		"controlling command",
+		expect.objectContaining({ message: "This command does not support input, or input was not supplied" }),
+	)
+	expect(callbacks.askApproval).not.toHaveBeenCalled()
+	expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+	expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
+	expect(process.writeInput).not.toHaveBeenCalled()
+})
+
+it("preserves a confirmed nonzero exit when an interrupt arrives after completion", async () => {
+	const { task, callbacks, process, terminal, commandEvidence } = harness()
+	const sessionId = commandSessionRegistry.register(task, process)
+	process.isSettled = true
+	terminal.running = false
+	commandEvidence.status = "failed"
+	commandEvidence.exitCode = 7
+	await new ToolRegistry().resolve("write_stdin")!.execute({
+		task,
+		call: {
+			type: "tool_use",
+			id: "nonzero-finished-interrupt",
+			name: "write_stdin",
+			params: {},
+			partial: false,
+			nativeArgs: { session_id: sessionId, chars: "\x03", yield_time_ms: 0 },
+		},
+		callbacks,
+	})
+
+	expect(callbacks.handleError).not.toHaveBeenCalled()
+	expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(
+		expect.stringContaining("Process exited with code 7"),
+	)
+	expect(callbacks.setResultMetadata).toHaveBeenCalledWith(
+		expect.objectContaining({ status: "success", executionStatus: "error", exitCode: 7 }),
+	)
+	expect(callbacks.askApproval).not.toHaveBeenCalled()
+	expect(process.writeInput).not.toHaveBeenCalled()
+	expect(process.abort).not.toHaveBeenCalled()
+})
+
+it.each(["denied", "cancelled"] as const)(
+	"preserves %s control when the original command exits during approval",
+	async (outcome) => {
+		const { task, callbacks, process, terminal, commandEvidence } = harness()
+		const controller = new AbortController()
+		const cancellation = new Error("control cancelled")
+		callbacks.askApproval.mockImplementation(async () => {
+			process.isSettled = true
+			terminal.running = false
+			commandEvidence.status = "succeeded"
+			commandEvidence.exitCode = 0
+			if (outcome === "cancelled") controller.abort(cancellation)
+			return outcome !== "denied"
+		})
+		const execute = manageCommandTool.execute(
+			{ execution_id: "execution", action: "input", input: "yes\n", timeout_ms: 0 },
+			task,
+			{ ...callbacks, signal: controller.signal },
+		)
+		if (outcome === "cancelled") await expect(execute).rejects.toBe(cancellation)
+		else {
+			await execute
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "denied" })
+			expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith("Command control was denied")
+		}
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+		expect(process.captureUnretrievedOutput).not.toHaveBeenCalled()
+		expect(process.writeInput).not.toHaveBeenCalled()
+		expect(process.abort).not.toHaveBeenCalled()
+	},
+)
 
 it("does not expose a settled command session to another task instance", async () => {
 	const { task, callbacks, process, terminal } = harness()

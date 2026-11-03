@@ -3,6 +3,7 @@ import * as os from "node:os"
 import * as path from "node:path"
 import { EventEmitter } from "node:events"
 import nock from "nock"
+import * as vscode from "vscode"
 
 import { TelemetryService } from "@alpha-code/telemetry"
 import type { ProviderSettings } from "@alpha-code/types"
@@ -13,6 +14,7 @@ import { getApiRequestTimeout } from "../../../api/providers/utils/timeout-confi
 import { OpenAiNativeHandler } from "../../../api/providers/openai-native"
 import { OpenAiHandler } from "../../../api/providers/openai"
 import { AnthropicHandler } from "../../../api/providers/anthropic"
+import { VsCodeLmHandler } from "../../../api/providers/vscode-lm"
 import {
 	ApiStreamDeadlineError,
 	createApiStreamError,
@@ -36,6 +38,26 @@ import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import type { AlphaProvider } from "../../webview/AlphaProvider"
 import { buildNativeToolsArrayWithRestrictions } from "../build-tools"
 import { Task } from "../Task"
+
+vi.mock("vscode", async (original) => {
+	const actual = await original<typeof import("vscode")>()
+	return {
+		...actual,
+		workspace: {
+			...actual.workspace,
+			onDidChangeConfiguration: vi.fn(() => ({ dispose() {} })),
+		},
+		lm: { selectChatModels: vi.fn() },
+		CancellationError: class extends Error {},
+		CancellationTokenSource: class {
+			readonly token = { isCancellationRequested: false, onCancellationRequested: () => ({ dispose() {} }) }
+			cancel() {
+				this.token.isCancellationRequested = true
+			}
+			dispose() {}
+		},
+	}
+})
 
 vi.mock("../../../api", async (original) => ({
 	...(await original<typeof import("../../../api")>()),
@@ -393,6 +415,53 @@ afterEach(async () => {
 })
 
 describe("Task recovery through provider adapters", () => {
+	it.each(["unavailable", "ambiguous"] as const)(
+		"does not retry a native VS Code LM %s selector through the shared owner",
+		async (failure) => {
+			const sendRequest = vi.fn()
+			const model = {
+				vendor: "copilot",
+				family: "claude-haiku-5.5",
+				version: "claude-haiku-5.5",
+				name: "Claude Haiku 5.5",
+				maxInputTokens: 128_000,
+				sendRequest,
+				countTokens: vi.fn(async () => 0),
+			}
+			const selection = vi.mocked(vscode.lm.selectChatModels).mockResolvedValue(
+				failure === "unavailable"
+					? []
+					: [
+							{ ...model, id: "opaque-first" },
+							{ ...model, id: "opaque-second" },
+						],
+			)
+			const handler = new VsCodeLmHandler({
+				vsCodeLmModelSelector:
+					failure === "unavailable"
+						? { vendor: "copilot", id: "missing-model" }
+						: { vendor: "copilot", family: "claude-haiku-5.5" },
+			})
+			try {
+				const fixture = await harness(async function* () {}, {}, { handler, apiProvider: "vscode-lm" })
+				fixture.live.autoApprovalEnabled = true
+				const countdown = vi.spyOn(fixture.hooks, "waitForRetryDecision").mockResolvedValue(undefined)
+
+				await fixture.run()
+
+				expect(fixture.task.isCompleted()).toBe(false)
+				expect(fixture.createMessage).toHaveBeenCalledOnce()
+				expect(selection).toHaveBeenCalledOnce()
+				expect(sendRequest).not.toHaveBeenCalled()
+				expect(countdown).not.toHaveBeenCalled()
+				expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+				expect(fixture.events).toContainEqual(expect.objectContaining({ type: "turn_failed" }))
+			} finally {
+				handler.dispose()
+			}
+		},
+	)
+
 	const sse = (...events: Array<{ type: string } & Record<string, unknown>>) =>
 		events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join("")
 	const nativeAnswer = sse({

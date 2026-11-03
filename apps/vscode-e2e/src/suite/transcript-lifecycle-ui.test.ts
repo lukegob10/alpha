@@ -97,7 +97,7 @@ suite("Transcript lifecycle renderer", function () {
 	this.timeout(300_000)
 
 	test("keeps a restored growing transcript mounted through compaction and hide/reveal", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		assert.ok(process.env.ALPHA_UI_ACCEPTANCE_NONCE)
 		const api = globalThis.api

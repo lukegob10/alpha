@@ -25,6 +25,7 @@ const createProvider = () => {
 	const publishTranscript = vi.fn()
 	const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
 		taskSessions,
+		taskHistoryStoreReady: Promise.resolve(),
 		taskNavigationGeneration: 0,
 		currentView: { type: "newTaskDraft" },
 		newTaskDraftMode: "code",
@@ -43,13 +44,47 @@ const createProvider = () => {
 }
 
 describe("blank-task navigation generations", () => {
+	it("reads saved-task metadata after startup recovery before opening an early history result", async () => {
+		const { provider } = createProvider()
+		const recovery = barrier()
+		Object.assign(provider, { taskHistoryStoreReady: recovery.promise })
+		let historyItem = { id: "saved", status: "active" } as HistoryItem
+		const lookup = vi.spyOn(provider, "getTaskWithId").mockImplementation(async () => ({
+			historyItem,
+			taskDirPath: "/task",
+			apiConversationHistoryFilePath: "/task/api.json",
+			uiMessagesFilePath: "/task/ui.json",
+			apiConversationHistory: [],
+		}))
+		const restore = vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation(async () => {
+			await recovery.promise
+			return createTask("saved")
+		})
+		const opening = provider.showTaskWithId("saved")
+		// Join the asynchronous focus lookup before checking whether history was read.
+		await Promise.resolve()
+		try {
+			expect(lookup).not.toHaveBeenCalled()
+		} finally {
+			historyItem = { ...historyItem, status: "interrupted" }
+			recovery.resolve()
+			await opening
+		}
+		expect(restore).toHaveBeenCalledWith(historyItem, expect.any(Object))
+	})
+
 	it.each(["blank", "task"] as const)(
 		"does not focus a queued history restore after a newer %s navigation",
 		async (destination) => {
 			const { provider, taskSessions, publishTranscript } = createProvider()
 			const historyReady = barrier()
-			const restoreEntered = barrier()
-			Object.assign(provider, { taskHistoryStoreReady: historyReady.promise })
+			const recoveryAwaited = barrier()
+			Object.defineProperty(provider, "taskHistoryStoreReady", {
+				get: () => {
+					recoveryAwaited.resolve()
+					return historyReady.promise
+				},
+			})
 			const historical = createTask("historical")
 			const next = createTask("next")
 			taskSessions.register(next, { focus: false })
@@ -60,15 +95,8 @@ describe("blank-task navigation generations", () => {
 				uiMessagesFilePath: "/task/ui.json",
 				apiConversationHistory: [],
 			})
-			const restore = provider.createTaskWithHistoryItem.bind(provider)
-			vi.spyOn(provider, "createTaskWithHistoryItem").mockImplementation((item, options) => {
-				const pending = restore(item, options)
-				restoreEntered.resolve()
-				return pending
-			})
-
 			const opening = provider.showTaskWithId(historical.taskId)
-			await restoreEntered.promise
+			await recoveryAwaited.promise
 			// Another view hydrates the canonical runtime while this restore waits.
 			taskSessions.register(historical, { focus: false })
 			if (destination === "blank") await provider.startBlankTask()

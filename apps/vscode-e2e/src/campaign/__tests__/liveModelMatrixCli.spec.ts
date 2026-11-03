@@ -69,9 +69,9 @@ test("matrix dry run exposes all three exact-host configurations and their combi
 	assert.equal(preview.gate, true)
 	assert.deepEqual(preview.preparation, [
 		"test:unit",
-		"test:smoke:1380",
+		"test:smoke:1410",
 		"test:core:regressions",
-		"test:core:1380:run",
+		"test:core:1410:run",
 	])
 	assert.deepEqual(
 		preview.plan.campaigns.map((config: { provider: unknown }) => config.provider),
@@ -82,7 +82,7 @@ test("matrix dry run exposes all three exact-host configurations and their combi
 		],
 	)
 	for (const campaign of preview.plan.campaigns) {
-		assert.deepEqual(campaign.hosts, [{ version: "1.138.0" }])
+		assert.deepEqual(campaign.hosts, [{ version: "1.141.0" }])
 		assert.equal(campaign.samples, 1)
 	}
 	await assert.rejects(fs.stat(root), (error: NodeJS.ErrnoException) => error.code === "ENOENT")
@@ -164,7 +164,7 @@ for (const drift of [false, true]) {
 			"createExtensionCampaignOperations",
 			(options: Parameters<typeof adapter.createExtensionCampaignOperations>[0]): CampaignOperations => ({
 				async runScenario(request) {
-					assert.equal(request.host.version, "1.138.0")
+					assert.equal(request.host.version, "1.141.0")
 					if (models.at(-1) !== request.provider.modelId) models.push(request.provider.modelId!)
 					return {
 						status: "passed" as const,
@@ -204,7 +204,7 @@ for (const drift of [false, true]) {
 			const report = JSON.parse(
 				await fs.readFile(path.join(root, "matrix-integration/matrix-result.json"), "utf8"),
 			)
-			assert.equal(report.hostVersion, "1.138.0")
+			assert.equal(report.hostVersion, "1.141.0")
 			assert.equal(report.status, drift ? "blocked" : "passed")
 			assert.deepEqual(
 				report.counts,

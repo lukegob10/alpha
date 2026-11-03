@@ -6,7 +6,7 @@ Alpha is a VS Code extension for planning, coding, debugging, and reviewing work
 
 Download Alpha from [GitHub Releases](https://github.com/lukegob10/alpha/releases/latest). Choose the `.vsix` matching your
 operating system and architecture, then run **Extensions: Install from VSIX...** in VS Code **1.125.0** or newer.
-The exact development and release reference host is VS Code **1.138.0**; it does not raise the installation minimum.
+The exact development and release reference host is VS Code **1.141.0**; it does not raise the installation minimum.
 
 ## Work in Alpha
 
@@ -150,7 +150,7 @@ pnpm harness doctor
 Turbo orders workspace builds and reuses their outputs. Its ignored `.turbo/` data is disposable; local cache entries
 are pruned at the start of runs using seven-day retention and a 2 GB size target.
 
-Open the checkout in VS Code 1.138.0, select **Run Extension** in Run and Debug, and press `F5`. The
+Open the checkout in VS Code 1.141.0, select **Run Extension** in Run and Debug, and press `F5`. The
 [launch configuration](.vscode/launch.json) starts the [watch tasks](.vscode/tasks.json) and opens an Extension Development
 Host with webview hot reload. Extension code rebuilds automatically; restart the development host to load those changes.
 Select **Run Extension (debugger)** when you need breakpoint debugging.
@@ -161,7 +161,7 @@ Keep the verified release commit and its VSIX available while developing a clean
 Give each parallel change its own branch and worktree, then integrate complete, tested changes into the cleanup branch.
 Fix release bugs against the release version first and merge those fixes into cleanup before continuing integration.
 
-Run the release and cleanup packages in separate VS Code 1.138.0 instances, each with its own `--user-data-dir` and
+Run the release and cleanup packages in separate VS Code 1.141.0 instances, each with its own `--user-data-dir` and
 `--extensions-dir`. Scope `ALPHA_HOME` and the child process's home directory to each instance so global rules, skills,
 and memory use separate filesystem roots. On Windows, a launcher-local `USERPROFILE` can provide that home without
 changing the operating-system profile. Install each VSIX only into its matching extension directory. Initialize
@@ -179,6 +179,8 @@ use the retained release profile and package when investigating release bugs.
 ## Testing
 
 Start with the focused tests and owning typecheck in the [validation matrix](AGENTS.md#validation-matrix).
+The E2E runner uses the published VS Code 1.140.0 API declarations with the exact 1.141.0 test host; 1.141.0
+declarations are unavailable. The production extension continues to compile against 1.125.0.
 Tooling checks execute workflow scripts with PowerShell 7 (`pwsh`), which must be on `PATH` on every platform.
 Use `pnpm harness list` for available checks. Common extension checks use the same harness as CI:
 
@@ -188,7 +190,7 @@ pnpm harness run unit
 pnpm harness run host
 ```
 
-Run build and host checks sequentially. The `host` lane runs the exact VS Code 1.138.0 smoke gate; minimum-host or
+Run build and host checks sequentially. The `host` lane runs the exact VS Code 1.141.0 smoke gate; minimum-host or
 host-adapter changes also require the compatibility gate:
 
 ```sh
@@ -201,7 +203,7 @@ broader core gate. Offline evaluator checks use `pnpm test:evals:offline`; the
 
 Use `pnpm --config.verify-deps-before-run=false harness:audit --plan` to inspect the repeatable repository audit, then
 the same command without `--plan` to run its
-static, unused-file, unit, tooling, offline evaluator, deterministic performance, exact 1.138.0, managed-agent and
+static, unused-file, unit, tooling, offline evaluator, deterministic performance, exact 1.141.0, managed-agent and
 minimum 1.125.0 gates sequentially. `--profile offline` excludes editor hosts; `--profile performance` selects the
 bounded performance fixtures and existing benchmark workloads. `--expensive` adds rendered, stress, confidence,
 outcome and VSIX checks; dedicated test services and Docker additionally require `--services` and `--infrastructure`.
@@ -232,7 +234,7 @@ directories must initially be empty or absent. Initialize a dedicated profile af
 pnpm bundle
 pnpm --filter @alpha-code/vscode-webview build
 pnpm --dir apps/vscode-e2e compile
-node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.138.0 --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>" --init-profile --setup
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.141.0 --profile-dir "<absolute-profile-root>" --workspace "<absolute-workspace>" --artifacts-dir "<absolute-artifacts-root>" --init-profile --setup
 ```
 
 Sign in inside the dedicated host. After discovery, repeat setup with the exact returned `--model-id` and a supported
@@ -240,7 +242,7 @@ Sign in inside the dedicated host. After discovery, repeat setup with the exact 
 running tests. Setup and model discovery do not prove that a task passed. Never copy credentials between profiles or
 reset unrelated editor data. See the [runner options](apps/vscode-e2e/src/runTest.ts) for current flags.
 
-Claude has dedicated deterministic and live suites on VS Code 1.138.0. After the build commands above, run the
+Claude has dedicated deterministic and live suites on VS Code 1.141.0. After the build commands above, run the
 mechanical fixture without credentials, then run the live suite with the exact Claude model ID returned by discovery:
 
 ```sh
@@ -264,7 +266,7 @@ Each case permits at most 12 task requests and records the actual parent and chi
 and completion counts. Both models run live; missing target capabilities fail before the conversational test starts.
 
 The live model matrix runs the same complete suite sequentially with **GPT 6 Luna / max**, **Claude Haiku 5.5 / high**,
-then **Grok 4.6 / low**, exclusively on **VS Code 1.138.0**. It prepares the build and deterministic host gates once,
+then **Grok 4.6 / low**, exclusively on **VS Code 1.141.0**. It prepares the build and deterministic host gates once,
 uses fresh scenario workspaces, and retains separate model reports plus a combined `matrix-result.json`. Every model
 must pass; missing models, unsupported effort, failed scenarios, and incomplete evidence cannot become a passing result.
 Source/build changes or a changed Copilot implementation invalidate the comparison. Model IDs are exact; no fallback is allowed.

@@ -3,6 +3,7 @@ import crypto from "node:crypto"
 import { t } from "../../i18n"
 import { terminateProcessTree } from "../../utils/processTree"
 import type { LifecycleHookTarget } from "./LifecycleHookTargets"
+import type { ModelRequestHookEvent } from "./ModelRequestHooks"
 import { MAX_HOOK_OUTPUT_BYTES, preserveHookOutput } from "./HookOutput"
 import {
 	DEFAULT_HOOK_TIMEOUT_MS,
@@ -43,6 +44,7 @@ type LifecycleHookBaseRequest = Omit<
 export type LifecycleHookPayload =
 	| { hook_event_name: "PreCompact" | "PostCompact"; trigger: "manual" | "auto" }
 	| { hook_event_name: "Interrupt" }
+	| ModelRequestHookEvent
 	| { hook_event_name: "SessionEnd"; reason: "other" }
 	| { hook_event_name: "PermissionRequest"; tool_name: string; tool_input: Record<string, unknown> }
 	| {
@@ -65,7 +67,10 @@ export type LifecycleHookPayload =
 			tool_response: unknown
 	  }
 
-export type LifecycleHookRequest = CompletionHookRequest | (LifecycleHookBaseRequest & LifecycleHookPayload)
+export type LifecycleHookRequest =
+	| CompletionHookRequest
+	| (LifecycleHookBaseRequest & Exclude<LifecycleHookPayload, ModelRequestHookEvent>)
+	| (Omit<LifecycleHookBaseRequest, "permission_mode" | "agent_transcript_path"> & ModelRequestHookEvent)
 
 function isCompletionHookRequest(request: LifecycleHookRequest): request is CompletionHookRequest {
 	return request.hook_event_name === "Stop" || request.hook_event_name === "SubagentStop"
@@ -148,7 +153,10 @@ async function runCommand(
 		const omitted =
 			request.hook_event_name === "SessionStart"
 				? ["turn_id"]
-				: request.hook_event_name === "PreCompact" || request.hook_event_name === "PostCompact"
+				: request.hook_event_name === "PreCompact" ||
+					  request.hook_event_name === "PostCompact" ||
+					  request.hook_event_name === "PreModelRequest" ||
+					  request.hook_event_name === "PostModelRequest"
 					? ["permission_mode", "agent_transcript_path"]
 					: []
 		const payload =
@@ -493,6 +501,17 @@ export async function runLifecycleHooks(
 	)
 	const results = await runHookCommands(commands, request, signal, options)
 	const outcome: LifecycleHookOutcome = { warnings: [] }
+	// Model-request observers never parse stdout as instructions, even for async
+	// handlers or JSON that resembles a Stop/permission/context directive.
+	if (event === "PreModelRequest" || event === "PostModelRequest") {
+		for (const result of results) {
+			if (!result || result.failure === "cancelled") continue
+			if (result.failure || result.exitCode !== 0 || result.stderr.trim()) {
+				outcome.warnings.push(t("common:lifecycleHooks.failed", { event }))
+			}
+		}
+		return outcome
+	}
 	if (signal.aborted) return outcome
 	const contexts: CompletionHookPromptFragment[] = []
 	const feedback: string[] = []

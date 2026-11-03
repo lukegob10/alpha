@@ -127,7 +127,7 @@ test("minimum host evidence is exact and cannot satisfy the reference-host gate"
 	assert.equal(hostSuiteVerdict(receipts, "smoke").status, "failed")
 	assert.equal(hostSuiteVerdict(minimumHostFiles.map(hostReceipt), "minimum").status, "failed")
 	for (const mutate of [
-		(values) => (values[0].requestedHostVersion = "1.138.0"),
+		(values) => (values[0].requestedHostVersion = "1.141.0"),
 		(values) => (values[0].actualHostVersion = "1.126.0"),
 		(values) => (values[0].testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }),
 		(values) => (values[0].testSelection.grep = "subset"),
@@ -153,9 +153,9 @@ test("managed automated host evidence requires all four existing host files and 
 test("host inventory matches the canonical runner scripts and requires background launch receipts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
 	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
-	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1380:run"]))
-	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1380:run"])])
-	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1380:run"]))
+	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1410:run"]))
+	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1410:run"])])
+	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1410:run"]))
 	for (const [suite, expected] of [
 		["smoke", smokeHostFiles],
 		["confidence", confidenceHostFiles],
@@ -272,7 +272,7 @@ test("a completed disposable smoke receipt cannot infer ownership from passed te
 
 test("smoke contracts require the provider selected by their canonical scripts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
-	const receipts = manifest.scripts["test:smoke:1380:run"]
+	const receipts = manifest.scripts["test:smoke:1410:run"]
 		.split(" && ")
 		.filter((command) => command.includes("--file "))
 		.map((command) => ({

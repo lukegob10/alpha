@@ -661,6 +661,7 @@ export class AlphaProvider
 
 	private recentTasksCache?: string[]
 	public readonly taskHistoryStore: TaskHistoryStore
+	private readonly taskHistoryMetadataReady: Promise<void>
 	private readonly taskHistoryStoreReady: Promise<void>
 	private taskHistoryStoreInitialized = false
 	private globalStateWriteThroughTimer: ReturnType<typeof setTimeout> | null = null
@@ -1168,7 +1169,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.20-harness-and-tickets"
+	public readonly latestAnnouncementId = "november-2026-v3.2.21-command-and-history-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1220,6 +1221,7 @@ export class AlphaProvider
 			},
 		})
 		this.memorySettingsSnapshot = this.getMemorySettings()
+		this.taskHistoryMetadataReady = this.initializeTaskHistoryMetadata()
 		this.taskHistoryStoreReady = this.initializeTaskHistoryStore()
 		void Promise.all([this.taskHistoryStoreReady, startupConfigurationReady])
 			.then(() => this.refreshMemorySettings())
@@ -1376,27 +1378,33 @@ export class AlphaProvider
 	}
 
 	/**
-	 * Initialize the TaskHistoryStore and migrate from globalState if needed.
+	 * Load authoritative history metadata and finish any legacy migration before listing chats.
+	 * Codex also separates thread/list from resume (openai/codex 84dfc209d269, 2026-11-02).
 	 */
+	private async initializeTaskHistoryMetadata(): Promise<void> {
+		await this.taskHistoryStore.initialize()
+
+		// Migration: backfill per-task files from globalState on first run
+		const migrationKey = "taskHistoryMigratedToFiles"
+		const alreadyMigrated = this.context.globalState.get<boolean>(migrationKey)
+
+		if (!alreadyMigrated) {
+			const legacyHistory = this.context.globalState.get<HistoryItem[]>("taskHistory") ?? []
+
+			if (legacyHistory.length > 0) {
+				this.log(`[initializeTaskHistoryMetadata] Migrating ${legacyHistory.length} entries from globalState`)
+				await this.taskHistoryStore.migrateFromGlobalState(legacyHistory)
+			}
+
+			await this.context.globalState.update(migrationKey, true)
+			this.log("[initializeTaskHistoryMetadata] Migration complete")
+		}
+	}
+
+	/** Finish compatibility writes and recovery before saved tasks can be opened. */
 	private async initializeTaskHistoryStore(): Promise<void> {
 		try {
-			await this.taskHistoryStore.initialize()
-
-			// Migration: backfill per-task files from globalState on first run
-			const migrationKey = "taskHistoryMigratedToFiles"
-			const alreadyMigrated = this.context.globalState.get<boolean>(migrationKey)
-
-			if (!alreadyMigrated) {
-				const legacyHistory = this.context.globalState.get<HistoryItem[]>("taskHistory") ?? []
-
-				if (legacyHistory.length > 0) {
-					this.log(`[initializeTaskHistoryStore] Migrating ${legacyHistory.length} entries from globalState`)
-					await this.taskHistoryStore.migrateFromGlobalState(legacyHistory)
-				}
-
-				await this.context.globalState.update(migrationKey, true)
-				this.log("[initializeTaskHistoryStore] Migration complete")
-			}
+			await this.taskHistoryMetadataReady
 
 			// Per-task files are authoritative. Keep only a bounded, root-only
 			// downgrade mirror in globalState so managed-child payloads cannot grow
@@ -3675,6 +3683,12 @@ export class AlphaProvider
 				return
 			}
 			if (!focused) {
+				// The catalog can render before recovery repairs this task's metadata.
+				await this.taskHistoryStoreReady
+				if (!stillCurrent()) {
+					await reportSuperseded()
+					return
+				}
 				const { historyItem } = await this.getTaskWithId(id, { includeApiConversationHistory: false })
 				if (!stillCurrent()) {
 					await reportSuperseded()
@@ -3721,6 +3735,7 @@ export class AlphaProvider
 	}
 
 	async exportTaskWithId(id: string) {
+		await this.taskHistoryStoreReady
 		const { historyItem, apiConversationHistory } = await this.getTaskWithId(id)
 		const fileName = getTaskFileName(historyItem.ts)
 		const defaultUri = await resolveDefaultSaveUri(this.contextProxy, "lastTaskExportPath", fileName, {
@@ -3784,6 +3799,7 @@ export class AlphaProvider
 	}
 
 	async deleteTaskWithId(id: string, cascadeSubtasks: boolean = true) {
+		await this.taskHistoryStoreReady
 		try {
 			// get the task directory full path and history item
 			const { taskDirPath, historyItem } = await this.getTaskWithId(id, {
@@ -3944,13 +3960,11 @@ export class AlphaProvider
 		if (deferTaskHistory) {
 			void this.taskHistoryStoreReady
 				.then(async () => {
-					if (
-						this._disposed ||
-						this.view !== webview ||
-						this.taskNavigationGeneration !== navigationGeneration ||
-						this.currentView !== currentView
-					)
+					if (this._disposed || this.view !== webview) return
+					if (this.taskNavigationGeneration !== navigationGeneration || this.currentView !== currentView) {
+						await this.broadcastTaskHistoryUpdate()
 						return
+					}
 					await this.postStateToWebview()
 				})
 				.catch((error) => {
@@ -5989,6 +6003,11 @@ export class AlphaProvider
 		if (!this.isViewLaunched) {
 			return
 		}
+		const webview = this.view
+		// Listing metadata must not wait for transcript/worktree recovery. Opening a
+		// saved chat still joins taskHistoryStoreReady before hydrating its runtime.
+		await this.taskHistoryMetadataReady
+		if (this._disposed || !this.isViewLaunched || this.view !== webview) return
 
 		const taskHistory = history ?? this.taskHistoryStore.getByWorkspace(this.cwd)
 

@@ -114,6 +114,7 @@ import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
+import { applySubagentSpawnOverrides } from "../../../core/agent/SubagentModelRouter"
 import type { ModelRequestPhase, ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
@@ -507,6 +508,80 @@ describe("VsCodeLmHandler", () => {
 			expect(client).toBe(selectedModel)
 		})
 
+		it.each([false, true])(
+			"keeps a spawned exact Haiku model independent of Auto (autoFirst=%s)",
+			async (autoFirst) => {
+				const selectedModel = {
+					...mockLanguageModelChat,
+					vendor: "copilot",
+					id: "claude-haiku-5.5",
+					family: "claude-haiku-5.5",
+					version: "claude-haiku-5.5",
+					name: "Claude Haiku 5.5",
+				}
+				const auto = { ...selectedModel, id: "auto", name: "Auto" }
+				vi.mocked(vscode.lm.selectChatModels).mockResolvedValue(
+					autoFirst ? [auto, selectedModel] : [selectedModel, auto],
+				)
+				const route = applySubagentSpawnOverrides(
+					{
+						apiConfiguration: {
+							apiProvider: "vscode-lm",
+							vsCodeLmModelSelector: { vendor: "copilot", id: "gpt-6-luna" },
+						},
+						apiConfigName: "Parent",
+						route: {
+							source: "parent",
+							resolution: "selected",
+							profileName: "Parent",
+							provider: "vscode-lm",
+							modelId: "gpt-6-luna",
+						},
+					},
+					"claude-haiku-5.5",
+					"high",
+				)
+				await expect(handler.createClient(route.apiConfiguration.vsCodeLmModelSelector!)).resolves.toBe(
+					selectedModel,
+				)
+				expect(route.apiConfiguration.reasoningEffort).toBe("high")
+				expect(route.route.modelId).toBe("claude-haiku-5.5")
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+			},
+		)
+
+		it("does not bind a catalog choice to Auto when it is the only family match", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
+				{
+					...mockLanguageModelChat,
+					vendor: "copilot",
+					family: "claude-haiku-5.5",
+					id: "auto",
+					version: "claude-haiku-5.5",
+					name: "Auto",
+				},
+			])
+			await expect(handler.createClient({ vendor: "copilot", family: "claude-haiku-5.5" })).rejects.toMatchObject(
+				{
+					code: "InvalidModelSelector",
+					retryable: false,
+					phase: "model-selection",
+				},
+			)
+		})
+
+		it.each([{ id: "Claude Haiku 5.5" }, { id: "missing-model" }, { id: "" }, { family: " " }])(
+			"rejects an unavailable or malformed selector %j as configuration",
+			async (selection) => {
+				vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([])
+				await expect(handler.createClient({ vendor: "copilot", ...selection })).rejects.toMatchObject({
+					code: "InvalidModelSelector",
+					retryable: false,
+					phase: "model-selection",
+				})
+			},
+		)
+
 		it("binds a catalog family to its unique Copilot route when the host uses opaque identifiers", async () => {
 			const model = {
 				...mockLanguageModelChat,
@@ -517,7 +592,6 @@ describe("VsCodeLmHandler", () => {
 			}
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockResolvedValueOnce([
 					{ ...model, vendor: "other-provider", id: "unrelated-route" },
 					{ ...model, id: "other-model", name: "Claude Opus 5.5" },
@@ -525,15 +599,11 @@ describe("VsCodeLmHandler", () => {
 				])
 
 			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
-			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(1, {
-				vendor: "copilot",
-				family: "gpt-6.1-sol",
-			})
-			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({ vendor: "copilot" })
 			expect(model.sendRequest).not.toHaveBeenCalled()
 		})
 
-		it("binds an exact catalog family with a decorated host name without listing other models", async () => {
+		it("binds an unambiguous catalog family with a decorated host name", async () => {
 			const model = {
 				...mockLanguageModelChat,
 				vendor: "copilot",
@@ -546,22 +616,24 @@ describe("VsCodeLmHandler", () => {
 			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
 			expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({
 				vendor: "copilot",
-				family: "gpt-6.1-sol",
 			})
 		})
 
 		it("rejects ambiguous Copilot routes for a catalog family instead of choosing a variant", async () => {
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockResolvedValueOnce([
 					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "standard-route" },
 					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "extended-route" },
 				])
 
-			await expect(handler.createClient({ vendor: "copilot", family: "gpt-5.5" })).rejects.toThrow(
-				/is ambiguous and matched 2 models/,
-			)
+			const request = handler.createClient({ vendor: "copilot", family: "gpt-5.5" })
+			await expect(request).rejects.toThrow(/is ambiguous and matched 2 models/)
+			await expect(request).rejects.toMatchObject({
+				code: "InvalidModelSelector",
+				retryable: false,
+				phase: "model-selection",
+			})
 		})
 
 		it("does not bind an unsupported near-name model to a catalog choice", async () => {
@@ -657,6 +729,44 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	describe("client resolution", () => {
+		it.each(["initialize", "stream", "completion"] as const)(
+			"preserves unavailable-selector metadata through %s startup",
+			async (entry) => {
+				vi.mocked(vscode.lm.selectChatModels).mockReset().mockResolvedValue([])
+				const unavailable = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { vendor: "copilot", id: "missing-model" },
+				})
+				try {
+					const request =
+						entry === "initialize"
+							? unavailable.initializeClient()
+							: entry === "completion"
+								? unavailable.completePrompt("Hello")
+								: unavailable.createMessage("System", []).next()
+					await expect(request).rejects.toMatchObject({
+						code: "InvalidModelSelector",
+						retryable: false,
+						phase: "model-selection",
+					})
+					expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+				} finally {
+					unavailable.dispose()
+				}
+			},
+		)
+
+		it.each([new Error("Model catalog temporarily unavailable"), new vscode.CancellationError()])(
+			"does not classify a rejected discovery operation as selector configuration (%s)",
+			async (failure) => {
+				vi.mocked(vscode.lm.selectChatModels).mockReset().mockRejectedValue(failure)
+				const request = handler.initializeClient()
+				await expect(request).rejects.not.toHaveProperty("code", "InvalidModelSelector")
+				if (!(failure instanceof vscode.CancellationError))
+					await expect(request).rejects.not.toHaveProperty("retryable", false)
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+			},
+		)
+
 		it("shares one in-flight model selection across cold handlers with the same selector", async () => {
 			mockVsCodeVersion.value = "1.125.0"
 			let resolveModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
@@ -2281,6 +2391,7 @@ describe("VsCodeLmHandler", () => {
 			["1.135.0", undefined],
 			["1.136.1", true],
 			["1.138.0", true],
+			["1.141.0", true],
 		] as const)("uses the verified Claude thinking bridge on host %s", async (version, enableThinking) => {
 			mockVsCodeVersion.value = version
 			handler.dispose()
@@ -3264,7 +3375,6 @@ describe("VsCodeLmHandler", () => {
 			})
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockImplementationOnce(() => {
 					markBindingStarted()
 					return new Promise((resolve) => {
@@ -3304,14 +3414,13 @@ describe("VsCodeLmHandler", () => {
 				mockGetApiRequestTimeoutSetting.mockReturnValue(0)
 				vi.mocked(vscode.lm.selectChatModels)
 					.mockReset()
-					.mockResolvedValueOnce([])
 					.mockImplementationOnce(() => new Promise(() => undefined))
 				const rejected = expect(handler.prepareModel({ deadline: Date.now() + 100 })).rejects.toMatchObject({
 					name: "ApiStreamDeadlineError",
 				})
 				await vi.advanceTimersByTimeAsync(100)
 				await rejected
-				expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({ vendor: "copilot" })
 				expect(handler["client"]).toBeNull()
 				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
 				expect(vi.getTimerCount()).toBe(0)
@@ -3518,7 +3627,7 @@ describe("VsCodeLmHandler", () => {
 			)
 		})
 
-		it.each(["1.125.0", "1.138.0"])(
+		it.each(["1.125.0", "1.138.0", "1.141.0"])(
 			"counts complete assistant tool arguments during context measurement on VS Code %s",
 			async (version) => {
 				mockVsCodeVersion.value = version

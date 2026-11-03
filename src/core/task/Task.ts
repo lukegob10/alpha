@@ -86,6 +86,7 @@ import {
 } from "../agent/CompletionHooks"
 import { LifecycleHookStoppedError } from "../agent/LifecycleHookTargets"
 import { AsyncLifecycleHooks } from "../agent/AsyncLifecycleHooks"
+import { observeModelRequestStream, type ModelRequestHookEvent } from "../agent/ModelRequestHooks"
 import { runLifecycleHookMcp } from "../agent/LifecycleHookMcp"
 import { applyHookToolInput, getHookToolIdentity } from "../agent/HookToolIdentity"
 import { TaskMemoryContext } from "../../services/memory/TaskMemoryContext"
@@ -307,7 +308,6 @@ import { AgentControlTransactionError } from "../agent/AgentControlTransaction"
 import type { CommandVerificationDiagnostic } from "../agent/VerificationScope"
 import { formatBackgroundCommandContext } from "../agent/CommandOutcomeContext"
 import { CompletionRecovery } from "../agent/CompletionRecovery"
-import { SearchLoopRecoveryPolicy, formatSearchLoopRecoveryGuidance } from "../agent/SearchLoopRecoveryPolicy"
 import {
 	isWorkerWritePathAllowed as isScopedWorkerWritePathAllowed,
 	redactTaskPrivatePaths,
@@ -1176,8 +1176,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly toolCatalogCache = new TaskToolCatalogCache()
 	private currentRequestSignal?: AbortSignal
 	private readonly agentRetryPolicy = new AgentRetryPolicy()
-	private readonly searchLoopRecoveryPolicy: SearchLoopRecoveryPolicy
-	private lastSearchProgressVersion = 0
 	private readonly agentStepContextBuilder = new AgentStepContextBuilder<ApiHandler, unknown>()
 	private readonly agentTurnEventLog: AgentTurnEventLog
 	private readonly performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
@@ -1248,6 +1246,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private completionHookActive = false
 	private pendingHookCleanupFailures?: Set<HookCommandCleanupError>
 	private asyncLifecycleHooks?: AsyncLifecycleHooks
+	private pendingModelRequestObservers?: Set<Promise<void>>
 	private lifecycleHookStartSource: "startup" | "resume" = "startup"
 	private lifecycleHookStartConsumed = false
 	private interruptHookPending = false
@@ -2180,7 +2179,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.diffStrategy = new MultiSearchReplaceDiffStrategy()
 
 		this.toolRepetitionDetector = new ToolRepetitionDetector(this.consecutiveMistakeLimit)
-		this.searchLoopRecoveryPolicy = new SearchLoopRecoveryPolicy()
 
 		// Initialize todo list if provided
 		if (initialTodos && initialTodos.length > 0) {
@@ -5273,6 +5271,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * immediately before the scheduler (and again before each tool) starts.
 	 */
 	private async assertCurrentProviderTranscriptBeforeEffects(): Promise<void> {
+		await this.awaitLifecycleHookCleanup()
 		if (!this.assistantMessageSavedToHistory) {
 			throw new Error("Cannot execute tool effects before the assistant transcript is persisted.")
 		}
@@ -5294,6 +5293,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		step: CurrentAgentStep,
 		signal: AbortSignal,
 	): Promise<void> {
+		await this.awaitLifecycleHookCleanup()
 		const preEofReadonlyCall = await this.isPreEofReadonlyToolCall(call, surface)
 		if (
 			this.currentAgentStep !== step ||
@@ -9195,6 +9195,125 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	/** Model-request observers retain attempt identity but never publish model/user input. */
+	private observeModelRequest(createStream: () => ApiStream, signal: AbortSignal): ApiStream {
+		this.completionHookConfig ??= readCompletionHookConfig()
+		if (!this.completionHookConfig.preModelRequest?.length && !this.completionHookConfig.postModelRequest?.length)
+			return createStream()
+		const invocation = this.captureLifecycleHookInvocation()
+		invocation.config = structuredClone(invocation.config)
+		const ownsRequest = invocation.guard
+		const ownerGeneration = this.apiConversationHistoryOwnerGeneration
+		// These observers belong to the captured session, across subsequent steps
+		// and cancellation. They cannot publish model/UI state for either step.
+		invocation.guard = () =>
+			this.apiConversationHistoryOwnerGeneration === ownerGeneration &&
+			this.isCurrentApiConversationHistoryOwner()
+		const { permission_mode: _permissionMode, ...context } = invocation.context
+		let transcriptPath: string | null = null
+		const warn = (warnings: readonly string[]) => {
+			for (const warning of warnings) console.warn(`[Task#${this.taskId}] ${warning}`)
+		}
+		const runtime = this.lifecycleHookRuntime(invocation)
+		const observationalRuntime: CompletionHookRuntimeOptions = {
+			...runtime,
+			scheduleAsync: (event, run) =>
+				runtime.scheduleAsync?.(event, async (hookSignal) => {
+					const outcome = await run(hookSignal)
+					warn(outcome.warnings)
+					return { warnings: [] }
+				}) ?? false,
+		}
+		// No await may separate this ownership check from the physical request.
+		const createOwnedStream = () => {
+			if (!ownsRequest()) throw new LifecycleHookOwnershipError()
+			return createStream()
+		}
+		return observeModelRequestStream(createOwnedStream, {
+			signal,
+			beforeRequest: () => this.awaitLifecycleHookCleanup(),
+			onEvent: (event) => {
+				const observation = (async () => {
+					// Capture the transcript once before dispatch. A cancelled Post must
+					// not wait on filesystem work abandoned by the interrupted request.
+					if (event.hook_event_name === "PreModelRequest" && invocation.guard()) {
+						try {
+							transcriptPath = await this.waitForRequestControl(
+								this.completionHookTranscriptPath(context.session_id),
+								signal,
+							)
+						} catch (error) {
+							if (!signal.aborted) throw error
+						}
+					}
+					const key = event.hook_event_name === "PreModelRequest" ? "preModelRequest" : "postModelRequest"
+					if (!invocation.config[key]?.length || !invocation.guard()) return
+					// A cancelled request still owns a bounded Post observation. Steer does
+					// not cancel session-owned observers; task shutdown retains their cleanup.
+					const cancelledPost = event.hook_event_name === "PostModelRequest" && signal.aborted
+					const hookSignal = cancelledPost
+						? AbortSignal.timeout(3_000)
+						: event.hook_event_name === "PostModelRequest"
+							? this.getTaskLifetimeCancellationSignal()
+							: signal
+					const config = cancelledPost
+						? {
+								...invocation.config,
+								postModelRequest: invocation.config.postModelRequest?.map((handler) => ({
+									...handler,
+									timeoutMs: Math.min(handler.timeoutMs ?? 1_000, 3_000),
+									...(handler.type === "mcp_tool" ? {} : { async: false }),
+								})),
+							}
+						: invocation.config
+					const outcome = await runLifecycleHooks(
+						config,
+						{ ...context, ...event, transcript_path: transcriptPath },
+						hookSignal,
+						observationalRuntime,
+					)
+					warn(outcome.warnings)
+				})()
+				this.pendingModelRequestObservers ??= new Set()
+				this.pendingModelRequestObservers.add(observation)
+				void observation
+					.finally(() => this.pendingModelRequestObservers?.delete(observation))
+					.catch(() => undefined)
+				return observation
+			},
+			onError: (error: unknown, event: ModelRequestHookEvent) => {
+				// Physical process cleanup keeps its existing Task owner; an observer
+				// failure cannot replace provider output or trigger a provider retry.
+				this.retainHookCleanupFailures(error)
+				console.warn(`[Task#${this.taskId}] ${event.hook_event_name} observer failed`)
+			},
+		})
+	}
+
+	private async joinModelRequestObservers(): Promise<void> {
+		while (this.pendingModelRequestObservers?.size) {
+			const results = await Promise.allSettled([...this.pendingModelRequestObservers])
+			for (const result of results) {
+				if (result.status === "rejected") this.retainHookCleanupFailures(result.reason)
+			}
+		}
+	}
+
+	/** Hook output is advisory; unconfirmed physical process cleanup still fences effects. */
+	private async awaitLifecycleHookCleanup(): Promise<void> {
+		try {
+			this.asyncLifecycleHooks?.checkCleanupFailures()
+		} catch (error) {
+			if (!this.retainHookCleanupFailures(error)) throw error
+			try {
+				await this.asyncLifecycleHooks?.shutdown()
+			} catch (cleanupError) {
+				if (!this.retainHookCleanupFailures(cleanupError)) throw cleanupError
+			}
+		}
+		if (this.pendingHookCleanupFailures?.size) await this.retryPendingHookCleanup()
+	}
+
 	/** Async hooks deliver advisory output only at an existing model/input boundary. */
 	private async drainAsyncLifecycleHooks(
 		signal: AbortSignal,
@@ -13010,7 +13129,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Ask replies, queued follow-ups, and steering converge here when consumed.
 			// Renew the attempt at this boundary; arrival alone can precede a still-running step.
 			this.toolRepetitionDetector?.resetProgress()
-			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			if (this.workContext) {
 				// External state is reusable only within the current user request.
@@ -14401,6 +14519,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// An old producer's rejected promise remains immutable. An explicit Stop
 		// retries only its retained physical cleanup callbacks, never the hook itself.
+		await this.joinModelRequestObservers()
 		hookCleanupMayRetry = false
 		try {
 			await this.retryPendingHookCleanup()
@@ -14628,6 +14747,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					captureCleanupFailure(error)
 				}
 			}
+			await this.joinModelRequestObservers()
 			// Do not let a held goal or whole-Task disposal hide an actual command
 			// cleanup failure. The finalizer owns the failure-only producer grace.
 			if (!cancellation.commandCleanupFailed) {
@@ -14674,6 +14794,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	/** No user input, tool effect, or uncommitted transaction may be lost to residency eviction. */
 	public canUnloadSubagentRuntime(): boolean {
+		if (this.pendingModelRequestObservers?.size || this.pendingHookCleanupFailures?.size) return false
 		const ownsEligibility = this.captureAgentStepOwnership()
 		if (!ownsEligibility()) return false
 		const hasUnsettledOutput = (process: AlphaTerminalProcess | undefined): boolean =>
@@ -15005,7 +15126,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Kicks off the checkpoints initialization process in the background.
 		if (userContent.length > 0) {
 			this.toolRepetitionDetector?.resetProgress()
-			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			this.completionHookConfig = readCompletionHookConfig()
 			this.pendingCompletionHookPrompt = undefined
@@ -15396,14 +15516,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.getTaskLifetimeCancellationSignal(),
 					)
 					if (!ownsCompletedStep()) return ownershipLostResult
-				}
-				if (
-					stepResult.status === "completed" &&
-					!this.pendingTurnSuspension &&
-					!this.abort &&
-					!this.didComplete
-				) {
-					this.observeSearchLoopStep(response)
 				}
 				const suspension = this.pendingTurnSuspension
 				if (suspension) {
@@ -15969,7 +16081,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// This resumes inside the same loop, bypassing its initial reset. A user
 			// retry needs a fresh progress window before the next tool is observed.
 			this.toolRepetitionDetector?.resetProgress()
-			this.searchLoopRecoveryPolicy?.reset()
 			this.resetCompletionRecoveryState()
 			const feedbackImages = recovery.images ?? []
 			if (feedbackText.trim() || feedbackImages.length > 0) {
@@ -17192,6 +17303,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								),
 							})),
 						})
+					// Match the canonical scheduler's four-call window and 4x prepared-read bound.
+					// Replenish only during natural streaming; a full window falls back without blocking the provider.
+					const earlyReadWindow = 4
+					const maxRetainedEarlyReads = earlyReadWindow * 4
+					let unsettledEarlyReadCount = 0
 					let earlyReadDispatchTail: Promise<void> = Promise.resolve()
 					let earlyReadLaneClosed = false
 					let earlyReadDispatchFailure: { status: "failed" | "aborted"; error: Error } | undefined
@@ -17201,7 +17317,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (
 							this.completionHookConfig?.preToolUse?.length ||
 							this.completionHookConfig?.postToolUse?.length ||
-							this.completionHookConfig?.permissionRequest?.length
+							this.completionHookConfig?.permissionRequest?.length ||
+							this.completionHookConfig?.postModelRequest?.some(
+								(hook) => hook.type === "mcp_tool" || !hook.async,
+							)
 						) {
 							earlyReadLaneClosed = true
 							return
@@ -17212,7 +17331,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						const step = streamLifecycleStep
 						if (
 							callPosition !== earlyReadDispatches.length ||
-							earlyReadDispatches.length >= 4 ||
+							unsettledEarlyReadCount >= earlyReadWindow ||
+							earlyReadDispatches.length >= maxRetainedEarlyReads ||
 							!surface ||
 							!step ||
 							!streamedToolCallPreflightAvailable ||
@@ -17222,7 +17342,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							earlyReadLaneClosed = true
 							return
 						}
-						if (!(await this.isPreEofReadonlyToolCall(call, surface))) {
+						if (!(await this.isPreEofReadonlyToolCall(call, surface)) || earlyReadLaneClosed) {
 							earlyReadLaneClosed = true
 							return
 						}
@@ -17240,6 +17360,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							},
 						}
 						earlyReadDispatches.push(dispatch)
+						unsettledEarlyReadCount++
 						const earlyResponse = createAgentResponse([call])
 						const scheduled = earlyReadDispatchTail.then(async () => {
 							if (
@@ -17263,6 +17384,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									},
 								},
 							)
+							// A yielded read still owns a live process. Retain the admitted prefix, but admit no more.
+							if (dispatch.outcome.results.some((result) => result.executionStatus === "running")) {
+								earlyReadLaneClosed = true
+							}
 							if (dispatch.outcome.status !== "completed") {
 								earlyReadLaneClosed = true
 								earlyReadDispatchFailure ??= {
@@ -17277,8 +17402,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						})
 						const settled = scheduled.then(
-							() => undefined,
+							() => {
+								unsettledEarlyReadCount--
+							},
 							(error) => {
+								unsettledEarlyReadCount--
 								dispatch.error = error
 								earlyReadDispatchFailure ??= {
 									status: "failed",
@@ -18024,6 +18152,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 							}
 
+							if (this.retainHookCleanupFailures(error, true)) {
+								return {
+									status: "failed",
+									reason: retryError.message,
+									error: retryError,
+									response: canonicalResponse,
+								}
+							}
 							const firstChunkFailure = retryMetadata.firstChunkFailure === true
 							const category = this.retryCategoryForError(error)
 							const retryAttempts = currentItem.retryAttempts ?? {}
@@ -20242,6 +20378,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		options: TaskRequestOptions,
 		capturedProvider: CapturedTaskProvider,
 	): ApiStream {
+		await this.awaitLifecycleHookCleanup()
 		const goalStep = this.activeGoalStep
 		const goalAdmission = this.goalHostAdmission
 		const stepInterruptionSignal = options.interruptionSignal
@@ -21089,12 +21226,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		let stream: ApiStream
 		try {
+			await this.awaitLifecycleHookCleanup()
+			this.throwIfStepInterrupted(abortSignal)
+			if (this.currentAgentStep !== step) throw new LifecycleHookOwnershipError()
 			if (this.performanceRequestPending && this.performanceSubmissionStartedAt !== undefined) {
 				this.recordTaskPerformance(this.performanceRequestPhase, this.performanceSubmissionStartedAt)
 				this.performanceRequestPending = false
 				this.performanceSubmissionStartedAt = undefined
 			}
-			stream = requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata)
+			stream = this.observeModelRequest(
+				() => requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata),
+				abortSignal,
+			)
 		} catch (error) {
 			clearRequestOwnership()
 			throw error
@@ -21158,6 +21301,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.recordProviderRequestTimeout(failure, step)
 				this.isWaitingForFirstChunk = false
 				clearRequestOwnership()
+				if (this.retainHookCleanupFailures(failure, true)) throw failure
+				if (failure instanceof LifecycleHookOwnershipError) throw failure
 				if (error instanceof SteerRequestInterruptError) {
 					throw error
 				}
@@ -21261,7 +21406,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						let compatibilityIterator: AsyncIterator<ApiStreamChunk> | undefined
 						let compatibilityStreamCompleted = false
 						try {
+							await this.awaitLifecycleHookCleanup()
 							this.throwIfStepInterrupted(stepInterruptionSignal)
+							if (this.currentAgentStep !== activeRequestStep) throw new LifecycleHookOwnershipError()
 							const compatibilityStep = this.captureAgentStep(
 								compatibilityAttempt,
 								systemPrompt,
@@ -21277,10 +21424,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							activeRequestStep = compatibilityStep
 							this.currentTaskToolSurface = compatibilityStep.surface
 							options.onStepCaptured?.(compatibilityStep)
-							const compatibilityStream = requestHandler.createMessage(
-								compatibilityRequest.systemPrompt,
-								compatibilityRequest.messages,
-								compatibilityMetadata,
+							const compatibilityStream = this.observeModelRequest(
+								() =>
+									requestHandler.createMessage(
+										compatibilityRequest.systemPrompt,
+										compatibilityRequest.messages,
+										compatibilityMetadata,
+									),
+								compatibilityController.signal,
 							)
 							compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
 							const nextCompatibilityChunk = async (): Promise<IteratorResult<ApiStreamChunk>> => {
@@ -21365,6 +21516,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							this.recordProviderRequestTimeout(nextError, activeRequestStep)
 							this.isWaitingForFirstChunk = false
 							compatibilityError = nextError
+							if (
+								this.retainHookCleanupFailures(nextError, true) ||
+								nextError instanceof LifecycleHookOwnershipError
+							)
+								throw nextError
 							if (nextError instanceof SteerRequestInterruptError) throw nextError
 							if (stepInterruptionSignal?.aborted) this.throwIfStepInterrupted(stepInterruptionSignal)
 						} finally {
@@ -21856,23 +22012,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		void name
 		void args
 		return this.pendingTurnSuspension !== undefined
-	}
-
-	private observeSearchLoopStep(response: AgentResponse): void {
-		const progressVersion = this.toolRepetitionDetector?.getProgressVersion?.() ?? 0
-		const madeProgress = progressVersion !== (this.lastSearchProgressVersion ?? 0)
-		this.lastSearchProgressVersion = progressVersion
-		const decision = this.searchLoopRecoveryPolicy?.observe(response.toolCalls, { madeProgress })
-		if (!decision || decision.action === "continue") return
-		if (decision.action === "recover") {
-			this.userMessageContent.push({
-				type: "text",
-				text: formatSearchLoopRecoveryGuidance(decision.attempt),
-			})
-			return
-		}
-
-		this.suspendAfterCurrentTurn(t("common:errors.search_loop_recovery_paused"), "blocked")
 	}
 
 	/** Pure admission check; requesting a blocked retry is settled with its terminal receipt. */

@@ -85,6 +85,8 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			const evidence = () =>
 				task.getCommandExecutionEvidence().find((item) => item.executionId === params.execution_id)
 			if (!evidence()) throw new Error("Command does not belong to this task instance or is no longer retained")
+			if (params.action === "input" && params.input == null)
+				throw new Error("This command does not support input, or input was not supplied")
 			const terminals = [
 				...TerminalRegistry.getTerminals(true, task.taskId),
 				...TerminalRegistry.getTerminals(false, task.taskId),
@@ -92,9 +94,13 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			const terminal = terminals.find(
 				(item) => item.taskId === task.taskId && item.process?.executionId === params.execution_id,
 			)
+			const hasRecordedExit = () => {
+				const current = evidence()
+				return current !== undefined && current.status !== "running" && Number.isInteger(current.exitCode)
+			}
 			const process =
 				terminal?.process ??
-				(params.action === "wait" &&
+				((params.action === "wait" || hasRecordedExit()) &&
 				sessionProcess?.isSettled &&
 				sessionProcess.executionId === params.execution_id
 					? sessionProcess
@@ -106,7 +112,14 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 				terminal.process === process &&
 				process.executionId === params.execution_id &&
 				terminal.running
-			if (params.action !== "wait") {
+			// Codex 3c074bb4, unified_exec/process_manager.rs (2026-11-02): a write
+			// racing with exit collects the final receipt. A failed reader alone is not exit proof.
+			const hasConfirmedExit = () =>
+				process?.isSettled === true &&
+				process.executionId === params.execution_id &&
+				!isPhysicallyRunning() &&
+				hasRecordedExit()
+			if (params.action !== "wait" && !hasConfirmedExit()) {
 				const interrupt = params.action === "input" && params.input === "\x03" && process?.interrupt
 				if (
 					!terminal ||
@@ -129,20 +142,23 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 					return
 				}
 				assertActive()
-				assertSessionCurrent?.()
-				if (!isPhysicallyRunning()) throw new Error("Command changed while approval was pending")
-				if (params.action === "input") {
-					const provider = task.providerRef.deref()
-					if (!provider) throw new Error("Task mutation owner unavailable")
-					await provider.runWorkspaceMutation(task, "command input", async () => {
-						assertActive()
-						assertSessionCurrent?.()
-						if (!isPhysicallyRunning() || (process.isSettled && !interrupt))
-							throw new Error("Command is no longer accepting input")
-						if (interrupt) await interrupt.call(process)
-						else await process.writeInput!(params.input!)
-					})
-				} else await process.abort()
+				if (!hasConfirmedExit()) {
+					assertSessionCurrent?.()
+					if (!isPhysicallyRunning()) throw new Error("Command changed while approval was pending")
+					if (params.action === "input") {
+						const provider = task.providerRef.deref()
+						if (!provider) throw new Error("Task mutation owner unavailable")
+						await provider.runWorkspaceMutation(task, "command input", async () => {
+							assertActive()
+							if (hasConfirmedExit()) return
+							assertSessionCurrent?.()
+							if (!isPhysicallyRunning() || (process.isSettled && !interrupt))
+								throw new Error("Command is no longer accepting input")
+							if (interrupt) await interrupt.call(process)
+							else await process.writeInput!(params.input!)
+						})
+					} else await process.abort()
+				}
 			}
 			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
 			assertActive()

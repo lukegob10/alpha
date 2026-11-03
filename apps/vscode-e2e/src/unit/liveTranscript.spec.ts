@@ -4,8 +4,43 @@ import test from "node:test"
 import {
 	assistantVisibleText,
 	finalAssistantResponse,
+	hasIntegerResult,
 	isUnansweredCommandReview,
 } from "../suite/live-transcript-support"
+
+test("integer results accept ordinary thousands grouping without changing the numeric value", () => {
+	for (const answer of [
+		"1562",
+		"**1,562**",
+		"22 × 71 = 1,562.",
+		"The thread returned 1,562, using the saved profile.",
+	])
+		assert.equal(hasIntegerResult(answer, 1562), true, answer)
+	assert.equal(hasIntegerResult("The result is -1,562.", -1562), true)
+	assert.equal(hasIntegerResult("0", 0), true)
+})
+
+test("integer results reject wrong values, partial numbers, signs, decimals, and malformed grouping", () => {
+	for (const answer of [
+		"1563",
+		"11562",
+		"15620",
+		"1,562,000",
+		"15,62",
+		"1,5620",
+		"-1,562",
+		"−1562",
+		"1562.5",
+		"1.1562",
+		"1562%",
+		"1562/10",
+		"result1562",
+		"1562nd",
+	])
+		assert.equal(hasIntegerResult(answer, 1562), false, answer)
+	assert.equal(hasIntegerResult("1562", Number.NaN), false)
+	assert.equal(hasIntegerResult("1562", 1562.5), false)
+})
 
 test("only the chronological final ordinary assistant response supplies final visible text", () => {
 	const completion = {

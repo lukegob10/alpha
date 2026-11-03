@@ -40,6 +40,15 @@ export function finalAssistantResponse(history: unknown): { text: string; toolCa
 	}
 }
 
+export function hasIntegerResult(answer: string, expected: number): boolean {
+	if (!Number.isSafeInteger(expected)) return false
+	const plain = String(expected)
+	const grouped = expected.toLocaleString("en-US", { useGrouping: true, maximumFractionDigits: 0 })
+	return new RegExp(`(?<![\\p{L}\\p{N}_.,+\\-−/])(?:${plain}|${grouped})(?![\\p{L}\\p{N}_%/]|[.,]\\d)`, "u").test(
+		answer,
+	)
+}
+
 export function isUnansweredCommandReview(
 	message: Pick<AlphaMessage, "type" | "ask" | "partial" | "isAnswered" | "text">,
 ): boolean {

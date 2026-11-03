@@ -95,7 +95,7 @@ suite("Host-local memories acceptance", function () {
 	const models: FeatureScriptedAI[] = []
 
 	setup(async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const alphaHome = process.env.ALPHA_HOME
 		assert.ok(alphaHome, "The launcher must isolate Alpha home before extension activation")

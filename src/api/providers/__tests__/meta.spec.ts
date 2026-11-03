@@ -287,6 +287,7 @@ describe("native Meta Responses provider", () => {
 		expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 			{
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 100,
 				outputTokens: 40,
 				cacheReadTokens: 25,

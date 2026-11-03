@@ -563,11 +563,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} improves task reliability, lifecycle hooks, and Alpha Tickets.",
-			"taskContinuity": "Keep task completion, cancellation, and recovery consistent during long-running work.",
-			"toolsAndProviders": "Use command and MCP lifecycle hooks with Alpha's native approval and workspace protections.",
-			"delegation": "Keep sub-agent permissions and task handoffs consistent with the parent chat.",
-			"workspaceExperience": "Track ticket progress, import and export ticket bundles, and delete selected tickets with one approval."
+			"welcome": "Alpha v{{version}} improves command recovery, task history, and completed-turn folding.",
+			"taskContinuity": "Keep completed turns folded and load task history sooner when opening a VS Code window.",
+			"toolsAndProviders": "Recover completed commands cleanly and preserve tool and reasoning state with GitHub Copilot.",
+			"delegation": "Keep long-running tasks and sub-agent handoffs consistent as work continues.",
+			"workspaceExperience": "Ticket import and export notices dismiss automatically after a short delay."
 		}
 	},
 	"crossTasks": {

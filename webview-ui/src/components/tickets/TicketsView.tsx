@@ -85,7 +85,8 @@ export default function TicketsView() {
 	const [exportOpen, setExportOpen] = useState(false)
 	const [importPreview, setImportPreview] = useState<TicketImportPreview>()
 	const importProject = useRef("")
-	const [transferMessage, setTransferMessage] = useState("")
+	// Renew the timer even when consecutive transfers produce identical notice text.
+	const [transferMessage, setTransferMessage] = useState<{ text: string }>()
 	const [importRecovery, setImportRecovery] = useState(false)
 	const importNeedsReload = useRef(false)
 	const [ticket, setTicket] = useState<Ticket | undefined>(initial?.ticket)
@@ -243,8 +244,16 @@ export default function TicketsView() {
 		vscode.setState({ project, ticket, draft, editing, query, typeFilter, offset, view })
 	}, [project, ticket, draft, editing, query, typeFilter, offset, view])
 	useEffect(() => {
+		if (!transferMessage) return
+		const timer = setTimeout(
+			() => setTransferMessage((current) => (current === transferMessage ? undefined : current)),
+			5_000,
+		)
+		return () => clearTimeout(timer)
+	}, [transferMessage])
+	useEffect(() => {
 		setSelectedIds([])
-		setTransferMessage("")
+		setTransferMessage(undefined)
 		setOverview(undefined)
 		setOverviewError("")
 		setImportPreview(undefined)
@@ -442,7 +451,7 @@ export default function TicketsView() {
 			)
 			if (!mounted.current || latest.current.project !== targetProject) return
 			if (result.kind === "exported") {
-				setTransferMessage(t("transfer.exported", { count: result.count, file: result.fileName }))
+				setTransferMessage({ text: t("transfer.exported", { count: result.count, file: result.fileName }) })
 				setExportOpen(false)
 			}
 		})
@@ -478,7 +487,9 @@ export default function TicketsView() {
 				)
 				if (!mounted.current || latest.current.project !== targetProject) return
 				if (result.kind !== "imported") throw new Error(t("transfer.invalidResponse"))
-				setTransferMessage(t("transfer.imported", { count: result.imported, skipped: result.skipped }))
+				setTransferMessage({
+					text: t("transfer.imported", { count: result.imported, skipped: result.skipped }),
+				})
 				setImportPreview(undefined)
 				setSelectedIds([])
 				setRefresh((value) => value + 1)
@@ -486,7 +497,7 @@ export default function TicketsView() {
 				if (!mounted.current || latest.current.project !== targetProject) return
 				// Commit consumes the preview even on failure. Recover durable work before selecting files again.
 				setImportPreview(undefined)
-				setTransferMessage("")
+				setTransferMessage(undefined)
 				importNeedsReload.current = true
 				setImportRecovery(true)
 				setError(cause instanceof Error ? cause.message : String(cause))
@@ -872,7 +883,7 @@ export default function TicketsView() {
 			)}
 			{transferMessage && (
 				<p className="tickets-notice" role="status">
-					{transferMessage}
+					{transferMessage.text}
 				</p>
 			)}
 			{(error || importRecovery) && !exportOpen && !importPreview && (

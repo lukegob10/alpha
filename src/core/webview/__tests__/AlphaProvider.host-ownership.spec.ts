@@ -71,6 +71,7 @@ function makeProvider(storagePath: string) {
 			getAvailableProfile: vi.fn(async () => ({ apiProvider: "openai" })),
 		},
 		taskCreationQueue: Promise.resolve(),
+		taskHistoryMetadataReady: Promise.resolve(),
 		taskHistoryStoreReady: Promise.resolve(),
 		taskHistoryStore: {
 			initialize: vi.fn(async () => undefined),

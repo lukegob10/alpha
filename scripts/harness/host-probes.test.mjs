@@ -11,7 +11,7 @@ const options = () => ({
 })
 const result = (testFile) => ({
 	...hostReceipt(testFile),
-	actualVSCodeVersion: "1.138.0",
+	actualVSCodeVersion: "1.141.0",
 	userDataDir: path.resolve("unused-owned-profile"),
 	profileDir: path.resolve("unused-owned-profile"),
 	retention: { status: "complete" },
@@ -42,7 +42,7 @@ test("bounded stress selection runs existing acceptance serially with explicit f
 			assert.equal(active, false)
 			active = true
 			assert.equal(launch.providerMode, "scripted")
-			assert.equal(launch.vscodeVersion, "1.138.0")
+			assert.equal(launch.vscodeVersion, "1.141.0")
 			assert.equal(launch.requireAllTests, true)
 			assert.equal(launch.retainEvidenceForCampaign, true)
 			assert.equal(launch.signal.aborted, false)

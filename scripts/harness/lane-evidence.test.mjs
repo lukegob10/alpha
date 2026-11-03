@@ -220,7 +220,7 @@ test("failed host acceptance retains known closure while incomplete or unclosed 
 		const directory = await mkdtemp(path.join(await realpath(os.tmpdir()), "alpha-failed-host-"))
 		try {
 			const collector = await configureLaneEvidence({
-				lane: { commands: [["test:smoke:1380"]], receipts: [{ runner: "extension-host", suite: "smoke" }] },
+				lane: { commands: [["test:smoke:1410"]], receipts: [{ runner: "extension-host", suite: "smoke" }] },
 				name: "host",
 				root,
 				directory,
@@ -247,7 +247,7 @@ test("failed host acceptance retains known closure while incomplete or unclosed 
 			}
 			const verdict = await collector.verify({
 				index: 0,
-				args: ["test:smoke:1380"],
+				args: ["test:smoke:1410"],
 				step: { startedAt: "2026-10-02T10:00:00Z", exitCode: 1 },
 			})
 			assert.equal(verdict.status, "failed")

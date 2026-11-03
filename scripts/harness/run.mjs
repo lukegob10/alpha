@@ -131,7 +131,7 @@ export async function main(args = process.argv.slice(2)) {
 				pnpm: { expected: manifest.packageManager, actual: version ?? "invoke through pnpm harness" },
 				services:
 					"Optional: pnpm --filter @alpha-code/evals services:check. Offline and host lanes require no services or Docker.",
-				host: "not probed; host lane checks actual VS Code 1.138.0",
+				host: "not probed; host lane checks actual VS Code 1.141.0",
 				registry: "Uses pnpm/user registry configuration; credentials are never printed",
 			}
 			console.log(JSON.stringify(result, null, 2))

@@ -1,7 +1,18 @@
 import { createHash } from "node:crypto"
-import { toolNames, type AlphaCodeSettings, type AlphaMessage, type ToolName } from "@alpha-code/types"
+import { relative } from "node:path"
+import {
+	toolNames,
+	parentVerificationObligationSchema,
+	type AlphaCodeSettings,
+	type AlphaMessage,
+	type ParentVerificationObligation,
+	type SubagentContextManifest,
+	type ToolName,
+} from "@alpha-code/types"
 
-import { inspectToolTransactions } from "./transactionAssertions"
+import { inspectTaskLifecycle, inspectToolTransactions } from "./transactionAssertions"
+import { inspectWorkflowCommandReceipts } from "./workflowTrace"
+import { isApprovedWorkflowCommand } from "./extensionWorkflowHost"
 
 const DIRECTORY = "managed-delegation"
 const approvals = new WeakSet<object>()
@@ -17,6 +28,7 @@ export interface ManagedDelegationScenario {
 	children: readonly { name: string; role: "explore" | "worker"; message: string; report: string }[]
 	files: Readonly<Record<string, string>>
 	readCommands: readonly string[]
+	verificationCommand: string
 	resultPath: string
 	canaryPath: string
 	expectedResult: string
@@ -31,6 +43,7 @@ export function createManagedDelegationScenario(nonce: string): ManagedDelegatio
 	const right = 10 + (Number.parseInt(nonce.slice(6, 12), 16) % 89)
 	const resultPath = `${directory}/result.json`
 	const canaryPath = `${directory}/unrelated.txt`
+	const verificationCommand = `node -e "process.stdout.write(require('node:fs').readFileSync('${resultPath}','utf8'))"`
 	const expectedResult = `${JSON.stringify({ left, right, total: left + right })}\n`
 	const expectedAnswer = `left=${left};right=${right};total=${left + right}`
 	const readCommands = ["left", "right"].map(
@@ -54,8 +67,8 @@ export function createManagedDelegationScenario(nonce: string): ManagedDelegatio
 		"I explicitly authorize exactly three managed sub-agents for this disposable evaluation.",
 		"Launch left_review and right_review as explorer agents, with fork_turns none, and collect both reports with wait_agent.",
 		...children.slice(0, 2).map((child) => `${child.name}: ${child.message}`),
-		`After both reports, launch one worker named scoped_writer with fork_turns none. Tell it to write ${resultPath} as a JSON object with numeric left, right and total fields, using the values in the two reports and their sum. It may edit only ${resultPath}; it must not delegate or execute commands. Ask it to return integrated=${nonce}.`,
-		"Collect the Worker result and let Alpha integrate its change. Preserve all concurrent edits to unrelated.txt.",
+		`After both reports, launch one worker named scoped_writer with fork_turns none. Tell it to use apply_patch to replace the known initial {} followed by a newline in ${resultPath} with a JSON object containing numeric left, right and total fields, using the values in the two reports and their sum. Include this known preimage in its assignment so it needs no inspection command. It may edit only ${resultPath}; it must not delegate or execute commands. Ask it to return integrated=${nonce}.`,
+		`Collect the Worker result, then verify the shared-workspace result using exec_command with exactly this read-only command: ${verificationCommand}. Preserve all concurrent edits to unrelated.txt.`,
 		"Do not write files yourself, create other tasks, use network services, install dependencies, or launch further children.",
 		"Finish with only left=NUMBER;right=NUMBER;total=NUMBER using the collected reports.",
 	].join("\n")
@@ -66,6 +79,7 @@ export function createManagedDelegationScenario(nonce: string): ManagedDelegatio
 		approval,
 		children: Object.freeze(children),
 		readCommands: Object.freeze(readCommands),
+		verificationCommand,
 		resultPath,
 		canaryPath,
 		expectedResult,
@@ -107,7 +121,7 @@ export function managedDelegationConfiguration(
 		alwaysAllowWriteOutsideWorkspace: false,
 		alwaysAllowWriteProtected: false,
 		alwaysAllowExecute: true,
-		allowedCommands: [...scenario.readCommands],
+		allowedCommands: [...scenario.readCommands, scenario.verificationCommand],
 		deniedCommands: [],
 		alwaysAllowMcp: false,
 		mcpEnabled: false,
@@ -126,6 +140,9 @@ export function managedDelegationConfiguration(
 export interface ManagedDelegationEvidence {
 	rootTaskId: string
 	rootHistory: unknown[]
+	workspacePath?: string
+	rootLifecycleEvents?: unknown[]
+	parentVerificationObligations?: ParentVerificationObligation[]
 	children: {
 		taskId: string
 		parentTaskId: string
@@ -134,6 +151,9 @@ export interface ManagedDelegationEvidence {
 		completionCount: number
 		history: unknown[]
 		changeSetStatus?: string
+		runtimePolicy?: Pick<SubagentContextManifest["runtimePolicy"], "authorityModel" | "sharedWorkspace">
+		changedFiles?: string[]
+		lifecycleEvents?: unknown[]
 	}[]
 	files: Record<string, string>
 	expectedCanary: string
@@ -154,11 +174,70 @@ function pairs(history: unknown[]) {
 	return blocks
 		.filter(({ block }) => block.type === "tool_use")
 		.map(({ block: call, messageIndex }) => ({
+			id: call.id,
 			name: call.name,
 			input: object(call.input),
 			messageIndex,
 			result: blocks.find(({ block }) => block.type === "tool_result" && block.tool_use_id === call.id)?.block,
 		}))
+}
+
+function hasDurableSuccessfulEffect(
+	events: unknown[] | undefined,
+	history: unknown[],
+	taskId: string,
+	callId: unknown,
+) {
+	if (
+		typeof callId !== "string" ||
+		!events ||
+		inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors.length > 0
+	)
+		return false
+	const owned = events.map(object).filter((event) => event?.taskId === taskId)
+	const started = owned.findIndex(
+		(event) => event?.type === "tool_effect_started" && object(event.payload)?.toolCallId === callId,
+	)
+	return (
+		started >= 0 &&
+		owned.slice(started + 1).some((event) => {
+			const item = object(object(event?.payload)?.item)
+			return event?.type === "tool_result_recorded" && item?.toolCallId === callId && item?.status === "success"
+		})
+	)
+}
+
+function hasSettledParentMutation(scenario: ManagedDelegationScenario, evidence: ManagedDelegationEvidence): boolean {
+	const content = evidence.files[scenario.resultPath]
+	if (content === undefined) return false
+	return (
+		evidence.parentVerificationObligations?.some((value) => {
+			const parsed = parentVerificationObligationSchema.safeParse(value)
+			if (!parsed.success) return false
+			const receipt = parsed.data
+			return (
+				receipt.origin === "primary" &&
+				receipt.rootTaskId === evidence.rootTaskId &&
+				receipt.parentTaskId === evidence.rootTaskId &&
+				receipt.workerTaskId === evidence.rootTaskId &&
+				receipt.changeSetId === `primary-change:${evidence.rootTaskId}` &&
+				typeof evidence.workspacePath === "string" &&
+				typeof receipt.workspacePath === "string" &&
+				relative(evidence.workspacePath, receipt.workspacePath) === "" &&
+				["pending", "satisfied", "failed"].includes(receipt.status) &&
+				receipt.appliedAt !== undefined &&
+				!receipt.scopeUnresolved &&
+				!receipt.observationIncomplete &&
+				!receipt.mutationReservations?.length &&
+				receipt.changedFiles.length === 1 &&
+				receipt.changedFiles[0] === scenario.resultPath &&
+				receipt.contentVersion !== undefined &&
+				receipt.fileVersions?.[scenario.resultPath] === digest(content) &&
+				receipt.contentFingerprint ===
+					digest(JSON.stringify(Object.entries(receipt.fileVersions).sort(([a], [b]) => a.localeCompare(b))))
+			)
+		}) ?? false
+	)
 }
 
 function jsonObjectEquals(actual: string | undefined, expected: string): boolean {
@@ -336,6 +415,16 @@ export function inspectManagedDelegationOutcome(
 	check(evidence.rootCompletionCount === 1, "root_completed_once")
 	check(evidence.capacity.active === 0 && evidence.capacity.queued === 0, "capacity_released")
 	const parentCalls = pairs(evidence.rootHistory)
+	const isVerificationRead = (call: (typeof parentCalls)[number]) =>
+		call.name === "exec_command" &&
+		call.input?.cmd === scenario.verificationCommand &&
+		typeof evidence.workspacePath === "string" &&
+		isApprovedWorkflowCommand(
+			scenario.verificationCommand,
+			evidence.rootHistory.slice(call.messageIndex, call.messageIndex + 1),
+			evidence.workspacePath,
+			[scenario.verificationCommand],
+		)
 	const assignedLaunches = scenario.children.map((expected) => {
 		const launches = parentCalls.filter(
 			(call) =>
@@ -358,7 +447,11 @@ export function inspectManagedDelegationOutcome(
 		"parent_spawned_children",
 	)
 	check(
-		parentCalls.every((call) => ["spawn_agent", "wait_agent", "attempt_completion"].includes(String(call.name))),
+		parentCalls.every(
+			(call) =>
+				["spawn_agent", "wait_agent", "attempt_completion"].includes(String(call.name)) ||
+				isVerificationRead(call),
+		),
 		"parent_did_not_edit",
 	)
 	const notifications = collectedManagedNotifications(evidence.rootHistory)
@@ -397,6 +490,21 @@ export function inspectManagedDelegationOutcome(
 		"parent_handoff_order",
 	)
 	const finalBlocks = Array.isArray(final?.content) ? final.content.map(object) : []
+	const parentVerified = inspectWorkflowCommandReceipts(evidence.rootHistory).commands.some((receipt) => {
+		const read = parentCalls.find((call) => call.id === receipt.resultCallIds[0])
+		return (
+			receipt.command === scenario.verificationCommand &&
+			receipt.toolSucceeded &&
+			receipt.terminalToolSucceeded &&
+			receipt.exitCode === 0 &&
+			jsonObjectEquals(receipt.output, scenario.expectedResult) &&
+			read !== undefined &&
+			isVerificationRead(read) &&
+			reportDelivered(2, read.messageIndex) &&
+			read.messageIndex < (finalEntry?.messageIndex ?? -1) &&
+			hasDurableSuccessfulEffect(evidence.rootLifecycleEvents, evidence.rootHistory, evidence.rootTaskId, read.id)
+		)
+	})
 	const answer = finalBlocks
 		.map((block) =>
 			block?.type === "text"
@@ -452,13 +560,31 @@ export function inspectManagedDelegationOutcome(
 			"child_commands_scoped",
 		)
 		if (child.role !== "worker") continue
-		check(child.changeSetStatus === "applied", "worker_integrated")
 		const edits = calls.filter((call) => call.name === "apply_patch")
+		const successfulEdits = edits.filter((call) => call.result && call.result.is_error !== true)
+		// Native Codex children inherit cwd (1a604d58 child_config.rs); Alpha records
+		// their shared mutations on the parent ledger, without an isolated change set.
+		const native = child.runtimePolicy?.authorityModel === "parent" || child.runtimePolicy?.sharedWorkspace === true
+		check(
+			native
+				? child.runtimePolicy?.authorityModel === "parent" &&
+						child.runtimePolicy.sharedWorkspace === true &&
+						child.changedFiles?.length === 1 &&
+						child.changedFiles[0] === scenario.resultPath &&
+						parentVerified &&
+						hasSettledParentMutation(scenario, evidence) &&
+						successfulEdits.some((call) =>
+							hasDurableSuccessfulEffect(child.lifecycleEvents, child.history, child.taskId, call.id),
+						)
+				: child.changeSetStatus === "applied",
+			"worker_integrated",
+		)
+		check(successfulEdits.length > 0, "worker_patch_applied")
 		check(
 			edits.length > 0 &&
 				edits.every((call) => {
 					const patch = call.input?.patch
-					if (typeof patch !== "string" || call.result?.is_error === true) return false
+					if (typeof patch !== "string") return false
 					const targets = [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map(
 						(match) => match[1],
 					)

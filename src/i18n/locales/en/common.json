@@ -132,7 +132,6 @@
 		"task_recovery_storage_busy": "The task paused while waiting for Alpha's task storage. Another operation or VS Code window is still using it. Let it finish or stop Alpha in that window, then resume. This is a task-storage issue.",
 		"task_recovery_failed": "The turn stopped because an operation failed. You can resume the task or send new guidance.",
 		"task_recovery_incomplete": "The turn ended before the task was complete. You can resume the task or send new guidance.",
-		"search_loop_recovery_paused": "The agent continued with search-only model steps after two recovery checkpoints. The task was paused without being failed. Resume with guidance, or ask the agent to use the best existing evidence and take a concrete next action.",
 		"task_recovery_exhausted": "The turn stopped after reaching its automatic retry limit. You can resume the task or send new guidance.",
 		"task_recovery_persistence": "The task paused because required task data could not be saved. Check free disk space and access to the task storage folder, then resume or send new guidance.",
 		"invalid_data_uri": "Invalid data URI format",

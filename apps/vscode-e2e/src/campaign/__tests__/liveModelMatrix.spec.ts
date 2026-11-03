@@ -28,7 +28,7 @@ function complete(config: CampaignConfig): CampaignExecutionResult {
 		result: {
 			status: "passed",
 			usage: { requests: 2, inputTokens: null, outputTokens: null, cost: null },
-			actualHostVersion: "1.138.0",
+			actualHostVersion: "1.141.0",
 			model: { id: config.provider.modelId!, effort: config.provider.effort },
 			providerIdentity: compareLiveProviderIdentity(
 				{ id: "github.copilot-chat", version: "0.66.0", entrypointSha256: "f".repeat(64) },
@@ -69,7 +69,7 @@ function complete(config: CampaignConfig): CampaignExecutionResult {
 			},
 			evaluationPlan: {
 				scenarioIds: [...config.scenarioIds],
-				hostVersions: ["1.138.0"],
+				hostVersions: ["1.141.0"],
 				samples: config.samples,
 			},
 		},
@@ -86,7 +86,7 @@ test("matrix plans one identical exact-host suite for Luna max, Haiku high and G
 			{ modelId: "grok-4.6", effort: "low" },
 		].map((provider) => ({
 			provider: { mode: "live-copilot", ...provider },
-			hosts: [{ version: "1.138.0" }],
+			hosts: [{ version: "1.141.0" }],
 			samples: 1,
 		})),
 	)

@@ -535,7 +535,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 
 	test("ten command/API launches keep every previous task running and respect capacity", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
 		assert.ok(provider)
@@ -613,7 +613,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 
 	test("ten native child threads survive completion and are collected by an explicit human follow-up", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
 		assert.ok(provider)
@@ -708,7 +708,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 
 	test("ten children with host completion notifications survive their coordinator and deliver one durable receipt each", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CrossTaskHostProvider }).sidebarProvider
 		assert.ok(provider)

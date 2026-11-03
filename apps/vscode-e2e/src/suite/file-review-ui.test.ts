@@ -26,7 +26,7 @@ const observedTasks = new WeakMap<object, ReviewTask>()
 
 function textDiffs(input: unknown): readonly vscode.TabInputTextDiff[] {
 	if (input instanceof vscode.TabInputTextDiff) return [input]
-	// Exact-host tab projection: VS Code 1.138.0 exposes multi-diff resources as textDiffs on an unknown input.
+	// Exact-host tab projection: VS Code 1.141.0 exposes multi-diff resources as textDiffs on an unknown input.
 	if (
 		input &&
 		typeof input === "object" &&
@@ -80,7 +80,7 @@ suite("Rendered file review", function () {
 	this.timeout(180_000)
 	test("opens the persisted command change from the activity trace and file panel", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

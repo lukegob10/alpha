@@ -282,6 +282,69 @@ describe("native Anthropic adapter", () => {
 		expect(handler.getThoughtSignature()).toBe("signature")
 	})
 
+	it("tags accepted provider usage deltas without counting repeated or stale totals again", async () => {
+		const totals = {
+			input_tokens: 12,
+			output_tokens: 5,
+			cache_creation_input_tokens: 4,
+			cache_read_input_tokens: 5,
+		}
+		mocks.create.mockResolvedValue(
+			stream([
+				{
+					type: "message_start",
+					message: {
+						usage: {
+							input_tokens: 10,
+							output_tokens: 0,
+							cache_creation_input_tokens: 4,
+							cache_read_input_tokens: 3,
+						},
+					},
+				},
+				{ type: "content_block_start", index: 0, content_block: { type: "text", text: "Done" } },
+				{ type: "content_block_stop", index: 0 },
+				{ type: "message_delta", usage: totals },
+				{ type: "message_delta", usage: totals },
+				{
+					type: "message_delta",
+					usage: {
+						input_tokens: 11,
+						output_tokens: 3,
+						cache_creation_input_tokens: 3,
+						cache_read_input_tokens: 4,
+					},
+				},
+				{ type: "message_delta", usage: {} },
+				{ type: "message_delta", usage: { input_tokens: -1, output_tokens: Number.NaN } },
+				{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 7 } },
+				{ type: "message_stop" },
+			]),
+		)
+		const chunks = await collect(new AnthropicHandler({ apiKey: "key" }))
+		const usage = chunks.filter((chunk) => chunk.type === "usage")
+		expect(usage.map((chunk) => chunk.usageSource)).toEqual([
+			"provider",
+			"provider",
+			"provider",
+			"unknown",
+			"unknown",
+			"unknown",
+			"provider",
+		])
+		expect(usage.map(({ inputTokens, outputTokens }) => [inputTokens, outputTokens])).toEqual([
+			[10, 0],
+			[2, 5],
+			[0, 0],
+			[0, 0],
+			[0, 0],
+			[0, 0],
+			[0, 2],
+		])
+		expect(usage.reduce((sum, chunk) => sum + (chunk.cacheWriteTokens ?? 0), 0)).toBe(4)
+		expect(usage.reduce((sum, chunk) => sum + (chunk.cacheReadTokens ?? 0), 0)).toBe(5)
+	})
+
 	it.each(["max_tokens", undefined])("keeps truncation/EOF (%s) incomplete", async (stopReason) => {
 		mocks.create.mockResolvedValue(
 			stream([

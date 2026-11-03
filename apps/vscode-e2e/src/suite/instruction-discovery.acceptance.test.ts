@@ -43,7 +43,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	const assertInstructionDiscovery = async (localFits: boolean) => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace, "The runner must supply its owned workspace")
@@ -206,7 +206,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 	}
 
 	for (const localFits of [true, false]) {
-		test(`loads ancestor override and ${localFits ? "includes bounded cwd guidance" : "caps personal guidance"} on VS Code 1.138.0`, () =>
+		test(`loads ancestor override and ${localFits ? "includes bounded cwd guidance" : "caps personal guidance"} on VS Code 1.141.0`, () =>
 			assertInstructionDiscovery(localFits))
 	}
 })

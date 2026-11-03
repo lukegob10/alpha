@@ -428,7 +428,7 @@ suite("Alpha native compaction acceptance", function () {
 
 	for (const automatic of [true, false]) {
 		test(`settles a full 200k Copilot window and accepts another prompt (automatic summary=${automatic})`, async () => {
-			assert.equal(vscode.version, "1.138.0")
+			assert.equal(vscode.version, "1.141.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const api = globalThis.api
 			const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -522,7 +522,7 @@ suite("Alpha native compaction acceptance", function () {
 	}
 
 	test("makes irreducible 200k overflow resumable and can start a healthy task", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -589,7 +589,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("recovers a long completed-thread follow-up in ask mode and accepts the next prompt", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -701,7 +701,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("compacts after a turn, reloads the archive, and sends reduced context on follow-up", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
@@ -852,7 +852,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("recovers an overflowed tool continuation before delivering queued steering", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

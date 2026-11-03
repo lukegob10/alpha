@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.20",
+		version: "3.2.21",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.20" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.21" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.20")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.21")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.20 improves task reliability, lifecycle hooks, and Alpha Tickets."),
+			screen.getByText("Alpha v3.2.21 improves command recovery, task history, and completed-turn folding."),
 		).toBeInTheDocument()
 	})
 
@@ -51,20 +51,18 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Keep task completion, cancellation, and recovery consistent during long-running work."),
+			screen.getByText("Keep completed turns folded and load task history sooner when opening a VS Code window."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Use command and MCP lifecycle hooks with Alpha's native approval and workspace protections.",
+				"Recover completed commands cleanly and preserve tool and reasoning state with GitHub Copilot.",
 			),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep sub-agent permissions and task handoffs consistent with the parent chat."),
+			screen.getByText("Keep long-running tasks and sub-agent handoffs consistent as work continues."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Track ticket progress, import and export ticket bundles, and delete selected tickets with one approval.",
-			),
+			screen.getByText("Ticket import and export notices dismiss automatically after a short delay."),
 		).toBeInTheDocument()
 	})
 
@@ -72,10 +70,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.20 improves task reliability, lifecycle hooks, and Alpha Tickets."),
+			screen.getByText("Alpha v3.2.21 improves command recovery, task history, and completed-turn folding."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep task completion, cancellation, and recovery consistent during long-running work."),
+			screen.getByText("Keep completed turns folded and load task history sooner when opening a VS Code window."),
 		).toBeInTheDocument()
 	})
 })

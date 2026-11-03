@@ -206,10 +206,12 @@ describe("getEnvironmentDetails", () => {
 		expect(result).not.toContain("Provider-profile interval:")
 	})
 
-	it("should include file details when includeFileDetails is true", async () => {
+	it("includes an initial file snapshot without retired tool guidance", async () => {
 		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 		expect(result).toContain("# Current Workspace Directory")
-		expect(result).toContain("Files")
+		expect(result).toContain("# Workspace Files (initial snapshot)\nfile1.ts\nfile2.ts")
+		expect(result).not.toMatch(/\b(?:list_files|read_file|search_files)\b/)
+		expect(result.indexOf("# Workspace Files")).toBeGreaterThan(result.indexOf("# Terminals"))
 
 		expect(listFiles).toHaveBeenCalledWith(mockCwd, true, 50, undefined)
 
@@ -286,14 +288,15 @@ describe("getEnvironmentDetails", () => {
 		compacted.release()
 	})
 
-	it("should handle desktop directory specially", async () => {
+	it("omits Desktop contents without retired tool guidance", async () => {
 		;(arePathsEqual as Mock).mockReturnValue(true)
 		const result = await getEnvironmentDetails(mockAlphaTask as Task, true)
 		expect(result).toContain("Desktop files not shown automatically")
+		expect(result).not.toMatch(/\b(?:list_files|read_file|search_files)\b/)
 		expect(listFiles).not.toHaveBeenCalled()
 	})
 
-	it("should skip file listing when maxWorkspaceFiles is 0", async () => {
+	it("omits disabled workspace contents without retired tool guidance", async () => {
 		mockProvider.getState.mockResolvedValue({
 			...mockState,
 			maxWorkspaceFiles: 0,
@@ -303,6 +306,7 @@ describe("getEnvironmentDetails", () => {
 
 		expect(listFiles).not.toHaveBeenCalled()
 		expect(result).toContain("Workspace files context disabled")
+		expect(result).not.toMatch(/\b(?:list_files|read_file|search_files)\b/)
 		expect(formatResponse.formatFilesList).not.toHaveBeenCalled()
 	})
 

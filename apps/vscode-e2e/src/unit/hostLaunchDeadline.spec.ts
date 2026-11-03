@@ -10,7 +10,7 @@ import { HostLaunchFailureError, launchExtensionHost } from "../hostLaunch"
 
 test("an automatic host stuck after its started receipt is terminated with its child before failure returns", async (context) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "alpha-live-deadline-")))
-	const expected = { runId: "after-start-deadline", nonce: randomUUID(), actualVSCodeVersion: "1.138.0" }
+	const expected = { runId: "after-start-deadline", nonce: randomUUID(), actualVSCodeVersion: "1.141.0" }
 	const { artifactDirectory } = await prepareEvidenceRun({ artifactsRoot: root, runId: expected.runId })
 	const pidsFile = join(artifactDirectory, "owned-fixture-pids.json")
 	context.after(async () => {

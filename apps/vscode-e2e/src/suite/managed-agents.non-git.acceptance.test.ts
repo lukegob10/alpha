@@ -183,7 +183,7 @@ async function assertNonGitWorkspace(workspace: string): Promise<void> {
 suite("Managed agents in a plain folder", function () {
 	this.timeout(120_000)
 	test("runs two native default agents in the parent directory without creating Git metadata or replacing the parent", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR

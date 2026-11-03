@@ -82,6 +82,11 @@ export class AsyncLifecycleHooks {
 			.flatMap(({ event, outcome, lifetimeSignal }) => (lifetimeSignal.aborted ? [] : [{ event, outcome }]))
 	}
 
+	/** Effect/admission fences inspect resource failures without consuming advisory output. */
+	checkCleanupFailures(): void {
+		this.throwFailures()
+	}
+
 	/** Completion may defer for ready feedback; running hooks never hold an idle turn open. */
 	hasPendingContext(): boolean {
 		return this.completed.some(

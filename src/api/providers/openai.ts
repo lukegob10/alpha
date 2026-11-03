@@ -1422,13 +1422,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	protected processOpenAiResponsesUsage(usage: unknown): ApiStreamUsageChunk {
 		const source = providerRecord(usage)
+		const inputTokens = providerTokenCount(source?.input_tokens)
+		const outputTokens = providerTokenCount(source?.output_tokens)
+		const cacheWriteTokens = providerTokenCount(providerRecord(source?.input_tokens_details)?.cache_write_tokens)
+		const cacheReadTokens = providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens)
+		const reasoningTokens = providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens)
 		return {
 			type: "usage",
-			inputTokens: providerTokenCount(source?.input_tokens) ?? 0,
-			outputTokens: providerTokenCount(source?.output_tokens) ?? 0,
-			cacheWriteTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cache_write_tokens),
-			cacheReadTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens),
-			reasoningTokens: providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens),
+			usageSource:
+				Number.isSafeInteger(inputTokens) &&
+				Number.isSafeInteger(outputTokens) &&
+				[cacheWriteTokens, cacheReadTokens, reasoningTokens].every(
+					(value) => value === undefined || Number.isSafeInteger(value),
+				)
+					? "provider"
+					: "unknown",
+			inputTokens: inputTokens ?? 0,
+			outputTokens: outputTokens ?? 0,
+			cacheWriteTokens,
+			cacheReadTokens,
+			reasoningTokens,
 		}
 	}
 
@@ -1464,17 +1477,30 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	protected processUsageMetrics(usage: unknown, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
 		const source = providerRecord(usage)
+		const inputTokens = providerTokenCount(source?.prompt_tokens)
+		const outputTokens = providerTokenCount(source?.completion_tokens)
+		const cacheWriteTokens = providerTokenCount(source?.cache_creation_input_tokens)
+		// A valid legacy counter, including zero, takes precedence on compatible endpoints.
+		const cacheReadTokens =
+			providerTokenCount(source?.cache_read_input_tokens) ??
+			providerTokenCount(providerRecord(source?.prompt_tokens_details)?.cached_tokens)
+		// Reasoning is already included in completion_tokens; report it as a subset only.
+		const reasoningTokens = providerTokenCount(providerRecord(source?.completion_tokens_details)?.reasoning_tokens)
 		return {
 			type: "usage",
-			inputTokens: providerTokenCount(source?.prompt_tokens) ?? 0,
-			outputTokens: providerTokenCount(source?.completion_tokens) ?? 0,
-			cacheWriteTokens: providerTokenCount(source?.cache_creation_input_tokens),
-			// A valid legacy counter, including zero, takes precedence on compatible endpoints.
-			cacheReadTokens:
-				providerTokenCount(source?.cache_read_input_tokens) ??
-				providerTokenCount(providerRecord(source?.prompt_tokens_details)?.cached_tokens),
-			// Reasoning is already included in completion_tokens; report it as a subset only.
-			reasoningTokens: providerTokenCount(providerRecord(source?.completion_tokens_details)?.reasoning_tokens),
+			usageSource:
+				Number.isSafeInteger(inputTokens) &&
+				Number.isSafeInteger(outputTokens) &&
+				[cacheWriteTokens, cacheReadTokens, reasoningTokens].every(
+					(value) => value === undefined || Number.isSafeInteger(value),
+				)
+					? "provider"
+					: "unknown",
+			inputTokens: inputTokens ?? 0,
+			outputTokens: outputTokens ?? 0,
+			cacheWriteTokens,
+			cacheReadTokens,
+			reasoningTokens,
 		}
 	}
 

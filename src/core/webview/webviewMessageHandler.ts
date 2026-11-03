@@ -740,7 +740,14 @@ export const webviewMessageHandler = async (
 				)
 			}
 
-			if (isCurrentWebview()) provider.isViewLaunched = true
+			if (isCurrentWebview()) {
+				provider.isViewLaunched = true
+				void provider.broadcastTaskHistoryUpdate().catch((error) => {
+					provider.log(
+						`Failed to load chat history: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
+			}
 			break
 		case "newTask": {
 			if (

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { TicketRequest, TicketSummary } from "@alpha-code/types"
 import TicketsView from "../TicketsView"
 import { vscode } from "../../../utils/vscode"
@@ -154,5 +154,64 @@ describe("ticket overview and sharing", () => {
 		fireEvent.click(screen.getByRole("button", { name: "transfer.import" }))
 		expect(requests("previewImport")).toHaveLength(2)
 		expect(requests("import")).toHaveLength(1)
+	})
+})
+
+describe("ticket transfer success notice timing", () => {
+	afterEach(() => vi.useRealTimers())
+
+	const openView = async () => {
+		const view = render(<TicketsView />)
+		await screen.findByRole("button", { name: /Portable work/ })
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		return view
+	}
+	const completeTransfer = async (kind: "export" | "import") => {
+		fireEvent.click(screen.getByRole("button", { name: `transfer.${kind}` }))
+		if (kind === "import") {
+			await act(async () => reply(requests("previewImport").at(-1)!.requestId, preview))
+			fireEvent.click(screen.getByRole("button", { name: "transfer.confirmImport" }))
+			await act(async () =>
+				reply(requests("import").at(-1)!.requestId, { kind: "imported", imported: 1, skipped: 0 }),
+			)
+		} else {
+			fireEvent.click(screen.getByRole("button", { name: "transfer.saveExport" }))
+			await act(async () =>
+				reply(requests("export").at(-1)!.requestId, { kind: "exported", count: 1, fileName: "tickets.zip" }),
+			)
+		}
+	}
+	const advance = (milliseconds: number) => act(() => vi.advanceTimersByTimeAsync(milliseconds))
+
+	it.each(["export", "import"] as const)("dismisses the %s notice after five seconds", async (kind) => {
+		await openView()
+		await completeTransfer(kind)
+		expect(screen.getByRole("status")).toHaveTextContent(`transfer.${kind}ed`)
+		await advance(4_999)
+		expect(screen.getByRole("status")).toBeVisible()
+		await advance(1)
+		expect(screen.queryByRole("status")).not.toBeInTheDocument()
+	})
+
+	it("gives an identical subsequent export notice a fresh five seconds", async () => {
+		await openView()
+		await completeTransfer("export")
+		await advance(4_000)
+		await completeTransfer("export")
+		await advance(1_000)
+		expect(screen.getByRole("status")).toHaveTextContent("transfer.exported")
+		await advance(3_999)
+		expect(screen.getByRole("status")).toBeVisible()
+		await advance(1)
+		expect(screen.queryByRole("status")).not.toBeInTheDocument()
+	})
+
+	it("cleans up the dismissal timer when the view closes", async () => {
+		const view = await openView()
+		await completeTransfer("export")
+		await advance(0)
+		expect(vi.getTimerCount()).toBeGreaterThan(0)
+		view.unmount()
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })

@@ -73,12 +73,21 @@ function createAnthropicUsageAccumulator() {
 		// Anthropic message_delta counters are cumulative, including optional
 		// input/cache updates. Task and the canonical usage ledger consume deltas;
 		// repeated or stale snapshots must not debit usage or lower the baseline.
+		const inputTokens = delta("input_tokens")
+		const outputTokens = delta("output_tokens")
+		const cacheWriteTokens = delta("cache_creation_input_tokens")
+		const cacheReadTokens = delta("cache_read_input_tokens")
 		return {
 			type: "usage",
-			inputTokens: delta("input_tokens") ?? 0,
-			outputTokens: delta("output_tokens") ?? 0,
-			cacheWriteTokens: delta("cache_creation_input_tokens"),
-			cacheReadTokens: delta("cache_read_input_tokens"),
+			usageSource: [inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens].some(
+				(value) => value !== undefined,
+			)
+				? "provider"
+				: "unknown",
+			inputTokens: inputTokens ?? 0,
+			outputTokens: outputTokens ?? 0,
+			cacheWriteTokens,
+			cacheReadTokens,
 		}
 	}
 }

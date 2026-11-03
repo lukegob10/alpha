@@ -56,7 +56,7 @@ async function fixture(t: { after(callback: () => Promise<void>): void }) {
 		assignmentDigest: digest("0"),
 		pairDigest: digest("1"),
 		extensionPath: temporary,
-		hostVersion: "1.138.0",
+		hostVersion: "1.141.0",
 		prelaunchBuildManifestDigest: digest("a"),
 		providerMode: "live-copilot" as const,
 		requestLimit: 10,

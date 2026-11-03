@@ -17,8 +17,9 @@ const sealed = <T extends object>(body: T) => ({ ...body, digest: sha256(canonic
 
 /** Offline transport data only: these fixtures do not execute or attest a VS Code host. */
 export async function createConfirmationFixture(
-	options: { live?: boolean; additionalCases?: number; samples?: number } = {},
+	options: { live?: boolean; additionalCases?: number; samples?: number; hostVersion?: "1.138.0" | "1.141.0" } = {},
 ) {
+	const hostVersion = options.hostVersion ?? "1.141.0"
 	const retained = new Map<string, Uint8Array>()
 	const store: ContentAddressedArtifactStore = {
 		put: async (input) => {
@@ -234,7 +235,7 @@ export async function createConfirmationFixture(
 		repairs: [],
 		requestedProvider: provider,
 		retention: { status: "complete" },
-		evaluationPlan: { scenarioIds: scenarios, hostVersions: ["1.138.0"], samples },
+		evaluationPlan: { scenarioIds: scenarios, hostVersions: [hostVersion], samples },
 		evaluationIdentity: {
 			extensionCommit: contexts[arm].sourceRevision,
 			workingTreeDigest: sha256(`${arm}-source`),
@@ -254,7 +255,7 @@ export async function createConfirmationFixture(
 					scenarioId,
 					sample: sample + 1,
 					phase: "sample",
-					host: { version: "1.138.0" },
+					host: { version: hostVersion },
 					decisionPlanDigest: decisionPlan ? sha256(canonicalJson(decisionPlan)) : undefined,
 					startedAt: CONFIRMATION_TIME,
 					timeWindow: "confirmation-block",
@@ -263,7 +264,7 @@ export async function createConfirmationFixture(
 					status: arm === "control" && scenarioId === regression.draft.id ? "failed" : "passed",
 					failure:
 						arm === "control" && scenarioId === regression.draft.id ? { class: "assertion" } : undefined,
-					actualHostVersion: "1.138.0",
+					actualHostVersion: hostVersion,
 					model: options.live ? { id: "observed-model", effort: "high" } : undefined,
 					usage: { cost: options.live ? 1 : null, inputTokens: null, outputTokens: null },
 				},
@@ -318,7 +319,7 @@ export async function createConfirmationFixture(
 			archivedCampaignDigests: [],
 		},
 		taskSet: preview.control.taskSet,
-		hostVersions: ["1.138.0"],
+		hostVersions: [hostVersion],
 		control: { runId: "fresh-control", context: contexts.control, variant: preview.control.variant, provider },
 		candidate: {
 			runId: "fresh-candidate",
@@ -348,8 +349,8 @@ export async function createConfirmationFixture(
 			],
 		},
 		requirements: {
-			targeted: [{ regressionId: regression.draft.id, taskId: `${regression.draft.id}:vscode-1.138.0` }],
-			neighbors: ["neighbor-cache:vscode-1.138.0"],
+			targeted: [{ regressionId: regression.draft.id, taskId: `${regression.draft.id}:vscode-${hostVersion}` }],
+			neighbors: [`neighbor-cache:vscode-${hostVersion}`],
 		},
 		limits: { maxRequestsPerArm: scenarios.length * samples, maxDurationMsPerArm: 30_000 },
 		promotionPolicy: "pr-v1",

@@ -68,14 +68,14 @@ export function validateImprovementCaptureOptions(options: ExtensionTestRunOptio
 		!options.workspace ||
 		!options.artifactsDir ||
 		!["scripted", "live-copilot"].includes(options.providerMode) ||
-		options.vscodeVersion !== "1.138.0" ||
+		options.vscodeVersion !== "1.141.0" ||
 		typeof options.improvementTaskId !== "string" ||
 		options.improvementTaskId.length > 200 ||
 		!/^[a-z0-9][a-z0-9._/-]*(?:@[1-9]\d*)?$/.test(options.improvementTaskId)
 	)
 		throw new TestRunError(
 			"invalid-options",
-			"Improvement evidence requires VS Code 1.138.0, one public problem-solving task and explicit owned run paths",
+			"Improvement evidence requires VS Code 1.141.0, one public problem-solving task and explicit owned run paths",
 		)
 	// This offline plan exercises real tools and failed validation; it does not solve the source benchmark.
 	if (

@@ -12,7 +12,7 @@ import { prepareTestProfile } from "../testProfile"
 import type { HostLaunchOptions } from "../hostLaunch"
 import { writeLiveHostReceipt, LIVE_HOST_COMPLETION, type LiveHostReceipt } from "../liveHostProtocol"
 
-const writeHostPreflight = async (options: HostLaunchOptions, version = "1.138.0", code?: string) => {
+const writeHostPreflight = async (options: HostLaunchOptions, version = "1.141.0", code?: string) => {
 	const env = options.extensionTestsEnv!
 	await fs.writeFile(
 		path.join(env.ALPHA_E2E_ARTIFACTS_DIR!, "host-preflight.json"),
@@ -55,7 +55,7 @@ test("strict runs reject explicit and inherited grep while focused runs retain i
 	await assert.rejects(
 		runExtensionTests({
 			providerMode: "scripted",
-			vscodeVersion: "1.138.0",
+			vscodeVersion: "1.141.0",
 			requireAllTests: true,
 			testGrep: "passing case",
 		}),
@@ -70,7 +70,7 @@ test("actual disposable completion cannot pass without observed host ownership",
 		await writeHostPreflight(options)
 		return 0
 	})
-	const result = await runExtensionTests({ providerMode: "scripted", vscodeVersion: "1.138.0" })
+	const result = await runExtensionTests({ providerMode: "scripted", vscodeVersion: "1.141.0" })
 	try {
 		assert.equal(result.execution, "extension-host")
 		assert.equal(result.status, "blocked")
@@ -102,7 +102,7 @@ test("strict launches require terminal coherent test counts even after a zero ho
 			const result = await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					profileDir: path.join(root, "profile"),
 					workspace: path.join(root, "workspace"),
 					artifactsDir: path.join(root, "artifacts"),
@@ -180,7 +180,7 @@ test("installed artifact runs load only the test sidecar, preserve identity, and
 	try {
 		const options = {
 			providerMode: "scripted" as const,
-			vscodeVersion: "1.138.0",
+			vscodeVersion: "1.141.0",
 			profileDir: path.join(root, "profile"),
 			workspace: path.join(root, "workspace"),
 			artifactsDir: path.join(root, "artifacts"),
@@ -238,7 +238,7 @@ test("live Copilot and explicit scripted diagnostics use the normal sidecar with
 			const result = await runExtensionTests(
 				{
 					providerMode,
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					modelId: "exact-model-id",
 					profileDir: path.join(root, "profile"),
 					workspace: path.join(root, "workspace"),
@@ -265,7 +265,7 @@ test("live Copilot and explicit scripted diagnostics use the normal sidecar with
 							options.extensionTestsEnv?.ALPHA_E2E_LAUNCH_NONCE,
 							options.liveHost?.expected.nonce,
 						)
-						const shared = await fs.realpath(path.join(root, "profile", "1.138.0", "shared-data"))
+						const shared = await fs.realpath(path.join(root, "profile", "1.141.0", "shared-data"))
 						assert.equal(options.extensionTestsEnv?.ALPHA_E2E_SHARED_DATA_DIR, shared)
 						assert.ok(options.launchArgs?.includes(`--shared-data-dir=${shared}`))
 						assert.ok(options.launchArgs?.includes("--disable-extension=vscode.git"))
@@ -290,7 +290,7 @@ test("live Copilot and explicit scripted diagnostics use the normal sidecar with
 			assert.equal(result.execution, "test-seam")
 			assert.equal(result.hostExitObserved, false)
 			assert.equal(result.completionReceiptPath, path.join(result.artifactsDir, LIVE_HOST_COMPLETION))
-			await assert.rejects(fs.stat(path.join(root, "profile", "1.138.0", ".alpha-e2e-launch.json")), {
+			await assert.rejects(fs.stat(path.join(root, "profile", "1.141.0", ".alpha-e2e-launch.json")), {
 				code: "ENOENT",
 			})
 		} finally {
@@ -314,7 +314,7 @@ test("normal-mode missing, stale, and failed receipts cannot pass a zero exit; p
 			const result = await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					profileDir: path.join(root, "profile"),
 					workspace: path.join(root, "workspace"),
 					artifactsDir: path.join(root, "artifacts"),
@@ -326,7 +326,7 @@ test("normal-mode missing, stale, and failed receipts cannot pass a zero exit; p
 						if (scenario !== "before-preflight")
 							await writeHostPreflight(
 								options,
-								"1.138.0",
+								"1.141.0",
 								scenario === "blocked" ? "authentication-required" : undefined,
 							)
 						if (scenario !== "missing" && scenario !== "blocked") {
@@ -367,12 +367,12 @@ test("normal-mode missing, stale, and failed receipts cannot pass a zero exit; p
 
 test("mode overrides cannot restore live in-memory tests or bypass the dedicated profile", async () => {
 	await assert.rejects(
-		runExtensionTests({ providerMode: "live-copilot", vscodeVersion: "1.138.0" }, { launchKind: "extension-test" }),
+		runExtensionTests({ providerMode: "live-copilot", vscodeVersion: "1.141.0" }, { launchKind: "extension-test" }),
 		{ code: "invalid-options" },
 	)
 	await assert.rejects(
 		runExtensionTests(
-			{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+			{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 			{ launchKind: "development-sidecar" },
 		),
 		{ code: "invalid-options" },
@@ -381,22 +381,23 @@ test("mode overrides cannot restore live in-memory tests or bypass the dedicated
 
 test("retains legacy provider and host environment defaults, with explicit options taking precedence", () => {
 	assert.equal(readRunOptions([], {}).providerMode, "live")
-	assert.equal(readRunOptions([], {}).vscodeVersion, "1.138.0")
+	assert.equal(readRunOptions([], {}).vscodeVersion, "1.141.0")
 	assert.equal(readRunOptions([], { VSCODE_VERSION: "1.125.0" }).vscodeVersion, "1.125.0")
+	assert.equal(readRunOptions(["--vscode-version", "1.138.0"], {}).vscodeVersion, "1.138.0")
 	assert.equal(
-		readRunOptions(["--vscode-version", "1.138.0"], { VSCODE_VERSION: "1.125.0" }).vscodeVersion,
-		"1.138.0",
+		readRunOptions(["--vscode-version", "1.141.0"], { VSCODE_VERSION: "1.125.0" }).vscodeVersion,
+		"1.141.0",
 	)
 	const result = readRunOptions(["--provider", "scripted", "--request-limit", "8", "--scenario-phase", "run"], {
 		ALPHA_E2E_PROVIDER_MODE: "live",
-		VSCODE_VERSION: "1.138.0",
+		VSCODE_VERSION: "1.141.0",
 		VSCODE_EXECUTABLE_PATH: "/test/Code",
 		TEST_FILE: "task.test",
 	})
 	assert.equal(result.providerMode, "scripted")
 	assert.equal(result.requestLimit, 8)
 	assert.equal(result.scenarioPhase, "run")
-	assert.equal(result.vscodeVersion, "1.138.0")
+	assert.equal(result.vscodeVersion, "1.141.0")
 	assert.equal(result.vscodeExecutablePath, "/test/Code")
 	assert.equal(result.testFile, "task.test")
 })
@@ -425,7 +426,7 @@ test("host scripts reuse configured owned roots without inheriting a previous ru
 	assert.equal(result.profileDir, "/alpha-test/profiles")
 	assert.equal(result.workspace, "/alpha-test/workspace")
 	assert.equal(result.artifactsDir, "/alpha-test/artifacts")
-	assert.equal(result.vscodeVersion, "1.138.0")
+	assert.equal(result.vscodeVersion, "1.141.0")
 	assert.equal(result.initializeProfile, false)
 
 	const unconfigured = readRunOptions([], {})
@@ -464,7 +465,7 @@ test("interactive setup has no implicit timeout and accepts only explicit bounde
 	assert.throws(() => readRunOptions(["--setup-timeout-ms", "1000"], {}), { code: "invalid-options" })
 	for (const setupTimeoutMs of [0, -1, 0.5, NaN, Infinity, 86_400_001]) {
 		await assert.rejects(
-			runExtensionTests({ providerMode: "live-copilot", vscodeVersion: "1.138.0", setup: true, setupTimeoutMs }),
+			runExtensionTests({ providerMode: "live-copilot", vscodeVersion: "1.141.0", setup: true, setupTimeoutMs }),
 			{ code: "invalid-options" },
 		)
 	}
@@ -475,7 +476,7 @@ test("campaign retention holds are explicit and invalid maintenance limits canno
 	assert.equal(readRunOptions([], {}).retainEvidenceForCampaign, false)
 	await assert.rejects(
 		runExtensionTests(
-			{ providerMode: "scripted", vscodeVersion: "1.138.0", evidenceRetention: { maxRuns: 0 } },
+			{ providerMode: "scripted", vscodeVersion: "1.141.0", evidenceRetention: { maxRuns: 0 } },
 			{
 				launch: async () => {
 					assert.fail("invalid retention options must not launch")
@@ -497,7 +498,7 @@ async function seedRetentionCandidate(
 		runId,
 		metadata: {
 			scenarioId: "synthetic-retention-fixture",
-			hostVersion: "1.138.0",
+			hostVersion: "1.141.0",
 			provider: "scripted",
 			taskIds: [],
 			startedAt: "2020-01-01T00:00:00Z",
@@ -520,7 +521,7 @@ async function seedRetentionCandidate(
 			hostExitObserved: true,
 			ownershipGate: "verified",
 			captureComplete: state !== "incomplete",
-			actualVSCodeVersion: "1.138.0",
+			actualVSCodeVersion: "1.141.0",
 			launchedHostPid: 101,
 			extensionHostPid: 102,
 			extensionHostParentPid: 101,
@@ -543,7 +544,7 @@ test("runner really prunes eligible artifacts while preserving active, incomplet
 		const result = await runExtensionTests(
 			{
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
 				runId: "current-campaign",
 				profileDir: path.join(root, "profiles"),
 				workspace: path.join(root, "workspace"),
@@ -588,7 +589,7 @@ test("standalone retention quota failure preserves the primary provider failure 
 		const result = await runExtensionTests(
 			{
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
 				profileDir: path.join(root, "profiles"),
 				workspace: path.join(root, "workspace"),
 				artifactsDir: path.join(root, "artifacts"),
@@ -597,7 +598,7 @@ test("standalone retention quota failure preserves the primary provider failure 
 			},
 			{
 				launch: async (options) => {
-					await writeHostPreflight(options, "1.138.0", "authentication-required")
+					await writeHostPreflight(options, "1.141.0", "authentication-required")
 					return 1
 				},
 			},
@@ -624,7 +625,7 @@ test("campaign holds preserve older evidence and a 22-launch matrix without appl
 		const result = await runExtensionTests(
 			{
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
 				runId: "matrix-last-host",
 				profileDir: path.join(root, "profiles"),
 				workspace: path.join(root, "workspace"),
@@ -659,7 +660,7 @@ test("standalone finalizer writes a report then releases only a complete synthet
 	const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-retention-release-")))
 	try {
 		const profile = await prepareTestProfile({
-			vscodeVersion: "1.138.0",
+			vscodeVersion: "1.141.0",
 			profileDir: path.join(root, "profiles"),
 			workspace: path.join(root, "workspace"),
 			artifactsDir: path.join(root, "artifacts"),
@@ -674,8 +675,8 @@ test("standalone finalizer writes a report then releases only a complete synthet
 				runId,
 				exitCode: 0,
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
-				actualVSCodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
+				actualVSCodeVersion: "1.141.0",
 				status: "passed",
 				retained: true,
 				execution: "extension-host",
@@ -690,7 +691,7 @@ test("standalone finalizer writes a report then releases only a complete synthet
 			const report = await finalizeRunRetention(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					evidenceRetention: { maxAgeMs: 100 * 365 * 24 * 60 * 60 * 1000 },
 				},
 				profile,
@@ -715,7 +716,7 @@ test("uses the same launch seam with isolated paths and checks exact version for
 	const result = await runExtensionTests(
 		{
 			providerMode: "scripted",
-			vscodeVersion: "1.138.0",
+			vscodeVersion: "1.141.0",
 			vscodeExecutablePath: "/fixture/Code",
 			requestLimit: 4,
 			scenarioId: "example",
@@ -735,7 +736,7 @@ test("uses the same launch seam with isolated paths and checks exact version for
 				assert.equal(await fs.realpath(path.dirname(alphaHome)), await fs.realpath(os.tmpdir()))
 				assert.match(path.basename(alphaHome), /^alpha-vscode-e2e-home-/)
 				assert.ok((await fs.stat(alphaHome)).isDirectory())
-				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.138.0")
+				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.141.0")
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_SCENARIO_ID, "example")
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_REQUEST_LIMIT, "4")
 				assert.equal(options.extensionTestsEnv?.ALPHA_E2E_SETUP_TIMEOUT_MS, undefined)
@@ -752,7 +753,7 @@ test("uses the same launch seam with isolated paths and checks exact version for
 	)
 	assert.equal(run?.status, "passed")
 	assert.equal(result.status, "passed")
-	assert.equal(result.actualVSCodeVersion, "1.138.0")
+	assert.equal(result.actualVSCodeVersion, "1.141.0")
 	assert.equal(result.retained, false)
 	assert.ok(result.alphaHome)
 	await assert.rejects(fs.stat(result.alphaHome), { code: "ENOENT" })
@@ -761,10 +762,10 @@ test("uses the same launch seam with isolated paths and checks exact version for
 
 test("retains failed sources and carries safe host-preflight classification, never raw errors", async () => {
 	const result = await runExtensionTests(
-		{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+		{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 		{
 			launch: async (options) => {
-				await writeHostPreflight(options, "1.138.0", "authentication-required")
+				await writeHostPreflight(options, "1.141.0", "authentication-required")
 				throw new Error("Authorization: secret-token private request body")
 			},
 		},
@@ -785,7 +786,7 @@ test("retains failed sources and carries safe host-preflight classification, nev
 test("a zero host exit cannot pass mismatched or missing host evidence", async () => {
 	for (const version of ["0.0.0", undefined]) {
 		const result = await runExtensionTests(
-			{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+			{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 			{
 				launch: async (options) => {
 					if (version) await writeHostPreflight(options, version)
@@ -805,7 +806,7 @@ test("a zero host exit cannot pass mismatched or missing host evidence", async (
 
 test("failed evidence capture preserves sources and cannot leave a successful runner report", async () => {
 	const result = await runExtensionTests(
-		{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+		{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 		{
 			launch: async (options) => {
 				await writeHostPreflight(options)
@@ -832,10 +833,10 @@ test("failed evidence capture preserves sources and cannot leave a successful ru
 test("normal nonzero host close and even a zero exit preserve a blocked preflight classification", async () => {
 	for (const exitCode of [0, 3]) {
 		const result = await runExtensionTests(
-			{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+			{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 			{
 				launch: async (options) => {
-					await writeHostPreflight(options, "1.138.0", "authentication-required")
+					await writeHostPreflight(options, "1.141.0", "authentication-required")
 					return exitCode
 				},
 			},
@@ -853,10 +854,10 @@ test("normal nonzero host close and even a zero exit preserve a blocked prefligh
 
 test("secondary evidence failure cannot obscure a known provider blocker", async () => {
 	const result = await runExtensionTests(
-		{ providerMode: "scripted", vscodeVersion: "1.138.0" },
+		{ providerMode: "scripted", vscodeVersion: "1.141.0" },
 		{
 			launch: async (options) => {
-				await writeHostPreflight(options, "1.138.0", "authentication-required")
+				await writeHostPreflight(options, "1.141.0", "authentication-required")
 				return 1
 			},
 			afterRun: async () => {

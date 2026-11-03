@@ -63,8 +63,14 @@ const createProvider = () => {
 		customModesManager: { getCustomModes: vi.fn(async () => []) },
 		scheduledTaskService: { getState: getScheduledState },
 		taskSessions,
+		taskHistoryMetadataReady: Promise.resolve(),
 		taskHistoryStoreReady: Promise.resolve(),
-		taskHistoryStore: { get: () => undefined, getByWorkspace: () => [] },
+		taskHistoryStoreInitialized: false,
+		taskHistoryStore: {
+			get: () => undefined,
+			getByWorkspace: () => [],
+			isForWorkspace: (item: HistoryItem, workspace: string) => item.workspace === workspace,
+		},
 		currentWorkspacePath: "/workspace",
 		currentView: { type: "newTaskDraft" },
 		newTaskDraftMode: "code",
@@ -96,6 +102,133 @@ const createProvider = () => {
 }
 
 describe("webview state projection work", () => {
+	it("lists authoritative migrated metadata while compatibility writes and task recovery remain pending", async () => {
+		const { provider, post } = createProvider()
+		const loading = barrier()
+		const migration = barrier()
+		const migrating = barrier()
+		const mirror = barrier()
+		const history: HistoryItem[] = [
+			{
+				id: "saved",
+				number: 1,
+				ts: 1,
+				task: "Saved chat",
+				workspace: "/workspace",
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			},
+		]
+		const recover = vi.fn(async () => undefined)
+		Object.assign(provider, {
+			isViewLaunched: true,
+			context: {
+				globalState: {
+					get: (key: string) => (key === "taskHistory" ? history : false),
+					update: vi.fn(async () => undefined),
+				},
+			},
+			taskHistoryStore: {
+				...provider.taskHistoryStore,
+				initialize: () => loading.promise,
+				migrateFromGlobalState: async () => {
+					migrating.resolve()
+					await migration.promise
+				},
+				getAll: () => history,
+				getByWorkspace: () => history,
+			},
+			updateGlobalState: () => mirror.promise,
+			recoverManagedWorkerArtifacts: recover,
+			reconcileInterruptedSubagentState: vi.fn(async () => undefined),
+			reconcileIndependentTaskCompletions: vi.fn(async () => undefined),
+		})
+		const startup = provider as unknown as {
+			initializeTaskHistoryMetadata(): Promise<void>
+			initializeTaskHistoryStore(): Promise<void>
+			taskHistoryStoreInitialized: boolean
+		}
+		Object.assign(provider, { taskHistoryMetadataReady: startup.initializeTaskHistoryMetadata() })
+		const ready = startup.initializeTaskHistoryStore()
+		Object.assign(provider, { taskHistoryStoreReady: ready })
+		const listing = provider.broadcastTaskHistoryUpdate()
+		try {
+			expect(post).not.toHaveBeenCalled()
+			loading.resolve()
+			await migrating.promise
+			expect(post).not.toHaveBeenCalled()
+			migration.resolve()
+			await listing
+			expect(post).toHaveBeenCalledExactlyOnceWith({ type: "taskHistoryUpdated", taskHistory: history })
+			expect(recover).not.toHaveBeenCalled()
+			expect(startup.taskHistoryStoreInitialized).toBe(false)
+			mirror.resolve()
+			await ready
+			expect(recover).toHaveBeenCalledOnce()
+			expect(startup.taskHistoryStoreInitialized).toBe(true)
+		} finally {
+			loading.resolve()
+			migration.resolve()
+			mirror.resolve()
+			await ready
+		}
+	})
+
+	it.each(["disposed", "replaced", "unlaunched", "navigated"] as const)(
+		"publishes startup history only to its current live view after it is %s",
+		async (transition) => {
+			const { provider, post } = createProvider()
+			const metadata = barrier()
+			Object.assign(provider, { isViewLaunched: true, taskHistoryMetadataReady: metadata.promise })
+			const listing = provider.broadcastTaskHistoryUpdate()
+			if (transition === "disposed") Object.assign(provider, { _disposed: true })
+			if (transition === "replaced") Object.assign(provider, { view: {} })
+			if (transition === "unlaunched") provider.isViewLaunched = false
+			if (transition === "navigated")
+				Object.assign(provider, {
+					taskNavigationGeneration: 1,
+					currentView: { type: "task", taskId: "saved" },
+					currentWorkspacePath: "/other-workspace",
+				})
+			metadata.resolve()
+			await listing
+			if (transition === "navigated") {
+				expect(post).toHaveBeenCalledExactlyOnceWith({ type: "taskHistoryUpdated", taskHistory: [] })
+			} else expect(post).not.toHaveBeenCalled()
+		},
+	)
+
+	it("does not publish startup history when metadata loading fails", async () => {
+		const { provider, post } = createProvider()
+		Object.assign(provider, {
+			isViewLaunched: true,
+			taskHistoryMetadataReady: Promise.reject(new Error("History unavailable")),
+		})
+		await expect(provider.broadcastTaskHistoryUpdate()).rejects.toThrow("History unavailable")
+		expect(post).not.toHaveBeenCalled()
+	})
+
+	it.each(["deleteTaskWithId", "exportTaskWithId"] as const)(
+		"keeps %s behind startup recovery when history is already visible",
+		async (method) => {
+			const { provider } = createProvider()
+			const recovery = barrier()
+			const stopped = new Error("Stop before accessing saved files")
+			Object.assign(provider, { taskHistoryStoreReady: recovery.promise })
+			const lookup = vi.spyOn(provider, "getTaskWithId").mockRejectedValue(stopped)
+			const action = provider[method]("saved")
+			const rejected = expect(action).rejects.toBe(stopped)
+			try {
+				expect(lookup).not.toHaveBeenCalled()
+			} finally {
+				recovery.resolve()
+				await rejected
+			}
+			expect(lookup).toHaveBeenCalledOnce()
+		},
+	)
+
 	it("hydrates a new-chat draft before saved-history recovery finishes", async () => {
 		const { provider, post } = createProvider()
 		const recovery = barrier()
@@ -142,7 +275,7 @@ describe("webview state projection work", () => {
 		)
 	})
 
-	it.each(["disposed", "replaced", "navigated"] as const)(
+	it.each(["disposed", "replaced"] as const)(
 		"does not refresh the startup draft after its view is %s",
 		async (transition) => {
 			const { provider, post } = createProvider()
@@ -156,12 +289,29 @@ describe("webview state projection work", () => {
 			await provider.postStateToWebview({ deferTaskHistory: true })
 			if (transition === "disposed") Object.assign(provider, { _disposed: true })
 			if (transition === "replaced") Object.assign(provider, { view: {} })
-			if (transition === "navigated") Object.assign(provider, { taskNavigationGeneration: 1 })
 			recovery.resolve()
 			await finished.promise
 			expect(post).toHaveBeenCalledTimes(1)
 		},
 	)
+
+	it("refreshes recovered history after navigation without overwriting the selected task", async () => {
+		const { provider, post } = createProvider()
+		const recovery = barrier()
+		const publishedHistory = barrier()
+		Object.assign(provider, { taskHistoryStoreReady: recovery.promise, isViewLaunched: true })
+		await provider.postStateToWebview({ deferTaskHistory: true })
+		const selected = { type: "task", taskId: "saved" }
+		Object.assign(provider, { taskNavigationGeneration: 1, currentView: selected })
+		post.mockImplementation(async (message) => {
+			if (message.type === "taskHistoryUpdated") publishedHistory.resolve()
+		})
+		recovery.resolve()
+		await publishedHistory.promise
+		expect(post).toHaveBeenCalledTimes(2)
+		expect(post.mock.calls[1][0]).toEqual({ type: "taskHistoryUpdated", taskHistory: [] })
+		expect(Reflect.get(provider, "currentView")).toBe(selected)
+	})
 
 	it("keeps a saved-task projection behind recovery even when history is omitted", async () => {
 		const { provider, getValues } = createProvider()

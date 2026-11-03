@@ -59,7 +59,7 @@ export const hostSuites = {
 	managed: managedHostFiles,
 	minimum: minimumHostFiles,
 }
-const suiteVersion = (suite) => (suite === "minimum" ? "1.125.0" : "1.138.0")
+const suiteVersion = (suite) => (suite === "minimum" ? "1.125.0" : "1.141.0")
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
 const hash = (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)
 const integer = (value) => Number.isSafeInteger(value) && value >= 0
@@ -76,7 +76,7 @@ const completeSelection = (receipt) =>
 	receipt.testSelection.grep === null &&
 	receipt.testSelection.forbidOnly === true
 
-function observedHostClosed(value, version = "1.138.0") {
+function observedHostClosed(value, version = "1.141.0") {
 	return !(
 		value?.schemaVersion !== 1 ||
 		value.kind !== "alpha-extension-test-run" ||
@@ -102,8 +102,8 @@ function observedHostClosed(value, version = "1.138.0") {
 	)
 }
 
-export function validateHostReceipt(value, version = "1.138.0") {
-	if (!["1.125.0", "1.138.0"].includes(version)) throw new Error("Unknown exact host version")
+export function validateHostReceipt(value, version = "1.141.0") {
+	if (!["1.125.0", "1.141.0"].includes(version)) throw new Error("Unknown exact host version")
 	const counts = value?.testCounts
 	if (
 		!observedHostClosed(value, version) ||
@@ -297,7 +297,7 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 		!Array.isArray(plan.scenarioIds) ||
 		plan.samples !== 1 ||
 		plan.hostVersions?.length !== 1 ||
-		plan.hostVersions[0] !== "1.138.0" ||
+		plan.hostVersions[0] !== "1.141.0" ||
 		plan.scenarioIds?.length !== outcomeScenarioIds.length ||
 		new Set(plan.scenarioIds).size !== outcomeScenarioIds.length ||
 		outcomeScenarioIds.some((id) => !plan.scenarioIds.includes(id)) ||
@@ -332,10 +332,10 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 			request.sample !== 1 ||
 			request.phase !== "sample" ||
 			!/^attempt-\d{4}$/.test(request.attemptId ?? "") ||
-			request.host?.version !== "1.138.0" ||
+			request.host?.version !== "1.141.0" ||
 			request.provider?.mode !== "scripted" ||
 			result?.status !== "passed" ||
-			result.actualHostVersion !== "1.138.0" ||
+			result.actualHostVersion !== "1.141.0" ||
 			result.failure != null ||
 			result.retentionFailed === true ||
 			attempt.evidenceFailed ||
@@ -399,7 +399,7 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 					"missing",
 				].map((key) => [key, identity[key]]),
 			),
-			evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.138.0"], samples: 1 },
+			evaluationPlan: { scenarioIds: [...outcomeScenarioIds], hostVersions: ["1.141.0"], samples: 1 },
 			counts: { passed: outcomeScenarioIds.length, failed: 0, blocked: 0 },
 			attempts: report.attempts.map((attempt) => ({
 				request: {
@@ -408,10 +408,10 @@ export function outcomeCampaignVerdict(report, receipts, expectedId) {
 					scenarioId: attempt.request.scenarioId,
 					sample: 1,
 					phase: "sample",
-					host: { version: "1.138.0" },
+					host: { version: "1.141.0" },
 					provider: { mode: "scripted" },
 				},
-				result: { status: "passed", actualHostVersion: "1.138.0", taskIds: attempt.result.taskIds },
+				result: { status: "passed", actualHostVersion: "1.141.0", taskIds: attempt.result.taskIds },
 				evidence: `${attempt.request.attemptId}/evidence-index.json`,
 			})),
 		},

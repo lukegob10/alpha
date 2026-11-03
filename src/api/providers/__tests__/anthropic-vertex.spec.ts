@@ -392,6 +392,7 @@ describe("VertexHandler", () => {
 			expect(chunks.length).toBe(5)
 			expect(chunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 0,
 			})
@@ -406,6 +407,7 @@ describe("VertexHandler", () => {
 			})
 			expect(chunks[3]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 0,
 				outputTokens: 5,
 			})
@@ -489,6 +491,7 @@ describe("VertexHandler", () => {
 			expect(chunks).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 12,
 					outputTokens: 7,
 					cacheWriteTokens: 3,
@@ -663,6 +666,7 @@ describe("VertexHandler", () => {
 			expect(usageChunks).toHaveLength(2)
 			expect(usageChunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 0,
 				cacheWriteTokens: 3,
@@ -670,6 +674,7 @@ describe("VertexHandler", () => {
 			})
 			expect(usageChunks[1]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 0,
 				outputTokens: 5,
 			})

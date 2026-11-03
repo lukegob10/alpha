@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.20",
+	"version": "3.2.21",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -557,7 +557,7 @@
 						}
 					},
 					"patternProperties": {
-						"^(stop|Stop|subagentStop|SubagentStop|sessionStart|SessionStart|subagentStart|SubagentStart|userPromptSubmit|UserPromptSubmit|preToolUse|PreToolUse|postToolUse|PostToolUse|permissionRequest|PermissionRequest|preCompact|PreCompact|postCompact|PostCompact|interrupt|Interrupt|sessionEnd|SessionEnd)$": {
+						"^(stop|Stop|subagentStop|SubagentStop|sessionStart|SessionStart|subagentStart|SubagentStart|userPromptSubmit|UserPromptSubmit|preToolUse|PreToolUse|postToolUse|PostToolUse|permissionRequest|PermissionRequest|preModelRequest|PreModelRequest|postModelRequest|PostModelRequest|preCompact|PreCompact|postCompact|PostCompact|interrupt|Interrupt|sessionEnd|SessionEnd)$": {
 							"type": "array",
 							"maxItems": 8,
 							"items": {

@@ -844,8 +844,8 @@ async function verifyProfile(userDataDir: string): Promise<void> {
 	// The persistent runner owns the profile root; its exact reference-host data is two fixed children below it.
 	if (
 		path.basename(userDataDir) !== "user-data" ||
-		path.basename(versionRoot) !== "1.138.0" ||
-		!same(userDataDir, path.join(profileRoot, "1.138.0", "user-data"))
+		path.basename(versionRoot) !== "1.141.0" ||
+		!same(userDataDir, path.join(profileRoot, "1.141.0", "user-data"))
 	)
 		throw new Error("Native capture requires the owned exact reference-host profile layout")
 	await verifyOwnedRoot(profileRoot, "profile")
@@ -1057,7 +1057,7 @@ async function verifyHostProofs(
 		!input.result.hostExitObserved ||
 		input.result.hostCleanupVerified !== true ||
 		input.result.ownershipGate !== "verified" ||
-		input.result.actualVSCodeVersion !== "1.138.0"
+		input.result.actualVSCodeVersion !== "1.141.0"
 	)
 		throw new Error("Native capture requires an exited, verified exact reference host")
 	const files = [
@@ -1096,8 +1096,8 @@ async function verifyHostProofs(
 			bundleSha256: z.string().regex(/^[a-f0-9]{64}$/),
 			metadata: z.object({
 				scenarioId: z.literal("problem-solving-attempt"),
-				hostVersion: z.literal("1.138.0"),
-				requestedHostVersion: z.literal("1.138.0"),
+				hostVersion: z.literal("1.141.0"),
+				requestedHostVersion: z.literal("1.141.0"),
 				provider: z.string(),
 				modelId: z.string().optional(),
 				taskIds: z.array(taskId),
@@ -1120,7 +1120,7 @@ async function verifyHostProofs(
 	const preflight = z
 		.object({
 			runId: hostId,
-			actualVSCodeVersion: z.literal("1.138.0"),
+			actualVSCodeVersion: z.literal("1.141.0"),
 			actualModelId: z.string().optional(),
 			actualReasoningEffort: z.string().optional(),
 			providerIdentity: z.unknown().optional(),
@@ -1131,7 +1131,7 @@ async function verifyHostProofs(
 	const host = z
 		.object({
 			runId: hostId,
-			actualVSCodeVersion: z.literal("1.138.0"),
+			actualVSCodeVersion: z.literal("1.141.0"),
 			ownershipGate: z.literal("verified"),
 			pid: z.number().int().positive(),
 			ppid: z.number().int().positive(),

@@ -278,7 +278,7 @@ suite("Managed-agent automatic Apply Extension Host acceptance", function () {
 	this.timeout(120_000)
 
 	test("retains applied review state across mixed child outcomes and accepts parent steering", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR

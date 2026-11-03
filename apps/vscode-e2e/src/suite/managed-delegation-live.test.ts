@@ -6,6 +6,7 @@ import * as vscode from "vscode"
 
 import {
 	AlphaCodeEventName,
+	agentControlStateSchema,
 	managedAgentTreeProjectionSchema,
 	type AlphaCodeSettings,
 	type AlphaMessage,
@@ -24,7 +25,7 @@ import {
 } from "../scenarios/managedDelegationScenario"
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
-import { inspectToolTransactions } from "../scenarios/transactionAssertions"
+import { inspectTaskLifecycle, inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { updateFilePatch } from "../scenarios/scriptedPatch"
 import { assertOwnedTestWorkspace } from "../testProfile"
 import { withBoundedFixtureCleanup } from "./proportional-context-support"
@@ -45,6 +46,7 @@ interface ManagedTask {
 }
 
 interface ManagedProvider {
+	agentControlStore: { persistence: { filePath: string } }
 	on(event: "taskCreated", listener: (task: ManagedTask) => void): void
 	off(event: "taskCreated", listener: (task: ManagedTask) => void): void
 	getLiveTask(id: string): ManagedTask | undefined
@@ -64,6 +66,7 @@ interface Observation {
 	rootId?: string
 	denied: boolean
 	workerLaunched: boolean
+	parentVerified?: boolean
 	turns: Map<string, number>
 	concurrentEdit?: Promise<void>
 	removeFromCache?: () => void
@@ -157,7 +160,10 @@ class ManagedDelegationAI {
 				fork_turns: "none",
 			})
 		} else if (state.workerLaunched && reports.includes(state.scenario.children[2]!.report)) {
-			yield { type: "text" as const, text: state.scenario.expectedAnswer }
+			if (!state.parentVerified) {
+				state.parentVerified = true
+				yield call("exec_command", { cmd: state.scenario.verificationCommand, yield_time_ms: 10000 })
+			} else yield { type: "text" as const, text: state.scenario.expectedAnswer }
 		} else yield call("wait_agent", { timeout_ms: 20000 })
 	}
 	getModel() {
@@ -177,9 +183,12 @@ async function taskHistory(provider: ManagedProvider, task: ManagedTask) {
 	const saved = await provider.getTaskWithId(task.taskId)
 	assert.equal(path.basename(saved.taskDirPath), task.taskId)
 	const history: unknown = await readBoundedJson(path.join(saved.taskDirPath, "api_conversation_history.json"))
+	const events = await readBoundedJson(path.join(saved.taskDirPath, "agent_lifecycle_events.jsonl"), true)
 	assert.ok(Array.isArray(history))
+	assert.ok(Array.isArray(events))
 	assert.deepEqual(inspectToolTransactions(history).errors, [])
-	return { history, saved }
+	assert.deepEqual(inspectTaskLifecycle(events, task.taskId, { apiHistory: history }).errors, [])
+	return { history, events, saved }
 }
 
 async function readScenarioFiles(workspace: string, scenario: ManagedDelegationScenario) {
@@ -206,7 +215,7 @@ suite("Managed delegation utility and captured authority", function () {
 				? "rejects fabricated and serialized approval through a task reopen"
 				: "collects authorized fanout, integrates one Worker and preserves a concurrent edit",
 			async () => {
-				assert.equal(vscode.version, "1.138.0")
+				assert.equal(vscode.version, "1.141.0")
 				const mode = process.env.ALPHA_E2E_PROVIDER_MODE
 				assert.ok(mode === "scripted" || mode === "live-copilot")
 				if (mode === "live-copilot")
@@ -392,7 +401,7 @@ suite("Managed delegation utility and captured authority", function () {
 								if (task.taskKind !== "subagent") continue
 								const record = records.get(task.taskId)
 								assert.ok(record)
-								const { history, saved } = await taskHistory(provider, task)
+								const { history, events, saved } = await taskHistory(provider, task)
 								assert.equal(saved.historyItem.subagentContextManifest?.parentTaskId, rootId)
 								children.push({
 									taskId: task.taskId,
@@ -402,11 +411,22 @@ suite("Managed delegation utility and captured authority", function () {
 									history,
 									completionCount: completions.get(task.taskId) ?? 0,
 									changeSetStatus: record.changeSet?.status,
+									runtimePolicy: saved.historyItem.subagentContextManifest?.runtimePolicy,
+									changedFiles: record.changedFiles,
+									lifecycleEvents: events,
 								})
 							}
+							const control = agentControlStateSchema.parse(
+								await readBoundedJson(provider.agentControlStore.persistence.filePath),
+							)
 							checks = inspectManagedDelegationOutcome(scenario, {
 								rootTaskId: rootId,
 								rootHistory: first.history,
+								workspacePath: await fs.realpath(workspace),
+								rootLifecycleEvents: first.events,
+								parentVerificationObligations: control.verificationObligations.filter(
+									(receipt) => receipt.parentTaskId === rootId,
+								),
 								children,
 								files: await readScenarioFiles(workspace, scenario),
 								expectedCanary: concurrentEdit,

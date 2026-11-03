@@ -138,7 +138,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 	directory: string,
 	output: string,
 	runId: string,
-	expectedHostVersion = "1.138.0",
+	expectedHostVersion = "1.141.0",
 ) {
 	const savedDirectory = path.join(output, runId)
 	await fs.cp(directory, savedDirectory, { recursive: true })
@@ -155,7 +155,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 }
 
 /** Exercises the built extension in an isolated exact-host profile, with trusted renderer input. */
-export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.138.0") {
+export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.141.0") {
 	await fs.mkdir(output, { recursive: true })
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-chats-ui-"))
 	const nonce = randomUUID()
@@ -1176,7 +1176,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 
 if (require.main === module) {
 	void (async () => {
-		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.138.0"
+		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.141.0"
 		const executable =
 			process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: expectedHostVersion }))
 		const output = process.env.ALPHA_HISTORY_UI_OUTPUT ?? path.join(os.tmpdir(), "alpha-code-history-ux")

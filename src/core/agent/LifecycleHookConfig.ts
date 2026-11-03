@@ -37,6 +37,8 @@ const configKeys = {
 	PreToolUse: "preToolUse",
 	PostToolUse: "postToolUse",
 	PermissionRequest: "permissionRequest",
+	PreModelRequest: "preModelRequest",
+	PostModelRequest: "postModelRequest",
 	PreCompact: "preCompact",
 	PostCompact: "postCompact",
 	Interrupt: "interrupt",
@@ -174,6 +176,8 @@ function matcherInputs(request: HookMatchRequest): string[] | undefined {
 		case "Stop":
 		case "UserPromptSubmit":
 		case "Interrupt":
+		case "PreModelRequest":
+		case "PostModelRequest":
 			return undefined
 		case "SessionStart":
 			return [request.source ?? ""]

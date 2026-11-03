@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
 import { openDiffPayloadSchema, type AlphaMessage } from "@alpha-code/types"
 import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
 import FileChangesPanel from "../components/chat/FileChangesPanel"
+import { installNativeTestFocus } from "@src/utils/test-native-focus"
 
 const mockPostMessage = vi.fn()
 
@@ -351,6 +352,87 @@ describe("FileChangesPanel", () => {
 		fireEvent.click(screen.getByText("Files edited: 1").closest("button")!)
 		expect(screen.getByRole("button", { name: /^src\/foo.ts/ })).toHaveAttribute("aria-expanded", "false")
 	})
+
+	it.each(["canonical", "legacy"] as const)(
+		"folds open file changes when their turn completes and permits reopening (%s)",
+		(source) => {
+			const identity = source === "canonical" ? { runId: "file-run", turnId: "file-turn" } : undefined
+			const edit = { ...createFileEditMessage("src/foo.ts", "diff"), ts: 100, turn: identity }
+			const view = renderPanel([edit], "file-turn")
+			fireEvent.click(screen.getByRole("button", { name: /^src\/foo.ts/ }))
+			expect(screen.getByTestId("file-diff")).toBeVisible()
+			const completed: AlphaMessage[] = [
+				edit,
+				{
+					ts: 200,
+					type: "say",
+					say: source === "canonical" ? "text" : "completion_result",
+					text: "Updated the file",
+					turn: identity ? { ...identity, terminalStatus: "completed" } : undefined,
+				},
+			]
+			const publish = (messages: AlphaMessage[]) =>
+				view.rerender(
+					<TranslationProvider>
+						<FileChangesPanel alphaMessages={messages} taskId="file-turn" />
+					</TranslationProvider>,
+				)
+			publish(completed)
+			const trigger = screen.getByText("Files edited: 1").closest("button")!
+			expect(trigger).toHaveAttribute("aria-expanded", "false")
+			expect(screen.queryByTestId("file-diff")).not.toBeInTheDocument()
+			fireEvent.click(trigger)
+			expect(trigger).toHaveAttribute("aria-expanded", "true")
+			expect(screen.getByTestId("file-diff")).toBeVisible()
+			publish([
+				...completed,
+				{ ts: 250, type: "say", say: "command_output", text: "Late captured output", turn: identity },
+			])
+			expect(trigger).toHaveAttribute("aria-expanded", "true")
+			expect(screen.getByTestId("file-diff")).toBeVisible()
+		},
+	)
+
+	it.each(["details", "composer"] as const)(
+		"preserves keyboard focus when completion folds file changes (%s)",
+		(owner) => {
+			const restoreFocus = installNativeTestFocus()
+			const composer = document.createElement("textarea")
+			document.body.append(composer)
+			try {
+				const identity = { runId: "focus-run", turnId: "focus-turn" }
+				const edit = { ...createFileEditMessage("src/foo.ts", "diff"), ts: 100, turn: identity }
+				const view = renderPanel([edit], "focus-turn")
+				const trigger = screen.getByText("Files edited: 1").closest("button")!
+				const file = screen.getByRole("button", { name: /^src\/foo.ts/ })
+				const focused = owner === "details" ? file : composer
+				focused.focus()
+				expect(focused).toHaveFocus()
+				view.rerender(
+					<TranslationProvider>
+						<FileChangesPanel
+							taskId="focus-turn"
+							alphaMessages={[
+								edit,
+								{
+									ts: 200,
+									type: "say",
+									say: "text",
+									text: "Done",
+									turn: { ...identity, terminalStatus: "completed" },
+								},
+							]}
+						/>
+					</TranslationProvider>,
+				)
+				expect(trigger).toHaveAttribute("aria-expanded", "false")
+				expect(owner === "details" ? trigger : composer).toHaveFocus()
+			} finally {
+				composer.remove()
+				restoreFocus()
+			}
+		},
+	)
 
 	it("reuses captured inline patches during unrelated text streaming", () => {
 		const originalContent = Array.from({ length: 10_000 }, (_, index) => `const line_${index} = ${index}\n`).join(

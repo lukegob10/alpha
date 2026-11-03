@@ -205,7 +205,7 @@ suite("Core response boundary contracts", function () {
 	this.timeout(120_000)
 	for (const scenario of ["continuation", "malformed-call", "incomplete-output"] as const) {
 		test(`${scenario}: truthful terminal state and durable tool history`, async () => {
-			assert.equal(vscode.version, "1.138.0")
+			assert.equal(vscode.version, "1.141.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR
 			assert.ok(artifacts)
@@ -385,7 +385,7 @@ suite("Core response boundary contracts", function () {
 suite("Coding workflow tool recovery", function () {
 	this.timeout(120_000)
 	test("a missing file can be corrected without losing its failed receipt or requiring user confirmation", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
 		const artifacts = process.env.ALPHA_E2E_ARTIFACTS_DIR

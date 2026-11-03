@@ -455,12 +455,10 @@ it("keeps already-consumed feedback immutable when its receipt is retried", asyn
 		queued_message_ids: ["accepted-request"],
 	})
 	const resetProgress = vi.fn()
-	const resetSearch = vi.fn()
 	const resetCompletion = vi.spyOn(task, "resetCompletionRecoveryState")
 	const evidence = vi.fn()
 	Object.assign(task, {
 		toolRepetitionDetector: { resetProgress },
-		searchLoopRecoveryPolicy: { reset: resetSearch },
 		completionRuntimeRevision: 7,
 		workContext: { protected: true },
 		enqueueCommandEvidence: evidence,
@@ -474,7 +472,6 @@ it("keeps already-consumed feedback immutable when its receipt is retried", asyn
 	expect(task["updateAlphaMessage"]).not.toHaveBeenCalled()
 	expect(task["enqueueAlphaMessagesSave"]).not.toHaveBeenCalled()
 	expect(resetProgress).not.toHaveBeenCalled()
-	expect(resetSearch).not.toHaveBeenCalled()
 	expect(resetCompletion).not.toHaveBeenCalled()
 	expect(evidence).not.toHaveBeenCalled()
 	expect(task["completionRuntimeRevision"]).toBe(7)

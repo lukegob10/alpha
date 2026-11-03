@@ -293,6 +293,7 @@ describe("OpenAiHandler", () => {
 			expect(chunks).toContainEqual({ type: "reasoning", text: "Reviewed the patch.", outputIndex: 0 })
 			expect(chunks).toContainEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 120,
 				outputTokens: 30,
 				cacheReadTokens: 40,
@@ -426,7 +427,13 @@ describe("OpenAiHandler", () => {
 			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
 				{ type: "tool_call_end", id: "call_minimal" },
 			])
-			expect(chunks).toContainEqual({ type: "usage", inputTokens: 8, outputTokens: 3, cacheReadTokens: 2 })
+			expect(chunks).toContainEqual({
+				type: "usage",
+				usageSource: "provider",
+				inputTokens: 8,
+				outputTokens: 3,
+				cacheReadTokens: 2,
+			})
 			expect(provider.getResponseId()).toBe("resp_minimal")
 			expect(provider.getEncryptedContent()).toEqual({
 				encrypted_content: "opaque-minimal",

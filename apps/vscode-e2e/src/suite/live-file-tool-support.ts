@@ -9,6 +9,7 @@ import {
 	type AlphaMessage,
 	type ToolName,
 	type TaskWorkContext,
+	type ToolApprovalDecision,
 } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
@@ -16,6 +17,8 @@ import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestRoot } from "../testProfile"
 import { assistantVisibleText, finalAssistantResponse } from "./live-transcript-support"
+import { createBrowserSessionApprover } from "./harness-quality-support"
+import { readBounded } from "../evidence/paths"
 import {
 	assertLiveFileToolBoundary,
 	createCompletionReviewAcknowledger,
@@ -31,7 +34,9 @@ export interface LiveTask {
 	abort?: boolean
 	taskAsk?: AlphaMessage
 	alphaMessages: AlphaMessage[]
+	apiConversationHistory: unknown[]
 	approveAsk(): void
+	handleWebviewToolApprovalResponse(requestId: string, decision: ToolApprovalDecision): boolean
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
 }
@@ -106,6 +111,7 @@ export async function runLiveCase(
 		timeoutMs?: number
 		onTaskRequest?: WorkflowRequestBudget["onTaskRequest"]
 		responseProbe?: WorkflowRequestBudget["responseProbe"]
+		browserSession?: { startCommand: string; urlFile: string }
 	} = {},
 ) {
 	assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot", "This suite requires a real Copilot model")
@@ -158,6 +164,15 @@ export async function runLiveCase(
 	let passed = false
 	let failure: string | undefined
 	const acknowledge = createCompletionReviewAcknowledger()
+	const browserSession = options.browserSession
+	const approveBrowser = browserSession
+		? createBrowserSessionApprover({
+				getTask: () => task,
+				startCommand: browserSession.startCommand,
+				readUrl: async () =>
+					(await readBounded(path.join(workspace, browserSession.urlFile), 256)).toString("utf8"),
+			})
+		: undefined
 	await withBoundedFixtureCleanup(async () => {
 		try {
 			await api.startNewTask({
@@ -188,10 +203,10 @@ export async function runLiveCase(
 				text: `${options.scope ?? scope}\n${prompt}`,
 			})
 			await waitFor(
-				() => {
+				async () => {
 					if (budget.failure) throw budget.failure
 					assert.equal(budget.exhausted, false, "Live request budget exhausted")
-					assertLiveFileToolBoundary(task, options.commands)
+					if (!(await approveBrowser?.())) assertLiveFileToolBoundary(task, options.commands)
 					acknowledge(task)
 					return completed > 0
 				},

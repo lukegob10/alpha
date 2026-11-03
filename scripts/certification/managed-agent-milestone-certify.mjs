@@ -1000,7 +1000,7 @@ function compatibleSharedStorage(report, bundleDigest) {
 		report?.schemaVersion === 1 &&
 		report.execution === "extension-host" &&
 		report.status === "passed" &&
-		report.hostVersion === "1.138.0" &&
+		report.hostVersion === "1.141.0" &&
 		typeof report.runId === "string" &&
 		/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(report.runId) &&
 		report.cleanupVerified === true &&
@@ -1049,7 +1049,7 @@ function compatibleChurn(report, bundleDigest) {
 		return false
 	try {
 		const pairs = report.phases.map((phase, index) => {
-			const expected = { hostVersion: "1.138.0", phase: index === 0 ? "populate" : "reload" }
+			const expected = { hostVersion: "1.141.0", phase: index === 0 ? "populate" : "reload" }
 			const receipts = phase.taskHistoryChurn.map((receipt) =>
 				parseTaskHistoryChurnReceipt(receipt, { ...expected, runId: phase.runId }),
 			)

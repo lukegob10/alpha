@@ -57,7 +57,7 @@ suite("Rendered reasoning controls", function () {
 	this.timeout(300_000)
 	test("uses acknowledged reasoning and scoped Windows hotkeys without saving a profile", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		const provider = (globalThis.api as unknown as { sidebarProvider: ReasoningHost }).sidebarProvider
 		const originalAutoSteer = provider.contextProxy.getValue("autoSteer")
 		const requests: Array<{ model: string; reasoning_effort?: string }> = []

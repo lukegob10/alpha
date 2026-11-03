@@ -244,7 +244,9 @@ describe("VSCodeBrowserTools", () => {
 			"",
 			"   ",
 		])("rejects %j before invoking the host", async (url) => {
-			await expect(invoke(url)).rejects.toThrow(/HTTP.*HTTPS.*read_file/)
+			const request = invoke(url)
+			await expect(request).rejects.toThrow(/HTTP.*HTTPS/)
+			await expect(request).rejects.not.toThrow("read_file")
 			expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
 			expect(vscodeMock.cancellationTokens).toHaveLength(0)
 			expect(vscodeMock.configurationUpdate).not.toHaveBeenCalled()
@@ -284,9 +286,7 @@ describe("VSCodeBrowserTools", () => {
 	it("rejects an open request without a URL before invoking the host", async () => {
 		vscodeMock.tools.push({ name: "open_browser_page" })
 
-		await expect(invokeVSCodeBrowserTool("open_browser_page", {} as { url: string })).rejects.toThrow(
-			/HTTP.*HTTPS.*read_file/,
-		)
+		await expect(invokeVSCodeBrowserTool("open_browser_page", {} as { url: string })).rejects.toThrow(/HTTP.*HTTPS/)
 		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
 		expect(vscodeMock.cancellationTokens).toHaveLength(0)
 	})
@@ -296,7 +296,7 @@ describe("VSCodeBrowserTools", () => {
 		vscodeMock.invokeTool.mockResolvedValue({ content: [{ value: "Unexpected navigation" }] })
 
 		await expect(invokeVSCodeBrowserTool("navigate_page", { pageId: "page-1", type })).rejects.toThrow(
-			/HTTP.*HTTPS.*read_file/,
+			/HTTP.*HTTPS/,
 		)
 		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
 	})

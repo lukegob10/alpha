@@ -57,8 +57,8 @@ async function fixture() {
 		runId,
 		metadata: {
 			scenarioId: "cancel-resume",
-			hostVersion: "1.138.0",
-			requestedHostVersion: "1.138.0",
+			hostVersion: "1.141.0",
+			requestedHostVersion: "1.141.0",
 			provider: "live-copilot",
 			modelId: "fixture-model",
 			reasoningEffort: "high",
@@ -86,7 +86,7 @@ async function fixture() {
 		phase: "sample",
 		sample: 0,
 		provider: { mode: "live-copilot", modelId: "fixture-model", effort: "high" },
-		host: { version: "1.138.0" },
+		host: { version: "1.141.0" },
 		requestLimit: 5,
 	}
 	const report = {
@@ -114,7 +114,7 @@ async function fixture() {
 		launchKind: "development-sidecar",
 		runId,
 		nonce,
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		pid: 100,
 		ppid: 90,
 	}
@@ -122,7 +122,7 @@ async function fixture() {
 		runId,
 		status: "failed",
 		providerMode: "live-copilot",
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		actualModelId: "fixture-model",
 		actualReasoningEffort: "high",
 		execution: "extension-host",
@@ -163,7 +163,7 @@ async function fixture() {
 		scenarioId: "cancel-resume",
 		phase: "run",
 		status: "failed",
-		hostVersion: "1.138.0",
+		hostVersion: "1.141.0",
 		providerMode: "live-copilot",
 		model: { id: "fixture-model", reasoningEffort: "high" },
 		checks: [{ name: "cancelled-effect-is-terminal", passed: false }],
@@ -183,6 +183,18 @@ async function fixture() {
 }
 
 describe("retained native host observations", () => {
+	it("reads retained observations from the previous host without relabeling their version", async () => {
+		const { input, ports } = await fixture()
+		const { digest: _digest, ...content } = await importHostEvidence(input, ports)
+		const historical = {
+			...content,
+			phases: content.phases.map((phase) => ({ ...phase, actualHostVersion: "1.138.0" as const })),
+		}
+		const sealed = { ...historical, digest: sha256(canonicalJson(historical)) }
+		expect(parseHostEvidenceObservation(sealed)).toEqual(sealed)
+		expect(await validateHostEvidenceObservation(sealed, ports.store)).toEqual(sealed)
+	})
+
 	it("imports real captureRunEvidence projections while preserving failed/null observations and unavailable rich evidence", async () => {
 		const { input, ports, privateText } = await fixture()
 		const observation = await importHostEvidence(input, ports)

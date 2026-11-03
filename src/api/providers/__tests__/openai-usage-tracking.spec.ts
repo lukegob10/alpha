@@ -137,6 +137,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 			expect(usageChunks).toHaveLength(1)
 			expect(usageChunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 5,
 			})
@@ -194,6 +195,7 @@ describe("OpenAiHandler with usage tracking fix", () => {
 			expect(usageChunks).toHaveLength(1)
 			expect(usageChunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 5,
 			})

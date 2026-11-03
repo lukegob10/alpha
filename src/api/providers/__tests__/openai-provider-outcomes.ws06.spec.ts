@@ -87,6 +87,26 @@ describe("WS06 provider terminal errors and usage", () => {
 			return new OpenAiHandler({ ...responseOptions, openAiStreamingEnabled: streaming })
 		}
 
+		it.each([
+			{ usage: responseUsage, source: "provider" },
+			{ usage: { input_tokens: 0, output_tokens: 0 }, source: "provider" },
+			{ usage: undefined, source: "unknown" },
+			{ usage: {}, source: "unknown" },
+			{ usage: { input_tokens: 120 }, source: "unknown" },
+			{ usage: { input_tokens: -1, output_tokens: Number.NaN }, source: "unknown" },
+			{ usage: { input_tokens: 1.5, output_tokens: 30 }, source: "unknown" },
+			{ usage: { ...responseUsage, input_tokens_details: { cached_tokens: 0.5 } }, source: "unknown" },
+			{ usage: { ...responseUsage, input_tokens_details: { cache_write_tokens: 0.5 } }, source: "unknown" },
+			{ usage: { ...responseUsage, output_tokens_details: { reasoning_tokens: 0.5 } }, source: "unknown" },
+		])("reports $source usage provenance for Responses counters $usage", async ({ usage, source }) => {
+			mockResponse(streaming, { id: "usage-provenance", status: "completed", output: [], usage })
+			const { chunks, failure } = await consume(provider())
+			expect(failure).toBeUndefined()
+			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+				expect.objectContaining({ usageSource: source }),
+			])
+		})
+
 		it.each(["rate_limit_exceeded", "slow_down"])(
 			"classifies opaque %s by code and retains safe server advice",
 			async (code) => {
@@ -240,6 +260,7 @@ describe("WS06 provider terminal errors and usage", () => {
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 120,
 					outputTokens: 30,
 					cacheReadTokens: 40,
@@ -299,6 +320,7 @@ describe("WS06 provider terminal errors and usage", () => {
 				expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 					{
 						type: "usage",
+						usageSource: "provider",
 						inputTokens: 120,
 						outputTokens: 30,
 						cacheReadTokens: 40,
@@ -372,6 +394,7 @@ describe("WS06 provider terminal errors and usage", () => {
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 120,
 					outputTokens: 30,
 					cacheReadTokens: 40,
@@ -396,6 +419,7 @@ describe("WS06 provider terminal errors and usage", () => {
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 120,
 					outputTokens: 30,
 					cacheReadTokens: 40,
@@ -599,11 +623,25 @@ describe("WS06 provider terminal errors and usage", () => {
 
 		it("normalizes nested cache and reasoning counters once without adding reasoning to output", async () => {
 			expect(await usageFor(chatUsage)).toMatchObject({
+				usageSource: "provider",
 				inputTokens: 120,
 				outputTokens: 30,
 				cacheReadTokens: 40,
 				reasoningTokens: 12,
 			})
+		})
+
+		it.each([
+			{ usage: { prompt_tokens: 0, completion_tokens: 0 }, source: "provider" },
+			{ usage: {}, source: "unknown" },
+			{ usage: { prompt_tokens: 120 }, source: "unknown" },
+			{ usage: { prompt_tokens: -1, completion_tokens: Number.NaN }, source: "unknown" },
+			{ usage: { prompt_tokens: 1.5, completion_tokens: 30 }, source: "unknown" },
+			{ usage: { ...chatUsage, cache_creation_input_tokens: 0.5 }, source: "unknown" },
+			{ usage: { ...chatUsage, prompt_tokens_details: { cached_tokens: 0.5 } }, source: "unknown" },
+			{ usage: { ...chatUsage, completion_tokens_details: { reasoning_tokens: 0.5 } }, source: "unknown" },
+		])("reports $source usage provenance for Chat counters $usage", async ({ usage, source }) => {
+			expect(await usageFor(usage)).toMatchObject({ usageSource: source })
 		})
 
 		it.each([0, 9])("gives valid legacy cache reads (%s) priority over nested cache", async (cacheReadTokens) => {

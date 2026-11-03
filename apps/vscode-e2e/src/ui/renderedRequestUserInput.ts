@@ -263,7 +263,7 @@ export async function exerciseRenderedRequestUserInput(
 				try {
 					detail = JSON.parse(await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"))
 					assert.equal(detail!.nonce, nonce)
-					assert.equal(detail!.version, "1.138.0")
+					assert.equal(detail!.version, "1.141.0")
 					return true
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false

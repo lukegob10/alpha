@@ -54,7 +54,7 @@ export async function exerciseRenderedTranscriptLifecycle(
 		fs.writeFile(
 			path.join(directory, "ui-transcript-lifecycle.json"),
 			JSON.stringify(
-				{ nonce, hostVersion: "1.138.0", observations, violations, fatalEventCount, fatalEvents },
+				{ nonce, hostVersion: "1.141.0", observations, violations, fatalEventCount, fatalEvents },
 				null,
 				2,
 			),
@@ -80,7 +80,7 @@ export async function exerciseRenderedTranscriptLifecycle(
 				try {
 					const detail = JSON.parse(await fs.readFile(path.join(directory, `ui-stage-${stage}.json`), "utf8"))
 					assert.equal(detail.nonce, nonce)
-					assert.equal(detail.version, "1.138.0")
+					assert.equal(detail.version, "1.141.0")
 					return true
 				} catch (error) {
 					if ((error as NodeJS.ErrnoException).code === "ENOENT") return false

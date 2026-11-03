@@ -200,7 +200,7 @@ suite("Alpha async user input acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("keeps async questions nonblocking with indefinite timing and accepts a later reply", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: AsyncInputHost }).sidebarProvider
@@ -293,7 +293,7 @@ suite("Alpha async user input acceptance", function () {
 
 	for (const decision of ["answer", "cancel"] as const) {
 		test(`keeps a blocking Full Access question waiting indefinitely until an addressed ${decision}`, async () => {
-			assert.equal(vscode.version, "1.138.0")
+			assert.equal(vscode.version, "1.141.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const api = globalThis.api
 			const provider = (api as unknown as { sidebarProvider?: AsyncInputHost }).sidebarProvider

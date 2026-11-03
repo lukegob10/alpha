@@ -7,6 +7,18 @@ const command = { command: process.execPath, args: ["hook.js"] }
 afterEach(() => vi.restoreAllMocks())
 
 describe("lifecycle hook configuration", () => {
+	it("recognizes model-request observers in native and Codex naming without match filters", () => {
+		const config = parseLifecycleHookConfig({
+			PreModelRequest: [{ ...command, matcher: "never" }],
+			postModelRequest: [{ ...command, async: true }],
+		})
+		expect(config.preModelRequest).toEqual([{ ...command, matcher: "never" }])
+		expect(config.postModelRequest).toEqual([{ ...command, async: true }])
+		expect(selectLifecycleHookCommands(config, { hook_event_name: "PreModelRequest" })).toEqual(
+			config.preModelRequest,
+		)
+	})
+
 	it("preserves legacy command arrays and merges event groups in declaration order", () => {
 		const config = parseLifecycleHookConfig({
 			stop: [command],

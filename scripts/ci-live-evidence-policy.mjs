@@ -157,8 +157,8 @@ export async function admitLiveEvidence(
 						!manifest.warnings.length &&
 						isDeepStrictEqual(manifest.summary, { category: "none", code: "OK" }) &&
 						manifest.metadata?.scenarioId === request.scenarioId &&
-						manifest.metadata.hostVersion === "1.138.0" &&
-						manifest.metadata.requestedHostVersion === "1.138.0" &&
+						manifest.metadata.hostVersion === "1.141.0" &&
+						manifest.metadata.requestedHostVersion === "1.141.0" &&
 						manifest.metadata.provider === "live-copilot" &&
 						manifest.metadata.modelId === modelId &&
 						manifest.metadata.reasoningEffort === effort &&
@@ -203,7 +203,7 @@ export async function admitLiveEvidence(
 						runner.exitCode === 0 &&
 						!runner.failure &&
 						runner.providerMode === "live-copilot" &&
-						runner.actualVSCodeVersion === "1.138.0" &&
+						runner.actualVSCodeVersion === "1.141.0" &&
 						runner.actualModelId === modelId &&
 						runner.actualReasoningEffort === effort &&
 						runner.execution === "extension-host" &&
@@ -228,7 +228,7 @@ export async function admitLiveEvidence(
 				)
 				profiles.add(sha(runner.profileDir))
 				const startedHost = await json(path.join(directory, "live-host-started.json"))
-				const expectedHost = { runId, nonce: startedHost.nonce, actualVSCodeVersion: "1.138.0" }
+				const expectedHost = { runId, nonce: startedHost.nonce, actualVSCodeVersion: "1.141.0" }
 				validateLiveHostReceipt(startedHost, expectedHost, "started")
 				const completion = validateLiveHostReceipt(
 					await json(path.join(directory, "host-completion.json")),

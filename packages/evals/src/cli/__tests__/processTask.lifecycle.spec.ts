@@ -121,7 +121,7 @@ const task = { id: 41, runId: 7, language: "javascript", exercise: "lifecycle", 
 const run = { id: 7, executionMethod: "vscode", timeout: 5 }
 const executionIdentity: ExecutionIdentity = {
 	schemaVersion: 1,
-	hostVersion: "1.138.0",
+	hostVersion: "1.141.0",
 	extensionId: "Alpha.alpha",
 	extensionVersion: "3.2.4",
 	entrypointDigest: `sha256:${"a".repeat(64)}`,

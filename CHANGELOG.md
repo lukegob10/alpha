@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.21
+
+### Patch Changes
+
+- Refine model-request lifecycle hooks and provider recovery while preserving structured tool results and reasoning continuity.
+- Return the recorded result when a command finishes before a later control request, avoiding spurious command-is-no-longer-running errors.
+- Fold completed-turn activity consistently, including file-change groups, and improve task-history loading and navigation.
+- Dismiss ticket import and export notices automatically after a short delay.
+- Move automated extension-host and live Copilot testing to exact VS Code 1.141.0 while preserving the VS Code 1.125.0 installation minimum and existing older-host capabilities.
+- Update the extension and in-app release announcement together for Alpha 3.2.21.
+
 ## 3.2.20
 
 ### Patch Changes

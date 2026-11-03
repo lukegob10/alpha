@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState, useCallback, useRef, useId } from "react"
+import { memo, useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef, useId } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronDown, ChevronRight, FileDiff } from "lucide-react"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -14,6 +14,7 @@ import {
 	type FileChangeEntry,
 } from "./utils/fileChangesFromMessages"
 import DiffView from "../common/DiffView"
+import { projectTranscriptTurns } from "./utils/transcriptTurns"
 
 interface FileChangesPanelProps {
 	alphaMessages: AlphaMessage[] | undefined
@@ -59,6 +60,8 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 	const [panelExpanded, setPanelExpanded] = useState(false)
 	const [showAllFiles, setShowAllFiles] = useState(false)
 	const panelId = useId()
+	const triggerRef = useRef<HTMLButtonElement>(null)
+	const contentRef = useRef<HTMLDivElement>(null)
 	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
 	const reviewInitializedRef = useRef(false)
 	const userToggledPathsRef = useRef(new Set<string>())
@@ -75,6 +78,16 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 		userToggledPathsRef.current.clear()
 		netStatsCacheRef.current.clear()
 	}, [taskId])
+
+	const turnCompleted = useMemo(
+		() => projectTranscriptTurns(alphaMessages ?? []).some((turn) => turn.terminalStatus === "completed"),
+		[alphaMessages],
+	)
+	useLayoutEffect(() => {
+		if (!turnCompleted) return
+		if (contentRef.current?.contains(document.activeElement)) triggerRef.current?.focus({ preventScroll: true })
+		setPanelExpanded(false)
+	}, [turnCompleted])
 
 	const fileChanges = useMemo(() => fileChangesFromMessages(alphaMessages), [alphaMessages])
 
@@ -223,6 +236,7 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 			className={cn("mx-[15px] my-3 overflow-hidden rounded-xl border border-[var(--border-subtle)]", className)}>
 			<div className="flex items-stretch bg-[var(--surface-raised)]">
 				<CollapsibleTrigger
+					ref={triggerRef}
 					className={cn(
 						"flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left text-vscode-foreground transition-colors",
 						"hover:bg-vscode-list-hoverBackground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
@@ -268,7 +282,7 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 					{t("chat:fileChangesInConversation.openAllDiffs")}
 				</button>
 			</div>
-			<CollapsibleContent>
+			<CollapsibleContent ref={contentRef}>
 				<div className="border-t border-[var(--border-subtle)]">
 					{Array.from(byPath.entries())
 						.slice(0, showAllFiles ? undefined : 3)

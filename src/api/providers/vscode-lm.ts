@@ -285,6 +285,26 @@ function getAbortSignalReason(signal: AbortSignal): unknown {
 
 type VsCodeLmRequestPhase = ModelRequestPhase
 
+function invalidVsCodeLmSelector(
+	message = "The selected VS Code language model is not available in this window. Sign in to GitHub Copilot and enable the selected model with 'Chat: Manage Language Models', or choose another model in Alpha settings.",
+): Error {
+	return Object.assign(new Error(message), {
+		code: "InvalidModelSelector",
+		retryable: false,
+		phase: "model-selection",
+	})
+}
+
+function wrapVsCodeLmClientError(message: string, cause: unknown): Error {
+	const error = new Error(message, { cause })
+	// Unknown discovery errors stay eligible for transport recovery. Only retain
+	// explicit retry authority; the general normalizer defaults unknowns to false.
+	if (cause && typeof cause === "object" && "retryable" in cause && typeof cause.retryable === "boolean") {
+		Object.assign(error, normalizeApiStreamErrorMetadata(cause))
+	}
+	return error
+}
+
 function normalizeVsCodeLmStreamError(
 	error: Error,
 	phase: VsCodeLmRequestPhase,
@@ -830,7 +850,10 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			// Handle errors during client initialization
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
 			console.error("Alpha <Language Model API>: Client initialization failed:", errorMessage)
-			throw new Error(`Alpha <Language Model API>: Failed to initialize client: ${errorMessage}`)
+			throw wrapVsCodeLmClientError(
+				`Alpha <Language Model API>: Failed to initialize client: ${errorMessage}`,
+				error,
+			)
 		}
 	}
 
@@ -874,11 +897,28 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		applyConfiguredTimeout: boolean,
 	): Promise<vscode.LanguageModelChat> {
 		try {
+			if (
+				!selector ||
+				typeof selector !== "object" ||
+				Array.isArray(selector) ||
+				Object.values(selector).some(
+					(value) => value !== undefined && (typeof value !== "string" || value.trim().length === 0),
+				)
+			) {
+				throw invalidVsCodeLmSelector()
+			}
 			if (!vscode.lm?.selectChatModels) {
-				throw new Error("VS Code Language Model API is not available in this VS Code build.")
+				throw invalidVsCodeLmSelector("VS Code Language Model API is not available in this VS Code build.")
 			}
 
-			const selection = vscode.lm.selectChatModels(selector)
+			// Prefer an exact host ID before catalog-family compatibility. Copilot's
+			// Auto route can report the same family/version as an explicitly chosen model.
+			// Saved IDs and versions remain exact bindings without catalog fallback.
+			const catalogModelId =
+				selector.vendor === "copilot" && selector.family && !selector.id && !selector.version
+					? getVscodeLlmExactModelId(selector)
+					: undefined
+			const selection = vscode.lm.selectChatModels(catalogModelId ? { vendor: "copilot" } : selector)
 			const models = applyConfiguredTimeout
 				? await withApiRequestTimeout(selection, "VS Code LM model selection", getApiRequestTimeout())
 				: await selection
@@ -887,30 +927,16 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				(entry): entry is [keyof vscode.LanguageModelChatSelector, string] =>
 					typeof entry[1] === "string" && entry[1].length > 0,
 			)
-			// Catalog choices contain a family, while VS Code may expose opaque host
-			// families. Resolve only this Copilot model; saved IDs and versions remain
-			// exact bindings and must never be replaced by another route.
-			const catalogModelId =
-				selector.vendor === "copilot" && selector.family && !selector.id && !selector.version
-					? getVscodeLlmExactModelId(selector)
-					: undefined
-			let matches = (models ?? []).filter(
-				(model) =>
-					selectorEntries.every(([key, value]) => model[key] === value) &&
-					(!catalogModelId || getVscodeLlmExactModelId(model) === catalogModelId),
+			let matches = (models ?? []).filter((model) =>
+				catalogModelId
+					? model.vendor === "copilot" &&
+						model.id !== "auto" &&
+						getVscodeLlmExactModelId(model) === catalogModelId
+					: selectorEntries.every(([key, value]) => model[key] === value),
 			)
-			if (matches.length === 0 && catalogModelId) {
-				const catalogSelection = vscode.lm.selectChatModels({ vendor: "copilot" })
-				const catalog = applyConfiguredTimeout
-					? await withApiRequestTimeout(
-							catalogSelection,
-							"VS Code LM model selection",
-							getApiRequestTimeout(),
-						)
-					: await catalogSelection
-				matches = (catalog ?? []).filter(
-					(model) => model.vendor === "copilot" && getVscodeLlmExactModelId(model) === catalogModelId,
-				)
+			if (catalogModelId) {
+				const exactMatches = matches.filter((model) => model.id === catalogModelId)
+				if (exactMatches.length > 0) matches = exactMatches
 			}
 
 			if (matches.length === 1) {
@@ -921,29 +947,27 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				const action = catalogModelId
 					? "Enable only one matching model with 'Chat: Manage Language Models', or choose another model in Alpha settings."
 					: "Choose a model with a unique id."
-				throw new Error(
+				throw invalidVsCodeLmSelector(
 					`The VS Code language model selector '${stringifyVsCodeLmModelSelector(selector) || "<all models>"}' is ambiguous and matched ${matches.length} models. ${action}`,
 				)
 			}
 
 			if (isGpt56Selector(selector) && isVersionBefore(vscode.version, VSCODE_GPT_56_MIN_VERSION)) {
-				throw new Error(
+				throw invalidVsCodeLmSelector(
 					`GPT-5.6 models through the VS Code Language Model API require VS Code ${VSCODE_GPT_56_MIN_VERSION} or newer (current: ${vscode.version}). Update VS Code, then enable the model with 'Chat: Manage Language Models'.`,
 				)
 			}
 
 			if (selectorEntries.length === 0) {
-				throw new Error(
+				throw invalidVsCodeLmSelector(
 					"No VS Code language models are available in this window. Sign in to GitHub Copilot in this window and enable a model with 'Chat: Manage Language Models'.",
 				)
 			}
 
-			throw new Error(
-				"The selected VS Code language model is not available in this window. Sign in to GitHub Copilot and enable the selected model with 'Chat: Manage Language Models', or choose another model in Alpha settings.",
-			)
+			throw invalidVsCodeLmSelector()
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : "Unknown error"
-			throw new Error(`Alpha <Language Model API>: Failed to select model: ${errorMessage}`)
+			throw wrapVsCodeLmClientError(`Alpha <Language Model API>: Failed to select model: ${errorMessage}`, error)
 		}
 	}
 
@@ -1213,7 +1237,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 				const message = error instanceof Error ? error.message : "Unknown error"
 				console.error("Alpha <Language Model API>: Client creation failed:", message)
-				throw new Error(`Alpha <Language Model API>: Failed to create client: ${message}`)
+				throw wrapVsCodeLmClientError(`Alpha <Language Model API>: Failed to create client: ${message}`, error)
 			}
 		}
 
@@ -1641,7 +1665,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		} catch (error) {
 			throwIfSingleCompletionAborted(metadata)
 			if (error instanceof Error) {
-				throw new Error(`VSCode LM completion error: ${error.message}`)
+				throw wrapVsCodeLmClientError(`VSCode LM completion error: ${error.message}`, error)
 			}
 			throw error
 		} finally {
