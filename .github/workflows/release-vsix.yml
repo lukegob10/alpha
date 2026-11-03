@@ -6,6 +6,11 @@ on:
         paths:
             - src/package.json
     workflow_dispatch:
+        inputs:
+            quality_evidence_run_id:
+                description: "Successful live-quality-evidence run for this commit (required for agent changes)"
+                type: string
+                required: false
 
 permissions:
     contents: read
@@ -16,6 +21,7 @@ concurrency:
 
 jobs:
     release-vsix:
+        needs: live-quality
         runs-on: windows-latest
         timeout-minutes: 120
 
@@ -45,6 +51,9 @@ jobs:
 
             - name: Run mechanical checks
               run: pnpm harness run static
+
+            - name: Verify shared stopping and continuation contracts
+              run: pnpm harness run turns
 
             - name: Run extension and UI unit checks
               run: pnpm harness run unit
@@ -84,7 +93,7 @@ jobs:
 
             - name: Require current release evidence
               if: always()
-              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes --require rendered --require stress
+              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require turns --require offline --require host --require extended --require confidence --require outcomes --require rendered --require stress
 
             - name: Verify command auto-approval and outside-path review
               run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1410:run
@@ -114,8 +123,51 @@ jobs:
                   retention-days: 14
                   if-no-files-found: error
 
+    live-quality:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            actions: read
+        env:
+            QUALITY_EVIDENCE_RUN_ID: ${{ inputs.quality_evidence_run_id }}
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Determine whether agent behavior changed since the last release
+              id: policy
+              run: node scripts/harness/release-quality.mjs policy --candidate "$GITHUB_SHA"
+            - name: Require a successful live comparison for the candidate commit
+              if: steps.policy.outputs.required != 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: node scripts/harness/release-quality.mjs verify-run --run-id "$QUALITY_EVIDENCE_RUN_ID" --candidate "$GITHUB_SHA"
+            - name: Download the reviewed live comparison
+              if: steps.policy.outputs.required != 'false'
+              uses: actions/download-artifact@v7
+              with:
+                  name: live-quality-evidence-${{ github.sha }}
+                  path: ${{ runner.temp }}/live-quality-evidence
+                  run-id: ${{ inputs.quality_evidence_run_id }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Recheck correctness and unnecessary work against the released baseline
+              if: steps.policy.outputs.required != 'false'
+              env:
+                  QUALITY_BASELINE: ${{ steps.policy.outputs.baseline }}
+              run: node scripts/evals/proportional-scope-compare.mjs --live-quality-bundle "$RUNNER_TEMP/live-quality-evidence/bundle.json" --require-baseline-commit "$QUALITY_BASELINE" --require-candidate-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/live-quality-evidence/release-comparison.json"
+            - name: Retain the release comparison
+              if: steps.policy.outputs.required != 'false'
+              uses: actions/upload-artifact@v6
+              with:
+                  name: live-quality-release-${{ github.sha }}
+                  path: ${{ runner.temp }}/live-quality-evidence/release-comparison.json
+                  if-no-files-found: error
+                  retention-days: 14
+
     package-vsix:
-        needs: release-vsix
+        needs: [release-vsix, live-quality]
         runs-on: ${{ matrix.os }}
         timeout-minutes: 45
         strategy:
@@ -169,7 +221,7 @@ jobs:
               run: |
                   $version = node -p "require('./src/package.json').version"
                   $vsix = Get-Item -LiteralPath "bin/alpha-$version-${{ matrix.target }}.vsix" -ErrorAction Stop
-                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --target "${{ matrix.target }}"
+                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --require-clean-build --target "${{ matrix.target }}"
                   if ($LASTEXITCODE -ne 0) { throw "VSIX target verification failed." }
                   "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
 

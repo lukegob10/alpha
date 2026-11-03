@@ -51,6 +51,11 @@
 		"invalidResponse": "Invalid response from embedder service. Please check your configuration."
 	},
 	"serviceFactory": {
+		"vertexGatewayRemoved": "Custom Vertex connections are no longer supported. Configure standard Google Cloud credentials in a new provider profile or save standard code indexing settings.",
+		"embeddingKeyMissing": "Configure an API key for the selected embedding provider.",
+		"embeddingModelMissing": "Select an embedding model and its output dimensions.",
+		"compatibleUrlMissing": "Configure an OpenAI-compatible embeddings base URL.",
+		"bedrockRegionMissing": "Configure a valid AWS region for embeddings.",
 		"vertexConfigMissing": "GCP Vertex AI configuration missing for embedder creation",
 		"geminiConfigMissing": "Gemini API key missing for code indexing",
 		"invalidEmbedderType": "Invalid embedder type configured: {{embedderProvider}}",

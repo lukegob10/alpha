@@ -22,6 +22,40 @@ import {
 } from "../AgentTurnEventLog"
 
 describe("AgentTurnEventLog", () => {
+	it("persists and projects model continuation reasons without exposing step input or arbitrary reason text", async () => {
+		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-continuation-"))
+		const log = new AgentTurnEventLog("task-continuation", storagePath)
+		try {
+			await log.append({ type: "model_continuation", step: 2, reason: "completion-repair" })
+			await log.close()
+			const [record] = await readAgentTurnEvents("task-continuation", storagePath)
+			expect(record.event).toEqual({ type: "model_continuation", step: 2, reason: "completion-repair" })
+			expect(projectPersistedAgentTurnEvent(record).event).toEqual({
+				type: "model_continuation",
+				step: 2,
+				reason: "completion-repair",
+				reasonPresent: true,
+			})
+			const privateRecord = {
+				...record,
+				event: {
+					type: "model_continuation",
+					step: -1,
+					reason: "private-command-prompt-or-output",
+					prompt: "private-command-prompt-or-output",
+				},
+			} as unknown as PersistedAgentTurnEvent
+			expect(projectPersistedAgentTurnEvent(privateRecord).event).toEqual({
+				type: "model_continuation",
+				reasonPresent: true,
+			})
+			expect(JSON.stringify(projectPersistedAgentTurnEvent(privateRecord))).not.toContain("private-command")
+		} finally {
+			await log.close()
+			await fs.rm(storagePath, { recursive: true, force: true })
+		}
+	})
+
 	it("persists shared canonical tool-call projections without treating aliases as cycles", async () => {
 		const storagePath = await fs.mkdtemp(path.join(tmpdir(), "agent-turn-events-shared-"))
 		const log = new AgentTurnEventLog("task-shared", storagePath)

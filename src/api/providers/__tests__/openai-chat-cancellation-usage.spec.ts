@@ -1,7 +1,6 @@
 import type { ApiStreamChunk } from "../../transform/stream"
 import { OpenAiHandler } from "../openai"
 import { OpenRouterHandler } from "../openrouter"
-import { StellarHandler } from "../stellar"
 
 const { chatCreate } = vi.hoisted(() => ({ chatCreate: vi.fn() }))
 
@@ -11,14 +10,6 @@ vi.mock("openai", () => {
 	})
 	return { default: constructor, AzureOpenAI: constructor }
 })
-vi.mock("../utils/helix-token-manager", () => ({
-	HelixTokenManager: {
-		getOrCreate: () => ({ getToken: async () => "fixture-token" }),
-	},
-}))
-vi.mock("../utils/vertex-gateway-transport", () => ({
-	configurePemCaTransport: vi.fn().mockResolvedValue("fixture.pem"),
-}))
 
 const routes = [
 	{
@@ -34,16 +25,6 @@ const routes = [
 		name: "OpenRouter",
 		create: (streaming = true) =>
 			new OpenRouterHandler({ openRouterApiKey: "fixture-key", openRouterStreamingEnabled: streaming }),
-	},
-	{
-		name: "Stellar",
-		wrapsErrors: true,
-		create: (streaming = true) =>
-			new StellarHandler({
-				stellarBaseUrl: "https://gateway.example.test/v1",
-				stellarPemCaBundlePath: "fixture.pem",
-				stellarStreamingEnabled: streaming,
-			}),
 	},
 ]
 
@@ -77,7 +58,6 @@ function stream(...chunks: unknown[]) {
 async function cancelOn(
 	handler: OpenAiHandler,
 	shouldCancel: (chunk: ApiStreamChunk) => boolean,
-	wrapsErrors = false,
 ): Promise<ApiStreamChunk[]> {
 	const controller = new AbortController()
 	const reason = Object.assign(new Error("fixture caller stopped"), { name: "AbortError" })
@@ -92,18 +72,14 @@ async function cancelOn(
 		}
 	}
 
-	if (wrapsErrors) {
-		await expect(consume()).rejects.toMatchObject({ name: "AbortError" })
-	} else {
-		await expect(consume()).rejects.toBe(reason)
-	}
+	await expect(consume()).rejects.toBe(reason)
 	expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([expect.objectContaining(expectedUsage)])
 	expect(chunks.some((chunk) => chunk.type === "outcome" && chunk.status === "completed")).toBe(false)
 	expect(chatCreate).toHaveBeenCalledOnce()
 	return chunks
 }
 
-describe.each(routes)("$name cancellation usage", ({ create, wrapsErrors }) => {
+describe.each(routes)("$name cancellation usage", ({ create }) => {
 	beforeEach(() => chatCreate.mockReset())
 
 	it.each([false, true])(
@@ -119,7 +95,7 @@ describe.each(routes)("$name cancellation usage", ({ create, wrapsErrors }) => {
 				),
 			)
 
-			await cancelOn(create(), (chunk) => chunk.type === "text" && chunk.text === "Second", wrapsErrors)
+			await cancelOn(create(), (chunk) => chunk.type === "text" && chunk.text === "Second")
 		},
 	)
 
@@ -137,7 +113,7 @@ describe.each(routes)("$name cancellation usage", ({ create, wrapsErrors }) => {
 					: { choices: [{ message: { tool_calls: [toolCall] }, finish_reason: "tool_calls" }], usage },
 			)
 
-			await cancelOn(create(streaming), (chunk) => chunk.type === "tool_call_end", wrapsErrors)
+			await cancelOn(create(streaming), (chunk) => chunk.type === "tool_call_end")
 		},
 	)
 
@@ -150,7 +126,7 @@ describe.each(routes)("$name cancellation usage", ({ create, wrapsErrors }) => {
 					: { choices: [{ message: { content: "Answer" }, finish_reason: "stop" }], usage },
 			)
 
-			await cancelOn(create(streaming), (chunk) => chunk.type === "usage", wrapsErrors)
+			await cancelOn(create(streaming), (chunk) => chunk.type === "usage")
 		},
 	)
 

@@ -38,7 +38,6 @@ export class OpenAiNativeHandler extends OpenAiHandler {
 			openAiR1FormatEnabled: false,
 			openAiStreamingEnabled: true,
 			azureApiVersion: undefined,
-			taskReasoningCustomEffort: undefined,
 		})
 	}
 

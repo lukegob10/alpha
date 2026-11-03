@@ -71,7 +71,7 @@ describe("list_provider_profiles", () => {
 	])("matches %s by product label %s while returning the canonical provider", async (provider, query) => {
 		const f = fixture([
 			{ id: "account-a", name: "Account A", apiProvider: provider, modelId: "configured-model" },
-			{ id: "account-b", name: "Account B", apiProvider: "stellar", modelId: "configured-model" },
+			{ id: "account-b", name: "Account B", apiProvider: "other-provider", modelId: "configured-model" },
 		])
 		expect((await f.read({ query })).profiles).toEqual([
 			{ id: "account-a", name: "Account A", provider, model: "configured-model" },

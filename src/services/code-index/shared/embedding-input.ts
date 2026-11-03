@@ -11,29 +11,6 @@ export const CODE_INDEX_VERSION = 2
 
 /** Fingerprints representation and model identity, never credentials. */
 export function getIndexIdentity(config: CodeIndexConfig): string {
-	const vertex = config.embedderProvider === "vertex" ? config.vertexOptions : undefined
-	const configuredRoutes = vertex?.modelRoutingMap ?? vertex?.vertexGatewayModelRoutingMap
-	let routes: unknown = configuredRoutes
-	if (typeof routes === "string") {
-		try {
-			routes = JSON.parse(routes)
-		} catch {
-			routes = undefined
-		}
-	}
-	const modelRoutes =
-		routes && typeof routes === "object"
-			? Object.entries(routes)
-					.sort(([a], [b]) => a.localeCompare(b))
-					.map(([alias, target]) => [
-						alias,
-						typeof target === "string"
-							? target
-							: target && typeof target === "object" && "modelOverride" in target
-								? target.modelOverride
-								: undefined,
-					])
-			: undefined
 	return createHash("sha256")
 		.update(
 			JSON.stringify({
@@ -41,13 +18,7 @@ export function getIndexIdentity(config: CodeIndexConfig): string {
 				provider: config.embedderProvider,
 				model: config.modelId ?? getDefaultModelId(config.embedderProvider),
 				dimension: config.modelDimension,
-				endpoint: vertex?.gatewayBaseUrl ?? vertex?.vertexGatewayBaseUrl,
-				vertexModelRouting: modelRoutes,
-				// Rebuild only gateway indexes when restoring their original embedding inputs.
-				vertexGatewayInput:
-					config.embedderProvider === "vertex" && (vertex?.gatewayBaseUrl || vertex?.vertexGatewayBaseUrl)
-						? "raw-content-v1"
-						: undefined,
+				endpoint: config.embedderProvider === "openai" ? config.embeddingOptions?.baseUrl : undefined,
 			}),
 		)
 		.digest("hex")

@@ -1,4 +1,3 @@
-import { stellarModels } from "../providers/stellar.js"
 import { VERTEX_1M_CONTEXT_MODEL_IDS, vertexDefaultModelId, vertexModels } from "../providers/vertex.js"
 import {
 	getVscodeLlmCatalogModels,
@@ -41,13 +40,6 @@ describe("supported provider model catalogs", () => {
 			}),
 		)
 		expect(VERTEX_1M_CONTEXT_MODEL_IDS).not.toContain("claude-opus-4-7")
-	})
-
-	it("keeps Stellar's supported model metadata", () => {
-		expect(Object.keys(stellarModels)).toEqual(["Meta-Llama-3.3-70B-Instruct"])
-		expect(stellarModels["Meta-Llama-3.3-70B-Instruct"]).toEqual(
-			expect.objectContaining({ contextWindow: 131_072, supportsImages: false }),
-		)
 	})
 
 	describe("VS Code LM / GitHub Copilot", () => {

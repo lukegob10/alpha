@@ -146,12 +146,10 @@ const modelPreferenceKeys = new Set([
 	"vertex1MContext",
 	"anthropicBeta1MContext",
 	"vertexStreamingEnabled",
-	"stellarStreamingEnabled",
 	"openAiStreamingEnabled",
 	"openRouterStreamingEnabled",
 	"refreshIntervalMinutes",
 	"vertexGatewayTokenRefreshMinutes",
-	"stellarTokenRefreshMinutes",
 	"openAiNativeServiceTier",
 	"openAiR1FormatEnabled",
 ])
@@ -433,7 +431,6 @@ export function applySubagentSpawnOverrides(
 				apiConfiguration.openAiModelId = requestedModelId
 				break
 			case "vertex":
-			case "stellar":
 			case "openai-native":
 			case "openai-codex":
 			case "bedrock":

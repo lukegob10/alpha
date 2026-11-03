@@ -23,6 +23,8 @@
 		"test:live:matrix:reliability": "pnpm --dir apps/vscode-e2e test:live:matrix:reliability",
 		"test:live:reliability": "pnpm --dir apps/vscode-e2e test:live:reliability",
 		"test:live:core": "pnpm --dir apps/vscode-e2e test:live:core",
+		"quality:capture": "pnpm --filter @alpha-code/vscode-e2e quality:capture",
+		"quality:compare": "node scripts/evals/proportional-scope-compare.mjs",
 		"test:claude:mechanical": "pnpm --dir apps/vscode-e2e test:claude:mechanical",
 		"test:claude:live": "pnpm --dir apps/vscode-e2e test:claude:live",
 		"test:core:confidence": "pnpm --dir apps/vscode-e2e test:core:confidence",

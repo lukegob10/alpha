@@ -1,3 +1,4 @@
+import { codebaseIndexConfigSchema, codebaseIndexProviderSchema } from "@alpha-code/types"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
@@ -2896,11 +2897,29 @@ export const webviewMessageHandler = async (
 				break
 			}
 
-			const settings = message.codeIndexSettings
-
+			const parsedSettings = codebaseIndexConfigSchema
+				.merge(codebaseIndexProviderSchema)
+				.safeParse(message.codeIndexSettings)
+			if (!parsedSettings.success) {
+				await provider.postMessageToWebview({
+					type: "codeIndexSettingsSaved",
+					success: false,
+					error: "Invalid code indexing configuration.",
+				})
+				break
+			}
+			const settings = parsedSettings.data
 			try {
-				const currentConfig = getGlobalState("codebaseIndexConfig") || {}
+				const currentConfig = { ...(getGlobalState("codebaseIndexConfig") || {}) }
 
+				for (const field of [
+					"codebaseIndexVertexGatewayBaseUrl",
+					"codebaseIndexVertexGatewayCaBundlePath",
+					"codebaseIndexVertexGatewayHelixCommand",
+					"codebaseIndexVertexGatewayTokenRefreshMinutes",
+					"codebaseIndexVertexGatewayModelRoutingMap",
+				] as const)
+					delete currentConfig[field]
 				// Save global state settings atomically
 				const globalStateConfig = {
 					...currentConfig,
@@ -2914,12 +2933,9 @@ export const webviewMessageHandler = async (
 					codebaseIndexVertexProjectId: settings.codebaseIndexVertexProjectId,
 					codebaseIndexVertexRegion: settings.codebaseIndexVertexRegion,
 					codebaseIndexVertexKeyFile: settings.codebaseIndexVertexKeyFile,
-					codebaseIndexVertexGatewayBaseUrl: settings.codebaseIndexVertexGatewayBaseUrl,
-					codebaseIndexVertexGatewayCaBundlePath: settings.codebaseIndexVertexGatewayCaBundlePath,
-					codebaseIndexVertexGatewayHelixCommand: settings.codebaseIndexVertexGatewayHelixCommand,
-					codebaseIndexVertexGatewayTokenRefreshMinutes:
-						settings.codebaseIndexVertexGatewayTokenRefreshMinutes,
-					codebaseIndexVertexGatewayModelRoutingMap: settings.codebaseIndexVertexGatewayModelRoutingMap,
+					codebaseIndexOpenAiCompatibleBaseUrl: settings.codebaseIndexOpenAiCompatibleBaseUrl,
+					codebaseIndexBedrockRegion: settings.codebaseIndexBedrockRegion,
+					codebaseIndexBedrockProfile: settings.codebaseIndexBedrockProfile,
 					codebaseIndexSearchMaxResults: settings.codebaseIndexSearchMaxResults,
 					codebaseIndexSearchMinScore: settings.codebaseIndexSearchMinScore,
 					codebaseIndexEmbeddingRateLimitEnabled: settings.codebaseIndexEmbeddingRateLimitEnabled,
@@ -2946,6 +2962,26 @@ export const webviewMessageHandler = async (
 					)
 				}
 
+				if (settings.codebaseIndexOpenAiApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenAiApiKey",
+						settings.codebaseIndexOpenAiApiKey,
+					)
+				if (settings.codebaseIndexOpenAiCompatibleApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenAiCompatibleApiKey",
+						settings.codebaseIndexOpenAiCompatibleApiKey,
+					)
+				if (settings.codebaseIndexOpenRouterApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenRouterApiKey",
+						settings.codebaseIndexOpenRouterApiKey,
+					)
+				if (settings.codebaseIndexBedrockApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexBedrockApiKey",
+						settings.codebaseIndexBedrockApiKey,
+					)
 				// Send success response first - settings are saved regardless of validation
 				await provider.postMessageToWebview({
 					type: "codeIndexSettingsSaved",
@@ -3059,12 +3095,22 @@ export const webviewMessageHandler = async (
 			))
 			const hasGeminiApiKey = !!(await provider.context.secrets.get("codebaseIndexGeminiApiKey"))
 
+			const hasOpenAiApiKey = !!(await provider.context.secrets.get("codebaseIndexOpenAiApiKey"))
+			const hasOpenAiCompatibleApiKey = !!(await provider.context.secrets.get(
+				"codebaseIndexOpenAiCompatibleApiKey",
+			))
+			const hasOpenRouterApiKey = !!(await provider.context.secrets.get("codebaseIndexOpenRouterApiKey"))
+			const hasBedrockApiKey = !!(await provider.context.secrets.get("codebaseIndexBedrockApiKey"))
 			provider.postMessageToWebview({
 				type: "codeIndexSecretStatus",
 				values: {
 					hasQdrantApiKey,
 					hasVertexJsonCredentials,
 					hasGeminiApiKey,
+					hasOpenAiApiKey,
+					hasOpenAiCompatibleApiKey,
+					hasOpenRouterApiKey,
+					hasBedrockApiKey,
 				},
 			})
 			break

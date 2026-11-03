@@ -1,94 +1,81 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
-
-import {
-	type VertexGatewayRouteTarget,
-	resolveVertexGatewayRoute,
-	resolveVertexOpenAiModelInfo,
-} from "@alpha-code/types"
-
+import { GoogleAuth, type JWTInput } from "google-auth-library"
+import { safeJsonParse } from "@alpha-code/core"
+import { resolveVertexOpenAiModelInfo } from "@alpha-code/types"
 import type { ApiHandlerOptions } from "../../shared/api"
 import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadata } from "../index"
-import type { ApiStream, ApiStreamCapabilities } from "../transform/stream"
+import type { ApiStream } from "../transform/stream"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
-
-import { DEFAULT_HEADERS } from "./constants"
 import { OpenAiHandler } from "./openai"
-import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
-import { getApiRequestTimeout } from "./utils/timeout-config"
-import { handleProviderError } from "./utils/error-handler"
-import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
+import { DEFAULT_HEADERS } from "./constants"
+import { assertNativeVertexSettings } from "./utils/native-vertex-settings"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
-
-type VertexOpenAiSettings = {
-	baseUrl: string
-	pemCaBundlePath: string
-	helixCommand: string
-	helixParseMode: HelixParseMode
-	helixTokenKey: string
-	refreshIntervalMinutes: number
-	extraHeaders?: Record<string, string>
-}
+import { getApiRequestTimeout } from "./utils/timeout-config"
 
 /**
- * Handles Vertex partner models that use Google's OpenAI-compatible
- * `endpoints/openapi/chat/completions` endpoint (for example, xAI Grok).
+ * Native Google OpenAI-compatible partner endpoints use the same Google credentials as Claude and Gemini.
+ * Google endpoint/auth contract checked 2026-11-03:
+ * https://docs.cloud.google.com/vertex-ai/generative-ai/docs/samples/generativeaionvertexai-gemini-chat-completions-non-streaming
  */
 export class VertexOpenAiHandler extends OpenAiHandler {
-	// Credential setup before the shared transport is not yet cancellable.
-	override readonly streamCapabilities: ApiStreamCapabilities
-	private readonly selectedModelId: string
-	private readonly vertexSettings: VertexOpenAiSettings
-	private readonly helixTokenManager: HelixTokenManager
-	private transportSetupPromise?: Promise<void>
+	override readonly streamCapabilities = { cancellation: false, lifecycle: true } as const
+	private readonly auth: GoogleAuth
 	private activeToken?: string
+	private readonly baseUrl: string
 
 	constructor(options: ApiHandlerOptions) {
-		const selectedModelId = options.apiModelId?.trim()
-		if (!selectedModelId) {
-			throw new Error("Missing required Vertex OpenAI-compatible model ID.")
-		}
-
-		const route = resolveVertexGatewayRoute(options, selectedModelId)
-		const routedModelId = route.modelOverride ?? selectedModelId
-		const modelInfo = resolveVertexOpenAiModelInfo(selectedModelId)
-		const settings = resolveVertexOpenAiSettings(options, route)
-
-		// OpenAiHandler owns chat-completions message conversion and tool streaming.
-		// The placeholder key is replaced with a Helix bearer token before a request.
+		assertNativeVertexSettings(options)
+		const modelId = options.apiModelId?.trim()
+		const project = (options.projectId ?? options.vertexProjectId)?.trim()
+		const location = (options.location ?? options.vertexRegion)?.trim()
+		if (!modelId || !project || !location) throw new Error("Vertex requires a project, location, and model ID.")
+		if (!/^[a-z0-9-]+$/.test(location)) throw new Error("Invalid Vertex location.")
+		const host = location === "global" ? "aiplatform.googleapis.com" : `${location}-aiplatform.googleapis.com`
+		const baseUrl = `https://${host}/v1/projects/${encodeURIComponent(project)}/locations/${encodeURIComponent(location)}/endpoints/openapi`
 		super({
 			...options,
-			modelTemperature: options.modelTemperature ?? modelInfo.defaultTemperature,
-			openAiBaseUrl: settings.baseUrl,
-			openAiApiKey: "helix-token-pending",
-			openAiHeaders: settings.extraHeaders,
-			openAiModelId: routedModelId,
-			openAiCustomModelInfo: modelInfo,
+			openAiBaseUrl: baseUrl,
+			openAiApiKey: "google-credentials-pending",
+			openAiModelId: modelId,
+			openAiCustomModelInfo: resolveVertexOpenAiModelInfo(modelId),
 			openAiStreamingEnabled: options.vertexStreamingEnabled ?? true,
+			openAiHeaders: undefined,
+			openAiUseAzure: false,
+			openAiR1FormatEnabled: false,
+			openAiHostHeader: undefined,
 		})
-		this.streamCapabilities = {
-			cancellation: false,
-			...(this.shouldUseResponsesApi(routedModelId) ? {} : { lifecycle: true }),
-		}
-		this.selectedModelId = selectedModelId
-
-		this.vertexSettings = settings
-		this.helixTokenManager = HelixTokenManager.getOrCreate({
-			helixCommand: settings.helixCommand,
-			helixParseMode: settings.helixParseMode,
-			helixTokenKey: settings.helixTokenKey,
-			refreshIntervalMinutes: settings.refreshIntervalMinutes,
+		this.baseUrl = baseUrl
+		this.auth = new GoogleAuth({
+			scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+			...(options.vertexJsonCredentials
+				? { credentials: safeJsonParse<JWTInput>(options.vertexJsonCredentials, undefined) }
+				: options.vertexKeyFile
+					? { keyFile: options.vertexKeyFile }
+					: {}),
 		})
 	}
 
 	override getModel() {
 		const model = super.getModel()
-		const toolIdentity = { provider: "vertex", family: this.selectedModelId, id: model.id }
-		return {
-			...model,
-			info: applyModelToolPreferences(toolIdentity, model.info),
-			toolIdentity,
-		}
+		const toolIdentity = { provider: "vertex", id: model.id }
+		return { ...model, info: applyModelToolPreferences(toolIdentity, model.info), toolIdentity }
+	}
+
+	private async prepareClient(metadata?: ApiHandlerSingleCompletionMetadata): Promise<void> {
+		throwIfSingleCompletionAborted(metadata)
+		const token = await awaitSingleCompletion(this.auth.getAccessToken(), metadata)
+		throwIfSingleCompletionAborted(metadata)
+		if (!token) throw new Error("Google Cloud credentials did not return an access token.")
+		if (token === this.activeToken) return
+		this.client = new OpenAI({
+			baseURL: this.baseUrl,
+			apiKey: token,
+			defaultHeaders: DEFAULT_HEADERS,
+			timeout: getApiRequestTimeout(),
+			maxRetries: 0,
+		})
+		this.activeToken = token
 	}
 
 	override async *createMessage(
@@ -96,181 +83,12 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
-		let didRetryForAuth = false
-
-		while (true) {
-			let emittedChunk = false
-
-			try {
-				await this.prepareClient(didRetryForAuth)
-
-				for await (const chunk of super.createMessage(systemPrompt, messages, metadata)) {
-					emittedChunk = true
-					yield chunk
-				}
-
-				return
-			} catch (error) {
-				if (!didRetryForAuth && !emittedChunk && isAuthenticationFailure(error)) {
-					didRetryForAuth = true
-					continue
-				}
-
-				throw asVertexOpenAiError(error)
-			}
-		}
+		await this.prepareClient(metadata)
+		yield* super.createMessage(systemPrompt, messages, metadata)
 	}
 
 	override async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
-		throwIfSingleCompletionAborted(metadata)
-		let didRetryForAuth = false
-
-		while (true) {
-			try {
-				await this.prepareClient(didRetryForAuth, metadata)
-				return await super.completePrompt(prompt, metadata)
-			} catch (error) {
-				throwIfSingleCompletionAborted(metadata)
-				if (!didRetryForAuth && isAuthenticationFailure(error)) {
-					didRetryForAuth = true
-					continue
-				}
-
-				throw asVertexOpenAiError(error)
-			}
-		}
+		await this.prepareClient(metadata)
+		return super.completePrompt(prompt, metadata)
 	}
-
-	private async prepareClient(
-		forceTokenRefresh: boolean,
-		metadata?: ApiHandlerSingleCompletionMetadata,
-	): Promise<void> {
-		throwIfSingleCompletionAborted(metadata)
-		if (!this.transportSetupPromise) {
-			this.transportSetupPromise = configureVertexGatewayTransport(this.vertexSettings.pemCaBundlePath).then(
-				() => undefined,
-			)
-		}
-
-		const transportSetup = this.transportSetupPromise
-		await awaitSingleCompletion(
-			transportSetup.catch((error) => {
-				if (this.transportSetupPromise === transportSetup) this.transportSetupPromise = undefined
-				throw error
-			}),
-			metadata,
-		)
-
-		const token = await awaitSingleCompletion(
-			forceTokenRefresh ? this.helixTokenManager.forceRefreshToken() : this.helixTokenManager.getToken(),
-			metadata,
-		)
-
-		if (token === this.activeToken) {
-			return
-		}
-
-		this.activeToken = token
-		this.client = new OpenAI({
-			baseURL: this.vertexSettings.baseUrl,
-			apiKey: token,
-			defaultHeaders: {
-				...DEFAULT_HEADERS,
-				...(this.vertexSettings.extraHeaders ?? {}),
-			},
-			timeout: getApiRequestTimeout(),
-			maxRetries: 0,
-		})
-	}
-}
-
-function resolveVertexOpenAiSettings(
-	options: ApiHandlerOptions,
-	route: VertexGatewayRouteTarget,
-): VertexOpenAiSettings {
-	const gatewayBaseUrl = getGatewaySetting(options.gatewayBaseUrl, options.vertexGatewayBaseUrl)
-	const projectId = route.projectId ?? getGatewaySetting(options.projectId, options.vertexProjectId)
-	const location = route.location ?? getGatewaySetting(options.location, options.vertexRegion)
-	const pemCaBundlePath = getGatewaySetting(options.pemCaBundlePath, options.vertexGatewayCaBundlePath)
-	const helixCommand = getGatewaySetting(options.helixCommand, options.vertexGatewayHelixCommand)
-
-	const missingFields = [
-		!gatewayBaseUrl ? "gatewayBaseUrl" : undefined,
-		!projectId ? "projectId" : undefined,
-		!location ? "location" : undefined,
-		!pemCaBundlePath ? "pemCaBundlePath" : undefined,
-		!helixCommand ? "helixCommand" : undefined,
-	].filter((field): field is string => Boolean(field))
-
-	if (missingFields.length > 0) {
-		throw new Error(`Missing required Vertex gateway settings: ${missingFields.join(", ")}`)
-	}
-
-	return {
-		baseUrl: buildVertexOpenAiBaseUrl(gatewayBaseUrl!, projectId!, location!),
-		pemCaBundlePath: pemCaBundlePath!,
-		helixCommand: helixCommand!,
-		helixParseMode: options.helixParseMode === "json_field" ? "json_field" : "raw_stdout",
-		helixTokenKey: options.helixTokenKey?.trim() || "access_token",
-		refreshIntervalMinutes: normalizeRefreshInterval(
-			options.refreshIntervalMinutes ?? options.vertexGatewayTokenRefreshMinutes,
-		),
-		extraHeaders: route.extraHeaders,
-	}
-}
-
-function buildVertexOpenAiBaseUrl(gatewayBaseUrl: string, projectId: string, location: string): string {
-	let parsedBaseUrl: URL
-	try {
-		parsedBaseUrl = new URL(gatewayBaseUrl)
-	} catch {
-		throw new Error("Invalid Vertex gatewayBaseUrl. Expected a valid absolute URL.")
-	}
-
-	const configuredPath = parsedBaseUrl.pathname === "/" ? "/v1" : parsedBaseUrl.pathname.replace(/\/+$/, "")
-	parsedBaseUrl.pathname = `${configuredPath}/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(location)}/endpoints/openapi`
-	parsedBaseUrl.hash = ""
-
-	return parsedBaseUrl.toString().replace(/\/$/, "")
-}
-
-function getGatewaySetting(primary: string | undefined, legacy: string | undefined): string | undefined {
-	const value = primary ?? legacy
-	return typeof value === "string" && value.trim() ? value.trim() : undefined
-}
-
-function normalizeRefreshInterval(value: number | undefined): number {
-	if (!Number.isFinite(value)) {
-		return 10
-	}
-
-	return Math.max(1, Math.floor(value as number))
-}
-
-function isAuthenticationFailure(error: unknown): boolean {
-	if (error && typeof error === "object") {
-		const errorRecord = error as Record<string, unknown>
-		const response =
-			errorRecord.response && typeof errorRecord.response === "object"
-				? (errorRecord.response as Record<string, unknown>)
-				: undefined
-		const statusCandidates = [errorRecord.status, errorRecord.statusCode, errorRecord.code, response?.status]
-
-		for (const candidate of statusCandidates) {
-			const status = typeof candidate === "string" ? Number.parseInt(candidate, 10) : candidate
-			if (status === 401 || status === 403) {
-				return true
-			}
-		}
-	}
-
-	const message = error instanceof Error ? error.message : String(error)
-	return /\b401\b|\b403\b|unauthorized|forbidden|authentication|permission denied|invalid token/i.test(message)
-}
-
-function asVertexOpenAiError(error: unknown): Error {
-	return handleProviderError(error, "Vertex OpenAI-compatible", {
-		messageTransformer: (message) =>
-			`Vertex OpenAI-compatible completion error: ${message.replace(/^(?:OpenAI completion error:\s*)+/, "")}`,
-	})
 }

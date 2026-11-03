@@ -5,9 +5,6 @@ import { AnthropicVertexHandler } from "../anthropic-vertex"
 import { VertexHandler } from "../vertex"
 
 const mocks = vi.hoisted(() => ({
-	configureTransport: vi.fn(),
-	getToken: vi.fn(),
-	forceRefreshToken: vi.fn(),
 	geminiRequest: vi.fn(),
 	anthropicRequest: vi.fn(),
 	requestTimeout: vi.fn(() => 600),
@@ -15,14 +12,6 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("vscode", () => ({
 	workspace: { getConfiguration: () => ({ get: mocks.requestTimeout }) },
-}))
-vi.mock("../utils/vertex-gateway-transport", () => ({
-	configureVertexGatewayTransport: mocks.configureTransport,
-}))
-vi.mock("../utils/helix-token-manager", () => ({
-	HelixTokenManager: {
-		getOrCreate: () => ({ getToken: mocks.getToken, forceRefreshToken: mocks.forceRefreshToken }),
-	},
 }))
 vi.mock("@google/genai", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@google/genai")>()),
@@ -63,20 +52,17 @@ function observe(promise: Promise<string>) {
 	}
 }
 
-const gatewayOptions = {
+const googleOptions = {
 	vertexProjectId: "fixture-project",
 	vertexRegion: "global",
-	vertexGatewayBaseUrl: "https://gateway.example.test/vertex",
-	vertexGatewayCaBundlePath: "fixture-gateway.pem",
-	vertexGatewayHelixCommand: "fixture-token-command",
 }
 
 const providers = [
 	{
 		name: "Vertex Gemini",
-		create: (gateway: boolean): SingleCompletionHandler =>
+		create: (_gateway: boolean): SingleCompletionHandler =>
 			new VertexHandler({
-				...(gateway ? gatewayOptions : {}),
+				...googleOptions,
 				apiModelId: "gemini-3.7-flash",
 			}),
 		request: mocks.geminiRequest,
@@ -87,7 +73,7 @@ const providers = [
 		name: "Vertex Anthropic",
 		create: (gateway: boolean): SingleCompletionHandler =>
 			new AnthropicVertexHandler({
-				...(gateway ? gatewayOptions : {}),
+				...(gateway ? googleOptions : {}),
 				apiModelId: "claude-sonnet-4-6",
 			}),
 		request: mocks.anthropicRequest,
@@ -100,9 +86,7 @@ beforeEach(() => {
 	vi.useFakeTimers()
 	vi.resetAllMocks()
 	mocks.requestTimeout.mockReturnValue(600)
-	mocks.configureTransport.mockResolvedValue("fixture-gateway.pem")
-	mocks.getToken.mockResolvedValue("fixture-token")
-	mocks.forceRefreshToken.mockResolvedValue("fixture-refreshed-token")
+
 	for (const provider of providers) provider.request.mockResolvedValue(provider.response)
 })
 
@@ -111,15 +95,13 @@ afterEach(() => {
 })
 
 describe.each(providers)("$name single completion cancellation", (provider) => {
-	it("rejects before gateway setup, credentials or dispatch when already cancelled", async () => {
+	it("rejects before credentials or dispatch when already cancelled", async () => {
 		const handler = provider.create(true)
 		const controller = new AbortController()
 		const reason = new Error("403: cancelled before authorization")
 		controller.abort(reason)
 		await expect(handler.completePrompt("prompt", { signal: controller.signal })).rejects.toBe(reason)
-		expect(mocks.configureTransport).not.toHaveBeenCalled()
-		expect(mocks.getToken).not.toHaveBeenCalled()
-		expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+
 		expect(provider.request).not.toHaveBeenCalled()
 	})
 
@@ -151,7 +133,6 @@ describe.each(providers)("$name single completion cancellation", (provider) => {
 				expect(provider.signal(provider.request)?.reason).toBe(reason)
 				expect(vi.getTimerCount()).toBe(0)
 				expect(provider.request).toHaveBeenCalledOnce()
-				expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
 			} finally {
 				if (lateOutcome === "resolve") held.resolve(provider.response)
 				else held.reject(new Error("late transport failure"))
@@ -160,63 +141,6 @@ describe.each(providers)("$name single completion cancellation", (provider) => {
 			await expect(handler.completePrompt("fresh prompt")).resolves.toBe("answer")
 		},
 	)
-
-	it.each(["setup", "token"] as const)(
-		"does not dispatch after cancellation while gateway %s is stalled",
-		async (stage) => {
-			const handler = provider.create(true)
-			const started = deferred<void>()
-			const held = deferred<string>()
-			const operation = stage === "setup" ? mocks.configureTransport : mocks.getToken
-			operation.mockImplementationOnce(() => {
-				started.resolve()
-				return held.promise
-			})
-			const controller = new AbortController()
-			const reason = { cancelledStage: stage }
-			const completion = observe(handler.completePrompt("prompt", { signal: controller.signal }))
-			await started.promise
-			try {
-				controller.abort(reason)
-				await vi.advanceTimersByTimeAsync(0)
-				expect(completion.result).toEqual({ status: "rejected", reason })
-				expect(provider.request).not.toHaveBeenCalled()
-			} finally {
-				held.resolve("late setup or token")
-				await completion.promise
-			}
-			await vi.advanceTimersByTimeAsync(0)
-			expect(provider.request).not.toHaveBeenCalled()
-			if (stage === "setup") expect(mocks.getToken).not.toHaveBeenCalled()
-			await expect(handler.completePrompt("fresh prompt")).resolves.toBe("answer")
-			expect(mocks.configureTransport).toHaveBeenCalledOnce()
-		},
-	)
-
-	it("does not retry after cancellation while refreshing gateway credentials", async () => {
-		const handler = provider.create(true)
-		const started = deferred<void>()
-		const held = deferred<string>()
-		provider.request.mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }))
-		mocks.forceRefreshToken.mockImplementationOnce(() => {
-			started.resolve()
-			return held.promise
-		})
-		const controller = new AbortController()
-		const reason = new Error("cancelled credential refresh")
-		const completion = observe(handler.completePrompt("prompt", { signal: controller.signal }))
-		await started.promise
-		try {
-			controller.abort(reason)
-			await vi.advanceTimersByTimeAsync(0)
-			expect(completion.result).toEqual({ status: "rejected", reason })
-		} finally {
-			held.resolve("late refreshed token")
-			await completion.promise
-		}
-		await vi.advanceTimersByTimeAsync(0)
-		expect(provider.request).toHaveBeenCalledOnce()
-	})
 
 	it("rejects a late SDK success with the original cancellation reason", async () => {
 		const handler = provider.create(false)
@@ -228,15 +152,6 @@ describe.each(providers)("$name single completion cancellation", (provider) => {
 		})
 		await expect(handler.completePrompt("prompt", { signal: controller.signal })).rejects.toBe(reason)
 		expect(provider.request).toHaveBeenCalledOnce()
-		expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
-	})
-
-	it("retains the normal gateway authentication retry", async () => {
-		const handler = provider.create(true)
-		provider.request.mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }))
-		await expect(handler.completePrompt("prompt", { signal: new AbortController().signal })).resolves.toBe("answer")
-		expect(provider.request).toHaveBeenCalledTimes(2)
-		expect(mocks.forceRefreshToken).toHaveBeenCalledOnce()
 	})
 })
 
@@ -258,7 +173,6 @@ it("retains the Gemini completion deadline and cancels its SDK request", async (
 		expect(provider.signal(provider.request)?.aborted).toBe(true)
 		expect(vi.getTimerCount()).toBe(0)
 		expect(provider.request).toHaveBeenCalledOnce()
-		expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
 	} finally {
 		held.resolve(provider.response)
 		await completion.promise

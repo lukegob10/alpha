@@ -28,7 +28,7 @@ import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
 import { filterProviders, filterModels } from "./utils/organizationFilters"
 import { SearchableSelect, Collapsible, CollapsibleTrigger, CollapsibleContent } from "@src/components/ui"
 
-import { OpenAICompatible, Stellar, Vertex, VSCodeLM } from "./providers"
+import { OpenAICompatible, Vertex, VSCodeLM } from "./providers"
 import { CuratedProvider } from "./providers/CuratedProvider"
 import { Bedrock } from "./providers/Bedrock"
 import { ChatGptAuth } from "./providers/ChatGptAuth"
@@ -226,7 +226,7 @@ const ApiOptions = ({
 		const provider = PROVIDERS.find(({ value }) => value === selectedProvider)
 		const name = provider?.label
 
-		if (!name || selectedProvider === "stellar") {
+		if (!name) {
 			return undefined
 		}
 
@@ -349,13 +349,6 @@ const ApiOptions = ({
 
 					{selectedProvider === "vscode-lm" && (
 						<VSCodeLM
-							apiConfiguration={apiConfiguration}
-							setApiConfigurationField={setApiConfigurationField}
-						/>
-					)}
-
-					{selectedProvider === "stellar" && (
-						<Stellar
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
 						/>

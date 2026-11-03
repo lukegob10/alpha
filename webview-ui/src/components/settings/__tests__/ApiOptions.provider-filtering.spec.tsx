@@ -11,7 +11,6 @@ describe("ApiOptions provider choices", () => {
 			"openai-codex",
 			"openai-native",
 			"openrouter",
-			"stellar",
 			"vertex",
 			"vscode-lm",
 			"xai",
@@ -29,7 +28,6 @@ describe("ApiOptions provider choices", () => {
 			{ value: "openai", label: "OpenAI Compatible", proxy: true },
 			{ value: "openrouter", label: "OpenRouter", proxy: true },
 			{ value: "openai-codex", label: "Sign in with ChatGPT", proxy: false },
-			{ value: "stellar", label: "Stellar", proxy: false },
 			{ value: "vscode-lm", label: "VS Code LM API", proxy: false },
 			{ value: "xai", label: "xAI", proxy: false },
 		])

@@ -98,7 +98,6 @@ describe("curated OpenRouter provider", () => {
 			openAiUseAzure: true,
 			openAiR1FormatEnabled: true,
 			openAiModelId: "other-model",
-			taskReasoningCustomEffort: "foreign-effort",
 		})
 		expect(vi.mocked(OpenAI)).toHaveBeenCalledWith(
 			expect.objectContaining({ baseURL: "https://openrouter.ai/api/v1", apiKey: "router-key" }),

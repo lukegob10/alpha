@@ -23,7 +23,6 @@ const ROUTED_PROVIDERS = new Set([
 	"gemini",
 	"xai",
 	"openrouter",
-	"stellar",
 	"vertex",
 	"vertex-openai",
 	"vscode-lm",

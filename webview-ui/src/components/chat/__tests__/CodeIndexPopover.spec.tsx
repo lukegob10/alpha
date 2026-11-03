@@ -98,7 +98,7 @@ describe("CodeIndexPopover", () => {
 		})
 	})
 
-	it("preserves a Vertex selection and endpoint edits across extension state refreshes", async () => {
+	it("preserves a Vertex selection and project edits across extension state refreshes", async () => {
 		const state = {
 			...useExtensionState(),
 			codebaseIndexConfig: {
@@ -127,8 +127,8 @@ describe("CodeIndexPopover", () => {
 		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
 		fireEvent.keyDown(screen.getAllByRole("combobox")[1], { key: "ArrowDown" })
 		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
-		const endpoint = screen.getByPlaceholderText("settings:placeholders.baseUrl")
-		fireEvent.input(endpoint, { target: { value: "https://index.example.com/vertex" } })
+		const project = screen.getByPlaceholderText("settings:placeholders.projectId")
+		fireEvent.input(project, { target: { value: "edited-index-project" } })
 		fireEvent.input(screen.getByPlaceholderText("settings:placeholders.credentialsJson"), {
 			target: { value: '{"client_email":"test@example.com"}' },
 		})
@@ -141,9 +141,9 @@ describe("CodeIndexPopover", () => {
 		})
 		rerender(cloneElement(view))
 
-		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveProperty(
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveProperty(
 			"value",
-			"https://index.example.com/vertex",
+			"edited-index-project",
 		)
 		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
 		expect(vscode.postMessage).toHaveBeenCalledWith({
@@ -151,7 +151,7 @@ describe("CodeIndexPopover", () => {
 			codeIndexSettings: expect.objectContaining({
 				codebaseIndexEmbedderProvider: "vertex",
 				codebaseIndexEmbedderModelId: "gemini-embedding-001",
-				codebaseIndexVertexGatewayBaseUrl: "https://index.example.com/vertex",
+				codebaseIndexVertexProjectId: "edited-index-project",
 				codebaseIndexVertexJsonCredentials: '{"client_email":"test@example.com"}',
 			}),
 		})
@@ -161,9 +161,9 @@ describe("CodeIndexPopover", () => {
 				new MessageEvent("message", { data: { type: "codeIndexSettingsSaved", success: true } }),
 			)
 		})
-		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveProperty(
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveProperty(
 			"value",
-			"https://index.example.com/vertex",
+			"edited-index-project",
 		)
 		expect(screen.getByPlaceholderText("settings:codeIndex.savedSecretPlaceholder")).toHaveProperty("value", "")
 		expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeDisabled()
@@ -177,7 +177,6 @@ describe("CodeIndexPopover", () => {
 				codebaseIndexEmbedderProvider: "vertex" as const,
 				codebaseIndexVertexProjectId: "index-project",
 				codebaseIndexVertexRegion: "us-central1",
-				codebaseIndexVertexGatewayBaseUrl: "https://saved.example.com/vertex",
 			},
 		}
 		vi.mocked(useExtensionState).mockReturnValue(state)
@@ -191,27 +190,24 @@ describe("CodeIndexPopover", () => {
 		const { rerender } = render(view)
 		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
 		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
-		fireEvent.input(screen.getByPlaceholderText("settings:placeholders.baseUrl"), {
-			target: { value: "https://draft.example.com/vertex" },
+		fireEvent.input(screen.getByPlaceholderText("settings:placeholders.projectId"), {
+			target: { value: "draft-project" },
 		})
 		vi.mocked(useExtensionState).mockReturnValue({
 			...state,
 			codebaseIndexConfig: {
 				...state.codebaseIndexConfig,
-				codebaseIndexVertexGatewayBaseUrl: "https://updated.example.com/vertex",
+				codebaseIndexVertexProjectId: "updated-project",
 			},
 		})
 		rerender(cloneElement(view))
-		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveProperty(
-			"value",
-			"https://draft.example.com/vertex",
-		)
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveProperty("value", "draft-project")
 		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
 		fireEvent.click(await screen.findByRole("button", { name: "settings:unsavedChangesDialog.discardButton" }))
 		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
-		expect(await screen.findByPlaceholderText("settings:placeholders.baseUrl")).toHaveProperty(
+		expect(await screen.findByPlaceholderText("settings:placeholders.projectId")).toHaveProperty(
 			"value",
-			"https://updated.example.com/vertex",
+			"updated-project",
 		)
 		expect(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" })).toBeDisabled()
 	})

@@ -646,7 +646,6 @@ describe("TaskToolCatalogCache", () => {
 		const { options } = fixture(0)
 		for (const [apiProvider, modelIdentity] of [
 			["vertex", { provider: "vertex", id: "gemini-3.7-flash" }],
-			["stellar", { provider: "stellar", id: "Meta-Llama-3.3-70B-Instruct" }],
 			["openai", { provider: "openai", id: "gpt-5.5" }],
 		] as const) {
 			const existing = await capture({

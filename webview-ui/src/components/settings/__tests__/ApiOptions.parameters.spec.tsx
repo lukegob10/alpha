@@ -5,7 +5,7 @@ import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
 
 vi.mock("@src/components/settings/providers", async () => {
 	const { OpenAICompatible } = await import("../providers/OpenAICompatible")
-	return { OpenAICompatible, Stellar: () => null, Vertex: () => null, VSCodeLM: () => null }
+	return { OpenAICompatible, Vertex: () => null, VSCodeLM: () => null }
 })
 
 vi.mock("vscrui", () => ({
@@ -214,8 +214,6 @@ describe("ApiOptions request parameter applicability", () => {
 		["Vertex Gemini", { apiProvider: "vertex", apiModelId: "gemini-3.1-pro-preview" }, true, false],
 		["Vertex model without temperature", { apiProvider: "vertex", apiModelId: "gemini-3.7-flash" }, false, false],
 		["Vertex imported custom partner", { apiProvider: "vertex", apiModelId: "partner-future" }, true, false],
-		["Stellar", { apiProvider: "stellar", apiModelId: "Meta-Llama-3.3-70B-Instruct" }, true, false],
-		["Stellar imported custom model", { apiProvider: "stellar", apiModelId: "custom-gateway-model" }, true, false],
 	])("shows controls executable by %s", (_name, configuration, temperatureVisible, verbosityVisible) => {
 		render(options(configuration))
 		expect(screen.queryByText("settings:temperature.useCustom") !== null).toBe(temperatureVisible)

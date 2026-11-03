@@ -1,11 +1,4 @@
-const {
-	mockGoogleGenAI,
-	mockEmbedContent,
-	mockGetOrCreate,
-	mockGetToken,
-	mockForceRefreshToken,
-	mockConfigureTransport,
-} = vitest.hoisted(() => {
+const { mockGoogleGenAI, mockEmbedContent } = vitest.hoisted(() => {
 	const mockEmbedContent = vitest.fn()
 
 	return {
@@ -17,25 +10,11 @@ const {
 				},
 			}
 		}),
-		mockGetToken: vitest.fn(),
-		mockForceRefreshToken: vitest.fn(),
-		mockGetOrCreate: vitest.fn(),
-		mockConfigureTransport: vitest.fn(),
 	}
 })
 
 vitest.mock("@google/genai", () => ({
 	GoogleGenAI: mockGoogleGenAI,
-}))
-
-vitest.mock("../../../../api/providers/utils/helix-token-manager", () => ({
-	HelixTokenManager: {
-		getOrCreate: mockGetOrCreate,
-	},
-}))
-
-vitest.mock("../../../../api/providers/utils/vertex-gateway-transport", () => ({
-	configureVertexGatewayTransport: mockConfigureTransport,
 }))
 
 vitest.mock("@alpha-code/telemetry", () => ({
@@ -53,91 +32,9 @@ import { VertexGeminiEmbedder } from "../vertex"
 describe("VertexGeminiEmbedder", () => {
 	beforeEach(() => {
 		vitest.resetAllMocks()
-		mockGetToken.mockResolvedValue("initial-token")
-		mockForceRefreshToken.mockResolvedValue("refreshed-token")
-		mockGetOrCreate.mockReturnValue({
-			getToken: mockGetToken,
-			forceRefreshToken: mockForceRefreshToken,
-		})
-		mockConfigureTransport.mockResolvedValue("C:\\certs\\gateway.pem")
 	})
 
 	afterEach(() => vitest.useRealTimers())
-
-	it.each(["gemini-embedding-001", "gemini-embedding-2"])(
-		"spaces %s requests across batches, queries, and retries",
-		async (model) => {
-			vitest.useFakeTimers()
-			vitest.setSystemTime(new Date("2026-09-12T12:00:00Z"))
-			const startedAt: number[] = []
-			const embedder = new VertexGeminiEmbedder(
-				{
-					apiProvider: "vertex",
-					projectId: "project",
-					location: "global",
-					gatewayBaseUrl: "https://gateway.example.com/vertex",
-					pemCaBundlePath: "test.pem",
-					helixCommand: "test-token-command",
-				},
-				model,
-				1,
-			)
-			mockEmbedContent.mockImplementation(async () => {
-				startedAt.push(Date.now())
-				if (startedAt.length === 1) throw Object.assign(new Error("Unauthorized"), { status: 401 })
-				if (startedAt.length === 2) throw Object.assign(new Error("Rate limited"), { status: 429 })
-				return { embeddings: [{ values: [1, 0] }] }
-			})
-			const responses = Promise.all([
-				embedder.createEmbeddings(["first", "second"]),
-				embedder.createEmbeddings(["query"], undefined, "query"),
-			])
-			await vitest.runAllTimersAsync()
-			await responses
-			// The 429 pauses every queued batch/query for the provider's five-second cooldown.
-			expect(startedAt.map((time) => time - startedAt[0])).toEqual([0, 1000, 6000, 7000, 8000])
-			expect(mockForceRefreshToken).toHaveBeenCalledOnce()
-		},
-	)
-
-	it("initializes GoogleGenAI with canonical Vertex gateway options and fake auth", () => {
-		new VertexGeminiEmbedder(
-			{
-				apiProvider: "vertex",
-				projectId: "test-project",
-				location: "global",
-				gatewayBaseUrl: "https://gateway.example.com/vertex",
-				pemCaBundlePath: "C:\\certs\\gateway.pem",
-				helixCommand: "helix auth access-token print -a",
-				helixParseMode: "json_field",
-				helixTokenKey: "token.access",
-				refreshIntervalMinutes: 15,
-			} as any,
-			"gemini-embedding-001",
-		)
-
-		expect(mockGetOrCreate).toHaveBeenCalledWith({
-			helixCommand: "helix auth access-token print -a",
-			helixParseMode: "json_field",
-			helixTokenKey: "token.access",
-			refreshIntervalMinutes: 15,
-		})
-		expect(mockGoogleGenAI).toHaveBeenLastCalledWith(
-			expect.objectContaining({
-				vertexai: true,
-				project: "test-project",
-				location: "global",
-				httpOptions: {
-					baseUrl: "https://gateway.example.com/vertex",
-				},
-				googleAuthOptions: {
-					authClient: expect.objectContaining({
-						getRequestHeaders: expect.any(Function),
-					}),
-				},
-			}),
-		)
-	})
 
 	it("returns ordered vectors for multiple texts", async () => {
 		const embedder = new VertexGeminiEmbedder({
@@ -168,127 +65,6 @@ describe("VertexGeminiEmbedder", () => {
 			contents: ["first text"],
 			config: { taskType: "RETRIEVAL_DOCUMENT", abortSignal: expect.any(AbortSignal) },
 		})
-	})
-
-	it("sends bearer auth, routed model, project, location, and extra headers through the gateway", async () => {
-		const embedder = new VertexGeminiEmbedder({
-			apiProvider: "vertex",
-			projectId: "default-project",
-			location: "global",
-			gatewayBaseUrl: "https://gateway.example.com/vertex",
-			pemCaBundlePath: "C:\\certs\\gateway.pem",
-			helixCommand: "helix auth access-token print -a",
-			modelRoutingMap: {
-				"gemini-embedding-001": {
-					projectId: "routed-project",
-					location: "us-central1",
-					modelOverride: "gateway-embedding-model",
-					extraHeaders: {
-						"x-route": "embedding",
-					},
-				},
-			},
-		} as any)
-		mockEmbedContent.mockResolvedValueOnce({
-			embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
-		})
-
-		await embedder.createEmbeddings(["text"])
-
-		expect(mockConfigureTransport).toHaveBeenCalledWith("C:\\certs\\gateway.pem")
-		expect(mockGoogleGenAI).toHaveBeenCalledWith(
-			expect.objectContaining({
-				project: "routed-project",
-				location: "us-central1",
-			}),
-		)
-		expect(mockEmbedContent).toHaveBeenCalledWith({
-			model: "gateway-embedding-model",
-			contents: ["text"],
-			config: {
-				abortSignal: expect.any(AbortSignal),
-				httpOptions: {
-					baseUrl: "https://gateway.example.com/vertex",
-					headers: {
-						Authorization: "Bearer initial-token",
-						"x-route": "embedding",
-					},
-				},
-			},
-		})
-	})
-
-	it("treats legacy string routing entries as model overrides", async () => {
-		const embedder = new VertexGeminiEmbedder({
-			apiProvider: "vertex",
-			vertexProjectId: "test-project",
-			vertexRegion: "us-central1",
-			vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
-			vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
-			vertexGatewayHelixCommand: "helix auth access-token print -a",
-			vertexGatewayModelRoutingMap: '{"gemini-embedding-001":"gateway-embedding-model"}',
-		} as any)
-		mockEmbedContent.mockResolvedValueOnce({
-			embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
-		})
-
-		await embedder.createEmbeddings(["text"])
-
-		expect(mockEmbedContent).toHaveBeenCalledWith({
-			model: "gateway-embedding-model",
-			contents: ["text"],
-			config: {
-				abortSignal: expect.any(AbortSignal),
-				httpOptions: {
-					baseUrl: "https://gateway.example.com/vertex",
-					headers: {
-						Authorization: "Bearer initial-token",
-					},
-				},
-			},
-		})
-	})
-
-	it("retries once with a forced Helix refresh after gateway auth failure", async () => {
-		const embedder = new VertexGeminiEmbedder({
-			apiProvider: "vertex",
-			projectId: "test-project",
-			location: "global",
-			gatewayBaseUrl: "https://gateway.example.com/vertex",
-			pemCaBundlePath: "C:\\certs\\gateway.pem",
-			helixCommand: "helix auth access-token print -a",
-		} as any)
-		mockGetToken.mockResolvedValueOnce("expired-token").mockResolvedValueOnce("refreshed-token")
-		mockEmbedContent
-			.mockRejectedValueOnce(Object.assign(new Error("Unauthorized"), { status: 401 }))
-			.mockResolvedValueOnce({
-				embeddings: [{ values: [0.1, 0.2], statistics: { tokenCount: 2 } }],
-			})
-
-		const response = await embedder.createEmbeddings(["text"])
-
-		expect(response.embeddings).toEqual([[0.1, 0.2]])
-		expect(mockForceRefreshToken).toHaveBeenCalledTimes(1)
-		expect(mockEmbedContent).toHaveBeenNthCalledWith(
-			1,
-			expect.objectContaining({
-				config: expect.objectContaining({
-					httpOptions: expect.objectContaining({
-						headers: expect.objectContaining({ Authorization: "Bearer expired-token" }),
-					}),
-				}),
-			}),
-		)
-		expect(mockEmbedContent).toHaveBeenNthCalledWith(
-			2,
-			expect.objectContaining({
-				config: expect.objectContaining({
-					httpOptions: expect.objectContaining({
-						headers: expect.objectContaining({ Authorization: "Bearer refreshed-token" }),
-					}),
-				}),
-			}),
-		)
 	})
 
 	it("retries rate-limited batch requests instead of failing after one attempt", async () => {

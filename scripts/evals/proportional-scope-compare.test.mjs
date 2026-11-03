@@ -1,15 +1,305 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { URL } from "node:url"
 import { buildReport } from "./proportional-scope-report.mjs"
-import { compareReports, comparePreflightReports } from "./proportional-scope-compare.mjs"
+import {
+	compareReports,
+	comparePreflightReports,
+	compareLiveQualityReports,
+	liveQualityComparisonCli,
+} from "./proportional-scope-compare.mjs"
 
 const fixtureIds = JSON.parse(
 	await fs.readFile(new URL("../../evals/proportional-scope/cases.json", import.meta.url), "utf8"),
 ).cases.map(({ id }) => id)
 const hash = "a".repeat(64)
 const contract = { sampleIndexes: [0, 1], measurementKind: "scripted-harness" }
+
+function liveRuns(label = "baseline") {
+	return ["provider-a", "provider-b"].map((provider) => ({
+		schemaVersion: 1,
+		kind: "alpha-live-short-task-quality",
+		measurementKind: "real-extension-live",
+		label,
+		status: "passed",
+		declared: { provider, modelId: `${provider}-chosen`, effort: "high" },
+		conditions: {
+			hostVersion: "1.141.0",
+			node: "v24.21.0",
+			platform: "win32",
+			arch: "x64",
+			machineDigest: hash,
+			harnessDigest: hash,
+			fixtureDigest: hash,
+			fixtureIds: ["read", "edit"],
+			cacheProtocol: "provider-cache-uncontrolled",
+		},
+		build: {
+			status: "verified",
+			sourceTreeState: "clean",
+			manifestDigest: label === "baseline" ? hash : "b".repeat(64),
+			sourceRevision: label === "baseline" ? "a".repeat(40) : "b".repeat(40),
+		},
+		samples: 3,
+		observations: ["read", "edit"].flatMap((fixtureId) =>
+			[0, 1, 2].map((sampleIndex) => ({
+				fixtureId,
+				sampleIndex,
+				correctness: "passed",
+				outcome: "completed",
+				configurationDigest: hash,
+				requestMetric: "adapter-dispatches",
+				providerImplementation: null,
+				modelCalls: 2,
+				toolCalls: 2,
+				commandCount: 1,
+				repeatedCommands: 0,
+				repeatedChecks: 0,
+				durationMs: 1000,
+			})),
+		),
+	}))
+}
+
+test("real short tasks pair routes and repeated samples while allowing the candidate extension build to differ", () => {
+	const reference = liveRuns()
+	const candidate = liveRuns("candidate").reverse()
+	for (const run of candidate) run.observations.reverse()
+	const result = compareLiveQualityReports(reference, candidate)
+	assert.equal(result.admitted, true)
+	assert.equal(result.passed, true)
+	assert.equal(result.comparisons.length, 4)
+	assert.equal(result.comparisons[0].samples.length, 3)
+	assert.match(result.interpretation, /not statistical proof/)
+})
+
+test("portable live comparison CLI requires the release candidate commit and writes no local profile paths", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-quality-compare-"))
+	try {
+		const args = ["--live-quality"]
+		for (const label of ["baseline", "candidate"])
+			for (const [index, report] of liveRuns(label).entries()) {
+				const file = path.join(directory, `${label}-${index}.json`)
+				await fs.writeFile(file, JSON.stringify(report))
+				args.push(`--${label}`, file)
+			}
+		const output = path.join(directory, "comparison.json")
+		await assert.rejects(
+			liveQualityComparisonCli([...args, "--require-candidate-commit", "c".repeat(40), "--output", output]),
+			/candidate captured source commit mismatch/,
+		)
+		assert.equal(
+			await liveQualityComparisonCli([...args, "--require-candidate-commit", "b".repeat(40), "--output", output]),
+			0,
+		)
+		const result = await fs.readFile(output, "utf8")
+		assert.equal(JSON.parse(result).sourceRevisions.candidate[0], "b".repeat(40))
+		assert.equal(result.includes(directory), false)
+		await assert.rejects(
+			liveQualityComparisonCli([...args, "--output", output]),
+			(error) => error.code === "EEXIST",
+		)
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true })
+	}
+})
+
+test("portable bundle exports discard unknown task contents and enforce both release revisions", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-quality-bundle-"))
+	try {
+		const bundle = { baseline: liveRuns(), candidate: liveRuns("candidate") }
+		bundle.candidate[0].rawAnswer = "private-task-text"
+		bundle.candidate[0].conditions.privatePath = "private-task-text"
+		bundle.candidate[0].build.rawInput = "private-task-text"
+		bundle.candidate[0].observations[0].toolOutput = "private-task-text"
+		const input = path.join(directory, "input.json")
+		await fs.writeFile(input, JSON.stringify(bundle))
+		const output = path.join(directory, "comparison.json")
+		const safe = path.join(directory, "bundle.json")
+		const dispatch = path.join(directory, "dispatch.json")
+		const args = [
+			"--live-quality-bundle",
+			input,
+			"--require-candidate-commit",
+			"b".repeat(40),
+			"--output",
+			output,
+			"--validated-bundle",
+			safe,
+			"--dispatch-input",
+			dispatch,
+		]
+		await assert.rejects(
+			liveQualityComparisonCli([...args, "--require-baseline-commit", "c".repeat(40)]),
+			/baseline captured source commit mismatch/,
+		)
+		assert.equal(await liveQualityComparisonCli([...args, "--require-baseline-commit", "a".repeat(40)]), 0)
+		for (const file of [output, safe, dispatch])
+			assert.equal((await fs.readFile(file, "utf8")).includes("private-task-text"), false)
+		assert.deepEqual(
+			JSON.parse(JSON.parse(await fs.readFile(dispatch, "utf8")).reports),
+			JSON.parse(await fs.readFile(safe, "utf8")),
+		)
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true })
+	}
+})
+
+test("oversized workflow input is rejected before any evidence export", async () => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-quality-dispatch-bound-"))
+	try {
+		const bundle = { baseline: liveRuns(), candidate: liveRuns("candidate") }
+		for (const runs of [bundle.baseline, bundle.candidate])
+			for (const run of runs) {
+				const originals = run.observations
+				run.samples = 20
+				run.conditions.fixtureIds = ["read", "edit", "lookup", "absence", "late"]
+				run.observations = run.conditions.fixtureIds.flatMap((fixtureId) =>
+					Array.from({ length: 20 }, (_, sampleIndex) => ({
+						...(originals.find((row) => row.fixtureId === fixtureId) ?? originals[0]),
+						fixtureId,
+						sampleIndex,
+					})),
+				)
+			}
+		const input = path.join(directory, "input.json")
+		await fs.writeFile(input, JSON.stringify(bundle))
+		const exports = ["comparison.json", "bundle.json", "dispatch.json"].map((file) => path.join(directory, file))
+		await assert.rejects(
+			liveQualityComparisonCli([
+				"--live-quality-bundle",
+				input,
+				"--output",
+				exports[0],
+				"--validated-bundle",
+				exports[1],
+				"--dispatch-input",
+				exports[2],
+			]),
+			/workflow input exceeds 65535 UTF-8 bytes/,
+		)
+		for (const file of exports) await assert.rejects(fs.stat(file), (error) => error.code === "ENOENT")
+	} finally {
+		await fs.rm(directory, { recursive: true, force: true })
+	}
+})
+
+test("real short task regression checks retain correctness and expose repeated checks and runaway work", () => {
+	const candidate = liveRuns("candidate")
+	for (const row of candidate[0].observations)
+		Object.assign(row, {
+			modelCalls: 20,
+			commandCount: 15,
+			repeatedChecks: 10,
+			repeatedCommands: 10,
+			durationMs: 60_000,
+		})
+	const result = compareLiveQualityReports(liveRuns(), candidate)
+	assert.equal(result.passed, false)
+	assert.equal(result.comparisons[0].metrics.repeatedChecks.regressed, true)
+	assert.equal(result.comparisons[0].metrics.durationMs.regressed, true)
+})
+
+for (const [label, mutate] of [
+	[
+		"one sample",
+		(runs) => {
+			runs[0].samples = 1
+		},
+	],
+	[
+		"one provider",
+		(runs) => {
+			runs.pop()
+		},
+	],
+	[
+		"same provider with another model",
+		(runs) => {
+			runs[1].declared.provider = runs[0].declared.provider
+		},
+	],
+	[
+		"mixed scripted measurements",
+		(runs) => {
+			runs[0].measurementKind = "scripted-harness"
+		},
+	],
+	[
+		"wrong exact host",
+		(runs) => {
+			runs[0].conditions.hostVersion = "1.125.0"
+		},
+	],
+	[
+		"changed oracle",
+		(runs) => {
+			runs[0].conditions.fixtureDigest = "c".repeat(64)
+		},
+	],
+	[
+		"missing source proof",
+		(runs) => {
+			delete runs[0].build.manifestDigest
+		},
+	],
+	[
+		"dirty source proof",
+		(runs) => {
+			runs[0].build.sourceTreeState = "modified"
+		},
+	],
+	[
+		"mixed source builds",
+		(runs) => {
+			runs[0].build.sourceRevision = "c".repeat(40)
+		},
+	],
+	[
+		"failed correctness",
+		(runs) => {
+			runs[0].observations[0].correctness = "failed"
+		},
+	],
+	[
+		"duplicate sample",
+		(runs) => {
+			runs[0].observations[0] = runs[0].observations[1]
+		},
+	],
+	[
+		"missing cells",
+		(runs) => {
+			runs[0].observations.pop()
+		},
+	],
+	[
+		"different settings",
+		(runs) => {
+			for (const row of runs[0].observations) row.configurationDigest = "c".repeat(64)
+		},
+	],
+	[
+		"model fallback",
+		(runs) => {
+			runs[0].declared.modelId = "fallback"
+		},
+	],
+	[
+		"missing timing",
+		(runs) => {
+			runs[0].observations[0].durationMs = null
+		},
+	],
+])
+	test(`real task comparison refuses ${label}`, () => {
+		const candidate = liveRuns("candidate")
+		mutate(candidate)
+		assert.throws(() => compareLiveQualityReports(liveRuns(), candidate), /Comparison not admitted/)
+	})
 
 function run(kind = "scripted-harness") {
 	return {

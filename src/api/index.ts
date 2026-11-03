@@ -28,9 +28,8 @@ import {
 	XAIHandler,
 	OpenRouterHandler,
 	VsCodeLmHandler,
-	StellarHandler,
 } from "./providers"
-import { assertSupportedApiProvider, type TaskReasoningRuntimeOptions } from "../shared/api"
+import { assertSupportedApiProvider } from "../shared/api"
 import { FakeAIHandler } from "./providers/fake-ai"
 import type { ModelToolIdentity } from "./providers/utils/router-tool-preferences"
 
@@ -154,7 +153,7 @@ export interface ApiHandler {
 	): Promise<number>
 }
 
-export function buildApiHandler(configuration: ProviderSettings & TaskReasoningRuntimeOptions): ApiHandler {
+export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 	const { apiProvider, ...options } = configuration
 	assertSupportedApiProvider(apiProvider)
 	if (isCuratedProvider(apiProvider)) {
@@ -204,8 +203,6 @@ export function buildApiHandler(configuration: ProviderSettings & TaskReasoningR
 			return new VsCodeLmHandler(options)
 		case "fake-ai":
 			return new FakeAIHandler(options)
-		case "stellar":
-			return new StellarHandler(options)
 		default:
 			throw new Error(`Unsupported API provider: ${String(apiProvider)}`)
 	}

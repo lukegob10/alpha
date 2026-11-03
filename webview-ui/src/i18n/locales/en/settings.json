@@ -80,6 +80,9 @@
 			"project": "Workspace"
 		},
 		"validation": {
+			"invalidEmbeddingBaseUrl": "Enter a valid embeddings base URL.",
+			"embeddingDimensionRequired": "Enter a positive whole number for the custom model's output dimensions.",
+			"bedrockRegionRequired": "Enter a valid AWS region.",
 			"nameRequired": "Name is required",
 			"nameTooLong": "Name must be 64 characters or less",
 			"nameInvalid": "Name must contain only letters, numbers, hyphens, and underscores"
@@ -165,6 +168,22 @@
 		"description": "Configure Alpha's support prompts for quick actions like enhancing prompts, explaining code, and fixing issues."
 	},
 	"codeIndex": {
+		"embeddingApiKeyLabel": "Embedding API key",
+		"embeddingProviders": {
+			"openai-native": "OpenAI",
+			"openai": "OpenAI Compatible",
+			"openrouter": "OpenRouter",
+			"bedrock": "Amazon Bedrock"
+		},
+		"embeddingApiKeyPlaceholder": "Enter the selected provider's API key",
+		"embeddingApiKeySaved": "An API key is already saved for this provider.",
+		"embeddingBaseUrlLabel": "Embeddings base URL",
+		"embeddingModelIdLabel": "Embedding model ID",
+		"embeddingDimensionLabel": "Output dimensions (required for custom models)",
+		"bedrockRegionLabel": "AWS region",
+		"bedrockProfileLabel": "AWS credential profile (optional)",
+		"bedrockAuthenticationDescription": "Use your AWS credential chain or a named profile. An optional Bedrock API key can be used when no profile is selected.",
+		"compatibleAuthenticationDescription": "The API key is optional for endpoints that do not require authentication.",
 		"freshnessNote": "Embeddings are catching up. Validated indexed results and recent saved edits remain searchable; semantic results for the newest code may be incomplete.",
 		"title": "Codebase Indexing",
 		"description": "Configure codebase indexing settings to enable semantic search of your project. <0>Learn more</0>",
@@ -235,9 +254,6 @@
 			"modelDimensionMinValue": "Model dimension must be greater than 0",
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
-			"invalidVertexGatewayBaseUrl": "Invalid Vertex gateway base URL",
-			"vertexGatewayTokenRefreshMinutesRequired": "Vertex gateway token refresh minutes must be greater than 0",
-			"vertexGatewayModelRoutingMap": "Vertex gateway model routing map must be valid JSON with non-empty string keys and values",
 			"embeddingRateLimitSecondsRange": "Embedding request delay must be between 0.1 and 60 seconds",
 			"localIndexPathRequired": "Local index path is required"
 		},
@@ -358,7 +374,6 @@
 	"providers": {
 		"names": {
 			"vertex": "GCP Vertex AI",
-			"stellar": "Stellar",
 			"openai": "OpenAI Compatible",
 			"vscode-lm": "VS Code LM API",
 			"openai-native": "OpenAI",
@@ -464,7 +479,7 @@
 			"missingConfig": "Enter the required provider configuration before refreshing models."
 		},
 		"vertexStreamingEnabledLabel": "Enable streaming responses",
-		"vertexStreamingEnabledDescription": "Disable this when a gateway or model does not support streaming. Responses will appear after completion.",
+		"vertexStreamingEnabledDescription": "Disable this when the selected model does not support streaming. Responses will appear after completion.",
 		"vertex1MContextBetaLabel": "Enable 1M context window (Beta)",
 		"vertex1MContextBetaDescription": "Extends context window to 1 million tokens for Claude Sonnet 4.x / Claude Opus 4.6",
 		"openAiApiKey": "OpenAI API Key",
@@ -495,27 +510,8 @@
 			"step2": "Set up Application Default Credentials",
 			"step3": "Create a service account key"
 		},
-		"vertexGatewayBaseUrl": "Vertex Gateway Base URL",
-		"vertexGatewayCaBundlePath": "Vertex Gateway CA Bundle Path",
-		"vertexGatewayHelixCommand": "Vertex Gateway Helix Command",
-		"vertexGatewayHelixParseMode": "Vertex Gateway Helix Parse Mode",
-		"vertexGatewayHelixParseModeRawStdout": "Raw stdout",
-		"vertexGatewayHelixParseModeJsonField": "JSON field",
-		"vertexGatewayHelixTokenKey": "Vertex Gateway Helix Token Key",
-		"vertexGatewayTokenRefreshMinutes": "Vertex Gateway Token Refresh Minutes",
-		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map",
-		"vertexGatewayModelRoutingMapDescription": "JSON object keyed by model ID. Values may be legacy model override strings or objects with projectId, location, modelOverride, and extraHeaders.",
-		"stellarDescription": "Connects to the internal Stellar OpenAI-compatible model gateway. The API key is retrieved automatically with Helix and is never stored.",
-		"stellarBaseUrl": "Stellar Base URL",
-		"stellarCaBundlePath": "Stellar PEM CA Bundle Path",
-		"stellarHelixCommand": "Stellar Helix Command",
-		"stellarHelixParseMode": "Stellar Helix Parse Mode",
-		"stellarHelixParseModeRawStdout": "Raw stdout",
-		"stellarHelixParseModeJsonField": "JSON field",
-		"stellarHelixTokenKey": "Stellar Helix Token Key",
-		"stellarTokenRefreshMinutes": "Stellar Token Refresh Minutes",
-		"stellarStreamingEnabledLabel": "Enable streaming responses",
-		"stellarStreamingEnabledDescription": "Disable this if the Stellar deployment does not support streaming. Responses will appear after completion.",
+		"vertexConnectionRemoved": "This saved profile uses a custom Vertex connection that is no longer supported. Switch to standard Google Cloud credentials, then save the profile.",
+		"useStandardVertex": "Use standard Vertex setup",
 		"customModel": {
 			"capabilities": "Configure the capabilities and pricing for your custom OpenAI-compatible model. Be careful when specifying the model capabilities, as they can affect how Alpha performs.",
 			"maxTokens": {
@@ -903,9 +899,6 @@
 		"bedrockProfile": "Enter the AWS profile name to use.",
 		"bedrockCredentials": "Enter both the AWS access key and secret key, or leave all credential fields blank to use the AWS credential chain.",
 		"googleCloud": "You must provide a Google Cloud project ID and region.",
-		"vertexGateway": "Vertex gateway requires a base URL, CA bundle path, and Helix command.",
-		"vertexGatewayModelRoutingMap": "Vertex Gateway Model Routing Map must be a JSON object with string model IDs.",
-		"stellar": "Stellar requires a valid base URL and PEM CA bundle path.",
 		"modelId": "You must provide a valid model ID.",
 		"modelSelector": "You must provide a valid model selector.",
 		"openAi": "You must provide a valid base URL, API key, and model ID.",

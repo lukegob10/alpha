@@ -4,7 +4,6 @@ import type { ProviderSettings } from "@alpha-code/types"
 
 vi.mock("@src/components/settings/providers", () => ({
 	OpenAICompatible: () => null,
-	Stellar: () => null,
 	Vertex: () => null,
 	VSCodeLM: () => null,
 }))

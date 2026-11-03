@@ -88,7 +88,7 @@ function applyInferenceProfilePricing(info: ModelInfo, requestModel: string): Mo
 	}
 }
 
-function createBedrockFetch(options: ApiHandlerOptions, region: string): typeof fetch {
+export function createBedrockFetch(options: ApiHandlerOptions, region: string): typeof fetch {
 	if (options.awsUseApiKey && options.awsUseProfile) {
 		throw new Error("Select one Bedrock authentication method.")
 	}
@@ -303,7 +303,6 @@ class BedrockResponsesHandler extends OpenAiHandler {
 			openAiR1FormatEnabled: false,
 			openAiStreamingEnabled: true,
 			azureApiVersion: undefined,
-			taskReasoningCustomEffort: undefined,
 		})
 		this.client = this.client.withOptions({ fetch: connection.fetch, organization: null, project: null })
 	}

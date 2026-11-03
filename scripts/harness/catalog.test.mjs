@@ -132,6 +132,35 @@ test("focused selection preserves argument boundaries and requires explicit test
 	assert.throws(() => selectLane("host", [path]), /does not accept/)
 	assert.throws(() => selectLane("constructor"), /Unknown lane/)
 })
+
+test("required stopping contracts execute the shared loop and reproduced regressions", async () => {
+	assert.ok(lanes.turns, "Stopping contracts must have their own required gate")
+	assert.equal(lanes.turns.decisions, "scripted")
+	assert.equal(lanes.turns.receipts.at(-1).requireAllTests, true)
+	const args = lanes.turns.commands.at(-1)
+	for (const owner of [
+		"core/agent/__tests__/AgentTurnEngine.spec.ts",
+		"core/agent/__tests__/AgentRetryPolicy.spec.ts",
+		"core/task/__tests__/completionDiagnostics.spec.ts",
+		"core/task/__tests__/Task.completion-obligations.spec.ts",
+		"core/task/__tests__/Task.spec.ts",
+		"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
+		"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
+		"core/condense/__tests__/index.spec.ts",
+	])
+		assert.ok(args.includes(owner), `Stopping gate must retain ${owner}`)
+	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
+		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
+		assert.match(workflow, /run: pnpm harness run turns/, `${file} must execute stopping contracts`)
+		assert.match(workflow, /--require turns/, `${file} must require current stopping evidence`)
+	}
+	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	assert.match(
+		release,
+		/verify-vsix-contents\.mjs[^\n]+--require-clean-build/,
+		"Release artifacts need clean source proof",
+	)
+})
 test("offline selection cannot start services or provider campaigns", () => {
 	assert.deepEqual(selectLane("offline").commands, [
 		["--filter", "@alpha-code/types", "build"],

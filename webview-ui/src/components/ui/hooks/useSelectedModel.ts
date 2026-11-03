@@ -12,8 +12,6 @@ import {
 	vertexDefaultModelId,
 	vertexModels,
 	resolveVertexOpenAiModelInfo,
-	stellarDefaultModelId,
-	resolveStellarModelInfo,
 	vscodeLlmDefaultModelId,
 } from "@alpha-code/types"
 
@@ -48,17 +46,6 @@ export const useSelectedModel = (apiConfiguration?: ProviderSettings) => {
 			provider,
 			id,
 			info,
-			isLoading: false,
-			isError: false,
-		}
-	}
-
-	if (provider === "stellar") {
-		const id = apiConfiguration?.apiModelId ?? stellarDefaultModelId
-		return {
-			provider,
-			id,
-			info: resolveStellarModelInfo(id),
 			isLoading: false,
 			isError: false,
 		}

@@ -2,8 +2,6 @@ import {
 	type ProviderSettings,
 	vertexDefaultModelId,
 	vertexModels,
-	stellarDefaultModelId,
-	stellarModels,
 	openAiModelInfoSaneDefaults,
 	curatedProviders,
 	getProviderDefaultModelId,
@@ -94,16 +92,6 @@ describe("selected model metadata", () => {
 		expect(
 			useSelectedModel({ apiProvider: "openai", openAiModelId: "custom-model", openAiCustomModelInfo: info }),
 		).toMatchObject({ provider: "openai", id: "custom-model", info })
-	})
-
-	it("uses the adapter's legacy Stellar metadata fallback while preserving a saved custom model ID", () => {
-		const configuration: ProviderSettings = { apiProvider: "stellar", apiModelId: "custom-gateway-model" }
-		expect(useSelectedModel(configuration)).toMatchObject({
-			provider: "stellar",
-			id: "custom-gateway-model",
-			info: stellarModels[stellarDefaultModelId],
-		})
-		expect(configuration.apiModelId).toBe("custom-gateway-model")
 	})
 
 	it("projects the OpenAI adapter's legacy model capabilities without rewriting saved metadata", () => {

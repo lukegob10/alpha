@@ -81,6 +81,8 @@ export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessE
 	/** Non-consuming, provider-sanitized bounded transcript for command progress. */
 	getOutputPreview?: () => string
 	command: string
+	/** Host proof used to reject automatic replay after a terminal observation failure. */
+	readonly hasSubmittedCommand?: boolean
 	isHot: boolean
 	/** True only after the process emitted its terminal completed/error event. */
 	isSettled?: boolean

@@ -1,0 +1,60 @@
+name: Live quality evidence
+
+on:
+    workflow_dispatch:
+        inputs:
+            reports:
+                description: "Portable captured facts: JSON bundle with baseline and candidate report arrays"
+                required: true
+                type: string
+
+permissions:
+    contents: read
+
+jobs:
+    compare:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  ref: ${{ github.sha }}
+                  fetch-depth: 0
+                  fetch-tags: true
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Select the published baseline
+              id: policy
+              env:
+                  CANDIDATE_SHA: ${{ github.sha }}
+              run: node scripts/harness/release-quality.mjs policy --candidate "$CANDIDATE_SHA"
+            - name: Read bounded workflow input
+              run: |
+                  node --input-type=module <<'NODE'
+                  import fs from 'node:fs/promises'
+                  import path from 'node:path'
+                  const event = JSON.parse(await fs.readFile(process.env.GITHUB_EVENT_PATH, 'utf8'))
+                  const reports = event.inputs?.reports
+                  if (typeof reports !== 'string' || Buffer.byteLength(reports, 'utf8') > 16 * 1024 * 1024)
+                    throw new Error('A bounded reports JSON bundle is required')
+                  await fs.writeFile(path.join(process.env.RUNNER_TEMP, 'input.json'), reports, { flag: 'wx', mode: 0o600 })
+                  NODE
+            - name: Compare captured facts for the exact release revisions
+              env:
+                  BASELINE_SHA: ${{ steps.policy.outputs.baseline }}
+                  CANDIDATE_SHA: ${{ github.sha }}
+              run: >-
+                  node scripts/evals/proportional-scope-compare.mjs
+                  --live-quality-bundle "$RUNNER_TEMP/input.json"
+                  --require-baseline-commit "$BASELINE_SHA"
+                  --require-candidate-commit "$CANDIDATE_SHA"
+                  --output "$RUNNER_TEMP/comparison.json"
+                  --validated-bundle "$RUNNER_TEMP/bundle.json"
+            - name: Retain sanitized evidence
+              uses: actions/upload-artifact@v6
+              with:
+                  name: live-quality-evidence-${{ github.sha }}
+                  path: |
+                      ${{ runner.temp }}/bundle.json
+                      ${{ runner.temp }}/comparison.json
+                  if-no-files-found: error
+                  retention-days: 30

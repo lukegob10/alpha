@@ -58,7 +58,15 @@ import {
 import { getTrustedCommandExploration } from "./CommandExploration"
 import { getCommandDecision } from "../auto-approval/commands"
 
-class ShellIntegrationError extends Error {}
+class ShellIntegrationError extends Error {
+	constructor(
+		message: string,
+		readonly commandNotSubmitted: boolean,
+		readonly outcomeKnown: boolean,
+	) {
+		super(message)
+	}
+}
 class PreparedCommandCancelledError extends Error {}
 
 const PREPARED_COMMAND_CLEANUP_OBSERVATION_MS = 15_000
@@ -958,7 +966,10 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				pushCommandResult(result)
 			} catch (error: unknown) {
 				if (!(error instanceof ShellIntegrationError)) throw error
-				if (tty === true) throw error
+				// Terminal output/marker failures can follow a real command effect. Codex
+				// f7167ac, tools/orchestrator.rs returns ordinary execution failures; an
+				// alternate transport is safe only with positive pre-submission proof.
+				if (tty === true || !error.commandNotSubmitted) throw error
 
 				const status: CommandExecutionStatus = { executionId: approvedExecutionId, status: "fallback" }
 				provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
@@ -995,6 +1006,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			if (!failure) {
 				const outcomeKnown =
 					effectsStarted === "no" ||
+					(error instanceof ShellIntegrationError && error.outcomeKnown) ||
 					error instanceof CommandOutputBookkeepingError ||
 					(error instanceof CommandMutationReceiptError && !error.observationUnknown)
 				reportFailure(
@@ -2217,8 +2229,23 @@ export async function executeCommandInTerminal(
 	}
 
 	if (shellIntegrationError) {
-		const shellError = new ShellIntegrationError(shellIntegrationError)
-		const completions: Promise<unknown>[] = [ensureMutationReceipt()]
+		const commandNotSubmitted = process.hasSubmittedCommand === false && exitDetails === undefined
+		const outcomeKnown = commandNotSubmitted || exitDetails !== undefined
+		const shellError = new ShellIntegrationError(shellIntegrationError, commandNotSubmitted, outcomeKnown)
+		const completions: Promise<unknown>[] = []
+		if (commandNotSubmitted) {
+			onExecutionState?.("no")
+			completions.push(releaseMutationReservationBeforeLaunch(shellError))
+		} else if (!outcomeKnown && mutationReservationAcquired) {
+			const receiptError = new CommandMutationReceiptError("process-outcome-unknown", true, shellError)
+			completions.push(
+				handleCommandMutationFailure(receiptError).then(({ recoveryError }) => {
+					if (recoveryError) throw recoveryError
+				}),
+			)
+		} else {
+			completions.push(ensureMutationReceipt())
+		}
 		if (onCompletedInvoked && onCompletedPromise) completions.push(onCompletedPromise)
 		const completionResults = await Promise.allSettled(completions)
 		if (toolCallId)

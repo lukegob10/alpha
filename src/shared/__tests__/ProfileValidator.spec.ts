@@ -36,7 +36,6 @@ describe("ProfileValidator", () => {
 				allowAll: false,
 				providers: {
 					vertex: { allowAll: true },
-					stellar: { allowAll: false, models: ["partner-model"] },
 				},
 			}
 			const profile: ProviderSettings = {
@@ -154,7 +153,6 @@ describe("ProfileValidator", () => {
 		// Test specific providers that use apiModelId
 		const apiModelProviders = [
 			"vertex",
-			"stellar",
 			"openai-native",
 			"openai-codex",
 			"anthropic",

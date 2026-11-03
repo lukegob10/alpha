@@ -127,8 +127,6 @@ import {
 	PROVIDER_SETTINGS_KEYS,
 	vertexModels,
 	vertexDefaultModelId,
-	stellarModels,
-	stellarDefaultModelId,
 	openAiModelInfoSaneDefaults,
 	type ModelInfo,
 	isProviderName,
@@ -1015,14 +1013,11 @@ export class AlphaProvider
 			const id =
 				provider === "openai"
 					? (configuration.openAiModelId ?? "")
-					: (configuration.apiModelId ??
-						(provider === "stellar" ? stellarDefaultModelId : vertexDefaultModelId))
+					: (configuration.apiModelId ?? vertexDefaultModelId)
 			const info =
 				provider === "vertex"
 					? (vertexModels as Record<string, ModelInfo>)[id]
-					: provider === "stellar"
-						? stellarModels[stellarDefaultModelId]
-						: configuration.openAiCustomModelInfo
+					: configuration.openAiCustomModelInfo
 			return resolveTaskReasoning(configuration, requested, { id, info: info ?? openAiModelInfoSaneDefaults })
 				.state
 		}
@@ -5654,13 +5649,9 @@ export class AlphaProvider
 				codebaseIndexVertexProjectId: codebaseIndexConfig?.codebaseIndexVertexProjectId,
 				codebaseIndexVertexRegion: codebaseIndexConfig?.codebaseIndexVertexRegion,
 				codebaseIndexVertexKeyFile: codebaseIndexConfig?.codebaseIndexVertexKeyFile,
-				codebaseIndexVertexGatewayBaseUrl: codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
-				codebaseIndexVertexGatewayCaBundlePath: codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
-				codebaseIndexVertexGatewayHelixCommand: codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
-				codebaseIndexVertexGatewayTokenRefreshMinutes:
-					codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
-				codebaseIndexVertexGatewayModelRoutingMap:
-					codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
+				codebaseIndexOpenAiCompatibleBaseUrl: codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
+				codebaseIndexBedrockRegion: codebaseIndexConfig?.codebaseIndexBedrockRegion,
+				codebaseIndexBedrockProfile: codebaseIndexConfig?.codebaseIndexBedrockProfile,
 			},
 			hasOpenedModeSelector: this.getGlobalState("hasOpenedModeSelector") ?? false,
 			lockApiConfigAcrossModes: lockApiConfigAcrossModes ?? false,
@@ -5822,15 +5813,10 @@ export class AlphaProvider
 				codebaseIndexVertexProjectId: stateValues.codebaseIndexConfig?.codebaseIndexVertexProjectId,
 				codebaseIndexVertexRegion: stateValues.codebaseIndexConfig?.codebaseIndexVertexRegion,
 				codebaseIndexVertexKeyFile: stateValues.codebaseIndexConfig?.codebaseIndexVertexKeyFile,
-				codebaseIndexVertexGatewayBaseUrl: stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayBaseUrl,
-				codebaseIndexVertexGatewayCaBundlePath:
-					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayCaBundlePath,
-				codebaseIndexVertexGatewayHelixCommand:
-					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayHelixCommand,
-				codebaseIndexVertexGatewayTokenRefreshMinutes:
-					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayTokenRefreshMinutes,
-				codebaseIndexVertexGatewayModelRoutingMap:
-					stateValues.codebaseIndexConfig?.codebaseIndexVertexGatewayModelRoutingMap,
+				codebaseIndexOpenAiCompatibleBaseUrl:
+					stateValues.codebaseIndexConfig?.codebaseIndexOpenAiCompatibleBaseUrl,
+				codebaseIndexBedrockRegion: stateValues.codebaseIndexConfig?.codebaseIndexBedrockRegion,
+				codebaseIndexBedrockProfile: stateValues.codebaseIndexConfig?.codebaseIndexBedrockProfile,
 			},
 			profileThresholds: stateValues.profileThresholds ?? {},
 			lockApiConfigAcrossModes: this.context.workspaceState.get("lockApiConfigAcrossModes", false),
@@ -10954,14 +10940,15 @@ export class AlphaProvider
 					),
 				)
 			} catch {
-				// Optional evidence observation cannot create new mutation debt. A durable
-				// version change also prevents an old in-memory receipt from restoring credit.
-				await this.agentControlStore.invalidateVerificationEvidence(
+				// Failed observations can outlive their captured receipt. Invalidate only
+				// that snapshot without replacing newer evidence or creating mutation debt.
+				const didInvalidate = await this.agentControlStore.invalidateVerificationEvidence(
 					parent.taskId,
 					obligation.changeSetId,
 					rootTaskId,
+					{ executionId: obligation.verification?.executionId, contentVersion: obligation.contentVersion },
 				)
-				invalidated.add(obligation.changeSetId)
+				if (didInvalidate) invalidated.add(obligation.changeSetId)
 				continue
 			}
 			const current = await this.agentControlStore.reconcileVerificationContent(
@@ -11203,6 +11190,7 @@ export class AlphaProvider
 				abandoned: parent.abandoned,
 			},
 			provider: { name: parent.apiConfiguration.apiProvider, modelId },
+			modelContinuations: parent.getModelContinuationDiagnostics?.(),
 			lifecycle,
 			queuedMessages: parent.queuedMessages,
 			mailbox,

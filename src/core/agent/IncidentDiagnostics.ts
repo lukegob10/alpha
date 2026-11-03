@@ -6,25 +6,28 @@ import {
 	alphaAskSchema,
 	providerNamesSchema,
 	retiredProviderNames,
-	stellarModels,
 	vertexModels,
 	vscodeLlmModels,
 } from "@alpha-code/types"
 
 import { hashAgentTurnEvidenceId } from "./AgentTurnEventLog"
+import { agentTurnContinuationReasons } from "./AgentTurnEvents"
 
 export const MAX_INCIDENT_RECEIPTS = 32
 const MAX_LIFECYCLE_ITEMS = 256
 const MAX_ERROR_CHARACTERS = 8_192
-const knownModels = new Set([
-	...Object.keys(stellarModels),
-	...Object.keys(vertexModels),
-	...Object.keys(vscodeLlmModels),
-])
+const knownModels = new Set([...Object.keys(vertexModels), ...Object.keys(vscodeLlmModels)])
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const countSchema = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
 const timeSchema = z.number().finite().nonnegative()
 const diagnosticProviderSchema = providerNamesSchema.or(z.enum(retiredProviderNames))
+const continuationReceiptSchema = z
+	.object({
+		step: countSchema.positive(),
+		reason: z.enum(agentTurnContinuationReasons),
+		turnIdSha256: hashSchema.optional(),
+	})
+	.strict()
 const identitySchema = z
 	.object({
 		provider: diagnosticProviderSchema.optional(),
@@ -52,6 +55,14 @@ export const incidentDiagnosticsSchema = z
 			})
 			.strict(),
 		provider: identitySchema,
+		modelContinuations: z
+			.object({
+				coverage: z.literal("since-task-load"),
+				receipts: z.array(continuationReceiptSchema).max(MAX_INCIDENT_RECEIPTS),
+				truncated: z.boolean(),
+			})
+			.strict()
+			.optional(),
 		lifecycle: z
 			.object({
 				available: z.boolean(),
@@ -179,6 +190,8 @@ export function projectIncidentDiagnostics(value: unknown): z.infer<typeof incid
 	const mailboxEntries = array(mailbox.entries)
 	const setup = object(input.setup)
 	const profiles = object(setup.profiles)
+	const modelContinuations = object(input.modelContinuations)
+	const continuationReceipts = array(modelContinuations.receipts)
 	return incidentDiagnosticsSchema.parse({
 		version: 1,
 		task: {
@@ -190,6 +203,25 @@ export function projectIncidentDiagnostics(value: unknown): z.infer<typeof incid
 			abandoned: task.abandoned === true,
 		},
 		provider: projectDiagnosticIdentity(provider.name, provider.modelId),
+		...(input.modelContinuations !== undefined
+			? {
+					modelContinuations: {
+						coverage: "since-task-load" as const,
+						receipts: continuationReceipts.slice(-MAX_INCIDENT_RECEIPTS).flatMap((value) => {
+							const receipt = object(value)
+							const step = member(continuationReceiptSchema.shape.step, receipt.step)
+							const reason = member(continuationReceiptSchema.shape.reason, receipt.reason)
+							const turnIdSha256 = hash(receipt.turnId)
+							return step !== undefined && reason !== undefined
+								? [{ step, reason, ...(turnIdSha256 ? { turnIdSha256 } : {}) }]
+								: []
+						}),
+						truncated:
+							modelContinuations.truncated === true ||
+							continuationReceipts.length > MAX_INCIDENT_RECEIPTS,
+					},
+				}
+			: {}),
 		lifecycle: {
 			available:
 				input.lifecycle !== null && typeof input.lifecycle === "object" && !Array.isArray(input.lifecycle),

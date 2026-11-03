@@ -114,7 +114,6 @@ describe("native Meta Responses provider", () => {
 			openAiUseAzure: true,
 			openAiR1FormatEnabled: true,
 			openAiStreamingEnabled: false,
-			taskReasoningCustomEffort: "unverified-effort",
 			verbosity: "high" as const,
 		}
 		const before = structuredClone(options)

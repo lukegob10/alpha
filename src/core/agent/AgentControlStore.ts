@@ -2421,7 +2421,7 @@ export class AgentControlStore {
 		parentTaskId: string,
 		changeSetId: string,
 		rootTaskId: string,
-		expectedEvidence?: { executionId: string; contentVersion: number },
+		expectedEvidence?: { executionId?: string; contentVersion: number },
 	): Promise<boolean> {
 		return this.transact((draft) => {
 			this.assertParentMutationOwned(draft, parentTaskId, rootTaskId, "invalidate verification evidence")

@@ -256,12 +256,12 @@ describe("ModelPicker", () => {
 		await act(async () => {
 			render(
 				<QueryClientProvider client={queryClient}>
-					<ModelPicker {...defaultProps} serviceName="Stellar" serviceUrl="" />
+					<ModelPicker {...defaultProps} serviceName="Custom Gateway" serviceUrl="" />
 				</QueryClientProvider>,
 			)
 		})
 
-		expect(screen.queryByRole("link", { name: "Stellar" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("link", { name: "Custom Gateway" })).not.toBeInTheDocument()
 	})
 
 	describe("Error Message Display", () => {

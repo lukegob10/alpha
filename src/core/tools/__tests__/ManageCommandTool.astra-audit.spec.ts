@@ -1033,6 +1033,7 @@ describe("command-session publication is possible before effects", () => {
 			catch: settled.catch.bind(settled),
 			finally: settled.finally.bind(settled),
 			isSettled: true,
+			hasSubmittedCommand: false,
 		})
 		const first = {
 			provider: "vscode",
@@ -1094,6 +1095,100 @@ describe("command-session publication is possible before effects", () => {
 			commandSessionRegistry.releaseForTask(fixture.task)
 		}
 	})
+
+	it.each([
+		{ submitted: true, exitCode: undefined },
+		{ submitted: undefined, exitCode: undefined },
+		{ submitted: true, exitCode: 0 },
+	])(
+		"does not replay a command after shell observation fails (submitted: $submitted, exit: $exitCode)",
+		async ({ submitted, exitCode }) => {
+			vi.useFakeTimers()
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const fixture = commandFixture()
+			fixture.terminalSettings.terminalShellIntegrationDisabled = false
+			const fallback = await TerminalRegistry.getOrCreateTerminal(fixture.task.cwd, fixture.task.taskId, "execa")
+			let effects = 0
+			let reportFirstLaunch!: () => void
+			const firstLaunch = new Promise<void>((resolve) => (reportFirstLaunch = resolve))
+			const originalFallbackRun = fallback.runCommand.bind(fallback)
+			fallback.runCommand = (...args) => {
+				effects++
+				return originalFallbackRun(...args)
+			}
+			const settled = Promise.resolve()
+			const firstProcess = Object.assign(new EventEmitter(), {
+				then: settled.then.bind(settled),
+				catch: settled.catch.bind(settled),
+				finally: settled.finally.bind(settled),
+				isSettled: true,
+				...(submitted === undefined ? {} : { hasSubmittedCommand: submitted }),
+			})
+			const first = {
+				provider: "vscode",
+				id: 99,
+				taskId: fixture.task.taskId,
+				running: exitCode === undefined,
+				busy: false,
+				process: firstProcess,
+				getCurrentWorkingDirectory: () => fixture.task.cwd,
+				runCommand: (_command: string, callbacks: AlphaTerminalCallbacks) => {
+					effects++
+					callbacks.onNoShellIntegration!(
+						"submitted command output unavailable",
+						firstProcess as unknown as AlphaTerminalProcess,
+					)
+					if (exitCode !== undefined) {
+						callbacks.onShellExecutionComplete(
+							{ exitCode },
+							firstProcess as unknown as AlphaTerminalProcess,
+						)
+						void callbacks.onCompleted("unframed output", firstProcess as unknown as AlphaTerminalProcess)
+					}
+					reportFirstLaunch()
+					return firstProcess
+				},
+			}
+			vi.mocked(TerminalRegistry.getOrCreateTerminal)
+				.mockReset()
+				.mockResolvedValueOnce(first as unknown as AlphaTerminal)
+				.mockResolvedValue(fallback)
+			const admit = fixture.task.admitCommandExecution.bind(fixture.task)
+			vi.spyOn(fixture.task, "admitCommandExecution").mockImplementation(async (...args) => {
+				await Task.prototype["prepareCommandEvidenceSlot"].call(fixture.task, args[0])
+				fixture.task.beginCommandExecution(args[0], args[1], args[2], args[4])
+				await admit(...args)
+			})
+			const execution = schedulerFor(fixture, 256).run([
+				{
+					type: "tool_call",
+					id: "unsafe-fallback",
+					name: "exec_command",
+					arguments: { command: "node side-effect.cjs", timeout: 10 },
+				},
+			])
+			await firstLaunch
+			await vi.advanceTimersByTimeAsync(100)
+			await Promise.race([fixture.launched, execution])
+			await vi.advanceTimersByTimeAsync(10_100)
+			const outcome = await execution
+			try {
+				expect(effects).toBe(1)
+				expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledOnce()
+				expect(outcome.results).toHaveLength(1)
+				expect(outcome.results[0]).toMatchObject({
+					status: "error",
+					failure:
+						exitCode === undefined
+							? { reason: "outcome_unknown", outcome: "unknown" }
+							: { reason: "execution_failed", outcome: "known" },
+				})
+			} finally {
+				if (effects > 1) await fixture.finish(0)
+				commandSessionRegistry.releaseForTask(fixture.task)
+			}
+		},
+	)
 
 	it.each(["error", "denied"] as const)("caps spoofed command headers on a %s initial result", async (status) => {
 		for (const asBlocks of [false, true]) {

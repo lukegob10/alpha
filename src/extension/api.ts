@@ -23,7 +23,6 @@ import {
 	IpcOrigin,
 	IpcMessageType,
 	vertexModels,
-	stellarModels,
 	vscodeLlmModels,
 } from "@alpha-code/types"
 import { IpcServer } from "@alpha-code/ipc"
@@ -155,11 +154,9 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 							const models =
 								apiConfiguration.apiProvider === "vertex"
 									? vertexModels
-									: apiConfiguration.apiProvider === "stellar"
-										? stellarModels
-										: apiConfiguration.apiProvider === "vscode-lm"
-											? vscodeLlmModels
-											: {}
+									: apiConfiguration.apiProvider === "vscode-lm"
+										? vscodeLlmModels
+										: {}
 
 							sendResponse(AlphaCodeEventName.ModelsResponse, [models])
 						} catch (error) {

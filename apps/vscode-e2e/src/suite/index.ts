@@ -4,7 +4,7 @@ import Mocha from "mocha"
 import { glob } from "glob"
 import * as vscode from "vscode"
 
-import type { AlphaCodeAPI } from "@alpha-code/types"
+import { isProviderName, type AlphaCodeAPI } from "@alpha-code/types"
 
 import { waitFor } from "./utils"
 import {
@@ -229,18 +229,34 @@ async function runSuite() {
 	const api = extension.isActive ? extension.exports : await extension.activate()
 	const providerMode = process.env.ALPHA_E2E_PROVIDER_MODE ?? "live"
 	if (providerMode === "live") {
-		const openAiApiKey = process.env.OPENAI_API_KEY
-		if (!openAiApiKey) {
-			throw new Error(
-				"OPENAI_API_KEY is required for live E2E tests. Use --provider scripted for deterministic tests.",
+		const savedProvider = process.env.ALPHA_E2E_SAVED_PROVIDER
+		if (savedProvider) {
+			if (
+				process.env.TEST_FILE !== "live-quality.test" ||
+				!isProviderName(savedProvider) ||
+				savedProvider === "vscode-lm" ||
+				api.getConfiguration().apiProvider !== savedProvider ||
+				!process.env.ALPHA_E2E_MODEL_ID ||
+				!process.env.ALPHA_E2E_REASONING_EFFORT
 			)
+				throw new TestRunError(
+					"invalid-options",
+					"Quality capture requires the declared saved provider and exact model/effort",
+				)
+		} else {
+			const openAiApiKey = process.env.OPENAI_API_KEY
+			if (!openAiApiKey) {
+				throw new Error(
+					"OPENAI_API_KEY is required for live E2E tests. Use --provider scripted for deterministic tests.",
+				)
+			}
+			await api.setConfiguration({
+				apiProvider: "openai" as const,
+				openAiApiKey,
+				openAiModelId: process.env.ALPHA_E2E_MODEL_ID || "gpt-4.1",
+				openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
+			})
 		}
-		await api.setConfiguration({
-			apiProvider: "openai" as const,
-			openAiApiKey,
-			openAiModelId: process.env.ALPHA_E2E_MODEL_ID || "gpt-4.1",
-			openAiBaseUrl: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1",
-		})
 	} else if (providerMode === "live-copilot") {
 		try {
 			if (

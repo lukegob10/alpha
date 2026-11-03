@@ -331,18 +331,23 @@ describe("resolveTaskReasoning", () => {
 		expect(result.configuration).toMatchObject({ enableReasoningEffort: true, reasoningEffort: "high" })
 	})
 
-	it("allows only constrained custom tokens for Stellar", () => {
-		const result = resolveTaskReasoning(
-			configuration({ apiProvider: "stellar", apiModelId: "Meta-Llama-3.3-70B-Instruct" }),
-			{ kind: "custom", value: "balanced_reasoning" },
-			{ id: "Meta-Llama-3.3-70B-Instruct", info: modelInfo() },
-		)
+	it.each(["openai", "vertex", "vscode-lm"] as const)(
+		"keeps historical custom preferences readable without granting %s custom capabilities",
+		(apiProvider) => {
+			const profile = configuration({ apiProvider })
+			const result = resolveTaskReasoning(
+				profile,
+				{ kind: "custom", value: "saved_token" },
+				{ id: "unknown-model", info: modelInfo() },
+			)
 
-		expect(result.state.capabilities).toEqual({ kind: "custom", canDisable: true })
-		expect(result.state.effective).toEqual({ kind: "custom", value: "balanced_reasoning" })
-		expect(result.configuration.taskReasoningCustomEffort).toBe("balanced_reasoning")
-		expect(result.configuration.reasoningEffort).toBe("disable")
-	})
+			expect(result.state.requested).toEqual({ kind: "custom", value: "saved_token" })
+			expect(result.state.capabilities).toEqual({ kind: "unavailable", canDisable: true })
+			expect(result.state.effective).toEqual({ kind: "off" })
+			expect(result.state.fallbackReason).toBe("unavailable")
+			expect(result.configuration).toBe(profile)
+		},
+	)
 
 	it("does not invent capabilities for an unknown model", () => {
 		const result = resolveTaskReasoning(

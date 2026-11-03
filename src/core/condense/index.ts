@@ -30,6 +30,12 @@ export type { CreateTokenCountContextOptions, TokenCountContext } from "./tokenC
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
 
+// Codex f7167ac8 retains structured call IDs during compaction. Keep the same
+// association in tool-free text without letting identifier bytes create new lines.
+function formatToolCallId(id: string | undefined): string {
+	return id === undefined ? "" : `\nTool call ID: ${JSON.stringify(id)}`
+}
+
 /**
  * Converts a tool_use block to a text representation.
  * This allows the conversation to be summarized without requiring the tools parameter.
@@ -47,7 +53,7 @@ export function toolUseToText(block: Anthropic.Messages.ToolUseBlockParam): stri
 	} else {
 		input = String(block.input)
 	}
-	return `[Tool Use: ${block.name}]\n${input}`
+	return `[Tool Use: ${block.name}]${formatToolCallId(getToolCallId(block))}\n${input}`
 }
 
 /** Converts an OpenAI-style `tool_call` block to the same text form. */
@@ -57,7 +63,7 @@ export function toolCallToText(block: Record<string, unknown>): string {
 	const name = block.name ?? functionRecord?.name ?? "unknown"
 	const input = block.input ?? functionRecord?.arguments ?? ""
 	const renderedInput = typeof input === "object" && input !== null ? JSON.stringify(input, null, 2) : String(input)
-	return `[Tool Use: ${String(name)}]\n${renderedInput}`
+	return `[Tool Use: ${String(name)}]${formatToolCallId(getToolCallId(block))}\n${renderedInput}`
 }
 
 /**
@@ -66,8 +72,9 @@ export function toolCallToText(block: Record<string, unknown>): string {
  */
 export function toolResultToText(block: Anthropic.Messages.ToolResultBlockParam): string {
 	const errorSuffix = block.is_error ? " (Error)" : ""
+	const header = `[Tool Result${errorSuffix}]${formatToolCallId(getToolResultId(block))}`
 	if (typeof block.content === "string") {
-		return `[Tool Result${errorSuffix}]\n${block.content}`
+		return `${header}\n${block.content}`
 	} else if (Array.isArray(block.content)) {
 		const contentText = block.content
 			.map((contentBlock) => {
@@ -81,9 +88,9 @@ export function toolResultToText(block: Anthropic.Messages.ToolResultBlockParam)
 				return `[${(contentBlock as { type: string }).type}]`
 			})
 			.join("\n")
-		return `[Tool Result${errorSuffix}]\n${contentText}`
+		return `${header}\n${contentText}`
 	}
-	return `[Tool Result${errorSuffix}]`
+	return header
 }
 
 /**

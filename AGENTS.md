@@ -53,8 +53,9 @@ Before changing code:
 - For a bug, reproduce it with a focused test or deterministic script when practical. Establish the root cause rather
   than patching only the visible symptom.
 - For a performance change, capture a meaningful baseline and define the metric and workload before optimizing.
-- Follow the Codex CLI source-first rule above for agent behavior. Consult current primary sources for VS Code or other
-  external contracts, and record the upstream version, commit, or retrieval date with the change.
+- Follow the Codex CLI source-first rule above, especially for loop, retry, verification, or stopping changes. State the
+  intended behavior before editing and record the upstream commit or retrieval date and any intentional divergence.
+  Consult current primary sources for VS Code and other external contracts.
 - Verify behavior against current code, tests, schemas, manifests, and primary sources rather than historical writeups.
 
 While implementing:
@@ -64,7 +65,10 @@ While implementing:
 - Keep refactors behavior-preserving unless the requested behavior change requires otherwise.
 - Keep model/provider selection independent from execution policy, tool availability, and approval authority.
 - Add or update tests in the same change. Prefer observable behavior and stable contracts over private implementation
-  details.
+  details. Review failing expectations against the behavior contract; explain changes to assertions, expected fixtures,
+  or evaluator goldens instead of changing behavior merely to make a test pass.
+- Keep evaluation measurement separate from proposed repairs: preserve the workload, graders, and baseline while
+  measuring, then compare the same workload after implementing a repair.
 - Validate incrementally with the narrowest useful command, then widen validation according to risk.
 
 Before finishing:
@@ -72,6 +76,8 @@ Before finishing:
 - Inspect the final diff for scope creep, generated artifacts, stale names, debug output, secrets, and accidental lockfile
   churn.
 - Run the checks required by the validation matrix below.
+- For behavior comparisons, use a clean source-built Alpha reference at a recorded commit and identify both builds;
+  stale installed extensions or unrelated worktree outputs cannot establish the baseline.
 - Report what changed, why, what was verified, and any residual risk. Never claim a check passed unless it ran.
 
 ## Runtime and toolchain baseline
@@ -201,6 +207,9 @@ inform a specific decision, but they do not replace Codex CLI as the target for 
   strategy but is not a security or correctness boundary.
 - Keep prompts lean, stable, and non-duplicative. Measure prompt or tool-schema changes against representative evals and
   inspect cache/token effects rather than assuming more instructions improve performance.
+- Agent-affecting releases require a passing real short-task comparison against the previous published commit: at least
+  three samples on each of two providers, matching per-provider model/settings and run conditions. The release workflow
+  binds reviewed evidence to both commits; missing credentials or evidence remain unavailable, never a live pass.
 
 ## State, concurrency, and messaging rules
 
@@ -300,6 +309,7 @@ Use the smallest relevant checks during development and the full affected-surfac
 | Webview                  | Focused webview Vitest file, then `pnpm --dir webview-ui check-types`                                    |
 | Shared package           | Package tests and typecheck, plus affected consumer tests                                                |
 | Provider/stream/history  | Provider transform tests, task persistence/turn tests, and cancellation/error cases                      |
+| Turn/retry/verification/stopping | `pnpm harness run turns`, then `pnpm harness matrix --require turns`, plus affected exact-host gates |
 | VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1410`; also `test:compatibility:1250` for minimum-host or adapter changes |
 | Managed agents           | Focused lifecycle/delegation tests and `pnpm certify:managed-agents:automated` when the contract changes |
 | Performance              | Focused correctness tests plus a recorded before/after benchmark on the same workload                    |

@@ -1194,11 +1194,6 @@ interface WebviewMessageBase {
 		codebaseIndexVertexProjectId?: string
 		codebaseIndexVertexRegion?: string
 		codebaseIndexVertexKeyFile?: string
-		codebaseIndexVertexGatewayBaseUrl?: string
-		codebaseIndexVertexGatewayCaBundlePath?: string
-		codebaseIndexVertexGatewayHelixCommand?: string
-		codebaseIndexVertexGatewayTokenRefreshMinutes?: number
-		codebaseIndexVertexGatewayModelRoutingMap?: string
 		codebaseIndexSearchMaxResults?: number
 		codebaseIndexSearchMinScore?: number
 		codebaseIndexEmbeddingRateLimitEnabled?: boolean
@@ -1207,6 +1202,13 @@ interface WebviewMessageBase {
 		codeIndexQdrantApiKey?: string
 		codebaseIndexVertexJsonCredentials?: string
 		codebaseIndexGeminiApiKey?: string
+		codebaseIndexOpenAiApiKey?: string
+		codebaseIndexOpenAiCompatibleApiKey?: string
+		codebaseIndexOpenRouterApiKey?: string
+		codebaseIndexBedrockApiKey?: string
+		codebaseIndexOpenAiCompatibleBaseUrl?: string
+		codebaseIndexBedrockRegion?: string
+		codebaseIndexBedrockProfile?: string
 	}
 	updatedSettings?: AlphaCodeSettings
 	/** Task configuration applied via `createTask()`. */

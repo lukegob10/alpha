@@ -1,3 +1,4 @@
+import { assertNativeVertexSettings } from "../../../api/providers/utils/native-vertex-settings"
 import { googleEmbeddingInput } from "../shared/google-embedding"
 import {
 	GoogleGenAI,
@@ -12,8 +13,6 @@ import { TelemetryEventName } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { t } from "../../../i18n"
-import { HelixTokenManager, type HelixParseMode } from "../../../api/providers/utils/helix-token-manager"
-import { configureVertexGatewayTransport } from "../../../api/providers/utils/vertex-gateway-transport"
 import { GEMINI_MAX_ITEM_TOKENS, MAX_BATCH_RETRIES } from "../constants"
 import type {
 	IEmbedder,
@@ -33,43 +32,13 @@ import {
 } from "../shared/embedding-retry"
 import { formatEmbeddingError, withValidationErrorHandling } from "../shared/validation-helpers"
 
-type VertexGatewayRouteTarget = {
-	projectId?: string
-	location?: string
-	modelOverride?: string
-	extraHeaders?: Record<string, string>
-}
-
-type VertexGatewaySettings = {
-	gatewayBaseUrl: string
-	projectId: string
-	location: string
-	pemCaBundlePath: string
-	helixCommand: string
-	helixParseMode: HelixParseMode
-	helixTokenKey: string
-	refreshIntervalMinutes: number
-	modelRoutingMap: Record<string, VertexGatewayRouteTarget>
-}
-
-type VertexGatewayAuthClient = {
-	getRequestHeaders: (url?: string | URL) => Promise<Iterable<[string, string]>>
-}
-
 type EmbedRequestContext = {
 	client: GoogleGenAI
 	model: string
 	httpOptions?: EmbedContentConfig["httpOptions"]
 }
 
-/**
- * Vertex/GCP Gemini embedder for code indexing.
- *
- * Gateway mode intentionally mirrors the main Gemini Vertex provider:
- * Helix supplies bearer tokens, Google auth is neutralized so it cannot
- * overwrite gateway auth, PEM trust is configured before requests, and
- * per-model routing may override project/location/model/headers.
- */
+/** Standard Google Cloud Vertex embeddings through ADC or explicit Google credentials. */
 export class VertexGeminiEmbedder implements IEmbedder {
 	private static readonly DEFAULT_MODEL = "gemini-embedding-001"
 	private readonly client: GoogleGenAI
@@ -78,11 +47,6 @@ export class VertexGeminiEmbedder implements IEmbedder {
 	private readonly embeddingRateLimiter: EmbeddingRateLimiter
 	private readonly modelId: string
 	private readonly options: ProviderSettings
-	private readonly vertexGatewaySettings?: VertexGatewaySettings
-	private readonly vertexGatewayClients = new Map<string, GoogleGenAI>()
-	private readonly helixTokenManager?: HelixTokenManager
-	private readonly vertexGatewayAuthClient?: VertexGatewayAuthClient
-	private gatewayTransportSetupPromise?: Promise<void>
 
 	constructor(options: ProviderSettings, modelId?: string, embeddingRateLimitSeconds?: number) {
 		if (
@@ -100,26 +64,7 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		this.requestConcurrency = this.modelId === "gemini-embedding-2" ? 16 : 8
 		this.embeddingRequests = new EmbeddingRequestQueue(this.requestConcurrency)
 		this.embeddingRateLimiter = new EmbeddingRateLimiter((embeddingRateLimitSeconds ?? 0) * 1000)
-		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
-
-		if (this.vertexGatewaySettings) {
-			this.vertexGatewayAuthClient = {
-				getRequestHeaders: async () => [],
-			}
-			this.helixTokenManager = HelixTokenManager.getOrCreate({
-				helixCommand: this.vertexGatewaySettings.helixCommand,
-				helixParseMode: this.vertexGatewaySettings.helixParseMode,
-				helixTokenKey: this.vertexGatewaySettings.helixTokenKey,
-				refreshIntervalMinutes: this.vertexGatewaySettings.refreshIntervalMinutes,
-			})
-
-			this.client = this.createVertexClient({
-				projectId: this.vertexGatewaySettings.projectId,
-				location: this.vertexGatewaySettings.location,
-				useHelixAuth: true,
-			})
-			return
-		}
+		assertNativeVertexSettings(options)
 
 		const project = this.getConfiguredProjectId(options)!
 		const location = this.getConfiguredLocation(options)!
@@ -272,278 +217,8 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
 	}
 
-	private getGatewayString(
-		field: "gatewayBaseUrl" | "pemCaBundlePath" | "helixCommand",
-		legacyField: "vertexGatewayBaseUrl" | "vertexGatewayCaBundlePath" | "vertexGatewayHelixCommand",
-	): string | undefined {
-		const value = this.options[field] ?? this.options[legacyField]
-		return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
-	}
-
-	private resolveVertexGatewaySettings(): VertexGatewaySettings | undefined {
-		const gatewayBaseUrl = this.getGatewayString("gatewayBaseUrl", "vertexGatewayBaseUrl")
-		const pemCaBundlePath = this.getGatewayString("pemCaBundlePath", "vertexGatewayCaBundlePath")
-		const helixCommand = this.getGatewayString("helixCommand", "vertexGatewayHelixCommand")
-		const modelRoutingMap = this.options.modelRoutingMap ?? this.options.vertexGatewayModelRoutingMap
-		const gatewayModeRequested = Boolean(gatewayBaseUrl || pemCaBundlePath || helixCommand)
-
-		if (!gatewayModeRequested) {
-			return undefined
-		}
-
-		const projectId = this.getConfiguredProjectId()
-		const location = this.getConfiguredLocation()
-		const missingFields = [
-			!gatewayBaseUrl ? "gatewayBaseUrl" : undefined,
-			!projectId ? "projectId" : undefined,
-			!location ? "location" : undefined,
-			!pemCaBundlePath ? "pemCaBundlePath" : undefined,
-			!helixCommand ? "helixCommand" : undefined,
-		].filter((field): field is string => Boolean(field))
-
-		if (missingFields.length > 0) {
-			throw new Error(`Missing required Vertex gateway settings: ${missingFields.join(", ")}`)
-		}
-
-		let normalizedGatewayBaseUrl: string
-		try {
-			normalizedGatewayBaseUrl = new URL(gatewayBaseUrl!).toString()
-		} catch {
-			throw new Error("Invalid Vertex gatewayBaseUrl. Expected a valid absolute URL.")
-		}
-
-		const parseMode: HelixParseMode = this.options.helixParseMode === "json_field" ? "json_field" : "raw_stdout"
-		const helixTokenKey = this.options.helixTokenKey?.trim() || "access_token"
-		const refreshIntervalMinutes = this.normalizeRefreshIntervalMinutes(
-			this.options.refreshIntervalMinutes ?? this.options.vertexGatewayTokenRefreshMinutes,
-		)
-
-		return {
-			gatewayBaseUrl: normalizedGatewayBaseUrl,
-			projectId: projectId!,
-			location: location!,
-			pemCaBundlePath: pemCaBundlePath!,
-			helixCommand: helixCommand!,
-			helixParseMode: parseMode,
-			helixTokenKey,
-			refreshIntervalMinutes,
-			modelRoutingMap: this.parseModelRoutingMap(modelRoutingMap),
-		}
-	}
-
-	private normalizeRefreshIntervalMinutes(value: unknown): number {
-		if (typeof value !== "number" || !Number.isFinite(value)) {
-			return 10
-		}
-
-		return Math.max(1, Math.floor(value))
-	}
-
-	private parseModelRoutingMap(rawModelRoutingMap: unknown): Record<string, VertexGatewayRouteTarget> {
-		if (!rawModelRoutingMap) {
-			return {}
-		}
-
-		let candidate: unknown = rawModelRoutingMap
-		if (typeof rawModelRoutingMap === "string") {
-			if (rawModelRoutingMap.trim().length === 0) {
-				return {}
-			}
-
-			try {
-				candidate = JSON.parse(rawModelRoutingMap)
-			} catch {
-				throw new Error("Invalid modelRoutingMap JSON for Vertex gateway configuration.")
-			}
-		}
-
-		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-			throw new Error("Invalid modelRoutingMap. Expected an object keyed by model name.")
-		}
-
-		const normalizedRoutingMap: Record<string, VertexGatewayRouteTarget> = {}
-
-		for (const [modelKey, routeValue] of Object.entries(candidate as Record<string, unknown>)) {
-			const normalizedModelKey = modelKey.trim()
-			if (!normalizedModelKey) {
-				continue
-			}
-
-			if (typeof routeValue === "string") {
-				const modelOverride = routeValue.trim()
-				if (modelOverride.length > 0) {
-					normalizedRoutingMap[normalizedModelKey] = { modelOverride }
-				}
-				continue
-			}
-
-			if (!routeValue || typeof routeValue !== "object" || Array.isArray(routeValue)) {
-				throw new Error(`Invalid modelRoutingMap entry for "${modelKey}".`)
-			}
-
-			const routeRecord = routeValue as Record<string, unknown>
-			const normalizedRoute: VertexGatewayRouteTarget = {}
-
-			if (typeof routeRecord.projectId === "string" && routeRecord.projectId.trim().length > 0) {
-				normalizedRoute.projectId = routeRecord.projectId.trim()
-			}
-
-			if (typeof routeRecord.location === "string" && routeRecord.location.trim().length > 0) {
-				normalizedRoute.location = routeRecord.location.trim()
-			}
-
-			if (typeof routeRecord.modelOverride === "string" && routeRecord.modelOverride.trim().length > 0) {
-				normalizedRoute.modelOverride = routeRecord.modelOverride.trim()
-			}
-
-			if (routeRecord.extraHeaders !== undefined) {
-				if (
-					typeof routeRecord.extraHeaders !== "object" ||
-					!routeRecord.extraHeaders ||
-					Array.isArray(routeRecord.extraHeaders)
-				) {
-					throw new Error(`Invalid extraHeaders for modelRoutingMap entry "${modelKey}".`)
-				}
-
-				const normalizedHeaders = Object.fromEntries(
-					Object.entries(routeRecord.extraHeaders as Record<string, unknown>)
-						.filter(
-							(entry): entry is [string, string] =>
-								entry[0].trim().length > 0 && typeof entry[1] === "string",
-						)
-						.map(([key, value]) => [key.trim(), value]),
-				)
-
-				if (Object.keys(normalizedHeaders).length > 0) {
-					normalizedRoute.extraHeaders = normalizedHeaders
-				}
-			}
-
-			if (Object.keys(normalizedRoute).length > 0) {
-				normalizedRoutingMap[normalizedModelKey] = normalizedRoute
-			}
-		}
-
-		return normalizedRoutingMap
-	}
-
-	private createVertexClient({
-		projectId,
-		location,
-		useHelixAuth,
-	}: {
-		projectId: string
-		location: string
-		useHelixAuth: boolean
-	}): GoogleGenAI {
-		if (useHelixAuth) {
-			if (!this.vertexGatewaySettings || !this.vertexGatewayAuthClient) {
-				throw new Error("Vertex gateway authentication is not configured.")
-			}
-
-			return new GoogleGenAI({
-				vertexai: true,
-				project: projectId,
-				location,
-				googleAuthOptions: {
-					authClient: this.vertexGatewayAuthClient as any,
-				},
-				httpOptions: {
-					baseUrl: this.vertexGatewaySettings.gatewayBaseUrl,
-				},
-			})
-		}
-
-		return new GoogleGenAI({ vertexai: true, project: projectId, location })
-	}
-
 	private async getRequestContext(model: string): Promise<EmbedRequestContext> {
-		if (!this.vertexGatewaySettings) {
-			return { client: this.client, model }
-		}
-
-		await this.ensureGatewayTransportConfigured()
-		const accessToken = await this.ensureGatewayAccessToken(false)
-		const route = this.vertexGatewaySettings.modelRoutingMap[model]
-		const routedProjectId = route?.projectId ?? this.vertexGatewaySettings.projectId
-		const routedLocation = route?.location ?? this.vertexGatewaySettings.location
-		const routedModel = route?.modelOverride ?? model
-
-		const client =
-			routedProjectId === this.vertexGatewaySettings.projectId &&
-			routedLocation === this.vertexGatewaySettings.location
-				? this.client
-				: this.getOrCreateVertexGatewayClient(routedProjectId, routedLocation)
-
-		return {
-			client,
-			model: routedModel,
-			httpOptions: {
-				baseUrl: this.vertexGatewaySettings.gatewayBaseUrl,
-				headers: {
-					Authorization: `Bearer ${accessToken}`,
-					...(route?.extraHeaders ?? {}),
-				},
-			},
-		}
-	}
-
-	private getOrCreateVertexGatewayClient(projectId: string, location: string): GoogleGenAI {
-		const cacheKey = `${projectId}::${location}`
-		const existingClient = this.vertexGatewayClients.get(cacheKey)
-
-		if (existingClient) {
-			return existingClient
-		}
-
-		const nextClient = this.createVertexClient({ projectId, location, useHelixAuth: true })
-		this.vertexGatewayClients.set(cacheKey, nextClient)
-		return nextClient
-	}
-
-	private async ensureGatewayTransportConfigured(): Promise<void> {
-		if (!this.vertexGatewaySettings) {
-			return
-		}
-
-		if (!this.gatewayTransportSetupPromise) {
-			this.gatewayTransportSetupPromise = configureVertexGatewayTransport(
-				this.vertexGatewaySettings.pemCaBundlePath,
-			).then(() => undefined)
-		}
-
-		await this.gatewayTransportSetupPromise
-	}
-
-	private async ensureGatewayAccessToken(forceRefresh: boolean): Promise<string> {
-		if (!this.helixTokenManager) {
-			throw new Error("Vertex gateway token manager is not configured.")
-		}
-
-		return forceRefresh ? await this.helixTokenManager.forceRefreshToken() : await this.helixTokenManager.getToken()
-	}
-
-	private async shouldRetryWithRefreshedGatewayToken(error: unknown): Promise<boolean> {
-		if (!this.vertexGatewaySettings || !this.isGatewayAuthFailure(error)) {
-			return false
-		}
-
-		await this.ensureGatewayAccessToken(true)
-		return true
-	}
-
-	private isGatewayAuthFailure(error: unknown): boolean {
-		const status = getEmbeddingStatus(error)
-		if (status === 401 || status === 403) {
-			return true
-		}
-
-		const message = error instanceof Error ? error.message : String(error)
-		return (
-			/\b401\b/.test(message) ||
-			/\b403\b/.test(message) ||
-			/unauthorized|forbidden|authentication|permission denied|invalid token/i.test(message)
-		)
+		return { client: this.client, model }
 	}
 
 	private getMaxItemTokens(modelId: string): number {
@@ -559,17 +234,12 @@ export class VertexGeminiEmbedder implements IEmbedder {
 		onProgress?: (progress: EmbeddingProgress) => void,
 		priority: EmbeddingPriority = purpose === "query" ? "query" : "bulk",
 	): Promise<EmbeddingResponse> {
-		let didRetryForGatewayAuth = false
 		let lastError: unknown
 		let requestAttempts = 0
 
 		for (let attempt = 0; attempt < MAX_BATCH_RETRIES; attempt++) {
 			signal?.throwIfAborted()
-			// Preserve the gateway's pre-2.1.34 predict payload, including opaque model aliases.
-			// Native Google task types/instructions are not part of that gateway contract.
-			const input = this.vertexGatewaySettings
-				? { contents: texts, config: {} }
-				: googleEmbeddingInput(texts, selectedModel, purpose)
+			const input = googleEmbeddingInput(texts, selectedModel, purpose)
 			try {
 				// Gate actual request starts, including retries and calls from concurrent index consumers.
 				onProgress?.({ stage: "queued" })
@@ -600,15 +270,6 @@ export class VertexGeminiEmbedder implements IEmbedder {
 			} catch (error) {
 				signal?.throwIfAborted()
 				lastError = error
-
-				if (
-					!didRetryForGatewayAuth &&
-					(await withEmbeddingTimeout(() => this.shouldRetryWithRefreshedGatewayToken(error), signal))
-				) {
-					didRetryForGatewayAuth = true
-					attempt--
-					continue
-				}
 
 				const hasMoreAttempts = attempt < MAX_BATCH_RETRIES - 1
 				const retryDelayMs = getEmbeddingRetryDelayMs(error, attempt)

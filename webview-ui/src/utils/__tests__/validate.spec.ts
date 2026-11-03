@@ -166,28 +166,7 @@ describe("provider configuration validation", () => {
 				undefined,
 				allowAll,
 			),
-		).toBe("settings:validation.vertexGateway")
-	})
-
-	it("validates Stellar URL and certificate settings", () => {
-		expect(
-			validateApiConfigurationExcludingModelErrors(
-				{ apiProvider: "stellar", stellarBaseUrl: "not-a-url", stellarPemCaBundlePath: "cert.pem" },
-				undefined,
-				allowAll,
-			),
-		).toBe("settings:validation.stellar")
-		expect(
-			validateApiConfigurationExcludingModelErrors(
-				{
-					apiProvider: "stellar",
-					stellarBaseUrl: "https://gateway.example.com/v1",
-					stellarPemCaBundlePath: "cert.pem",
-				},
-				undefined,
-				allowAll,
-			),
-		).toBeUndefined()
+		).toBe("settings:providers.vertexConnectionRemoved")
 	})
 
 	it("requires a VS Code LM selector", () => {

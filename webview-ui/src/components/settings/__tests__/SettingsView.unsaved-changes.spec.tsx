@@ -781,7 +781,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
 				<button
 					onClick={() => {
-						setApiConfigurationField("apiProvider", "stellar")
+						setApiConfigurationField("apiProvider", "vertex")
 						setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
 						setApiConfigurationField("openAiApiKey", "buffered-key")
 						setApiConfigurationField("openAiModelId", "buffered-model")
@@ -804,7 +804,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			type: "renameApiConfiguration",
 			apiConfigurationRename: { requestId: expect.any(String), id: "profile-a", newName: "renamed" },
 		})
-		expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+		expect(screen.getByTestId("cached-provider")).toHaveTextContent("vertex")
 		expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
 		expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
 		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
@@ -849,7 +849,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 						<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
 						<button
 							onClick={() => {
-								setApiConfigurationField("apiProvider", "stellar")
+								setApiConfigurationField("apiProvider", "vertex")
 								setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
 								setApiConfigurationField("openAiApiKey", "buffered-key")
 								setApiConfigurationField("openAiModelId", "buffered-model")
@@ -925,7 +925,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				result.rerender(view())
 			}
 			const expectDraft = () => {
-				expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+				expect(screen.getByTestId("cached-provider")).toHaveTextContent("vertex")
 				expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
 				expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
 				expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
@@ -962,7 +962,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 							apiConfigurationId: "profile-a",
 							text: "default",
 							apiConfiguration: expect.objectContaining({
-								apiProvider: "stellar",
+								apiProvider: "vertex",
 								openAiBaseUrl: "https://buffered.example/v1",
 								openAiApiKey: "buffered-key",
 								openAiModelId: "buffered-model",
@@ -1384,7 +1384,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 					apiConfigurationId: "profile-a",
 					text: "renamed",
 					apiConfiguration: expect.objectContaining({
-						apiProvider: "stellar",
+						apiProvider: "vertex",
 						openAiBaseUrl: "https://buffered.example/v1",
 						openAiApiKey: "buffered-key",
 						openAiModelId: "buffered-model",

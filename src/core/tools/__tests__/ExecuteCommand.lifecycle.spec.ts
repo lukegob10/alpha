@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
 import type { TerminalOutputPreviewSize } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { Task } from "../../task/Task"
@@ -140,6 +141,8 @@ async function createFixture(
 		reportArchiveOutput: (chunk: string) =>
 			callbacks.onOutput?.(chunk, process as unknown as AlphaTerminalProcess, lifetime.signal),
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
+		reportShellIntegrationFailure: () =>
+			callbacks.onNoShellIntegration?.("command output unavailable", process as unknown as AlphaTerminalProcess),
 		finishProcess: async (joinObservers = false) => {
 			terminal.running = false
 			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
@@ -165,6 +168,44 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it.each([false, true, undefined])(
+		"preserves shell observation failure ownership (submitted: %s)",
+		async (submitted) => {
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const fixture = await createFixture()
+			Object.assign(fixture.process, { hasSubmittedCommand: submitted })
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "shell-observation-failure",
+				toolCallId: "shell-observation-failure-call",
+				command: "command with an effect",
+				terminalShellIntegrationDisabled: false,
+			}).catch((error: unknown) => error)
+			await fixture.launch
+			fixture.reportShellIntegrationFailure()
+			fixture.releaseProcess()
+			await vi.advanceTimersByTimeAsync(100)
+			expect(await execution).toMatchObject({
+				commandNotSubmitted: submitted === false,
+				outcomeKnown: submitted === false,
+			})
+			if (submitted === false) {
+				expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.task.suspendAfterCurrentTurn).not.toHaveBeenCalled()
+			} else {
+				expect(fixture.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledExactlyOnceWith(
+					fixture.task,
+					expect.objectContaining({ __unobserved_command_scope__: expect.any(String) }),
+					true,
+					expect.any(String),
+				)
+				expect(fixture.task.suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+			}
+		},
+	)
+
 	it("publishes bounded background progress without consuming session output or reopening a user ask", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers()

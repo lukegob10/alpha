@@ -1924,7 +1924,7 @@ describe("toolUseToText", () => {
 
 		const result = toolUseToText(block)
 
-		expect(result).toBe("[Tool Use: read_file]\npath: test.ts\nencoding: utf-8")
+		expect(result).toBe('[Tool Use: read_file]\nTool call ID: "tool-123"\npath: test.ts\nencoding: utf-8')
 	})
 
 	it("should convert tool_use block with nested object input to text", () => {
@@ -1957,7 +1957,7 @@ describe("toolUseToText", () => {
 
 		const result = toolUseToText(block)
 
-		expect(result).toBe("[Tool Use: execute_command]\nls -la")
+		expect(result).toBe('[Tool Use: execute_command]\nTool call ID: "tool-789"\nls -la')
 	})
 
 	it("should handle empty object input", () => {
@@ -1970,7 +1970,7 @@ describe("toolUseToText", () => {
 
 		const result = toolUseToText(block)
 
-		expect(result).toBe("[Tool Use: some_tool]\n")
+		expect(result).toBe('[Tool Use: some_tool]\nTool call ID: "tool-empty"\n')
 	})
 })
 
@@ -1984,7 +1984,7 @@ describe("toolResultToText", () => {
 
 		const result = toolResultToText(block)
 
-		expect(result).toBe("[Tool Result]\nFile contents here")
+		expect(result).toBe('[Tool Result]\nTool call ID: "tool-123"\nFile contents here')
 	})
 
 	it("should convert tool_result with error flag to text", () => {
@@ -1997,7 +1997,7 @@ describe("toolResultToText", () => {
 
 		const result = toolResultToText(block)
 
-		expect(result).toBe("[Tool Result (Error)]\nFile not found")
+		expect(result).toBe('[Tool Result (Error)]\nTool call ID: "tool-456"\nFile not found')
 	})
 
 	it("should convert tool_result with array content to text", () => {
@@ -2012,7 +2012,7 @@ describe("toolResultToText", () => {
 
 		const result = toolResultToText(block)
 
-		expect(result).toBe("[Tool Result]\nFirst line\nSecond line")
+		expect(result).toBe('[Tool Result]\nTool call ID: "tool-789"\nFirst line\nSecond line')
 	})
 
 	it("should handle tool_result with image in array content", () => {
@@ -2027,7 +2027,7 @@ describe("toolResultToText", () => {
 
 		const result = toolResultToText(block)
 
-		expect(result).toBe("[Tool Result]\nScreenshot:\n[Image]")
+		expect(result).toBe('[Tool Result]\nTool call ID: "tool-img"\nScreenshot:\n[Image]')
 	})
 
 	it("should handle tool_result with no content", () => {
@@ -2038,11 +2038,27 @@ describe("toolResultToText", () => {
 
 		const result = toolResultToText(block)
 
-		expect(result).toBe("[Tool Result]")
+		expect(result).toBe('[Tool Result]\nTool call ID: "tool-empty"')
 	})
 })
 
 describe("convertToolBlocksToText", () => {
+	it("retains legacy call and result aliases with escaped identifiers", () => {
+		const id = 'legacy-"call\nnext-line'
+		const content = [
+			{ type: "tool_call", tool_call_id: id, function: { name: "read_file", arguments: '{"path":"a.ts"}' } },
+			{ type: "tool_result", tool_call_id: id, content: "file contents" },
+		] as unknown as Anthropic.Messages.ContentBlockParam[]
+
+		expect(convertToolBlocksToText(content)).toEqual([
+			{
+				type: "text",
+				text: `[Tool Use: read_file]\nTool call ID: ${JSON.stringify(id)}\n{"path":"a.ts"}`,
+			},
+			{ type: "text", text: `[Tool Result]\nTool call ID: ${JSON.stringify(id)}\nfile contents` },
+		])
+	})
+
 	it("should return string content unchanged", () => {
 		const content = "Simple text content"
 
@@ -2134,6 +2150,49 @@ describe("convertToolBlocksToText", () => {
 })
 
 describe("transformMessagesForCondensing", () => {
+	it("preserves which batched tool call owns each result during summarization", () => {
+		const calls: ApiMessage = {
+			role: "assistant",
+			content: [
+				{ type: "tool_use", id: "check-a", name: "execute_command", input: { command: "pnpm test test-a" } },
+				{ type: "tool_use", id: "check-b", name: "execute_command", input: { command: "pnpm test test-b" } },
+			],
+		}
+		const history = (successfulCall: string, failedCall: string): ApiMessage[] => [
+			calls,
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: successfulCall, content: "Exit code: 0" },
+					{ type: "tool_result", tool_use_id: failedCall, content: "Exit code: 1", is_error: true },
+				],
+			},
+		]
+		const firstPassed = history("check-a", "check-b")
+		const secondPassed = history("check-b", "check-a")
+		const original = structuredClone(firstPassed)
+
+		const firstProjection = transformMessagesForCondensing(firstPassed)
+		const secondProjection = transformMessagesForCondensing(secondPassed)
+
+		expect(firstProjection).not.toEqual(secondProjection)
+		expect(firstProjection[0].content).toEqual([
+			{
+				type: "text",
+				text: '[Tool Use: execute_command]\nTool call ID: "check-a"\ncommand: pnpm test test-a',
+			},
+			{
+				type: "text",
+				text: '[Tool Use: execute_command]\nTool call ID: "check-b"\ncommand: pnpm test test-b',
+			},
+		])
+		expect(firstProjection[1].content).toEqual([
+			{ type: "text", text: '[Tool Result]\nTool call ID: "check-a"\nExit code: 0' },
+			{ type: "text", text: '[Tool Result (Error)]\nTool call ID: "check-b"\nExit code: 1' },
+		])
+		expect(firstPassed).toEqual(original)
+	})
+
 	it("should transform all messages with tool blocks to text", () => {
 		const messages = [
 			{ role: "user" as const, content: "Hello" },

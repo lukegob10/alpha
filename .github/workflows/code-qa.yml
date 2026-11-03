@@ -44,6 +44,29 @@ jobs:
                   path: artifacts/harness/
                   retention-days: 14
 
+    turn-contracts:
+        name: Shared turn and stopping contracts
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v5
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+            - name: Run turn and stopping contracts
+              run: pnpm harness run turns
+            - name: Require current turn contract evidence
+              if: always()
+              run: pnpm harness matrix --output artifacts/harness/matrix-turns.json --require turns
+            - name: Retain turn contract evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: turn-contracts
+                  path: artifacts/harness/
+                  retention-days: 14
+                  if-no-files-found: error
+
     unit-test:
         name: platform-unit-test (${{ matrix.name }})
         runs-on: ${{ matrix.os }}

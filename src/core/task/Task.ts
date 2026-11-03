@@ -426,7 +426,9 @@ import {
 	type AgentToolCall,
 	type AgentTurnStagedHost,
 	type AgentTurnOutcome,
+	type AgentTurnContinuationDiagnostic,
 } from "../agent/AgentTurnEngine"
+import { MAX_INCIDENT_RECEIPTS } from "../agent/IncidentDiagnostics"
 import { createAgentResponse } from "../agent/AgentResponse"
 import {
 	buildCanonicalAnthropicAssistantHistoryContent,
@@ -1178,6 +1180,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private readonly agentRetryPolicy = new AgentRetryPolicy()
 	private readonly agentStepContextBuilder = new AgentStepContextBuilder<ApiHandler, unknown>()
 	private readonly agentTurnEventLog: AgentTurnEventLog
+	/** Bounded projection of the existing event log since this Task instance loaded. */
+	private readonly modelContinuationReceipts: Array<AgentTurnContinuationDiagnostic & { turnId?: string }> = []
+	private modelContinuationsTruncated = false
 	private readonly performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
 	private performanceSubmissionStartedAt?: number
 	private performanceRequestPending = false
@@ -5412,6 +5417,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Event telemetry is additive to the legacy task contract. A telemetry
 			// write must not turn a successful provider/tool step into a task failure.
 			console.error(`[Task#${this.taskId}] Failed to append agent turn event:`, error)
+		}
+	}
+
+	private recordModelContinuation(diagnostic: AgentTurnContinuationDiagnostic): void {
+		this.modelContinuationReceipts.push({ ...diagnostic, turnId: this.agentTurnId })
+		if (this.modelContinuationReceipts.length > MAX_INCIDENT_RECEIPTS) {
+			this.modelContinuationReceipts.shift()
+			this.modelContinuationsTruncated = true
+		}
+		void this.appendAgentTurnEvent({ type: "model_continuation", ...diagnostic }, undefined, {
+			turnId: this.agentTurnId,
+		})
+	}
+
+	public getModelContinuationDiagnostics() {
+		return {
+			receipts: this.modelContinuationReceipts.map((receipt) => ({ ...receipt })),
+			truncated: this.modelContinuationsTruncated,
 		}
 	}
 
@@ -9935,7 +9958,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
 			const backgroundExecutions = JSON.stringify(this.getActiveBackgroundCommandExecutionIds())
-			// Codex 67f0994 ends a settled turn through Stop hooks, not mandatory test-pass receipts.
+			// Codex f7167ac ends a settled turn through Stop hooks, not mandatory test-pass receipts.
 			// Keep declared command evidence advisory; durable review and effect settlement still gate completion.
 			const decision = await provider.getParentCompletionDecision(this, {
 				deferResultNotifications: this.deferAgentResultNotifications,
@@ -9991,30 +10014,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					modelCanResolveRejection: true,
 				}
 			}
-			const diagnostic = this.getCompletionVerificationDiagnostic(obligations)
-			const diagnosticUnavailable =
-				diagnostic &&
-				[
-					"unavailable_scope",
-					"unavailable_content",
-					"unsupported_configuration",
-					"runtime_scope_unavailable",
-				].includes(diagnostic.code)
+			// Optional command evidence cannot repair a missing review or effect receipt.
+			// Preserve the ledger's actual blocker instead of prompting unrelated checks.
 			return {
 				...decision,
-				message: diagnostic
-					? `${decision.message ?? "Required verification is missing."}\nVerification evidence (${diagnostic.code}): ${diagnostic.message}`
-					: decision.message,
-				classification: unavailable || diagnosticUnavailable ? "blocked" : "repairable",
+				classification: unavailable ? "blocked" : "repairable",
 				reasonCode: unavailable
 					? "scope_unavailable"
-					: (diagnostic?.code ??
-						(obligations.some((item) => item.status === "failed")
-							? "verification_failed"
-							: obligations.length > 0
-								? "verification_missing"
-								: "managed_results_pending")),
-				modelCanResolveRejection: !unavailable && !diagnosticUnavailable,
+					: obligations.some((item) => item.origin !== "primary" && item.review?.decision !== "approved")
+						? "review_pending"
+						: "managed_results_pending",
+				modelCanResolveRejection: !unavailable,
 			}
 		} catch {
 			return {
@@ -10026,37 +10036,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					"Cannot verify completion because durable verification evidence is unavailable. The task remains incomplete; restore task persistence before resuming.",
 			}
 		}
-	}
-
-	private getCompletionVerificationDiagnostic(
-		obligations: readonly ParentVerificationObligation[],
-	): CommandVerificationDiagnostic | { code: "stale_content"; message: string } | undefined {
-		const commands = [...(this.commandExecutionEvidence?.values() ?? [])].reverse()
-		for (const obligation of obligations) {
-			const latest = commands.find(
-				(item) =>
-					item.status !== "running" &&
-					item.startedAt >= (obligation.appliedAt ?? 0) &&
-					(item.verificationChangeSetIds?.includes(obligation.changeSetId) ||
-						item.verificationDiagnostics?.some(
-							(diagnostic) =>
-								diagnostic.code === "missing_change_set" || diagnostic.code === "unknown_change_set",
-						)),
-			)
-			if (!latest) continue
-			const diagnostic = latest.verificationDiagnostics?.find(
-				(item) => !item.changeSetId || item.changeSetId === obligation.changeSetId,
-			)
-			if (diagnostic) return diagnostic
-			const captured = latest.verificationVersions?.[obligation.changeSetId]
-			if (captured && captured.contentVersion !== obligation.contentVersion) {
-				return {
-					code: "stale_content",
-					message: `Change set ${obligation.changeSetId} requires content version ${obligation.contentVersion}; the command captured version ${captured.contentVersion}. Run only the remaining checks for the current content and exact change-set association.`,
-				}
-			}
-		}
-		return undefined
 	}
 
 	private getPendingCompletionRuntimeDecision(): CompletionGateDecision | undefined {
@@ -15198,6 +15177,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		const host: AgentTurnStagedHost<TaskTurnInput, TaskTurnStep> = {
 			shouldAbort: () => this.abort || this.getTaskLifetimeCancellationSignal().aborted || !ownsTurnAndSample(),
+			onContinuation: (diagnostic) => this.recordModelContinuation(diagnostic),
 			canContinueWhenIdle: () => !this.lifecycleHookStoppedThisTurn && this.isGoalIdleBoundary(),
 			selectIdleContinuation: async () => {
 				const goal = await this.admitGoalContinuation()

@@ -18,28 +18,20 @@ export function assertSupportedApiProvider(provider: unknown): void {
 	throw new Error(`Unsupported API provider: ${String(provider)}`)
 }
 
-// ApiHandlerOptions
-// Extend ProviderSettings (minus apiProvider) with handler-specific toggles.
-// Task-level reasoning overrides are runtime-only and are deliberately not part
-// of ProviderSettings, which is persisted as a provider profile.
-export type TaskReasoningRuntimeOptions = {
-	taskReasoningCustomEffort?: string
-}
-
 /** These transports retain historical tool schemas and restrict calls separately. */
 export function supportsFunctionCallingRestrictions(provider: ProviderSettings["apiProvider"]): boolean {
 	return provider === "vertex" || provider === "gemini"
 }
 
-export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> &
-	TaskReasoningRuntimeOptions & {
-		/**
-		 * When true and using OpenAI Responses API models that support reasoning summaries,
-		 * include reasoning.summary: "auto" so the API returns summaries (we already parse
-		 * and surface them). Defaults to true; set to false to disable summaries.
-		 */
-		enableResponsesReasoningSummary?: boolean
-	}
+/** Extend provider settings with handler-specific toggles. */
+export type ApiHandlerOptions = Omit<ProviderSettings, "apiProvider"> & {
+	/**
+	 * When true and using OpenAI Responses API models that support reasoning summaries,
+	 * include reasoning.summary: "auto" so the API returns summaries (we already parse
+	 * and surface them). Defaults to true; set to false to disable summaries.
+	 */
+	enableResponsesReasoningSummary?: boolean
+}
 
 // Reasoning
 

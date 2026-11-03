@@ -108,7 +108,7 @@ full editor SVG preview. Use **Zoom Out** and **Zoom In** in the editor toolbar.
 the zoom percentage in the status bar, then **Whole Image**. **Save Image** exports a PNG.
 
 Supported chat providers are native OpenAI, Sign in with ChatGPT, Anthropic, Gemini, xAI, Meta, Amazon Bedrock, OpenRouter,
-GCP Vertex AI, VS Code LM API, Stellar, and OpenAI Compatible. Select the provider and model in Settings and click
+GCP Vertex AI, VS Code LM API, and OpenAI Compatible. Select the provider and model in Settings and click
 **Save**. API-key providers use their own credentials. Bedrock supports the default AWS credential chain, a named AWS
 profile, explicit AWS credentials, or a Bedrock API key. **Continue with ChatGPT** opens the browser for eligible ChatGPT
 plan access; its account credentials remain in VS Code SecretStorage and are not exported with provider profiles.
@@ -118,7 +118,11 @@ OpenAI share the same model shortlist. Extension updates can retire older choice
 model IDs and report unsupported models without silently switching to a replacement. Choose reasoning separately in
 the task composer; levels follow the selected model without a discovery request. OpenAI Compatible remains available
 for explicitly configured custom endpoints and models.
-Code indexing supports GCP Vertex AI and Gemini Developer API embeddings. Retired saved modes resume in Plan.
+Code indexing supports GCP Vertex AI, Gemini, OpenAI, OpenAI Compatible, OpenRouter, and Amazon Bedrock embeddings.
+Vertex uses a Google Cloud project and region with Application Default Credentials, a service account key file, or JSON
+credentials. Indexing API keys are stored separately from chat credentials. OpenAI Compatible requires an embeddings base
+URL, model ID, and vector dimension for custom models. Bedrock uses an AWS profile, the default AWS credential chain, or a
+Bedrock API key. Changing the embedding model or endpoint requires rebuilding the index. Retired saved modes resume in Plan.
 
 Enable optional local memory in **Settings → Context → Memories**, then **Save**. Use and generation have separate
 controls; background generation uses the selected provider and can incur model usage. Memory uses eligible idle
@@ -186,9 +190,15 @@ Use `pnpm harness list` for available checks. Common extension checks use the sa
 
 ```sh
 pnpm harness run static
+pnpm harness run turns
 pnpm harness run unit
 pnpm harness run host
 ```
+
+The `turns` gate checks the shared stopping, continuation, retry, command execution, and history contracts. QA and
+release require its current execution receipts. It uses scripted responses to test Alpha's behavior; live model
+decisions are evaluated separately below. Before repairing a failed expectation, check the intended behavior against
+current Codex CLI source and explain any deliberate difference in the change description.
 
 Run build and host checks sequentially. The `host` lane runs the exact VS Code 1.141.0 smoke gate; minimum-host or
 host-adapter changes also require the compatibility gate:
@@ -225,6 +235,41 @@ Offline controls and archived results do not establish live quality. Model revie
 explicit configuration and budgets; reports and handoffs remain tool artifacts, and generated tasks require review.
 
 ### Live tests
+
+For an agent-behavior release, compare short real tasks against the previous published release using clean, separately
+built checkouts. Keep the current test runner unchanged for both checkouts. Each provider/model pair uses the same
+dedicated profile and reasoning effort, with at least three samples; a comparison needs at least two providers.
+The five tasks include source lookup and a small edit. Final file contents establish correctness; model calls,
+commands, repeated checks, and elapsed time measure unnecessary work separately.
+
+After compiling the current runner, capture each provider against the baseline and candidate extension paths:
+
+```sh
+pnpm quality:capture capture --label baseline --provider live-copilot --model-id "<exact-model-id>" --effort "<supported-effort>" --profile-dir "<owned-profile-root>" --extension-development-path "<clean-baseline-checkout>/src" --output "<new-baseline-output>" --samples 3
+pnpm quality:capture capture --label baseline --provider live --saved-provider "<provider-id>" --model-id "<exact-model-id>" --effort "<supported-effort>" --profile-dir "<other-configured-profile-root>" --extension-development-path "<clean-baseline-checkout>/src" --output "<new-other-baseline-output>" --samples 3
+```
+
+Repeat both captures with `--label candidate`, the clean candidate extension path, and new output directories.
+The generic route uses credentials already configured in its dedicated Alpha profile; it cannot silently fall back to
+another provider or model. Both captures verify the loaded build and source before and after execution. Keep the same
+machine, host, runner, and provider conditions; provider-side caching remains uncontrolled and is recorded as such.
+
+```sh
+pnpm quality:compare --live-quality --baseline "<baseline-output>/run.json" --baseline "<other-baseline-output>/run.json" --candidate "<candidate-output>/run.json" --candidate "<other-candidate-output>/run.json" --output "<private-output>/comparison.json" --dispatch-input "<private-output>/dispatch.json"
+```
+
+For release evidence, submit the generated dispatch input to the **Live quality evidence** workflow on the exact
+candidate branch. In PowerShell (available on every supported development platform):
+
+```powershell
+Get-Content -Raw -LiteralPath "<private-output>/dispatch.json" | gh workflow run live-quality-evidence.yml --ref "<candidate-branch>" --json
+```
+
+That workflow checks the candidate and previous published commit, then retains only sanitized measurements. Run
+**Release VSIX** manually on the same commit with `quality_evidence_run_id` set to the successful evidence run ID.
+Agent-affecting releases without this evidence stop before the larger release checks. Release verifies the evidence
+again and requires clean source and matching packaged bytes. Submitted measurements are reviewed captured facts,
+not cryptographic proof of model execution. Preserve private task artifacts locally for investigation.
 
 Live provider runs supplement deterministic checks and require their own credentials and run budget. Use three separate
 absolute profile, workspace, and artifact paths outside this checkout and normal VS Code data. Profile and workspace

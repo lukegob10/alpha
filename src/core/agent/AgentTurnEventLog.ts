@@ -3,7 +3,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 
 import type { StepContext } from "./StepContext"
-import type { AgentTurnEvent, AgentTurnEventIdentity } from "./AgentTurnEvents"
+import { agentTurnContinuationReasons, type AgentTurnEvent, type AgentTurnEventIdentity } from "./AgentTurnEvents"
 import { redactAgentCredentialText } from "./redactCredentials"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../utils/storage"
@@ -22,6 +22,7 @@ const PROJECTED_EVENT_TYPES = new Set([
 	"progress",
 	"retry",
 	"model_request_started",
+	"model_continuation",
 	"model_request_failed",
 	"task_performance",
 	"request_usage",
@@ -65,6 +66,7 @@ const PROJECTED_PERFORMANCE_PHASES = new Set([
 	"condensation",
 ])
 const PROJECTED_RESPONSE_ITEM_TYPES = new Set(["text", "reasoning", "tool_call", "usage", "grounding", "error"])
+const PROJECTED_CONTINUATION_REASONS = new Set<string>(agentTurnContinuationReasons)
 
 /** Optional construction hooks kept separate from the persisted event shape. */
 export interface AgentTurnEventLogOptions {
@@ -279,6 +281,14 @@ function projectEvent(event: AgentTurnEvent): Record<string, unknown> {
 	}
 	if (typeof source.phase === "string" && PROJECTED_PERFORMANCE_PHASES.has(source.phase)) {
 		projected.phase = source.phase
+	}
+	if (source.type === "model_continuation") {
+		if (typeof source.reason === "string" && PROJECTED_CONTINUATION_REASONS.has(source.reason)) {
+			projected.reason = source.reason
+		}
+		if (typeof source.step === "number" && Number.isSafeInteger(source.step) && source.step > 0) {
+			projected.step = source.step
+		}
 	}
 	for (const [key, output] of [
 		["name", "nameSha256"],

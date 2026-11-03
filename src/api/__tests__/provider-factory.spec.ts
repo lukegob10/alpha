@@ -14,7 +14,6 @@ vi.mock("../providers", () => ({
 	XAIHandler: vi.fn(),
 	OpenRouterHandler: vi.fn(),
 	VsCodeLmHandler: vi.fn(),
-	StellarHandler: vi.fn(),
 }))
 
 import { buildApiHandler } from "../index"
@@ -32,7 +31,6 @@ import {
 	XAIHandler,
 	OpenRouterHandler,
 	VsCodeLmHandler,
-	StellarHandler,
 } from "../providers"
 
 describe("public provider factory", () => {
@@ -55,7 +53,6 @@ describe("public provider factory", () => {
 		[{ apiProvider: "xai" }, XAIHandler],
 		[{ apiProvider: "openrouter" }, OpenRouterHandler],
 		[{ apiProvider: "vscode-lm" }, VsCodeLmHandler],
-		[{ apiProvider: "stellar" }, StellarHandler],
 	] as const)("routes the supported configuration %j", (configuration, Handler) => {
 		expect(buildApiHandler(configuration)).toBeInstanceOf(Handler)
 	})

@@ -18,11 +18,6 @@ describe("checkExistKey", () => {
 		{ apiProvider: "bedrock", awsRegion: "us-east-1" },
 		{ apiProvider: "bedrock" },
 		{ apiProvider: "meta", metaApiKey: "meta-key" },
-		{
-			apiProvider: "stellar",
-			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
-			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
-		},
 	])("recognizes configured supported provider $apiProvider", (config) => {
 		expect(checkExistKey(config)).toBe(true)
 	})

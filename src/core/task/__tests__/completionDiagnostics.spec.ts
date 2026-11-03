@@ -1,7 +1,7 @@
 import type { ParentVerificationObligation } from "@alpha-code/types"
 
 import { Task, type CommandExecutionEvidence } from "../Task"
-import type { ParentCompletionDecision } from "../../agent/ParentVerification"
+import { decideParentCompletion, type ParentCompletionDecision } from "../../agent/ParentVerification"
 
 const obligation: ParentVerificationObligation = {
 	id: "change",
@@ -37,16 +37,15 @@ function taskWith(
 	allowed = false,
 	decision: Partial<ParentCompletionDecision> = {},
 ): Task {
+	const { blockingObligations = [obligation], ...runtimeDecision } = decision
 	return Object.assign(Object.create(Task.prototype), {
 		getOpenTodoCompletionDecision: () => undefined,
 		commandExecutionEvidence: new Map(commands.map((item) => [item.toolCallId, item])),
 		providerRef: {
 			deref: () => ({
 				getParentCompletionDecision: async () => ({
-					allowed,
-					blockingObligations: allowed ? [] : [obligation],
-					message: "Change change requires types for version 2.",
-					...decision,
+					...decideParentCompletion(allowed ? [] : blockingObligations),
+					...runtimeDecision,
 				}),
 			}),
 		},
@@ -112,20 +111,22 @@ describe("completion verification diagnostics", () => {
 	)
 
 	it.each(["missing_change_set", "uncovered_changes", "unsupported_command", "no_test_validation"] as const)(
-		"reports the precise corrective %s diagnostic without claiming command success is evidence",
+		"keeps review repair focused despite an optional %s diagnostic",
 		async (code) => {
 			const task = taskWith([command({ verificationDiagnostics: [{ code, message: `Correct ${code}.` }] })])
 			expect(await task.getCompletionGateDecision()).toMatchObject({
 				allowed: false,
 				classification: "repairable",
-				reasonCode: code,
-				message: expect.stringContaining(`Correct ${code}.`),
+				reasonCode: "review_pending",
+				message: expect.stringContaining("an approved review"),
+				modelCanResolveRejection: true,
 			})
+			expect((await task.getCompletionGateDecision()).message).not.toContain(`Correct ${code}.`)
 			expect(task.getCompletionStageMetrics().rejectionCount).toBe(0)
 		},
 	)
 
-	it("settles unavailable verifier configuration as blocked", async () => {
+	it("keeps a review repairable when an optional verifier is unavailable", async () => {
 		const task = taskWith([
 			command({
 				verificationDiagnostics: [
@@ -135,13 +136,13 @@ describe("completion verification diagnostics", () => {
 		])
 		expect(await task.getCompletionGateDecision()).toMatchObject({
 			allowed: false,
-			classification: "blocked",
-			modelCanResolveRejection: false,
-			reasonCode: "unsupported_configuration",
+			classification: "repairable",
+			modelCanResolveRejection: true,
+			reasonCode: "review_pending",
 		})
 	})
 
-	it("identifies the exact stale captured content version", async () => {
+	it("does not request more checks to repair an unrelated missing review", async () => {
 		const task = taskWith([
 			command({
 				verificationVersions: {
@@ -157,10 +158,12 @@ describe("completion verification diagnostics", () => {
 				},
 			}),
 		])
-		expect(await task.getCompletionGateDecision()).toMatchObject({
-			reasonCode: "stale_content",
-			message: expect.stringContaining("requires content version 2; the command captured version 1"),
+		const decision = await task.getCompletionGateDecision()
+		expect(decision).toMatchObject({
+			reasonCode: "review_pending",
+			message: expect.stringContaining("an approved review"),
 		})
+		expect(decision.message).not.toContain("Run only the remaining checks")
 	})
 
 	it("does not recycle a rejected recognizer diagnostic after a newer valid command", async () => {
@@ -168,8 +171,56 @@ describe("completion verification diagnostics", () => {
 			verificationDiagnostics: [{ code: "unsupported_command", message: "Old unsupported command." }],
 		})
 		const task = taskWith([old, command({ toolCallId: "new-check", startedAt: 5 })])
-		expect(await task.getCompletionGateDecision()).toMatchObject({ reasonCode: "verification_missing" })
+		expect(await task.getCompletionGateDecision()).toMatchObject({ reasonCode: "review_pending" })
 	})
+
+	it("preserves the actual missing effect receipt instead of diagnosing optional checks", async () => {
+		const task = taskWith(
+			[command({ verificationDiagnostics: [{ code: "unsupported_command", message: "Optional check." }] })],
+			false,
+			{
+				blockingObligations: [
+					{
+						...obligation,
+						appliedAt: undefined,
+						review: { decision: "approved", source: "apply", recordedAt: 1 },
+					},
+				],
+			},
+		)
+		expect(await task.getCompletionGateDecision()).toMatchObject({
+			allowed: false,
+			classification: "repairable",
+			reasonCode: "managed_results_pending",
+			message: expect.stringContaining("a durable applied effect receipt"),
+		})
+	})
+
+	it("keeps unavailable mutation scope blocked", async () => {
+		const task = taskWith([], false, { blockingObligations: [{ ...obligation, scopeUnresolved: true }] })
+		expect(await task.getCompletionGateDecision()).toMatchObject({
+			allowed: false,
+			classification: "blocked",
+			reasonCode: "scope_unavailable",
+			modelCanResolveRejection: false,
+		})
+	})
+
+	it.each(["pending", "failed"] as const)(
+		"accepts settled reviewed work with %s optional evidence",
+		async (status) => {
+			const task = taskWith([], false, {
+				blockingObligations: [
+					{
+						...obligation,
+						status,
+						review: { decision: "approved", source: "apply", recordedAt: 1 },
+					},
+				],
+			})
+			expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true, classification: "ready" })
+		},
+	)
 
 	it("accepts current durable evidence without reopening obsolete diagnostics", async () => {
 		const task = taskWith(

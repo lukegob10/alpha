@@ -5,7 +5,6 @@ import {
 	AlphaCodeEventName,
 	IpcMessageType,
 	IpcOrigin,
-	stellarModels,
 	TaskCommandName,
 	vertexModels,
 	vscodeLlmModels,
@@ -80,7 +79,6 @@ describe("API - GetModels command", () => {
 
 	it.each([
 		["vertex", vertexModels],
-		["stellar", stellarModels],
 		["vscode-lm", vscodeLlmModels],
 	] as const)("returns the static catalog for %s", async (apiProvider, expectedModels) => {
 		expect(await getModelsForProvider(apiProvider)).toBe(expectedModels)

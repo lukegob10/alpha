@@ -171,6 +171,7 @@ describe("TerminalProcess", () => {
 
 			// Create new process with the no-shell terminal
 			const noShellProcess = new TerminalProcess(noShellTerminalInfo)
+			expect(noShellProcess.hasSubmittedCommand).toBe(false)
 
 			// Set up event listeners to verify events are emitted
 			const eventPromises = Promise.all([
@@ -187,6 +188,7 @@ describe("TerminalProcess", () => {
 
 			// Verify sendText was called with the command
 			expect(noShellTerminal.sendText).toHaveBeenCalledWith("test command", true)
+			expect(noShellProcess.hasSubmittedCommand).toBe(true)
 
 			// Restore the original console.warn
 			consoleWarnSpy.mockRestore()

@@ -112,7 +112,6 @@ describe("native xAI Responses provider", () => {
 			openAiHeaders: { Authorization: "unrelated-token" },
 			openAiUseAzure: true,
 			openAiR1FormatEnabled: true,
-			taskReasoningCustomEffort: "unrelated-effort",
 			verbosity: "high",
 		})
 		const chunks = await consume(handler)

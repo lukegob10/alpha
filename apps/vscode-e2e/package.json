@@ -44,6 +44,7 @@
 		"test:approval-mode:1410:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.141.0 --provider scripted --require-all-tests --file approval-mode.test",
 		"test:approval-github:live": "pnpm compile && node ./out/runTest.js --provider live-copilot --file approval-github-live.test",
 		"test:quality:live": "pnpm compile && node ./out/runTest.js --provider live-copilot --file live-quality.test",
+		"quality:capture": "pnpm compile && node ./out/runQuality.js",
 		"test:command-paths:1410:run": "pnpm compile && node ./out/runTest.js --vscode-version 1.141.0 --provider scripted --require-all-tests --file command-path-approval.test",
 		"test:vscode-lm:1410:run": "rimraf out && tsc -p tsconfig.json && node ./out/runTest.js --vscode-version 1.141.0 --provider vscode-lm-fixture --require-all-tests --file vscode-lm-contract.test",
 		"test:managed-agents": "pnpm -w bundle && pnpm test:managed-agents:run",

@@ -5,19 +5,7 @@ import type { ApiStreamChunk } from "../../transform/stream"
 import { AnthropicVertexHandler } from "../anthropic-vertex"
 
 const mocks = vi.hoisted(() => ({
-	configureTransport: vi.fn(),
-	getToken: vi.fn(),
-	forceRefreshToken: vi.fn(),
 	create: vi.fn(),
-}))
-
-vi.mock("../utils/vertex-gateway-transport", () => ({
-	configureVertexGatewayTransport: mocks.configureTransport,
-}))
-vi.mock("../utils/helix-token-manager", () => ({
-	HelixTokenManager: {
-		getOrCreate: () => ({ getToken: mocks.getToken, forceRefreshToken: mocks.forceRefreshToken }),
-	},
 }))
 vi.mock("@anthropic-ai/vertex-sdk", () => ({
 	AnthropicVertex: vi.fn(function () {
@@ -59,9 +47,7 @@ function handler(streaming = true) {
 		apiModelId: "claude-sonnet-4-6",
 		vertexProjectId: "fixture-project",
 		vertexRegion: "global",
-		vertexGatewayBaseUrl: "https://gateway.example.test/vertex",
-		vertexGatewayCaBundlePath: "fixture-gateway.pem",
-		vertexGatewayHelixCommand: "fixture-token-command",
+
 		vertexStreamingEnabled: streaming,
 	})
 }
@@ -89,9 +75,7 @@ function observe<T>(promise: Promise<T>) {
 
 beforeEach(() => {
 	vi.resetAllMocks()
-	mocks.configureTransport.mockResolvedValue("fixture-gateway.pem")
-	mocks.getToken.mockResolvedValue("fixture-token")
-	mocks.forceRefreshToken.mockResolvedValue("fixture-refreshed-token")
+
 	mocks.create.mockImplementation(async ({ stream: streaming }: { stream?: boolean }) =>
 		streaming ? stream() : completeResponse,
 	)
@@ -102,43 +86,7 @@ afterEach(() => {
 })
 
 describe("Vertex Claude request lifecycle", () => {
-	// Codex CLI 5a7353f0401b970c44cf7d428ef23d74f3c366d5 keeps stream cancellation
-	// and incomplete responses explicit (core/src/client.rs, codex-api/src/sse/responses.rs).
-	it.each(["stream", "response", "single-prompt"] as const)(
-		"retries failed gateway setup on the next %s request and retains successful setup",
-		async (surface) => {
-			const target = handler(surface === "stream")
-			const request = () => (surface === "single-prompt" ? target.completePrompt("hello") : collect(target))
-			mocks.configureTransport.mockRejectedValueOnce(new Error("fixture PEM temporarily unavailable"))
-
-			await expect(request()).rejects.toThrow("fixture PEM temporarily unavailable")
-			expect(mocks.getToken).not.toHaveBeenCalled()
-			expect(mocks.create).not.toHaveBeenCalled()
-			await expect(request()).resolves.toBeDefined()
-			await expect(request()).resolves.toBeDefined()
-			expect(mocks.configureTransport).toHaveBeenCalledTimes(2)
-			expect(mocks.create).toHaveBeenCalledTimes(2)
-			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
-		},
-	)
-
-	it("shares a concurrent failed setup and one subsequent successful setup", async () => {
-		const target = handler()
-		const held = deferred<string>()
-		mocks.configureTransport.mockReturnValueOnce(held.promise)
-		const failed = Promise.allSettled([target.completePrompt("one"), target.completePrompt("two")])
-		expect(mocks.configureTransport).toHaveBeenCalledOnce()
-		held.reject(new Error("fixture shared setup failure"))
-		expect((await failed).map((result) => result.status)).toEqual(["rejected", "rejected"])
-
-		await expect(Promise.all([target.completePrompt("one"), target.completePrompt("two")])).resolves.toEqual([
-			"answer",
-			"answer",
-		])
-		expect(mocks.configureTransport).toHaveBeenCalledTimes(2)
-	})
-
-	it("rejects cancellation and elapsed deadlines before gateway setup or dispatch", async () => {
+	it("rejects cancellation and elapsed deadlines before credentials or dispatch", async () => {
 		const target = handler()
 		const controller = new AbortController()
 		const reason = new Error("fixture cancelled admission")
@@ -147,43 +95,9 @@ describe("Vertex Claude request lifecycle", () => {
 		await expect(collect(target, { taskId: "fixture", deadline: Date.now() - 1 })).rejects.toMatchObject({
 			name: "ApiStreamDeadlineError",
 		})
-		expect(mocks.configureTransport).not.toHaveBeenCalled()
-		expect(mocks.getToken).not.toHaveBeenCalled()
+
 		expect(mocks.create).not.toHaveBeenCalled()
 	})
-
-	it.each(["setup", "token"] as const)(
-		"settles cancellation during gateway %s without admitting late credential or SDK work",
-		async (stage) => {
-			vi.useFakeTimers()
-			const target = handler()
-			const started = deferred<void>()
-			const held = deferred<string>()
-			const operation = stage === "setup" ? mocks.configureTransport : mocks.getToken
-			operation.mockImplementationOnce(() => {
-				started.resolve()
-				return held.promise
-			})
-			const controller = new AbortController()
-			const reason = new Error(`fixture cancelled ${stage}`)
-			const completion = observe(collect(target, { taskId: "fixture", signal: controller.signal }))
-			await started.promise
-			try {
-				controller.abort(reason)
-				await vi.advanceTimersByTimeAsync(0)
-				expect(completion.result).toEqual({ status: "rejected", reason })
-			} finally {
-				held.resolve("late setup or token")
-				await completion.promise
-			}
-			await vi.advanceTimersByTimeAsync(0)
-			expect(mocks.create).not.toHaveBeenCalled()
-			if (stage === "setup") expect(mocks.getToken).not.toHaveBeenCalled()
-			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
-			await expect(collect(target)).resolves.toContainEqual(expect.objectContaining({ status: "completed" }))
-			expect(mocks.configureTransport).toHaveBeenCalledOnce()
-		},
-	)
 
 	it.each([true, false])("settles a stalled SDK request promptly with streaming=%s", async (streaming) => {
 		vi.useFakeTimers()
@@ -207,7 +121,6 @@ describe("Vertex Claude request lifecycle", () => {
 			expect(requestSignal?.aborted).toBe(true)
 			expect(requestSignal?.reason).toBe(reason)
 			expect(mocks.create).toHaveBeenCalledOnce()
-			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
 		} finally {
 			held.resolve(streaming ? stream() : completeResponse)
 			await completion.promise
@@ -240,7 +153,7 @@ describe("Vertex Claude request lifecycle", () => {
 				reason: interruption === "deadline" ? { code: "ProviderTimeout" } : controller.signal.reason,
 			})
 			expect(mocks.create.mock.calls[0][1].signal.aborted).toBe(true)
-			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
+
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {
 			held.resolve({ done: true, value: undefined })
@@ -254,7 +167,6 @@ describe("Vertex Claude request lifecycle", () => {
 			mocks.create.mockResolvedValue({ ...completeResponse, stop_reason })
 			await expect(handler().completePrompt("hello")).rejects.toThrow("complete text response")
 			expect(mocks.create).toHaveBeenCalledOnce()
-			expect(mocks.forceRefreshToken).not.toHaveBeenCalled()
 		},
 	)
 

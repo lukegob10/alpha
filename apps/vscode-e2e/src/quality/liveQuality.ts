@@ -1,5 +1,6 @@
-import type { ToolName } from "@alpha-code/types"
+import { globalSettingsSchema, providerSettingsSchema, type ToolName } from "@alpha-code/types"
 import { posix as paths } from "node:path"
+import { createHash } from "node:crypto"
 
 /** Retrieval tools whose results can support a claim. Completion text cannot. */
 const RETRIEVAL_TOOLS = new Set(["exec_command", "read_file", "search_files"])
@@ -17,10 +18,11 @@ export interface QualityObservation {
 	calls: readonly QualityCall[]
 	/** Captured fixture root. Missing provenance remains readable but cannot earn grounding credit. */
 	workspace?: string
+	finalFiles?: Readonly<Record<string, string>>
 }
 
 export interface DimensionScore {
-	name: "groundedness" | "tool_correctness" | "step_efficiency"
+	name: "groundedness" | "tool_correctness" | "step_efficiency" | "final_state"
 	dimension: "groundedness" | "trajectory"
 	value: number
 	threshold: number
@@ -32,6 +34,8 @@ export interface QualityReport {
 	schemaVersion: 1
 	id: string
 	passed: boolean
+	/** Cost is reported separately so a correct but wasteful live candidate remains comparable. */
+	correctnessPassed: boolean
 	answer: string
 	tools: string[]
 	scores: DimensionScore[]
@@ -57,6 +61,8 @@ export interface QualityCase {
 	/** Ordered tool milestones; each may allow equivalent actions. Extra calls count against maxSteps. */
 	milestones: readonly (string | readonly string[])[]
 	maxSteps: number
+	/** Independent final-content oracle for the small edit case, including unchanged files. */
+	expectedFiles?: Readonly<Record<string, string>>
 }
 
 const ledger = (): string => {
@@ -66,12 +72,12 @@ const ledger = (): string => {
 	return lines.join("\n")
 }
 
-const readTools = ["exec_command"] as const satisfies readonly ToolName[]
+const readTools = ["exec_command", "read_file", "search_files"] as const satisfies readonly ToolName[]
 const readOnlySourceScope = (directory: string): string =>
-	`Work only inside ${directory}. Inspect source text with bounded rg searches before answering. Narrow patterns or limit results for long files. Do not execute source files or inline interpreter code. Do not edit files or delegate.`
+	`Work only inside ${directory}. Answer from the source files. Do not execute source files or inline interpreter code. Do not edit files or delegate.`
 
 /**
- * Four read-only probes. One live completion scores groundedness and trajectory together.
+ * Short real tasks. One live completion scores correctness and trajectory together.
  * The prompt states the goal. It does not name the tool sequence.
  */
 export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
@@ -90,7 +96,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		forbidden: ["900", "250"],
 		evidence: "exports.total = (items) => items.reduce((sum, item) => sum + item.cents * item.quantity, 0)",
 		sourcePath: "live-quality/supported-total/invoice.cjs",
-		milestones: ["exec_command"],
+		milestones: [readTools],
 		maxSteps: 3,
 	},
 	{
@@ -108,7 +114,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		evidence: "module.exports = { total }",
 		supportingEvidence: ["function total() { return 250"],
 		sourcePath: "live-quality/exported-symbol/totals.cjs",
-		milestones: ["exec_command"],
+		milestones: [readTools],
 		maxSteps: 3,
 	},
 	{
@@ -124,7 +130,7 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		forbidden: ["TICKET-0001"],
 		evidence: "TICKET-1842",
 		sourcePath: "live-quality/late-span/ledger.txt",
-		milestones: ["exec_command"],
+		milestones: [readTools],
 		maxSteps: 3,
 	},
 	{
@@ -141,8 +147,29 @@ export const LIVE_QUALITY_CASES: readonly QualityCase[] = [
 		evidence: "5 business days",
 		sourcePath: "live-quality/refund-absence/shipping.md",
 		absence: true,
-		milestones: ["exec_command"],
+		milestones: [readTools],
 		maxSteps: 3,
+	},
+	{
+		id: "known-file-label-edit",
+		tools: [...readTools, "apply_patch", "apply_diff"],
+		files: {
+			"live-quality/known-file-label-edit/config.cjs": 'module.exports = { label: "Alpha" }\n',
+			"live-quality/known-file-label-edit/notes.md": "The historical label was Alpha.\n",
+		},
+		prompt: 'Change the label string from "Alpha" to "Beta" in live-quality/known-file-label-edit/config.cjs. Preserve the rest of that file and leave notes.md unchanged. Report the result briefly.',
+		scope: "Work only inside live-quality/known-file-label-edit. Do not delegate or change other files.",
+		requestLimit: 8,
+		expected: "",
+		forbidden: [],
+		evidence: "",
+		sourcePath: "live-quality/known-file-label-edit/config.cjs",
+		milestones: [],
+		maxSteps: 5,
+		expectedFiles: {
+			"live-quality/known-file-label-edit/config.cjs": 'module.exports = { label: "Beta" }\n',
+			"live-quality/known-file-label-edit/notes.md": "The historical label was Alpha.\n",
+		},
 	},
 ]
 
@@ -218,7 +245,12 @@ function commandSource(command: string): string | undefined {
 		.split("/")
 		.at(-1)
 		?.replace(/\.exe$/i, "")
-	if (!words || (executable !== "rg" && executable !== "cut")) return undefined
+	if (!words) return undefined
+	if (["cat", "type", "get-content"].includes(executable?.toLowerCase() ?? "")) {
+		const operands = words.filter((word) => !["-LiteralPath", "-Path", "-Raw"].includes(word))
+		return operands.length === 1 && !operands[0]!.startsWith("-") ? operands[0] : undefined
+	}
+	if (executable !== "rg" && executable !== "cut") return undefined
 	const valueOptions =
 		executable === "rg"
 			? new Set([
@@ -311,7 +343,17 @@ function retrievedSource(call: QualityCall, sourcePath: string, workspace: strin
 			)
 		)
 	}
-	if (call.name === "search_files") return sourceMatches(call.input?.path, sourcePath, workspace)
+	if (call.name === "search_files") {
+		if (sourceMatches(call.input?.path, sourcePath, workspace)) return true
+		const scope = typeof call.input?.path === "string" ? absolutePath(call.input.path, workspace) : undefined
+		const source = absolutePath(sourcePath, workspace)
+		const filename = paths.basename(sourcePath).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+		return Boolean(
+			scope &&
+				source?.startsWith(`${scope}/`) &&
+				new RegExp(`(?:^|[\\s/\\\\"'])${filename}(?=[:\\s"']|$)`).test(call.result),
+		)
+	}
 	return false
 }
 
@@ -401,16 +443,125 @@ export function scoreStepEfficiency(maxSteps: number, calls: readonly QualityCal
 
 export function scoreQuality(spec: QualityCase, observation: QualityObservation): QualityReport {
 	const scores = [
-		scoreGroundedness(spec, observation),
-		scoreToolCorrectness(spec.milestones, observation.calls),
+		spec.expectedFiles
+			? score({
+					name: "final_state",
+					dimension: "groundedness",
+					value:
+						observation.answer.trim() &&
+						Object.entries(spec.expectedFiles).every(
+							([file, content]) => observation.finalFiles?.[file] === content,
+						)
+							? 1
+							: 0,
+					threshold: 1,
+					reason: "Independent final-content oracle, unchanged companion file, and visible report",
+				})
+			: scoreGroundedness(spec, observation),
+		...(spec.expectedFiles ? [] : [scoreToolCorrectness(spec.milestones, observation.calls)]),
 		scoreStepEfficiency(spec.maxSteps, observation.calls),
 	]
 	return {
 		schemaVersion: 1,
 		id: spec.id,
 		passed: scores.every((item) => item.passed),
+		correctnessPassed: scores.filter((item) => item.name !== "step_efficiency").every((item) => item.passed),
 		answer: observation.answer,
 		tools: stepsOf(observation.calls).map((call) => call.name),
 		scores,
 	}
+}
+
+/** Stable nonsecret settings identity; profile locations and credentials are never serialized. */
+export function qualityDigest(value: unknown): string {
+	const project = (item: unknown): unknown => {
+		if (Array.isArray(item)) return item.map(project)
+		if (!item || typeof item !== "object") return item
+		return Object.fromEntries(
+			Object.entries(item)
+				.filter(
+					([key]) =>
+						!/(api.?key|secret|password|credential|authorization|access.?token|refresh.?token)/i.test(key),
+				)
+				.sort(([left], [right]) => left.localeCompare(right))
+				.map(([key, child]) => [key, project(child)]),
+		)
+	}
+	return createHash("sha256")
+		.update(JSON.stringify(project(value)))
+		.digest("hex")
+}
+
+// getConfiguration also returns mutable UI/history state. Only captured provider
+// settings and stable task behavior belong in the cross-case comparison identity.
+// Fixture tools, approvals, delays and scope are fixed by the harness/fixture digest.
+const qualityGlobalSettingsSchema = globalSettingsSchema.pick({
+	customInstructions: true,
+	customCondensingPrompt: true,
+	memorySettings: true,
+	customModes: true,
+	customModePrompts: true,
+	language: true,
+	enableSubfolderRules: true,
+	disabledBuiltinSkills: true,
+	newTaskReasoningPreference: true,
+	autoCondenseContext: true,
+	autoCondenseContextPercent: true,
+	autoCondenseContextScope: true,
+	postTurnCondenseContextPercent: true,
+	preventCompletionWithOpenTodos: true,
+	allowedMaxCost: true,
+	deniedCommands: true,
+	commandTimeoutAllowlist: true,
+	includeCurrentTime: true,
+	includeCurrentCost: true,
+	maxGitStatusFiles: true,
+	includeDiagnosticMessages: true,
+	maxDiagnosticMessages: true,
+	maxOpenTabsContext: true,
+	maxWorkspaceFiles: true,
+	maxImageFileSize: true,
+	maxTotalImageSize: true,
+	terminalOutputPreviewSize: true,
+	terminalShellIntegrationTimeout: true,
+	terminalShellIntegrationDisabled: true,
+	terminalCommandDelay: true,
+	terminalPowershellCounter: true,
+	terminalZshClearEolMark: true,
+	terminalZshOhMy: true,
+	terminalZshP10k: true,
+	terminalZdotdir: true,
+	execaShellPath: true,
+	experiments: true,
+})
+
+/** Hash selected configuration, never changing task history or profile bookkeeping. */
+export function qualityConfigurationDigest(configuration: unknown): string {
+	return qualityDigest({
+		provider: providerSettingsSchema.parse(configuration),
+		global: qualityGlobalSettingsSchema.parse(configuration),
+	})
+}
+
+/** Reissued exact commands are counted only within one native-edit epoch; legitimate post-edit checks differ. */
+export function qualityWorkCounters(calls: readonly QualityCall[]) {
+	let commandCount = 0
+	let repeatedCommands = 0
+	let repeatedChecks = 0
+	const seen = new Set<string>()
+	for (const call of calls) {
+		if (["apply_patch", "apply_diff", "write_to_file", "edit_file"].includes(call.name) && !call.isError)
+			seen.clear()
+		if (!["exec_command", "execute_command", "shell"].includes(call.name)) continue
+		commandCount++
+		const command = typeof call.input?.cmd === "string" ? call.input.cmd.trim() : ""
+		if (!command) throw new Error("Quality command input is unavailable")
+		const key = JSON.stringify([command, call.input?.workdir ?? ""])
+		if (seen.has(key)) {
+			repeatedCommands++
+			if (/\b(test|check|lint|tsc|vitest|jest|pytest)\b/i.test(command)) repeatedChecks++
+		}
+		seen.add(key)
+	}
+	return { toolCalls: stepsOf(calls).length, commandCount, repeatedCommands, repeatedChecks }
 }

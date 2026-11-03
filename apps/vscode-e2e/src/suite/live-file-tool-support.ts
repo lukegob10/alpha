@@ -10,6 +10,8 @@ import {
 	type ToolName,
 	type TaskWorkContext,
 	type ToolApprovalDecision,
+	type TaskReasoningProjection,
+	type AlphaCodeSettings,
 } from "@alpha-code/types"
 
 import { readBoundedJson } from "../scenarios/extensionWorkflowHost"
@@ -25,6 +27,9 @@ import {
 	withBoundedFixtureCleanup,
 } from "./proportional-context-support"
 import { waitFor } from "./utils"
+import { qualityConfigurationDigest } from "../quality/liveQuality"
+import { WorkflowFailure } from "../scenarios/contracts"
+import { assertLiveTaskEffort, captureLiveFixtureSettings } from "./live-provider-settings"
 
 export interface LiveTask {
 	workContext?: TaskWorkContext
@@ -39,9 +44,12 @@ export interface LiveTask {
 	handleWebviewToolApprovalResponse(requestId: string, decision: ToolApprovalDecision): boolean
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
+	getReasoningState(): TaskReasoningProjection
 }
 
 interface LiveProvider {
+	getValues(): AlphaCodeSettings
+	setValues(values: AlphaCodeSettings): Promise<void>
 	getSkillsManager?(): { refreshSkills(): Promise<unknown> } | undefined
 	on(event: "taskCreated", listener: (task: LiveTask) => void): void
 	off(event: "taskCreated", listener: (task: LiveTask) => void): void
@@ -114,7 +122,11 @@ export async function runLiveCase(
 		browserSession?: { startCommand: string; urlFile: string }
 	} = {},
 ) {
-	assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot", "This suite requires a real Copilot model")
+	const generic = process.env.ALPHA_E2E_PROVIDER_MODE === "live" && Boolean(process.env.ALPHA_E2E_SAVED_PROVIDER)
+	assert.ok(
+		generic || process.env.ALPHA_E2E_PROVIDER_MODE === "live-copilot",
+		"This suite requires a real configured provider",
+	)
 	const workspace = process.env.ALPHA_E2E_WORKSPACE!
 	await assertOwnedTestRoot(workspace)
 	for (const [relative, content] of Object.entries(files)) {
@@ -132,17 +144,35 @@ export async function runLiveCase(
 			await fs.realpath(process.env.ALPHA_E2E_INSTALLED_EXTENSION_DIR),
 		)
 	const original = api.getConfiguration()
+	if (generic) assert.equal(original.apiProvider, process.env.ALPHA_E2E_SAVED_PROVIDER)
 	const provider = (api as unknown as { sidebarProvider: LiveProvider }).sidebarProvider
 	if (tools.includes("skill")) await provider.getSkillsManager?.()?.refreshSkills()
-	const budget = new WorkflowRequestBudget(options.requestLimit ?? 12, process.env.ALPHA_E2E_ACTUAL_MODEL_ID)
-	budget.onTaskRequest = options.onTaskRequest
+	const budget = new WorkflowRequestBudget(
+		options.requestLimit ?? 12,
+		process.env.ALPHA_E2E_ACTUAL_MODEL_ID ?? process.env.ALPHA_E2E_MODEL_ID,
+	)
 	budget.responseProbe = options.responseProbe
 	const releases: Array<() => void> = []
 	let task: LiveTask | undefined
+	budget.onTaskRequest = (...args) => {
+		if (generic) {
+			try {
+				assert.ok(task)
+				budget.model.reasoningEffort = assertLiveTaskEffort(
+					task.getReasoningState(),
+					process.env.ALPHA_E2E_REASONING_EFFORT,
+				)
+			} catch {
+				budget.failure = new WorkflowFailure("configuration", "actual_reasoning_effort_mismatch", true)
+				throw budget.failure
+			}
+		}
+		options.onTaskRequest?.(...args)
+	}
 	let completed = 0
 	const onCreated = (created: LiveTask) => {
 		task = created
-		releases.push(guardTaskApi(created, budget))
+		releases.push(guardTaskApi(created, budget, generic ? "generic" : "vscode-lm"))
 	}
 	const onCompleted = (taskId: string) => {
 		if (taskId === task?.taskId) completed++
@@ -158,6 +188,32 @@ export async function runLiveCase(
 	if (allowed.has("update_plan")) policyAllowed.add("update_todo_list")
 	if (allowed.has("shell")) policyAllowed.add("execute_command")
 	if (allowed.has("manage_command")) policyAllowed.add("read_command_output")
+	const settings = captureLiveFixtureSettings(provider, {
+		mode: "code",
+		disabledTools: toolNames.filter((name) => !policyAllowed.has(name)),
+		approvalMode: "auto",
+		autoApprovalEnabled: true,
+		alwaysAllowReadOnly: true,
+		alwaysAllowReadOnlyOutsideWorkspace: false,
+		alwaysAllowWrite: true,
+		alwaysAllowWriteOutsideWorkspace: false,
+		alwaysAllowWriteProtected: false,
+		alwaysAllowExecute: options.commands !== undefined,
+		...(options.commands !== undefined ? { commandExecutionTimeout: 300, allowedCommands: options.commands } : {}),
+		alwaysAllowMcp: false,
+		mcpEnabled: false,
+		alwaysAllowSubagents: false,
+		alwaysAllowSubtasks: false,
+		alwaysAllowFollowupQuestions: false,
+		allowedMaxRequests: budget.limit,
+		enableCheckpoints: false,
+		requestDelaySeconds: 0,
+		writeDelayMs: 0,
+	})
+	const extensionName: unknown = extension.packageJSON.name
+	assert.ok(typeof extensionName === "string")
+	const hostSettings = vscode.workspace.getConfiguration(extensionName)
+	const originalCommandTimeout = hostSettings.inspect<number>("commandExecutionTimeout")?.globalValue
 	const startedAt = Date.now()
 	let calls: Transaction[] = []
 	let answer = ""
@@ -176,30 +232,7 @@ export async function runLiveCase(
 	await withBoundedFixtureCleanup(async () => {
 		try {
 			await api.startNewTask({
-				configuration: {
-					...original,
-					mode: "code",
-					disabledTools: toolNames.filter((name) => !policyAllowed.has(name)),
-					approvalMode: "auto",
-					autoApprovalEnabled: true,
-					alwaysAllowReadOnly: true,
-					alwaysAllowReadOnlyOutsideWorkspace: false,
-					alwaysAllowWrite: true,
-					alwaysAllowWriteOutsideWorkspace: false,
-					alwaysAllowWriteProtected: false,
-					alwaysAllowExecute: options.commands !== undefined,
-					commandExecutionTimeout: options.commands !== undefined ? 300 : original.commandExecutionTimeout,
-					...(options.commands ? { allowedCommands: options.commands } : {}),
-					alwaysAllowMcp: false,
-					mcpEnabled: false,
-					alwaysAllowSubagents: false,
-					alwaysAllowSubtasks: false,
-					alwaysAllowFollowupQuestions: false,
-					allowedMaxRequests: budget.limit,
-					enableCheckpoints: false,
-					requestDelaySeconds: 0,
-					writeDelayMs: 0,
-				},
+				configuration: settings.configuration,
 				text: `${options.scope ?? scope}\n${prompt}`,
 			})
 			await waitFor(
@@ -279,9 +312,12 @@ export async function runLiveCase(
 						failure,
 						hostVersion: vscode.version,
 						extensionPath: extension.extensionPath,
-						provider: "live-copilot",
+						provider: original.apiProvider,
+						providerMode: process.env.ALPHA_E2E_PROVIDER_MODE,
+						configurationDigest: qualityConfigurationDigest(original),
+						requestMetric: generic ? "adapter-dispatches" : "host-send-requests",
 						model: budget.model,
-						effort: process.env.ALPHA_E2E_ACTUAL_REASONING_EFFORT,
+						effort: generic ? budget.model.reasoningEffort : process.env.ALPHA_E2E_ACTUAL_REASONING_EFFORT,
 						requests: budget.used,
 						elapsedMs: Date.now() - startedAt,
 						resultChars: calls.reduce((sum, call) => sum + call.result.length, 0),
@@ -306,6 +342,14 @@ export async function runLiveCase(
 		() => {
 			for (const release of releases.reverse()) release()
 		},
-		() => api.setConfiguration(original),
+		() => settings.restore(),
+		() =>
+			options.commands !== undefined
+				? hostSettings.update(
+						"commandExecutionTimeout",
+						originalCommandTimeout,
+						vscode.ConfigurationTarget.Global,
+					)
+				: undefined,
 	])
 }

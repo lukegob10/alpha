@@ -34,6 +34,10 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private shellExecutionReported = false
 	private terminationPromise?: Promise<void>
 
+	public get hasSubmittedCommand(): boolean {
+		return this.commandSubmitted
+	}
+
 	constructor(terminal: Terminal) {
 		super()
 

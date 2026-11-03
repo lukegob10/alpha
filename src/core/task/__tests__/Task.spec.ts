@@ -11628,12 +11628,12 @@ describe("Alpha", () => {
 			"repairs a %s text completion without presenting a terminal error or premature completion",
 			async (kind) => {
 				const task = createTask(kind)
-				const message = "Declared acceptance checks need attention: catalog-validation: unavailable."
+				const message = "An applied Worker change needs an approved review."
 				vi.spyOn(task, "waitForCompletionGateDecision")
 					.mockResolvedValueOnce({
 						allowed: false,
 						classification: "repairable",
-						reasonCode: "verification_missing",
+						reasonCode: "review_pending",
 						modelCanResolveRejection: true,
 						message,
 					})
@@ -11652,13 +11652,16 @@ describe("Alpha", () => {
 						expect(task.alphaMessages.some((row) => row.say === "completion_result")).toBe(false)
 						return {
 							status: "completed",
-							response: createAgentResponse([{ type: "text", text: "Catalog validation verified." }]),
+							response: createAgentResponse([{ type: "text", text: "Worker change reviewed." }]),
 						}
 					})
 
 				await task["initiateTaskLoop"]([{ type: "text", text: "Build the catalog." }])
 
 				expect(request).toHaveBeenCalledTimes(2)
+				expect(task.getModelContinuationDiagnostics().receipts).toEqual([
+					{ step: 2, reason: "completion-repair", turnId: expect.any(String) },
+				])
 				expect(request.mock.calls[1]?.[0]).toEqual([
 					expect.objectContaining({ text: expect.stringContaining(message) }),
 				])

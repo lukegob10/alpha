@@ -1,6 +1,8 @@
 import type { AgentResponse } from "./AgentResponse"
+import type { AgentTurnContinuationDiagnostic, AgentTurnContinuationReason } from "./AgentTurnEvents"
 
 export type { AgentResponse, AgentResponseItem, AgentToolCall } from "./AgentResponse"
+export type { AgentTurnContinuationDiagnostic, AgentTurnContinuationReason } from "./AgentTurnEvents"
 export { AgentResponseAccumulator, collectAgentResponse } from "./AgentResponseAccumulator"
 
 /**
@@ -20,6 +22,8 @@ export interface AgentTurnStepResult<TInput> {
 	error?: unknown
 	/** The host selected concrete follow-up input that must run before implicit completion. */
 	requiresContinuation?: boolean
+	/** Trusted host attribution when the selected input has a more specific source. */
+	continuationReason?: AgentTurnContinuationReason
 }
 
 /** One canonical provider response captured before transcript or tool effects. */
@@ -43,6 +47,7 @@ export interface AgentTurnPhaseResult {
 export interface AgentTurnContinuation<TInput> {
 	nextInput: TInput | "complete"
 	requiresContinuation?: boolean
+	continuationReason?: AgentTurnContinuationReason
 	status?: AgentTurnStepStatus
 	reason?: string
 	error?: unknown
@@ -85,6 +90,8 @@ interface AgentTurnHostBase<TInput, TStep> {
 		response: AgentResponse,
 		step: number,
 	): Promise<AgentTurnPhaseResult | void> | AgentTurnPhaseResult | void
+	/** Observation only: enqueue bounded diagnostics without changing turn admission or completion. */
+	onContinuation?(diagnostic: AgentTurnContinuationDiagnostic): Promise<void> | void
 }
 
 /** Legacy one-callback host retained with its original required method contract. */
@@ -242,6 +249,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 		this.consideredIdleOutcomes.add(outcome)
 		const input = await this.host.selectIdleContinuation?.(outcome)
 		if (this.running || this.host.shouldAbort() || !(this.host.canContinueWhenIdle?.() ?? true)) return undefined
+		if (input !== undefined) this.recordContinuation(1, "host-idle-continuation")
 		return input
 	}
 
@@ -260,6 +268,26 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 			!response.outcome?.requiresContinuation &&
 			(this.host.canCompleteWithoutTools?.(response, step) ?? true)
 		)
+	}
+
+	private continuationReason(
+		response: AgentResponse,
+		requiresContinuation?: boolean,
+		override?: AgentTurnContinuationReason,
+	): AgentTurnContinuationReason {
+		if (override) return override
+		if (response.toolCalls.length > 0) return "model-tool-call"
+		if (response.outcome?.requiresContinuation) return "model-continuation"
+		return requiresContinuation ? "host-pending-input" : "host-continuation"
+	}
+
+	private recordContinuation(step: number, reason: AgentTurnContinuationReason): void {
+		try {
+			const observation = this.host.onContinuation?.({ step, reason })
+			if (observation) void observation.catch(() => undefined)
+		} catch {
+			// Additive diagnostic export cannot fail a task or change its selected input.
+		}
 	}
 
 	private async runLegacy(initialInput: TInput): Promise<AgentTurnOutcome> {
@@ -374,6 +402,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					}
 					if (admission && admission.nextInput !== "complete") {
 						input = admission.nextInput
+						this.recordContinuation(steps + 1, admission.continuationReason ?? "completion-repair")
 						continue
 					}
 					if (admission?.requiresContinuation) {
@@ -388,6 +417,10 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				}
 
 				input = result.nextInput
+				this.recordContinuation(
+					steps + 1,
+					this.continuationReason(result.response, result.requiresContinuation, result.continuationReason),
+				)
 			}
 		} catch (error) {
 			// shouldAbort/callback failures are host failures, never successful
@@ -423,6 +456,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 				let outcome: AgentTurnOutcome | undefined
 				let continuationInput: TInput | undefined
 				let hasContinuation = false
+				let continuationReason: AgentTurnContinuationReason = "host-continuation"
 				const absorbPhase = (result: AgentTurnPhaseResult | void) => {
 					const merged = mergePhaseResult({ status, reason, error }, result)
 					status = merged.status
@@ -529,6 +563,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 								} else {
 									continuationInput = continuation.nextInput
 									hasContinuation = true
+									continuationReason = this.continuationReason(
+										sample.response,
+										continuation.requiresContinuation,
+										continuation.continuationReason,
+									)
 								}
 							}
 						}
@@ -548,6 +587,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						} else if (admission && admission.nextInput !== "complete") {
 							continuationInput = admission.nextInput
 							hasContinuation = true
+							continuationReason = admission.continuationReason ?? "completion-repair"
 							outcome = undefined
 						} else if (admission?.requiresContinuation) {
 							outcome = terminalOutcome(
@@ -624,6 +664,7 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					) {
 						continuationInput = recovery.nextInput
 						hasContinuation = true
+						continuationReason = recovery.continuationReason ?? "provider-recovery"
 						outcome = undefined
 					}
 				}
@@ -636,7 +677,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 						"Agent turn continuation input was missing.",
 					)
 				}
+				if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, sample.response, reason)
 				input = continuationInput!
+				this.recordContinuation(steps + 1, continuationReason)
 			}
 		} catch (error) {
 			return terminalOutcome("failed", steps, undefined, errorMessage(error), error)

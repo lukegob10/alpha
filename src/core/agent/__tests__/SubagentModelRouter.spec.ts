@@ -326,21 +326,21 @@ describe("resolveSubagentModelRoute", () => {
 		expect(resolved.configuration.enableReasoningEffort).toBeUndefined()
 	})
 
-	it("inherits a captured custom-token choice without writing it into the provider profile", async () => {
+	it("preserves a captured custom preference while falling back to supported capabilities", async () => {
 		const result = await resolveSubagentModelRoute({
 			role: "worker",
-			parentApiConfiguration: { apiProvider: "stellar", apiModelId: "stellar-model" },
+			parentApiConfiguration: { apiProvider: "openai", openAiModelId: "custom-model" },
 			parentReasoningPreference: { kind: "custom", value: "captured_custom" },
 			profileLoader: loader,
 		})
 		const resolved = resolveTaskReasoning(result.apiConfiguration, result.reasoningPreference, {
-			id: "stellar-model",
+			id: "custom-model",
 			info: { contextWindow: 128_000, supportsPromptCache: false },
 		})
 
 		expect(result.reasoningPreference).toEqual({ kind: "custom", value: "captured_custom" })
-		expect(result.apiConfiguration).not.toHaveProperty("taskReasoningCustomEffort")
-		expect(resolved.configuration.taskReasoningCustomEffort).toBe("captured_custom")
+		expect(resolved.state.effective).toEqual({ kind: "off" })
+		expect(resolved.state.fallbackReason).toBe("unavailable")
 	})
 
 	it("uses an explicitly selected provider profile instead of the parent task preference", async () => {

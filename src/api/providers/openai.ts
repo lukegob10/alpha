@@ -8,7 +8,6 @@ import {
 	type ModelInfo,
 	type AssistantMessageMetadata,
 	normalizeAssistantMessageMetadata,
-	taskReasoningCustomTokenPattern,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
@@ -514,7 +513,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		this.responsesReasoningItems.clear()
 		this.responsesSummary = undefined
 		const { info: modelInfo, reasoning, temperature } = this.getModel()
-		const effectiveReasoning = this.getRuntimeReasoning(reasoning)
+		const effectiveReasoning = reasoning
 		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
 		const enabledR1Format = this.options.openAiR1FormatEnabled ?? false
@@ -1466,15 +1465,6 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return this.responsesSummary
 	}
 
-	/** Apply an ephemeral task token without mutating the saved provider profile. */
-	private getRuntimeReasoning(
-		fallback: { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined,
-	): { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined {
-		const value = this.options.taskReasoningCustomEffort
-		if (!value || !taskReasoningCustomTokenPattern.test(value)) return fallback
-		return { reasoning_effort: value as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] }
-	}
-
 	protected processUsageMetrics(usage: unknown, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
 		const source = providerRecord(usage)
 		const inputTokens = providerTokenCount(source?.prompt_tokens)
@@ -1559,7 +1549,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 			const model = this.getModel()
 			const modelInfo = model.info
-			const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+			const effectiveReasoning = model.reasoning
 			if (this.usesResponsesForSingleCompletion()) {
 				const response = await awaitSingleCompletion(
 					this.client.responses.create(
@@ -1662,7 +1652,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	): ApiStream {
 		const model = this.getModel()
 		const modelInfo = model.info
-		const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+		const effectiveReasoning = model.reasoning
 		const methodIsAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 		const instructionMessages =
 			metadata?.instructionFragments !== undefined

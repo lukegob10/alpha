@@ -831,7 +831,7 @@
 	},
 	"retiredProvider": {
 		"title": "Provider no longer supported",
-		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
+		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, or OpenAI Compatible in Settings.",
 		"openSettings": "Open Settings"
 	},
 	"transcript": {
