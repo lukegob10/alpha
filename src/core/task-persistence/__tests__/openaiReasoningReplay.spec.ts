@@ -202,7 +202,20 @@ describe("OpenAI reasoning persistence and replay", () => {
 		const handler = new OpenAiHandler({ ...options, openAiStreamingEnabled: variant !== "nonstreaming" })
 		const response = await collectResponse(handler)
 		expect(response.toolCalls).toEqual([
-			{ type: "tool_call", id: "read-call", name: "read_file", arguments: { path: "a.ts" } },
+			{
+				type: "tool_call",
+				id: "read-call",
+				name: "read_file",
+				arguments: { path: "a.ts" },
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: "function-item",
+					status: "completed",
+				},
+			},
 		])
 		const expectedOpaqueReasoning = [
 			{
@@ -242,11 +255,52 @@ describe("OpenAI reasoning persistence and replay", () => {
 		const reloaded: ApiMessage[] = JSON.parse(JSON.stringify(task.apiConversationHistory))
 		expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
 		expect(reloaded[0]!.content).toEqual([
-			{ type: "text", text: "Before the read.", id: "message-before", outputIndex: 0 },
+			{
+				type: "text",
+				text: "Before the read.",
+				id: "message-before",
+				outputIndex: 0,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "message",
+					id: "message-before",
+					status: "completed",
+					content: [{ type: "output_text", length: 16, annotations: [] }],
+				},
+			},
 			firstReasoning,
-			{ type: "tool_use", id: "read-call", name: "read_file", input: { path: "a.ts" } },
+			{
+				type: "tool_use",
+				id: "read-call",
+				name: "read_file",
+				input: { path: "a.ts" },
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: "function-item",
+					status: "completed",
+				},
+			},
 			secondReasoning,
-			{ type: "text", text: "After the read.", id: "message-after", outputIndex: 4 },
+			{
+				type: "text",
+				text: "After the read.",
+				id: "message-after",
+				outputIndex: 4,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "message",
+					id: "message-after",
+					status: "completed",
+					content: [{ type: "output_text", length: 15, annotations: [] }],
+				},
+			},
 		])
 		for (const store of [false, true]) {
 			expect(buildOpenAiResponsesInput("", [], task.buildCleanConversationHistory(reloaded), store)).toEqual(

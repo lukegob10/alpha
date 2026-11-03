@@ -547,7 +547,22 @@ describe("assistant message phase persistence and replay", () => {
 			])
 			const retried = await collectResponse(handler)
 			expect(buildCanonicalAssistantHistoryItems(retried)).toEqual([
-				{ type: "text", id: "message-recovered", phase: "final_answer", outputIndex: 0, text: "Recovered." },
+				{
+					type: "text",
+					id: "message-recovered",
+					phase: "final_answer",
+					outputIndex: 0,
+					text: "Recovered.",
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-6.1-sol",
+						itemType: "message",
+						id: "message-recovered",
+						status: "completed",
+						content: [{ type: "output_text", length: 10, annotations: [] }],
+					},
+				},
 			])
 		},
 	)

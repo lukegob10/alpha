@@ -244,7 +244,14 @@ describe("native xAI Responses provider", () => {
 			expect(responsesCreate.mock.calls[1]![0].input).toEqual([
 				{ role: "system", content: "System instructions." },
 				reasoning,
-				{ type: "function_call", call_id: "read_xai", name: "read_file", arguments: '{"path":"a.ts"}' },
+				{
+					type: "function_call",
+					id: "function_xai",
+					call_id: "read_xai",
+					name: "read_file",
+					arguments: '{"path":"a.ts"}',
+					status: "completed",
+				},
 				{ type: "function_call_output", call_id: "read_xai", output: "File contents." },
 			])
 		},
