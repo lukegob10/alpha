@@ -527,6 +527,84 @@ describe("Task retained retry wire inputs", () => {
 		expect(logicalRequest(originalHandler.createMessage.mock.calls[1])).toEqual(logicalRequest(firstCall))
 	})
 
+	it.each(["changed", "removed"] as const)(
+		"keeps captured repository guidance on retry and adopts %s guidance only on a fresh step",
+		async (change) => {
+			const { task, originalHandler } = harness()
+			let guidance: string | undefined = "Keep the original API stable."
+			const base = { role: "developer" as const, origin: "built-in-mode", content: "Inspect before editing." }
+			const originalFragments = [
+				base,
+				{ role: "user" as const, origin: "project-instructions", content: guidance },
+			]
+			const getSystemPrompt = vi.fn(async (...args: unknown[]) => {
+				const fragments = [
+					base,
+					...(guidance ? [{ role: "user" as const, origin: "project-instructions", content: guidance }] : []),
+				]
+				const capture = args[4] as (value: typeof fragments) => void
+				capture(fragments)
+				return fragments.map(({ content }) => content).join("\n")
+			})
+			Object.assign(task, { getSystemPrompt })
+			let entered!: () => void
+			let release!: () => void
+			const streaming = new Promise<void>((resolve) => {
+				entered = resolve
+			})
+			const held = new Promise<void>((resolve) => {
+				release = resolve
+			})
+			originalHandler.createMessage.mockImplementationOnce(async function* () {
+				entered()
+				await held
+				yield* failBeforeFirstChunk(new Error("captured guidance transport failure"))
+			})
+			const first = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next()
+			await streaming
+			const firstSnapshot = capturedStep(task).snapshot
+			const originalRequest = logicalRequest(originalHandler.createMessage.mock.calls[0])
+			guidance = change === "changed" ? "Use the updated API contract." : undefined
+			release()
+			await expect(first).rejects.toThrow("captured guidance transport failure")
+
+			for await (const _chunk of task.attemptApiRequest(1, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+				retryCategory: "transport",
+			})) {
+				/* consume */
+			}
+			expect(getSystemPrompt).toHaveBeenCalledOnce()
+			expect(logicalRequest(originalHandler.createMessage.mock.calls[1])).toEqual(originalRequest)
+			expect(originalHandler.createMessage.mock.calls[1][2]?.instructionFragments).toEqual(originalFragments)
+			expect(capturedStep(task).snapshot.context.contextId).toBe(firstSnapshot.context.contextId)
+			expect(capturedStep(task).snapshot.digests.instructions).toBe(firstSnapshot.digests.instructions)
+
+			for await (const _chunk of task.attemptApiRequest(0, {
+				skipProviderRateLimit: true,
+				ownerHandlesRetry: true,
+			})) {
+				/* consume */
+			}
+			const next = capturedStep(task).snapshot
+			const expectedFragments = [
+				base,
+				...(guidance ? [{ role: "user" as const, origin: "project-instructions", content: guidance }] : []),
+			]
+			expect(getSystemPrompt).toHaveBeenCalledTimes(2)
+			expect(next.context.contextId).not.toBe(firstSnapshot.context.contextId)
+			expect(next.digests.instructions).not.toBe(firstSnapshot.digests.instructions)
+			expect(next.context.instructions.instructionFragments).toEqual(expectedFragments)
+			expect(originalHandler.createMessage.mock.calls[2][2]?.instructionFragments).toEqual(expectedFragments)
+			expect(originalHandler.createMessage.mock.calls[2][0]).toBe(
+				expectedFragments.map(({ content }) => content).join("\n"),
+			)
+			expect(originalHandler.createMessage.mock.calls[2][0]).not.toContain("Keep the original API stable.")
+			expect(firstSnapshot.context.instructions.instructionFragments).toEqual(originalFragments)
+		},
+	)
+
 	it.each(["primary", "subagent"])(
 		"prepares a %s model before its first tool capture and only again on a new step",
 		async (taskKind) => {

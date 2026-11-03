@@ -64,6 +64,38 @@ function savedAssistant(provider: string, modelId: string, content: unknown[] = 
 }
 
 describe("provider reasoning replay scope", () => {
+	it("scopes response item metadata without dropping visible text or tool transactions", () => {
+		const providerItem = {
+			protocol: "openai-responses",
+			providerId: "openai-native",
+			modelId: "gpt-6.1-sol",
+			itemType: "function_call",
+			id: "fc_source",
+			status: "completed",
+		}
+		const original = [
+			savedAssistant("openai-native", "gpt-6.1-sol", [
+				{ ...text, providerItem: { ...providerItem, itemType: "message" } },
+				{ ...tool, providerItem },
+			]),
+			result,
+		]
+		const same = bridge("openai-native", "gpt-6.1-sol").buildCleanConversationHistory(original)
+		expect(JSON.stringify(same)).toContain("fc_source")
+		const revoked = JSON.parse(
+			serializeProviderTranscript(invalidateOpaqueProviderStateReplay(original)),
+		) as ApiMessage[]
+		expect(revoked[0]).toHaveProperty("provider_state_replay_disabled", true)
+		for (const history of [original, revoked]) {
+			const destination =
+				history === original ? bridge("openai-native", "other-model") : bridge("openai-native", "gpt-6.1-sol")
+			const projected = destination.buildCleanConversationHistory(history)
+			expect(projected).toEqual([{ role: "assistant", content: [text, tool] }, result])
+			expect(JSON.stringify(projected)).not.toContain("providerItem")
+		}
+		expect(JSON.stringify(original)).toContain("fc_source")
+	})
+
 	it.each([true, false])(
 		"durably disables same-provider/model opaque state across a profile switch (scoped=%s)",
 		(scoped) => {
@@ -282,8 +314,13 @@ describe("provider reasoning replay scope", () => {
 		]
 		const before = structuredClone(original)
 		const transformed = transformMessagesForCondensing(original)
-		expect(transformed[0].content).toEqual([text, { type: "text", text: "[Tool Use: read_file]\npath: a.ts" }])
-		expect(transformed[1].content).toEqual([{ type: "text", text: "[Tool Result]\nFile contents." }])
+		expect(transformed[0].content).toEqual([
+			text,
+			{ type: "text", text: '[Tool Use: read_file]\nTool call ID: "call-1"\npath: a.ts' },
+		])
+		expect(transformed[1].content).toEqual([
+			{ type: "text", text: '[Tool Result]\nTool call ID: "call-1"\nFile contents.' },
+		])
 		expect(original).toEqual(before)
 	})
 

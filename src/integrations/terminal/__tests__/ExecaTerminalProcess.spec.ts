@@ -28,6 +28,7 @@ vitest.mock("ps-tree", () => ({
 }))
 
 import { execa, ExecaError } from "execa"
+import * as commandShell from "../../../utils/shell"
 import * as path from "node:path"
 import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
@@ -126,6 +127,36 @@ describe("ExecaTerminalProcess", () => {
 				expect(terminal.busy).toBe(false)
 			},
 		)
+
+		it("executes an approved shell/startup choice without consulting later global shell settings", async () => {
+			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {
+				iterable: () =>
+					(async function* () {
+						yield "selected shell output\n"
+					})(),
+				kill: vitest.fn(),
+			})
+			const spawn = vitest.fn().mockReturnValue(child)
+			const factory = vitest.fn().mockReturnValue(spawn)
+			vitest.mocked(execa).mockImplementationOnce(factory)
+			vitest.spyOn(commandShell, "assertCommandShellLaunchUnchanged").mockResolvedValue(undefined)
+			Object.assign(mockTerminal, {
+				shellLaunch: Object.freeze({
+					shellPath: "/bin/bash",
+					family: "bash",
+					login: false,
+					binaryIdentity: "binary",
+					identity: "selected",
+				}),
+			})
+			BaseTerminal.setExecaShellPath("changed-global-shell")
+			const command = "printf '%s' 'quoted argument;$(literal shell code)'"
+			await terminalProcess.run(command)
+			expect(factory).toHaveBeenCalledWith(
+				expect.objectContaining({ shell: false, extendEnv: true, stdin: "ignore" }),
+			)
+			expect(spawn).toHaveBeenCalledExactlyOnceWith("/bin/bash", ["-c", command])
+		})
 
 		it("executes the captured executable, argv and environment without a shell or ambient extension", async () => {
 			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {

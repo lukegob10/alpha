@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import { arePathsEqual } from "../../utils/path"
 
-import { AlphaTerminal, AlphaTerminalProvider } from "./types"
+import { AlphaTerminal, AlphaTerminalProvider, type CommandShellLaunch } from "./types"
 import { TerminalProcess } from "./TerminalProcess"
 import { BaseTerminal } from "./BaseTerminal"
 import type { AlphaTerminalProcess } from "./types"
@@ -161,14 +161,15 @@ export class TerminalRegistry {
 		cwd: string,
 		provider: AlphaTerminalProvider,
 		commandEnv: Record<string, string> = {},
+		shellLaunch?: CommandShellLaunch,
 	): AlphaTerminal {
 		this.assertCommandCapacity()
 		let newTerminal
 
 		if (provider === "vscode") {
-			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv)
+			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv, shellLaunch)
 		} else {
-			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv)
+			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv, shellLaunch)
 		}
 
 		this.terminals.push(newTerminal)
@@ -188,12 +189,18 @@ export class TerminalRegistry {
 		cwd: string,
 		taskId?: string,
 		provider: AlphaTerminalProvider = "vscode",
+		shellLaunch?: CommandShellLaunch,
 	): Promise<AlphaTerminal> {
 		this.assertCommandCapacity()
 		const findAvailableTerminal = () => {
 			const terminals = this.getAllTerminals()
 			const matches = (t: AlphaTerminal) => {
-				if (t.busy || t.running || t.provider !== provider) {
+				if (
+					t.busy ||
+					t.running ||
+					t.provider !== provider ||
+					t.shellLaunch?.identity !== shellLaunch?.identity
+				) {
 					return false
 				}
 
@@ -220,7 +227,11 @@ export class TerminalRegistry {
 			// This check and the reservation below have no asynchronous boundary.
 			this.assertCommandCapacity()
 			// Another request may have created a terminal while binary resolution was pending.
-			terminal = findAvailableTerminal() ?? this.createTerminal(cwd, provider, commandEnv)
+			terminal =
+				findAvailableTerminal() ??
+				(shellLaunch
+					? this.createTerminal(cwd, provider, commandEnv, shellLaunch)
+					: this.createTerminal(cwd, provider, commandEnv))
 		}
 
 		terminal.taskId = taskId

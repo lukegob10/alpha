@@ -29,6 +29,9 @@ import {
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { Terminal } from "../../integrations/terminal/Terminal"
+import { BaseTerminal } from "../../integrations/terminal/BaseTerminal"
+import { captureCommandShellLaunch, assertCommandShellLaunchUnchanged, getCommandShell } from "../../utils/shell"
+import type { CommandShellLaunch } from "../../integrations/terminal/types"
 import { OutputArchiveInterruptedError, OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 import { Package } from "../../shared/package"
 import { t } from "../../i18n"
@@ -195,6 +198,8 @@ async function finalizeCommandMutationReceipt(
 
 export interface ExecuteCommandParams {
 	command: string
+	shell?: string | null
+	login?: boolean | null
 	tty?: boolean | null
 	cwd?: string | null
 	timeout?: number | null
@@ -687,7 +692,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 		callbacks: ToolCallbacks,
 		host?: PreparedCommandHost,
 	): Promise<void> {
-		const { command, tty, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
+		const { command, tty, shell, login, cwd: requestedCwd, timeout: timeoutSeconds, verification } = params
 		const customCwd = requestedCwd ?? undefined
 		const { handleError, pushToolResult, askApproval } = callbacks
 		let commandResult: CommandToolResult | undefined
@@ -801,6 +806,27 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
+			let shellLaunch: CommandShellLaunch | undefined
+			if (shell != null || login != null) {
+				const mode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
+				if (mode === planModeSlug || host) {
+					denyByTaskCommandAuthority(t("common:commandShell.codeOnly"))
+					return
+				}
+				const owner = await task.providerRef.deref()
+				const useExeca =
+					tty === false || (tty !== true && (owner?.getValue("terminalShellIntegrationDisabled") ?? true))
+				shellLaunch = await captureCommandShellLaunch(
+					shell,
+					login,
+					getCommandShell(useExeca, BaseTerminal.getExecaShellPath()),
+				)
+				if (callbacks.signal?.aborted || task.abort || task.getTaskLifetimeCancellationSignal().aborted) {
+					preLaunchFailure("cancelled", { kind: "user-action" }, "explicit-shell-admission")
+					return
+				}
+			}
+
 			// Native arguments already contain literal shell input; decoding changes approved intent.
 			const canonicalCommand = command
 			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
@@ -841,9 +867,15 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			const commandProgressStatus = customCwd
 				? { text: redactTaskPrivatePaths(task, path.resolve(task.cwd, customCwd)) }
 				: undefined
-			const approval = customCwd
-				? await askCommandApproval("command", canonicalCommand, commandProgressStatus)
-				: await askCommandApproval("command", canonicalCommand)
+			const approvalCommand = shellLaunch
+				? `${canonicalCommand}\n${t("common:commandShell.approvalDetail", { shell: shellLaunch.shellPath, login: String(shellLaunch.login) })}`
+				: canonicalCommand
+			// A changed interpreter must never inherit a command-only rule or reusable grant.
+			const approval = shellLaunch
+				? await askCommandApproval("command", approvalCommand, commandProgressStatus, true, true)
+				: customCwd
+					? await askCommandApproval("command", canonicalCommand, commandProgressStatus)
+					: await askCommandApproval("command", canonicalCommand)
 
 			if (!approval.approved) {
 				task.failCommandExecution?.(commandEvidenceId, "denied")
@@ -862,6 +894,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 
 			const executionMode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug
 			if (
+				(shellLaunch && executionMode === planModeSlug) ||
 				!isToolAllowedForMode("execute_command", executionMode, [], undefined, {
 					command: canonicalCommand,
 					cwd: customCwd ?? null,
@@ -909,6 +942,7 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				toolCallId: commandEvidenceId,
 				command: canonicalCommand,
 				tty: tty ?? undefined,
+				shellLaunch,
 				customCwd,
 				verificationChangeSetIds: verification?.change_set_ids,
 				terminalShellIntegrationDisabled,
@@ -1130,6 +1164,7 @@ export type ExecuteCommandOptions = {
 	toolCallId?: string
 	command: string
 	tty?: boolean
+	shellLaunch?: CommandShellLaunch
 	customCwd?: string
 	verificationChangeSetIds?: readonly string[]
 	terminalShellIntegrationDisabled?: boolean
@@ -1160,6 +1195,7 @@ export async function executeCommandInTerminal(
 		toolCallId,
 		command,
 		tty,
+		shellLaunch,
 		customCwd,
 		verificationChangeSetIds,
 		terminalShellIntegrationDisabled = true,
@@ -1238,6 +1274,11 @@ export async function executeCommandInTerminal(
 	const taskWasCancelled = () =>
 		task.abort || (stepOwnsLaunch && signal?.aborted) || task.getTaskLifetimeCancellationSignal().aborted
 	if (taskWasCancelled()) return cancellationResult()
+	if (shellLaunch && (isPlanMode || directCommand)) {
+		rejectBeforeLaunch("policy_denied", "explicit-shell")
+		if (toolCallId) task.failCommandExecution?.(toolCallId, "denied")
+		return [false, t("common:commandShell.codeOnly")]
+	}
 	if (tty === true && (isManagedCommandAgent || isPlanMode)) {
 		rejectBeforeLaunch("policy_denied", "interactive-terminal")
 		if (toolCallId)
@@ -1796,7 +1837,11 @@ export async function executeCommandInTerminal(
 	}
 
 	if (taskWasCancelled()) return cancellationResult()
-	const terminal = await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
+	if (shellLaunch) await assertCommandShellLaunchUnchanged(shellLaunch)
+	if (taskWasCancelled()) return cancellationResult()
+	const terminal = shellLaunch
+		? await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider, shellLaunch)
+		: await TerminalRegistry.getOrCreateTerminal(workingDir, task.taskId, terminalProvider)
 	const releaseTerminalReservation = () => TerminalRegistry.releaseTerminalReservation(terminal, task.taskId)
 	if (taskWasCancelled()) {
 		releaseTerminalReservation()
@@ -1873,6 +1918,7 @@ export async function executeCommandInTerminal(
 		return cancellationResult()
 	}
 	try {
+		if (shellLaunch) await assertCommandShellLaunchUnchanged(shellLaunch)
 		await beforeLaunch?.()
 	} catch (error) {
 		stopBackgroundPreview()

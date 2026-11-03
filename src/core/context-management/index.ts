@@ -15,6 +15,7 @@ import {
 	summarizeConversation,
 	SummarizeResponse,
 	TokenCountContext,
+	type CompactionUsageObserver,
 } from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS, type AutoCondenseContextScope } from "@alpha-code/types"
@@ -228,7 +229,7 @@ async function truncateToTokenBudget(
 			remoteDeadline: metadata?.deadline,
 		})
 	signal?.throwIfAborted()
-	const active = getEffectiveApiHistory(messages)
+	const active = getEffectiveApiHistory(messages, apiHandler.nativeCompaction?.scope ?? null)
 	const truncationId = crypto.randomUUID()
 	const unchanged = { messages, truncationId, messagesRemoved: 0, tokens: 0, status: "exhausted" as const }
 	const storedMessages = new Set(messages)
@@ -274,7 +275,7 @@ async function truncateToTokenBudget(
 	)
 	tagged.splice(insertIndex, 0, marker)
 	const tokens = await countContextTokens(
-		getEffectiveApiHistory(tagged),
+		getEffectiveApiHistory(tagged, apiHandler.nativeCompaction?.scope ?? null),
 		apiHandler,
 		systemPrompt,
 		metadata,
@@ -396,6 +397,9 @@ export type ContextManagementOptions = {
 	forceCompaction?: boolean
 	/** Shared token-counting budget/cache for this context-preparation operation. */
 	countContext?: TokenCountContext
+	beforeAttempt?: () => Promise<void>
+	observeUsage?: CompactionUsageObserver
+	inputIncludesCache?: boolean
 	/** Retain observed summary usage independently of the recovery outcome. */
 	observeCost?: (cost: number) => void
 }
@@ -444,6 +448,9 @@ export async function manageContext({
 	forceCompaction = false,
 	countContext,
 	observeCost,
+	observeUsage,
+	beforeAttempt,
+	inputIncludesCache,
 }: ContextManagementOptions): Promise<ContextManagementResult> {
 	metadata?.signal?.throwIfAborted()
 	let compactAdmission: Promise<void> | undefined
@@ -491,7 +498,7 @@ export async function manageContext({
 	if (forceCompaction) {
 		if (prepareTools) await prepareToolMetadata()
 		prevContextTokens = await countContextTokens(
-			getEffectiveApiHistory(messages),
+			getEffectiveApiHistory(messages, apiHandler.nativeCompaction?.scope ?? null),
 			apiHandler,
 			systemPrompt,
 			metadata,
@@ -559,6 +566,9 @@ export async function manageContext({
 				countContext: operation,
 				forceCompaction,
 				observeCost,
+				observeUsage,
+				beforeAttempt,
+				inputIncludesCache,
 			})
 			metadata?.signal?.throwIfAborted()
 			cost = result.cost
@@ -585,7 +595,7 @@ export async function manageContext({
 					// retained input, including fixed overhead, before allowing a normal
 					// request above the preferred trigger but within the safe input limit.
 					const retainedTokens = await countContextTokens(
-						getEffectiveApiHistory(messages),
+						getEffectiveApiHistory(messages, apiHandler.nativeCompaction?.scope ?? null),
 						apiHandler,
 						systemPrompt,
 						metadata,
@@ -671,7 +681,7 @@ export async function manageContext({
 				newContextTokensAfterTruncation: Number.NaN,
 			}
 		prevContextTokens = await countContextTokens(
-			getEffectiveApiHistory(messages),
+			getEffectiveApiHistory(messages, apiHandler.nativeCompaction?.scope ?? null),
 			apiHandler,
 			systemPrompt,
 			metadata,
@@ -718,7 +728,7 @@ export async function manageContext({
 				: truncationResult.messagesRemoved > 0
 					? truncationResult.tokens
 					: await countContextTokens(
-							getEffectiveApiHistory(messages),
+							getEffectiveApiHistory(messages, apiHandler.nativeCompaction?.scope ?? null),
 							apiHandler,
 							systemPrompt,
 							metadata,

@@ -8,6 +8,7 @@ import {
 	type ModelInfo,
 	type AssistantMessageMetadata,
 	normalizeAssistantMessageMetadata,
+	snapshotProviderResponseItem,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
@@ -181,7 +182,14 @@ function createOpenAiChatCompletionOutcome(
 	}
 
 	if (finishReason === "stop" || finishReason === "tool_calls") {
-		return createApiStreamOutcome({ status: "completed", terminal: true, semanticOutputObserved })
+		// OpenAI Chat finish_reason is authoritative (API reference, 2026-11-03).
+		// Match Codex ac558e2a32's completed sampling boundary without inferring success from EOF.
+		return createApiStreamOutcome({
+			status: "completed",
+			terminal: true,
+			semanticOutputObserved,
+			requiresContinuation: finishReason === "tool_calls",
+		})
 	}
 
 	return createApiStreamOutcome({
@@ -449,7 +457,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				if (chunk.type === "usage") pendingChatUsage = undefined
 				terminalOutcomeObserved ||= chunk.type === "outcome"
 				semanticOutputObserved ||= isApiStreamSemanticChunk(chunk)
-				yield chunk
+				yield chunk.type === "outcome"
+					? { ...chunk, semanticOutputObserved: chunk.semanticOutputObserved || semanticOutputObserved }
+					: chunk
 			}
 			control?.signal.throwIfAborted()
 			if (reportsLifecycle && !terminalOutcomeObserved) {
@@ -864,7 +874,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				messages,
 				store,
 				freeformApplyPatch,
-				{ preserveReasoningIds: this.preserveResponsesReasoningIds() },
+				{ preserveReasoningIds: this.preserveResponsesReasoningIds(), providerId: this.providerId, modelId },
 			),
 			...(tools !== undefined ? { tools } : {}),
 			parallel_tool_calls: metadata?.parallelToolCalls ?? true,
@@ -1152,10 +1162,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		this.captureOpenAiResponsesState({ ...response, output })
 		if (!interrupted) yield this.processOpenAiResponsesUsage(response.usage)
-		// Codex can finish this response while requesting another model step.
-		if (interrupted || response.end_turn === false) {
-			yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
-		}
+		// An authoritative terminal distinguishes successful empty output from unsupported EOF.
+		yield createApiStreamOutcome({
+			status: "completed",
+			terminal: true,
+			requiresContinuation: interrupted || response.end_turn === false,
+		})
 	}
 
 	private async *rejectOpenAiResponsesResult(
@@ -1201,7 +1213,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					arguments: item.arguments,
 					outputIndex,
 				}
-				yield { type: "tool_call_end", id: item.call_id }
+				yield {
+					type: "tool_call_end",
+					id: item.call_id,
+					providerItem: this.captureOpenAiResponsesProviderItem(item),
+				}
 				return
 			}
 			const finalArguments = item.arguments
@@ -1210,7 +1226,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 			const remainder = finalArguments.slice(active.functionArguments.length)
 			if (remainder) yield { type: "tool_call_partial", index: outputIndex, arguments: remainder }
-			yield { type: "tool_call_end", id: item.call_id }
+			yield {
+				type: "tool_call_end",
+				id: item.call_id,
+				providerItem: this.captureOpenAiResponsesProviderItem(item),
+			}
 			toolCalls.delete(outputIndex)
 			return
 		}
@@ -1224,7 +1244,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					arguments: normalizeOpenAiCustomToolInput(item.name, item.input),
 					outputIndex,
 				}
-				yield { type: "tool_call_end", id: item.call_id }
+				yield {
+					type: "tool_call_end",
+					id: item.call_id,
+					providerItem: this.captureOpenAiResponsesProviderItem(item),
+				}
 				return
 			}
 			if (!item.input.startsWith(active.customInput)) {
@@ -1239,7 +1263,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 			}
 			if (item.name === "apply_patch") yield { type: "tool_call_partial", index: outputIndex, arguments: '"}' }
-			yield { type: "tool_call_end", id: item.call_id }
+			yield {
+				type: "tool_call_end",
+				id: item.call_id,
+				providerItem: this.captureOpenAiResponsesProviderItem(item),
+			}
 			toolCalls.delete(outputIndex)
 			return
 		}
@@ -1270,7 +1298,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (item.type !== "message") return
-		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata)
+		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata, true)
 		const previous = messageText.get(outputIndex)
 		for (const [contentIndex, part] of previous?.parts ?? []) {
 			if (item.content[contentIndex]?.type !== part.type) {
@@ -1364,10 +1392,44 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return remainder || previous === undefined ? remainder : undefined
 	}
 
+	private captureOpenAiResponsesProviderItem(item: unknown) {
+		const source = providerRecord(item)
+		if (!source) return undefined
+		const content = Array.isArray(source.content)
+			? source.content.map((part) => {
+					const value = providerRecord(part)
+					return {
+						type: value?.type,
+						length:
+							typeof value?.text === "string"
+								? value.text.length
+								: typeof value?.refusal === "string"
+									? value.refusal.length
+									: -1,
+						...(value?.annotations !== undefined ? { annotations: value.annotations } : {}),
+						...(value?.logprobs !== undefined ? { logprobs: value.logprobs } : {}),
+					}
+				})
+			: undefined
+		// Codex ac558e2a32, models.rs:899/1141 (2026-11-03): retain supported
+		// sampled metadata. Private ciphertext/authority fields are not imported.
+		return snapshotProviderResponseItem({
+			protocol: "openai-responses",
+			providerId: this.providerId,
+			modelId: this.getModel().id,
+			itemType: source.type,
+			...(source.id !== undefined ? { id: source.id } : {}),
+			...(source.status !== undefined ? { status: source.status } : {}),
+			...(source.namespace !== undefined ? { namespace: source.namespace } : {}),
+			...(content !== undefined ? { content } : {}),
+		})
+	}
+
 	private captureOpenAiResponsesMessageMetadata(
 		item: unknown,
 		outputIndex: number,
 		messages: Map<number, AssistantMessageMetadata>,
+		completed = false,
 	): AssistantMessageMetadata {
 		if (!Number.isSafeInteger(outputIndex) || outputIndex < 0) {
 			throw new Error("OpenAI Responses message has an invalid index")
@@ -1377,7 +1439,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (previous?.id !== undefined && incoming.id !== undefined && previous.id !== incoming.id) {
 			throw new Error("OpenAI Responses streamed message changed identity")
 		}
-		const metadata = { ...previous, ...incoming, outputIndex }
+		const source = providerRecord(item)
+		const providerItem =
+			completed && source?.type === "message" ? this.captureOpenAiResponsesProviderItem(item) : undefined
+		const metadata = { ...previous, ...incoming, outputIndex, ...(providerItem ? { providerItem } : {}) }
 		messages.set(outputIndex, metadata)
 		return metadata
 	}

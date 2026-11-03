@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { taskGoalUsageReceiptSchema } from "./task-goal.js"
 import { agentCanonicalPathSchema } from "./agent-control.js"
 
 import {
@@ -392,6 +393,46 @@ export type SubagentGroupState = z.infer<typeof subagentGroupStateSchema>
 export type SubagentSpawnHandle = z.infer<typeof subagentSpawnHandleSchema>
 export type SubagentLifecycleEvent = z.infer<typeof subagentLifecycleEventSchema>
 
+/** Host-owned billing evidence survives discarded compaction output without entering provider history. */
+const compactionUsageCounterSchema = z.number().int().nonnegative().safe()
+export const compactionUsageReceiptSchema = z
+	.object({
+		attemptId: z.string().min(1).max(256),
+		inputIncludesCache: z.boolean(),
+		inputTokens: compactionUsageCounterSchema,
+		outputTokens: compactionUsageCounterSchema,
+		cacheReadTokens: compactionUsageCounterSchema.optional(),
+		cacheWriteTokens: compactionUsageCounterSchema.optional(),
+		reasoningTokens: compactionUsageCounterSchema.optional(),
+		usageSource: z.enum(["provider", "estimate", "unknown"]).optional(),
+		/** Evidence only; existing compaction cost receipts remain the monetary source. */
+		totalCost: z.number().finite().nonnegative().optional(),
+		goalReceipt: taskGoalUsageReceiptSchema.optional(),
+		/** Remaining manual root work after provider completion; immutable once finalized. */
+		goalElapsedReceipt: taskGoalUsageReceiptSchema.optional(),
+	})
+	.strict()
+	.superRefine((receipt, context) => {
+		const elapsed = receipt.goalElapsedReceipt
+		if (
+			elapsed &&
+			(!receipt.goalReceipt ||
+				elapsed.tokens !== 0 ||
+				elapsed.goalTaskId !== receipt.goalReceipt.goalTaskId ||
+				elapsed.goalId !== receipt.goalReceipt.goalId ||
+				elapsed.eventId !== `${receipt.goalReceipt.eventId}:elapsed`)
+		) {
+			context.addIssue({
+				code: "custom",
+				message: "Elapsed compaction usage requires its original goal receipt",
+				path: ["goalElapsedReceipt"],
+			})
+		}
+	})
+export type CompactionUsageReceipt = z.infer<typeof compactionUsageReceiptSchema>
+export const MAX_COMPACTION_USAGE_RECEIPTS = 64
+export const compactionUsageReceiptsSchema = z.array(compactionUsageReceiptSchema).max(MAX_COMPACTION_USAGE_RECEIPTS)
+
 /**
  * ContextCondense
  *
@@ -583,6 +624,8 @@ export const alphaMessageSchema = z
 		contextTruncation: contextTruncationSchema.optional(),
 		/** Known cost of a failed summary; successful fallback keeps its existing truncation presentation. */
 		contextCondenseErrorCost: z.number().finite().nonnegative().optional(),
+		/** Per-attempt host usage evidence, including compactions whose output was discarded. */
+		compactionUsageReceipts: compactionUsageReceiptsSchema.optional(),
 		isProtected: z.boolean().optional(),
 		apiProtocol: z.union([z.literal("openai"), z.literal("anthropic")]).optional(),
 		isAnswered: z.boolean().optional(),

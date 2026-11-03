@@ -1062,9 +1062,9 @@ describe("useMcpToolTool", () => {
 				setResultMetadata,
 			})
 
-			const modelOutput = `Error:\nStructured content:\n${JSON.stringify(structuredContent, null, 2)}`
-			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", modelOutput, [])
-			expect(mockPushToolResult).toHaveBeenCalledWith(`Tool result: ${modelOutput}`)
+			const displayOutput = `Error:\nStructured content:\n${JSON.stringify(structuredContent, null, 2)}`
+			expect(mockTask.say).toHaveBeenCalledWith("mcp_server_response", displayOutput, [])
+			expect(mockPushToolResult).toHaveBeenCalledWith(`Tool result: ${JSON.stringify(structuredContent)}`)
 			expect(mockTask.didToolFailInCurrentTurn).toBe(true)
 			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(executionStatuses(postMessageToWebview).at(-1)).toEqual({

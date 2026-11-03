@@ -1,3 +1,5 @@
+import * as i18n from "../../../i18n"
+import * as commandShell from "../../../utils/shell"
 import { EventEmitter } from "node:events"
 import * as vscode from "vscode"
 
@@ -286,5 +288,114 @@ describe("ordinary command captured policy", () => {
 			expect.objectContaining({ isNonInteractive: true }),
 		)
 		commandSessionRegistry.release(test.task, sessionId)
+	})
+})
+
+describe("explicit command shell admission", () => {
+	const shellLaunch = Object.freeze({
+		shellPath: "/bin/bash",
+		family: "bash" as const,
+		login: false,
+		binaryIdentity: "approved-binary",
+		identity: "approved-shell-fingerprint",
+	})
+	function captureShell() {
+		vi.spyOn(commandShell, "captureCommandShellLaunch").mockResolvedValue(shellLaunch)
+		vi.spyOn(commandShell, "assertCommandShellLaunchUnchanged").mockResolvedValue(undefined)
+	}
+
+	it("binds explicit interpreter/startup to a fresh approval and captured terminal identity", async () => {
+		const test = fixture()
+		captureShell()
+		const execution = executeCommandTool.execute(
+			{ command: "echo owned", shell: "/bin/bash", login: false },
+			test.task,
+			test.callbacks,
+		)
+		await Promise.race([
+			test.launched.promise,
+			execution.then(() => {
+				throw new Error("Command never launched")
+			}),
+		])
+		expect(test.callbacks.askApproval).toHaveBeenCalledWith(
+			"command",
+			`echo owned\n${i18n.t("common:commandShell.approvalDetail", { shell: "/bin/bash", login: "false" })}`,
+			undefined,
+			true,
+			true,
+		)
+		expect(TerminalRegistry.getOrCreateTerminal).toHaveBeenCalledWith(
+			test.task.cwd,
+			test.task.taskId,
+			"execa",
+			shellLaunch,
+		)
+		await test.finish()
+		await execution
+		expect(test.callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it("does not request approval when selection capture is cancelled", async () => {
+		const test = fixture()
+		const captured = deferred<typeof shellLaunch>()
+		vi.spyOn(commandShell, "captureCommandShellLaunch").mockReturnValue(captured.promise)
+		const execution = executeCommandTool.execute(
+			{ command: "echo owned", shell: "/bin/bash" },
+			test.task,
+			test.callbacks,
+		)
+		test.step.abort(new Error("selection cancelled"))
+		captured.resolve(shellLaunch)
+		await execution
+		expect(test.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(test.callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "cancelled" }))
+	})
+
+	it("rejects explicit shell controls in Plan before approval or terminal creation", async () => {
+		const test = fixture()
+		test.taskState.getTaskMode.mockResolvedValue("architect")
+		await executeCommandTool.execute(
+			{ command: "rg pattern file", shell: "/bin/bash", login: false },
+			test.task,
+			test.callbacks,
+		)
+		expect(test.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(test.callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "denied" }))
+	})
+
+	it("rechecks a changed mode after explicit approval without creating a terminal", async () => {
+		const test = fixture()
+		captureShell()
+		test.taskState.getTaskMode.mockResolvedValueOnce("code").mockResolvedValue("architect")
+		await executeCommandTool.execute(
+			{ command: "echo owned", shell: "/bin/bash", login: false },
+			test.task,
+			test.callbacks,
+		)
+		expect(test.callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(test.callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status: "denied" }))
+	})
+
+	it("rejects unavailable interpreters before approval or command effects", async () => {
+		const test = fixture()
+		vi.spyOn(commandShell, "captureCommandShellLaunch").mockRejectedValue(new Error("selected shell unavailable"))
+		await executeCommandTool.execute({ command: "echo owned", shell: "/missing/bash" }, test.task, test.callbacks)
+		expect(test.callbacks.askApproval).not.toHaveBeenCalled()
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(test.callbacks.handleError).toHaveBeenCalled()
+	})
+
+	it("rejects a changed interpreter after approval before terminal creation", async () => {
+		const test = fixture()
+		captureShell()
+		vi.mocked(commandShell.assertCommandShellLaunchUnchanged).mockRejectedValue(new Error("approved shell changed"))
+		await executeCommandTool.execute({ command: "echo owned", shell: "/bin/bash" }, test.task, test.callbacks)
+		expect(test.callbacks.askApproval).toHaveBeenCalledOnce()
+		expect(TerminalRegistry.getOrCreateTerminal).not.toHaveBeenCalled()
+		expect(test.callbacks.handleError).toHaveBeenCalled()
 	})
 })

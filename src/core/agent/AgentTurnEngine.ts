@@ -261,9 +261,9 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 		return (
 			response.toolCalls.length === 0 &&
 			(response.text.trim().length > 0 ||
-				(response.outcome?.status === "completed" &&
-					response.outcome.requiresContinuation === false &&
-					response.items.some((item) => item.type === "reasoning"))) &&
+				// Codex ac558e2a, session/turn.rs:3396: a successful terminal can
+				// finish without visible output. Unknown adapter EOF remains distinct.
+				(response.outcome?.status === "completed" && response.outcome.requiresContinuation === false)) &&
 			!requiresContinuation &&
 			!response.outcome?.requiresContinuation &&
 			(this.host.canCompleteWithoutTools?.(response, step) ?? true)

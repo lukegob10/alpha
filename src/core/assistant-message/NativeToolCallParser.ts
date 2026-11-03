@@ -91,7 +91,16 @@ export class NativeToolCallParser {
 	private static isExecCommandArgs(value: unknown): value is NativeToolArgs["exec_command"] {
 		if (
 			!this.isArgumentObject(value) ||
-			!this.hasOnlyKeys(value, ["cmd", "workdir", "tty", "yield_time_ms", "max_output_tokens", "verification"])
+			!this.hasOnlyKeys(value, [
+				"cmd",
+				"workdir",
+				"tty",
+				"shell",
+				"login",
+				"yield_time_ms",
+				"max_output_tokens",
+				"verification",
+			])
 		) {
 			return false
 		}
@@ -102,6 +111,8 @@ export class NativeToolCallParser {
 				this.parseCommandVerificationScope(value.verification) !== undefined) &&
 			(value.workdir === undefined || value.workdir === null || typeof value.workdir === "string") &&
 			(value.tty === undefined || value.tty === null || typeof value.tty === "boolean") &&
+			(value.shell === undefined || value.shell === null || typeof value.shell === "string") &&
+			(value.login === undefined || value.login === null || typeof value.login === "boolean") &&
 			(value.yield_time_ms === undefined ||
 				value.yield_time_ms === null ||
 				(typeof value.yield_time_ms === "number" && Number.isInteger(value.yield_time_ms))) &&
@@ -845,6 +856,8 @@ export class NativeToolCallParser {
 				} else if (partialArgs.command) {
 					nativeArgs = {
 						command: partialArgs.command,
+						shell: partialArgs.shell,
+						login: partialArgs.login,
 						cwd: partialArgs.cwd,
 						timeout: partialArgs.timeout,
 						verification: this.parseCommandVerificationScope(partialArgs.verification),
@@ -1415,6 +1428,8 @@ export class NativeToolCallParser {
 					} else if (args.command) {
 						nativeArgs = {
 							command: args.command,
+							shell: args.shell,
+							login: args.login,
 							cwd: args.cwd,
 							timeout: args.timeout,
 							verification: this.parseCommandVerificationScope(args.verification),

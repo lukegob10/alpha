@@ -170,6 +170,8 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"shell", // exec_command interpreter selection
+	"login", // exec_command startup selection
 	"tty", // exec_command terminal transport
 	"yield_time_ms", // exec_command and write_stdin wait interval
 	"max_output_tokens", // exec_command and write_stdin result budget
@@ -269,6 +271,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 		  }
 	shell: {
 		command: string
+		shell?: string | null
+		login?: boolean | null
 		cwd?: string | null
 		timeout?: number | null
 		/** Internal and historical verification metadata; omitted from the model-facing schema. */
@@ -278,6 +282,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 		cmd: string
 		workdir?: string | null
 		tty?: boolean | null
+		shell?: string | null
+		login?: boolean | null
 		yield_time_ms?: number | null
 		max_output_tokens?: number | null
 		/** Host-injected verification scope; omitted from the model-facing schema. */
@@ -286,6 +292,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: {
 		command: string
+		shell?: string | null
+		login?: boolean | null
 		cwd?: string | null
 		timeout?: number | null
 		/** Native exec transport selection; omitted historical calls retain their configured provider. */

@@ -1,4 +1,9 @@
-import type { AssistantMessageMetadata, GeminiResponse, VscodeLmThinking } from "@alpha-code/types"
+import type {
+	AssistantMessageMetadata,
+	GeminiResponse,
+	ProviderResponseItem,
+	VscodeLmThinking,
+} from "@alpha-code/types"
 
 /**
  * Provider-neutral source information attached to a response.
@@ -77,6 +82,7 @@ export type AgentResponseItem =
 			argumentParseError?: string
 			/** Bounded original malformed payload retained as evidence, never an object-only provider input. */
 			rawArguments?: string
+			providerItem?: ProviderResponseItem
 	  }
 	| ({ type: "usage" } & AgentResponseUsage)
 	| { type: "grounding"; sources: GroundingSource[] }

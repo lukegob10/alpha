@@ -2,6 +2,8 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
 import {
+	type NativeCompactionCheckpoint,
+	type NativeCompactionScope,
 	type ProviderSettings,
 	type ModelInfo,
 	type ModelRequestPhase,
@@ -12,7 +14,12 @@ import {
 	getUnsupportedCuratedProviderSettings,
 } from "@alpha-code/types"
 
-import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
+import {
+	ApiStream,
+	type ApiStreamCapabilities,
+	type ApiStreamRequestMetadata,
+	type ApiStreamUsageChunk,
+} from "./transform/stream"
 
 import {
 	VertexHandler,
@@ -113,7 +120,19 @@ export interface ApiHandlerCountTokensMetadata {
 	remoteDeadline?: number | Date
 }
 
+export interface ApiNativeCompactionCapability {
+	readonly scope: NativeCompactionScope
+	compact(
+		systemPrompt: string,
+		messages: readonly Anthropic.Messages.MessageParam[],
+		metadata?: ApiHandlerCreateMessageMetadata & { observeUsage?: (usage: ApiStreamUsageChunk) => void },
+	): Promise<NativeCompactionCheckpoint>
+}
+
 export interface ApiHandler {
+	/** Absent for providers or host APIs without a verified native compaction route. */
+	readonly nativeCompaction?: ApiNativeCompactionCapability
+
 	/** Release adapter listeners after all captured requests using it have finished. */
 	dispose?(): void
 	/** Additive capability declaration; absent means legacy stream semantics. */

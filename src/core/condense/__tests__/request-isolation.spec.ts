@@ -5,7 +5,7 @@ import type { ApiStreamChunk } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
 import { invalidateOpaqueProviderStateReplay } from "../../task-persistence/providerStateScope"
-import { getEffectiveApiHistory, getToolFreeMetadata, summarizeConversation } from "../index"
+import { countContextTokens, getEffectiveApiHistory, getToolFreeMetadata, summarizeConversation } from "../index"
 
 vi.mock("@alpha-code/telemetry", () => ({
 	TelemetryService: { instance: { captureContextCondensed: vi.fn() } },
@@ -71,6 +71,111 @@ describe("isolated summary requests", () => {
 		expect(retryInput).not.toContain("Original task.")
 		expect(retryInput).not.toContain("Previous work.")
 		expect(retryInput).toContain("Continue the work.")
+		expect(options.messages).toEqual(before)
+	})
+
+	it("fits a reducible long summary into the compactor budget within the existing attempt bound", async () => {
+		const { options, handler } = fixture([])
+		handler.getModel = () => ({
+			id: "bounded-summary-fixture",
+			info: { contextWindow: 6_000, maxTokens: 512, supportsPromptCache: false },
+		})
+		const oldSteps: ApiMessage[] = Array.from({ length: 24 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" : "assistant",
+			content: `Old step ${index}. `.repeat(50),
+			ts: index + 1,
+		}))
+		const tail: ApiMessage[] = [
+			{ role: "user", content: "Keep the corrected requirement.", ts: 25 },
+			{ role: "assistant", content: "Continue from the recent evidence.", ts: 26 },
+		]
+		const messages = [...oldSteps, ...tail]
+		const before = structuredClone(messages)
+		const inputCounts: number[] = []
+		vi.mocked(handler.createMessage).mockImplementation(async function* (systemPrompt, request, metadata) {
+			const inputTokens = await countContextTokens(request, handler, systemPrompt, metadata)
+			inputCounts.push(inputTokens)
+			yield { type: "usage", inputTokens, outputTokens: 0, totalCost: 0.25 }
+			if (inputTokens > 4_888) {
+				yield { type: "error", error: "context_length_exceeded", message: "maximum context length exceeded" }
+				return
+			}
+			yield { type: "text", text: "Recovered summary with the corrected requirement." }
+			yield completed
+		})
+
+		const result = await summarizeConversation({
+			...options,
+			messages,
+			customCondensingPrompt: "Summarize the completed work.",
+			recentTailTokenBudget: 150,
+		})
+
+		expect(result.status).toBe("reduced")
+		expect(handler.createMessage).toHaveBeenCalledTimes(2)
+		expect(inputCounts[0]).toBeGreaterThan(4_888)
+		expect(inputCounts[1]).toBeLessThanOrEqual(4_888)
+		expect(result.cost).toBe(0.5)
+		expect(getEffectiveApiHistory(result.messages).slice(-2)).toEqual(tail)
+		expect(result.messages).toHaveLength(messages.length + 1)
+		expect(messages).toEqual(before)
+	})
+
+	it("cancels overflow budget preparation before another summary request starts", async () => {
+		const { options, handler } = fixture([])
+		const controller = new AbortController()
+		const cancellation = new Error("Stop during summary overflow recovery")
+		let recovering = false
+		let notifyCountEntered = () => {}
+		const countEntered = new Promise<void>((resolve) => (notifyCountEntered = resolve))
+		vi.mocked(handler.countTokens).mockImplementation(async (content) => {
+			if (recovering) {
+				notifyCountEntered()
+				return new Promise<number>(() => {})
+			}
+			return content.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0)
+		})
+		vi.mocked(handler.createMessage).mockImplementation(async function* () {
+			yield { type: "usage", inputTokens: 1, outputTokens: 0, totalCost: 0.25 }
+			recovering = true
+			yield { type: "error", error: "context_length_exceeded", message: "maximum context length exceeded" }
+		})
+		const observeCost = vi.fn()
+		const result = summarizeConversation({
+			...options,
+			metadata: { taskId: options.taskId, signal: controller.signal },
+			observeCost,
+		})
+
+		await countEntered
+		controller.abort(cancellation)
+
+		await expect(result).rejects.toBe(cancellation)
+		expect(handler.createMessage).toHaveBeenCalledOnce()
+		expect(observeCost).toHaveBeenLastCalledWith(0.25)
+	})
+
+	it("rejects invalid overflow budget counts without dispatching another request", async () => {
+		const { options, handler } = fixture([])
+		let recovering = false
+		vi.mocked(handler.countTokens).mockImplementation(async (content) =>
+			recovering
+				? Number.NaN
+				: content.reduce((total, block) => total + (block.type === "text" ? block.text.length : 0), 0),
+		)
+		vi.mocked(handler.createMessage).mockImplementation(async function* () {
+			yield { type: "usage", inputTokens: 1, outputTokens: 0, totalCost: 0.25 }
+			recovering = true
+			yield { type: "error", error: "context_length_exceeded", message: "maximum context length exceeded" }
+		})
+		const before = structuredClone(options.messages)
+
+		const result = await summarizeConversation(options)
+
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(options.messages)
+		expect(result.cost).toBe(0.25)
+		expect(handler.createMessage).toHaveBeenCalledOnce()
 		expect(options.messages).toEqual(before)
 	})
 

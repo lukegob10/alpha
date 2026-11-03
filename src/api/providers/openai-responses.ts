@@ -1,6 +1,12 @@
 import type OpenAI from "openai"
 
-import { normalizeAssistantMessageMetadata, type AssistantMessageMetadata } from "@alpha-code/types"
+import {
+	normalizeAssistantMessageMetadata,
+	snapshotNativeCompactionCheckpoint,
+	snapshotProviderResponseItem,
+	type AssistantMessageMetadata,
+	type ProviderResponseItem,
+} from "@alpha-code/types"
 
 import type { ApiInstructionFragment } from "../index"
 import { normalizeToolHistory, toToolArgumentsString } from "../transform/tool-history"
@@ -95,7 +101,7 @@ export function buildOpenAiResponsesInput(
 	messages: readonly unknown[],
 	store: boolean | undefined,
 	freeformApplyPatch = true,
-	options: { preserveReasoningIds?: boolean } = {},
+	options: ResponsesReplayOptions = {},
 ): OpenAI.Responses.ResponseInputItem[] {
 	const input: OpenAI.Responses.ResponseInputItem[] = []
 	const instructions = instructionFragments ?? [{ role: "system" as const, content: systemPrompt }]
@@ -104,9 +110,35 @@ export function buildOpenAiResponsesInput(
 		input.push({ role: fragment.role, content: fragment.content })
 	}
 
+	const instructionCount = input.length
 	const callNames = new Map<string, string>()
 	for (const candidate of normalizeToolHistory(messages)) {
 		if (!isRecord(candidate)) continue
+		const scope = isRecord(candidate.provider_state_scope) ? candidate.provider_state_scope : undefined
+		const replayOptions =
+			candidate.provider_state_replay_disabled !== undefined ||
+			(candidate.provider_state_scope !== undefined &&
+				(!scope || scope.provider !== options.providerId || scope.modelId !== options.modelId))
+				? {}
+				: options
+		if (candidate.native_compaction !== undefined) {
+			const checkpoint = snapshotNativeCompactionCheckpoint(candidate.native_compaction)
+			if (
+				!checkpoint ||
+				checkpoint.provider !== replayOptions.providerId ||
+				checkpoint.modelId !== replayOptions.modelId
+			) {
+				throw new Error("Native compaction checkpoint requires its original supported provider and model")
+			}
+			// Runtime-validated provider JSON is opaque here. SDK 5.12.2 predates
+			// compaction items; preserve the documented output window without pruning.
+			const currentInstructions = input.splice(0, instructionCount)
+			input.push(
+				...(checkpoint.output as unknown as OpenAI.Responses.ResponseInputItem[]),
+				...currentInstructions,
+			)
+			continue
+		}
 		const hookContext = getLifecycleHookDeveloperContext(candidate)
 		if (hookContext !== undefined) {
 			input.push({ role: "developer", content: hookContext })
@@ -124,7 +156,7 @@ export function buildOpenAiResponsesInput(
 			if (candidate.content || (candidate.role === "assistant" && hasAssistantMessageMetadata(metadata))) {
 				input.push(
 					candidate.role === "assistant"
-						? toAssistantMessageInput(candidate.content, metadata)
+						? toAssistantMessageInput(candidate.content, metadata, replayOptions)
 						: { role: "user", content: candidate.content },
 				)
 			}
@@ -169,7 +201,7 @@ export function buildOpenAiResponsesInput(
 			candidate.content.length === 0 &&
 			(candidate.type === "message" || hasAssistantMessageMetadata(messageMetadata))
 		) {
-			input.push(toAssistantMessageInput([], messageMetadata))
+			input.push(toAssistantMessageInput([], messageMetadata, replayOptions))
 			continue
 		}
 		let pendingText:
@@ -180,7 +212,7 @@ export function buildOpenAiResponsesInput(
 			| undefined
 		const flushAssistantText = () => {
 			if (!pendingText) return
-			input.push(toAssistantMessageInput(pendingText.content, pendingText.metadata))
+			input.push(toAssistantMessageInput(pendingText.content, pendingText.metadata, replayOptions))
 			pendingText = undefined
 		}
 		for (const block of candidate.content) {
@@ -211,6 +243,16 @@ export function buildOpenAiResponsesInput(
 			}
 			if (!isToolUse(block)) continue
 			callNames.set(block.id, block.name)
+			const source = replayProviderItem(block.providerItem, replayOptions)
+			const nativeMetadata =
+				source?.itemType ===
+				(block.name === "apply_patch" && freeformApplyPatch ? "custom_tool_call" : "function_call")
+					? {
+							...(source.id !== undefined ? { id: source.id } : {}),
+							...(source.status !== undefined ? { status: source.status } : {}),
+							...(source.namespace !== undefined ? { namespace: source.namespace } : {}),
+						}
+					: {}
 			if (block.name === "apply_patch" && freeformApplyPatch) {
 				const patch =
 					typeof block.rawArguments === "string"
@@ -220,13 +262,22 @@ export function buildOpenAiResponsesInput(
 							: isRecord(block.input) && typeof block.input.patch === "string"
 								? block.input.patch
 								: JSON.stringify(block.input)
-				input.push({ type: "custom_tool_call", call_id: block.id, name: block.name, input: patch })
+				// The pinned SDK omits additive status/namespace fields on custom calls.
+				const nativeCall = {
+					type: "custom_tool_call" as const,
+					call_id: block.id,
+					name: block.name,
+					input: patch,
+					...nativeMetadata,
+				}
+				input.push(nativeCall)
 			} else {
 				input.push({
 					type: "function_call",
 					call_id: block.id,
 					name: block.name,
 					arguments: toToolArgumentsString(block),
+					...nativeMetadata,
 				})
 			}
 		}
@@ -236,6 +287,44 @@ export function buildOpenAiResponsesInput(
 	return input
 }
 
+interface ResponsesReplayOptions {
+	preserveReasoningIds?: boolean
+	providerId?: string
+	modelId?: string
+}
+
+function replayProviderItem(value: unknown, options: ResponsesReplayOptions): ProviderResponseItem | undefined {
+	const source = snapshotProviderResponseItem(value)
+	return source && source.providerId === options.providerId && source.modelId === options.modelId ? source : undefined
+}
+
+function replayMessageContent(
+	content: string | Array<OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal>,
+	source: ProviderResponseItem,
+): { content: Array<OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal> } | undefined {
+	if (!source.content) return undefined
+	const text =
+		typeof content === "string"
+			? content
+			: content.map((part) => (part.type === "output_text" ? part.text : part.refusal)).join("")
+	// Metadata never replaces canonical text or introduces a missing provider part.
+	if (source.content.reduce((length, part) => length + part.length, 0) !== text.length) return undefined
+	let offset = 0
+	return {
+		content: source.content.map((part) => {
+			const value = text.slice(offset, (offset += part.length))
+			return part.type === "refusal"
+				? { type: "refusal", refusal: value }
+				: ({
+						type: "output_text",
+						text: value,
+						annotations: part.annotations ?? [],
+						...(part.logprobs !== undefined ? { logprobs: part.logprobs } : {}),
+					} as OpenAI.Responses.ResponseOutputText)
+		}),
+	}
+}
+
 function getAssistantEnvelopeMetadata(candidate: Record<string, unknown>): AssistantMessageMetadata {
 	// Native ApiMessage.id identifies the response envelope, not a source message.
 	// Raw Responses messages declare their type; native histories use messageId.
@@ -243,6 +332,7 @@ function getAssistantEnvelopeMetadata(candidate: Record<string, unknown>): Assis
 		id: candidate.type === "message" ? candidate.id : candidate.messageId,
 		phase: candidate.phase,
 		outputIndex: candidate.outputIndex,
+		providerItem: candidate.providerItem,
 	})
 }
 
@@ -263,8 +353,10 @@ function hasAssistantMessageMetadata(metadata: AssistantMessageMetadata): boolea
 function toAssistantMessageInput(
 	content: string | Array<OpenAI.Responses.ResponseOutputText | OpenAI.Responses.ResponseOutputRefusal>,
 	metadata: AssistantMessageMetadata,
+	options: ResponsesReplayOptions,
 ): OpenAI.Responses.ResponseInputItem {
-	if (metadata.id === undefined && metadata.phase === undefined) {
+	const source = replayProviderItem(metadata.providerItem, options)
+	if (metadata.id === undefined && metadata.phase === undefined && source?.itemType !== "message") {
 		return {
 			role: "assistant",
 			content:
@@ -280,6 +372,12 @@ function toAssistantMessageInput(
 			typeof content === "string" ? [{ type: "output_text" as const, text: content, annotations: [] }] : content,
 		...(metadata.id !== undefined ? { id: metadata.id } : {}),
 		...(metadata.phase !== undefined ? { phase: metadata.phase } : {}),
+		...(source?.itemType === "message"
+			? {
+					...(source.status !== undefined ? { status: source.status } : {}),
+					...(replayMessageContent(content, source) ?? {}),
+				}
+			: {}),
 	}
 	// The pinned SDK predates message phase and optional replay IDs. Native
 	// Responses keeps the exact Codex protocol phase, including partial_answer
@@ -337,9 +435,14 @@ function isToolResult(value: unknown): value is { type: "tool_result"; tool_use_
 	return isRecord(value) && value.type === "tool_result" && typeof value.tool_use_id === "string"
 }
 
-function isToolUse(
-	value: unknown,
-): value is { type: "tool_use"; id: string; name: string; input: unknown; rawArguments?: unknown } {
+function isToolUse(value: unknown): value is {
+	type: "tool_use"
+	id: string
+	name: string
+	input: unknown
+	rawArguments?: unknown
+	providerItem?: unknown
+} {
 	return (
 		isRecord(value) && value.type === "tool_use" && typeof value.id === "string" && typeof value.name === "string"
 	)

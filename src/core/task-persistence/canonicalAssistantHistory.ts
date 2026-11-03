@@ -5,6 +5,8 @@ import {
 	snapshotVscodeLmThinking,
 	type AssistantMessageMetadata,
 	type GeminiResponseHistoryBlock,
+	type ProviderResponseItem,
+	snapshotProviderResponseItem,
 	type VscodeLmThinkingHistoryBlock,
 } from "@alpha-code/types"
 
@@ -25,7 +27,10 @@ export type CanonicalAssistantHistoryItem =
 export type CanonicalAssistantTextHistoryItem = Anthropic.TextBlockParam & AssistantMessageMetadata
 
 /** Raw rejected arguments are replay evidence; object-only transports retain the safe input projection. */
-export type CanonicalAssistantToolUseHistoryItem = Anthropic.ToolUseBlockParam & { rawArguments?: string }
+export type CanonicalAssistantToolUseHistoryItem = Anthropic.ToolUseBlockParam & {
+	rawArguments?: string
+	providerItem?: ProviderResponseItem
+}
 
 function canMergeText(
 	previous: CanonicalAssistantTextHistoryItem,
@@ -133,6 +138,7 @@ export function buildCanonicalAssistantHistoryItems(response: AgentResponse): Ca
 			id,
 			name: item.name,
 			input: item.arguments,
+			...(item.providerItem ? { providerItem: snapshotProviderResponseItem(item.providerItem) } : {}),
 			...(item.argumentParseError !== undefined && item.rawArguments !== undefined
 				? { rawArguments: item.rawArguments }
 				: {}),

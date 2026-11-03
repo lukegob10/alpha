@@ -3,7 +3,7 @@ import * as fs from "fs/promises"
 import crypto from "crypto"
 
 import { Anthropic } from "@anthropic-ai/sdk"
-import type { TaskGoalUsageReceipt } from "@alpha-code/types"
+import type { NativeCompactionCheckpoint, TaskGoalUsageReceipt } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../utils/fs"
 
@@ -49,6 +49,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	goal_usage_receipts?: TaskGoalUsageReceipt[]
 	ts?: number
 	isSummary?: boolean
+	/** Canonical native window; original messages remain archived for rewind or route fallback. */
+	native_compaction?: NativeCompactionCheckpoint
 	/** Legacy response receipt (or standalone reasoning ID); never an assistant output-message ID. */
 	id?: string
 	/** Optional original assistant message identity for a single-message envelope. */

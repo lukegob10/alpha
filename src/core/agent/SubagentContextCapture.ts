@@ -1362,6 +1362,31 @@ function expectedContextRefs(manifest: Omit<SubagentContextManifest, "contextRef
 /** Capture a deterministic, compact manifest and a separate model-visible data block. */
 export function captureSubagentContext(input: CaptureSubagentContextInput): CapturedSubagentContext {
 	const forkTurns = subagentForkTurnsSchema.parse(input.forkTurns)
+	// Native checkpoints belong to the parent request scope. Children rebuild
+	// their own route/instructions, so retain complete plaintext source steps
+	// rather than passing an opaque parent window or losing its archived prefix.
+	if (forkTurns !== "none" && input.history.some((message) => message.native_compaction)) {
+		const problem = invalidPersistedApiMessages(input.history)
+		if (problem) throw new Error(`Cannot fork invalid parent model history: ${problem}`)
+		const history = getEffectiveApiHistory([...input.history], null)
+		const finalAssistantMessageIndexes = input.historyInheritance?.finalAssistantMessageIndexes?.flatMap(
+			(index) => {
+				if (!Number.isSafeInteger(index) || index < 0 || index >= input.history.length) {
+					throw new Error("Sub-agent final-answer indexes must identify messages in the captured history")
+				}
+				const inheritedIndex = history.indexOf(input.history[index])
+				return inheritedIndex < 0 ? [] : [inheritedIndex]
+			},
+		)
+		input = {
+			...input,
+			history,
+			...(input.historyInheritance
+				? { historyInheritance: { ...input.historyInheritance, finalAssistantMessageIndexes } }
+				: {}),
+		}
+	}
+
 	if (!input.parentTaskId.trim()) throw new Error("Sub-agent context requires a parent task ID")
 	if (!Number.isSafeInteger(input.capturedAt) || input.capturedAt < 0) {
 		throw new Error("Sub-agent context capturedAt must be a non-negative safe integer")

@@ -367,6 +367,10 @@ function normalizeExecCommandInvocation(
 	const usesExecCommandArgs = typeof raw.cmd === "string"
 	const command = typeof raw.cmd === "string" ? raw.cmd : typeof raw.command === "string" ? raw.command : ""
 	const workdir = typeof raw.workdir === "string" ? raw.workdir : typeof raw.cwd === "string" ? raw.cwd : undefined
+	const requestedShell = raw.shell
+	const requestedLogin = raw.login
+	if (requestedShell != null && typeof requestedShell !== "string") throw new Error("shell must be a string")
+	if (requestedLogin != null && typeof requestedLogin !== "boolean") throw new Error("login must be a boolean")
 	const normalizedYield = normalizeExecCommandYieldTimeMs(raw.yield_time_ms)
 	const legacyTimeout = typeof raw.timeout === "number" ? raw.timeout : undefined
 	const maxOutputTokens =
@@ -377,6 +381,8 @@ function normalizeExecCommandInvocation(
 				: undefined
 	const nativeParams: NativeToolArgs["execute_command"] = {
 		command,
+		...(requestedShell != null ? { shell: requestedShell } : {}),
+		...(requestedLogin != null ? { login: requestedLogin } : {}),
 		...(workdir ? { cwd: workdir } : {}),
 		...(usesExecCommandArgs ? { tty: raw.tty === true } : {}),
 		...(usesExecCommandArgs

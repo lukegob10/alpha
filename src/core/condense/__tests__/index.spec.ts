@@ -2043,6 +2043,27 @@ describe("toolResultToText", () => {
 })
 
 describe("convertToolBlocksToText", () => {
+	it("strips source response item metadata from rewritten summary text without changing the archive", () => {
+		const content = [
+			{
+				type: "text" as const,
+				text: "Prior visible assistant text.",
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-native",
+					modelId: "gpt-5.2",
+					itemType: "message",
+					id: "original-message",
+					status: "completed",
+				},
+			},
+		]
+		const before = structuredClone(content)
+
+		expect(convertToolBlocksToText(content)).toEqual([{ type: "text", text: content[0].text }])
+		expect(content).toEqual(before)
+	})
+
 	it("retains legacy call and result aliases with escaped identifiers", () => {
 		const id = 'legacy-"call\nnext-line'
 		const content = [

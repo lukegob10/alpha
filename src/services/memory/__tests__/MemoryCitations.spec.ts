@@ -119,7 +119,7 @@ describe("Alpha memory citations", () => {
 		).toEqual([])
 	})
 
-	it("joins finalized text fragments but excludes reasoning, tool input, and commentary", () => {
+	it("counts completed commentary and final fragments but excludes reasoning, tool input, and partial phases", () => {
 		const text = `Answer.\n${citation("source-1\nsource-1")}`
 		const split = text.indexOf("<rollout_ids>") + 5
 		expect(
@@ -138,7 +138,22 @@ describe("Alpha memory citations", () => {
 					{ type: "text", text: text.slice(split), id: "message-1", phase: "final_answer" },
 				]),
 			),
-		).toEqual(["source-1"])
+		).toEqual(["commentary-source", "source-1"])
+	})
+
+	it("accounts for completed commentary without adding final-display citation metadata", () => {
+		const output = createAgentResponse(
+			[
+				{ type: "text", id: "progress", phase: "commentary", text: citation("progress-source") },
+				{ type: "text", id: "answer", phase: "final_answer", text: citation("answer-source") },
+			],
+			{ status: "completed" },
+		)
+		expect(assistantMemoryCitationReferences(output)).toEqual(["progress-source", "answer-source"])
+		const displayed = withAssistantMemoryCitations(output)
+		expect(displayed.items[0]).not.toHaveProperty("memoryCitation")
+		expect(displayed.items[1]).toHaveProperty("memoryCitation.rolloutIds", ["answer-source"])
+		expect(output.items.every((item) => !("memoryCitation" in item))).toBe(true)
 	})
 
 	it("does not stitch tags across distinct messages, reasoning, or tool calls", () => {

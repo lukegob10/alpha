@@ -211,6 +211,21 @@ describe("failed summary cost receipts", () => {
 			"saveAlphaMessages",
 			vi.fn(async () => true),
 		)
+		// Finalized usage uses the same snapshot/commit ownership fence as production.
+		Reflect.set(
+			task,
+			"enqueueAlphaMessagesSave",
+			vi.fn<Task["enqueueAlphaMessagesSave"]>(
+				async (snapshot = () => task.alphaMessages, committed, _handoff, _reasoning, ownership) => {
+					if (ownership && !ownership.guard()) return false
+					snapshot()
+					const saved = await task["saveAlphaMessages"](ownership)
+					if (!saved || (ownership && !ownership.guard())) return false
+					committed?.()
+					return true
+				},
+			),
+		)
 		Reflect.set(
 			task,
 			"updateAlphaMessage",

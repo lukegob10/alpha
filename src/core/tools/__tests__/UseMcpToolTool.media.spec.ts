@@ -1,5 +1,6 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 import type { McpToolCallResponse } from "@alpha-code/types"
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js"
 import { beforeAll, describe, expect, it, vi } from "vitest"
 
 import type { Task } from "../../task/Task"
@@ -41,7 +42,9 @@ function textOf(content: ToolResponse): string {
 }
 
 function fixture(
-	result: McpToolCallResponse,
+	result: Omit<McpToolCallResponse, "structuredContent"> & {
+		structuredContent?: McpToolCallResponse["structuredContent"] | null
+	},
 	options: { supportsImages?: boolean; deferResultCommit?: boolean; maxOutputChars?: number } = {},
 ) {
 	const history: Array<Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam> = []
@@ -118,6 +121,78 @@ function receipt(history: ReturnType<typeof fixture>["history"]): Anthropic.Tool
 }
 
 describe("MCP media result projection", () => {
+	it.each([
+		{
+			name: "conflicting display text",
+			structuredContent: { result: "authoritative" },
+			content: [{ type: "text" as const, text: "Conflicting display answer" }],
+			images: [],
+		},
+		{
+			name: "an empty structured object",
+			structuredContent: {},
+			content: [{ type: "text" as const, text: "Conflicting display answer" }],
+			images: [],
+		},
+		{
+			name: "supplemental display media",
+			structuredContent: { result: "authoritative" },
+			content: [
+				{ type: "text" as const, text: "Conflicting display answer" },
+				{ type: "image" as const, mimeType: "image/png", data: "Zmlyc3Q=" },
+			],
+			images: ["data:image/png;base64,Zmlyc3Q="],
+		},
+	])("prefers structured JSON over $name in model history while retaining display evidence", async (fixtureCase) => {
+		const execution = fixture({
+			structuredContent: fixtureCase.structuredContent,
+			content: fixtureCase.content,
+			_meta: { private: "backend-private-metadata" },
+		})
+
+		const outcome = await execution.scheduler.run(modelResponse())
+		const modelContent = outcome.results[0].content
+
+		expect(outcome.results).toHaveLength(1)
+		expect(outcome.results[0]).toMatchObject({ callId, status: "success" })
+		expect(modelContent).toBe(JSON.stringify(fixtureCase.structuredContent))
+		expect(receipt(execution.history)).toMatchObject({ is_error: false, content: modelContent })
+		expect(execution.say).toHaveBeenCalledWith(
+			"mcp_server_response",
+			expect.stringContaining("Conflicting display answer"),
+			fixtureCase.images,
+		)
+		expect(JSON.stringify(execution.history)).not.toContain("backend-private-metadata")
+		expect(JSON.stringify(execution.say.mock.calls)).not.toContain("backend-private-metadata")
+	})
+
+	// Current SDK transport rejects null; historical/direct adapters still use the content fallback.
+	it.each([undefined, null])(
+		"retains ordered text/media fallback for structuredContent=%s",
+		async (structuredContent) => {
+			const execution = fixture({
+				structuredContent,
+				content: [
+					{ type: "text", text: "Fallback caption" },
+					{ type: "image", mimeType: "image/png", data: "Zmlyc3Q=" },
+				],
+			})
+
+			const outcome = await execution.scheduler.run(modelResponse())
+			const expected = [text("Fallback caption"), image("Zmlyc3Q=")]
+
+			expect(outcome.results[0]).toMatchObject({ status: "success", content: expected })
+			expect(receipt(execution.history)).toMatchObject({ is_error: false, content: expected })
+		},
+	)
+
+	it("rejects malformed structured MCP envelopes at the SDK transport boundary", () => {
+		for (const structuredContent of [[], ["invalid"], "invalid", 42, false, null]) {
+			expect(CallToolResultSchema.safeParse({ content: [], structuredContent }).success).toBe(false)
+		}
+		expect(CallToolResultSchema.safeParse({ content: [], structuredContent: {} }).success).toBe(true)
+	})
+
 	it("preserves text/image/text/image through immediate MCP history", async () => {
 		const execution = fixture({
 			content: [
@@ -214,7 +289,7 @@ describe("MCP media result projection", () => {
 		expect(receipt(execution.history).is_error).toBe(false)
 	})
 
-	it("preserves error status and structured details beside ordered media", async () => {
+	it("preserves structured error status in model history and supplemental media in the UI", async () => {
 		const structuredContent = { code: "PARTIAL", message: "Second render is unavailable" }
 		const execution = fixture({
 			isError: true,
@@ -229,14 +304,41 @@ describe("MCP media result projection", () => {
 		const outcome = await execution.scheduler.run(modelResponse())
 		expect(outcome.results[0]).toMatchObject({ callId, status: "error" })
 		const content = outcome.results[0].content
-		expect(Array.isArray(content)).toBe(true)
-		if (!Array.isArray(content)) throw new Error("MCP media was flattened")
-		const imagePosition = content.findIndex((part) => part.type === "image")
-		expect(textOf(content.slice(0, imagePosition))).toContain("First caption")
-		expect(textOf(content.slice(imagePosition + 1))).toContain("After first image")
-		expect(textOf(content.slice(imagePosition + 1))).toContain(JSON.stringify(structuredContent, null, 2))
+		expect(content).toBe(JSON.stringify(structuredContent))
 		expect(receipt(execution.history)).toMatchObject({ is_error: true, content })
 		expect(execution.task.didToolFailInCurrentTurn).toBe(true)
+		expect(execution.say).toHaveBeenCalledWith(
+			"mcp_server_response",
+			expect.stringMatching(/First caption[\s\S]*After first image[\s\S]*Structured content:/),
+			["data:image/png;base64,Zmlyc3Q="],
+		)
+		expect(execution.say).toHaveBeenCalledWith(
+			"mcp_server_response",
+			expect.stringContaining(JSON.stringify(structuredContent, null, 2)),
+			["data:image/png;base64,Zmlyc3Q="],
+		)
+	})
+
+	it("bounds structured model output without changing source or display evidence", async () => {
+		const source: McpToolCallResponse = {
+			structuredContent: { message: "😀".repeat(200) },
+			content: [{ type: "text", text: "Display evidence" }],
+		}
+		const before = structuredClone(source)
+		const execution = fixture(source, { maxOutputChars: 160 })
+
+		const outcome = await execution.scheduler.run(modelResponse())
+		const content = outcome.results[0].content
+
+		expect(typeof content).toBe("string")
+		if (typeof content !== "string") throw new Error("Expected structured JSON text")
+		expect(outcome.results[0]).toMatchObject({ status: "success", truncated: true })
+		expect(content.length).toBeLessThanOrEqual(160)
+		expect(content).toContain(TOOL_OUTPUT_TRUNCATION_SUFFIX)
+		expect(content).toBe(Buffer.from(content, "utf8").toString("utf8"))
+		expect(receipt(execution.history)).toMatchObject({ is_error: false, content })
+		expect(source).toEqual(before)
+		expect(execution.say).toHaveBeenCalledWith("mcp_server_response", expect.stringContaining("😀".repeat(200)), [])
 	})
 
 	it("keeps image positions when the scheduler truncates long intervening text", async () => {
@@ -314,38 +416,43 @@ describe("MCP media result projection", () => {
 		expect(source).toEqual(before)
 	})
 
-	it("commits one cancelled immediate MCP receipt and rejects late media", async () => {
-		const result: McpToolCallResponse = {
-			content: [
-				{ type: "text", text: "Late caption" },
-				{ type: "image", mimeType: "image/png", data: "bGF0ZQ==" },
-			],
-		}
-		const execution = fixture(result)
-		let dispatchStarted!: () => void
-		const started = new Promise<void>((resolve) => {
-			dispatchStarted = resolve
-		})
-		let resolveRequest!: (value: McpToolCallResponse) => void
-		const request = new Promise<McpToolCallResponse>((resolve) => {
-			resolveRequest = resolve
-		})
-		execution.callTool.mockImplementation(() => {
-			dispatchStarted()
-			return request
-		})
-		const running = execution.scheduler.run(modelResponse())
+	it.each([undefined, { result: "Late canonical answer" }])(
+		"commits one cancelled immediate MCP receipt and rejects late content (structured=%j)",
+		async (structuredContent) => {
+			const result: McpToolCallResponse = {
+				structuredContent,
+				content: [
+					{ type: "text", text: "Late caption" },
+					{ type: "image", mimeType: "image/png", data: "bGF0ZQ==" },
+				],
+			}
+			const execution = fixture(result)
+			let dispatchStarted!: () => void
+			const started = new Promise<void>((resolve) => {
+				dispatchStarted = resolve
+			})
+			let resolveRequest!: (value: McpToolCallResponse) => void
+			const request = new Promise<McpToolCallResponse>((resolve) => {
+				resolveRequest = resolve
+			})
+			execution.callTool.mockImplementation(() => {
+				dispatchStarted()
+				return request
+			})
+			const running = execution.scheduler.run(modelResponse())
 
-		await started
-		execution.controller.abort(new Error("cancelled during MCP media request"))
-		resolveRequest(result)
-		const outcome = await running
-		expect(outcome.results).toHaveLength(1)
-		expect(outcome.results[0]).toMatchObject({ callId, status: "cancelled" })
-		expect(receipt(execution.history).is_error).toBe(true)
-		expect(execution.history).toHaveLength(1)
-		expect(JSON.stringify(execution.history)).not.toContain("Late caption")
-		expect(JSON.stringify(execution.history)).not.toContain('"type":"image"')
-		expect(execution.callTool).toHaveBeenCalledOnce()
-	})
+			await started
+			execution.controller.abort(new Error("cancelled during MCP media request"))
+			resolveRequest(result)
+			const outcome = await running
+			expect(outcome.results).toHaveLength(1)
+			expect(outcome.results[0]).toMatchObject({ callId, status: "cancelled" })
+			expect(receipt(execution.history).is_error).toBe(true)
+			expect(execution.history).toHaveLength(1)
+			expect(JSON.stringify(execution.history)).not.toContain("Late caption")
+			expect(JSON.stringify(execution.history)).not.toContain("Late canonical answer")
+			expect(JSON.stringify(execution.history)).not.toContain('"type":"image"')
+			expect(execution.callTool).toHaveBeenCalledOnce()
+		},
+	)
 })

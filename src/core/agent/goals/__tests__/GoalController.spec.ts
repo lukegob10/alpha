@@ -56,6 +56,119 @@ async function admit(goal: GoalController): Promise<TaskGoal | undefined> {
 	return reservation ? goal.consumeContinuation(reservation, idle) : undefined
 }
 
+describe("automatic goal empty-turn accounting", () => {
+	async function finishAutomatic(goal: GoalController, hasActivity = false, emptyFinal = true) {
+		const admitted = await admit(goal)
+		expect(admitted).toBeDefined()
+		const receipt = {
+			goalId: admitted!.goalId,
+			controlVersion: admitted!.controlVersion,
+			continuationCount: admitted!.continuationCount,
+			automatic: true,
+			hasActivity,
+			emptyFinal,
+		}
+		await goal.recordTurnProgress(receipt)
+		return receipt
+	}
+
+	it("blocks the third empty automatic turn, preserving budgets and replay identity", async () => {
+		const store = new MemoryStore()
+		const goal = controller(store)
+		await goal.create({ objective: "Ship" }, "user")
+		const first = await finishAutomatic(goal)
+		await goal.recordTurnProgress(first)
+		expect((await goal.get())?.status).toBe("active")
+		await finishAutomatic(goal)
+		const third = await finishAutomatic(goal)
+		expect(await goal.get()).toMatchObject({ status: "blocked", continuationCount: 3 })
+		expect(await goal.reserveContinuation(idle)).toBeUndefined()
+		const before = structuredClone(store.state)
+		await controller(store).recordTurnProgress(third)
+		expect(store.state).toEqual(before)
+	})
+
+	it("resets on useful activity and excludes empty commentary from the final-answer streak", async () => {
+		const goal = controller()
+		await goal.create({ objective: "Ship" }, "user")
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		await finishAutomatic(goal, true)
+		await finishAutomatic(goal)
+		await finishAutomatic(goal, false, false)
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		expect((await goal.get())?.status).toBe("active")
+		await finishAutomatic(goal)
+		expect((await goal.get())?.status).toBe("blocked")
+	})
+
+	it("resets a human turn and ignores stale automatic progress after resume or newer admission", async () => {
+		const goal = controller()
+		await goal.create({ objective: "Ship" }, "user")
+		await finishAutomatic(goal)
+		const prior = await finishAutomatic(goal)
+		await goal.recordTurnProgress({ ...prior, automatic: false, hasActivity: true })
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		expect((await goal.get())?.status).toBe("active")
+		await goal.pause()
+		await goal.resume()
+		await goal.recordTurnProgress(prior)
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		expect((await goal.get())?.status).toBe("active")
+	})
+
+	it("lets a pending pause win a held third-empty settlement", async () => {
+		const store = new MemoryStore()
+		const goal = controller(store)
+		await goal.create({ objective: "Ship" }, "user")
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		const admitted = (await admit(goal))!
+		const entered = barrier(),
+			release = barrier()
+		store.beforeNextTransaction = async () => {
+			entered.resolve()
+			await release.promise
+		}
+		const settlement = goal.recordTurnProgress({
+			goalId: admitted.goalId,
+			controlVersion: admitted.controlVersion,
+			continuationCount: admitted.continuationCount,
+			automatic: true,
+			hasActivity: false,
+			emptyFinal: true,
+		})
+		await entered.promise
+		const pause = goal.pause()
+		release.resolve()
+		await Promise.all([settlement, pause])
+		expect((await goal.get())?.status).toBe("paused")
+		expect(store.state.turnProgress?.consecutiveEmptyTurns).toBe(2)
+	})
+
+	it("lets a spent token budget win progress settlement", async () => {
+		const store = new MemoryStore()
+		const goal = controller(store)
+		const created = await goal.create({ objective: "Ship", tokenBudget: 10 }, "user")
+		await finishAutomatic(goal)
+		await finishAutomatic(goal)
+		const admitted = (await admit(goal))!
+		await goal.recordUsage("budget", 10, 0, created.goalId)
+		await goal.recordTurnProgress({
+			goalId: admitted.goalId,
+			controlVersion: admitted.controlVersion,
+			continuationCount: admitted.continuationCount,
+			automatic: true,
+			hasActivity: false,
+			emptyFinal: true,
+		})
+		expect((await goal.get())?.status).toBe("budget_limited")
+	})
+})
+
 describe("native goal state and idle admission", () => {
 	it("ordinary work does not silently create an objective", async () => {
 		const store = new MemoryStore()

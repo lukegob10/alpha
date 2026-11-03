@@ -23,7 +23,17 @@ export interface DirectTerminalCommand {
 	readonly env: Readonly<Record<string, string>>
 }
 
+/** Immutable, validated interpreter identity captured before command approval. */
+export interface CommandShellLaunch {
+	readonly shellPath: string
+	readonly family: "sh" | "bash" | "zsh" | "powershell" | "cmd"
+	readonly login: boolean
+	readonly binaryIdentity: string
+	readonly identity: string
+}
+
 export interface AlphaTerminal {
+	readonly shellLaunch?: CommandShellLaunch
 	provider: AlphaTerminalProvider
 	id: number
 	busy: boolean

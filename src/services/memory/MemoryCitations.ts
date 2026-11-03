@@ -57,8 +57,11 @@ export function parseMemoryCitationReferences(block: string): string[] {
 	return parseCitation(block)?.references ?? []
 }
 
-/** Read only canonical user-facing assistant text; never reasonings, tool arguments, or replayed input. */
-function assistantCitationGroups(response: AgentResponse): Array<{ index: number; citation: MemoryCitation }> {
+/** Group complete canonical assistant messages without joining citations across message boundaries. */
+function assistantCitationGroups(
+	response: AgentResponse,
+	includeCommentary = false,
+): Array<{ index: number; citation: MemoryCitation }> {
 	const groups: Array<{ index: number; citation: MemoryCitation }> = []
 	let text = ""
 	let messageKey = ""
@@ -79,7 +82,10 @@ function assistantCitationGroups(response: AgentResponse): Array<{ index: number
 		text = ""
 	}
 	for (const [index, item] of response.items.entries()) {
-		if (item.type !== "text" || (item.phase && item.phase !== "final_answer")) {
+		if (
+			item.type !== "text" ||
+			(item.phase && item.phase !== "final_answer" && !(includeCommentary && item.phase === "commentary"))
+		) {
 			flush()
 			messageKey = ""
 			continue
@@ -108,10 +114,15 @@ export function withAssistantMemoryCitations(response: AgentResponse): AgentResp
 }
 
 export function assistantMemoryCitationReferences(response: AgentResponse): string[] {
+	if (response.outcome && response.outcome.status !== "completed") return []
+	// Codex ac558e2a, stream_events_utils.rs:185 attributes completed assistant
+	// commentary too. Usage and final-display decoration have separate scopes.
+	const citations = new Map(assistantCitationGroups(response, true).map(({ index, citation }) => [index, citation]))
 	const references = new Set<string>()
-	for (const item of withAssistantMemoryCitations(response).items) {
-		if (item.type !== "text" || (item.phase && item.phase !== "final_answer")) continue
-		const parsed = memoryCitationSchema.safeParse(item.memoryCitation)
+	for (const [index, item] of response.items.entries()) {
+		if (item.type !== "text" || (item.phase && item.phase !== "final_answer" && item.phase !== "commentary"))
+			continue
+		const parsed = memoryCitationSchema.safeParse(citations.get(index) ?? item.memoryCitation)
 		if (!parsed.success) continue
 		for (const entry of parsed.data.entries) {
 			if (entry.path.startsWith("rollout_summaries/") && references.size < MAX_REFERENCES)

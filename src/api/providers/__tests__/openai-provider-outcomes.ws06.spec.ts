@@ -518,7 +518,20 @@ describe("WS06 provider terminal errors and usage", () => {
 			expect(failure).toBeUndefined()
 			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toHaveLength(1)
 			expect(canonical.toolCalls).toEqual([
-				{ type: "tool_call", id: "call-completed", name: "read_file", arguments: { path: "example.txt" } },
+				{
+					type: "tool_call",
+					id: "call-completed",
+					name: "read_file",
+					arguments: { path: "example.txt" },
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-6.1-sol",
+						itemType: "function_call",
+						id: "item-completed",
+						status: "completed",
+					},
+				},
 			])
 			expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
 		})

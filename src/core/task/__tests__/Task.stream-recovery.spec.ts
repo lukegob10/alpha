@@ -1157,6 +1157,52 @@ describe("Task canonical response admission", () => {
 		},
 	)
 
+	it.each(["no-output", "empty-final"] as const)(
+		"commits an authoritative successful %s response without retry",
+		async (kind) => {
+			const fixture = await harness(async function* () {
+				if (kind === "empty-final") yield { type: "text", text: "", id: "empty-final", phase: "final_answer" }
+				yield { type: "usage", inputTokens: 10, outputTokens: 0 }
+				yield createApiStreamOutcome({ status: "completed", requiresContinuation: false })
+			})
+			fixture.live.autoApprovalEnabled = true
+			const hooks = vi.fn(async () => ({}))
+			Object.assign(fixture.task, { evaluateCompletionHooks: hooks })
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(fixture.task.ask).not.toHaveBeenCalled()
+			expect(fixture.effect).not.toHaveBeenCalled()
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+			expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+			expect(hooks).toHaveBeenCalledOnce()
+			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
+			const assistant = (await fixture.history()).filter((message) => message.role === "assistant")
+			expect(assistant).toHaveLength(1)
+			expect(assistant[0].agentResponseOutcome).toEqual({ status: "completed", requiresContinuation: false })
+		},
+	)
+
+	it.each(["failed", "incomplete", "cancelled"] as const)(
+		"refuses an empty %s terminal despite a false continuation flag",
+		async (status) => {
+			const fixture = await harness(async function* () {
+				yield { type: "text", text: "", phase: "final_answer", id: "empty-final" }
+				yield createApiStreamOutcome({ status, requiresContinuation: false, retryable: false })
+			})
+
+			await fixture.run()
+
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.task.isCompleted()).toBe(false)
+			expect(fixture.task.finalizeTaskCompletion).not.toHaveBeenCalled()
+			expect(fixture.effect).not.toHaveBeenCalled()
+			expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		},
+	)
+
 	it("keeps a genuinely empty completed response on the existing bounded retry path", async () => {
 		const fixture = await harness(async function* (attempt) {
 			if (attempt === 1) {

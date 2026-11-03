@@ -1,7 +1,8 @@
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 
-import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise } from "./types"
+import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, CommandShellLaunch } from "./types"
+import { terminalShellArgs } from "../../utils/shell"
 import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -18,12 +19,21 @@ export class Terminal extends BaseTerminal {
 		terminal: vscode.Terminal | undefined,
 		cwd: string,
 		commandEnv: Record<string, string> = {},
+		readonly shellLaunch?: CommandShellLaunch,
 	) {
 		super("vscode", id, cwd)
 
 		const env = { ...Terminal.getEnv(), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
-		this.terminal = terminal ?? vscode.window.createTerminal({ cwd, name: "Alpha", iconPath, env })
+		this.terminal =
+			terminal ??
+			vscode.window.createTerminal({
+				cwd,
+				name: "Alpha",
+				iconPath,
+				env,
+				...(shellLaunch ? { shellPath: shellLaunch.shellPath, shellArgs: terminalShellArgs(shellLaunch) } : {}),
+			})
 
 		if (Terminal.getTerminalZdotdir()) {
 			ShellIntegrationManager.terminalTmpDirs.set(id, env.ZDOTDIR)

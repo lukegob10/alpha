@@ -91,6 +91,23 @@ describe("finalized assistant memory citation usage", () => {
 		expect(output.text).toContain(citation)
 	})
 
+	it("records completed commentary usage after durable persistence without changing final display", async () => {
+		const { commit, save, recordMemoryUsage } = fixture()
+		let finishSave!: (saved: boolean) => void
+		save.mockImplementationOnce(() => new Promise<boolean>((resolve) => (finishSave = resolve)))
+		const output = createAgentResponse(
+			[{ type: "text", id: "progress", phase: "commentary", text: `Relevant prior context.\n${citation}` }],
+			{ status: "completed" },
+		)
+		const committing = commit(output)
+		expect(recordMemoryUsage).not.toHaveBeenCalled()
+		finishSave(true)
+		expect(await committing).toBe(true)
+		expect(recordMemoryUsage).toHaveBeenCalledExactlyOnceWith(["source-1"], expect.stringMatching(/^[a-f0-9]{64}$/))
+		expect(output.items[0]).not.toHaveProperty("memoryCitation")
+		expect(save.mock.calls[0][0].content).toContain(citation)
+	})
+
 	it("uses stable host-derived receipt keys for replay and distinct keys for later attempts", async () => {
 		const { commit, step, recordMemoryUsage } = fixture()
 		await commit()

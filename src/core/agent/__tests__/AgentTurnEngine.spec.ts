@@ -146,6 +146,38 @@ describe("AgentTurnEngine", () => {
 		expect(admitCompletion).toHaveBeenCalledOnce()
 	})
 
+	it.each(["legacy", "staged"] as const)(
+		"admits an authoritative successful empty %s response once",
+		async (kind) => {
+			const response = createAgentResponse([], { status: "completed", requiresContinuation: false })
+			const sample = vi
+				.fn()
+				.mockResolvedValueOnce({ response })
+				.mockRejectedValue(new Error("Unexpected follow-up"))
+			const admission = vi.fn()
+			const common = { shouldAbort: () => false, admitCompletion: admission }
+			const engine =
+				kind === "staged"
+					? new AgentTurnEngine<string>({
+							...common,
+							sampleStep: sample,
+							selectContinuation: async () => ({ nextInput: "follow-up" }),
+						})
+					: new AgentTurnEngine<string>({
+							...common,
+							runStep: async (input) => ({ ...(await sample(input)), nextInput: "follow-up" }),
+						})
+
+			expect(await engine.run("request")).toMatchObject({
+				status: "completed",
+				steps: 1,
+				completionReason: "assistant",
+			})
+			expect(sample).toHaveBeenCalledOnce()
+			expect(admission).toHaveBeenCalledOnce()
+		},
+	)
+
 	it("runs pending tools and the follow-up step even when assistant text declares a final answer", async () => {
 		const firstResponse = await collectAgentResponse(
 			(async function* () {

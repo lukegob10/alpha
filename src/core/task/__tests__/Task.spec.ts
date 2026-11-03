@@ -7457,11 +7457,12 @@ describe("Alpha", () => {
 		}
 
 		it.each([
-			{ label: "a queued read before EOF", laterCall: "queued-read" as const },
-			{ label: "a remaining serial command", laterCall: "serial-command" as const },
-			{ label: "a single accepted read", laterCall: undefined },
-		])("stops $label after a real failed early-read scheduler outcome", async ({ laterCall }) => {
+			{ label: "drains an already admitted sibling read", laterCall: "queued-read" as const },
+			{ label: "blocks a remaining serial command", laterCall: "serial-command" as const },
+			{ label: "contains a single accepted failed read", laterCall: undefined },
+		])("$label after a real failed early-read scheduler outcome", async ({ laterCall }) => {
 			const fixture = await startEarlyReadStream({ failReadEffectFence: true, laterCall })
+			const drainsSibling = laterCall === "queued-read"
 			try {
 				await waitForControlledSignal("provider tail", fixture.providerTailReached, fixture.debugState)
 				await waitForControlledSignal(
@@ -7483,15 +7484,25 @@ describe("Alpha", () => {
 				// Let this fixture's ready promise work drain while the provider EOF gate remains held.
 				await new Promise<void>((resolve) => setImmediate(() => resolve()))
 				expect(fixture.providerReachedEof()).toBe(false)
-				expect(fixture.readEffectCount()).toBe(0)
+				expect(fixture.readEffectCount()).toBe(drainsSibling ? 1 : 0)
+				expect(fixture.readStartIds).toEqual(drainsSibling ? ["later-early-read"] : [])
 				fixture.releaseProvider()
 				fixture.releaseAssistantSave()
+				if (drainsSibling) {
+					// The read began before the independent fence failure was known.
+					// Drain it before publishing history; never erase its actual outcome.
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					expect(fixture.eventOrder).not.toContain("read_result_ready")
+					fixture.releaseRead()
+				}
 				const result = await waitForControlledSignal("failed task step", fixture.run, fixture.debugState)
 				expect(fixture.normalCommandEffectCount()).toBe(0)
 				expect(result).toMatchObject({ status: "failed", reason: fixture.readEffectFenceFailure.message })
 				expect(fixture.attempt).toHaveBeenCalledOnce()
 				expect(fixture.readExecute).not.toHaveBeenCalled()
-				expect(fixture.eventOrder).not.toContain("read_published")
+				expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(
+					drainsSibling ? 1 : 0,
+				)
 				const expectedIds = [fixture.acceptedCallId, ...(laterCall ? ["later-early-read"] : [])]
 				const toolUses = fixture.task.apiConversationHistory.flatMap((message) =>
 					message.role === "assistant" && Array.isArray(message.content)
@@ -7511,7 +7522,7 @@ describe("Alpha", () => {
 				expect(receipts).toHaveLength(expectedIds.length)
 				for (const id of expectedIds) {
 					expect(receipts.filter((block) => block.tool_use_id === id)).toEqual([
-						expect.objectContaining({ is_error: true }),
+						expect.objectContaining({ is_error: !(drainsSibling && id === "later-early-read") }),
 					])
 					expect(
 						fixture.lifecycleSnapshot().terminalToolCallIds.filter((callId: string) => callId === id),
@@ -7735,12 +7746,50 @@ describe("Alpha", () => {
 			}
 		})
 
+		it("measures a four-read burst on a frozen controlled stream", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				const started = Date.now()
+				fixture = await startEarlyReadStream({
+					readCount: 4,
+					timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal(
+					"four-read provider tail",
+					Promise.all([fixture.readStarted, fixture.providerTailReached]),
+					fixture.debugState,
+				)
+				await vi.advanceTimersByTimeAsync(1400)
+				const result = await waitForControlledSignal("four-read completion", fixture.run, fixture.debugState)
+				process.stdout.write(
+					JSON.stringify({
+						workload: "four-read-burst",
+						elapsedMs: fixture.runCompletedAt()! - started,
+						preEofReads: fixture.preEofReadCount(),
+					}) + "\n",
+				)
+				const expectedIds = Array.from({ length: 4 }, (_, index) => `early-read-${index + 1}`)
+				expect(result).toMatchObject({ status: "completed" })
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.readEffectCount()).toBe(4)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual(expectedIds)
+				await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
 		it("drains a fast read burst without waiting for a full early-read window", async () => {
 			const fixture = await startEarlyReadStream({ readCount: 8 })
 			try {
 				await waitForControlledSignal("burst provider tail", fixture.providerTailReached, fixture.debugState)
 				await waitForControlledSignal("burst first read", fixture.readStarted, fixture.debugState)
-				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.readEffectCount()).toBe(4)
 				fixture.releaseRead()
 				await waitForControlledSignal(
 					"burst first settlement",
@@ -7848,6 +7897,16 @@ describe("Alpha", () => {
 					fixture.readEffectFenceEntered,
 					fixture.debugState,
 				)
+				// The seventh read was admitted while the sixth's fence was unresolved.
+				// An observed failure must stop the eighth without erasing completed sibling evidence.
+				expect(fixture.readStartIds).toEqual([
+					"early-read-1",
+					"early-read-2",
+					"early-read-3",
+					"early-read-4",
+					"early-read-5",
+					"early-read-7",
+				])
 				fixture.releaseReadEffectFence()
 				await vi.advanceTimersByTimeAsync(600)
 				expect(
@@ -7857,9 +7916,19 @@ describe("Alpha", () => {
 					reason: fixture.readEffectFenceFailure.message,
 				})
 				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
-				expect(fixture.readStartIds).toEqual(expectedIds.slice(0, 5))
-				expect(fixture.readEffectCount()).toBe(5)
-				await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(fixture.readStartIds).toEqual([...expectedIds.slice(0, 5), expectedIds[6]])
+				expect(fixture.readEffectCount()).toBe(6)
+				const receipts = await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(receipts.map((receipt) => receipt.is_error)).toEqual([
+					false,
+					false,
+					false,
+					false,
+					false,
+					true,
+					false,
+					true,
+				])
 				expect(vi.getTimerCount()).toBe(0)
 			} finally {
 				fixture?.clearTimingTimers()
@@ -7929,8 +7998,8 @@ describe("Alpha", () => {
 				fixture.releaseAssistantSave()
 				await waitForControlledSignal("read interruption", interrupted, fixture.debugState)
 				await waitForControlledSignal("interrupted completion", fixture.run, fixture.debugState)
-				expect(fixture.readStartIds).toEqual([fixture.acceptedCallId])
-				expect(fixture.readEffectCount()).toBe(1)
+				expect(fixture.readStartIds).toEqual(["early-read-1", "early-read-2", "early-read-3", "early-read-4"])
+				expect(fixture.readEffectCount()).toBe(4)
 				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
 				const receipts = await expectOrderedReadReceipts(fixture, expectedIds)
 				expect(receipts.every((receipt) => receipt.is_error)).toBe(true)

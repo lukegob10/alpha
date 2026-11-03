@@ -2,6 +2,13 @@ import { OpenAiHandler } from "../openai"
 import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
 import type { ApiStreamChunk } from "../../transform/stream"
 
+// These assertions own visible/order/phase projections. Exact additive source
+// envelopes and native replay are asserted in openai-responses-metadata.spec.ts.
+function displayProjection<T extends object>(item: T): Omit<T, "providerItem"> {
+	const { providerItem: _providerItem, ...display } = item as T & { providerItem?: unknown }
+	return display
+}
+
 const { responsesCreate } = vi.hoisted(() => ({ responsesCreate: vi.fn() }))
 
 vi.mock("openai", () => {
@@ -184,7 +191,9 @@ describe("OpenAI Responses completed text fidelity", () => {
 
 		expect(failure).toMatchObject({ message: expect.stringContaining("Fixture disconnected") })
 		expect(canonical.reasoning).toBe("Inspecting")
-		expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toEqual([])
+		expect(
+			chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent).map(displayProjection),
+		).toEqual([])
 	})
 
 	it.each(
@@ -206,7 +215,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 			" world",
 		])
 		expect(canonical.text).toBe("Hello world")
-		expect(canonical.items.filter((item) => item.type === "text")).toEqual(
+		expect(canonical.items.filter((item) => item.type === "text").map(displayProjection)).toEqual(
 			["Hel", "lo", " world"].map((text) => ({
 				type: "text",
 				text,
@@ -227,7 +236,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 
 			expect(failure).toBeUndefined()
 			expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(["Hello"])
-			expect(canonical.items.filter((item) => item.type === "text")).toEqual([
+			expect(canonical.items.filter((item) => item.type === "text").map(displayProjection)).toEqual([
 				{ type: "text", text: "Hello", id: "msg_fidelity", phase: "final_answer", outputIndex: 0 },
 			])
 			expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
@@ -289,7 +298,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 
 		expect(failure).toBeUndefined()
 		expect(chunks.filter((chunk) => chunk.type === "text").map((chunk) => chunk.text)).toEqual(["Hello"])
-		expect(canonical.items.filter((item) => item.type === "text")).toEqual([
+		expect(canonical.items.filter((item) => item.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "Hello", id: "msg_fidelity", phase: "final_answer", outputIndex: 0 },
 		])
 		expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
@@ -380,7 +389,7 @@ describe("OpenAI Responses completed text fidelity", () => {
 		)
 		const { chunks, failure, canonical, handler } = await consume()
 		expect(failure).toBeUndefined()
-		expect(canonical.items.filter((entry) => entry.type !== "usage")).toEqual([
+		expect(canonical.items.filter((entry) => entry.type !== "usage").map(displayProjection)).toEqual([
 			{ type: "reasoning", text: "Retained summary.", outputIndex: 0 },
 			{
 				type: "reasoning",
@@ -393,10 +402,10 @@ describe("OpenAI Responses completed text fidelity", () => {
 			{ type: "text", text: "Hello", id: "msg_fidelity", phase: "final_answer", outputIndex: 2 },
 			{ type: "text", text: " world", id: "msg_fidelity", phase: "final_answer", outputIndex: 2 },
 		])
-		expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
+		expect(chunks.filter((chunk) => chunk.type === "tool_call_end").map(displayProjection)).toEqual([
 			{ type: "tool_call_end", id: "call_fidelity" },
 		])
-		expect(chunks).toContainEqual({
+		expect(chunks.map(displayProjection)).toContainEqual({
 			type: "reasoning",
 			text: "",
 			id: "rs_fidelity",

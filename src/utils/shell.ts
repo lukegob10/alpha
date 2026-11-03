@@ -1,4 +1,7 @@
 import * as vscode from "vscode"
+import fs from "fs/promises"
+import { constants } from "fs"
+import type { CommandShellLaunch } from "../integrations/terminal/types"
 import { userInfo } from "os"
 import * as path from "path"
 
@@ -374,4 +377,103 @@ export function getCommandShell(useExeca: boolean, execaShellPath?: string): str
 	if (!useExeca) return vscode.env?.shell || getShell()
 	if (execaShellPath) return execaShellPath
 	return process.platform === "win32" ? process.env.ComSpec || process.env.COMSPEC || "cmd.exe" : "/bin/sh"
+}
+
+// These locations apply only to explicit selections; getShell's historical fallback remains unchanged.
+const COMMAND_SHELL_PATHS = new Set([
+	...SHELL_ALLOWLIST,
+	"/usr/bin/pwsh",
+	"/usr/local/bin/pwsh",
+	"/opt/homebrew/bin/pwsh",
+	"/opt/microsoft/powershell/7/pwsh",
+])
+
+function isCommandShellAllowed(shellPath: string): boolean {
+	return isShellAllowed(shellPath) || COMMAND_SHELL_PATHS.has(path.normalize(shellPath))
+}
+
+function commandShellFamily(shellPath: string): CommandShellLaunch["family"] | undefined {
+	const name = path.win32
+		.basename(path.posix.basename(shellPath))
+		.replace(/\.exe$/i, "")
+		.toLowerCase()
+	if (name === "pwsh" || name === "powershell") return "powershell"
+	if (name === "sh" || name === "bash" || name === "zsh" || name === "cmd") return name
+	return undefined
+}
+
+async function commandShellBinaryIdentity(shellPath: string): Promise<string> {
+	await fs.access(shellPath, process.platform === "win32" ? constants.F_OK : constants.X_OK)
+	const stat = await fs.stat(shellPath)
+	if (!stat.isFile()) throw new Error("The selected shell is not an executable file")
+	return JSON.stringify([stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs])
+}
+
+/**
+ * Codex ac558e2a, core/src/shell.rs and handlers/unified_exec.rs (2026-11-03):
+ * explicit interpreter/startup choices select argv. Omitted controls deliberately
+ * retain Alpha's existing configured startup and never enter this path.
+ */
+export async function captureCommandShellLaunch(
+	shell: unknown,
+	login: unknown,
+	fallbackShell: string,
+): Promise<CommandShellLaunch | undefined> {
+	if (shell == null && login == null) return undefined
+	if (
+		shell != null &&
+		(typeof shell !== "string" || shell.length === 0 || shell.trim() !== shell || shell.includes("\0"))
+	)
+		throw new Error("shell must name an installed approved shell executable")
+	if (login != null && typeof login !== "boolean") throw new Error("login must be a boolean")
+	const requested = typeof shell === "string" ? shell : fallbackShell
+	const family = commandShellFamily(requested)
+	if (!family) throw new Error("The requested shell family is unsupported")
+	const isBareName = path.win32.basename(requested) === requested && path.posix.basename(requested) === requested
+	const candidates = isBareName
+		? [...COMMAND_SHELL_PATHS].filter(
+				(candidate) =>
+					path.isAbsolute(candidate) &&
+					path
+						.basename(candidate)
+						.replace(/\.exe$/i, "")
+						.toLowerCase() === requested.replace(/\.exe$/i, "").toLowerCase(),
+			)
+		: [requested]
+	for (const candidate of candidates) {
+		if (!isCommandShellAllowed(candidate)) continue
+		try {
+			const shellPath = await fs.realpath(candidate)
+			if (!isCommandShellAllowed(shellPath)) continue
+			const binaryIdentity = await commandShellBinaryIdentity(shellPath)
+			const useLogin = typeof login === "boolean" ? login : true
+			return Object.freeze({
+				shellPath,
+				family,
+				login: useLogin,
+				binaryIdentity,
+				identity: JSON.stringify([shellPath, family, useLogin, binaryIdentity]),
+			})
+		} catch {
+			// Try only the finite approved locations; never fall back to a different requested family.
+		}
+	}
+	throw new Error("The selected shell is unavailable or outside the approved shell locations")
+}
+
+export async function assertCommandShellLaunchUnchanged(launch: CommandShellLaunch): Promise<void> {
+	if ((await commandShellBinaryIdentity(launch.shellPath)) !== launch.binaryIdentity)
+		throw new Error("The approved shell executable changed before command launch")
+}
+
+export function commandShellArgs(launch: CommandShellLaunch, command: string): string[] {
+	if (launch.family === "cmd") return ["/c", command]
+	if (launch.family === "powershell") return [...(launch.login ? [] : ["-NoProfile"]), "-Command", command]
+	return [launch.login ? "-lc" : "-c", command]
+}
+
+export function terminalShellArgs(launch: CommandShellLaunch): string[] {
+	if (launch.family === "cmd") return []
+	if (launch.family === "powershell") return launch.login ? [] : ["-NoProfile"]
+	return launch.login ? ["-l"] : []
 }

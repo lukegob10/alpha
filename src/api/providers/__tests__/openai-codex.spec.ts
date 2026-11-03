@@ -394,7 +394,19 @@ describe("Sign in with ChatGPT provider", () => {
 			}),
 		)
 		expect(chunks.filter(({ type }) => type === "tool_call_end")).toEqual([
-			{ type: "tool_call_end", id: "call_one" },
+			{
+				type: "tool_call_end",
+				id: "call_one",
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-codex",
+					modelId: "gpt-6-astra",
+					itemType: "function_call",
+					id: "fc_one",
+					status: "completed",
+					namespace: "alpha",
+				},
+			},
 		])
 		expect(handler.getReasoningItems()).toEqual([
 			{ id: "reasoning-one", encrypted_content: "opaque", summary: [{ type: "summary_text", text: "Thinking" }] },

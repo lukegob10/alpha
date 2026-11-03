@@ -1,4 +1,7 @@
 {
+	"compaction": {
+		"native_summary": "Conversation context was compacted by the provider."
+	},
 	"mcpOAuth": {
 		"authorize": "Authorize MCP server {{server}} using {{issuer}}?",
 		"openBrowser": "Open authorization browser",
@@ -33,6 +36,10 @@
 		"missing": "This editor chat was saved before tab identity was supported. Open Alpha task history to select the chat; its saved data has been retained.",
 		"invalid": "This editor chat has an unsupported saved tab identity. Open Alpha task history to select the chat; its saved data has been retained.",
 		"unavailable": "Alpha could not reopen this editor chat. It may have been deleted or its storage or saved provider configuration may be unavailable. Check the Alpha output and open task history; no saved task data was reset."
+	},
+	"commandShell": {
+		"approvalDetail": "Shell: {{shell}} (login: {{login}})",
+		"codeOnly": "Explicit shell selection requires an approved serial Code command."
 	},
 	"subagentContext": {
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."

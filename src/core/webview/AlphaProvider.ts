@@ -9163,7 +9163,12 @@ export class AlphaProvider
 		)
 		const invokingApprovalMode = parent.getStepApprovalMode?.() ?? parent.getTaskApprovalMode?.()
 		const parentHistory =
-			invocation?.history ?? structuredClone(getEffectiveApiHistory(parent.apiConversationHistory))
+			invocation?.history ??
+			structuredClone(
+				parent.apiConversationHistory.some((message) => message.native_compaction)
+					? parent.apiConversationHistory
+					: getEffectiveApiHistory(parent.apiConversationHistory),
+			)
 		await parent.flushApiConversationHistoryPersistence?.()
 		if (parent.abort || parent.getTaskLifetimeCancellationSignal?.().aborted) {
 			throw new Error("Subagent preparation was cancelled")

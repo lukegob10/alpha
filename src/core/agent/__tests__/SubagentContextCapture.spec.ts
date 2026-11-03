@@ -179,6 +179,60 @@ function captureNative(
 }
 
 describe("native sub-agent conversation forks", () => {
+	it("restores a native parent's archive before capturing a child on another model route", () => {
+		const original: ApiMessage[] = [
+			{ role: "user", content: "Approved corrected requirement: preserve the configuration." },
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: "read-before-compaction", name: "read_file", input: { path: "config.ts" } },
+				],
+			},
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "read-before-compaction", content: "Configuration evidence" },
+				],
+			},
+			{
+				role: "assistant",
+				content: "The configuration must survive the change. Configuration evidence was reviewed.",
+			},
+		]
+		const stored: ApiMessage[] = [
+			...original.map((message) => ({ ...message, condenseParent: "native-summary" })),
+			{
+				role: "assistant",
+				content: [],
+				isSummary: true,
+				condenseId: "native-summary",
+				provider_state_scope: { provider: "openai-native", modelId: "gpt-6.1-sol" },
+				native_compaction: {
+					protocol: "openai-responses",
+					provider: "openai-native",
+					modelId: "gpt-6.1-sol",
+					responseId: "compact-parent",
+					output: [{ type: "compaction", encrypted_content: "foreign-native-checkpoint" }],
+				},
+			},
+		]
+		const before = structuredClone(stored)
+		const childRoute = { ...route, provider: "vscode-lm", modelId: "different-child-model" }
+		const control = captureNative("all", original, [3], childRoute)
+
+		const captured = captureNative("all", stored, [3], childRoute)
+
+		expect(captured.historyFork).toEqual(control.historyFork)
+		expect(captured.historyFork.kind).toBe("native")
+		const serialized = JSON.stringify(captured.historyFork)
+		expect(serialized).toContain("Approved corrected requirement")
+		expect(serialized).toContain("Configuration evidence")
+		expect(serialized).not.toContain("foreign-native-checkpoint")
+		expect(captured.manifest.runtimePolicy).toEqual(control.manifest.runtimePolicy)
+		assertSubagentHistoryFork(captured.historyFork, captured.manifest)
+		expect(stored).toEqual(before)
+	})
+
 	it("preserves completed tool transactions, commentary and signed reasoning on compatible full forks", () => {
 		const parentHistory: ApiMessage[] = [
 			{

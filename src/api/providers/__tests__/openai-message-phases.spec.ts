@@ -2,6 +2,13 @@ import { OpenAiHandler } from "../openai"
 import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
 import type { ApiStreamChunk } from "../../transform/stream"
 
+// These assertions own visible/order/phase projections. Exact additive source
+// envelopes and native replay are asserted in openai-responses-metadata.spec.ts.
+function displayProjection<T extends object>(item: T): Omit<T, "providerItem"> {
+	const { providerItem: _providerItem, ...display } = item as T & { providerItem?: unknown }
+	return display
+}
+
 const { responsesCreate, chatCreate } = vi.hoisted(() => ({ responsesCreate: vi.fn(), chatCreate: vi.fn() }))
 
 vi.mock("openai", () => {
@@ -84,10 +91,10 @@ describe("OpenAI Responses assistant message metadata", () => {
 				outputIndex: 0,
 				...(["commentary", "partial_answer", "final_answer"].includes(String(phase)) ? { phase } : {}),
 			}
-			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
+			expect(chunks.filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 				{ type: "text", text: "Answer text.", ...expectedMetadata },
 			])
-			expect(chunks).toContainEqual({ type: "message_metadata", ...expectedMetadata })
+			expect(chunks.map(displayProjection)).toContainEqual({ type: "message_metadata", ...expectedMetadata })
 			const accumulator = new AgentResponseAccumulator()
 			for (const chunk of chunks) await accumulator.add(chunk)
 			expect((await accumulator.finish()).outcome).toMatchObject({
@@ -128,10 +135,10 @@ describe("OpenAI Responses assistant message metadata", () => {
 				})(),
 			)
 			const chunks = await collect(provider())
-			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
+			expect(chunks.filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 				{ type: "text", text: "Stable answer.", id: "msg_late", outputIndex: 0 },
 			])
-			expect(chunks).toContainEqual({
+			expect(chunks.map(displayProjection)).toContainEqual({
 				type: "message_metadata",
 				id: "msg_late",
 				phase: "partial_answer",
@@ -139,7 +146,9 @@ describe("OpenAI Responses assistant message metadata", () => {
 			})
 			const accumulator = new AgentResponseAccumulator()
 			for (const chunk of chunks) await accumulator.add(chunk)
-			expect((await accumulator.finish()).items.filter((item) => item.type === "text")).toEqual([
+			expect(
+				(await accumulator.finish()).items.filter((item) => item.type === "text").map(displayProjection),
+			).toEqual([
 				{ type: "text", text: "Stable answer.", id: "msg_late", phase: "partial_answer", outputIndex: 0 },
 			])
 		},
@@ -159,7 +168,9 @@ describe("OpenAI Responses assistant message metadata", () => {
 			],
 			usage: null,
 		})
-		expect((await collect(provider(false))).filter((chunk) => chunk.type === "text")).toEqual([
+		expect(
+			(await collect(provider(false))).filter((chunk) => chunk.type === "text").map(displayProjection),
+		).toEqual([
 			{
 				type: "text",
 				text: "Repeated.",
@@ -230,10 +241,10 @@ describe("OpenAI Responses assistant message metadata", () => {
 			})(),
 		)
 		const chunks = await collect(provider())
-		expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
+		expect(chunks.filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "Answer.", outputIndex: 0 },
 		])
-		expect(chunks).toContainEqual({
+		expect(chunks.map(displayProjection)).toContainEqual({
 			type: "message_metadata",
 			id: "msg_late_id",
 			phase: "final_answer",
@@ -241,9 +252,9 @@ describe("OpenAI Responses assistant message metadata", () => {
 		})
 		const accumulator = new AgentResponseAccumulator()
 		for (const chunk of chunks) await accumulator.add(chunk)
-		expect((await accumulator.finish()).items.filter((item) => item.type === "text")).toEqual([
-			{ type: "text", text: "Answer.", id: "msg_late_id", phase: "final_answer", outputIndex: 0 },
-		])
+		expect(
+			(await accumulator.finish()).items.filter((item) => item.type === "text").map(displayProjection),
+		).toEqual([{ type: "text", text: "Answer.", id: "msg_late_id", phase: "final_answer", outputIndex: 0 }])
 	})
 
 	it.each([
@@ -273,12 +284,12 @@ describe("OpenAI Responses assistant message metadata", () => {
 			const accumulator = new AgentResponseAccumulator()
 			for (const chunk of chunks) await accumulator.add(chunk)
 
-			expect(chunks.filter((chunk) => chunk.type === "message_metadata")).toEqual([
+			expect(chunks.filter((chunk) => chunk.type === "message_metadata").map(displayProjection)).toEqual([
 				{ type: "message_metadata", ...metadata },
 			])
-			expect((await accumulator.finish()).items.filter((item) => item.type === "text")).toEqual([
-				{ type: "text", text: "Original answer.", ...metadata },
-			])
+			expect(
+				(await accumulator.finish()).items.filter((item) => item.type === "text").map(displayProjection),
+			).toEqual([{ type: "text", text: "Original answer.", ...metadata }])
 			expect(handler.getResponseId()).toBe("resp_original")
 		},
 	)
@@ -305,7 +316,7 @@ describe("OpenAI Responses assistant message metadata", () => {
 				}
 			})(),
 		)
-		expect((await collect(provider())).filter((chunk) => chunk.type === "text")).toEqual([
+		expect((await collect(provider())).filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "", id: "msg_empty", phase: "commentary", outputIndex: 0 },
 		])
 	})
@@ -332,7 +343,7 @@ describe("OpenAI Responses assistant message metadata", () => {
 				}
 			})(),
 		)
-		expect((await collect(provider())).filter((chunk) => chunk.type === "text")).toEqual([
+		expect((await collect(provider())).filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "Cannot provide that.", id: "msg_refusal", phase: "final_answer", outputIndex: 0 },
 		])
 	})
@@ -388,7 +399,7 @@ describe("OpenAI Responses assistant message metadata", () => {
 		} finally {
 			releaseTransport()
 		}
-		expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
+		expect(chunks.filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "Before cancellation.", id: "msg_cancelled", phase: "final_answer", outputIndex: 0 },
 		])
 		expect(chunks.some((chunk) => chunk.type === "usage" || chunk.type === "outcome")).toBe(false)
@@ -410,7 +421,7 @@ describe("OpenAI Responses assistant message metadata", () => {
 		})
 		const handler = provider(false)
 		await collect(handler)
-		expect((await collect(handler)).filter((chunk) => chunk.type === "text")).toEqual([
+		expect((await collect(handler)).filter((chunk) => chunk.type === "text").map(displayProjection)).toEqual([
 			{ type: "text", text: "Second.", outputIndex: 0 },
 		])
 	})

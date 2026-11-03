@@ -100,10 +100,36 @@ it.each(["omitted", "empty", "compact", "conflicting"] as const)(
 		const canonical = await accumulator.finish()
 		expect(canonical.text).toBe("Creating test tickets.")
 		expect(canonical.items.filter((item) => item.type === "tool_call")).toEqual([
-			{ type: "tool_call", id: call.call_id, name: call.name, arguments: args },
+			{
+				type: "tool_call",
+				id: call.call_id,
+				name: call.name,
+				arguments: args,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-codex",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: call.id,
+					status: call.status,
+					namespace: call.namespace,
+				},
+			},
 		])
 		expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
-			{ type: "tool_call_end", id: call.call_id },
+			{
+				type: "tool_call_end",
+				id: call.call_id,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-codex",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: call.id,
+					status: call.status,
+					namespace: call.namespace,
+				},
+			},
 		])
 		expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toHaveLength(1)
 		expect(handler.getReasoningItems()).toEqual([

@@ -1,4 +1,9 @@
-import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, DirectTerminalCommand } from "./types"
+import type {
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcessResultPromise,
+	DirectTerminalCommand,
+	CommandShellLaunch,
+} from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
@@ -10,6 +15,7 @@ export class ExecaTerminal extends BaseTerminal {
 		id: number,
 		cwd: string,
 		readonly commandEnv: Record<string, string> = {},
+		readonly shellLaunch?: CommandShellLaunch,
 	) {
 		super("execa", id, cwd)
 	}

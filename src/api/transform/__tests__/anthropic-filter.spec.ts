@@ -3,6 +3,32 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import { filterNonAnthropicBlocks, VALID_ANTHROPIC_BLOCK_TYPES } from "../anthropic-filter"
 
 describe("anthropic-filter", () => {
+	it("strips Responses source envelopes while preserving text, tools and native signed thinking", () => {
+		const providerItem = {
+			protocol: "openai-responses",
+			providerId: "openai",
+			modelId: "gpt-6.1-sol",
+			itemType: "function_call",
+			id: "fc_source",
+		}
+		const content = [
+			{ type: "text" as const, text: "Visible", providerItem },
+			{ type: "tool_use" as const, id: "call", name: "read_file", input: {}, providerItem },
+			{ type: "thinking" as const, thinking: "Native", signature: "signed" },
+		]
+		expect(filterNonAnthropicBlocks([{ role: "assistant", content }])).toEqual([
+			{
+				role: "assistant",
+				content: [
+					{ type: "text", text: "Visible" },
+					{ type: "tool_use", id: "call", name: "read_file", input: {} },
+					{ type: "thinking", thinking: "Native", signature: "signed" },
+				],
+			},
+		])
+		expect(content[0]).toHaveProperty("providerItem", providerItem)
+	})
+
 	describe("VALID_ANTHROPIC_BLOCK_TYPES", () => {
 		it("should contain all valid Anthropic types", () => {
 			expect(VALID_ANTHROPIC_BLOCK_TYPES.has("text")).toBe(true)

@@ -606,6 +606,80 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
 	})
 
+	it("cancels a disposed view's pending frame without publishing into its replacement provider", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 7
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		const removeListener = vi.spyOn(window, "removeEventListener")
+		const oldMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "Old view", partial: true }
+		const oldView = render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+		try {
+			act(() => {
+				dispatchExtensionState({ currentTaskId: "old-task", alphaMessages: [oldMessage], alphaMessagesSeq: 1 })
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "old-task",
+							alphaMessagesSeq: 2,
+							alphaMessage: { ...oldMessage, text: "Queued old view" },
+						},
+					}),
+				)
+			})
+			expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+			expect(screen.getByTestId("latest-message")).toHaveTextContent("Old view")
+			const lateFrame = frameCallback
+			oldView.unmount()
+			expect(cancelAnimationFrame).toHaveBeenCalledWith(7)
+			expect(removeListener).toHaveBeenCalledWith("message", expect.any(Function))
+
+			render(
+				<ExtensionStateContextProvider>
+					<MessagesTestComponent />
+				</ExtensionStateContextProvider>,
+			)
+			const freshMessage: AlphaMessage = { ts: 2, type: "say", say: "text", text: "Fresh view" }
+			act(() => {
+				dispatchExtensionState({
+					currentTaskId: "fresh-task",
+					alphaMessages: [freshMessage],
+					alphaMessagesSeq: 10,
+				})
+				// An already-captured callback can still be dispatched after cancellation.
+				lateFrame?.(0)
+			})
+			expect(screen.getByTestId("all-messages")).toHaveTextContent("Fresh view")
+			expect(screen.getByTestId("all-messages")).not.toHaveTextContent("Old view")
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "fresh-task",
+							alphaMessagesSeq: 11,
+							alphaMessage: { ...freshMessage, text: "Fresh completion", partial: false },
+						},
+					}),
+				)
+			})
+			expect(screen.getByTestId("latest-message")).toHaveTextContent("Fresh completion")
+			expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+		} finally {
+			removeListener.mockRestore()
+		}
+	})
+
 	it("preserves legacy transcript wire creation, streaming, completion, and sequence ordering", () => {
 		let frameCallback: FrameRequestCallback | undefined
 		vi.stubGlobal(
