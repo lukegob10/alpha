@@ -8,13 +8,16 @@ import { createContext, runInContext } from "node:vm"
 import type { CdpConnection } from "../ui/cdp"
 import { exerciseUnattendedLifecycle } from "../ui/renderedUnattendedLifecycle"
 
-async function fixture(queueApplicationFrames: boolean) {
+async function fixture(queueApplicationFrames: boolean, deferApplicationFrame = false) {
 	const temporaryRoot = await fs.realpath(os.tmpdir())
 	const directory = await fs.mkdtemp(path.join(temporaryRoot, "alpha-unattended-unit-"))
 	assert.equal(path.dirname(await fs.realpath(directory)), temporaryRoot)
 	const nativeFrames = new Map<number, FrameRequestCallback>()
 	let nextFrame = 0
 	let round = 0
+	const streamingAcknowledged = new Set<number>()
+	let streamingPending = false
+	let applicationFrame: number | undefined
 	const selection = {
 		rangeCount: 0,
 		isCollapsed: true,
@@ -51,8 +54,22 @@ async function fixture(queueApplicationFrames: boolean) {
 		}),
 	}
 	const context = createContext({ d: document })
+	const queueApplicationFrame = () => {
+		applicationFrame = runInContext("d.defaultView.requestAnimationFrame(()=>{})", context)
+		streamingPending = false
+	}
 	const evaluate = async <T>(expression: string): Promise<T> => {
 		const result = runInContext(expression, context)
+		if (
+			streamingPending &&
+			queueApplicationFrames &&
+			deferApplicationFrame &&
+			result?.documentRetained &&
+			runInContext("d.defaultView.__alphaUnattended?.held===true", context)
+		) {
+			// Deliver application work after the first renderer sample, before the next controlled observation.
+			queueApplicationFrame()
+		}
 		// Advance only native frames. The injected scheduler owns and holds its own callbacks.
 		for (let tick = 0; tick < 2; tick++) {
 			const callbacks = [...nativeFrames.values()]
@@ -71,15 +88,34 @@ async function fixture(queueApplicationFrames: boolean) {
 				evaluate,
 				ready: async (stage) => {
 					round = stage.charCodeAt(stage.length - 1) - "a".charCodeAt(0)
-					if (stage.startsWith("unattended-complete-") && queueApplicationFrames) {
-						// Completion snapshots flush partial state and cancel its scheduled callback.
-						runInContext(
-							"d.defaultView.cancelAnimationFrame(d.defaultView.requestAnimationFrame(()=>{}))",
-							context,
+					if (stage.startsWith("unattended-complete-")) {
+						assert.ok(
+							streamingAcknowledged.has(round),
+							"Completion must wait for the renderer's streaming acknowledgement",
 						)
+						streamingPending = false
+						if (applicationFrame !== undefined) {
+							// Completion snapshots flush partial state and cancel its scheduled callback.
+							runInContext(`d.defaultView.cancelAnimationFrame(${applicationFrame})`, context)
+							applicationFrame = undefined
+						}
+					}
+					if (stage.startsWith("unattended-streaming-")) {
+						streamingPending = true
+						if (queueApplicationFrames && !deferApplicationFrame) queueApplicationFrame()
 					}
 				},
-				acknowledge: async () => undefined,
+				acknowledge: async (stage) => {
+					if (stage.startsWith("unattended-streaming-")) {
+						if (runInContext("d.defaultView.__alphaUnattended?.held===true", context))
+							assert.notEqual(
+								applicationFrame,
+								undefined,
+								"Completion cannot resume before application work arrives",
+							)
+						streamingAcknowledged.add(round)
+					}
+				},
 			}),
 		cleanup: () => fs.rm(directory, { recursive: true, force: true }),
 	}
@@ -102,4 +138,12 @@ test("held-frame acceptance rejects a probe heartbeat without application frame 
 	const probe = await fixture(false)
 	t.after(probe.cleanup)
 	await assert.rejects(probe.run(), /Actual application frame work must be queued/)
+})
+
+test("held-frame acceptance waits for delayed renderer work before releasing completion", async (t) => {
+	const probe = await fixture(true, true)
+	t.after(probe.cleanup)
+	await probe.run()
+	const evidence = JSON.parse(await fs.readFile(path.join(probe.directory, "ui-unattended-lifecycle.json"), "utf8"))
+	assert.equal(evidence.observations.length, 6)
 })

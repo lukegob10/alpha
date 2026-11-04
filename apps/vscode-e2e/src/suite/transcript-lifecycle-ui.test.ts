@@ -32,6 +32,8 @@ class TranscriptLifecycleAI {
 	private releaseMain?: () => void
 	private mainGate?: Promise<void>
 	private releaseSummary?: () => void
+	private unattendedStreamGate?: Promise<void>
+	private releaseUnattendedStream?: () => void
 	unattendedRound: number | undefined
 
 	holdMain(): void {
@@ -46,6 +48,16 @@ class TranscriptLifecycleAI {
 
 	continueSummary(): void {
 		this.releaseSummary?.()
+	}
+
+	holdUnattendedStream(): void {
+		this.unattendedStreamGate = new Promise<void>((resolve) => {
+			this.releaseUnattendedStream = resolve
+		})
+	}
+
+	continueUnattendedStream(): void {
+		this.releaseUnattendedStream?.()
 	}
 
 	async *createMessage(systemPrompt: string, _messages: unknown[], metadata?: { attemptId?: string }) {
@@ -68,6 +80,8 @@ class TranscriptLifecycleAI {
 			for (let chunk = 0; chunk < 120; chunk++) {
 				yield { type: "text" as const, text: `Unattended streamed chunk ${chunk}. ` }
 			}
+			await this.unattendedStreamGate
+			this.unattendedStreamGate = undefined
 			yield {
 				type: "text" as const,
 				text: `\n\nUNATTENDED_FINAL_${this.unattendedRound}\n\n\`\`\`typescript\n${"const unattendedAnswer = 42\n".repeat(80)}\`\`\``,
@@ -216,6 +230,7 @@ suite("Transcript lifecycle renderer", function () {
 			for (const [round, testCase] of UNATTENDED_TRANSCRIPT_CASES.entries()) {
 				model.unattendedRound = round
 				model.holdMain()
+				model.holdUnattendedStream()
 				await api.sendMessage(`Complete unattended fixture ${round}.`)
 				await waitFor(() => model.mainRequests === round + 5, { timeout: 20_000 })
 				if (testCase.mode === "hidden") {
@@ -224,6 +239,8 @@ suite("Transcript lifecycle renderer", function () {
 				await uiFixtureBarrier(unattendedStage("start", round), { version: vscode.version, taskId })
 				for (let batch = 0; batch < 12; batch++) await appendRows(10)
 				model.continueMain()
+				await uiFixtureBarrier(unattendedStage("streaming", round), { version: vscode.version, taskId })
+				model.continueUnattendedStream()
 				await waitFor(() => task.didComplete, { timeout: 30_000 })
 				await host.postStateToWebview()
 				await uiFixtureBarrier(unattendedStage("complete", round), { version: vscode.version, taskId })
@@ -303,6 +320,7 @@ suite("Transcript lifecycle renderer", function () {
 		} finally {
 			model.continueMain()
 			model.continueSummary()
+			model.continueUnattendedStream()
 			await api.clearCurrentTask().catch(() => undefined)
 			await api.setConfiguration(original)
 			model.removeFromCache?.()
