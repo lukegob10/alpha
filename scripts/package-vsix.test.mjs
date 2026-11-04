@@ -166,11 +166,11 @@ test("release publication waits for all six verified native host packages", () =
 	assert.equal(manifest.scripts["publish:marketplace"], undefined)
 	const workflow = parse(readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
 	const packaging = workflow.jobs["package-vsix"]
-	assert.deepEqual(packaging.needs, ["release-vsix", "live-quality"])
+	assert.equal(packaging.needs, "live-quality")
 	assert.equal(packaging["runs-on"], "${{ matrix.os }}")
 	assert.deepEqual(packaging.strategy, {
 		"fail-fast": false,
-		"max-parallel": 3,
+		"max-parallel": 6,
 		matrix: { include: releasePlatforms },
 	})
 	assert.ok(packaging.steps.some((step) => step.run === "pnpm vsix"))
@@ -182,16 +182,24 @@ test("release publication waits for all six verified native host packages", () =
 	assert.ok(verification.run.includes("bin/alpha-$version-${{ matrix.target }}.vsix"))
 	assert.ok(verification.run.includes('--check-source --require-clean-build --target "${{ matrix.target }}"'))
 	const upload = packaging.steps.find((step) => step.uses === "actions/upload-artifact@v6")
-	assert.equal(upload.with.name, "alpha-vsix-${{ matrix.target }}")
-	assert.equal(upload.with.path, "${{ steps.artifact.outputs.path }}")
+	assert.equal(upload.with.name, "alpha-vsix-${{ matrix.target }}-${{ github.run_attempt }}")
+	assert.deepEqual(upload.with.path.trim().split(/\r?\n/u), [
+		"${{ steps.artifact.outputs.path }}",
+		"${{ steps.artifact.outputs.path }}.evidence.json",
+	])
 	assert.equal(upload.with["if-no-files-found"], "error")
 	assert.ok(packaging.steps.indexOf(verification) < packaging.steps.indexOf(upload))
 	assert.ok(packaging.steps.every((step) => step["continue-on-error"] !== true))
 	assert.doesNotMatch(JSON.stringify(packaging), /gh release create/u)
 	const publication = workflow.jobs["publish-release"]
-	assert.equal(publication.needs, "package-vsix")
+	assert.deepEqual(publication.needs, ["live-quality", "validation", "package-vsix", "release-gate"])
 	const download = publication.steps.find((step) => step.uses === "actions/download-artifact@v7")
-	assert.deepEqual(download.with, { pattern: "alpha-vsix-*", path: "bin", "merge-multiple": true })
+	assert.deepEqual(download.with, {
+		pattern: "alpha-vsix-*-${{ github.run_attempt }}",
+		path: "bin",
+		"merge-multiple": true,
+	})
+	assert.ok(publication.steps.some((step) => step.run?.includes("verify-publication")))
 })
 
 test("publication preserves every verified platform package and the historical release title", () => {

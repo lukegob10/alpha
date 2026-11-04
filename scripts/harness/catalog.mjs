@@ -270,6 +270,15 @@ export const lanes = {
 		commands: [["--filter", "@alpha-code/vscode-e2e", "test:compatibility:1250"]],
 		receipts: [{ runner: "extension-host", suite: "minimum" }],
 	},
+	"command-approval": {
+		exclusiveBuild: true,
+		fidelity: "actual VS Code 1.141.0 command approval and outside-path review",
+		decisions: "scripted",
+		owner: "apps/vscode-e2e existing command-path approval suite",
+		proves: "The release's explicit command approval recheck, with complete exact-host receipts",
+		commands: [["bundle"], ["--filter", "@alpha-code/vscode-e2e", "test:command-paths:1410:run"]],
+		receipts: [null, { runner: "extension-host", suite: "command-approval" }],
+	},
 	performance: {
 		exclusiveBuild: true,
 		fidelity: "deterministic operation-count and component fixtures",

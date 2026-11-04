@@ -22,10 +22,9 @@ test("release promotion revalidates one reviewed live smoke while retaining full
 		await fs.readFile(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8"),
 	)
 	const jobs = workflow.jobs
-	assert.equal(jobs["release-vsix"].needs, "live-quality")
-	assert.ok(jobs["package-vsix"].needs.includes("live-quality"))
-	assert.ok(jobs["package-vsix"].needs.includes("release-vsix"))
-	assert.equal(jobs["publish-release"].needs, "package-vsix")
+	assert.equal(jobs.validation.needs, "live-quality")
+	assert.equal(jobs["package-vsix"].needs, "live-quality")
+	assert.deepEqual(jobs["publish-release"].needs, ["live-quality", "validation", "package-vsix", "release-gate"])
 	assert.equal(jobs["live-quality"].permissions.actions, "read")
 	const steps = jobs["live-quality"].steps
 	const verification = steps.find((step) => step.run?.includes("release-quality.mjs verify-run"))
@@ -55,7 +54,7 @@ test("release promotion revalidates one reviewed live smoke while retaining full
 		"outcomes",
 	])
 		assert.ok(
-			jobs["release-vsix"].steps.some((step) => step.run === `pnpm harness run ${lane}`),
+			jobs.validation.strategy.matrix.include.some((entry) => entry.lane === lane),
 			lane,
 		)
 	const evidence = yaml.load(
@@ -150,6 +149,7 @@ test("harness and measurement owners require quality evidence while unrelated UI
 		"scripts/evals/proportional-scope-report.mjs",
 		"evals/proportional-scope/cases.json",
 		"scripts/harness/release-quality.mjs",
+		"scripts/harness/release-evidence.mjs",
 		evidenceWorkflow,
 		".github/workflows/release-vsix.yml",
 	])

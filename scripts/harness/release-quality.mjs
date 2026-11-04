@@ -18,7 +18,7 @@ const affectedPaths = [
 	/^apps\/vscode-e2e\/src\/scenarios\/requestBudget(?:[.]|$)/u,
 	/^scripts\/evals\/proportional-scope-(?:compare|report)(?:[.]|$)/u,
 	/^evals\/proportional-scope\//u,
-	/^scripts\/harness\/release-quality(?:[.]|$)/u,
+	/^scripts\/harness\/release-(?:quality|evidence)(?:[.]|$)/u,
 	/^\.github\/workflows\/(?:live-quality-evidence|release-vsix)\.yml$/u,
 ]
 
@@ -160,7 +160,7 @@ export function validateLiveSmokeEvidence(value, { candidate } = {}) {
 	}
 }
 
-async function readJson(file, limit = 64 * 1024) {
+export async function readJson(file, limit = 64 * 1024) {
 	const handle = await open(file, "r")
 	try {
 		const stat = await handle.stat()

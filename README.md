@@ -266,6 +266,11 @@ Both workflows validate the live smoke facts, require their own repository and c
 sanitized evidence. Submitted facts are reviewed captured observations, not cryptographic proof of model execution.
 Keep the original private host artifacts for investigation.
 
+Release validation lanes run in separate checkouts while all six native package builds run alongside them after live
+preflight. Publication waits for every validation and package job plus an evidence barrier. That barrier rechecks the
+harness's source, toolchain, host, freshness and test-inventory contracts, and binds native build provenance to package
+hashes for the same workflow attempt. Publication verifies the downloaded package bytes again before creating a release.
+
 For an optional broader quality comparison, use clean, separately built baseline and candidate checkouts and the same
 runner, profiles, models, effort and conditions. The comparison keeps its two-provider, three-sample workload unchanged:
 

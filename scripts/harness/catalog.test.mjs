@@ -7,6 +7,7 @@ import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
 import { expectedTestFiles } from "./lane-evidence.mjs"
+import { releaseValidationPlatforms } from "./release-evidence.mjs"
 
 test(
 	"canonical bundle prepares one cached webview build without duplicate host preparation",
@@ -151,8 +152,15 @@ test("required stopping contracts execute the shared loop and reproduced regress
 		assert.ok(args.includes(owner), `Stopping gate must retain ${owner}`)
 	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
-		assert.match(workflow, /run: pnpm harness run turns/, `${file} must execute stopping contracts`)
-		assert.match(workflow, /--require turns/, `${file} must require current stopping evidence`)
+		if (file === "code-qa.yml") {
+			assert.match(workflow, /run: pnpm harness run turns/, `${file} must execute stopping contracts`)
+			assert.match(workflow, /--require turns/, `${file} must require current stopping evidence`)
+		} else {
+			assert.equal(releaseValidationPlatforms.turns, "win32")
+			assert.match(workflow, /lane: turns, os: windows-latest/u)
+			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
+			assert.match(workflow, /release-evidence\.mjs aggregate/u)
+		}
 	}
 	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
 	assert.match(
@@ -236,13 +244,22 @@ test("minimum-host compatibility and extended reference-host coverage are mandat
 	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
 	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
-		assert.match(
-			workflow,
-			/run: pnpm --filter @alpha-code\/vscode-e2e test:compatibility:1250:run/,
-			`${file} must execute the separate minimum-host compatibility gate`,
-		)
-		assert.match(workflow, /run: pnpm harness run extended/, `${file} must execute the extended host lane`)
-		assert.match(workflow, /--require extended/, `${file} must reject missing extended execution evidence`)
+		if (file === "code-qa.yml") {
+			assert.match(workflow, /run: pnpm --filter @alpha-code\/vscode-e2e test:compatibility:1250:run/)
+			assert.match(workflow, /run: pnpm harness run extended/)
+			assert.match(workflow, /--require extended/)
+		} else {
+			for (const lane of ["minimum", "extended"]) {
+				assert.equal(releaseValidationPlatforms[lane], "win32")
+				assert.match(workflow, new RegExp(`lane: ${lane}, os: windows-latest`, "u"))
+			}
+			assert.deepEqual(lanes.minimum.commands, [
+				["--filter", "@alpha-code/vscode-e2e", "test:compatibility:1250"],
+			])
+			assert.deepEqual(lanes.minimum.receipts, [{ runner: "extension-host", suite: "minimum" }])
+			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
+			assert.match(workflow, /release-evidence\.mjs aggregate/u)
+		}
 	}
 })
 

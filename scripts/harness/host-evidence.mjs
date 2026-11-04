@@ -58,6 +58,7 @@ export const hostSuites = {
 	stress: stressHostFiles,
 	managed: managedHostFiles,
 	minimum: minimumHostFiles,
+	"command-approval": ["command-path-approval.test"],
 }
 const suiteVersion = (suite) => (suite === "minimum" ? "1.125.0" : "1.141.0")
 export const outcomeScenarioIds = ["dev-git-inspect", "dev-repo-bootstrap", "review-edit-test-commit-followup"]
