@@ -68,7 +68,7 @@ jobs:
               run: pnpm --filter @alpha-code/evals check-types
             - name: Bind the job to its source and harness evidence
               if: ${{ always() }}
-              run: pnpm exec node scripts/harness/release-evidence.mjs record-validation --lane "${{ matrix.lane }}" --output "artifacts/harness/release-validation-${{ matrix.lane }}.json"
+              run: pnpm release:evidence record-validation --lane "${{ matrix.lane }}" --output "artifacts/harness/release-validation-${{ matrix.lane }}.json"
             - name: Retain validation evidence and failure diagnostics
               if: ${{ always() }}
               uses: actions/upload-artifact@v6
@@ -179,7 +179,7 @@ jobs:
                   "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
 
             - name: Bind native package bytes and clean build provenance
-              run: pnpm exec node scripts/harness/release-evidence.mjs record-package --target "${{ matrix.target }}" --vsix "${{ steps.artifact.outputs.path }}" --output "${{ steps.artifact.outputs.path }}.evidence.json"
+              run: pnpm release:evidence record-package --target "${{ matrix.target }}" --vsix "${{ steps.artifact.outputs.path }}" --output "${{ steps.artifact.outputs.path }}.evidence.json"
 
             - name: Retain verified target artifact
               uses: actions/upload-artifact@v6
@@ -220,7 +220,7 @@ jobs:
               if: ${{ always() }}
               env:
                   RELEASE_NEEDS: ${{ toJSON(needs) }}
-              run: pnpm exec node scripts/harness/release-evidence.mjs aggregate --validation-root artifacts/release-input/validation --packages bin --output artifacts/harness/release-gate.json
+              run: pnpm release:evidence aggregate --validation-root artifacts/release-input/validation --packages bin --output artifacts/harness/release-gate.json
             - name: Retain the complete publication barrier
               if: ${{ always() }}
               uses: actions/upload-artifact@v6

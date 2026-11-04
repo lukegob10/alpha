@@ -8,6 +8,7 @@ import { releaseTargets, releaseValidationPlatforms } from "./release-evidence.m
 const require = createRequire(import.meta.url)
 const yaml = createRequire(require.resolve("eslint/package.json"))("js-yaml")
 const workflow = yaml.load(await readFile(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
+const manifest = JSON.parse(await readFile(new URL("../../package.json", import.meta.url), "utf8"))
 const validationLanes = [
 	"static",
 	"turns",
@@ -40,6 +41,21 @@ test("all six native packages overlap validation immediately after live prefligh
 	assert.equal(packaging.strategy["max-parallel"], 6)
 	assert.equal(packaging.strategy["fail-fast"], false)
 	assert.equal(packaging.strategy.matrix.include.length, 6)
+})
+
+test("evidence recorders use a pnpm script that supplies the verified CLI path", () => {
+	assert.equal(manifest.scripts["release:evidence"], "node scripts/harness/release-evidence.mjs")
+	for (const [job, action] of [
+		["validation", "record-validation"],
+		["package-vsix", "record-package"],
+		["release-gate", "aggregate"],
+	]) {
+		const step = workflow.jobs[job].steps.find((step) => step.run?.includes(` ${action} `))
+		assert.ok(
+			step?.run.startsWith(`pnpm release:evidence ${action} `),
+			`${job} requires npm_execpath from pnpm run`,
+		)
+	}
 })
 
 test("publication requires successful live, validation, package and aggregate barriers", () => {
@@ -113,7 +129,7 @@ test("the matrix selects complete existing lanes, preserves native checks, and r
 
 test("aggregation and publication bind current attempt artifacts and recheck bytes before release creation", () => {
 	const gate = workflow.jobs["release-gate"]
-	const aggregate = gate.steps.find((step) => step.run?.includes("release-evidence.mjs aggregate"))
+	const aggregate = gate.steps.find((step) => step.run?.includes("release:evidence aggregate"))
 	assert.equal(aggregate.if, "${{ always() }}")
 	assert.equal(aggregate.env.RELEASE_NEEDS, "${{ toJSON(needs) }}")
 	for (const step of gate.steps.filter((step) => step.uses?.startsWith("actions/download-artifact@")))

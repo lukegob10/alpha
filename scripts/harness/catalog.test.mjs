@@ -159,7 +159,7 @@ test("required stopping contracts execute the shared loop and reproduced regress
 			assert.equal(releaseValidationPlatforms.turns, "win32")
 			assert.match(workflow, /lane: turns, os: windows-latest/u)
 			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
-			assert.match(workflow, /release-evidence\.mjs aggregate/u)
+			assert.match(workflow, /pnpm release:evidence aggregate/u)
 		}
 	}
 	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
@@ -258,7 +258,7 @@ test("minimum-host compatibility and extended reference-host coverage are mandat
 			])
 			assert.deepEqual(lanes.minimum.receipts, [{ runner: "extension-host", suite: "minimum" }])
 			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
-			assert.match(workflow, /release-evidence\.mjs aggregate/u)
+			assert.match(workflow, /pnpm release:evidence aggregate/u)
 		}
 	}
 })

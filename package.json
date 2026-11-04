@@ -11,6 +11,7 @@
 		"harness:audit": "node scripts/harness/run.mjs audit",
 		"harness:acceptance": "node scripts/harness/local-acceptance.mjs",
 		"harness:stress": "node scripts/harness/host-probes.mjs stress",
+		"release:evidence": "node scripts/harness/release-evidence.mjs",
 		"preinstall": "node scripts/bootstrap.mjs",
 		"prepare": "husky",
 		"install": "node scripts/bootstrap.mjs",

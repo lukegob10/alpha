@@ -109,7 +109,7 @@ test("QA and releases require offline evaluator checks and bounded rendered acce
 	assert.ok(acceptance.steps.some((step) => step.uses?.startsWith("actions/checkout@")))
 	const gate = release.jobs["release-gate"]
 	assert.equal(gate.if, "${{ always() }}")
-	assert.ok(gate.steps.some((step) => step.run?.includes("release-evidence.mjs aggregate")))
+	assert.ok(gate.steps.some((step) => step.run?.includes("pnpm release:evidence aggregate")))
 })
 
 test("release publishing rejects existing remote tags that identify another source commit", async (t) => {
