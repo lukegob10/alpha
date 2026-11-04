@@ -102,8 +102,8 @@ export function historyPointerProbeExpression(selector: string, action: "install
 			probe={events:[],eventCount:0,dispose:()=>{}};
 			if(row){
 				const receive=event=>{probe.eventCount=Math.min(1000000,probe.eventCount+1);if(probe.events.length<8)probe.events.push({type:String(event.type).slice(0,32),trusted:event.isTrusted===true,x:Number.isFinite(event.clientX)?event.clientX:null,y:Number.isFinite(event.clientY)?event.clientY:null,target:describe(event.target,row)})};
-				for(const type of ['pointerover','mouseover'])row.addEventListener(type,receive,true);
-				probe.dispose=()=>{for(const type of ['pointerover','mouseover'])row.removeEventListener(type,receive,true)};
+				for(const type of ['pointerover','mouseover','click'])row.addEventListener(type,receive,true);
+				probe.dispose=()=>{for(const type of ['pointerover','mouseover','click'])row.removeEventListener(type,receive,true)};
 			}
 			window[key]=probe;
 		}
@@ -1094,36 +1094,46 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			})()`,
 		)
 		await capture("ticket-mention-preview")
-		const { frameTree: ticketFrameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
-			"Page.getFrameTree",
-			{},
-			sessionId,
-		)
-		const { backendNodeId: ticketFrameNode } = await connection.request<{ backendNodeId: number }>(
-			"DOM.getFrameOwner",
-			{ frameId: ticketFrameTree.frame.id },
-			pageSession,
-		)
-		const { model: ticketFrameBounds } = await connection.request<{ model: { content: number[] } }>(
-			"DOM.getBoxModel",
-			{ backendNodeId: ticketFrameNode },
-			pageSession,
-		)
-		for (const type of ["mousePressed", "mouseReleased"]) {
-			await connection.request(
-				"Input.dispatchMouseEvent",
-				{
-					type,
-					x: ticketFrameBounds.content[0]! + mentionPoint.x,
-					y: ticketFrameBounds.content[1]! + mentionPoint.y,
-					button: "left",
-					clickCount: 1,
-				},
-				pageSession,
-			)
-		}
-		await check(
-			`d.querySelector(${javascriptLiteral(ticketSelector)}).querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')==='true'`,
+		await evaluate(historyPointerProbeExpression(ticketSelector, "install"))
+		await withHistoryPointerEvidence(
+			async () => {
+				// The measured point belongs to the webview viewport. Route real input
+				// to that target, as the shared rendered controls do.
+				for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+					await connection.request(
+						"Input.dispatchMouseEvent",
+						{
+							type,
+							x: mentionPoint.x,
+							y: mentionPoint.y,
+							button: type === "mouseMoved" ? "none" : "left",
+							buttons: type === "mousePressed" ? 1 : 0,
+							clickCount: type === "mouseMoved" ? 0 : 1,
+						},
+						sessionId,
+					)
+				}
+				const pointer = await evaluate<{ events: Array<{ type: string; trusted: boolean }> }>(
+					historyPointerProbeExpression(ticketSelector, "snapshot"),
+				)
+				assert.ok(
+					pointer.events.some((event) => event.type === "click" && event.trusted),
+					"Collapsed ticket preview receives a trusted pointer click",
+				)
+				await check(
+					`d.querySelector(${javascriptLiteral(ticketSelector)}).querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')==='true'`,
+				)
+			},
+			async (status) => {
+				await fs.writeFile(
+					path.join(directory, "ticket-pointer.json"),
+					JSON.stringify(
+						{ status, observed: await evaluate(historyPointerProbeExpression(ticketSelector, "dispose")) },
+						null,
+						2,
+					),
+				)
+			},
 		)
 		const pointerExpanded = await sampleTicketFrames(ticketGeometry.crossoverWidth)
 		assertStableTicketFrames(pointerExpanded, "true")

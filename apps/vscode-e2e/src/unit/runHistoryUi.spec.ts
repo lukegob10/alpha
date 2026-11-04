@@ -110,6 +110,28 @@ test("history pointer receipts preserve trusted flags with bounded metadata and 
 	assert.equal(fixture.listeners.size, 0)
 })
 
+test("history pointer receipts distinguish trusted clicks from synthetic clicks", () => {
+	const fixture = pointerDocumentFixture()
+	fixture.observe("install")
+	try {
+		const receive = fixture.listeners.get("click")
+		assert.equal(typeof receive, "function", "Record click delivery as well as hover")
+		for (const isTrusted of [false, true])
+			receive!({ type: "click", isTrusted, clientX: 120, clientY: 52, target: fixture.target })
+		const observed = fixture.observe("snapshot")
+		assert.deepEqual(
+			observed.events.map((event: { type: string; trusted: boolean }) => [event.type, event.trusted]),
+			[
+				["click", false],
+				["click", true],
+			],
+		)
+	} finally {
+		fixture.observe("dispose")
+	}
+	assert.equal(fixture.listeners.size, 0)
+})
+
 test("history diagnostic capture failures cannot replace the primary assertion or a successful interaction", async () => {
 	const primary = new Error("original hover assertion")
 	await assert.rejects(
