@@ -405,7 +405,7 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 		assert.equal((await fs.readFile(path.join(workspace, relativeFile), "utf8")).replaceAll("\r\n", "\n"), "ask\n")
 	})
 
-	test("a task approval change during a pending Ask affects the next step only", async () => {
+	test("a task approval change resolves the pending Ask and applies to the next step", async () => {
 		const firstFile = "src/approval-pending-ask-" + Date.now() + ".txt"
 		const nextFile = "src/approval-next-step-" + Date.now() + ".txt"
 		let changedMode = false
@@ -418,7 +418,7 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 						patch:
 							"*** Begin Patch\n*** Add File: " +
 							firstFile +
-							"\n+approved-under-original-ask\n*** End Patch",
+							"\n+approved-after-mode-change\n*** End Patch",
 					},
 				},
 				{
@@ -443,7 +443,6 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 						approvalMode: "auto",
 					})
 					changedMode = true
-					task.approveAsk()
 					return
 				}
 				task.denyAsk()
@@ -453,7 +452,7 @@ suite("Ask / Auto / Full Access in the extension host", function () {
 		assert.equal(asks.filter((ask) => ask === "tool").length, 1)
 		assert.equal(
 			(await fs.readFile(path.join(workspace, firstFile), "utf8")).replaceAll("\r\n", "\n"),
-			"approved-under-original-ask\n",
+			"approved-after-mode-change\n",
 		)
 		assert.equal(
 			(await fs.readFile(path.join(workspace, nextFile), "utf8")).replaceAll("\r\n", "\n"),

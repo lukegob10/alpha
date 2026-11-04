@@ -1272,6 +1272,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		staged?: boolean
 	}> = []
 	private taskApprovalModePersistence: Promise<boolean> = Promise.resolve(true)
+	private taskApprovalModeRevision = 0
 
 	/**
 	 * Reset all provider-profile request-pacing lanes. This should only be used for testing.
@@ -1351,6 +1352,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		queuedMessageIds?: string[]
 		signal?: AbortSignal
 		published?: boolean
+		recheckApproval?: () => Promise<void>
 	}
 	private askResponseQueuedMessageIds?: string[]
 	public lastMessageTs?: number
@@ -2645,18 +2647,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.taskModeReady = Promise.resolve()
 	}
 
-	/** Current task policy, captured at task creation or explicitly changed for later steps. */
+	/** Current task approval choice, captured at creation or explicitly changed by the user. */
 	public getTaskApprovalMode(): ApprovalMode {
 		return this.taskApprovalMode ?? "auto"
 	}
 
 	/** Authority of the invoking step, including when the task dial changes while a tool is pending. */
 	public getStepApprovalMode(): ApprovalMode {
-		return this.getApprovalModeForAsk()
+		return this.currentAgentStep?.snapshot.context.policy.approval.mode ?? this.getTaskApprovalMode()
 	}
 
 	private getApprovalModeForAsk(): ApprovalMode {
-		return this.currentAgentStep?.snapshot.context.policy.approval.mode ?? this.getTaskApprovalMode()
+		return this.taskApprovalMode ?? this.getStepApprovalMode()
 	}
 
 	/** A fresh private copy of the invoking request boundary, never redacted diagnostic state. */
@@ -2739,12 +2741,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
-	 * Update only this task's policy for subsequently admitted steps. Existing
-	 * StepContext and unresolved asks retain the policy under which they were admitted.
+	 * Explicit user changes also re-evaluate this task's pending permission prompt.
+	 * Unlike Codex's pinned step settings (openai/codex@48524f337a84, 2026-11-04),
+	 * this user-requested override applies now; StepContext and child ceilings stay immutable.
 	 */
 	public setTaskApprovalMode(mode: ApprovalMode): boolean {
 		if (!isApprovalMode(mode) || this.abort || this.abandoned || this.didComplete) return false
 		this.taskApprovalMode = mode
+		this.taskApprovalModeRevision = (this.taskApprovalModeRevision ?? 0) + 1
+		this.cancelAutoApprovalTimeout(true)
+		void this.activeAsk?.recheckApproval?.()
 		this.taskApprovalModePersistence = this.taskApprovalModePersistence.then(async () => {
 			const saved = await this.saveAlphaMessages()
 			if (!saved) this.providerRef.deref()?.log(`Failed to persist approval mode for task ${this.taskId}`)
@@ -7577,6 +7583,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// Host resume/recovery asks have no tool signal, but Stop must still release their preflight waits.
 		signal ??= this.taskCancellationController?.signal
 		const capturedAutoApprovalTimeoutRevision = this.autoApprovalTimeoutRevision ?? 0
+		const capturedApprovalModeRevision = this.taskApprovalModeRevision ?? 0
+		const isPermissionAsk = type === "tool" || type === "command" || type === "use_mcp_server"
+		const approvalModeChanged = () =>
+			isPermissionAsk && (this.taskApprovalModeRevision ?? 0) !== capturedApprovalModeRevision
 		const capturedTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
 		const addMessage = (message: AlphaMessage) =>
 			this.addToAlphaMessages(message, undefined, undefined, capturedTurn)
@@ -7592,7 +7602,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
 		}
 		if (signal) this.throwIfStepInterrupted(signal)
-		const taskApprovalMode = this.getStepApprovalMode()
+		const taskApprovalMode = this.getApprovalModeForAsk()
 		const stepPolicy = this.currentAgentStep?.snapshot.context.policy
 		const commandPolicy = stepPolicy?.execution?.command
 		const reviewPolicy = stepPolicy ? (stepPolicy.approval.reviewPolicy ?? CLOSED_TOOL_REVIEW_POLICY) : undefined
@@ -7676,8 +7686,53 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		let askTs: number
 		let installedAsk: Task["activeAsk"]
+		const recheckApproval = async () => {
+			if (!provider || !isPermissionAsk) return
+			const revision = this.taskApprovalModeRevision ?? 0
+			const ownsDecision = () =>
+				!this.abort &&
+				!this.abandoned &&
+				!this.didComplete &&
+				!signal?.aborted &&
+				(this.taskApprovalModeRevision ?? 0) === revision &&
+				this.activeAsk === installedAsk &&
+				installedAsk?.published === true &&
+				this.lastMessageTs === askTs &&
+				this.askResponse === undefined &&
+				!this.deferredAskResponse
+			if (!ownsDecision()) return
+			try {
+				const currentState = signal
+					? await this.waitForRequestControl(provider.getState(), signal)
+					: await provider.getState()
+				if (!ownsDecision()) return
+				const currentApproval = await checkAutoApprovalWithInheritedPolicy({
+					...autoApprovalInput,
+					state: this.approvalStateForAsk(currentState, this.getApprovalModeForAsk()),
+				})
+				if (!ownsDecision()) return
+				if (currentApproval.decision === "approve" || currentApproval.decision === "deny") {
+					this.handleWebviewAskResponse(
+						currentApproval.decision === "approve" ? "yesButtonClicked" : "noButtonClicked",
+						undefined,
+						undefined,
+						undefined,
+						askTs,
+					)
+				}
+			} catch {
+				if (ownsDecision())
+					provider.log("Leaving permission prompt pending because approval revalidation failed.")
+			}
+		}
 		const installActiveAsk = (ts: number) => {
-			installedAsk = { type, ts, toolCallId: this.toolInputContext?.getStore()?.toolCallId, signal }
+			installedAsk = {
+				type,
+				ts,
+				toolCallId: this.toolInputContext?.getStore()?.toolCallId,
+				signal,
+				recheckApproval,
+			}
 			this.activeAsk = installedAsk
 		}
 
@@ -7812,15 +7867,25 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			signal?.addEventListener("abort", onAbort, { once: true })
 			if (signal?.aborted) onAbort()
 
-			if (!signal?.aborted && offscreenAutoResponse) {
+			// A user update can arrive while state or prompt persistence is awaiting.
+			// Revalidate after publication and never apply the superseded automatic decision.
+			if (approvalModeChanged()) {
+				const message = this.findMessageByTimestamp(askTs)
+				if (message?.isAnswered && this.askResponse === undefined && !this.deferredAskResponse) {
+					message.isAnswered = false
+					await this.updateAlphaMessage(message)
+				}
+				await recheckApproval()
+			}
+			if (!signal?.aborted && !approvalModeChanged() && offscreenAutoResponse) {
 				this.handleWebviewAskResponse(
 					offscreenAutoResponse.response,
 					offscreenAutoResponse.text,
 					offscreenAutoResponse.images,
 				)
-			} else if (!signal?.aborted && approval.decision === "approve") {
+			} else if (!signal?.aborted && !approvalModeChanged() && approval.decision === "approve") {
 				this.approveAsk()
-			} else if (!signal?.aborted && approval.decision === "deny") {
+			} else if (!signal?.aborted && !approvalModeChanged() && approval.decision === "deny") {
 				this.denyAsk()
 			} else if (
 				!signal?.aborted &&
@@ -7899,7 +7964,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				!signal?.aborted &&
 				isBlocking &&
 				(!shouldDrainQueuedMessageForAsk() || !isMessageQueued) &&
-				(approval.decision === "ask" ||
+				(approvalModeChanged() ||
+					approval.decision === "ask" ||
 					(approval.decision === "timeout" &&
 						(this.autoApprovalTimeoutRevision ?? 0) !== capturedAutoApprovalTimeoutRevision))
 			if (

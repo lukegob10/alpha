@@ -20,7 +20,8 @@ The exact development and release reference host is VS Code **1.141.0**; it does
 - Connect MCP servers and use automatic context compaction for longer tasks.
 
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval
-policy or workspace protections.
+policy or workspace protections. Changing a task's approval mode also rechecks its pending permission prompt; the action
+proceeds when the new choice and its existing protection rules allow it.
 
 In **Alpha Tickets**, use **Overview** for the completion ring and progress chart, or **Tickets** to browse and select
 work. **Export** saves selected tickets, all filtered matches, or the project as one ZIP of readable Markdown files;

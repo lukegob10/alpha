@@ -53,6 +53,8 @@ jobs:
               uses: actions/checkout@v5
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
             - name: Run turn and stopping contracts
               run: pnpm harness run turns
             - name: Require current turn contract evidence

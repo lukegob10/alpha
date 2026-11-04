@@ -1120,7 +1120,7 @@ export class AlphaProvider
 		await this.postStateToWebview().catch(() => this.log("Failed to refresh reasoning state after persistence"))
 		return state
 	}
-	/** Apply a task-scoped approval choice to future step admissions for exactly the addressed task. */
+	/** Apply a task-scoped approval choice, including its pending prompt, to exactly the addressed task. */
 	public updateTaskApprovalMode(update: TaskApprovalModeUpdate): TaskApprovalModeUpdateResult {
 		const { requestId, taskId, approvalMode } = update
 		const task = this.getLiveTask(taskId)
@@ -2489,6 +2489,7 @@ export class AlphaProvider
 			"askResponse",
 			"terminalOperation",
 			"cancelAutoApproval",
+			"setTaskApprovalMode",
 			"resumeCompletedTask",
 			"implementPlan",
 		])
@@ -2642,7 +2643,10 @@ export class AlphaProvider
 			if (messageType && taskControlTypes.has(messageType)) {
 				// Capture the active lane at receipt time; focus can change before this
 				// operation reaches the front of its task-scoped queue.
-				const laneKey = message.taskId ?? this.getActiveTaskId() ?? "legacy-active-task"
+				const laneKey =
+					(messageType === "setTaskApprovalMode" ? message.taskApprovalModeUpdate?.taskId : message.taskId) ??
+					this.getActiveTaskId() ??
+					"legacy-active-task"
 				const previous = this.taskControlMessageQueues.get(laneKey) ?? Promise.resolve()
 				const processing = previous.then(() => run(message))
 				const tracked = processing.catch((error) => logFailure(message, error))

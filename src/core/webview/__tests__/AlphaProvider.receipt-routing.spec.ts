@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import type { WebviewMessage } from "@alpha-code/types"
+import type { TaskApprovalModeUpdate, WebviewMessage } from "@alpha-code/types"
 import type * as vscode from "vscode"
 
 import { AlphaProvider } from "../AlphaProvider"
@@ -25,6 +25,10 @@ const createProvider = () => {
 	const finish = barrier()
 	const handleModeSwitch = vi.fn(async () => undefined)
 	const activateProviderProfile = vi.fn(async () => undefined)
+	const updateTaskApprovalMode = vi.fn((update: TaskApprovalModeUpdate) => ({
+		...update,
+		status: "applied" as const,
+	}))
 	let receive!: (message: WebviewMessage) => Promise<void> | undefined
 	const provider: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
 		currentView: { type: "task", taskId: selectedTask.taskId },
@@ -42,7 +46,9 @@ const createProvider = () => {
 		},
 		handleModeSwitch,
 		activateProviderProfile,
+		updateTaskApprovalMode,
 		postMessageToWebview: vi.fn(async () => undefined),
+		postStateToWebview: vi.fn(async () => undefined),
 		postTaskStateToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	})
@@ -63,6 +69,46 @@ const createProvider = () => {
 }
 
 describe("webview selection ownership at receipt", () => {
+	it("applies a task approval change while global compaction is pending", async () => {
+		const { provider, receive, entered, finish } = createProvider()
+		const pending = receive({ type: "condenseTaskContextRequest", text: "first" })
+		await entered.promise
+		const update: TaskApprovalModeUpdate = { requestId: "approval-first", taskId: "first", approvalMode: "auto" }
+		const changed = receive({ type: "setTaskApprovalMode", taskApprovalModeUpdate: update })
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(provider.updateTaskApprovalMode).toHaveBeenCalledExactlyOnceWith(update)
+			expect(provider.postMessageToWebview).toHaveBeenCalledWith({
+				type: "taskApprovalModeUpdated",
+				taskApprovalModeUpdateResult: { ...update, status: "applied" },
+			})
+		} finally {
+			finish.resolve()
+			await Promise.all([pending, changed])
+		}
+	})
+
+	it("orders approval changes by their addressed task even after focus changes", async () => {
+		const { provider, receive, select } = createProvider()
+		const firstControl = barrier()
+		const queues: Map<string, Promise<void>> = Reflect.get(provider, "taskControlMessageQueues")
+		queues.set("first", firstControl.promise)
+		select("second")
+		const first: TaskApprovalModeUpdate = { requestId: "approval-first", taskId: "first", approvalMode: "auto" }
+		const second: TaskApprovalModeUpdate = { requestId: "approval-second", taskId: "second", approvalMode: "ask" }
+		const pendingFirst = receive({ type: "setTaskApprovalMode", taskApprovalModeUpdate: first })
+		const pendingSecond = receive({ type: "setTaskApprovalMode", taskApprovalModeUpdate: second })
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(provider.updateTaskApprovalMode).toHaveBeenCalledExactlyOnceWith(second)
+		} finally {
+			firstControl.resolve()
+			await Promise.all([pendingFirst, pendingSecond])
+		}
+		expect(provider.updateTaskApprovalMode).toHaveBeenNthCalledWith(2, first)
+		expect(queues.size).toBe(0)
+	})
+
 	it.each(selectionCommands)("does not retarget a queued $type after selecting another task", async (command) => {
 		const { provider, receive, select, entered, finish } = createProvider()
 		const pending = receive({ type: "condenseTaskContextRequest", text: "first" })

@@ -6619,7 +6619,7 @@ describe("Alpha", () => {
 			expect(JSON.stringify(task.apiConversationHistory).match(/Only one body/g)).toHaveLength(1)
 		})
 
-		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
+		it("applies explicit task approval changes to asks while preserving step and other-task authority", async () => {
 			const task = createTask()
 			task.setTaskApprovalMode("ask")
 			const globalAskState = {
@@ -6646,16 +6646,17 @@ describe("Alpha", () => {
 			expect(await decide(admittedMode, "tool", editAsk.tool)).toEqual({ decision: "ask" })
 			expect(await decide(admittedMode, "command", editAsk.command)).toEqual({ decision: "ask" })
 
-			// Changing the task while this step is admitted cannot widen its policy.
+			// The user can change permission decisions immediately without rewriting
+			// the admitted request or broadening another task's authority.
 			expect(task.setTaskApprovalMode("auto")).toBe(true)
-			expect(task["getApprovalModeForAsk"]()).toBe("ask")
-			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "ask" })
+			expect(task.getStepApprovalMode()).toBe("ask")
+			expect(task["getApprovalModeForAsk"]()).toBe("auto")
+			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "approve" })
 			expect(await decide(task["getApprovalModeForAsk"](), "command", editAsk.command)).toEqual({
-				decision: "ask",
+				decision: "approve",
 			})
 
-			// The next admitted step receives Auto, while the provider's default and
-			// another task remain on Ask.
+			// Subsequent steps use the selected mode as well.
 			Object.assign(task, {
 				currentAgentStep: { snapshot: { context: { policy: { approval: { mode: "auto" } } } } },
 			})
