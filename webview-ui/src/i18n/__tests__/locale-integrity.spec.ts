@@ -1,5 +1,4 @@
 import common from "../locales/en/common.json"
-import marketplace from "../locales/en/marketplace.json"
 import settings from "../locales/en/settings.json"
 
 const localeFiles = import.meta.glob("../locales/**/*.json", { eager: true })
@@ -37,11 +36,6 @@ describe("locale integrity", () => {
 		expect(common.dismiss).toBe("Dismiss")
 		expect(common.dismissAndDontShowAgain).toBe("Dismiss and don't show again")
 		expect(settings.providers.refreshModels.missingConfig).toEqual(expect.any(String))
-	})
-
-	it("does not require interpolation for the English clear-tags action", () => {
-		expect(marketplace.filters.tags.clear).toBe("Clear tags")
-		expect(marketplace.filters.tags.clear).not.toContain("{{")
 	})
 
 	it("ships only the English locale", () => {

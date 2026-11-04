@@ -94,8 +94,9 @@ export class CodeIndexServiceFactory {
 
 		let vectorSize: number | undefined
 
-		// First try to get the model-specific dimension from profiles
-		vectorSize = getModelDimension(config.embedderProvider, modelId)
+		// Explicit compatible dimensions preserve existing custom deployments when presets are added.
+		vectorSize = config.embedderProvider === "openai" ? config.modelDimension : undefined
+		vectorSize ??= getModelDimension(config.embedderProvider, modelId)
 
 		// Only use manual dimension if model doesn't have a built-in dimension
 		if (!vectorSize && config.modelDimension && config.modelDimension > 0) {

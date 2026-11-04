@@ -26,6 +26,8 @@ type HttpProvider = Exclude<EmbedderProvider, "vertex" | "gemini">
 type ResponseBody = {
 	data?: { index: number; embedding: number[] }[]
 	embeddings?: { float?: number[][] }
+	embedding?: number[]
+	inputTextTokenCount?: number
 	usage?: { prompt_tokens?: number; total_tokens?: number }
 }
 
@@ -44,7 +46,8 @@ export class HttpEmbedder implements IEmbedder {
 	) {
 		this.limiter = new EmbeddingRateLimiter((rateLimitSeconds ?? 0) * 1000)
 		if (provider === "bedrock") {
-			if (model !== "cohere.embed-v4:0") throw new Error(t("embeddings:serviceFactory.embeddingModelMissing"))
+			if (!embeddingModelProfiles.bedrock?.[model])
+				throw new Error(t("embeddings:serviceFactory.embeddingModelMissing"))
 			const region = options.region || "us-east-1"
 			if (!/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(region))
 				throw new Error(t("embeddings:serviceFactory.bedrockRegionMissing"))
@@ -77,6 +80,14 @@ export class HttpEmbedder implements IEmbedder {
 	get embedderInfo(): EmbedderInfo {
 		return { name: this.provider, preferredBatchSize: BATCH_SEGMENT_THRESHOLD, managesRateLimit: true }
 	}
+	private get usesTitanFormat(): boolean {
+		return this.provider === "bedrock" && this.model === "amazon.titan-embed-text-v2:0"
+	}
+	private getModelProfile(model: string) {
+		// Explicit dimensions mark a custom compatible deployment. Preserve its pre-preset input format too.
+		if (this.provider === "openai" && this.expectedDimension) return undefined
+		return embeddingModelProfiles[this.provider]?.[model]
+	}
 	async createEmbeddings(
 		texts: string[],
 		model = this.model,
@@ -88,7 +99,7 @@ export class HttpEmbedder implements IEmbedder {
 		signal?.throwIfAborted()
 		if (this.provider === "bedrock" && model !== this.model)
 			throw new Error(t("embeddings:serviceFactory.embeddingModelMissing"))
-		const profile = embeddingModelProfiles[this.provider]?.[model]
+		const profile = this.getModelProfile(model)
 		const prefix = purpose === "query" ? profile?.queryPrefix : profile?.documentPrefix
 		const inputs = texts.map((text) => `${prefix ?? ""}${text}`)
 		for (const [index, text] of inputs.entries()) {
@@ -98,11 +109,13 @@ export class HttpEmbedder implements IEmbedder {
 				throw new Error(t("embeddings:textExceedsTokenLimit", { index, itemTokens, maxTokens: 8191 }))
 		}
 		const batches: string[][] = []
+		// Titan's InvokeModel contract accepts one inputText per request, unlike Cohere and OpenAI batches.
+		const batchSize = this.usesTitanFormat ? 1 : BATCH_SEGMENT_THRESHOLD
 		let batch: string[] = [],
 			tokens = 0
 		for (const text of inputs) {
 			const count = Math.ceil(text.length / 4)
-			if (batch.length >= BATCH_SEGMENT_THRESHOLD || (batch.length && tokens + count > 40000)) {
+			if (batch.length >= batchSize || (batch.length && tokens + count > 40000)) {
 				batches.push(batch)
 				batch = []
 				tokens = 0
@@ -160,8 +173,11 @@ export class HttpEmbedder implements IEmbedder {
 					priority,
 				)
 				progress?.({ stage: "request" })
-				const body =
-					this.provider === "bedrock"
+				const profile = this.getModelProfile(model)
+				const inputType = profile?.inputType?.[purpose]
+				const body = this.usesTitanFormat
+					? { inputText: input[0], dimensions: 1024, normalize: true }
+					: this.provider === "bedrock"
 						? {
 								texts: input,
 								input_type: purpose === "query" ? "search_query" : "search_document",
@@ -169,7 +185,12 @@ export class HttpEmbedder implements IEmbedder {
 								output_dimension: 1536,
 								truncate: "NONE",
 							}
-						: { input, model, encoding_format: "float" }
+						: {
+								input,
+								model,
+								encoding_format: "float",
+								...(inputType ? { input_type: inputType } : {}),
+							}
 				const result = await withEmbeddingTimeout(async (requestSignal) => {
 					const response = await this.fetch(this.endpoint, {
 						method: "POST",
@@ -191,7 +212,8 @@ export class HttpEmbedder implements IEmbedder {
 				}, signal)
 				signal?.throwIfAborted()
 				let embeddings: number[][]
-				if (this.provider === "bedrock") embeddings = result.embeddings?.float ?? []
+				if (this.usesTitanFormat) embeddings = result.embedding ? [result.embedding] : []
+				else if (this.provider === "bedrock") embeddings = result.embeddings?.float ?? []
 				else {
 					const ordered = [...(result.data ?? [])].sort((a, b) => a.index - b.index)
 					if (ordered.some((item, index) => item.index !== index))
@@ -199,14 +221,14 @@ export class HttpEmbedder implements IEmbedder {
 					embeddings = ordered.map((item) => item.embedding)
 				}
 				validateEmbeddingBatch(embeddings, input.length)
-				const dimension = embeddingModelProfiles[this.provider]?.[model]?.dimension ?? this.expectedDimension
+				const dimension = profile?.dimension ?? this.expectedDimension
 				if (dimension && embeddings.some((vector) => vector.length !== dimension))
 					throw new Error(t("embeddings:validation.invalidResponse"))
 				return {
 					embeddings,
 					usage: {
-						promptTokens: result.usage?.prompt_tokens ?? 0,
-						totalTokens: result.usage?.total_tokens ?? 0,
+						promptTokens: result.usage?.prompt_tokens ?? result.inputTextTokenCount ?? 0,
+						totalTokens: result.usage?.total_tokens ?? result.inputTextTokenCount ?? 0,
 					},
 				}
 			} catch (error) {

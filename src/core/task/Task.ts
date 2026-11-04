@@ -17197,7 +17197,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.getTaskCancellationSignal().throwIfAborted()
 				const parsedUserContent = preparedMessages.pop()!.content
 
-				// Switch mode if specified in a slash command's frontmatter
+				// Apply only host-owned mode admission such as /plan.
 				if (slashCommandMode && provider) {
 					const targetMode = getModeBySlug(slashCommandMode, state?.customModes)
 					if (targetMode) {

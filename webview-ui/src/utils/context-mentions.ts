@@ -1,4 +1,5 @@
 import { Fzf } from "fzf"
+import { t } from "i18next"
 import { planModeSlug } from "@alpha/modes"
 
 import type { ModeConfig, Command } from "@alpha-code/types"
@@ -172,7 +173,7 @@ export function getContextMenuOptions(
 			if (matchingCommands.length > 0) {
 				results.push({
 					type: ContextMenuOptionType.SectionHeader,
-					label: "Commands",
+					label: t("chat:slashSkills.title"),
 				})
 				results.push(...matchingCommands)
 			}

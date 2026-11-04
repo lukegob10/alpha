@@ -15,6 +15,8 @@ The exact development and release reference host is VS Code **1.141.0**; it does
 - Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff.
 - Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
 - Use built-in skills, Alpha Tickets, the HTML document previewer, and scheduled tasks.
+  Type `/skill-name` to invoke a skill, and manage reusable workflows in **Settings → Skills**.
+  Custom `.alpha/commands/*.md` files are no longer loaded.
 - Connect MCP servers and use automatic context compaction for longer tasks.
 
 Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provider selection does not change the approval

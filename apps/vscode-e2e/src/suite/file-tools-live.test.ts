@@ -56,7 +56,7 @@ suite("Live Copilot file-tool contracts", function () {
 		)
 	})
 
-	test("patch reports applied, error and skipped files after a partial failure", async () => {
+	test("patch preflight reports every path without editing valid siblings after a failed hunk", async () => {
 		const paths = ["first", "second", "third", "fourth"].map((name) => `${prefix}/partial-${name}.txt`)
 		const patch = [
 			"*** Begin Patch",
@@ -105,15 +105,15 @@ suite("Live Copilot file-tool contracts", function () {
 				assert.ok(Array.isArray(ledger))
 				assert.deepEqual(
 					ledger.map((entry) => record(entry).status),
-					["applied", "error", "applied", "skipped"],
+					["skipped", "error", "skipped", "skipped"],
 				)
 				assert.deepEqual(
 					ledger.map((entry) => record(entry).path),
 					paths,
 				)
-				assert.equal(await fs.readFile(path.join(workspace, paths[0]!), "utf8"), "first new\n")
+				assert.equal(await fs.readFile(path.join(workspace, paths[0]!), "utf8"), "first old\n")
 				assert.equal(await fs.readFile(path.join(workspace, paths[1]!), "utf8"), "second old\n")
-				assert.equal(await fs.readFile(path.join(workspace, paths[2]!), "utf8"), "third new\n")
+				assert.equal(await fs.readFile(path.join(workspace, paths[2]!), "utf8"), "third old\n")
 				assert.equal(await fs.readFile(path.join(workspace, paths[3]!), "utf8"), "fourth old\n")
 				assert.match(String(record(ledger[1]).reason), /Failed to find expected lines/)
 				assert.match(String(record(ledger[3]).reason), /alphaignore/)

@@ -159,7 +159,6 @@ export async function importSettingsFromPath(
 		// They will be imported automatically with the config - no special handling needed
 
 		const referencedIds = [
-			globalSettings.enhancementApiConfigId,
 			globalSettings.subagentDefaultApiConfigId,
 			...Object.values(globalSettings.subagentApiConfigByRole ?? {}),
 		].filter((id): id is string => typeof id === "string")
@@ -169,8 +168,6 @@ export async function importSettingsFromPath(
 		const finalProfiles = importedProfiles ?? providerProfiles
 		const remapId = createImportedProfileIdRemapper(providerProfiles, finalProfiles)
 		const finalSettings = { ...globalSettings }
-		if (finalSettings.enhancementApiConfigId !== undefined)
-			finalSettings.enhancementApiConfigId = remapId(finalSettings.enhancementApiConfigId)
 		if (finalSettings.subagentDefaultApiConfigId !== undefined)
 			finalSettings.subagentDefaultApiConfigId = remapId(finalSettings.subagentDefaultApiConfigId)
 		if (finalSettings.subagentApiConfigByRole)

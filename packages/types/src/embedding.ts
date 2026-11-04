@@ -30,10 +30,14 @@ export interface EmbeddingModelProfile {
 	scoreThreshold?: number // Model-specific minimum score threshold for semantic search.
 	queryPrefix?: string // Optional prefix required by the model for queries.
 	documentPrefix?: string
-	// Add other model-specific properties if needed, e.g., context window size.
+	/** Retrieval purpose values used by OpenRouter models with a native input_type parameter. */
+	inputType?: { query: string; document: string }
 }
 
-/** Provider documentation verified 2026-11-03. Existing Vertex defaults preserve saved index identity. */
+/**
+ * Curated text/code embedding models; provider IDs and default dimensions verified 2026-11-03.
+ * Existing defaults preserve saved index identity. Compatible IDs use the publishers' deployment names.
+ */
 export const embeddingModelProfiles: EmbeddingModelProfiles = {
 	vertex: {
 		"gemini-embedding-001": { dimension: 3072, scoreThreshold: 0.4 },
@@ -45,23 +49,72 @@ export const embeddingModelProfiles: EmbeddingModelProfiles = {
 		"gemini-embedding-2": { dimension: 3072, scoreThreshold: 0.4 },
 		"gemini-embedding-001": { dimension: 3072, scoreThreshold: 0.4 },
 	},
-	"openai-native": { "text-embedding-3-large": { dimension: 3072, scoreThreshold: 0.4 } },
-	openai: { "text-embedding-3-large": { dimension: 3072, scoreThreshold: 0.4 } },
+	"openai-native": {
+		"text-embedding-3-large": { dimension: 3072, scoreThreshold: 0.4 },
+		"text-embedding-3-small": { dimension: 1536, scoreThreshold: 0.4 },
+	},
+	openai: {
+		"text-embedding-3-large": { dimension: 3072, scoreThreshold: 0.4 },
+		"text-embedding-3-small": { dimension: 1536, scoreThreshold: 0.4 },
+		"Qwen/Qwen3-Embedding-8B": {
+			dimension: 4096,
+			scoreThreshold: 0.4,
+			queryPrefix: "Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
+		},
+		"Qwen/Qwen3-Embedding-4B": {
+			dimension: 2560,
+			scoreThreshold: 0.4,
+			queryPrefix: "Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
+		},
+		"BAAI/bge-m3": { dimension: 1024, scoreThreshold: 0.4 },
+		"nomic-ai/nomic-embed-text-v1.5": {
+			dimension: 768,
+			scoreThreshold: 0.4,
+			queryPrefix: "search_query: ",
+			documentPrefix: "search_document: ",
+		},
+	},
 	openrouter: {
 		"qwen/qwen3-embedding-8b": {
 			dimension: 4096,
 			scoreThreshold: 0.4,
 			queryPrefix: "Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
 		},
+		"qwen/qwen3-embedding-4b": {
+			dimension: 2560,
+			scoreThreshold: 0.4,
+			queryPrefix: "Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
+		},
 		"openai/text-embedding-3-large": { dimension: 3072, scoreThreshold: 0.4 },
+		"openai/text-embedding-3-small": { dimension: 1536, scoreThreshold: 0.4 },
 		"google/gemini-embedding-2": {
 			dimension: 3072,
 			scoreThreshold: 0.4,
 			queryPrefix: "task: code retrieval | query: ",
 			documentPrefix: "title: none | text: ",
 		},
+		"cohere/embed-5-pro": {
+			dimension: 2048,
+			scoreThreshold: 0.4,
+			inputType: { query: "search_query", document: "search_document" },
+		},
+		"cohere/embed-5-fast": {
+			dimension: 2048,
+			scoreThreshold: 0.4,
+			inputType: { query: "search_query", document: "search_document" },
+		},
+		"mongodb/voyage-code-4": {
+			dimension: 1024,
+			scoreThreshold: 0.4,
+			inputType: { query: "query", document: "document" },
+		},
+		"mistralai/codestral-embed-2505": { dimension: 1536, scoreThreshold: 0.4 },
+		"baai/bge-m3": { dimension: 1024, scoreThreshold: 0.4 },
 	},
-	bedrock: { "cohere.embed-v4:0": { dimension: 1536, scoreThreshold: 0.4 } },
+	bedrock: {
+		"cohere.embed-v4:0": { dimension: 1536, scoreThreshold: 0.4 },
+		"amazon.titan-embed-text-v2:0": { dimension: 1024, scoreThreshold: 0.4 },
+	},
 }
 
 export type EmbeddingModelProfiles = {

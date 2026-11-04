@@ -162,7 +162,7 @@ export class CodeIndexConfigManager {
 		}
 		if (this.provider === "bedrock" && !/^[a-z]{2}(?:-[a-z0-9]+)+-\d$/.test(c.embeddingOptions?.region ?? ""))
 			return t("embeddings:serviceFactory.bedrockRegionMissing")
-		if (this.provider === "bedrock" && (c.modelId ?? getDefaultModelId("bedrock")) !== "cohere.embed-v4:0")
+		if (this.provider === "bedrock" && !getModelDimension("bedrock", c.modelId ?? getDefaultModelId("bedrock")))
 			return t("embeddings:serviceFactory.embeddingModelMissing")
 		if (!this.currentModelDimension || !(c.modelId ?? getDefaultModelId(this.provider)))
 			return t("embeddings:serviceFactory.embeddingModelMissing")
@@ -209,6 +209,8 @@ export class CodeIndexConfigManager {
 		return this.config.modelId
 	}
 	get currentModelDimension(): number | undefined {
+		// Saved compatible deployments keep their explicit shape when a matching preset is introduced.
+		if (this.provider === "openai" && this.config.modelDimension) return this.config.modelDimension
 		return (
 			getModelDimension(this.provider, this.config.modelId ?? getDefaultModelId(this.provider)) ??
 			this.config.modelDimension

@@ -39,16 +39,20 @@ function vertexConfig(overrides: Record<string, unknown> = {}) {
 describe("CodeIndexConfigManager", () => {
 	it.each([
 		["openai-native", "codebaseIndexOpenAiApiKey", "text-embedding-3-large", 3072],
+		["openai-native", "codebaseIndexOpenAiApiKey", "text-embedding-3-small", 1536],
 		["openrouter", "codebaseIndexOpenRouterApiKey", "qwen/qwen3-embedding-8b", 4096],
+		["openrouter", "codebaseIndexOpenRouterApiKey", "mongodb/voyage-code-4", 1024],
+		["openai", "codebaseIndexOpenAiCompatibleApiKey", "Qwen/Qwen3-Embedding-4B", 2560],
 		["openai", "codebaseIndexOpenAiCompatibleApiKey", "custom-embedding", 1024],
 		["bedrock", "codebaseIndexBedrockApiKey", "cohere.embed-v4:0", 1536],
+		["bedrock", "codebaseIndexBedrockApiKey", "amazon.titan-embed-text-v2:0", 1024],
 	] as const)(
 		"loads %s with dedicated credentials and restarts after relevant connection changes",
 		async (provider, field, model, dimension) => {
 			const settings = vertexConfig({
 				codebaseIndexEmbedderProvider: provider,
 				codebaseIndexEmbedderModelId: model,
-				codebaseIndexEmbedderModelDimension: dimension,
+				codebaseIndexEmbedderModelDimension: model === "custom-embedding" ? dimension : undefined,
 				codebaseIndexOpenAiCompatibleBaseUrl: "https://embeddings.test/v1",
 				codebaseIndexBedrockRegion: "us-west-2",
 			})
@@ -73,6 +77,30 @@ describe("CodeIndexConfigManager", () => {
 		const manager = new CodeIndexConfigManager(context as unknown as ContextProxy)
 		expect(manager.isFeatureConfigured).toBe(false)
 		expect(manager.getConfig().vertexOptions).not.toHaveProperty("helixCommand")
+	})
+	it("rejects unsupported Bedrock models even when manual dimensions are supplied", () => {
+		const context = createContextProxy(
+			vertexConfig({
+				codebaseIndexEmbedderProvider: "bedrock",
+				codebaseIndexEmbedderModelId: "unsupported-model",
+				codebaseIndexEmbedderModelDimension: 1024,
+			}),
+		)
+		const manager = new CodeIndexConfigManager(context as unknown as ContextProxy)
+		expect(manager.isFeatureConfigured).toBe(false)
+	})
+	it("preserves explicit dimensions for a compatible deployment that now has a preset", () => {
+		const context = createContextProxy(
+			vertexConfig({
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexOpenAiCompatibleBaseUrl: "https://embeddings.test/v1",
+				codebaseIndexEmbedderModelId: "nomic-ai/nomic-embed-text-v1.5",
+				codebaseIndexEmbedderModelDimension: 384,
+			}),
+		)
+		const manager = new CodeIndexConfigManager(context as unknown as ContextProxy)
+		expect(manager.isFeatureConfigured).toBe(true)
+		expect(manager.currentModelDimension).toBe(384)
 	})
 	it("requires a custom endpoint and known or explicit dimensions for compatible embeddings", () => {
 		const context = createContextProxy(

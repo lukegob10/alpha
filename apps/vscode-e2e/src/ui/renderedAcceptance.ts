@@ -362,7 +362,8 @@ export async function exerciseRenderedAcceptance(
 				"d.querySelector('[data-testid=save-button]').disabled",
 			)
 			try {
-				for (const section of ["providers", "modes", "autoApprove", "agents", "mcp"]) {
+				await check("!d.querySelector('[data-testid=tab-modes]')")
+				for (const section of ["providers", "autoApprove", "agents", "mcp"]) {
 					await activate(`[data-testid="settings-tab-list"] [data-testid="tab-${section}"]`)
 					await check(
 						`d.querySelector('[data-testid="tab-${section}"]').getAttribute('aria-selected')==='true'`,

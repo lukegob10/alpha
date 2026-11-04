@@ -174,13 +174,13 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 
 	it("reuses one capture for equivalent object keys and MCP tool order", async () => {
 		const { servers, options } = createFixture()
-		options.experiments = { imageGeneration: false, runSlashCommand: false }
+		options.experiments = { preventFocusDisruption: false, customTools: false }
 		const first = await capture(options)
 
 		servers[0].tools!.reverse()
 		const second = await capture({
 			...options,
-			experiments: { runSlashCommand: false, imageGeneration: false },
+			experiments: { customTools: false, preventFocusDisruption: false },
 		})
 
 		expect(second).toBe(first)

@@ -1,14 +1,11 @@
 import React, { useEffect, useRef, useState } from "react"
 import { getIconForFilePath, getIconUrlByName, getIconForDirectoryPath } from "vscode-material-icons"
-import { Trans } from "react-i18next"
 import { t } from "i18next"
 import { Settings } from "lucide-react"
 
 import { ContextMenuOptionType, ContextMenuQueryItem } from "@src/utils/context-mentions"
 import { removeLeadingNonAlphanumeric } from "@src/utils/removeLeadingNonAlphanumeric"
 import { vscode } from "@src/utils/vscode"
-
-import { buildDocLink } from "@/utils/docLinks"
 
 interface ContextMenuProps {
 	id: string
@@ -251,11 +248,11 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 	const handleSettingsClick = (e: React.MouseEvent) => {
 		// Prevent any default behavior
 		e.preventDefault()
-		// Switch to settings tab and navigate to slash commands section
+		// Manage the skills exposed by the slash menu.
 		vscode.postMessage({
 			type: "switchTab",
 			tab: "settings",
-			values: { section: "slashCommands" },
+			values: { section: "skills" },
 		})
 	}
 
@@ -287,33 +284,15 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 					overflowY: "auto",
 					overflowX: "hidden",
 				}}>
-				{/* Settings button for slash commands */}
+				{/* Skills exposed through slash invocation */}
 				{searchQuery === "/" && (
 					<div className="p-2 flex items-start gap-4 justify-between">
-						{searchQuery.length === 1 && (
-							<div className="text-sm">
-								<p className="font-bold text-base text-vscode-foreground mt-1 mb-0.5">Slash Commands</p>
-								<p className="text-xs mt-0.5 -mb-1">
-									<Trans
-										i18nKey="settings:slashCommands.description"
-										components={{
-											DocsLink: (
-												<a
-													href={buildDocLink(
-														"features/slash-commands",
-														"slash_commands_settings",
-													)}
-													target="_blank"
-													rel="noopener noreferrer"
-													className="text-vscode-textLink-foreground hover:underline">
-													{t("common:docsLink.label")}
-												</a>
-											),
-										}}
-									/>
-								</p>
-							</div>
-						)}
+						<div className="text-sm">
+							<p className="font-bold text-base text-vscode-foreground mt-1 mb-0.5">
+								{t("chat:slashSkills.title")}
+							</p>
+							<p className="text-xs mt-0.5 -mb-1">{t("chat:slashSkills.description")}</p>
+						</div>
 						<button
 							className="mt-1 cursor-pointer"
 							onClick={handleSettingsClick}
@@ -329,7 +308,7 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 								e.currentTarget.style.opacity = "0.7"
 								e.currentTarget.style.backgroundColor = "transparent"
 							}}
-							title={t("chat:slashCommands.manageCommands")}>
+							title={t("chat:slashSkills.manageSkills")}>
 							<Settings size={16} />
 						</button>
 					</div>

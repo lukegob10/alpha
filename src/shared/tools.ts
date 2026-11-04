@@ -369,6 +369,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	}
 	codebase_search: { query: string; path?: string }
 	generate_image: GenerateImageParams
+	// Decode saved tool transactions without restoring the retired tool.
 	run_slash_command: { command: string; args?: string }
 	skill: {
 		skill?: string | null
@@ -550,11 +551,6 @@ export interface AttemptCompletionToolUse extends ToolUse<"attempt_completion"> 
 export interface NewTaskToolUse extends ToolUse<"new_task"> {
 	name: "new_task"
 	params: Partial<Pick<Record<ToolParamName, string>, "mode" | "message" | "todos">>
-}
-
-export interface RunSlashCommandToolUse extends ToolUse<"run_slash_command"> {
-	name: "run_slash_command"
-	params: Partial<Pick<Record<ToolParamName, string>, "command" | "args">>
 }
 
 export interface SkillToolUse extends ToolUse<"skill"> {
@@ -762,7 +758,6 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"new_task",
 	"update_plan",
-	"run_slash_command",
 	"skill",
 	"tool_search",
 ] as const

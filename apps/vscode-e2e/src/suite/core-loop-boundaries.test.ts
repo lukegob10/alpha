@@ -413,6 +413,7 @@ suite("Coding workflow tool recovery", function () {
 					apiProvider: "fake-ai",
 					fakeAi: scripted,
 					mode: "code",
+					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowReadOnly: true,
 					alwaysAllowExecute: true,

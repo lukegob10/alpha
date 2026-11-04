@@ -30,6 +30,7 @@ import { isTaskOperationApproval, ToolApprovalDetails } from "./ToolApprovalDeta
 import { resolveLegacyChildLink } from "./utils/legacyChildLink"
 import { TodoChangeDisplay } from "./TodoChangeDisplay"
 import CodeAccordion from "../common/CodeAccordion"
+import { openFileDiffs } from "@src/utils/openDiff"
 import MarkdownBlock from "../common/MarkdownBlock"
 import { ReasoningBlock } from "./ReasoningBlock"
 import Thumbnails from "../common/Thumbnails"
@@ -592,13 +593,14 @@ const ChatRowContentInner = ({
 		return (tool.content ?? tool.diff) as string | undefined
 	}, [tool])
 
-	const onJumpToCreatedFile = useMemo(() => {
-		if (!tool || tool.tool !== "newFileCreated" || !tool.path) {
-			return undefined
-		}
-
-		return () => vscode.postMessage({ type: "openFile", text: "./" + tool.path })
-	}, [tool])
+	const onOpenToolDiff = useCallback(() => {
+		if (!tool?.path) return
+		openFileDiffs(
+			[{ ...tool, path: tool.path, diff: unifiedDiff ?? "" }],
+			t("chat:fileChangesInConversation.diffTitleForFile", { path: tool.path }),
+			t("chat:fileChangesInConversation.diffTitle"),
+		)
+	}, [tool, unifiedDiff, t])
 
 	const followUpData = useMemo(() => {
 		if (message.type === "ask" && message.ask === "followup" && !message.partial) {
@@ -732,7 +734,7 @@ const ChatRowContentInner = ({
 								isLoading={message.partial}
 								isExpanded={isExpanded}
 								onToggleExpand={handleToggleExpand}
-								onJumpToFile={onJumpToCreatedFile}
+								onOpenDiff={onOpenToolDiff}
 								diffStats={tool.diffStats}
 							/>
 						</div>
@@ -776,7 +778,7 @@ const ChatRowContentInner = ({
 								progressStatus={message.progressStatus}
 								isLoading={message.partial}
 								isExpanded={isExpanded}
-								onToggleExpand={handleToggleExpand}
+								onOpenDiff={onOpenToolDiff}
 								diffStats={tool.diffStats}
 							/>
 						</div>
@@ -1177,6 +1179,7 @@ const ChatRowContentInner = ({
 						</div>
 					</ActivityStep>
 				)
+			// Saved transcripts retain display support for the retired custom-command tool.
 			case "runSlashCommand": {
 				const slashCommandInfo = tool
 				return (
@@ -1662,7 +1665,20 @@ const ChatRowContentInner = ({
 								language="diff"
 								isFeedback={true}
 								isExpanded={isExpanded}
-								onToggleExpand={handleToggleExpand}
+								onOpenDiff={() =>
+									openFileDiffs(
+										[
+											{
+												path: tool?.path || "user-edits",
+												diff: tool?.diff ?? "",
+												originalContent: tool?.originalContent,
+												finalContent: tool?.finalContent,
+											},
+										],
+										t("chat:fileChangesInConversation.diffTitle"),
+										t("chat:fileChangesInConversation.diffTitle"),
+									)
+								}
 							/>
 						</div>
 					)
@@ -1812,6 +1828,7 @@ const ChatRowContentInner = ({
 								</div>
 							)
 						}
+						// Saved transcripts retain display support for the retired custom-command tool.
 						case "runSlashCommand": {
 							const slashCommandInfo = sayTool
 							return (

@@ -166,7 +166,7 @@ test("release publication waits for all six verified native host packages", () =
 	assert.equal(manifest.scripts["publish:marketplace"], undefined)
 	const workflow = parse(readFileSync(new URL("../.github/workflows/release-vsix.yml", import.meta.url), "utf8"))
 	const packaging = workflow.jobs["package-vsix"]
-	assert.equal(packaging.needs, "release-vsix")
+	assert.deepEqual(packaging.needs, ["release-vsix", "live-quality"])
 	assert.equal(packaging["runs-on"], "${{ matrix.os }}")
 	assert.deepEqual(packaging.strategy, {
 		"fail-fast": false,
@@ -180,7 +180,7 @@ test("release publication waits for all six verified native host packages", () =
 	assert.equal(nativeIndex.if, "matrix.native_index")
 	const verification = packaging.steps.find((step) => step.id === "artifact")
 	assert.ok(verification.run.includes("bin/alpha-$version-${{ matrix.target }}.vsix"))
-	assert.ok(verification.run.includes('--check-source --target "${{ matrix.target }}"'))
+	assert.ok(verification.run.includes('--check-source --require-clean-build --target "${{ matrix.target }}"'))
 	const upload = packaging.steps.find((step) => step.uses === "actions/upload-artifact@v6")
 	assert.equal(upload.with.name, "alpha-vsix-${{ matrix.target }}")
 	assert.equal(upload.with.path, "${{ steps.artifact.outputs.path }}")

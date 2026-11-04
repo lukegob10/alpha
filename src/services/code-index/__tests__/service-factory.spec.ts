@@ -138,6 +138,23 @@ describe("CodeIndexServiceFactory", () => {
 			expect.any(String),
 		)
 	})
+	it("preserves a compatible deployment's explicit dimensions when a preset is added", () => {
+		configManager.getConfig.mockReturnValue({
+			isConfigured: true,
+			embedderProvider: "openai",
+			modelId: "nomic-ai/nomic-embed-text-v1.5",
+			modelDimension: 384,
+			vectorStoreProvider: "lancedb",
+			localIndexPath: ".alpha/code-index/lancedb",
+		})
+		factory.createVectorStore()
+		expect(LanceDbVectorStore).toHaveBeenCalledWith(
+			"/workspace",
+			".alpha/code-index/lancedb",
+			384,
+			expect.any(String),
+		)
+	})
 
 	it("rejects an unknown model without a dimension override", () => {
 		vi.mocked(getModelDimension).mockReturnValue(undefined)

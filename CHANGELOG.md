@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.22
+
+### Patch Changes
+
+- Simplify settings around skills, Code and Plan, and English. Keep `/skill-name` available while removing the separate custom-command setup, marketplace, and prompt-enhancement controls.
+- Use native VS Code file review and expand embedding-model configuration for code search.
+- Accept ordinary final responses without synthetic continuation while preserving explicitly pending work, cancellation, and structured tool results.
+- Serialize approval prompts across concurrent reads in the same task, allow approved reads to run together, and cancel queued approvals promptly.
+- Verify complete tool receipts against bounded lifecycle previews and align live patch tests with whole-patch preflight validation.
+- Update the extension and in-app release announcement together for Alpha 3.2.22. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
+
 ## 3.2.21
 
 ### Patch Changes

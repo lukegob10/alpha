@@ -30,6 +30,30 @@ function localizationReferences(value: unknown): string[] {
 }
 
 describe("extension command manifest", () => {
+	it("omits retired commands from commands, menus, and keyboard shortcuts", () => {
+		const retiredCommands = [
+			"alpha.sidebarMarketplace",
+			"alpha.marketplaceButtonClicked",
+			"alpha.explainCode",
+			"alpha.fixCode",
+			"alpha.improveCode",
+			"alpha.addToContext",
+			"alpha.terminalAddToContext",
+			"alpha.terminalFixCommand",
+			"alpha.terminalExplainCommand",
+		]
+		const commands = manifest.contributes.commands.map(({ command }) => command)
+		const menuCommands = Object.values(manifest.contributes.menus).flatMap((entries) =>
+			entries.map(({ command }) => command),
+		)
+		const shortcuts = manifest.contributes.keybindings.map(({ command }) => command)
+		for (const command of retiredCommands) {
+			expect(commands).not.toContain(command)
+			expect(menuCommands).not.toContain(command)
+			expect(shortcuts).not.toContain(command)
+		}
+	})
+
 	it("activates to restore editor chat panels after a window reload", () => {
 		expect(manifest.activationEvents).toContain("onWebviewPanel:alpha.TabPanelProvider")
 	})
@@ -102,12 +126,11 @@ describe("extension command manifest", () => {
 				when: "view == alpha.SidebarProvider && config.alpha.debug",
 			},
 			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
-			{ command: "alpha.sidebarMarketplace", group: "overflow@2", when: "view == alpha.SidebarProvider" },
 		])
 		for (const { command } of manifest.contributes.menus["view/title"]) {
 			expect(manifest.contributes.menus["editor/title"].some((item) => item.command === command)).toBe(false)
 		}
-		for (const command of ["sidebarNewChat", "sidebarSettings", "sidebarScheduledTasks", "sidebarMarketplace"]) {
+		for (const command of ["sidebarNewChat", "sidebarSettings", "sidebarScheduledTasks"]) {
 			expect(manifest.contributes.commands.some((item) => item.command === `alpha.${command}`)).toBe(true)
 			expect(manifest.contributes.menus.commandPalette).toContainEqual({
 				command: `alpha.${command}`,
@@ -122,7 +145,9 @@ describe("extension command manifest", () => {
 
 	it("provides visible zoom controls only in the native SVG preview", () => {
 		const when = "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
-		expect(manifest.contributes.menus["editor/title"]).toEqual(
+		expect(
+			manifest.contributes.menus["editor/title"].filter(({ command }) => command.startsWith("alpha.diagramZoom")),
+		).toEqual(
 			["Out", "In"].map((direction, index) => ({
 				command: `alpha.diagramZoom${direction}`,
 				when,
@@ -138,6 +163,28 @@ describe("extension command manifest", () => {
 			})
 			expect(manifest.contributes.menus.commandPalette).toContainEqual({ command, when })
 		}
+	})
+
+	it("scopes review actions and folding shortcuts to the native multi-file editor", () => {
+		const when = "activeEditor == multiDiffEditor"
+		expect(
+			manifest.contributes.commands.find(({ command }) => command === "alpha.diffReviewActions"),
+		).toMatchObject({
+			title: "%command.diffReviewActions.title%",
+			icon: "$(list-selection)",
+			enablement: when,
+		})
+		expect(manifest.contributes.menus["editor/title"]).toContainEqual({
+			command: "alpha.diffReviewActions",
+			when,
+			group: "navigation@90",
+		})
+		expect(
+			manifest.contributes.keybindings.filter(({ command }) => command.startsWith("multiDiffEditor.")),
+		).toEqual([
+			{ command: "multiDiffEditor.collapseAll", key: "ctrl+alt+0", mac: "cmd+alt+0", when },
+			{ command: "multiDiffEditor.expandAll", key: "ctrl+alt+9", mac: "cmd+alt+9", when },
+		])
 	})
 
 	it("resolves every contributed localization reference to a nonempty English label", () => {

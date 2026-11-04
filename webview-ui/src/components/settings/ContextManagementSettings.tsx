@@ -3,7 +3,7 @@ import React from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox, VSCodeTextArea } from "@vscode/webview-ui-toolkit/react"
 
-import { supportPrompt } from "@alpha/support-prompt"
+import { DEFAULT_CONDENSING_PROMPT } from "@alpha/condense-prompt"
 import { DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT, type AutoCondenseContextScope } from "@alpha-code/types"
 
 import { cn } from "@/lib/utils"
@@ -90,7 +90,7 @@ export const ContextManagementSettings = ({
 
 	// Helper function to get the CONDENSE prompt value
 	const getCondensePromptValue = (): string => {
-		return supportPrompt.get(customSupportPrompts, "CONDENSE")
+		return customSupportPrompts.CONDENSE ?? DEFAULT_CONDENSING_PROMPT
 	}
 
 	// Helper function to update the CONDENSE prompt

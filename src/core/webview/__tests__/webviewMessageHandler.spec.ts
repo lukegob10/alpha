@@ -1,9 +1,5 @@
 // npx vitest core/webview/__tests__/webviewMessageHandler.spec.ts
 
-vi.mock("../../../services/command/commands", () => ({
-	getCommands: vi.fn(),
-}))
-
 vi.mock("../../../integrations/misc/open-file", () => ({
 	openFile: vi.fn().mockResolvedValue(undefined),
 }))
@@ -29,12 +25,9 @@ import type { WebviewMessage } from "@alpha-code/types"
 import type { ExtensionContext } from "vscode"
 
 import { webviewMessageHandler } from "../webviewMessageHandler"
-import { MessageEnhancer } from "../messageEnhancer"
-import { beginPromptEnhancement } from "../promptEnhancementRequests"
 import { TaskRenameError } from "../../task-persistence/TaskHistoryStore"
 import * as todoTools from "../../tools/UpdateTodoListTool"
 import type { AlphaProvider } from "../AlphaProvider"
-import { getCommands } from "../../../services/command/commands"
 import { openFile } from "../../../integrations/misc/open-file"
 import { openDiff } from "../../../integrations/editor/openDiff"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
@@ -45,8 +38,6 @@ import {
 	ProviderProfileRenameError,
 	ProviderProfileSaveError,
 } from "../../config/ProviderSettingsManager"
-
-const mockGetCommands = vi.mocked(getCommands)
 
 // Mock AlphaProvider
 const mockAlphaProvider = {
@@ -147,62 +138,38 @@ describe("Settings persistence barrier", () => {
 	})
 })
 
-describe("prompt enhancement cancellation messages", () => {
-	afterEach(() => vi.restoreAllMocks())
-
-	it("does not cancel an enhancement when a stale Stop targets a previous turn", async () => {
+describe("retired feature messages", () => {
+	it.each([
+		"enhancePrompt",
+		"cancelEnhancePrompt",
+		"enhancementApiConfigId",
+		"fetchMarketplaceData",
+		"filterMarketplaceItems",
+		"installMarketplaceItem",
+		"removeInstalledMarketplaceItem",
+		"installMarketplaceItemWithParameters",
+		"cancelMarketplaceInstall",
+		"marketplaceButtonClicked",
+	])("ignores stale %s requests without changing tasks or settings", async (type) => {
+		const createTask = vi.fn()
+		const cancelTask = vi.fn()
+		const setValue = vi.fn()
+		const postMessageToWebview = vi.fn()
 		const host = {
 			...mockAlphaProvider,
-			getLiveTask: vi.fn(() => ({ matchesExpectedTurn: () => false })),
+			createTask,
+			cancelTask,
+			postMessageToWebview,
+			contextProxy: { ...mockAlphaProvider.contextProxy, setValue },
 		} as unknown as AlphaProvider
-		const request = beginPromptEnhancement(host, "current-enhancement", "task")
-		await webviewMessageHandler(host, { type: "cancelTask", taskId: "task", expectedTurnId: "previous-turn" })
-		expect(request.signal.aborted).toBe(false)
-		request.finish()
+
+		await webviewMessageHandler(host, { type, text: "Retired helper input" } as unknown as WebviewMessage)
+
+		expect(createTask).not.toHaveBeenCalled()
+		expect(cancelTask).not.toHaveBeenCalled()
+		expect(setValue).not.toHaveBeenCalled()
+		expect(postMessageToWebview).not.toHaveBeenCalled()
 	})
-
-	it.each(["cancelEnhancePrompt", "cancelTask"] as const)(
-		"%s cancels the owned request and rejects its late enhancement result",
-		async (control) => {
-			let enter!: () => void
-			let finish!: (result: { success: boolean; enhancedText: string }) => void
-			const entered = new Promise<void>((resolve) => (enter = resolve))
-			const response = new Promise<{ success: boolean; enhancedText: string }>((resolve) => (finish = resolve))
-			let requestSignal: AbortSignal | undefined
-			vi.spyOn(MessageEnhancer, "enhanceMessage").mockImplementationOnce((options) => {
-				requestSignal = options.signal
-				enter()
-				return response
-			})
-			const postMessageToWebview = vi.fn(async () => undefined)
-			const host = {
-				...mockAlphaProvider,
-				getState: vi.fn(async () => ({ apiConfiguration: { apiProvider: "vscode-lm" } })),
-				postMessageToWebview,
-			} as unknown as AlphaProvider
-			const pending = webviewMessageHandler(host, {
-				type: "enhancePrompt",
-				requestId: "enhance-cancelled",
-				taskId: "enhanced-task",
-				text: "Original draft",
-			})
-			await entered
-			await webviewMessageHandler(host, {
-				type: control,
-				requestId: "enhance-cancelled",
-				taskId: "enhanced-task",
-			})
-			finish({ success: true, enhancedText: "Late stale result" })
-			await pending
-
-			expect(requestSignal?.aborted).toBe(true)
-			expect(postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
-				type: "enhancedPrompt",
-				requestId: "enhance-cancelled",
-				enhancementStatus: "cancelled",
-			})
-		},
-	)
 })
 
 describe("chat rename and toolbar host messages", () => {
@@ -930,6 +897,8 @@ vi.mock("fs/promises", () => {
 			writeFile: mockWriteFile,
 		},
 		access: vi.fn().mockResolvedValue(undefined),
+		unlink: vi.fn(),
+		readdir: vi.fn(),
 		rm: mockRm,
 		mkdir: mockMkdir,
 		readFile: mockReadFile,
@@ -1025,6 +994,14 @@ describe("webviewMessageHandler - captured diff review", () => {
 		expect(mockAlphaProvider.getLiveTask).not.toHaveBeenCalled()
 		expect(fs.readFile).not.toHaveBeenCalled()
 		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
+	})
+
+	it("opens a legacy patch without a live task or workspace reads", async () => {
+		const legacyPayload = { title: "Alpha Diff", patch: { path: "legacy.ts", content: "-old\n+new" } }
+		await webviewMessageHandler(mockAlphaProvider, { type: "openDiff", payload: legacyPayload })
+		expect(openDiff).toHaveBeenCalledExactlyOnceWith(legacyPayload)
+		expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
+		expect(fs.readFile).not.toHaveBeenCalled()
 	})
 
 	it.each(["src/file.ts", "../../../private.txt", "/outside/workspace.txt", ""])(
@@ -2902,7 +2879,6 @@ describe("webviewMessageHandler - Alpha project configuration", () => {
 		vi.mocked(getWorkspacePath).mockReturnValue("/mock/workspace")
 		vi.mocked(fs.access).mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOENT" }))
 		vi.mocked(fs.writeFile).mockReset().mockResolvedValue(undefined)
-		mockGetCommands.mockResolvedValue([])
 	})
 
 	afterEach(() => {
@@ -2928,18 +2904,15 @@ describe("webviewMessageHandler - Alpha project configuration", () => {
 		expect(vscode.window.showErrorMessage).not.toHaveBeenCalled()
 	})
 
-	it("creates project slash commands in .alpha where discovery can find them", async () => {
+	it.each(["createCommand", "deleteCommand", "openCommandFile"])("ignores retired %s messages", async (type) => {
 		await webviewMessageHandler(mockAlphaProvider, {
-			type: "createCommand",
-			text: "Project Setup",
+			type,
+			text: "old-command",
 			values: { source: "project" },
-		})
-		expect(fs.writeFile).toHaveBeenCalledWith(
-			path.join("/mock/workspace", ".alpha", "commands", "project-setup.md"),
-			t("common:errors.command_template_content"),
-			"utf8",
-		)
-		expect(mockGetCommands).toHaveBeenCalledWith("/mock/workspace")
+		} as unknown as WebviewMessage)
+		expect(fs.writeFile).not.toHaveBeenCalled()
+		expect(fs.unlink).not.toHaveBeenCalled()
+		expect(openFile).not.toHaveBeenCalled()
 	})
 })
 
@@ -3272,179 +3245,78 @@ describe("webviewMessageHandler - command auto-approval settings", () => {
 	})
 })
 
-describe("webviewMessageHandler - requestCommands", () => {
+describe("webviewMessageHandler - slash skill discovery", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
 
-	it("includes skill slug commands and dedupes duplicate skill names while preserving first skill entry", async () => {
-		mockGetCommands.mockResolvedValue([])
-
-		const getTaskMode = vi.fn().mockResolvedValue("code")
+	it("lists only skills available in the current task mode and deduplicates names", async () => {
 		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
 			cwd: "/mock/workspace",
-			getTaskMode,
+			getTaskMode: vi.fn().mockResolvedValue("architect"),
 		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
-
 		const getSkillsForMode = vi.fn().mockReturnValue([
 			{
-				name: "skill-slug-entry",
-				description: "Primary skill slug",
-				path: "/mock/.alpha/skills/skill-slug-entry/SKILL.md",
+				name: "review",
+				description: "Project review",
+				path: "/project/.agents/skills/review/SKILL.md",
 				source: "project",
-				modeSlugs: ["code"],
 			},
 			{
-				name: "skill-slug-entry",
-				description: "Duplicate skill slug",
-				path: "/mock/.alpha/skills/duplicate-skill/SKILL.md",
+				name: "review",
+				description: "Global review",
+				path: "/global/.agents/skills/review/SKILL.md",
 				source: "global",
-				modeSlugs: ["code"],
 			},
 			{
-				name: "another-skill-slug",
-				description: "Another skill-generated command",
-				path: "/mock/.alpha/skills/another-skill-slug/SKILL.md",
-				source: "global",
-				modeSlugs: ["code"],
+				name: "debug",
+				description: "Debug issues",
+				path: "/extension/assets/skills/debug/SKILL.md",
+				source: "builtin",
 			},
 		])
-
-		vi.mocked(mockAlphaProvider.getSkillsManager).mockReturnValue({
-			getSkillsForMode,
-		} as unknown as ReturnType<AlphaProvider["getSkillsManager"]>)
+		vi.mocked(mockAlphaProvider.getSkillsManager).mockReturnValue({ getSkillsForMode } as unknown as ReturnType<
+			AlphaProvider["getSkillsManager"]
+		>)
 
 		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
 
-		const commandMessageCall = vi
-			.mocked(mockAlphaProvider.postMessageToWebview)
-			.mock.calls.find(([postedMessage]) => postedMessage.type === "commands")
-		expect(commandMessageCall).toBeDefined()
-
-		const commandMessage = commandMessageCall?.[0]
-		expect(commandMessage?.commands).toEqual(
-			expect.arrayContaining([
-				{
-					name: "skill-slug-entry",
-					source: "project",
-					filePath: "/mock/.alpha/skills/skill-slug-entry/SKILL.md",
-					description: "Primary skill slug",
-				},
-				{
-					name: "another-skill-slug",
-					source: "global",
-					filePath: "/mock/.alpha/skills/another-skill-slug/SKILL.md",
-					description: "Another skill-generated command",
-				},
-			]),
+		expect(getSkillsForMode).toHaveBeenCalledWith("architect")
+		expect(mockAlphaProvider.getSkillsManager).toHaveBeenCalledWith(
+			expect.objectContaining({ cwd: "/mock/workspace" }),
 		)
-
-		expect(commandMessage?.commands?.filter((command) => command.name === "skill-slug-entry")).toHaveLength(1)
-	})
-
-	it("adds skill-backed command entries without overriding existing command names", async () => {
-		mockGetCommands.mockResolvedValue([
-			{
-				name: "deploy",
-				content: "existing command",
-				source: "project",
-				filePath: "/mock/workspace/.alpha/commands/deploy.md",
-				description: "Deploy command",
-				argumentHint: "staging | production",
-			},
-		])
-
-		const getTaskMode = vi.fn().mockResolvedValue("code")
-		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
-			cwd: "/mock/workspace",
-			getTaskMode,
-		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
-
-		const getSkillsForMode = vi.fn().mockReturnValue([
-			{
-				name: "deploy",
-				description: "Deploy skill",
-				path: "/mock/.alpha/skills/deploy/SKILL.md",
-				source: "global",
-				modeSlugs: ["code"],
-			},
-			{
-				name: "skill-only",
-				description: "Skill-generated command",
-				path: "/mock/.alpha/skills/skill-only/SKILL.md",
-				source: "project",
-				modeSlugs: ["code"],
-			},
-		])
-
-		vi.mocked(mockAlphaProvider.getSkillsManager).mockReturnValue({
-			getSkillsForMode,
-		} as unknown as ReturnType<AlphaProvider["getSkillsManager"]>)
-
-		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
-
-		expect(getSkillsForMode).toHaveBeenCalledWith("code")
-
-		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
-			type: "commands",
-			commands: expect.arrayContaining([
-				{
-					name: "deploy",
-					source: "project",
-					filePath: "/mock/workspace/.alpha/commands/deploy.md",
-					description: "Deploy command",
-					argumentHint: "staging | production",
-				},
-				{
-					name: "skill-only",
-					source: "project",
-					filePath: "/mock/.alpha/skills/skill-only/SKILL.md",
-					description: "Skill-generated command",
-				},
-			]),
-		})
-
-		const commandMessageCall = vi
-			.mocked(mockAlphaProvider.postMessageToWebview)
-			.mock.calls.find(([postedMessage]) => postedMessage.type === "commands")
-		expect(commandMessageCall).toBeDefined()
-
-		const commandMessage = commandMessageCall?.[0]
-		expect(commandMessage?.commands?.filter((command) => command.name === "deploy")).toHaveLength(1)
-	})
-
-	it("preserves existing behavior when skills manager is unavailable", async () => {
-		mockGetCommands.mockResolvedValue([
-			{
-				name: "build",
-				content: "build command",
-				source: "built-in",
-				filePath: "<built-in:build>",
-				description: "Build command",
-				argumentHint: "target",
-			},
-		])
-
-		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
-			cwd: "/mock/workspace",
-		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
-
-		vi.mocked(mockAlphaProvider.getSkillsManager).mockReturnValue(undefined)
-
-		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
-
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "commands",
 			commands: [
 				{
-					name: "build",
+					name: "review",
+					description: "Project review",
+					filePath: "/project/.agents/skills/review/SKILL.md",
+					source: "project",
+				},
+				{
+					name: "debug",
+					description: "Debug issues",
+					filePath: "/extension/assets/skills/debug/SKILL.md",
 					source: "built-in",
-					filePath: "<built-in:build>",
-					description: "Build command",
-					argumentHint: "target",
 				},
 			],
 		})
+		expect(fs.readdir).not.toHaveBeenCalled()
+	})
+
+	it("returns an empty list when no skills manager is available", async () => {
+		vi.mocked(mockAlphaProvider.getSkillsManager).mockReturnValue(undefined)
+		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "commands", commands: [] })
+	})
+
+	it("clears suggestions when skill discovery fails", async () => {
+		vi.mocked(mockAlphaProvider.getSkillsManager).mockImplementation(() => {
+			throw new Error("unavailable")
+		})
+		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "commands", commands: [] })
 	})
 })
 

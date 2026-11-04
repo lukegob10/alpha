@@ -30,7 +30,8 @@ import { IpcServer } from "@alpha-code/ipc"
 import { Package } from "../shared/package"
 import { AlphaProvider } from "../core/webview/AlphaProvider"
 import { openAlphaInNewTab } from "../activate/registerCommands"
-import { getCommands } from "../services/command/commands"
+import { getSkillCommands } from "../services/skills/skillInvocation"
+import { defaultModeSlug } from "../shared/modes"
 import { probeModel } from "../api/probeModel"
 import { readExecutionIdentity } from "./executionIdentity"
 
@@ -123,7 +124,14 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 						break
 					case TaskCommandName.GetCommands:
 						try {
-							const commands = await getCommands(this.sidebarProvider.cwd)
+							const task = this.sidebarProvider.getCurrentTask()
+							const mode = task
+								? await task.getTaskMode()
+								: ((await this.sidebarProvider.getState()).mode ?? defaultModeSlug)
+							const skillsManager = task
+								? await this.sidebarProvider.getSkillsManager(task)
+								: this.sidebarProvider.getSkillsManager()
+							const commands = getSkillCommands(skillsManager?.getSkillsForMode(mode) ?? [])
 
 							sendResponse(AlphaCodeEventName.CommandsResponse, [
 								commands.map((cmd) => ({

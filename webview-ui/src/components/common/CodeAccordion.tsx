@@ -15,9 +15,10 @@ interface CodeAccordionProps {
 	language: string
 	progressStatus?: ToolProgressStatus
 	isLoading?: boolean
-	isExpanded: boolean
+	isExpanded?: boolean
 	isFeedback?: boolean
-	onToggleExpand: () => void
+	onToggleExpand?: () => void
+	onOpenDiff?: () => void
 	header?: string
 	onJumpToFile?: () => void
 	// New props for diff stats
@@ -35,6 +36,7 @@ const CodeAccordion = ({
 	onToggleExpand,
 	header,
 	onJumpToFile,
+	onOpenDiff,
 	diffStats,
 }: CodeAccordionProps) => {
 	const detailsId = useId()
@@ -56,9 +58,9 @@ const CodeAccordion = ({
 				<ToolUseBlockHeader className="group min-w-0">
 					<button
 						type="button"
-						aria-expanded={isExpanded}
-						aria-controls={detailsId}
-						onClick={onToggleExpand}
+						aria-expanded={onOpenDiff ? undefined : isExpanded}
+						aria-controls={onOpenDiff ? undefined : detailsId}
+						onClick={onOpenDiff ?? onToggleExpand}
 						className="flex min-w-0 flex-1 items-center rounded-sm text-left focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
 						{isLoading && <VSCodeProgressRing className="size-3 mr-2" />}
 						{header ? (
@@ -114,14 +116,14 @@ const CodeAccordion = ({
 								</>
 							)
 						)}
-						{!onJumpToFile && (
+						{!onOpenDiff && !onJumpToFile && (
 							<span
 								aria-hidden="true"
 								className={`shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 codicon codicon-chevron-${isExpanded ? "up" : "down"}`}
 							/>
 						)}
 					</button>
-					{onJumpToFile && path && (
+					{!onOpenDiff && onJumpToFile && path && (
 						<button
 							type="button"
 							className="flex shrink-0 items-center rounded-sm p-1 focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder"
@@ -139,17 +141,19 @@ const CodeAccordion = ({
 					)}
 				</ToolUseBlockHeader>
 			)}
-			<div
-				id={detailsId}
-				hidden={hasHeader && !isExpanded}
-				className="overflow-x-auto overflow-y-auto max-h-[300px] max-w-full">
-				{(!hasHeader || isExpanded) &&
-					(inferredLanguage === "diff" ? (
-						<DiffView source={source} filePath={path} />
-					) : (
-						<CodeBlock source={source} language={inferredLanguage} />
-					))}
-			</div>
+			{!onOpenDiff && (
+				<div
+					id={detailsId}
+					hidden={hasHeader && !isExpanded}
+					className="overflow-x-auto overflow-y-auto max-h-[300px] max-w-full">
+					{(!hasHeader || isExpanded) &&
+						(inferredLanguage === "diff" ? (
+							<DiffView source={source} filePath={path} />
+						) : (
+							<CodeBlock source={source} language={inferredLanguage} />
+						))}
+				</div>
+			)}
 		</ToolUseBlock>
 	)
 }

@@ -14,7 +14,7 @@ import { digestProviderTranscript } from "../task-persistence/ProviderTranscript
 import { isOpaqueProviderContentBlock, stripProviderResponseItemMetadata } from "../task-persistence/providerStateScope"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast, findLastIndex } from "../../shared/array"
-import { supportPrompt } from "../../shared/support-prompt"
+import { DEFAULT_CONDENSING_PROMPT } from "../../shared/condense-prompt"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
@@ -1247,7 +1247,7 @@ ${commandBlocks}
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
 	// This respects user's custom condensing prompt setting
-	const condenseInstructions = customCondensingPrompt?.trim() || supportPrompt.default.CONDENSE
+	const condenseInstructions = customCondensingPrompt?.trim() || DEFAULT_CONDENSING_PROMPT
 	const summaryBudgetTokens = Math.max(
 		0,
 		Math.floor(availableHistoryTokens - tail.tokens - verbatimUserSelection.tokens),

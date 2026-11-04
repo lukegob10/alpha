@@ -2231,12 +2231,12 @@ describe("AlphaProvider", () => {
 		expect(webviewState.managedAgentTree).toBe(projection)
 	})
 
-	test("language is set to VSCode language", async () => {
-		// Mock VSCode language as Spanish
+	test("a retired VSCode language falls back to English", async () => {
+		// Keep a retired host locale to verify the English fallback.
 		;(vscode.env as any).language = "pt-BR"
 
 		const state = await provider.getState()
-		expect(state.language).toBe("pt-BR")
+		expect(state.language).toBe("en")
 	})
 
 	test("writeDelayMs defaults to 1000ms", async () => {

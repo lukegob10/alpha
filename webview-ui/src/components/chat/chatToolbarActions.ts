@@ -7,5 +7,4 @@ export const chatToolbarActions = {
 	onOpenTickets: () => vscode.postMessage({ type: "openTickets" }),
 	onOpenIncidents: () => vscode.postMessage({ type: "openIncidentDashboard" }),
 	onOpenScheduledTasks: () => vscode.postMessage({ type: "switchTab", tab: "scheduledTasks" }),
-	onOpenMarketplace: () => vscode.postMessage({ type: "switchTab", tab: "marketplace" }),
 } satisfies Omit<ChatToolbarProps, "navigation" | "renderContext" | "debug" | "onNewChat">

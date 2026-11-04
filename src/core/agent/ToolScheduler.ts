@@ -303,14 +303,34 @@ function getStructuredToolResultStatus(content: ToolResponse): ToolResultStatus 
 class AsyncMutex {
 	private tail: Promise<void> = Promise.resolve()
 
-	async run<T>(operation: () => Promise<T>): Promise<T> {
+	async run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
+		if (signal?.aborted) return undefined
 		let release!: () => void
 		const previous = this.tail
 		this.tail = new Promise<void>((resolve) => {
 			release = resolve
 		})
 
-		await previous
+		if (signal) {
+			let onAbort: (() => void) | undefined
+			try {
+				await Promise.race([
+					previous,
+					new Promise<void>((resolve) => {
+						onAbort = resolve
+						signal.addEventListener("abort", onAbort, { once: true })
+						if (signal.aborted) onAbort()
+					}),
+				])
+			} finally {
+				if (onAbort) signal.removeEventListener("abort", onAbort)
+			}
+			if (signal.aborted) {
+				// A cancelled waiter must not open the lane ahead of its predecessor.
+				void previous.then(release)
+				return undefined
+			}
+		} else await previous
 		try {
 			return await operation()
 		} finally {
@@ -318,6 +338,10 @@ class AsyncMutex {
 		}
 	}
 }
+
+// Streamed reads use separate schedulers/adapters for one task. Codex 71a4c070
+// correlates each approval with its call; Alpha serializes its single task prompt.
+const taskApprovalMutexes = new WeakMap<object, AsyncMutex>()
 
 class ToolResultCollector {
 	private result: ToolResponse | undefined
@@ -775,7 +799,7 @@ function getVerificationOutput(content: ToolResponse): string {
 }
 
 export class ToolScheduler {
-	private readonly approvalMutex = new AsyncMutex()
+	private readonly approvalMutex: AsyncMutex
 	private readonly admissionMutex = new AsyncMutex()
 	private readonly capturedCustomToolNames: ReadonlySet<string>
 	private effectFenceFailure?: ToolEffectFenceError
@@ -812,7 +836,14 @@ export class ToolScheduler {
 	private deferredBatchFinishedEvent?: Extract<AgentTurnEvent, { type: "tool_batch_finished" }>
 
 	constructor(private readonly options: ToolSchedulerOptions) {
+		const approvalOwner = options.executionHost?.taskFacade ?? options.task ?? options.executionHost
+		this.approvalMutex = (approvalOwner && taskApprovalMutexes.get(approvalOwner)) || new AsyncMutex()
+		if (approvalOwner) taskApprovalMutexes.set(approvalOwner, this.approvalMutex)
 		this.capturedCustomToolNames = captureCustomToolNames(options.registry)
+	}
+
+	private runApproval<T>(operation: () => Promise<T>): Promise<T | undefined> {
+		return this.approvalMutex.run(operation, this.executionSignal)
 	}
 
 	private get executionHost(): ToolExecutionHost {
@@ -2457,7 +2488,7 @@ export class ToolScheduler {
 			responseMode: "boolean" | "structured",
 			captureCommandPresentation = false,
 		): Promise<ToolApprovalResponse | undefined> =>
-			this.approvalMutex.run(async () => {
+			this.runApproval(async () => {
 				try {
 					// A call stopped before this serialized lane opens has no approval
 					// request to resolve. Its cancelled tool receipt closes the call.

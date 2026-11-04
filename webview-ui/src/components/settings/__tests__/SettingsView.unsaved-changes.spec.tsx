@@ -185,11 +185,6 @@ vi.mock("@src/components/ui", async () => {
 	}
 })
 
-// Mock ModesView and McpView since they're rendered during indexing
-vi.mock("@src/components/modes/ModesView", () => ({
-	default: () => null,
-}))
-
 vi.mock("@src/components/mcp/McpView", () => ({
 	default: ({ mcpEnabled, onMcpEnabledChange }: any) => (
 		<button
@@ -313,12 +308,6 @@ vi.mock("../LanguageSettings", () => ({
 vi.mock("../About", () => ({
 	About: vi.fn(() => <div>About</div>),
 }))
-vi.mock("../PromptsSettings", () => ({
-	default: vi.fn(() => <div>PromptsSettings</div>),
-}))
-vi.mock("../SlashCommandsSettings", () => ({
-	SlashCommandsSettings: vi.fn(() => <div>SlashCommandsSettings</div>),
-}))
 vi.mock("../UISettings", () => ({
 	UISettings: vi.fn(() => <div>UISettings</div>),
 }))
@@ -395,7 +384,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		followupAutoApproveTimeoutMs: undefined,
 		includeDiagnosticMessages: false,
 		maxDiagnosticMessages: 50,
-		includeTaskHistoryInEnhance: true,
 		openRouterImageApiKey: undefined,
 		openRouterImageGenerationSelectedModel: undefined,
 		reasoningBlockCollapsed: true,

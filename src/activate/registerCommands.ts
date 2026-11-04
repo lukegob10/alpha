@@ -11,6 +11,7 @@ import { ContextProxy } from "../core/config/ContextProxy"
 import { focusPanel } from "../utils/focusPanel"
 import { handleNewTask } from "./handleTask"
 import { t } from "../i18n"
+import { showDiffReviewActions } from "../integrations/editor/diffReviewActions"
 import { manageTaskGoal } from "./goalCommands"
 import { recoverTaskHistory } from "./recoverTaskHistory"
 import { generateErrorDiagnostics } from "../core/webview/diagnosticsHandler"
@@ -73,6 +74,7 @@ export const registerCommands = (options: RegisterCommandOptions) => {
 
 const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOptions): Record<CommandId, any> => ({
 	activationCompleted: () => {},
+	diffReviewActions: showDiffReviewActions,
 	// Native media-preview commands are supported on VS Code 1.125.0 and 1.138.0 (verified 2026-10-26).
 	diagramZoomOut: () => vscode.commands.executeCommand("imagePreview.zoomOut"),
 	diagramZoomIn: () => vscode.commands.executeCommand("imagePreview.zoomIn"),
@@ -92,9 +94,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	sidebarScheduledTasks: () => {
 		TelemetryService.instance.captureTitleButtonClicked("scheduledTasks")
 		provider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
-	},
-	sidebarMarketplace: () => {
-		provider.postMessageToWebview({ type: "action", action: "marketplaceButtonClicked" })
 	},
 	plusButtonClicked: async (surface?: string) => {
 		const visibleProvider =
@@ -154,11 +153,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		TelemetryService.instance.captureTitleButtonClicked("scheduledTasks")
 
 		visibleProvider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
-	},
-	marketplaceButtonClicked: () => {
-		const visibleProvider = getVisibleProviderOrLog(outputChannel)
-		if (!visibleProvider) return
-		visibleProvider.postMessageToWebview({ type: "action", action: "marketplaceButtonClicked" })
 	},
 	newTask: handleNewTask,
 	exportDiagnostics: async () => {

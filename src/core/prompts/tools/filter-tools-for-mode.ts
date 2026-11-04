@@ -267,10 +267,8 @@ export function filterNativeToolsForMode(
 	// Historical transcripts may contain the retired image-generation tool.
 	allowedToolNames.delete("generate_image")
 
-	// Conditionally exclude run_slash_command if experiment is not enabled
-	if (!experiments?.runSlashCommand) {
-		allowedToolNames.delete("run_slash_command")
-	}
+	// Persisted tool names cannot restore a retired custom-command executor.
+	allowedToolNames.delete("run_slash_command")
 
 	// Remove tools that are explicitly disabled via the disabledTools setting
 	if (settings?.disabledTools?.length) {
@@ -375,7 +373,7 @@ export function isToolAllowedInMode(
 			return false
 		}
 		if (toolName === "run_slash_command") {
-			return experiments?.runSlashCommand === true
+			return false
 		}
 		return true
 	}

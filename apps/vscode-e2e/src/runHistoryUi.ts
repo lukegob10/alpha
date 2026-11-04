@@ -615,13 +615,13 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			pageSession,
 			false,
 		)
+		assert.ok(!menuEntries.includes("Marketplace"), "Marketplace must not appear in the toolbar")
 		const alphaMenuEntries = menuEntries.filter((label) =>
-			["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"].includes(label),
+			["Alpha: Incident Dashboard", "Scheduled Tasks"].includes(label),
 		)
 		assert.ok(
-			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks", "Marketplace"]) ||
-				JSON.stringify(alphaMenuEntries) ===
-					JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"]),
+			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks"]) ||
+				JSON.stringify(alphaMenuEntries) === JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks"]),
 			`Only approved toolbar entries remain: ${JSON.stringify(menuEntries)}`,
 		)
 		assert.ok(

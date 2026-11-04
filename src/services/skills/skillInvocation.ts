@@ -1,6 +1,24 @@
 import path from "path"
 
-import type { SkillContent } from "../../shared/skills"
+import type { Command } from "@alpha-code/types"
+import type { SkillContent, SkillMetadata } from "../../shared/skills"
+
+/** Slash commands project the effective skill catalog; they have no separate definitions. */
+export function getSkillCommands(skills: readonly SkillMetadata[]): Command[] {
+	const seen = new Set<string>()
+	return skills.flatMap((skill) => {
+		if (seen.has(skill.name)) return []
+		seen.add(skill.name)
+		return [
+			{
+				name: skill.name,
+				source: skill.source === "builtin" ? "built-in" : skill.source,
+				filePath: skill.path,
+				description: skill.description,
+			},
+		]
+	})
+}
 
 export interface SkillLookup {
 	getSkillContent(name: string, currentMode?: string): Promise<SkillContent | null>

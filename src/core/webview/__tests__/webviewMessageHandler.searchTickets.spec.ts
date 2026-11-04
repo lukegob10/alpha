@@ -42,7 +42,7 @@ describe("project ticket search routing", () => {
 		const host = provider()
 		const cancellation = new AbortController()
 		const message = { type: "searchTickets" as const, requestId: "lookup", query: "" }
-		await webviewMessageHandler(host as unknown as AlphaProvider, message, undefined, {
+		await webviewMessageHandler(host as unknown as AlphaProvider, message, {
 			ticketSearch: { signal: cancellation.signal, cwd: "/workspace" },
 		})
 		expect(searchTicketMentions).toHaveBeenCalledExactlyOnceWith("/workspace", message, cancellation.signal)
@@ -59,7 +59,6 @@ describe("project ticket search routing", () => {
 		const lookup = webviewMessageHandler(
 			host as unknown as AlphaProvider,
 			{ type: "searchTickets", taskId: "editor", requestId: "lookup", query: "" },
-			undefined,
 			{ ticketSearch: { signal: cancellation.signal, cwd: "/editor-project" } },
 		)
 		cancellation.abort(reason)
@@ -72,7 +71,6 @@ describe("project ticket search routing", () => {
 		await webviewMessageHandler(
 			host as unknown as AlphaProvider,
 			{ type: "searchTickets", taskId: "unknown", requestId: "lookup", query: "" },
-			undefined,
 			{ ticketSearch: { signal: new AbortController().signal, cwd: "/editor-project" } },
 		)
 		expect(searchTicketMentions).not.toHaveBeenCalled()

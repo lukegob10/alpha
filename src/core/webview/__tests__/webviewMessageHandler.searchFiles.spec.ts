@@ -302,7 +302,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		const running = webviewMessageHandler(
 			mockAlphaProvider,
 			{ type: "searchFiles", query: "source", requestId: "superseded" },
-			undefined,
 			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" } },
 		)
 		controller.abort()
@@ -328,7 +327,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		const running = webviewMessageHandler(
 			mockAlphaProvider,
 			{ type: "searchFiles", query: "source", requestId: "cancelled" },
-			undefined,
 			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" } },
 		)
 		await started
@@ -351,7 +349,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		await webviewMessageHandler(
 			mockAlphaProvider,
 			{ type: "searchFiles", query: "source", requestId: "old-view" },
-			undefined,
 			{ fileSearch: { signal: controller.signal, cwd: "/captured/project" }, isCurrentWebview: () => current },
 		)
 

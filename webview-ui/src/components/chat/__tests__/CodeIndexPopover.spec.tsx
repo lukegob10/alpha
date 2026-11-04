@@ -32,6 +32,29 @@ const indexingStatus: IndexingStatus = {
 	totalItems: 0,
 }
 
+// FAST reflects placeholders onto hidden form proxies as its controls upgrade.
+const getTextField = (placeholder: string) => {
+	const fields = [
+		...new Set(
+			screen
+				.getAllByPlaceholderText(placeholder)
+				.map((element) => element.closest<HTMLElement>("vscode-text-field")),
+		),
+	]
+	expect(fields).toHaveLength(1)
+	const [field] = fields
+	if (!field) throw new Error(`Expected a text field for ${placeholder}`)
+	return field
+}
+
+const setTextFieldValue = (placeholder: string, value: string) => {
+	const field = getTextField(placeholder)
+	act(() => {
+		Object.assign(field, { value })
+		fireEvent.input(field)
+	})
+}
+
 describe("CodeIndexPopover", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -40,6 +63,124 @@ describe("CodeIndexPopover", () => {
 			codebaseIndexModels: undefined,
 			cwd: "/workspace",
 			apiConfiguration: undefined,
+		})
+	})
+
+	it.each([
+		["vertex", "gemini-embedding-2"],
+		["gemini", "gemini-embedding-2"],
+		["openai-native", "text-embedding-3-small"],
+		["openai", "Qwen/Qwen3-Embedding-4B"],
+		["openrouter", "mongodb/voyage-code-4"],
+		["bedrock", "amazon.titan-embed-text-v2:0"],
+	] as const)("offers standard %s models even when the saved host catalog is older", async (provider, modelId) => {
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+			...useExtensionState(),
+			codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: provider },
+			codebaseIndexModels: { [provider]: {} },
+		})
+		render(
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button>Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		const picker = screen.getByRole("combobox", { name: "settings:codeIndex.modelLabel" })
+		fireEvent.click(picker)
+		expect(
+			await screen.findByRole("option", { name: (name) => name.startsWith(`${modelId} `) }),
+		).toBeInTheDocument()
+	})
+
+	it("saves a compatible preset with its built-in dimensions and preserves the draft across refreshes", async () => {
+		const state = {
+			...useExtensionState(),
+			codebaseIndexConfig: {
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexOpenAiCompatibleBaseUrl: "https://embeddings.test/v1",
+				codebaseIndexEmbedderModelId: "nomic-ai/nomic-embed-text-v1.5",
+				codebaseIndexEmbedderModelDimension: 384,
+			},
+		}
+		vi.mocked(useExtensionState).mockReturnValue(state)
+		const view = (
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button>Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>
+		)
+		const { rerender } = render(view)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		expect(getTextField("settings:codeIndex.embeddingModelIdLabel")).toHaveProperty(
+			"value",
+			"nomic-ai/nomic-embed-text-v1.5",
+		)
+		const picker = screen.getByRole("combobox", { name: "settings:codeIndex.modelLabel" })
+		fireEvent.click(picker)
+		fireEvent.click(
+			await screen.findByRole("option", { name: (name) => name.startsWith("Qwen/Qwen3-Embedding-4B ") }),
+		)
+		expect(screen.queryByPlaceholderText("settings:codeIndex.embeddingDimensionLabel")).not.toBeInTheDocument()
+
+		vi.mocked(useExtensionState).mockReturnValue({
+			...state,
+			codebaseIndexConfig: { ...state.codebaseIndexConfig },
+		})
+		rerender(cloneElement(view))
+		expect(picker).toHaveTextContent("Qwen/Qwen3-Embedding-4B")
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: expect.objectContaining({
+				codebaseIndexEmbedderModelId: "Qwen/Qwen3-Embedding-4B",
+				codebaseIndexEmbedderModelDimension: undefined,
+			}),
+		})
+	})
+
+	it("allows a custom compatible model and requires its output dimensions", async () => {
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+			...useExtensionState(),
+			codebaseIndexConfig: {
+				codebaseIndexEnabled: true,
+				codebaseIndexEmbedderProvider: "openai",
+				codebaseIndexOpenAiCompatibleBaseUrl: "https://embeddings.test/v1",
+				codebaseIndexEmbedderModelId: "text-embedding-3-small",
+			},
+		})
+		render(
+			<CodeIndexPopover indexingStatus={indexingStatus}>
+				<PopoverTrigger asChild>
+					<button>Open code index</button>
+				</PopoverTrigger>
+			</CodeIndexPopover>,
+		)
+		fireEvent.click(screen.getByRole("button", { name: "Open code index" }))
+		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+		const picker = screen.getByRole("combobox", { name: "settings:codeIndex.modelLabel" })
+		fireEvent.click(picker)
+		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.customModelOption" }))
+		setTextFieldValue("settings:codeIndex.embeddingModelIdLabel", "nomic-ai/nomic-embed-text-v1.5")
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		expect(await screen.findByText("settings:codeIndex.validation.embeddingDimensionRequired")).toBeVisible()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "saveCodeIndexSettingsAtomic" }),
+		)
+
+		setTextFieldValue("settings:codeIndex.embeddingDimensionLabel", "768")
+		fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+		expect(vscode.postMessage).toHaveBeenCalledWith({
+			type: "saveCodeIndexSettingsAtomic",
+			codeIndexSettings: expect.objectContaining({
+				codebaseIndexEmbedderModelId: "nomic-ai/nomic-embed-text-v1.5",
+				codebaseIndexEmbedderModelDimension: 768,
+			}),
 		})
 	})
 

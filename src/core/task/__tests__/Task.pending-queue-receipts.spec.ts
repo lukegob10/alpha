@@ -1,7 +1,6 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
 
 import type { SkillContent } from "../../../shared/skills"
-import * as commands from "../../../services/command/commands"
 import { digestValue } from "../../agent/StepContext"
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { processUserContentMentions } from "../../mentions/processUserContentMentions"
@@ -69,7 +68,6 @@ async function mixedOriginHarness() {
 	const { processUserContentMentions: processActualMentions } = await vi.importActual<
 		typeof import("../../mentions/processUserContentMentions")
 	>("../../mentions/processUserContentMentions")
-	vi.spyOn(commands, "getCommand").mockResolvedValue(undefined)
 	vi.mocked(processUserContentMentions).mockImplementation(processActualMentions)
 	const notification: Anthropic.TextBlockParam = {
 		type: "text",

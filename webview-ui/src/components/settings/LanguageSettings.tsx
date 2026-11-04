@@ -1,9 +1,9 @@
 import { HTMLAttributes } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
-import type { Language } from "@alpha-code/types"
+import { languagesSchema } from "@alpha-code/types"
 
-import { LANGUAGES } from "@alpha/language"
+import { LANGUAGES, formatLanguage } from "@alpha/language"
 
 import { cn } from "@src/lib/utils"
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
@@ -31,8 +31,8 @@ export const LanguageSettings = ({ language, setCachedStateField, className, ...
 					section="language"
 					label={t("settings:sections.language")}>
 					<Select
-						value={language}
-						onValueChange={(value) => setCachedStateField("language", value as Language)}>
+						value={formatLanguage(language)}
+						onValueChange={(value) => setCachedStateField("language", languagesSchema.parse(value))}>
 						<SelectTrigger className="w-full">
 							<SelectValue placeholder={t("settings:common.select")} />
 						</SelectTrigger>

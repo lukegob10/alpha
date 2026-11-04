@@ -48,12 +48,6 @@ import type { Experiments } from "./experiment.js"
 import type { AlphaMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
 import type { ManagedAgentTreeProjection } from "./managed-agent-tree.js"
-import {
-	type MarketplaceItem,
-	type MarketplaceInstalledMetadata,
-	type InstallMarketplaceItemOptions,
-	marketplaceItemSchema,
-} from "./marketplace.js"
 import type { TodoItem, TodoApprovalEdit } from "./todo.js"
 import type { TicketActivity, TicketSearchResponse, TicketTarget } from "./ticket.js"
 import type { SerializedCustomToolDefinition } from "./custom-tool.js"
@@ -438,12 +432,6 @@ export const webviewErrorMessageSchema = z
 
 export type WebviewErrorMessage = z.infer<typeof webviewErrorMessageSchema>
 
-export const cancelEnhancePromptMessageSchema = z.object({
-	type: z.literal("cancelEnhancePrompt"),
-	requestId: z.string().min(1).max(128),
-	taskId: z.string().min(1).optional(),
-})
-
 /**
  * ExtensionMessage
  * Extension -> Webview
@@ -466,7 +454,6 @@ export interface ExtensionMessage {
 		| "messageCreated"
 		| "messageUpdated"
 		| "mcpServers"
-		| "enhancedPrompt"
 		| "commitSearchResults"
 		| "listApiConfig"
 		| "openAiModels"
@@ -500,9 +487,6 @@ export interface ExtensionMessage {
 		| "indexingStatusUpdate"
 		| "indexCleared"
 		| "codebaseIndexConfig"
-		| "marketplaceInstallResult"
-		| "marketplaceRemoveResult"
-		| "marketplaceData"
 		| "codeIndexSettingsSaved"
 		| "codeIndexSecretStatus"
 		| "showDeleteMessageDialog"
@@ -572,7 +556,6 @@ export interface ExtensionMessage {
 		| "newChatButtonClicked"
 		| "settingsButtonClicked"
 		| "historyButtonClicked"
-		| "marketplaceButtonClicked"
 		| "didBecomeVisible"
 		| "focusInput"
 		| "switchTab"
@@ -613,8 +596,6 @@ export interface ExtensionMessage {
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	values?: Record<string, any>
 	requestId?: string
-	/** Terminal prompt-enhancement outcome; absent on older extension hosts. */
-	enhancementStatus?: "success" | "error" | "cancelled"
 	/** Task-scoped queue/steer acceptance result. */
 	chatCommandResult?: ChatCommandResult
 	/** Fresh task activity metadata attached to incremental transcript messages. */
@@ -627,11 +608,7 @@ export interface ExtensionMessage {
 	setting?: string
 	value?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 	hasContent?: boolean
-	items?: MarketplaceItem[]
 	tab?: string
-	marketplaceItems?: MarketplaceItem[]
-	organizationMcps?: MarketplaceItem[]
-	marketplaceInstalledMetadata?: MarketplaceInstalledMetadata
 	errors?: string[]
 	rulesFolderPath?: string
 	settings?: any // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -757,7 +734,6 @@ export type ExtensionState = Pick<
 	| "modeApiConfigs"
 	| "customModePrompts"
 	| "customSupportPrompts"
-	| "enhancementApiConfigId"
 	| "customCondensingPrompt"
 	| "memorySettings"
 	| "codebaseIndexConfig"
@@ -765,7 +741,6 @@ export type ExtensionState = Pick<
 	| "profileThresholds"
 	| "includeDiagnosticMessages"
 	| "maxDiagnosticMessages"
-	| "includeTaskHistoryInEnhance"
 	| "reasoningBlockCollapsed"
 	| "enterBehavior"
 	| "autoSteer"
@@ -835,9 +810,6 @@ export type ExtensionState = Pick<
 	autoCondenseContextPercent: number
 	autoCondenseContextScope?: GlobalSettings["autoCondenseContextScope"]
 	postTurnCondenseContextPercent?: number
-	marketplaceItems?: MarketplaceItem[]
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	marketplaceInstalledMetadata?: { project: Record<string, any>; global: Record<string, any> }
 	profileThresholds: Record<string, number>
 	hasOpenedModeSelector: boolean
 	messageQueue?: QueuedMessage[]
@@ -960,9 +932,6 @@ interface WebviewMessageBase {
 		| "toggleToolEnabledForPrompt"
 		| "toggleMcpServer"
 		| "updateMcpTimeout"
-		| "enhancePrompt"
-		| "cancelEnhancePrompt"
-		| "enhancedPrompt"
 		| "draggedImages"
 		| "deleteMessage"
 		| "deleteMessageConfirm"
@@ -975,7 +944,6 @@ interface WebviewMessageBase {
 		| "getSystemPrompt"
 		| "copySystemPrompt"
 		| "systemPrompt"
-		| "enhancementApiConfigId"
 		| "autoApprovalEnabled"
 		| "updateCustomMode"
 		| "deleteCustomMode"
@@ -1005,14 +973,6 @@ interface WebviewMessageBase {
 		| "setAutoEnableDefault"
 		| "focusPanelRequest"
 		| "openExternal"
-		| "filterMarketplaceItems"
-		| "marketplaceButtonClicked"
-		| "installMarketplaceItem"
-		| "installMarketplaceItemWithParameters"
-		| "cancelMarketplaceInstall"
-		| "removeInstalledMarketplaceItem"
-		| "marketplaceInstallResult"
-		| "fetchMarketplaceData"
 		| "switchTab"
 		| "exportMode"
 		| "exportModeResult"
@@ -1023,9 +983,6 @@ interface WebviewMessageBase {
 		| "saveCodeIndexSettingsAtomic"
 		| "requestCodeIndexSecretStatus"
 		| "requestCommands"
-		| "openCommandFile"
-		| "deleteCommand"
-		| "createCommand"
 		| "insertTextIntoTextarea"
 		| "queueMessage"
 		| "sendAndSteer"
@@ -1106,7 +1063,7 @@ interface WebviewMessageBase {
 	reasoningProfileId?: string
 	reasoningPreference?: z.infer<typeof taskReasoningPreferenceSchema>
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "marketplace" | "scheduledTasks"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "scheduledTasks"
 	disabled?: boolean
 	context?: string
 	dataUri?: string
@@ -1133,13 +1090,8 @@ interface WebviewMessageBase {
 	alwaysAllow?: boolean
 	isEnabled?: boolean
 	mode?: string
-	promptMode?: string | "enhance"
+	promptMode?: string
 	customPrompt?: PromptComponent
-	enhancementOptions?: {
-		apiConfigId: string
-		includeTaskHistory: boolean
-		supportPrompt: string
-	}
 	dataUrls?: string[]
 	/** Generic payload for webview messages that use `values` */
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1170,12 +1122,9 @@ interface WebviewMessageBase {
 	restoreCheckpoint?: boolean
 	messageAction?: "restart"
 	historyPreviewCollapsed?: boolean
-	filters?: { type?: string; search?: string; tags?: string[] }
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	settings?: any
 	url?: string // For openExternal
-	mpItem?: MarketplaceItem
-	mpInstallOptions?: InstallMarketplaceItemOptions
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	config?: Record<string, any> // Add config to the payload
 	hasContent?: boolean // For checkRulesDirectoryResult
@@ -1319,25 +1268,16 @@ export interface IndexClearedPayload {
 	error?: string
 }
 
-export const installMarketplaceItemWithParametersPayloadSchema = z.object({
-	item: marketplaceItemSchema,
-	parameters: z.record(z.string(), z.any()),
-})
-
-export type InstallMarketplaceItemWithParametersPayload = z.infer<
-	typeof installMarketplaceItemWithParametersPayloadSchema
->
-
 export type WebViewMessagePayload =
 	| CheckpointDiffPayload
 	| CheckpointRestorePayload
 	| IndexingStatusPayload
 	| IndexClearedPayload
-	| InstallMarketplaceItemWithParametersPayload
 	| UpdateTodoListPayload
 	| EditQueuedMessagePayload
 	| ReorderQueuedMessagePayload
 	| OpenDiffPayload
+	| OpenDiffPatchPayload
 
 export interface OpenDiffFile {
 	path: string
@@ -1350,19 +1290,30 @@ export interface OpenDiffPayload {
 	files: OpenDiffFile[]
 }
 
-export const openDiffPayloadSchema = z.object({
-	title: z.string().max(256).optional(),
-	files: z
-		.array(
-			z.object({
-				path: z.string().min(1).max(4_096),
-				originalContent: z.string(),
-				finalContent: z.string(),
-			}),
-		)
-		.min(1)
-		.max(128),
-})
+export interface OpenDiffPatchPayload {
+	title?: string
+	patch: { path: string; content: string }
+}
+
+export const openDiffPayloadSchema = z.union([
+	z.object({
+		title: z.string().max(256).optional(),
+		files: z
+			.array(
+				z.object({
+					path: z.string().min(1).max(4_096),
+					originalContent: z.string(),
+					finalContent: z.string(),
+				}),
+			)
+			.min(1)
+			.max(128),
+	}),
+	z.object({
+		title: z.string().max(256).optional(),
+		patch: z.object({ path: z.string().min(1).max(4_096), content: z.string() }),
+	}),
+])
 export interface IndexingStatus {
 	systemStatus: string
 	message?: string
@@ -1407,7 +1358,7 @@ export interface AlphaSayTool {
 		| "finishTask"
 		| "generateImage"
 		| "imageGenerated"
-		| "runSlashCommand"
+		| "runSlashCommand" // Historical transcripts only; no executable tool.
 		| "ticket"
 		| "goal"
 		| "memory"
@@ -1473,7 +1424,7 @@ export interface AlphaSayTool {
 	}>
 	question?: string
 	imageData?: string // Base64 encoded image data for generated images
-	// Properties for runSlashCommand tool
+	// Historical command rows and skill invocation metadata
 	command?: string
 	args?: string
 	source?: string

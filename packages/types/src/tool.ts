@@ -89,7 +89,7 @@ export const toolNames = [
 	"codebase_search",
 	"update_todo_list",
 	"update_plan",
-	"run_slash_command",
+	"run_slash_command", // Historical transcripts/settings only; never exposed or executed.
 	"skill",
 	"generate_image",
 	...browserToolNames,

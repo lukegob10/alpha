@@ -1086,7 +1086,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).toContain("Your own judgment that delegation would be useful is not authorization")
 	})
 
-	it("should include vscode language in custom instructions", async () => {
+	it("should use English custom instructions for a retired VS Code language", async () => {
 		// Mock vscode.env.language
 		const vscode = vi.mocked(await import("vscode")) as any
 		vscode.env = { language: "es" }
@@ -1130,7 +1130,7 @@ describe("SYSTEM_PROMPT", () => {
 		)
 
 		expect(prompt).toContain("Language Preference:")
-		expect(prompt).toContain('You should always speak and think in the "es" language')
+		expect(prompt).toContain('You should always speak and think in the "en" language')
 
 		// Reset mock
 		vscode.env = { language: "en" }

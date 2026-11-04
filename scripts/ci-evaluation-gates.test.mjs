@@ -91,7 +91,7 @@ test("QA and releases require offline evaluator checks and bounded rendered acce
 			),
 		)
 	}
-	assert.equal(release.jobs["package-vsix"].needs, "release-vsix")
+	assert.deepEqual(release.jobs["package-vsix"].needs, ["release-vsix", "live-quality"])
 	assert.equal(release.jobs["publish-release"].needs, "package-vsix")
 	const acceptance = release.jobs["release-vsix"]
 	assert.ok(command(acceptance, "pnpm harness run stress"))

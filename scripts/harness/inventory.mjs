@@ -669,6 +669,12 @@ export const hostDriverInventory = [
 	driver("apps/vscode-e2e/src/runCoreConfidence.ts", "pr", "core confidence", "Composes strict smoke/core receipts"),
 	driver("apps/vscode-e2e/src/runUnitTests.ts", "pr", "tooling", "Runner units only; never host execution"),
 	driver(
+		"apps/vscode-e2e/src/runQuality.ts",
+		"live",
+		"live-quality capture",
+		"Real short-task captures require owned profiles and clean selected extension builds",
+	),
+	driver(
 		"apps/vscode-e2e/src/runCampaign.ts",
 		"pr",
 		"workflow campaign",

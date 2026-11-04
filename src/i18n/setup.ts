@@ -3,7 +3,6 @@ import common from "./locales/en/common.json"
 import embeddings from "./locales/en/embeddings.json"
 import htmlArtifactKit from "./locales/en/htmlArtifactKit.json"
 import htmlDocument from "./locales/en/htmlDocument.json"
-import marketplace from "./locales/en/marketplace.json"
 import mcp from "./locales/en/mcp.json"
 import scheduledTasks from "./locales/en/scheduledTasks.json"
 import skills from "./locales/en/skills.json"
@@ -14,6 +13,7 @@ import worktrees from "./locales/en/worktrees.json"
 i18next.init({
 	lng: "en",
 	fallbackLng: "en",
+	supportedLngs: ["en"],
 	debug: false,
 	// Unit tests use translation keys; production bundles English resources without extension-host file I/O.
 	resources:
@@ -25,7 +25,6 @@ i18next.init({
 						embeddings,
 						htmlArtifactKit,
 						htmlDocument,
-						marketplace,
 						mcp,
 						scheduledTasks,
 						skills,

@@ -14,6 +14,7 @@ import {
 	providerSettingsSchema,
 	persistedProviderSettingsSchema,
 	globalSettingsSchema,
+	languagesSchema,
 	isSecretStateKey,
 	isGlobalStateKey,
 	isProviderName,
@@ -23,7 +24,7 @@ import {
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { logger } from "../../utils/logging"
-import { supportPrompt } from "../../shared/support-prompt"
+import { DEFAULT_CONDENSING_PROMPT } from "../../shared/condense-prompt"
 
 type GlobalStateKey = keyof GlobalState
 type SecretStateKey = keyof SecretState
@@ -65,8 +66,10 @@ export class ContextProxy {
 			// Keep the public settings shape while loading credential-bearing headers only through the secure reader.
 			if (key === "openAiHeaders") continue
 			try {
-				// Revert to original assignment
 				this.stateCache[key] = this.originalContext.globalState.get(key)
+				if (key === "language" && this.stateCache.language !== undefined) {
+					this.stateCache.language = languagesSchema.parse(this.stateCache.language)
+				}
 			} catch (error) {
 				logger.error(`Error loading global ${key}: ${error instanceof Error ? error.message : String(error)}`)
 			}
@@ -106,7 +109,7 @@ export class ContextProxy {
 				// 1. The new location doesn't already have a value
 				// 2. The legacy prompt is a true customization (not equal to the default)
 				// This prevents pinning users to an old default if the default prompt changes.
-				const isCustomized = legacyPrompt.trim() !== supportPrompt.default.CONDENSE.trim()
+				const isCustomized = legacyPrompt.trim() !== DEFAULT_CONDENSING_PROMPT.trim()
 				if (!currentSupportPrompts.CONDENSE && isCustomized) {
 					logger.info("Migrating customized legacy customCondensingPrompt to customSupportPrompts")
 					const updatedPrompts = { ...currentSupportPrompts, CONDENSE: legacyPrompt }
@@ -285,6 +288,12 @@ export class ContextProxy {
 	}
 
 	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K]) {
+		if (key === "language") {
+			const language = languagesSchema.parse(value)
+			this.stateCache.language = language
+			return this.originalContext.globalState.update("language", language)
+		}
+
 		if (key === "openAiHeaders") {
 			return this.storeOpenAiHeaders(providerSettingsSchema.shape.openAiHeaders.parse(value))
 		}

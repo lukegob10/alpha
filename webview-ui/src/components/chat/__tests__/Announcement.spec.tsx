@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.21",
+		version: "3.2.22",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.21" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.22" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.21")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.22")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.21 improves command recovery, task history, and completed-turn folding."),
+			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
 		).toBeInTheDocument()
 	})
 
@@ -51,18 +51,12 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
 		expect(
-			screen.getByText("Keep completed turns folded and load task history sooner when opening a VS Code window."),
+			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
 		).toBeInTheDocument()
+		expect(screen.getByText("Call skills with /skill-name without a separate command setup.")).toBeInTheDocument()
+		expect(screen.getByText("Work in Code or Plan with a focused English interface.")).toBeInTheDocument()
 		expect(
-			screen.getByText(
-				"Recover completed commands cleanly and preserve tool and reasoning state with GitHub Copilot.",
-			),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Keep long-running tasks and sub-agent handoffs consistent as work continues."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Ticket import and export notices dismiss automatically after a short delay."),
+			screen.getByText("Review changes in VS Code and configure more embedding models for code search."),
 		).toBeInTheDocument()
 	})
 
@@ -70,10 +64,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.21 improves command recovery, task history, and completed-turn folding."),
+			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
 		).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep completed turns folded and load task history sooner when opening a VS Code window."),
+			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
 		).toBeInTheDocument()
 	})
 })

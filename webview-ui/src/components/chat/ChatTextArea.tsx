@@ -10,7 +10,7 @@ import React, {
 	useState,
 } from "react"
 import DynamicTextArea from "react-textarea-autosize"
-import { MoreHorizontal, WandSparkles, SendHorizontal, X, ListEnd, Square } from "lucide-react"
+import { SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
 import type { AlphaMessage, ApprovalMode } from "@alpha-code/types"
 
@@ -33,13 +33,7 @@ import {
 import { cn } from "@src/lib/utils"
 import { convertToMentionPath } from "@src/utils/path-mentions"
 import { StandardTooltip } from "@src/components/ui"
-import {
-	DropdownMenu,
-	DropdownMenuContent,
-	DropdownMenuItem,
-	DropdownMenuTrigger,
-} from "@src/components/ui/dropdown-menu"
-import { useAlphaPortal } from "@src/components/ui/hooks/useAlphaPortal"
+import {} from "@src/components/ui/dropdown-menu"
 
 import Thumbnails from "../common/Thumbnails"
 import { ModeSelector } from "./ModeSelector"
@@ -125,7 +119,6 @@ export const ChatTextArea = memo(
 		) => {
 			const isNewTask = appearance === "newTask" && !isEditMode
 			const { t } = useAppTranslation()
-			const portalContainer = useAlphaPortal("alpha-portal")
 			const {
 				filePaths,
 				openedTabs,
@@ -144,8 +137,6 @@ export const ChatTextArea = memo(
 				taskReasoning,
 				currentTaskId,
 			} = useShellState()
-			const composerTaskId = conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId
-			const draftActionsScope = isTaskDraft || isNewTask ? "newTaskDraft" : `task:${composerTaskId ?? ""}`
 			const [reasoningProfileLoading, setReasoningProfileLoading] = useState(false)
 			useEffect(() => setReasoningProfileLoading(false), [taskReasoning, currentTaskId, currentApiConfigName])
 
@@ -160,69 +151,13 @@ export const ChatTextArea = memo(
 
 			const [gitCommits, setGitCommits] = useState<any[]>([])
 			const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
-			const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false)
 			const searchRequestIdRef = useRef("")
-			const pendingEnhancementRef = useRef<{
-				requestId: string
-				scope: string
-				draft: string
-				taskId?: string
-			} | null>(null)
-			const cancelPendingEnhancement = useCallback((updateUi = true) => {
-				const pending = pendingEnhancementRef.current
-				if (!pending) return
-				pendingEnhancementRef.current = null
-				if (updateUi) setIsEnhancingPrompt(false)
-				vscode.postMessage({
-					type: "cancelEnhancePrompt",
-					requestId: pending.requestId,
-					...(pending.taskId ? { taskId: pending.taskId } : {}),
-				})
-			}, [])
-
-			useLayoutEffect(() => {
-				const pending = pendingEnhancementRef.current
-				if (pending && (pending.scope !== draftActionsScope || pending.draft !== inputValue || isEditMode)) {
-					cancelPendingEnhancement()
-				}
-			}, [draftActionsScope, inputValue, isEditMode, cancelPendingEnhancement])
-
-			useEffect(() => () => cancelPendingEnhancement(false), [cancelPendingEnhancement])
-
-			// Handle enhanced prompt response and search results.
+			// Handle inserted text and search results.
 			useEffect(() => {
 				const messageHandler = (event: MessageEvent) => {
 					const message = event.data
 
-					if (message.type === "enhancedPrompt") {
-						const pending = pendingEnhancementRef.current
-						if (!pending || message.requestId !== pending.requestId) return
-						pendingEnhancementRef.current = null
-						setIsEnhancingPrompt(false)
-						if (message.enhancementStatus !== undefined && message.enhancementStatus !== "success") return
-						if (typeof message.text === "string" && message.text && textAreaRef.current) {
-							try {
-								// Use execCommand to replace text while preserving undo history
-								if (document.execCommand) {
-									// Use native browser methods to preserve undo stack
-									const textarea = textAreaRef.current
-
-									// Focus the textarea to ensure it's the active element
-									textarea.focus()
-
-									// Select all text first
-									textarea.select()
-									if (!document.execCommand("insertText", false, message.text)) {
-										setInputValue(message.text)
-									}
-								} else {
-									setInputValue(message.text)
-								}
-							} catch {
-								setInputValue(message.text)
-							}
-						}
-					} else if (message.type === "insertTextIntoTextarea") {
+					if (message.type === "insertTextIntoTextarea") {
 						if (message.text && textAreaRef.current) {
 							// Insert the command text at the current cursor position
 							const textarea = textAreaRef.current
@@ -334,38 +269,13 @@ export const ChatTextArea = memo(
 				}
 			}, [selectedType, searchQuery])
 
-			const handleEnhancePrompt = useCallback(() => {
-				if (pendingEnhancementRef.current) {
-					return
-				}
-
-				const trimmedInput = inputValue.trim()
-
-				if (trimmedInput) {
-					const requestId = crypto.randomUUID()
-					const taskId = !isTaskDraft && !isNewTask ? composerTaskId : undefined
-					pendingEnhancementRef.current = { requestId, scope: draftActionsScope, draft: inputValue, taskId }
-					setIsEnhancingPrompt(true)
-					vscode.postMessage({
-						type: "enhancePrompt",
-						requestId,
-						...(taskId ? { taskId } : {}),
-						text: trimmedInput,
-					})
-				} else {
-					setInputValue(t("chat:enhancePromptDescription"))
-				}
-			}, [inputValue, draftActionsScope, composerTaskId, isTaskDraft, isNewTask, setInputValue, t])
-
 			const handleSend = useCallback(() => {
-				cancelPendingEnhancement()
 				resetHistoryNavigation()
 				onSend()
-			}, [cancelPendingEnhancement, resetHistoryNavigation, onSend])
+			}, [resetHistoryNavigation, onSend])
 			const handleStop = useCallback(() => {
-				cancelPendingEnhancement()
 				onStop?.()
-			}, [cancelPendingEnhancement, onStop])
+			}, [onStop])
 
 			const allModes = useMemo(
 				() => getUserFacingModeOptions(getAllModes(customModes), mode),
@@ -586,11 +496,6 @@ export const ChatTextArea = memo(
 				(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
 					const isComposing = event.nativeEvent?.isComposing ?? false
 					if (isComposing) return
-					if (event.key === "Escape" && pendingEnhancementRef.current) {
-						event.preventDefault()
-						cancelPendingEnhancement()
-						return
-					}
 					if (showContextMenu) {
 						if (event.key === "Tab" && event.shiftKey) {
 							return
@@ -740,7 +645,6 @@ export const ChatTextArea = memo(
 				},
 				[
 					handleSend,
-					cancelPendingEnhancement,
 					showContextMenu,
 					selectedMenuIndex,
 					handleMentionSelect,
@@ -784,7 +688,6 @@ export const ChatTextArea = memo(
 			const handleInputChange = useCallback(
 				(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 					const newValue = e.target.value
-					cancelPendingEnhancement()
 					cancelPendingFileSearch()
 					setInputValue(newValue)
 
@@ -862,14 +765,7 @@ export const ChatTextArea = memo(
 						setFileSearchResults([]) // Clear file search results.
 					}
 				},
-				[
-					cancelPendingEnhancement,
-					cancelPendingFileSearch,
-					setInputValue,
-					setFileSearchResults,
-					resetOnInputChange,
-					selectedType,
-				],
+				[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange, selectedType],
 			)
 
 			useEffect(() => {
@@ -1470,7 +1366,7 @@ export const ChatTextArea = memo(
 								/>
 							</div>
 							<div className="chat-composer-actions">
-								{isEditMode ? (
+								{isEditMode && (
 									<StandardTooltip content={t("chat:cancel.title")}>
 										<button
 											aria-label={t("chat:cancel.title")}
@@ -1489,47 +1385,7 @@ export const ChatTextArea = memo(
 											<X className="w-4 h-4" />
 										</button>
 									</StandardTooltip>
-								) : isVisible ? (
-									<DropdownMenu key={draftActionsScope}>
-										<StandardTooltip content={t("chat:composer.draftActions")}>
-											<DropdownMenuTrigger asChild>
-												<button
-													type="button"
-													aria-label={t("chat:composer.draftActions")}
-													aria-busy={isEnhancingPrompt}
-													className="composer-control chat-composer-icon">
-													{isEnhancingPrompt ? (
-														<WandSparkles
-															className="size-4 animate-spin"
-															aria-hidden="true"
-														/>
-													) : (
-														<MoreHorizontal className="size-4" aria-hidden="true" />
-													)}
-												</button>
-											</DropdownMenuTrigger>
-										</StandardTooltip>
-										<DropdownMenuContent container={portalContainer} align="end" side="top">
-											<DropdownMenuItem
-												onSelect={
-													isEnhancingPrompt
-														? () => cancelPendingEnhancement()
-														: handleEnhancePrompt
-												}>
-												{isEnhancingPrompt ? (
-													<X className="size-4" />
-												) : (
-													<WandSparkles className="size-4" />
-												)}
-												{t(
-													isEnhancingPrompt
-														? "chat:composer.cancelImprovePrompt"
-														: "chat:composer.improvePrompt",
-												)}
-											</DropdownMenuItem>
-										</DropdownMenuContent>
-									</DropdownMenu>
-								) : null}
+								)}
 								{/* Auto-steer keeps an explicit queue action beside the primary submission. */}
 								{!isEditMode && isStreaming && autoSteer && hasInputContent && onEnqueueMessage && (
 									<StandardTooltip content={t("chat:enqueueMessage")}>

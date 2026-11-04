@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import type { ExtensionState } from "@alpha-code/types"
-import { CalendarClock, Ellipsis, LayoutDashboard, Settings, SquarePen, Store, Ticket } from "lucide-react"
+import { CalendarClock, Ellipsis, LayoutDashboard, Settings, SquarePen, Ticket } from "lucide-react"
 
 import {
 	Button,
@@ -22,7 +22,6 @@ export interface ChatToolbarProps {
 	onOpenTickets: () => void
 	onOpenIncidents: () => void
 	onOpenScheduledTasks: () => void
-	onOpenMarketplace: () => void
 }
 
 const controlClassName =
@@ -37,7 +36,6 @@ const ChatToolbar = ({
 	onOpenTickets,
 	onOpenIncidents,
 	onOpenScheduledTasks,
-	onOpenMarketplace,
 }: ChatToolbarProps) => {
 	const { t } = useAppTranslation()
 	const hasNativeActions = renderContext === "sidebar"
@@ -96,10 +94,6 @@ const ChatToolbar = ({
 						<DropdownMenuItem onSelect={onOpenScheduledTasks}>
 							<CalendarClock aria-hidden="true" />
 							{t("common:chatToolbar.scheduledTasks")}
-						</DropdownMenuItem>
-						<DropdownMenuItem onSelect={onOpenMarketplace}>
-							<Store aria-hidden="true" />
-							{t("common:chatToolbar.marketplace")}
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>

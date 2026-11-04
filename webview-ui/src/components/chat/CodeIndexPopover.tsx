@@ -7,14 +7,7 @@ import {
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react"
 import { Trans } from "react-i18next"
 import { z } from "zod"
-import {
-	VSCodeButton,
-	VSCodeTextField,
-	VSCodeDropdown,
-	VSCodeOption,
-	VSCodeLink,
-	VSCodeCheckbox,
-} from "@vscode/webview-ui-toolkit/react"
+import { VSCodeButton, VSCodeTextField, VSCodeLink, VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import * as ProgressPrimitive from "@radix-ui/react-progress"
 import { AlertTriangle } from "lucide-react"
 
@@ -58,6 +51,7 @@ import { useEscapeKey } from "@src/hooks/useEscapeKey"
 
 const DEFAULT_QDRANT_URL = "http://localhost:6333"
 const DEFAULT_LOCAL_INDEX_PATH = ".alpha/code-index/lancedb"
+const CUSTOM_MODEL_VALUE = "__custom__"
 
 type VectorStoreProvider = "qdrant" | "lancedb"
 
@@ -112,7 +106,12 @@ type SavedSecretStatus = Record<SecretField, boolean>
 const emptySavedSecretStatus = (): SavedSecretStatus =>
 	Object.fromEntries(Object.keys(secretStatusKeyByField).map((field) => [field, false])) as SavedSecretStatus
 
-const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, embedderProvider: string, t: any) => {
+const createValidationSchema = (
+	vectorStoreProvider: VectorStoreProvider,
+	embedderProvider: string,
+	t: any,
+	requireCustomModelDimension: boolean,
+) => {
 	const vectorStoreSchema =
 		vectorStoreProvider === "qdrant"
 			? {
@@ -192,7 +191,8 @@ const createValidationSchema = (vectorStoreProvider: VectorStoreProvider, embedd
 			.superRefine((value, context) => {
 				if (
 					embedderProvider === "openai" &&
-					!embeddingModelProfiles.openai?.[value.codebaseIndexEmbedderModelId] &&
+					(requireCustomModelDimension ||
+						!embeddingModelProfiles.openai?.[value.codebaseIndexEmbedderModelId]) &&
 					!value.codebaseIndexEmbedderModelDimension
 				)
 					context.addIssue({
@@ -223,6 +223,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	const [open, setOpen] = useState(false)
 	const [isAdvancedSettingsOpen, setIsAdvancedSettingsOpen] = useState(false)
 	const [isSetupSettingsOpen, setIsSetupSettingsOpen] = useState(false)
+	const [isCustomModelSelected, setIsCustomModelSelected] = useState(false)
 
 	const [indexingStatus, setIndexingStatus] = useState<IndexingStatus>(externalIndexingStatus)
 
@@ -281,6 +282,16 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	// Current settings state - tracks user changes
 	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
+	const embedderProvider = currentSettings.codebaseIndexEmbedderProvider
+	// Saved host catalogs may predate newly shipped presets. Current profiles own their dimensions.
+	const availableModels = isSupportedCodebaseIndexEmbedderProvider(embedderProvider)
+		? { ...codebaseIndexModels?.[embedderProvider], ...embeddingModelProfiles[embedderProvider] }
+		: {}
+	const isCustomModel =
+		embedderProvider === "openai" &&
+		(isCustomModelSelected ||
+			currentSettings.codebaseIndexEmbedderModelDimension !== undefined ||
+			!availableModels[currentSettings.codebaseIndexEmbedderModelId])
 
 	const hasUnsavedChanges = useMemo(() => {
 		const keys = new Set([...Object.keys(initialSettings), ...Object.keys(currentSettings)])
@@ -520,6 +531,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 			currentSettings.codebaseIndexVectorStoreProvider,
 			currentSettings.codebaseIndexEmbedderProvider,
 			t,
+			isCustomModel,
 		)
 
 		// Prepare data for validation
@@ -639,21 +651,6 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	const transformStyleString = `translateX(-${100 - progressPercentage}%)`
 
-	const getAvailableModels = () => {
-		const provider = currentSettings.codebaseIndexEmbedderProvider
-		const models = isSupportedCodebaseIndexEmbedderProvider(provider)
-			? (codebaseIndexModels?.[provider] ?? embeddingModelProfiles[provider])
-			: undefined
-		return models ? Object.keys(models) : []
-	}
-
-	const getModelProfile = (modelId: string) => {
-		const provider = currentSettings.codebaseIndexEmbedderProvider
-		return isSupportedCodebaseIndexEmbedderProvider(provider)
-			? (codebaseIndexModels?.[provider] ?? embeddingModelProfiles[provider])?.[modelId]
-			: undefined
-	}
-
 	const portalContainer = useAlphaPortal("alpha-portal")
 
 	return (
@@ -665,6 +662,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 						// User is trying to close the popover
 						handlePopoverClose()
 					} else {
+						setIsCustomModelSelected(false)
 						setOpen(newOpen)
 					}
 				}}>
@@ -811,6 +809,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											onValueChange={(value) => {
 												if (!isSupportedCodebaseIndexEmbedderProvider(value)) return
 
+												setIsCustomModelSelected(false)
 												updateSetting("codebaseIndexEmbedderProvider", value)
 												updateSetting(
 													"codebaseIndexEmbedderModelId",
@@ -1015,53 +1014,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 												placeholder={t("settings:placeholders.baseUrl")}
 												className="w-full"
 											/>
-											<label className="text-sm font-medium">
-												{t("settings:codeIndex.embeddingModelIdLabel")}
-											</label>
-											<VSCodeTextField
-												value={currentSettings.codebaseIndexEmbedderModelId}
-												placeholder={t("settings:codeIndex.embeddingModelIdLabel")}
-												onInput={(e) =>
-													updateSetting(
-														"codebaseIndexEmbedderModelId",
-														(e.target as HTMLInputElement).value,
-													)
-												}
-												aria-label={t("settings:codeIndex.embeddingModelIdLabel")}
-												className="w-full"
-											/>
-											<label className="text-sm font-medium">
-												{t("settings:codeIndex.embeddingDimensionLabel")}
-											</label>
-											<VSCodeTextField
-												inputMode="numeric"
-												placeholder={t("settings:codeIndex.embeddingDimensionLabel")}
-												value={
-													currentSettings.codebaseIndexEmbedderModelDimension?.toString() ||
-													""
-												}
-												onInput={(e) =>
-													updateSetting(
-														"codebaseIndexEmbedderModelDimension",
-														(e.target as HTMLInputElement).value
-															? Number((e.target as HTMLInputElement).value)
-															: undefined,
-													)
-												}
-												aria-label={t("settings:codeIndex.embeddingDimensionLabel")}
-												className="w-full"
-											/>
-											{[
-												"codebaseIndexOpenAiCompatibleBaseUrl",
-												"codebaseIndexEmbedderModelId",
-												"codebaseIndexEmbedderModelDimension",
-											].map(
-												(field) =>
-													formErrors[field] && (
-														<p key={field} className="text-xs text-vscode-errorForeground">
-															{formErrors[field]}
-														</p>
-													),
+											{formErrors.codebaseIndexOpenAiCompatibleBaseUrl && (
+												<p className="text-xs text-vscode-errorForeground">
+													{formErrors.codebaseIndexOpenAiCompatibleBaseUrl}
+												</p>
 											)}
 										</div>
 									)}
@@ -1139,46 +1095,101 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 											)}
 										</div>
 									)}
-									{currentSettings.codebaseIndexEmbedderProvider !== "openai" &&
-										isSupportedCodebaseIndexEmbedderProvider(
-											currentSettings.codebaseIndexEmbedderProvider,
-										) && (
-											<div className="space-y-2">
-												<label className="text-sm font-medium">
-													{t("settings:codeIndex.modelLabel")}
-												</label>
-												<VSCodeDropdown
-													value={currentSettings.codebaseIndexEmbedderModelId}
-													onChange={(e: any) =>
-														updateSetting("codebaseIndexEmbedderModelId", e.target.value)
-													}
-													className={cn("w-full", {
-														"border-red-500": formErrors.codebaseIndexEmbedderModelId,
-													})}>
-													<VSCodeOption value="" className="p-2">
-														{t("settings:codeIndex.selectModel")}
-													</VSCodeOption>
-													{getAvailableModels().map((modelId) => {
-														const model = getModelProfile(modelId)
-														return (
-															<VSCodeOption key={modelId} value={modelId} className="p-2">
-																{modelId}{" "}
-																{model
-																	? t("settings:codeIndex.modelDimensions", {
-																			dimension: model.dimension,
-																		})
-																	: ""}
-															</VSCodeOption>
-														)
-													})}
-												</VSCodeDropdown>
-												{formErrors.codebaseIndexEmbedderModelId && (
-													<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
-														{formErrors.codebaseIndexEmbedderModelId}
-													</p>
-												)}
-											</div>
-										)}
+									{isSupportedCodebaseIndexEmbedderProvider(
+										currentSettings.codebaseIndexEmbedderProvider,
+									) && (
+										<div className="space-y-2">
+											<label className="text-sm font-medium" htmlFor="code-index-model">
+												{t("settings:codeIndex.modelLabel")}
+											</label>
+											<Select
+												value={
+													isCustomModel
+														? CUSTOM_MODEL_VALUE
+														: currentSettings.codebaseIndexEmbedderModelId
+												}
+												onValueChange={(value) => {
+													const modelId = value === CUSTOM_MODEL_VALUE ? "" : value
+													setIsCustomModelSelected(value === CUSTOM_MODEL_VALUE)
+													updateSetting("codebaseIndexEmbedderModelId", modelId)
+													updateSetting("codebaseIndexEmbedderModelDimension", undefined)
+												}}>
+												<SelectTrigger
+													id="code-index-model"
+													aria-label={t("settings:codeIndex.modelLabel")}
+													aria-invalid={Boolean(formErrors.codebaseIndexEmbedderModelId)}
+													className="w-full">
+													<SelectValue placeholder={t("settings:codeIndex.selectModel")} />
+												</SelectTrigger>
+												<SelectContent>
+													{embedderProvider === "openai" && (
+														<SelectItem value={CUSTOM_MODEL_VALUE}>
+															{t("settings:codeIndex.customModelOption")}
+														</SelectItem>
+													)}
+													{Object.entries(availableModels).map(([modelId, model]) => (
+														<SelectItem key={modelId} value={modelId}>
+															{modelId}{" "}
+															{t("settings:codeIndex.modelDimensions", {
+																dimension: model.dimension,
+															})}
+														</SelectItem>
+													))}
+												</SelectContent>
+											</Select>
+											{formErrors.codebaseIndexEmbedderModelId && (
+												<p className="text-xs text-vscode-errorForeground mt-1 mb-0">
+													{formErrors.codebaseIndexEmbedderModelId}
+												</p>
+											)}
+										</div>
+									)}
+
+									{isCustomModel && (
+										<div className="space-y-2">
+											<label className="text-sm font-medium">
+												{t("settings:codeIndex.embeddingModelIdLabel")}
+											</label>
+											<VSCodeTextField
+												value={currentSettings.codebaseIndexEmbedderModelId}
+												placeholder={t("settings:codeIndex.embeddingModelIdLabel")}
+												onInput={(e) =>
+													updateSetting(
+														"codebaseIndexEmbedderModelId",
+														(e.target as HTMLInputElement).value,
+													)
+												}
+												aria-label={t("settings:codeIndex.embeddingModelIdLabel")}
+												className="w-full"
+											/>
+											<label className="text-sm font-medium">
+												{t("settings:codeIndex.embeddingDimensionLabel")}
+											</label>
+											<VSCodeTextField
+												inputMode="numeric"
+												placeholder={t("settings:codeIndex.embeddingDimensionLabel")}
+												value={
+													currentSettings.codebaseIndexEmbedderModelDimension?.toString() ||
+													""
+												}
+												onInput={(e) =>
+													updateSetting(
+														"codebaseIndexEmbedderModelDimension",
+														(e.target as HTMLInputElement).value
+															? Number((e.target as HTMLInputElement).value)
+															: undefined,
+													)
+												}
+												aria-label={t("settings:codeIndex.embeddingDimensionLabel")}
+												className="w-full"
+											/>
+											{formErrors.codebaseIndexEmbedderModelDimension && (
+												<p className="text-xs text-vscode-errorForeground">
+													{formErrors.codebaseIndexEmbedderModelDimension}
+												</p>
+											)}
+										</div>
+									)}
 
 									{/* Vector Store Settings */}
 									{currentSettings.codebaseIndexVectorStoreProvider === "qdrant" ? (

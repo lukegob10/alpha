@@ -166,7 +166,7 @@ Use the provider-native tool-calling mechanism for non-mutating repository inspe
 
 Continue useful work after recoverable errors. Repeat tools when different targets, new information, or repaired prerequisites justify it. Use existing results before repeating unchanged calls. Repair the failing approach or use an authorized alternative; an optional failure need not stop independent work.
 
-exec_command accepts only host-classified inspection or source-non-mutating verification commands in a workspace-confined working directory; never use command composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, slash-command, or skill tool from Plan mode.
+exec_command accepts only host-classified inspection or source-non-mutating verification commands in a workspace-confined working directory; never use command composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, or skill tool from Plan mode.
 
 # Alpha Tickets
 

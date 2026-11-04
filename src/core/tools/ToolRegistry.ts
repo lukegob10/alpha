@@ -80,7 +80,6 @@ import { newTaskTool } from "./NewTaskTool"
 import { manageCommandTool } from "./ManageCommandTool"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { viewImageTool } from "./ViewImageTool"
-import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
 import { sendMessageTool } from "./SendMessageTool"
 import { reportProgressTool } from "./ReportProgressTool"
@@ -715,7 +714,6 @@ const TOOL_NAMES = [
 	"new_task",
 	"read_command_output",
 	"view_image",
-	"run_slash_command",
 	"search_replace",
 	"skill",
 	"update_plan",
@@ -780,7 +778,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		concurrency,
 		sideEffects,
 		...(name === "exec_command" && options.parallelExecutionEnabled !== false ? { parallelCommandRead: true } : {}),
-		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
+		controlFlow: BARRIER_TOOLS.has(name) || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
 		requiresApproval:
@@ -1146,7 +1144,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("view_image", viewImageTool, schemas, (context) =>
 			executeViewImage({ ...context, callbacks: { ...context.callbacks, supportsImages } }),
 		)
-		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)
 		this.registerBuiltIn("update_plan", updateTodoListTool, schemas)

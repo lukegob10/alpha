@@ -222,27 +222,70 @@ describe("ChatRow - inline diff stats and actions", () => {
 		expect(screen.getByText("-0")).toBeInTheDocument()
 	})
 
-	it("preserves jump-to-file affordance for newFileCreated", () => {
+	it.each(["{Enter}", " "])("opens the complete new-file row with %s without inline expansion", async (key) => {
+		const user = userEvent.setup()
 		const message = createToolAskMessage({
 			tool: "newFileCreated",
 			path: "src/new-file.ts",
 			content: "+new file",
+			originalContent: "",
+			finalContent: "new file\n",
 			diffStats: { added: 1, removed: 0 },
 		})
-
-		const { container } = renderChatRow(message)
-		const openFileIcon = container.querySelector(".codicon-link-external") as HTMLElement | null
-
-		expect(openFileIcon).toBeInTheDocument()
-		if (!openFileIcon) {
-			throw new Error("Expected external link icon for newFileCreated")
-		}
-
-		fireEvent.click(openFileIcon)
-
+		const { container } = renderChatRow(message, true)
+		const row = screen.getByRole("button", { name: /src\/new-file.ts/ })
+		row.focus()
+		await user.keyboard(key)
+		expect(container.querySelector(".codicon-link-external")).toBeNull()
+		expect(row).not.toHaveAttribute("aria-expanded")
+		expect(row).not.toHaveAttribute("aria-controls")
+		expect(container.querySelector("[data-testid='diff-view']")).toBeNull()
 		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "openFile",
-			text: "./src/new-file.ts",
+			type: "openDiff",
+			payload: {
+				title: "chat:fileChangesInConversation.diffTitleForFile",
+				files: [{ path: "src/new-file.ts", originalContent: "", finalContent: "new file\n" }],
+			},
+		})
+	})
+
+	it("opens a legacy edit's saved patch in the editor", () => {
+		renderChatRow(createToolAskMessage({ tool: "appliedDiff", path: "legacy.ts", diff: "-old\n+new" }), true)
+		fireEvent.click(screen.getByRole("button", { name: /legacy.ts/ }))
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "chat:fileChangesInConversation.diffTitleForFile",
+				patch: { path: "legacy.ts", content: "Index: legacy.ts\n-old\n+new" },
+			},
+		})
+	})
+
+	it("opens batch-file rows directly while preserving the approval scope", () => {
+		renderChatRow(
+			createToolAskMessage({
+				tool: "appliedDiff",
+				isProtected: true,
+				batchDiffs: [
+					{
+						path: "batch.ts",
+						content: "-old\n+new",
+						originalContent: "old\n",
+						finalContent: "new\n",
+						changeCount: 1,
+					},
+				],
+			}),
+			true,
+		)
+		expect(screen.getByText("Alpha wants to edit a protected file")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: /batch.ts/ }))
+		expect(mockPostMessage).toHaveBeenCalledWith({
+			type: "openDiff",
+			payload: {
+				title: "chat:fileChangesInConversation.diffTitleForFile",
+				files: [{ path: "batch.ts", originalContent: "old\n", finalContent: "new\n" }],
+			},
 		})
 	})
 

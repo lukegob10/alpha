@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.21",
+	"version": "3.2.22",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -87,6 +87,13 @@
 				"enablement": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'"
 			},
 			{
+				"command": "alpha.diffReviewActions",
+				"title": "%command.diffReviewActions.title%",
+				"category": "%configuration.title%",
+				"icon": "$(list-selection)",
+				"enablement": "activeEditor == multiDiffEditor"
+			},
+			{
 				"command": "alpha.sidebarNewChat",
 				"title": "%command.newTask.title%",
 				"icon": {
@@ -106,11 +113,6 @@
 				"command": "alpha.sidebarScheduledTasks",
 				"title": "%command.scheduledTasks.title%",
 				"icon": "$(calendar)"
-			},
-			{
-				"command": "alpha.sidebarMarketplace",
-				"title": "%command.marketplace.title%",
-				"icon": "$(extensions)"
 			},
 			{
 				"command": "alpha.manageGoal",
@@ -162,11 +164,6 @@
 				"icon": "$(calendar)"
 			},
 			{
-				"command": "alpha.marketplaceButtonClicked",
-				"title": "%command.marketplace.title%",
-				"icon": "$(extensions)"
-			},
-			{
 				"command": "alpha.popoutButtonClicked",
 				"title": "%command.openInEditor.title%",
 				"icon": "$(link-external)"
@@ -185,44 +182,9 @@
 				"category": "%configuration.title%"
 			},
 			{
-				"command": "alpha.explainCode",
-				"title": "%command.explainCode.title%",
-				"category": "%configuration.title%"
-			},
-			{
-				"command": "alpha.fixCode",
-				"title": "%command.fixCode.title%",
-				"category": "%configuration.title%"
-			},
-			{
-				"command": "alpha.improveCode",
-				"title": "%command.improveCode.title%",
-				"category": "%configuration.title%"
-			},
-			{
-				"command": "alpha.addToContext",
-				"title": "%command.addToContext.title%",
-				"category": "%configuration.title%"
-			},
-			{
 				"command": "alpha.newTask",
 				"title": "%command.newTask.title%",
 				"category": "%configuration.title%"
-			},
-			{
-				"command": "alpha.terminalAddToContext",
-				"title": "%command.terminal.addToContext.title%",
-				"category": "Terminal"
-			},
-			{
-				"command": "alpha.terminalFixCommand",
-				"title": "%command.terminal.fixCommand.title%",
-				"category": "Terminal"
-			},
-			{
-				"command": "alpha.terminalExplainCommand",
-				"title": "%command.terminal.explainCommand.title%",
-				"category": "Terminal"
 			},
 			{
 				"command": "alpha.setCustomStoragePath",
@@ -303,10 +265,6 @@
 					"when": "false"
 				},
 				{
-					"command": "alpha.sidebarMarketplace",
-					"when": "false"
-				},
-				{
 					"command": "alpha.openIncidents",
 					"when": "config.alpha.debug"
 				}
@@ -316,46 +274,6 @@
 					"command": "alpha.previewHtmlDocument",
 					"group": "navigation@10",
 					"when": "!explorerResourceIsFolder && resourceScheme == file && resourceExtname =~ /^\\.html?$/i"
-				}
-			],
-			"editor/context": [
-				{
-					"submenu": "alpha.contextMenu",
-					"group": "1"
-				}
-			],
-			"alpha.contextMenu": [
-				{
-					"command": "alpha.addToContext",
-					"group": "1_actions@1"
-				},
-				{
-					"command": "alpha.explainCode",
-					"group": "1_actions@2"
-				},
-				{
-					"command": "alpha.improveCode",
-					"group": "1_actions@3"
-				}
-			],
-			"terminal/context": [
-				{
-					"submenu": "alpha.terminalMenu",
-					"group": "2"
-				}
-			],
-			"alpha.terminalMenu": [
-				{
-					"command": "alpha.terminalAddToContext",
-					"group": "1_actions@1"
-				},
-				{
-					"command": "alpha.terminalFixCommand",
-					"group": "1_actions@2"
-				},
-				{
-					"command": "alpha.terminalExplainCommand",
-					"group": "1_actions@3"
 				}
 			],
 			"view/title": [
@@ -383,11 +301,6 @@
 					"command": "alpha.sidebarScheduledTasks",
 					"group": "overflow@1",
 					"when": "view == alpha.SidebarProvider"
-				},
-				{
-					"command": "alpha.sidebarMarketplace",
-					"group": "overflow@2",
-					"when": "view == alpha.SidebarProvider"
 				}
 			],
 			"editor/title": [
@@ -400,10 +313,27 @@
 					"command": "alpha.diagramZoomIn",
 					"when": "activeCustomEditorId == 'imagePreview.previewEditor' && resourceExtname == '.svg'",
 					"group": "navigation@2"
+				},
+				{
+					"command": "alpha.diffReviewActions",
+					"when": "activeEditor == multiDiffEditor",
+					"group": "navigation@90"
 				}
 			]
 		},
 		"keybindings": [
+			{
+				"command": "multiDiffEditor.collapseAll",
+				"key": "ctrl+alt+0",
+				"mac": "cmd+alt+0",
+				"when": "activeEditor == multiDiffEditor"
+			},
+			{
+				"command": "multiDiffEditor.expandAll",
+				"key": "ctrl+alt+9",
+				"mac": "cmd+alt+9",
+				"when": "activeEditor == multiDiffEditor"
+			},
 			{
 				"command": "alpha.plusButtonClicked",
 				"key": "ctrl+alt+n",
@@ -482,29 +412,11 @@
 				"args": "sidebar"
 			},
 			{
-				"command": "alpha.addToContext",
-				"key": "cmd+k cmd+a",
-				"mac": "cmd+k cmd+a",
-				"win": "ctrl+k ctrl+a",
-				"linux": "ctrl+k ctrl+a",
-				"when": "editorTextFocus && editorHasSelection"
-			},
-			{
 				"command": "alpha.toggleAutoApprove",
 				"key": "cmd+alt+a",
 				"mac": "cmd+alt+a",
 				"win": "ctrl+alt+a",
 				"linux": "ctrl+alt+a"
-			}
-		],
-		"submenus": [
-			{
-				"id": "alpha.contextMenu",
-				"label": "%views.contextMenu.label%"
-			},
-			{
-				"id": "alpha.terminalMenu",
-				"label": "%views.terminalMenu.label%"
 			}
 		],
 		"configuration": {
@@ -807,11 +719,6 @@
 					"type": "string",
 					"default": "",
 					"description": "%settings.customStoragePath.description%"
-				},
-				"alpha.enableCodeActions": {
-					"type": "boolean",
-					"default": true,
-					"description": "%settings.enableCodeActions.description%"
 				},
 				"alpha.autoImportSettingsPath": {
 					"type": "string",

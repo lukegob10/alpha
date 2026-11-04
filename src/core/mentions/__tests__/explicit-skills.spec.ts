@@ -1,3 +1,7 @@
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+
 import { parseMentions } from "../index"
 import { processUserContentMentions } from "../processUserContentMentions"
 import type { FileContextTracker } from "../../context-tracking/FileContextTracker"
@@ -11,7 +15,6 @@ import {
 } from "../../../services/skills/skillInvocationProvenance"
 
 vi.mock("vscode", () => ({ window: { showErrorMessage: vi.fn() } }))
-vi.mock("../../../services/command/commands", () => ({ getCommand: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("../../../i18n", () => ({ t: (key: string) => key }))
 
 const skill: SkillContent = {
@@ -28,6 +31,36 @@ function parse(text: string, lookup: Parameters<typeof parseMentions>[7], signal
 }
 
 describe("explicit skill requests", () => {
+	it("resolves slash requests through skills even when a retired command file has the same name", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-slash-skill-"))
+		try {
+			const commandDir = path.join(cwd, ".alpha", "commands")
+			await fs.mkdir(commandDir, { recursive: true })
+			await fs.writeFile(path.join(commandDir, "review.md"), "---\nmode: architect\n---\nRETIRED_COMMAND")
+			const manager = { getSkillContent: vi.fn().mockResolvedValue(skill) }
+			const result = await parseMentions(
+				"/review check this change",
+				cwd,
+				undefined,
+				undefined,
+				false,
+				true,
+				50,
+				manager,
+			)
+			expect(manager.getSkillContent).toHaveBeenCalledWith("review", "code")
+			expect(result.slashCommandHelp).toContain(skill.instructions)
+			expect(result.slashCommandHelp).not.toContain("RETIRED_COMMAND")
+			expect(result.mode).toBeUndefined()
+			const withoutSkill = await parseMentions("/review", cwd)
+			expect(withoutSkill.text).toBe("/review")
+			expect(withoutSkill.slashCommandHelp).toBeUndefined()
+			expect(await fs.readFile(path.join(commandDir, "review.md"), "utf8")).toContain("RETIRED_COMMAND")
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true })
+		}
+	})
+
 	it("recognizes names, namespaces, and exact linked paths without consuming connector links", () => {
 		expect(
 			extractExplicitSkillMentions(
@@ -62,7 +95,7 @@ describe("explicit skill requests", () => {
 			getExplicitSkillContent: vi.fn().mockResolvedValue(skill),
 		}
 		const result = await parse("/review $review", manager)
-		expect(result.text).toContain("Command 'review'")
+		expect(result.text).toContain("Skill 'review'")
 		expect(result.slashCommandHelp?.match(/REVIEW_INSTRUCTIONS/g)).toHaveLength(1)
 	})
 

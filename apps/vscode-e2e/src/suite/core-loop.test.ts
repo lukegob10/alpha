@@ -205,6 +205,7 @@ suite("Workspace read streaming", function () {
 					apiProvider: "fake-ai",
 					fakeAi: scripted,
 					mode: "code",
+					approvalMode: "auto",
 					autoApprovalEnabled: true,
 					alwaysAllowExecute: true,
 					allowedCommands: ["rg"],

@@ -29,13 +29,7 @@ import { migrateSettings } from "./utils/migrateSettings"
 import { autoImportSettings } from "./utils/autoImportSettings"
 import { API } from "./extension/api"
 
-import {
-	registerCommands,
-	registerEditorChatSerializer,
-	registerCodeActions,
-	registerTerminalActions,
-	CodeActionProvider,
-} from "./activate"
+import { registerCommands, registerEditorChatSerializer } from "./activate"
 import { initializeI18n } from "./i18n"
 
 /**
@@ -265,16 +259,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider),
 	)
-	// Register code actions provider.
-	context.subscriptions.push(
-		vscode.languages.registerCodeActionsProvider({ pattern: "**/*" }, new CodeActionProvider(), {
-			providedCodeActionKinds: CodeActionProvider.providedCodeActionKinds,
-		}),
-	)
-
-	registerCodeActions(context)
-	registerTerminalActions(context)
-
 	// Allows other extensions to activate once Alpha is ready.
 	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
 

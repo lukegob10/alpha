@@ -22,7 +22,7 @@ afterEach(() => {
 })
 describe("HTTP indexing embeddings", () => {
 	it("rejects unsupported Bedrock wire formats and unsafe compatible URLs before dispatch", () => {
-		expect(() => new HttpEmbedder("bedrock", "amazon.titan-embed-text-v2:0", { region: "us-west-2" })).toThrow()
+		expect(() => new HttpEmbedder("bedrock", "cohere.embed-english-v3", { region: "us-west-2" })).toThrow()
 		for (const baseUrl of [
 			"file:///tmp/models",
 			"https://user:secret@example.com",
@@ -30,6 +30,84 @@ describe("HTTP indexing embeddings", () => {
 		])
 			expect(() => new HttpEmbedder("openai", "model", { baseUrl })).toThrow()
 		expect(fetchMock).not.toHaveBeenCalled()
+	})
+	it("sends each Titan input separately and preserves batch order and token usage", async () => {
+		let active = 0,
+			maximum = 0
+		bedrockFetch.mockImplementation(async (_url, options) => {
+			active++
+			maximum = Math.max(maximum, active)
+			const body = JSON.parse(options.body)
+			expect(body).toEqual({ inputText: expect.any(String), dimensions: 1024, normalize: true })
+			await Promise.resolve()
+			active--
+			return new Response(
+				JSON.stringify({ embedding: new Array(1024).fill(Number(body.inputText)), inputTextTokenCount: 2 }),
+			)
+		})
+		const texts = Array.from({ length: 5 }, (_, index) => String(index + 1))
+		const result = await new HttpEmbedder("bedrock", "amazon.titan-embed-text-v2:0", {
+			region: "us-west-2",
+			profile: "index-profile",
+		}).createEmbeddings(texts)
+		expect(result.embeddings.map((vector) => vector[0])).toEqual([1, 2, 3, 4, 5])
+		expect(result.usage).toEqual({ promptTokens: 10, totalTokens: 10 })
+		expect(maximum).toBeLessThanOrEqual(2)
+		expect(bedrockFetch).toHaveBeenCalledTimes(5)
+		expect(bedrockFetch).toHaveBeenCalledWith(
+			"https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.titan-embed-text-v2%3A0/invoke",
+			expect.anything(),
+		)
+	})
+	it.each([{}, { embedding: [0.5] }])("rejects missing or wrong-sized Titan vectors: %j", async (body) => {
+		bedrockFetch.mockResolvedValue(new Response(JSON.stringify(body)))
+		await expect(
+			new HttpEmbedder("bedrock", "amazon.titan-embed-text-v2:0", { region: "us-west-2" }).createEmbeddings([
+				"text",
+			]),
+		).rejects.toThrow()
+		expect(bedrockFetch).toHaveBeenCalledOnce()
+	})
+	it.each([
+		["cohere/embed-5-pro", 2048, "query", "search_query"],
+		["cohere/embed-5-fast", 2048, "document", "search_document"],
+		["mongodb/voyage-code-4", 1024, "query", "query"],
+		["mongodb/voyage-code-4", 1024, "document", "document"],
+	] as const)("passes retrieval purpose for %s (%s dimensions, %s)", async (model, dimension, purpose, inputType) => {
+		fetchMock.mockResolvedValue(response([new Array(dimension).fill(0.5)]))
+		await new HttpEmbedder("openrouter", model, { apiKey: "key" }).createEmbeddings(["text"], undefined, purpose)
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+			input: ["text"],
+			model,
+			encoding_format: "float",
+			input_type: inputType,
+		})
+	})
+	it.each([
+		[
+			"openrouter",
+			"qwen/qwen3-embedding-4b",
+			2560,
+			"query",
+			"Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
+		],
+		[
+			"openai",
+			"Qwen/Qwen3-Embedding-8B",
+			4096,
+			"query",
+			"Instruct: Given a code search query, retrieve relevant code snippets.\nQuery: ",
+		],
+		["openai", "nomic-ai/nomic-embed-text-v1.5", 768, "query", "search_query: "],
+		["openai", "nomic-ai/nomic-embed-text-v1.5", 768, "document", "search_document: "],
+	] as const)("formats %s / %s for retrieval", async (provider, model, dimension, purpose, prefix) => {
+		fetchMock.mockResolvedValue(response([new Array(dimension).fill(0.5)]))
+		await new HttpEmbedder(provider, model, { baseUrl: "https://compatible.test/v1" }).createEmbeddings(
+			["text"],
+			undefined,
+			purpose,
+		)
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toEqual([`${prefix}text`])
 	})
 	it.each([
 		["openai-native", "https://api.openai.com/v1/embeddings"],
@@ -96,6 +174,20 @@ describe("HTTP indexing embeddings", () => {
 				}),
 			}),
 		)
+	})
+	it("preserves the input format and dimensions of a saved compatible deployment that now has a preset", async () => {
+		fetchMock.mockImplementation(async () => response([new Array(384).fill(0.5)]))
+		const embedder = new HttpEmbedder(
+			"openai",
+			"nomic-ai/nomic-embed-text-v1.5",
+			{ baseUrl: "https://compatible.test/v1" },
+			undefined,
+			384,
+		)
+		await embedder.createEmbeddings(["query"], undefined, "query")
+		await embedder.createEmbeddings(["document"])
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toEqual(["query"])
+		expect(JSON.parse(fetchMock.mock.calls[1][1].body).input).toEqual(["document"])
 	})
 	it("adds Qwen's retrieval instructions", async () => {
 		fetchMock.mockResolvedValue(response([new Array(4096).fill(0.5)]))

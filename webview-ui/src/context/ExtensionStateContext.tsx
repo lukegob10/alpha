@@ -6,6 +6,7 @@ import {
 	type ProviderSettings,
 	type ProviderSettingsEntry,
 	type CustomModePrompts,
+	type CustomSupportPrompts,
 	type ModeConfig,
 	type ExperimentId,
 	type TodoItem,
@@ -16,7 +17,6 @@ import {
 	type ApprovalMode,
 	type AlphaMessage,
 	type LiveTaskMetadata,
-	type MarketplaceInstalledMetadata,
 	type SkillMetadata,
 	type Command,
 	type McpServer,
@@ -29,7 +29,6 @@ import { findLastIndex } from "@alpha/array"
 
 import { checkExistKey } from "@alpha/checkExistApiConfig"
 import { Mode, defaultModeSlug, defaultPrompts } from "@alpha/modes"
-import { CustomSupportPrompts } from "@alpha/support-prompt"
 import { experimentDefault } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
@@ -62,8 +61,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setAlwaysAllowFollowupQuestions: (value: boolean) => void // Setter for the new property
 	followupAutoApproveTimeoutMs: number | undefined // Timeout in ms for auto-approving follow-up questions
 	setFollowupAutoApproveTimeoutMs: (value: number) => void // Setter for the timeout
-	marketplaceItems?: any[]
-	marketplaceInstalledMetadata?: MarketplaceInstalledMetadata
 	profileThresholds: Record<string, number>
 	setProfileThresholds: (value: Record<string, number>) => void
 	setApiConfiguration: (config: ProviderSettings) => void
@@ -93,8 +90,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setMode: (value: Mode) => void
 	setCustomModePrompts: (value: CustomModePrompts) => void
 	setCustomSupportPrompts: (value: CustomSupportPrompts) => void
-	enhancementApiConfigId?: string
-	setEnhancementApiConfigId: (value: string) => void
 	setExperimentEnabled: (id: ExperimentId, enabled: boolean) => void
 	setAutoApprovalEnabled: (value: boolean) => void
 	setApprovalMode: (value: ApprovalMode) => void
@@ -116,8 +111,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	postTurnCondenseContextPercent: number
 	includeDiagnosticMessages?: boolean
 	maxDiagnosticMessages?: number
-	includeTaskHistoryInEnhance?: boolean
-	setIncludeTaskHistoryInEnhance: (value: boolean) => void
 	includeCurrentTime?: boolean
 	includeCurrentCost?: boolean
 	showWorktreesInHomeScreen: boolean
@@ -533,7 +526,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		customModePrompts: defaultPrompts,
 		customSupportPrompts: {},
 		experiments: experimentDefault,
-		enhancementApiConfigId: "",
 		hasOpenedModeSelector: false, // Default to false (not opened yet)
 		autoApprovalEnabled: true,
 		approvalMode: "auto",
@@ -594,15 +586,9 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [commands, setCommands] = useState<Command[]>([])
 	const [mcpServers, setMcpServers] = useState<McpServer[]>([])
 	const [currentCheckpoint, setCurrentCheckpoint] = useState<string>()
-	const [marketplaceItems, setMarketplaceItems] = useState<any[]>([])
 	const [alwaysAllowFollowupQuestions, setAlwaysAllowFollowupQuestions] = useState(false) // Add state for follow-up questions auto-approve
 	const [followupAutoApproveTimeoutMs, setFollowupAutoApproveTimeoutMs] = useState<number | undefined>(undefined) // Will be set from global settings
-	const [marketplaceInstalledMetadata, setMarketplaceInstalledMetadata] = useState<MarketplaceInstalledMetadata>({
-		project: {},
-		global: {},
-	})
 	const [skills, setSkills] = useState<SkillMetadata[]>([])
-	const [includeTaskHistoryInEnhance, setIncludeTaskHistoryInEnhance] = useState(true)
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
 	const latestTaskStateSeqRef = useRef<number>()
@@ -868,10 +854,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					if ((newState as any).followupAutoApproveTimeoutMs !== undefined) {
 						setFollowupAutoApproveTimeoutMs((newState as any).followupAutoApproveTimeoutMs)
 					}
-					// Update includeTaskHistoryInEnhance if present in state message
-					if ((newState as any).includeTaskHistoryInEnhance !== undefined) {
-						setIncludeTaskHistoryInEnhance((newState as any).includeTaskHistoryInEnhance)
-					}
 					// Update includeCurrentTime if present in state message
 					if ((newState as any).includeCurrentTime !== undefined) {
 						setIncludeCurrentTime((newState as any).includeCurrentTime)
@@ -879,13 +861,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					// Update includeCurrentCost if present in state message
 					if ((newState as any).includeCurrentCost !== undefined) {
 						setIncludeCurrentCost((newState as any).includeCurrentCost)
-					}
-					// Handle marketplace data if present in state message
-					if (newState.marketplaceItems !== undefined) {
-						setMarketplaceItems(newState.marketplaceItems)
-					}
-					if (newState.marketplaceInstalledMetadata !== undefined) {
-						setMarketplaceInstalledMetadata(newState.marketplaceInstalledMetadata)
 					}
 					break
 				}
@@ -962,15 +937,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				case "listApiConfig": {
 					setListApiConfigMeta(message.listApiConfig ?? [])
-					break
-				}
-				case "marketplaceData": {
-					if (message.marketplaceItems !== undefined) {
-						setMarketplaceItems(message.marketplaceItems)
-					}
-					if (message.marketplaceInstalledMetadata !== undefined) {
-						setMarketplaceInstalledMetadata(message.marketplaceInstalledMetadata)
-					}
 					break
 				}
 				case "taskHistoryUpdated": {
@@ -1096,8 +1062,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		commands,
 		soundVolume: state.soundVolume,
 		writeDelayMs: state.writeDelayMs,
-		marketplaceItems,
-		marketplaceInstalledMetadata,
 		profileThresholds: state.profileThresholds ?? EMPTY_PROFILE_THRESHOLDS,
 		alwaysAllowFollowupQuestions,
 		followupAutoApproveTimeoutMs,
@@ -1128,8 +1092,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setMode: (value: Mode) => setState((prevState) => ({ ...prevState, mode: value })),
 		setCustomModePrompts: (value) => setState((prevState) => ({ ...prevState, customModePrompts: value })),
 		setCustomSupportPrompts: (value) => setState((prevState) => ({ ...prevState, customSupportPrompts: value })),
-		setEnhancementApiConfigId: (value) =>
-			setState((prevState) => ({ ...prevState, enhancementApiConfigId: value })),
 		setAutoApprovalEnabled: (value) => setState((prevState) => ({ ...prevState, autoApprovalEnabled: value })),
 		setApprovalMode: (value) => setState((prevState) => ({ ...prevState, approvalMode: value })),
 		setApprovalModeBypassAcknowledged: (value) =>
@@ -1159,8 +1121,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setProfileThresholds: (value) => setState((prevState) => ({ ...prevState, profileThresholds: value })),
 		includeDiagnosticMessages: state.includeDiagnosticMessages,
 		maxDiagnosticMessages: state.maxDiagnosticMessages,
-		includeTaskHistoryInEnhance,
-		setIncludeTaskHistoryInEnhance,
 		includeCurrentTime,
 		includeCurrentCost,
 		skills,

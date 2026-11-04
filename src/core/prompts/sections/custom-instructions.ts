@@ -2,11 +2,11 @@ import fs from "fs/promises"
 import path from "path"
 import { Dirent } from "fs"
 
-import { DEFAULT_MODES, isLanguage } from "@alpha-code/types"
+import { DEFAULT_MODES } from "@alpha-code/types"
 
 import type { SystemPromptSettings } from "../types"
 
-import { LANGUAGES } from "../../../shared/language"
+import { LANGUAGES, formatLanguage } from "../../../shared/language"
 import {
 	getAllConfigDirectoriesForCwd,
 	getProjectInstructionDirectoriesForCwd,
@@ -698,12 +698,13 @@ export async function addCustomInstructionParts(
 
 	// Add language preference if provided
 	if (options.language) {
-		const languageName = isLanguage(options.language) ? LANGUAGES[options.language] : options.language
+		const language = formatLanguage(options.language)
+		const languageName = LANGUAGES[language]
 		sections.push([
 			{
 				role: "user",
 				origin: "language-preference",
-				content: `Language Preference:\nYou should always speak and think in the "${languageName}" (${options.language}) language unless the user gives you instructions below to do otherwise.`,
+				content: `Language Preference:\nYou should always speak and think in the "${languageName}" (${language}) language unless the user gives you instructions below to do otherwise.`,
 			},
 		])
 	}

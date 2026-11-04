@@ -9,8 +9,7 @@
 		"tickets": "Alpha Tickets",
 		"more": "More actions",
 		"incidentDashboard": "Alpha: Incident Dashboard",
-		"scheduledTasks": "Scheduled Tasks",
-		"marketplace": "Marketplace"
+		"scheduledTasks": "Scheduled Tasks"
 	},
 	"errorBoundary": {
 		"title": "Something went wrong",

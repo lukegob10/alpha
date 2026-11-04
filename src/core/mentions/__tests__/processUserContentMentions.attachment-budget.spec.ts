@@ -119,7 +119,7 @@ describe("aggregate generated attachment admission", () => {
 			text: withMentions.text,
 			contentBlocks: [
 				generated("huge", DEFAULT_TOOL_OUTPUT_LIMIT + 1),
-				{ type: "command", content: "SKILL_INSTRUCTIONS" },
+				{ type: "skill", content: "SKILL_INSTRUCTIONS" },
 				{ type: "ticket", content: "TICKET_DETAIL" },
 			],
 		})

@@ -2,7 +2,6 @@ import type { Mock } from "vitest"
 import * as vscode from "vscode"
 import { readFileSync } from "node:fs"
 import { AlphaProvider } from "../../core/webview/AlphaProvider"
-import { registerCodeActions } from "../registerCodeActions"
 
 import { getPanel, getVisibleProviderOrLog, registerCommands, setPanel } from "../registerCommands"
 
@@ -116,15 +115,16 @@ describe("registerCommands", () => {
 		vi.clearAllMocks()
 	})
 
-	it("registers exactly one handler for every contributed keyboard shortcut", () => {
+	it("registers exactly one handler for every Alpha keyboard shortcut", () => {
 		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
 		registerCommands({ context, outputChannel: mockOutputChannel, provider: {} as AlphaProvider })
-		registerCodeActions(context)
 		const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
 			contributes: { keybindings: Array<{ command: string }>; commands: Array<{ command: string }> }
 		}
 		const registered = vi.mocked(vscode.commands.registerCommand).mock.calls.map(([id]) => id)
-		for (const { command } of manifest.contributes.keybindings) {
+		for (const { command } of manifest.contributes.keybindings.filter(({ command }) =>
+			command.startsWith("alpha."),
+		)) {
 			expect(
 				registered.filter((id) => id === command),
 				command,
@@ -214,7 +214,6 @@ describe("registerCommands", () => {
 			],
 		],
 		["sidebarScheduledTasks", [{ type: "action", action: "switchTab", tab: "scheduledTasks" }]],
-		["sidebarMarketplace", [{ type: "action", action: "marketplaceButtonClicked" }]],
 	])(
 		"keeps the native %s action on its sidebar owner for keyboard and pointer activation",
 		async (command, messages) => {

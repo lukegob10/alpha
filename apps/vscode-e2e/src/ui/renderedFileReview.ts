@@ -38,7 +38,7 @@ export async function exerciseRenderedFileReview(
 			true,
 		)
 	}
-	const enter = async () => {
+	const enter = async (targetSession = sessionId) => {
 		for (const type of ["keyDown", "keyUp"]) {
 			await cdp.request(
 				"Input.dispatchKeyEvent",
@@ -49,7 +49,7 @@ export async function exerciseRenderedFileReview(
 					windowsVirtualKeyCode: 13,
 					...(type === "keyDown" ? { text: "\r" } : {}),
 				},
-				sessionId,
+				targetSession,
 			)
 		}
 	}
@@ -89,8 +89,6 @@ export async function exerciseRenderedFileReview(
 	assert.ok(stage.fileNames.every((fileName: unknown) => typeof fileName === "string"))
 	const fileNames = stage.fileNames
 	assert.equal(fileNames.length, 3)
-	const fileToggle = (fileName: string) =>
-		`[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes(${javascriptLiteral(fileName)}))`
 
 	await check("!!d.querySelector('[data-activity-trace-id][aria-expanded=false]')")
 	await check("d.body.innerText.includes('Files edited: 3')")
@@ -99,37 +97,125 @@ export async function exerciseRenderedFileReview(
 	await focus("d.querySelector('[data-activity-trace-id]')")
 	await enter()
 	await check("d.querySelector('[data-activity-trace-id]')?.getAttribute('aria-expanded')==='true'")
-	await check(
-		"!![...d.querySelectorAll('[data-chat-message-index]')].find(e=>!e.hidden&&e.textContent?.includes('alpha-file-review-'))",
-	)
 	await focus("d.querySelector('button[aria-label=Review]')")
 	await enter()
 	await acknowledge("file-review")
+	await readStage("file-review-controls")
+	const nativeEvaluate = async (expression: string): Promise<boolean> => {
+		const result = await cdp.request<{ result: { value: boolean }; exceptionDetails?: unknown }>(
+			"Runtime.evaluate",
+			{ expression, returnByValue: true },
+			workbenchSession,
+		)
+		assert.equal(result.exceptionDetails, undefined)
+		return result.result.value
+	}
+	const nativeCheck = async (expression: string) => {
+		try {
+			await waitUntil(
+				() => nativeEvaluate(expression),
+				Date.now() + 15_000,
+				`native_review_timeout: ${expression}`,
+			)
+		} catch (error) {
+			const state = await cdp.request(
+				"Runtime.evaluate",
+				{
+					expression:
+						"({text:document.body.innerText,labels:[...document.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label')),editors:[...document.querySelectorAll('.multiDiffEntry .editorContainer')].map(e=>e.style.display)})",
+					returnByValue: true,
+				},
+				workbenchSession,
+			)
+			await fs.writeFile(path.join(directory, "ui-native-review-failure.json"), JSON.stringify(state))
+			const screenshot = await cdp.request<{ data: string }>(
+				"Page.captureScreenshot",
+				{ format: "png" },
+				workbenchSession,
+			)
+			await fs.writeFile(
+				path.join(directory, "ui-native-review-failure.png"),
+				Buffer.from(screenshot.data, "base64"),
+			)
+			throw error
+		}
+	}
+	const visibleAction = (label: string) =>
+		`(()=>{const e=[...document.querySelectorAll('[aria-label]')].find(e=>e.getAttribute('aria-label')?.startsWith(${javascriptLiteral(label)})&&e.getBoundingClientRect().width>0);return !!e})()`
+	const foldedState = (collapsed: boolean) =>
+		`(()=>{const editors=[...document.querySelectorAll('.multiDiffEntry .editorContainer')];return editors.length>0&&editors.every(e=>(e.style.display==='none')===${collapsed})})()`
+	const runAction = async (label: string) => {
+		await nativeCheck(visibleAction("Review Actions"))
+		assert.equal(
+			await nativeEvaluate(
+				"(()=>{const e=[...document.querySelectorAll('[aria-label]')].find(e=>e.getAttribute('aria-label')?.startsWith('Review Actions')&&e.getBoundingClientRect().width>0);e.focus();return document.activeElement===e})()",
+			),
+			true,
+		)
+		await enter(workbenchSession)
+		await nativeCheck("!!document.querySelector('.quick-input-widget input')?.getBoundingClientRect().width")
+		await cdp.request("Input.insertText", { text: label }, workbenchSession)
+		await nativeCheck(
+			`document.querySelector('.quick-input-widget')?.textContent?.includes(${javascriptLiteral(label)})===true`,
+		)
+		await enter(workbenchSession)
+		await nativeCheck("!document.querySelector('.quick-input-widget')?.getBoundingClientRect().width")
+	}
+	await nativeCheck("document.querySelectorAll('.multiDiffEntry .status.renamed').length===0")
+	await runAction("Collapse all files")
+	await nativeCheck(foldedState(true))
+	await runAction("Expand all files")
+	await nativeCheck(foldedState(false))
+	await runAction("Inline view")
+	await runAction("Side-by-side view")
+	await nativeCheck(
+		"(()=>{const editors=[...document.querySelectorAll('.multiDiffEntry .monaco-diff-editor')];return editors.length>0&&editors.every(e=>e.classList.contains('side-by-side'))})()",
+	)
+	await runAction("Next change")
+	await runAction("Previous change")
+	for (const [digit, collapsed] of [
+		["0", true],
+		["9", false],
+	] as const) {
+		assert.equal(
+			await nativeEvaluate(
+				"(()=>{const e=[...document.querySelectorAll('[aria-label]')].find(e=>e.getAttribute('aria-label')?.startsWith('Review Actions')&&e.getBoundingClientRect().width>0);e.focus();return document.activeElement===e})()",
+			),
+			true,
+		)
+		for (const type of ["keyDown", "keyUp"]) {
+			await cdp.request(
+				"Input.dispatchKeyEvent",
+				{ type, key: digit, code: `Digit${digit}`, windowsVirtualKeyCode: digit.charCodeAt(0), modifiers: 3 },
+				workbenchSession,
+			)
+		}
+		await nativeCheck(foldedState(collapsed))
+	}
 	const reviewScreenshot = await cdp.request<{ data: string }>(
 		"Page.captureScreenshot",
 		{ format: "png" },
 		workbenchSession,
 	)
 	await fs.writeFile(path.join(directory, "ui-file-review-native.png"), Buffer.from(reviewScreenshot.data, "base64"))
+	await acknowledge("file-review-controls")
 
 	// The host verifies every native Review resource and closes that editor before authorizing the next action.
 	const fileStage = await readStage("file-review-file")
 	assert.ok("fileName" in fileStage && fileStage.fileName === fileNames[1])
-	for (const [index, fileName] of fileNames.entries()) {
-		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='${index === 2}'`)
-	}
-	await focus(fileToggle(fileNames[2]!))
+	const panelTrigger =
+		"[...d.querySelectorAll('button[aria-expanded]')].find(e=>e.textContent?.includes('Files edited: 3'))"
+	await check(`(${panelTrigger})?.getAttribute('aria-expanded')==='false'`)
+	await focus(panelTrigger)
 	await enter()
+	await check(`(${panelTrigger})?.getAttribute('aria-expanded')==='true'`)
+	// File rows are editor actions, with no inline disclosure or second icon button.
 	for (const fileName of fileNames) {
-		await check(`(${fileToggle(fileName)})?.getAttribute('aria-expanded')==='false'`)
+		await check(
+			`(()=>{const row=[...d.querySelectorAll('button')].find(e=>e.getAttribute('aria-label')===${javascriptLiteral("Show diff: ")}+${javascriptLiteral(fileName)});return !!row&&!row.hasAttribute('aria-expanded')&&!row.querySelector('button,svg')})()`,
+		)
 	}
-	await focus(fileToggle(fileNames[0]!))
-	await enter()
-	await check(`(${fileToggle(fileNames[0]!)})?.getAttribute('aria-expanded')==='true'`)
-	await focus(fileToggle(fileNames[0]!))
-	await enter()
-	await focus(fileToggle(fileNames[2]!))
-	await enter()
+
 	const screenshot = await cdp.request<{ data: string }>(
 		"Page.captureScreenshot",
 		{ format: "png" },
@@ -145,8 +231,10 @@ export async function exerciseRenderedFileReview(
 	return [
 		"file-review",
 		"review-native-multi-diff",
-		"review-bottom-file-open",
-		"review-all-files-closed",
+		"review-collapse-expand-navigation",
+		"review-side-by-side-layout",
+		"review-chat-stays-collapsed",
+		"review-full-row-actions",
 		"review-native-file-diff",
 	]
 }

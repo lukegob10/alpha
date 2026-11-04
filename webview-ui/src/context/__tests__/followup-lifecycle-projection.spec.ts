@@ -62,7 +62,7 @@ const state = (turnId: string, sequence: number, taskStateSeq: number): Extensio
 	enableSubfolderRules: false,
 	maxImageFileSize: 5,
 	maxTotalImageSize: 20,
-	experiments: { preventFocusDisruption: false, runSlashCommand: false, customTools: false },
+	experiments: { preventFocusDisruption: false, customTools: false },
 	mode: "code",
 	customModes: [],
 	telemetrySetting: "unset",

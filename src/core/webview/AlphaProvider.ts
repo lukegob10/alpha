@@ -58,10 +58,6 @@ import {
 	type GitProperties,
 	type TelemetryProperties,
 	type TelemetryPropertiesProvider,
-	type CodeActionId,
-	type CodeActionName,
-	type TerminalActionId,
-	type TerminalActionPromptType,
 	type HistoryItem,
 	type ThreadListOptions,
 	type ThreadListResult,
@@ -108,7 +104,6 @@ import {
 	type ManagedAgentTreeProjection,
 	type ManagedAgentTreeNodeProjection,
 	type SubagentUsage,
-	type MarketplaceInstalledMetadata,
 	TaskLifecycleState,
 	AlphaCodeEventName,
 	DEFAULT_WRITE_DELAY_MS,
@@ -157,7 +152,6 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
-import { supportPrompt } from "../../shared/support-prompt"
 import { GlobalFileNames } from "../../shared/globalFileNames"
 import { Mode, defaultModeSlug, getAllModes, planModeSlug } from "../../shared/modes"
 import { experimentDefault } from "../../shared/experiments"
@@ -175,7 +169,6 @@ import WorkspaceTracker from "../../integrations/workspace/WorkspaceTracker"
 
 import { McpHub } from "../../services/mcp/McpHub"
 import { McpServerManager } from "../../services/mcp/McpServerManager"
-import { MarketplaceManager } from "../../services/marketplace"
 import { ShadowCheckpointService } from "../../services/checkpoints/ShadowCheckpointService"
 import { CodeIndexManager } from "../../services/code-index/manager"
 import type { IndexProgressUpdate } from "../../services/code-index/interfaces/manager"
@@ -326,7 +319,6 @@ import {
 	type AgentLifecycleSnapshotResyncRequest,
 } from "./AgentLifecycleProjection"
 import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
-import { cancelPromptEnhancements } from "./promptEnhancementRequests"
 import { cancelTicketSearches, enqueueFileSearch, enqueueTicketSearch } from "./ticketSearchRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
@@ -645,7 +637,6 @@ export class AlphaProvider
 		{ manager: SkillsManager; ready: Promise<void>; taskIds: Set<string> }
 	>()
 	private scheduledTaskService?: ScheduledTaskService
-	private marketplaceManager: MarketplaceManager
 	private taskCreationCallback: (task: Task) => void
 	private taskEventListeners: WeakMap<Task, Array<() => void>> = new WeakMap()
 	private currentWorkspacePath: string | undefined
@@ -1164,7 +1155,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.21-command-and-history-reliability"
+	public readonly latestAnnouncementId = "november-2026-v3.2.22-simpler-settings-and-reliable-tools"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1260,8 +1251,6 @@ export class AlphaProvider
 		this.skillsManager.initialize().catch((error) => {
 			this.log(`Failed to initialize Skills Manager: ${error}`)
 		})
-
-		this.marketplaceManager = new MarketplaceManager(this.context, this.customModesManager)
 
 		// Forward <most> task events to the provider.
 		// We do something fairly similar for the IPC-based API.
@@ -1709,7 +1698,6 @@ export class AlphaProvider
 		// Cleanup joins this below; foreground cancellation must not wait for a background model.
 		void memoryStopped.catch(() => undefined)
 		this.log("Disposing AlphaProvider...")
-		cancelPromptEnhancements(this)
 		cancelTicketSearches(this)
 
 		// Accepted compaction and tool operations can wait on task cancellation.
@@ -1891,67 +1879,6 @@ export class AlphaProvider
 		}
 
 		return false
-	}
-
-	public static async handleCodeAction(
-		command: CodeActionId,
-		promptType: CodeActionName,
-		params: Record<string, string | any[]>,
-	): Promise<void> {
-		// Capture telemetry for code action usage
-		TelemetryService.instance.captureCodeActionUsed(promptType)
-
-		const visibleProvider = await AlphaProvider.getInstance()
-
-		if (!visibleProvider) {
-			return
-		}
-
-		const { customSupportPrompts } = await visibleProvider.getState()
-
-		// TODO: Improve type safety for promptType.
-		const prompt = supportPrompt.create(promptType, params, customSupportPrompts)
-
-		if (command === "addToContext") {
-			await visibleProvider.postMessageToWebview({
-				type: "invoke",
-				invoke: "setChatBoxMessage",
-				text: `${prompt}\n\n`,
-			})
-			await visibleProvider.postMessageToWebview({ type: "action", action: "focusInput" })
-			return
-		}
-
-		await visibleProvider.createTask(prompt)
-	}
-
-	public static async handleTerminalAction(
-		command: TerminalActionId,
-		promptType: TerminalActionPromptType,
-		params: Record<string, string | any[]>,
-	): Promise<void> {
-		TelemetryService.instance.captureCodeActionUsed(promptType)
-
-		const visibleProvider = await AlphaProvider.getInstance()
-
-		if (!visibleProvider) {
-			return
-		}
-
-		const { customSupportPrompts } = await visibleProvider.getState()
-		const prompt = supportPrompt.create(promptType, params, customSupportPrompts)
-
-		if (command === "terminalAddToContext") {
-			await visibleProvider.postMessageToWebview({
-				type: "invoke",
-				invoke: "setChatBoxMessage",
-				text: `${prompt}\n\n`,
-			})
-			await visibleProvider.postMessageToWebview({ type: "action", action: "focusInput" })
-			return
-		}
-
-		await visibleProvider.createTask(prompt)
 	}
 
 	async resolveWebviewView(webviewView: vscode.WebviewView | vscode.WebviewPanel) {
@@ -2573,8 +2500,6 @@ export class AlphaProvider
 			"chatGptSelectAccount",
 			// A recreated webview needs its initial state even while an older request is still running.
 			"webviewDidLaunch",
-			"enhancePrompt",
-			"cancelEnhancePrompt",
 			// Captured diff snapshots need no task or settings transition. Keep review
 			// available while compaction or other global operations are still pending.
 			"openDiff",
@@ -2594,8 +2519,8 @@ export class AlphaProvider
 		}
 		const run = (message: WebviewMessage) =>
 			message.type === "webviewDidLaunch" || message.type.startsWith("chatGpt")
-				? webviewMessageHandler(this, message, this.marketplaceManager, { isCurrentWebview })
-				: webviewMessageHandler(this, message, this.marketplaceManager)
+				? webviewMessageHandler(this, message, { isCurrentWebview })
+				: webviewMessageHandler(this, message)
 		const failTicketSearch = (requestId: string) =>
 			this.postMessageToWebview({
 				type: "ticketSearchResults",
@@ -2659,7 +2584,7 @@ export class AlphaProvider
 				const cwd = task?.cwd ?? this.cwd
 				const scopedMessage = taskId ? { ...message, taskId } : message
 				const processing = enqueueFileSearch(this, taskId, (signal) =>
-					webviewMessageHandler(this, scopedMessage, this.marketplaceManager, {
+					webviewMessageHandler(this, scopedMessage, {
 						fileSearch: { signal, cwd },
 						isCurrentWebview,
 					}),
@@ -2689,7 +2614,7 @@ export class AlphaProvider
 				const cwd = task?.cwd ?? this.cwd
 				const scopedMessage = taskId ? { ...message, taskId } : message
 				const processing = enqueueTicketSearch(this, taskId, (signal) =>
-					webviewMessageHandler(this, scopedMessage, this.marketplaceManager, {
+					webviewMessageHandler(this, scopedMessage, {
 						ticketSearch: { signal, cwd },
 					}),
 				)
@@ -5012,51 +4937,6 @@ export class AlphaProvider
 	}
 
 	/**
-	 * Fetches marketplace data on demand to avoid blocking main state updates
-	 */
-	async fetchMarketplaceData() {
-		try {
-			const [marketplaceResult, marketplaceInstalledMetadata] = await Promise.all([
-				this.marketplaceManager.getMarketplaceItems().catch((error) => {
-					console.error("Failed to fetch marketplace items:", error)
-					return { organizationMcps: [], marketplaceItems: [], errors: [error.message] }
-				}),
-				this.marketplaceManager.getInstallationMetadata().catch((error) => {
-					console.error("Failed to fetch installation metadata:", error)
-					return { project: {}, global: {} } as MarketplaceInstalledMetadata
-				}),
-			])
-
-			// Send marketplace data separately
-			this.postMessageToWebview({
-				type: "marketplaceData",
-				organizationMcps: marketplaceResult.organizationMcps || [],
-				marketplaceItems: marketplaceResult.marketplaceItems || [],
-				marketplaceInstalledMetadata: marketplaceInstalledMetadata || { project: {}, global: {} },
-				errors: marketplaceResult.errors,
-			})
-		} catch (error) {
-			console.error("Failed to fetch marketplace data:", error)
-
-			// Send empty data on error to prevent UI from hanging
-			this.postMessageToWebview({
-				type: "marketplaceData",
-				organizationMcps: [],
-				marketplaceItems: [],
-				marketplaceInstalledMetadata: { project: {}, global: {} },
-				errors: [error instanceof Error ? error.message : String(error)],
-			})
-
-			// Show user-friendly error notification for network issues
-			if (error instanceof Error && error.message.includes("timeout")) {
-				vscode.window.showWarningMessage(
-					"Marketplace data could not be loaded due to network restrictions. Core functionality remains available.",
-				)
-			}
-		}
-	}
-
-	/**
 	 * Merges allowed commands from global state and workspace configuration
 	 * with proper validation and deduplication
 	 */
@@ -5427,7 +5307,6 @@ export class AlphaProvider
 			mode,
 			customModePrompts,
 			customSupportPrompts,
-			enhancementApiConfigId,
 			autoApprovalEnabled,
 			approvalMode,
 			approvalModeBypassAcknowledged,
@@ -5455,7 +5334,6 @@ export class AlphaProvider
 			followupAutoApproveTimeoutMs,
 			includeDiagnosticMessages,
 			maxDiagnosticMessages,
-			includeTaskHistoryInEnhance,
 			includeCurrentTime,
 			includeCurrentCost,
 			maxGitStatusFiles,
@@ -5606,7 +5484,6 @@ export class AlphaProvider
 			mode: restoreTaskMode(currentTaskMode ?? (currentView.type === "newTaskDraft" ? newTaskDraftMode : mode)),
 			customModePrompts: customModePrompts ?? {},
 			customSupportPrompts: customSupportPrompts ?? {},
-			enhancementApiConfigId,
 			autoApprovalEnabled: autoApprovalEnabled ?? false,
 			disabledBuiltinSkills: this.contextProxy.getValue("disabledBuiltinSkills") ?? [],
 			customModes,
@@ -5621,7 +5498,7 @@ export class AlphaProvider
 			machineId,
 			showAlphaIgnoredFiles: showAlphaIgnoredFiles ?? false,
 			enableSubfolderRules: enableSubfolderRules ?? false,
-			language: language ?? formatLanguage(vscode.env.language),
+			language: formatLanguage(language ?? vscode.env.language),
 			renderContext: this.renderContext,
 			maxImageFileSize: maxImageFileSize ?? 5,
 			maxTotalImageSize: maxTotalImageSize ?? 20,
@@ -5659,7 +5536,6 @@ export class AlphaProvider
 			followupAutoApproveTimeoutMs: followupAutoApproveTimeoutMs ?? 0,
 			includeDiagnosticMessages: includeDiagnosticMessages ?? true,
 			maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
-			includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
 			includeCurrentTime: includeCurrentTime ?? true,
 			includeCurrentCost: includeCurrentCost ?? true,
 			maxGitStatusFiles: maxGitStatusFiles ?? 0,
@@ -5763,7 +5639,7 @@ export class AlphaProvider
 			terminalZshP10k: stateValues.terminalZshP10k ?? false,
 			terminalZdotdir: stateValues.terminalZdotdir ?? false,
 			mode: this.currentView.type === "newTaskDraft" ? this.newTaskDraftMode : restoreTaskMode(stateValues.mode),
-			language: stateValues.language ?? formatLanguage(vscode.env.language),
+			language: formatLanguage(stateValues.language ?? vscode.env.language),
 			mcpEnabled: stateValues.mcpEnabled ?? true,
 			mcpServers: this.mcpHub?.getAllServers() ?? [],
 			currentApiConfigName: stateValues.currentApiConfigName ?? "default",
@@ -5772,7 +5648,6 @@ export class AlphaProvider
 			modeApiConfigs: stateValues.modeApiConfigs ?? ({} as Record<Mode, string>),
 			customModePrompts: stateValues.customModePrompts ?? {},
 			customSupportPrompts: stateValues.customSupportPrompts ?? {},
-			enhancementApiConfigId: stateValues.enhancementApiConfigId,
 			experiments: stateValues.experiments ?? experimentDefault,
 			autoApprovalEnabled: approval.autoApprovalEnabled,
 			disabledBuiltinSkills: stateValues.disabledBuiltinSkills ?? [],
@@ -5822,7 +5697,6 @@ export class AlphaProvider
 			lockApiConfigAcrossModes: this.context.workspaceState.get("lockApiConfigAcrossModes", false),
 			includeDiagnosticMessages: stateValues.includeDiagnosticMessages ?? true,
 			maxDiagnosticMessages: stateValues.maxDiagnosticMessages ?? 50,
-			includeTaskHistoryInEnhance: stateValues.includeTaskHistoryInEnhance ?? true,
 			includeCurrentTime: stateValues.includeCurrentTime ?? true,
 			includeCurrentCost: stateValues.includeCurrentCost ?? true,
 			maxGitStatusFiles: stateValues.maxGitStatusFiles ?? 0,

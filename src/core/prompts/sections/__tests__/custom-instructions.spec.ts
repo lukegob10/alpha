@@ -671,8 +671,8 @@ Mode-specific Instructions:\n${modeInstructions}
 		)
 
 		expect(result).toContain("Language Preference:")
-		expect(result).toContain("Español") // Check for language name
-		expect(result).toContain("(es)") // Check for language code in parentheses
+		expect(result).toContain('"English" (en) language')
+		expect(result).not.toContain("Español")
 		expect(result).toContain("Global Instructions:\nglobal instructions")
 		expect(result).toContain("Mode-specific Instructions:\nmode instructions")
 		expect(result).toContain("Rules from .alpharules-test-mode:\nmode specific rules")
@@ -1161,7 +1161,7 @@ Mode-specific Instructions:\n${modeInstructions}
 		expect(result).not.toContain("Rules from .alpharules-test-mode")
 	})
 
-	it("should handle unknown language codes properly", async () => {
+	it("uses English for unknown language preferences", async () => {
 		// Simulate no .alpha/rules-test-mode directory
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })
 
@@ -1176,7 +1176,7 @@ Mode-specific Instructions:\n${modeInstructions}
 		)
 
 		expect(result).toContain("Language Preference:")
-		expect(result).toContain('"xyz" (xyz) language') // For unknown codes, the code is used as the name too
+		expect(result).toContain('"English" (en) language')
 		expect(result).toContain("Global Instructions:\nglobal instructions")
 	})
 

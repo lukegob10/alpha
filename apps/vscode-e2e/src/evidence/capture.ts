@@ -70,6 +70,7 @@ const EVENT_TYPES = new Set([
 	"approval_result",
 	"retry",
 	"model_request_started",
+	"model_continuation",
 	"model_request_failed",
 	"task_performance",
 	"request_usage",

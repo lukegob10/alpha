@@ -27,7 +27,6 @@
 	},
 	"sections": {
 		"providers": "Providers",
-		"modes": "Modes",
 		"mcp": "MCP Servers",
 		"worktrees": "Worktrees",
 		"skills": "Skills",
@@ -37,8 +36,6 @@
 		"notifications": "Notifications",
 		"contextManagement": "Context",
 		"terminal": "Terminal",
-		"slashCommands": "Slash Commands",
-		"prompts": "Prompts",
 		"ui": "UI",
 		"experimental": "Experimental",
 		"language": "Language",
@@ -50,44 +47,6 @@
 			"label": "Enable debug mode",
 			"description": "Enable debug mode to show additional buttons in the task header for viewing API conversation history and UI messages as prettified JSON in temporary files."
 		}
-	},
-	"slashCommands": {
-		"description": "Slash commands are shortcuts for reusable workflows and actions to be used on demand (like creating a PR, running a set of tasks, etc). <DocsLink>Learn more</DocsLink>",
-		"workspaceCommands": "Workspace Commands",
-		"globalCommands": "Global Commands",
-		"noWorkspaceCommands": "No commands in this project yet.",
-		"noGlobalCommands": "No global commands yet.",
-		"addCommand": "Add Slash Command",
-		"editCommand": "Edit command",
-		"deleteCommand": "Delete command",
-		"deleteDialog": {
-			"title": "Delete Command",
-			"description": "Are you sure you want to delete the command \"{{name}}\"? This action cannot be undone.",
-			"confirm": "Delete",
-			"cancel": "Cancel"
-		},
-		"createDialog": {
-			"title": "Create New Slash Command",
-			"nameLabel": "Name",
-			"namePlaceholder": "my-command-name",
-			"nameHint": "Lowercase letters, numbers, hyphens and underscores only",
-			"sourceLabel": "Location",
-			"create": "Create",
-			"cancel": "Cancel"
-		},
-		"source": {
-			"global": "Global (available in all workspaces)",
-			"project": "Workspace"
-		},
-		"validation": {
-			"invalidEmbeddingBaseUrl": "Enter a valid embeddings base URL.",
-			"embeddingDimensionRequired": "Enter a positive whole number for the custom model's output dimensions.",
-			"bedrockRegionRequired": "Enter a valid AWS region.",
-			"nameRequired": "Name is required",
-			"nameTooLong": "Name must be 64 characters or less",
-			"nameInvalid": "Name must contain only letters, numbers, hyphens, and underscores"
-		},
-		"footer": "Use slash commands for quick access to frequently used prompts and workflows."
 	},
 	"skills": {
 		"description": "Skills encapsulate contextual instructions and workflows, which the agent can load on-demand. They can include general instructions, specific workflows and even scripts to be run as needed. <DocsLink>Learn more</DocsLink>",
@@ -140,7 +99,6 @@
 			"descriptionRequired": "Description is required",
 			"descriptionTooLong": "Description must be 1024 characters or less"
 		},
-		"footer": "Create your own skills with the Skill Writer mode, available in the <MarketplaceLink>Modes Marketplace</MarketplaceLink>.",
 		"builtinSkills": "Built-in",
 		"enabled": "Enabled",
 		"inspectSkill": "Inspect",
@@ -164,9 +122,6 @@
 			"description": "The number of live tasks that can run at the same time. Failed and completed tasks do not count against this limit."
 		}
 	},
-	"prompts": {
-		"description": "Configure Alpha's support prompts for quick actions like enhancing prompts, explaining code, and fixing issues."
-	},
 	"codeIndex": {
 		"embeddingApiKeyLabel": "Embedding API key",
 		"embeddingProviders": {
@@ -179,6 +134,7 @@
 		"embeddingApiKeySaved": "An API key is already saved for this provider.",
 		"embeddingBaseUrlLabel": "Embeddings base URL",
 		"embeddingModelIdLabel": "Embedding model ID",
+		"customModelOption": "Custom model…",
 		"embeddingDimensionLabel": "Output dimensions (required for custom models)",
 		"bedrockRegionLabel": "AWS region",
 		"bedrockProfileLabel": "AWS credential profile (optional)",
@@ -255,7 +211,10 @@
 			"vertexProjectIdRequired": "Google Cloud project ID is required",
 			"vertexRegionRequired": "Google Cloud region is required",
 			"embeddingRateLimitSecondsRange": "Embedding request delay must be between 0.1 and 60 seconds",
-			"localIndexPathRequired": "Local index path is required"
+			"localIndexPathRequired": "Local index path is required",
+			"invalidEmbeddingBaseUrl": "Enter a valid embeddings base URL.",
+			"embeddingDimensionRequired": "Enter a positive whole number for the custom model's output dimensions.",
+			"bedrockRegionRequired": "Enter a valid AWS region."
 		},
 		"optional": "optional",
 		"stopIndexingButton": "Stop Indexing",
@@ -809,10 +768,6 @@
 			"name": "Use experimental multi block diff tool",
 			"description": "When enabled, Alpha will use multi block diff tool. This will try to update multiple code blocks in the file in one request."
 		},
-		"MARKETPLACE": {
-			"name": "Enable Marketplace",
-			"description": "When enabled, you can install MCPs and custom modes from the Marketplace."
-		},
 		"PREVENT_FOCUS_DISRUPTION": {
 			"name": "Background editing",
 			"description": "Prevent editor focus disruption when enabled. File edits happen in the background without opening diff views or stealing focus. You can continue working uninterrupted while Alpha makes changes. Files can be opened without focus to capture diagnostics or kept closed entirely."
@@ -824,10 +779,6 @@
 		"NEW_TASK_REQUIRE_TODOS": {
 			"name": "Require 'todos' list for new tasks",
 			"description": "When enabled, the new_task tool will require a todos parameter to be provided. This ensures all new tasks start with a clear list of objectives. When disabled (default), the todos parameter remains optional for backward compatibility."
-		},
-		"RUN_SLASH_COMMAND": {
-			"name": "Enable model-initiated slash commands",
-			"description": "When enabled, Alpha can run your slash commands to execute workflows."
 		},
 		"CUSTOM_TOOLS": {
 			"name": "Enable custom tools",

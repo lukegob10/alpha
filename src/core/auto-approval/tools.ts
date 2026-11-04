@@ -12,6 +12,5 @@ export function isReadOnlyToolAction(tool: AlphaSayTool): boolean {
 		"listFilesRecursive",
 		"searchFiles",
 		"codebaseSearch",
-		"runSlashCommand",
 	].includes(tool.tool)
 }

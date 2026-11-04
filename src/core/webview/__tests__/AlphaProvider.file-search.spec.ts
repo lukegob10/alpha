@@ -84,7 +84,7 @@ function dispatchedFileRequests() {
 }
 
 function fileSearchOptions(requestId: string) {
-	return vi.mocked(webviewMessageHandler).mock.calls.find(([, message]) => message.requestId === requestId)?.[3]
+	return vi.mocked(webviewMessageHandler).mock.calls.find(([, message]) => message.requestId === requestId)?.[2]
 		?.fileSearch
 }
 

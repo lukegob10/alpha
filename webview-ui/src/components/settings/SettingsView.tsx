@@ -19,13 +19,10 @@ import {
 	AlertTriangle,
 	Globe,
 	Info,
-	MessageSquare,
 	LucideIcon,
-	SquareSlash,
 	Glasses,
 	Plug,
 	Server,
-	Users2,
 	ArrowLeft,
 	GitCommitVertical,
 	GraduationCap,
@@ -84,11 +81,8 @@ import { ExperimentalSettings } from "./ExperimentalSettings"
 import { LanguageSettings } from "./LanguageSettings"
 import { About } from "./About"
 import { Section } from "./Section"
-import PromptsSettings from "./PromptsSettings"
-import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { UISettings } from "./UISettings"
-import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
 import { SettingsSearch } from "./SettingsSearch"
@@ -114,16 +108,13 @@ export const sectionNames = [
 	"providers",
 	"autoApprove",
 	"agents",
-	"slashCommands",
 	"skills",
 	"checkpoints",
 	"notifications",
 	"contextManagement",
 	"terminal",
-	"modes",
 	"mcp",
 	"worktrees",
-	"prompts",
 	"ui",
 	"experimental",
 	"language",
@@ -279,8 +270,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		followupAutoApproveTimeoutMs,
 		includeDiagnosticMessages,
 		maxDiagnosticMessages,
-		includeTaskHistoryInEnhance,
-		enhancementApiConfigId,
 		reasoningBlockCollapsed,
 		enterBehavior,
 		autoSteer,
@@ -289,8 +278,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		includeCurrentTime,
 		includeCurrentCost,
 		maxGitStatusFiles,
-		customModePrompts,
-		customInstructions,
 	} = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
@@ -733,8 +720,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					alwaysAllowTickets,
 					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
 					followupAutoApproveTimeoutMs,
-					includeTaskHistoryInEnhance: includeTaskHistoryInEnhance ?? true,
-					enhancementApiConfigId: enhancementApiConfigId ?? "",
 					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
 					enterBehavior: enterBehavior ?? "send",
 					autoSteer: autoSteer === true,
@@ -743,8 +728,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					maxGitStatusFiles: maxGitStatusFiles ?? 0,
 					showWorktreesInHomeScreen,
 					experiments,
-					customModePrompts,
-					customInstructions,
 					customSupportPrompts,
 				},
 			})
@@ -895,9 +878,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const sections: { id: SectionName; icon: LucideIcon; hasSearchableSettings: boolean }[] = useMemo(
 		() => [
 			{ id: "providers", icon: Plug, hasSearchableSettings: false },
-			{ id: "modes", icon: Users2, hasSearchableSettings: false },
 			{ id: "skills", icon: GraduationCap, hasSearchableSettings: false },
-			{ id: "slashCommands", icon: SquareSlash, hasSearchableSettings: false },
 			{ id: "autoApprove", icon: CheckCheck, hasSearchableSettings: true },
 			{ id: "agents", icon: Bot, hasSearchableSettings: true },
 			{ id: "mcp", icon: Server, hasSearchableSettings: false },
@@ -905,7 +886,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "notifications", icon: Bell, hasSearchableSettings: true },
 			{ id: "contextManagement", icon: Database, hasSearchableSettings: true },
 			{ id: "terminal", icon: SquareTerminal, hasSearchableSettings: true },
-			{ id: "prompts", icon: MessageSquare, hasSearchableSettings: true },
 			{ id: "worktrees", icon: GitBranch, hasSearchableSettings: false },
 			{ id: "ui", icon: Glasses, hasSearchableSettings: true },
 			{ id: "experimental", icon: FlaskConical, hasSearchableSettings: true },
@@ -1136,9 +1116,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{/* Agents Section */}
 			{section === "agents" && <AgentsSettings values={cachedState} setCachedStateField={setCachedStateField} />}
 
-			{/* Slash Commands Section */}
-			{section === "slashCommands" && <SlashCommandsSettings />}
-
 			{/* Skills Section */}
 			{section === "skills" && (
 				<SkillsSettings
@@ -1214,16 +1191,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				/>
 			)}
 
-			{/* Modes Section */}
-			{section === "modes" && (
-				<ModesView
-					customModePrompts={customModePrompts}
-					customInstructions={customInstructions}
-					setCustomModePrompts={(value) => setCachedStateField("customModePrompts", value)}
-					setCustomInstructions={(value) => setCachedStateField("customInstructions", value)}
-				/>
-			)}
-
 			{/* MCP Section */}
 			{section === "mcp" && (
 				<McpView
@@ -1239,20 +1206,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					onShowWorktreesInHomeScreenChange={(value) =>
 						setCachedStateField("showWorktreesInHomeScreen", value)
 					}
-				/>
-			)}
-
-			{/* Prompts Section */}
-			{section === "prompts" && (
-				<PromptsSettings
-					customSupportPrompts={customSupportPrompts || {}}
-					setCustomSupportPrompts={setCustomSupportPromptsField}
-					includeTaskHistoryInEnhance={includeTaskHistoryInEnhance ?? true}
-					setIncludeTaskHistoryInEnhance={(value) =>
-						setCachedStateField("includeTaskHistoryInEnhance", value)
-					}
-					enhancementApiConfigId={enhancementApiConfigId}
-					setEnhancementApiConfigId={(value) => setCachedStateField("enhancementApiConfigId", value)}
 				/>
 			)}
 
