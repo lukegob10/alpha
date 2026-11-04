@@ -14,6 +14,7 @@ function deferred<T>() {
 }
 
 function fixture(mode: ApprovalMode = "ask") {
+	const persisted: AlphaMessage[][] = []
 	const state = {
 		approvalMode: mode,
 		alwaysAllowWriteProtected: false,
@@ -38,11 +39,14 @@ function fixture(mode: ApprovalMode = "ask") {
 		alphaMessages: [],
 		messageQueueService: new MessageQueueService(),
 		addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.alphaMessages.push(message)),
-		saveAlphaMessages: vi.fn(async () => true),
+		saveAlphaMessages: vi.fn(async () => {
+			persisted.push(structuredClone(task.alphaMessages))
+			return true
+		}),
 		updateAlphaMessage: vi.fn(async () => {}),
 		emit: vi.fn(),
 	}) as Task
-	return { task, state, provider, policy }
+	return { task, state, provider, policy, persisted }
 }
 
 function request(task: Task, ...args: Parameters<Task["ask"]>) {
@@ -162,7 +166,7 @@ describe("explicit task approval-mode updates", () => {
 	})
 
 	it("keeps a revoked automatic decision pending when publication was already in progress", async () => {
-		const { task } = fixture("auto")
+		const { task, persisted } = fixture("auto")
 		const publication = deferred<void>()
 		vi.mocked(task["addToAlphaMessages"]).mockImplementationOnce(async (message) => {
 			task.alphaMessages.push(message)
@@ -176,6 +180,7 @@ describe("explicit task approval-mode updates", () => {
 			await vi.advanceTimersByTimeAsync(100)
 			expect(ask.result()).toBeUndefined()
 			expect(task.alphaMessages.at(-1)?.isAnswered).not.toBe(true)
+			expect(persisted.at(-1)?.at(-1)?.isAnswered).toBe(false)
 		} finally {
 			publication.resolve()
 			await finish(task, ask.pending)

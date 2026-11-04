@@ -7873,6 +7873,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const message = this.findMessageByTimestamp(askTs)
 				if (message?.isAnswered && this.askResponse === undefined && !this.deferredAskResponse) {
 					message.isAnswered = false
+					await this.saveAlphaMessages()
 					await this.updateAlphaMessage(message)
 				}
 				await recheckApproval()

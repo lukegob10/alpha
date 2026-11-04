@@ -295,7 +295,7 @@ export interface TaskLike {
 
 	approveAsk(options?: { text?: string; images?: string[] }): void
 	denyAsk(options?: { text?: string; images?: string[] }): void
-	/** Set the policy for later steps admitted by this task. Existing StepContext snapshots are immutable. */
+	/** Set this task's approval choice and recheck pending prompts; StepContext snapshots stay immutable. */
 	setTaskApprovalMode?(mode: ApprovalMode): boolean
 	/** Return this task's effective approval mode, including its captured creation default. */
 	getTaskApprovalMode?(): ApprovalMode
