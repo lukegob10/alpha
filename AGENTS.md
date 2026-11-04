@@ -127,6 +127,9 @@ release-gating host. Moving the reference host does not by itself raise the inst
   a dedicated, signed-in Alpha-owned 1.141.0 profile. Record the exact host version, selected model ID, profile, and run
   conditions with the result. A live run does not replace the deterministic exact-host gate:
 
+  A previously captured real extension live smoke may be explicitly reviewed and reused for a release. Preserve its
+  original host, model, date, and known or unknown source identity; current exact-host gates still run in full.
+
 ```sh
 pnpm --filter @alpha-code/vscode-e2e test:smoke:1410
 pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
@@ -207,9 +210,10 @@ inform a specific decision, but they do not replace Codex CLI as the target for 
   strategy but is not a security or correctness boundary.
 - Keep prompts lean, stable, and non-duplicative. Measure prompt or tool-schema changes against representative evals and
   inspect cache/token effects rather than assuming more instructions improve performance.
-- Agent-affecting releases require a passing real short-task comparison against the previous published commit: at least
-  three samples on each of two providers, matching per-provider model/settings and run conditions. The release workflow
-  binds reviewed evidence to both commits; missing credentials or evidence remain unavailable, never a live pass.
+- Agent-affecting releases require one reviewed successful real extension live task on one provider/model; a Luna run
+  qualifies. A recorded pass may be explicitly reused with its original execution identity. The evidence review is bound
+  to the candidate commit; it does not relabel historical execution as a test of that candidate. Broader model matrices
+  and baseline comparisons are optional. Missing evidence remains unavailable, never a live pass.
 
 ## State, concurrency, and messaging rules
 

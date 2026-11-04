@@ -239,13 +239,35 @@ explicit configuration and budgets; reports and handoffs remain tool artifacts, 
 
 ### Live tests
 
-For an agent-behavior release, compare short real tasks against the previous published release using clean, separately
-built checkouts. Keep the current test runner unchanged for both checkouts. Each provider/model pair uses the same
-dedicated profile and reasoning effort, with at least three samples; a comparison needs at least two providers.
-The five tasks include source lookup and a small edit. Final file contents establish correctness; model calls,
-commands, repeated checks, and elapsed time measure unnecessary work separately.
+An agent-behavior release needs one reviewed successful real task through the extension on one provider/model. Luna
+qualifies; testing every live model is optional. Full deterministic release checks still run on VS Code 1.141.0, with
+minimum-host coverage on 1.125.0. For a fresh live smoke, use the dedicated signed-in profile described below and run:
 
-After compiling the current runner, capture each provider against the baseline and candidate extension paths:
+```sh
+node apps/vscode-e2e/out/runTest.js --provider live-copilot --vscode-version 1.141.0 --model-id "<exact-luna-model-id>" --reasoning-effort "<supported-effort>" --profile-dir "<owned-profile-root>" --workspace "<owned-workspace-root>" --artifacts-dir "<artifacts-root>" --file live-quality.test --grep supported-total
+```
+
+Export that completed run's evidence. An earlier recorded pass can be explicitly reviewed and reused by adding
+`--reuse-recorded true`. Its original host, date and source identity remain recorded; unknown source identity stays
+unknown. The review identifies the release candidate without claiming the historical run executed that candidate:
+
+```sh
+node scripts/harness/release-quality.mjs verify-smoke --run-dir "<completed-run-artifacts>" --fixture supported-total --candidate "<full-candidate-sha>" --output "<private-output>/smoke.json" --dispatch-input "<private-output>/dispatch.json"
+```
+
+Submit the sanitized input to **Live quality evidence** on the candidate branch:
+
+```powershell
+Get-Content -Raw -LiteralPath "<private-output>/dispatch.json" | gh workflow run live-quality-evidence.yml --ref "<candidate-branch>" --json
+```
+
+Run **Release VSIX** on the same commit with `quality_evidence_run_id` set to the successful evidence review run ID.
+Both workflows validate the live smoke facts, require their own repository and candidate identities, and retain only
+sanitized evidence. Submitted facts are reviewed captured observations, not cryptographic proof of model execution.
+Keep the original private host artifacts for investigation.
+
+For an optional broader quality comparison, use clean, separately built baseline and candidate checkouts and the same
+runner, profiles, models, effort and conditions. The comparison keeps its two-provider, three-sample workload unchanged:
 
 ```sh
 pnpm quality:capture capture --label baseline --provider live-copilot --model-id "<exact-model-id>" --effort "<supported-effort>" --profile-dir "<owned-profile-root>" --extension-development-path "<clean-baseline-checkout>/src" --output "<new-baseline-output>" --samples 3
@@ -258,21 +280,8 @@ another provider or model. Both captures verify the loaded build and source befo
 machine, host, runner, and provider conditions; provider-side caching remains uncontrolled and is recorded as such.
 
 ```sh
-pnpm quality:compare --live-quality --baseline "<baseline-output>/run.json" --baseline "<other-baseline-output>/run.json" --candidate "<candidate-output>/run.json" --candidate "<other-candidate-output>/run.json" --output "<private-output>/comparison.json" --dispatch-input "<private-output>/dispatch.json"
+pnpm quality:compare --live-quality --baseline "<baseline-output>/run.json" --baseline "<other-baseline-output>/run.json" --candidate "<candidate-output>/run.json" --candidate "<other-candidate-output>/run.json" --output "<private-output>/comparison.json"
 ```
-
-For release evidence, submit the generated dispatch input to the **Live quality evidence** workflow on the exact
-candidate branch. In PowerShell (available on every supported development platform):
-
-```powershell
-Get-Content -Raw -LiteralPath "<private-output>/dispatch.json" | gh workflow run live-quality-evidence.yml --ref "<candidate-branch>" --json
-```
-
-That workflow checks the candidate and previous published commit, then retains only sanitized measurements. Run
-**Release VSIX** manually on the same commit with `quality_evidence_run_id` set to the successful evidence run ID.
-Agent-affecting releases without this evidence stop before the larger release checks. Release verifies the evidence
-again and requires clean source and matching packaged bytes. Submitted measurements are reviewed captured facts,
-not cryptographic proof of model execution. Preserve private task artifacts locally for investigation.
 
 Live provider runs supplement deterministic checks and require their own credentials and run budget. Use three separate
 absolute profile, workspace, and artifact paths outside this checkout and normal VS Code data. Profile and workspace

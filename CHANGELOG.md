@@ -9,6 +9,7 @@
 - Accept ordinary final responses without synthetic continuation while preserving explicitly pending work, cancellation, and structured tool results.
 - Serialize approval prompts across concurrent reads in the same task, allow approved reads to run together, and cancel queued approvals promptly.
 - Apply task approval-mode changes during a turn, including the pending permission prompt, while preserving deny rules, protected files, and inherited child limits.
+- Accept one reviewed real extension live smoke for release, including an explicitly reused Luna pass with its original execution identity; keep broader live comparisons optional.
 - Verify complete tool receipts against bounded lifecycle previews and align live patch tests with whole-patch preflight validation.
 - Update the extension and in-app release announcement together for Alpha 3.2.22. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
 

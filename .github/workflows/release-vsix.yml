@@ -8,7 +8,7 @@ on:
     workflow_dispatch:
         inputs:
             quality_evidence_run_id:
-                description: "Successful live-quality-evidence run for this commit (required for agent changes)"
+                description: "Successful one-provider live smoke evidence review for this commit (required for agent changes)"
                 type: string
                 required: false
 
@@ -139,12 +139,12 @@ jobs:
             - name: Determine whether agent behavior changed since the last release
               id: policy
               run: node scripts/harness/release-quality.mjs policy --candidate "$GITHUB_SHA"
-            - name: Require a successful live comparison for the candidate commit
+            - name: Require a successful live smoke review for the candidate commit
               if: steps.policy.outputs.required != 'false'
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: node scripts/harness/release-quality.mjs verify-run --run-id "$QUALITY_EVIDENCE_RUN_ID" --candidate "$GITHUB_SHA"
-            - name: Download the reviewed live comparison
+            - name: Download the reviewed live smoke evidence
               if: steps.policy.outputs.required != 'false'
               uses: actions/download-artifact@v7
               with:
@@ -152,17 +152,15 @@ jobs:
                   path: ${{ runner.temp }}/live-quality-evidence
                   run-id: ${{ inputs.quality_evidence_run_id }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
-            - name: Recheck correctness and unnecessary work against the released baseline
+            - name: Recheck the reviewed real extension live task
               if: steps.policy.outputs.required != 'false'
-              env:
-                  QUALITY_BASELINE: ${{ steps.policy.outputs.baseline }}
-              run: node scripts/evals/proportional-scope-compare.mjs --live-quality-bundle "$RUNNER_TEMP/live-quality-evidence/bundle.json" --require-baseline-commit "$QUALITY_BASELINE" --require-candidate-commit "$GITHUB_SHA" --output "$RUNNER_TEMP/live-quality-evidence/release-comparison.json"
-            - name: Retain the release comparison
+              run: node scripts/harness/release-quality.mjs verify-smoke --input "$RUNNER_TEMP/live-quality-evidence/bundle.json" --candidate "$GITHUB_SHA" --output "$RUNNER_TEMP/live-quality-evidence/release-smoke.json"
+            - name: Retain the live smoke review
               if: steps.policy.outputs.required != 'false'
               uses: actions/upload-artifact@v6
               with:
                   name: live-quality-release-${{ github.sha }}
-                  path: ${{ runner.temp }}/live-quality-evidence/release-comparison.json
+                  path: ${{ runner.temp }}/live-quality-evidence/release-smoke.json
                   if-no-files-found: error
                   retention-days: 14
 

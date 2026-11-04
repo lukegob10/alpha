@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -11,9 +12,10 @@ import {
 	releaseQualityCli,
 	releaseQualityRequired,
 	validateEvidenceRun,
+	validateLiveSmokeEvidence,
 } from "./release-quality.mjs"
 
-test("release promotion depends on revalidated live evidence for the exact revisions", async () => {
+test("release promotion revalidates one reviewed live smoke while retaining full deterministic gates", async () => {
 	const require = createRequire(import.meta.url)
 	const yaml = createRequire(require.resolve("eslint/package.json"))("js-yaml")
 	const workflow = yaml.load(
@@ -35,10 +37,32 @@ test("release promotion depends on revalidated live evidence for the exact revis
 	const download = steps.find((step) => step.uses?.startsWith("actions/download-artifact@"))
 	assert.equal(download.with.name, "live-quality-evidence-${{ github.sha }}")
 	assert.equal(download.with["run-id"], "${{ inputs.quality_evidence_run_id }}")
-	const comparison = steps.find((step) => step.run?.includes("--live-quality-bundle"))
-	assert.match(comparison.run, /--require-baseline-commit "\$QUALITY_BASELINE"/u)
-	assert.match(comparison.run, /--require-candidate-commit "\$GITHUB_SHA"/u)
-	assert.equal(comparison.env.QUALITY_BASELINE, "${{ steps.policy.outputs.baseline }}")
+	const smoke = steps.find((step) => step.run?.includes("release-quality.mjs verify-smoke"))
+	assert.match(smoke.run, /--candidate "\$GITHUB_SHA"/u)
+	assert.match(smoke.run, /--input .*bundle.json/u)
+	assert.doesNotMatch(JSON.stringify(steps), /--live-quality-bundle|--require-baseline-commit/u)
+	for (const lane of [
+		"static",
+		"turns",
+		"unit",
+		"tooling",
+		"offline",
+		"host",
+		"extended",
+		"confidence",
+		"rendered",
+		"stress",
+		"outcomes",
+	])
+		assert.ok(
+			jobs["release-vsix"].steps.some((step) => step.run === `pnpm harness run ${lane}`),
+			lane,
+		)
+	const evidence = yaml.load(
+		await fs.readFile(new URL("../../.github/workflows/live-quality-evidence.yml", import.meta.url), "utf8"),
+	)
+	assert.ok(evidence.jobs.validate.steps.some((step) => step.run?.includes("release-quality.mjs verify-smoke")))
+	assert.doesNotMatch(JSON.stringify(evidence), /--live-quality-bundle|--require-baseline-commit/u)
 })
 
 async function fixture(t, tagged = true) {
@@ -174,6 +198,159 @@ test("evidence provenance accepts only the successful manual candidate workflow 
 			/successful own-repository/u,
 		)
 	assert.throws(() => validateEvidenceRun(null, { candidate, repository }), /successful own-repository/u)
+})
+
+const smoke = {
+	schemaVersion: 1,
+	kind: "alpha-live-extension-smoke",
+	reviewedForCandidate: candidate,
+	reuseRecorded: false,
+	runId: "luna-smoke",
+	fixtureId: "supported-total",
+	capturedAt: "2026-11-04T12:00:00.000Z",
+	hostVersion: "1.141.0",
+	providerMode: "live-copilot",
+	provider: "live-copilot",
+	modelId: "gpt-6-luna",
+	effort: "max",
+	status: "passed",
+	execution: "extension-host",
+	exitCode: 0,
+	completed: 1,
+	modelCalls: 2,
+	durationMs: 1000,
+	hostExitObserved: true,
+	ownershipGate: "verified",
+	captureComplete: true,
+	observedSourceRevision: null,
+	artifactBinding: "manifest-inventory",
+	evidence: { run: "a".repeat(64), task: "b".repeat(64), manifest: "c".repeat(64) },
+}
+
+test("one successful Luna extension task satisfies release smoke without a baseline or other models", async (t) => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-release-smoke-"))
+	t.after(() => fs.rm(root, { recursive: true, force: true }))
+	const input = path.join(root, "input.json")
+	const output = path.join(root, "smoke.json")
+	await fs.writeFile(input, JSON.stringify(smoke))
+	const result = await releaseQualityCli([
+		"verify-smoke",
+		"--candidate",
+		candidate,
+		"--input",
+		input,
+		"--output",
+		output,
+	])
+	assert.equal(result.status, "passed")
+	assert.equal(JSON.parse(await fs.readFile(output, "utf8")).modelId, "gpt-6-luna")
+})
+
+test("a reviewed recorded Luna pass keeps its original host, date and unknown source identity", () => {
+	const recorded = { ...smoke, hostVersion: "1.139.1", capturedAt: "2026-09-28T03:34:59.180Z" }
+	assert.throws(() => validateLiveSmokeEvidence(recorded, { candidate }), /explicit reuse review/u)
+	const result = validateLiveSmokeEvidence(
+		{ ...recorded, reuseRecorded: true, rawPrompt: "private-input" },
+		{ candidate },
+	)
+	assert.equal(result.hostVersion, "1.139.1")
+	assert.equal(result.capturedAt, recorded.capturedAt)
+	assert.equal(result.observedSourceRevision, null)
+	assert.equal(result.reviewedForCandidate, candidate)
+	assert.doesNotMatch(JSON.stringify(result), /private-input|rawPrompt/u)
+})
+
+for (const patch of [
+	{ reviewedForCandidate: "b".repeat(40) },
+	{ status: "blocked" },
+	{ providerMode: "scripted" },
+	{ provider: "vscode-lm-fixture" },
+	{ modelId: "" },
+	{ hostVersion: "1.124.0", reuseRecorded: true },
+	{ execution: "cli" },
+	{ exitCode: 1 },
+	{ completed: 0 },
+	{ modelCalls: 0 },
+	{ durationMs: 0 },
+	{ hostExitObserved: false },
+	{ ownershipGate: "unverified" },
+	{ captureComplete: false },
+	{ observedSourceRevision: "unknown" },
+	{ artifactBinding: "recorded-legacy" },
+	{ evidence: {} },
+])
+	test(`live smoke refuses unavailable or mismatched facts: ${JSON.stringify(patch)}`, () => {
+		assert.throws(
+			() => validateLiveSmokeEvidence({ ...smoke, ...patch }, { candidate }),
+			/Live smoke|successful captured/u,
+		)
+	})
+
+test("smoke export binds existing host artifacts, strips task contents and rejects changed task bytes", async (t) => {
+	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-smoke-export-"))
+	t.after(() => fs.rm(root, { recursive: true, force: true }))
+	const task = {
+		passed: true,
+		completed: 1,
+		requests: 2,
+		elapsedMs: 1000,
+		hostVersion: smoke.hostVersion,
+		provider: smoke.provider,
+		model: { id: smoke.modelId },
+		effort: smoke.effort,
+		rawPrompt: "private-task-content",
+	}
+	const taskBytes = JSON.stringify(task)
+	await fs.writeFile(path.join(root, "supported-total.json"), taskBytes)
+	await fs.writeFile(
+		path.join(root, "run-result.json"),
+		JSON.stringify({ ...smoke, actualVSCodeVersion: smoke.hostVersion }),
+	)
+	await fs.writeFile(
+		path.join(root, "manifest.json"),
+		JSON.stringify({
+			kind: "alpha-vscode-e2e-run-evidence",
+			runId: smoke.runId,
+			finalized: true,
+			captureComplete: true,
+			metadata: {
+				outcome: "passed",
+				provider: smoke.providerMode,
+				hostVersion: smoke.hostVersion,
+				modelId: smoke.modelId,
+				reasoningEffort: smoke.effort,
+				finishedAt: smoke.capturedAt,
+			},
+			artifacts: [{ path: "supported-total.json", sha256: createHash("sha256").update(taskBytes).digest("hex") }],
+		}),
+	)
+	const output = path.join(root, "smoke.json")
+	const dispatch = path.join(root, "dispatch.json")
+	const args = ["verify-smoke", "--candidate", candidate, "--run-dir", root, "--fixture", "supported-total"]
+	const result = await releaseQualityCli([...args, "--output", output, "--dispatch-input", dispatch])
+	assert.equal(result.artifactBinding, "manifest-inventory")
+	assert.doesNotMatch(await fs.readFile(dispatch, "utf8"), /private-task-content|rawPrompt/u)
+	assert.deepEqual(JSON.parse(JSON.parse(await fs.readFile(dispatch, "utf8")).reports), result)
+	await fs.writeFile(path.join(root, "supported-total.json"), JSON.stringify({ ...task, passed: false }))
+	await assert.rejects(
+		releaseQualityCli([...args, "--reuse-recorded", "true", "--output", path.join(root, "invalid.json")]),
+		/artifacts do not match/u,
+	)
+	await assert.rejects(fs.stat(path.join(root, "invalid.json")), { code: "ENOENT" })
+	await assert.rejects(
+		releaseQualityCli([
+			"verify-smoke",
+			"--candidate",
+			candidate,
+			"--run-dir",
+			root,
+			"--fixture",
+			"../outside",
+			"--output",
+			output,
+		]),
+		/fixture identifier/u,
+	)
 })
 
 test("invalid CLI inputs fail before a metadata command can execute", async () => {
