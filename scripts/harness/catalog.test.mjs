@@ -267,8 +267,11 @@ test("platform unit and tooling checks retain Windows, Linux and macOS execution
 	const workflow = readFileSync(new URL("../../.github/workflows/code-qa.yml", import.meta.url), "utf8")
 	const platformJob = workflow.split("    unit-test:")[1]?.split("    offline-evaluator:")[0]
 	assert.ok(platformJob)
-	for (const platform of ["ubuntu-latest", "windows-latest", "macos-latest"])
+	for (const platform of ["ubuntu-latest", "windows-latest", "macos-15"])
 		assert.ok(platformJob.includes(`os: ${platform}`), `Platform regressions must run on ${platform}`)
+	assert.match(platformJob, /os: macos-15\s+name: macos-latest/u, "Keep the protected macOS check name stable")
+	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	assert.match(release, /os: macos-15\s+target: darwin-arm64/u, "Use the matching native release host")
 	assert.match(platformJob, /run: pnpm harness run unit/)
 	assert.match(platformJob, /run: pnpm harness run tooling/)
 })

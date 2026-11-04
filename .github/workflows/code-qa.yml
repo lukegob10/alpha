@@ -80,7 +80,8 @@ jobs:
                       name: ubuntu-latest
                     - os: windows-latest
                       name: windows-latest
-                    - os: macos-latest
+                    # Match the supported ARM release host; retain the protected check's existing name.
+                    - os: macos-15
                       name: macos-latest
         steps:
             - name: Checkout code
