@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
@@ -345,7 +345,8 @@ test("failed/skipped aggregate jobs produce a failing diagnostic receipt without
 test("the publish-side verifier runs without installed dependencies and rejects changed bytes or stale barriers", async (t) => {
 	const input = await fixture(t)
 	const barrier = structuredClone(await aggregateReleaseEvidence(input))
-	const directory = await mkdtemp(path.join(os.tmpdir(), "alpha-release-publication-"))
+	// Match a canonical checkout when macOS supplies a symlinked /var temporary directory.
+	const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "alpha-release-publication-")))
 	t.after(() => rm(directory, { recursive: true, force: true }))
 	for (const relative of [
 		"scripts/harness/release-evidence.mjs",
