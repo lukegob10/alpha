@@ -120,12 +120,18 @@ suite("Alpha Extension", function () {
 			}
 		).sidebarProvider
 		try {
-			for (const personality of ["default", "friendly", "pragmatic", "none"]) {
-				const legacy = { ...original, personality }
+			for (const retiredSettings of [
+				...["default", "friendly", "pragmatic", "none"].map((personality) => ({ personality })),
+				{ enhancementApiConfigId: "retired-profile" },
+				{ includeTaskHistoryInEnhance: true },
+			]) {
+				const legacy = { ...original, ...retiredSettings }
 				await api.setConfiguration(legacy)
-				assert.ok(!("personality" in api.getConfiguration()))
-				assert.ok(!("personality" in (await host.getState())))
-				assert.ok(!("personality" in (await host.getStateToPostToWebview())))
+				for (const key of Object.keys(retiredSettings)) {
+					assert.ok(!(key in api.getConfiguration()))
+					assert.ok(!(key in (await host.getState())))
+					assert.ok(!(key in (await host.getStateToPostToWebview())))
+				}
 			}
 		} finally {
 			await api.setConfiguration(original)
@@ -154,7 +160,7 @@ suite("Alpha Extension", function () {
 				reject(new Error("Ticket tab did not open"))
 			}, 10000)
 		})
-		// VS Code 1.138.0 title-menu mouse actions forward this focus context.
+		// VS Code 1.141.0 title-menu mouse actions forward this focus context.
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
 		await opened
 		const ticketTab = ticketTabs()[0]
@@ -180,14 +186,12 @@ suite("Alpha Extension", function () {
 			"alpha.sidebarNewChat",
 			"alpha.sidebarSettings",
 			"alpha.sidebarScheduledTasks",
-			"alpha.sidebarMarketplace",
 			"alpha.plusButtonClicked",
 			"alpha.settingsButtonClicked",
 			"alpha.openTickets",
 			"alpha.historyButtonClicked",
 			"alpha.openIncidents",
 			"alpha.scheduledTasksButtonClicked",
-			"alpha.marketplaceButtonClicked",
 			"alpha.popoutButtonClicked",
 		])
 		assert.deepEqual(menus?.["view/title"], [
@@ -200,14 +204,8 @@ suite("Alpha Extension", function () {
 				when: "view == alpha.SidebarProvider && config.alpha.debug",
 			},
 			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
-			{ command: "alpha.sidebarMarketplace", group: "overflow@2", when: "view == alpha.SidebarProvider" },
 		])
-		for (const command of [
-			"alpha.sidebarNewChat",
-			"alpha.sidebarSettings",
-			"alpha.sidebarScheduledTasks",
-			"alpha.sidebarMarketplace",
-		]) {
+		for (const command of ["alpha.sidebarNewChat", "alpha.sidebarSettings", "alpha.sidebarScheduledTasks"]) {
 			assert.deepEqual(
 				menus?.commandPalette?.find((item) => item.command === command),
 				{ command, when: "false" },
@@ -291,7 +289,6 @@ suite("Alpha Extension", function () {
 			"sidebarNewChat",
 			"sidebarSettings",
 			"sidebarScheduledTasks",
-			"sidebarMarketplace",
 			"popoutButtonClicked",
 			"openInNewTab",
 			"settingsButtonClicked",
@@ -299,7 +296,6 @@ suite("Alpha Extension", function () {
 			"scheduledTasksButtonClicked",
 			"openTickets",
 			"openIncidents",
-			"marketplaceButtonClicked",
 			"newTask",
 			"setCustomStoragePath",
 			"importSettings",
@@ -313,13 +309,6 @@ suite("Alpha Extension", function () {
 			"nextTask",
 			"nextTaskNeedingInput",
 			"toggleAutoApprove",
-			"explainCode",
-			"fixCode",
-			"improveCode",
-			"addToContext",
-			"terminalAddToContext",
-			"terminalFixCommand",
-			"terminalExplainCommand",
 		]
 
 		const commands = new Set((await vscode.commands.getCommands(true)).filter((cmd) => cmd.startsWith("alpha")))
@@ -328,14 +317,28 @@ suite("Alpha Extension", function () {
 			assert.ok(commands.has(`alpha.${command}`), `Command ${command} should be registered`)
 		}
 
-		assert.ok(!commands.has("alpha.goalSeekButtonClicked"), "Goal Seek must not be registered")
+		const retiredCommands = [
+			"sidebarMarketplace",
+			"marketplaceButtonClicked",
+			"goalSeekButtonClicked",
+			"explainCode",
+			"fixCode",
+			"improveCode",
+			"addToContext",
+			"terminalAddToContext",
+			"terminalFixCommand",
+			"terminalExplainCommand",
+		]
+		for (const command of retiredCommands) {
+			assert.ok(!commands.has(`alpha.${command}`), `Retired command ${command} must not be registered`)
+		}
 		const extensionId = process.env.ALPHA_E2E_EXTENSION_ID
 		assert.ok(extensionId, "The E2E runner should provide the extension ID")
 		const extension = vscode.extensions.getExtension(extensionId)
 		assert.ok(extension, "Alpha extension should be installed")
-		assert.ok(
-			!JSON.stringify(extension.packageJSON.contributes).includes("alpha.goalSeekButtonClicked"),
-			"Goal Seek must not be contributed to the command palette or title menus",
-		)
+		const contributions = JSON.stringify(extension.packageJSON.contributes)
+		for (const command of retiredCommands) {
+			assert.ok(!contributions.includes(`alpha.${command}`), `Retired command ${command} must not be contributed`)
+		}
 	})
 })

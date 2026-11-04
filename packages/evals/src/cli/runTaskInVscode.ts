@@ -66,8 +66,8 @@ async function prepareBenchmarkHost(): Promise<BenchmarkHost> {
 	const extensionDevelopmentPath = await fs.promises.realpath(
 		fileURLToPath(new URL("../../../../src", import.meta.url)),
 	)
-	const expectedIdentity = await readExecutionIdentity(extensionDevelopmentPath, "1.138.0")
-	const profile = await prepareTestProfile({ vscodeVersion: "1.138.0" })
+	const expectedIdentity = await readExecutionIdentity(extensionDevelopmentPath, "1.141.0")
+	const profile = await prepareTestProfile({ vscodeVersion: "1.141.0" })
 	if (!profile.temporaryRoot) throw new Error("The benchmark test adapter did not create an owned temporary profile")
 	const profileRoot = profile.temporaryRoot
 	const sharedDataDir = path.join(profileRoot, "shared-data")
@@ -274,8 +274,8 @@ export const runTaskInVscode = async ({
 			presentationPolicy = { schemaVersion: 1, presentationModelCalls: false, presentationModelCallOptOut: true }
 		}
 		if (client.executionIdentity) {
-			if (client.executionIdentity.hostVersion !== "1.138.0")
-				throw new Error("Evaluator requires exact VS Code 1.138.0")
+			if (client.executionIdentity.hostVersion !== "1.141.0")
+				throw new Error("Evaluator requires exact VS Code 1.141.0")
 			if (benchmarkHost) {
 				if (!client.serverProcess) throw new Error("Benchmark host process identity is unavailable")
 				await benchmarkHost.assertRunnerAncestry(process.pid, client.serverProcess.pid)

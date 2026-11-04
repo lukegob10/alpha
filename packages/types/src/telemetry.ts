@@ -46,11 +46,6 @@ export enum TelemetryEventName {
 
 	AUTHENTICATION_INITIATED = "Authentication Initiated",
 
-	MARKETPLACE_ITEM_INSTALLED = "Marketplace Item Installed",
-	MARKETPLACE_ITEM_REMOVED = "Marketplace Item Removed",
-	MARKETPLACE_TAB_VIEWED = "Marketplace Tab Viewed",
-	MARKETPLACE_INSTALL_BUTTON_CLICKED = "Marketplace Install Button Clicked",
-
 	SHARE_BUTTON_CLICKED = "Share Button Clicked",
 	SHARE_ORGANIZATION_CLICKED = "Share Organization Clicked",
 	SHARE_PUBLIC_CLICKED = "Share Public Clicked",
@@ -171,10 +166,6 @@ export const alphaCodeTelemetryEventSchema = z.discriminatedUnion("type", [
 			TelemetryEventName.PROMPT_ENHANCED,
 			TelemetryEventName.TITLE_BUTTON_CLICKED,
 			TelemetryEventName.AUTHENTICATION_INITIATED,
-			TelemetryEventName.MARKETPLACE_ITEM_INSTALLED,
-			TelemetryEventName.MARKETPLACE_ITEM_REMOVED,
-			TelemetryEventName.MARKETPLACE_TAB_VIEWED,
-			TelemetryEventName.MARKETPLACE_INSTALL_BUTTON_CLICKED,
 			TelemetryEventName.SHARE_BUTTON_CLICKED,
 			TelemetryEventName.SHARE_ORGANIZATION_CLICKED,
 			TelemetryEventName.SHARE_PUBLIC_CLICKED,

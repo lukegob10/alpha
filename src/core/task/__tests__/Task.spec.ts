@@ -25,6 +25,7 @@ import {
 import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task, type ToolApprovalReviewer } from "../Task"
+import type { ApiInstructionFragment } from "../../../api"
 import { AskIgnoredError } from "../AskIgnoredError"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ApiStreamChunk } from "../../../api/transform/stream"
@@ -515,6 +516,46 @@ describe("Alpha", () => {
 	})
 
 	describe("constructor", () => {
+		it.each([false, true])(
+			"retains host-owned assignment context after construction (cold reload=%s)",
+			async (reload) => {
+				const origin = "handoff-origin"
+				const identity = {
+					id: "assigned-task",
+					orchestrationParentTaskId: origin,
+					number: 1,
+					ts: 1,
+					task: "Implement the assigned ticket",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				}
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					...(reload
+						? { historyItem: identity }
+						: { taskId: identity.id, task: identity.task, orchestrationParentTaskId: origin }),
+					startTask: false,
+					enableCheckpoints: false,
+				})
+				vi.spyOn(mockProvider, "getSkillsManager").mockResolvedValue(undefined)
+				let fragments: readonly ApiInstructionFragment[] = []
+				const state = { ...(await mockProvider.getState()), mcpEnabled: false }
+				const prompt = await task["getSystemPrompt"](state, undefined, undefined, "code", (parts) => {
+					fragments = parts
+				})
+
+				expect(task.orchestrationParentTaskId).toBe(origin)
+				const assignment = fragments.find(({ origin }) => origin === "alpha-task-assignment")
+				expect(assignment).toMatchObject({ role: "developer" })
+				expect(assignment?.content).toContain(JSON.stringify(origin))
+				expect(prompt).toContain(assignment?.content)
+				// Reopening the chat preserves provenance without manufacturing fresh human authorization.
+				expect(task["getUserRequestTextForCatalog"]()).toBeUndefined()
+			},
+		)
+
 		it("restores bounded diagnostic-session authority from persisted history", () => {
 			const alphaTask = new Task({
 				provider: mockProvider,
@@ -6578,7 +6619,7 @@ describe("Alpha", () => {
 			expect(JSON.stringify(task.apiConversationHistory).match(/Only one body/g)).toHaveLength(1)
 		})
 
-		it("uses the admitted step's approval mode and isolates the next-step task override", async () => {
+		it("applies explicit task approval changes to asks while preserving step and other-task authority", async () => {
 			const task = createTask()
 			task.setTaskApprovalMode("ask")
 			const globalAskState = {
@@ -6605,16 +6646,17 @@ describe("Alpha", () => {
 			expect(await decide(admittedMode, "tool", editAsk.tool)).toEqual({ decision: "ask" })
 			expect(await decide(admittedMode, "command", editAsk.command)).toEqual({ decision: "ask" })
 
-			// Changing the task while this step is admitted cannot widen its policy.
+			// The user can change permission decisions immediately without rewriting
+			// the admitted request or broadening another task's authority.
 			expect(task.setTaskApprovalMode("auto")).toBe(true)
-			expect(task["getApprovalModeForAsk"]()).toBe("ask")
-			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "ask" })
+			expect(task.getStepApprovalMode()).toBe("ask")
+			expect(task["getApprovalModeForAsk"]()).toBe("auto")
+			expect(await decide(task["getApprovalModeForAsk"](), "tool", editAsk.tool)).toEqual({ decision: "approve" })
 			expect(await decide(task["getApprovalModeForAsk"](), "command", editAsk.command)).toEqual({
-				decision: "ask",
+				decision: "approve",
 			})
 
-			// The next admitted step receives Auto, while the provider's default and
-			// another task remain on Ask.
+			// Subsequent steps use the selected mode as well.
 			Object.assign(task, {
 				currentAgentStep: { snapshot: { context: { policy: { approval: { mode: "auto" } } } } },
 			})
@@ -6806,11 +6848,22 @@ describe("Alpha", () => {
 			command?: { command: string; arguments: string }
 			workdir?: (cwd: string) => string
 			timing?: { providerTailMs: number; readMs: number; assistantSaveMs: number }
-			failReadEffectFence?: boolean
+			failReadEffectFence?: boolean | number
 			laterCall?: "queued-read" | "serial-command"
+			readCount?: number
+			readIntervalMs?: number
+			yieldRead?: number
 		}) => {
 			const task = createTask()
-			if (scenario.command || scenario.timing) {
+			if (scenario.readCount) {
+				// Keep the scripted dispatch workload independent of host filesystem latency.
+				const commandExploration = await import("../../tools/CommandExploration")
+				vi.spyOn(commandExploration, "canonicalRgInspection").mockResolvedValue({
+					executable: "rg",
+					semantics: ["needle", "src/fixture.ts"],
+				})
+			}
+			if (scenario.command || scenario.timing || scenario.readCount) {
 				vi.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects").mockResolvedValue(undefined)
 			}
 			if (scenario.command) {
@@ -6821,12 +6874,29 @@ describe("Alpha", () => {
 			let readTimer: ReturnType<typeof setTimeout> | undefined
 			let providerTimer: ReturnType<typeof setTimeout> | undefined
 			let assistantSaveTimer: ReturnType<typeof setTimeout> | undefined
+			const batchTimers = new Set<ReturnType<typeof setTimeout>>()
+			const waitForBatchDelay = async (milliseconds: number, release: Promise<unknown>) => {
+				let timer!: ReturnType<typeof setTimeout>
+				await Promise.race([
+					release,
+					new Promise<void>((resolve) => {
+						timer = setTimeout(resolve, milliseconds)
+						batchTimers.add(timer)
+					}),
+				])
+				clearTimeout(timer)
+				batchTimers.delete(timer)
+			}
 			const lifecyclePublications: Array<{ type: string; durable: boolean }> = []
 			const lifecycleEvents: AgentLifecycleEventInput[] = []
 			let lifecycleSnapshot: any
 			let sequence = 0
 			const acceptedCallId = "early-read-1"
+			const readCommand = scenario.readCount ? "rg --line-number needle src/fixture.ts" : "git status --short"
 			let readEffectCount = 0
+			let preEofReadCount = 0
+			const readStartIds: string[] = []
+			let providerReachedEof = false
 			const assistantSaveStarted = deferred()
 			const releaseAssistantSave = deferred()
 			const readStarted = deferred()
@@ -6854,6 +6924,7 @@ describe("Alpha", () => {
 			if (scenario.laterCall === "serial-command") {
 				readExecute.mockImplementation(async ({ callbacks }: Parameters<ToolDescriptor["execute"]>[0]) => {
 					normalCommandEffectCount += 1
+					eventOrder.push("normal_command_started")
 					normalCommandStarted.resolve()
 					callbacks.pushToolResult("later serial command completed")
 				})
@@ -6881,18 +6952,28 @@ describe("Alpha", () => {
 						requiresApproval: true,
 						parallelCommandRead: true,
 					},
-					prepareParallelCommand: async () => {
+					prepareParallelCommand: async ({ call }) => {
 						if (scenario.unavailableReadPreparation) return undefined
+						if (scenario.laterCall === "serial-command" && call.id === "later-early-read") return undefined
 						return {
 							scope: path.resolve(task.cwd, "."),
 							run: async (callbacks) => {
 								readEffectCount += 1
+								if (!providerReachedEof) preEofReadCount++
+								readStartIds.push(call.id ?? "")
 								eventOrder.push("read_started")
 								readStarted.resolve()
-								if (scenario.timing) {
-									readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+								if (scenario.readCount && scenario.timing) {
+									await waitForBatchDelay(scenario.timing.readMs, releaseRead.promise)
+								} else {
+									if (scenario.timing) {
+										readTimer = setTimeout(() => releaseRead.resolve(), scenario.timing.readMs)
+									}
+									await releaseRead.promise
 								}
-								await releaseRead.promise
+								if (call.id === `early-read-${scenario.yieldRead}`) {
+									callbacks.setResultMetadata?.({ status: "success", executionStatus: "running" })
+								}
 								callbacks.pushToolResult("directory listing")
 								eventOrder.push("read_result_ready")
 								readResultReady.resolve()
@@ -7093,12 +7174,16 @@ describe("Alpha", () => {
 			if (scenario.failAssistantSave) vi.spyOn(task, "retrySaveApiConversationHistory").mockResolvedValue(false)
 			const executeCanonicalToolCalls = (task as any).executeCanonicalToolCalls.bind(task)
 			const earlyDispatchSettled = deferred()
+			const earlyDispatchIds: string[] = []
 			vi.spyOn(task as any, "executeCanonicalToolCalls").mockImplementation(async (...args: any[]) => {
+				if (args[5]?.deferResultCommit)
+					earlyDispatchIds.push(...args[0].toolCalls.map((call: { id: string }) => call.id))
 				const outcome = await executeCanonicalToolCalls(...args)
 				if (args[5]?.deferResultCommit) earlyDispatchSettled.resolve(outcome)
 				return outcome
 			})
 			if (scenario.failReadEffectFence) {
+				const failedReadId = `early-read-${scenario.failReadEffectFence === true ? 1 : scenario.failReadEffectFence}`
 				const controls = task as unknown as {
 					assertDurableAcceptedReadonlyToolCallBeforeEffects: Task["assertDurableAcceptedReadonlyToolCallBeforeEffects"]
 				}
@@ -7108,7 +7193,7 @@ describe("Alpha", () => {
 					async (...args) => {
 						await nativeReadFence(...args)
 						// The first check admits the scheduler; its next native beforeEffect check fails.
-						if (args[0].id === acceptedCallId && ++readFenceChecks === 2) {
+						if (args[0].id === failedReadId && ++readFenceChecks === 2) {
 							readEffectFenceEntered.resolve()
 							await releaseReadEffectFence.promise
 							throw readEffectFenceFailure
@@ -7116,7 +7201,6 @@ describe("Alpha", () => {
 					},
 				)
 			}
-			let providerReachedEof = false
 			let mismatchFinishSpy: { mockRestore: () => void } | undefined
 			if (scenario.mismatch) {
 				const originalFinish = AgentResponseAccumulator.prototype.finish
@@ -7172,9 +7256,21 @@ describe("Alpha", () => {
 						name: "exec_command",
 						arguments:
 							scenario.command?.arguments ??
-							JSON.stringify({ cmd: "git status --short", workdir: scenario.workdir?.(task.cwd) ?? "." }),
+							JSON.stringify({ cmd: readCommand, workdir: scenario.workdir?.(task.cwd) ?? "." }),
 					}
 					yield { type: "tool_call_end", id: acceptedCallId }
+					for (let index = 1; index < (scenario.readCount ?? 1); index++) {
+						if (scenario.readIntervalMs)
+							await waitForBatchDelay(scenario.readIntervalMs, releaseProvider.promise)
+						const callId = `early-read-${index + 1}`
+						yield {
+							type: "tool_call",
+							id: callId,
+							name: "exec_command",
+							arguments: JSON.stringify({ cmd: readCommand, workdir: "." }),
+						}
+						yield { type: "tool_call_end", id: callId }
+					}
 					if (scenario.laterCall === "queued-read") {
 						yield {
 							type: "tool_call",
@@ -7265,6 +7361,8 @@ describe("Alpha", () => {
 					if (readTimer !== undefined) clearTimeout(readTimer)
 					if (providerTimer !== undefined) clearTimeout(providerTimer)
 					if (assistantSaveTimer !== undefined) clearTimeout(assistantSaveTimer)
+					for (const timer of batchTimers) clearTimeout(timer)
+					batchTimers.clear()
 				},
 				lifecycleSnapshot: () => lifecycleSnapshot,
 				debugState: () =>
@@ -7273,6 +7371,8 @@ describe("Alpha", () => {
 						lifecycle: lifecyclePublications,
 						providerReachedEof,
 						runCompletion,
+						readEffectCount,
+						preEofReadCount,
 						assistantSavedToHistory: (task as any).assistantMessageSavedToHistory,
 						historyRoles: task.apiConversationHistory.map((message) => message.role),
 					}),
@@ -7289,6 +7389,9 @@ describe("Alpha", () => {
 				readExecute,
 				acceptedCallId,
 				readEffectCount: () => readEffectCount,
+				preEofReadCount: () => preEofReadCount,
+				readStartIds,
+				earlyDispatchIds,
 				providerReachedEof: () => providerReachedEof,
 				runCompletion: () => runCompletion,
 				runCompletedAt: () => runCompletedAt,
@@ -7355,11 +7458,12 @@ describe("Alpha", () => {
 		}
 
 		it.each([
-			{ label: "a queued read before EOF", laterCall: "queued-read" as const },
-			{ label: "a remaining serial command", laterCall: "serial-command" as const },
-			{ label: "a single accepted read", laterCall: undefined },
-		])("stops $label after a real failed early-read scheduler outcome", async ({ laterCall }) => {
+			{ label: "drains an already admitted sibling read", laterCall: "queued-read" as const },
+			{ label: "blocks a remaining serial command", laterCall: "serial-command" as const },
+			{ label: "contains a single accepted failed read", laterCall: undefined },
+		])("$label after a real failed early-read scheduler outcome", async ({ laterCall }) => {
 			const fixture = await startEarlyReadStream({ failReadEffectFence: true, laterCall })
+			const drainsSibling = laterCall === "queued-read"
 			try {
 				await waitForControlledSignal("provider tail", fixture.providerTailReached, fixture.debugState)
 				await waitForControlledSignal(
@@ -7381,15 +7485,25 @@ describe("Alpha", () => {
 				// Let this fixture's ready promise work drain while the provider EOF gate remains held.
 				await new Promise<void>((resolve) => setImmediate(() => resolve()))
 				expect(fixture.providerReachedEof()).toBe(false)
-				expect(fixture.readEffectCount()).toBe(0)
+				expect(fixture.readEffectCount()).toBe(drainsSibling ? 1 : 0)
+				expect(fixture.readStartIds).toEqual(drainsSibling ? ["later-early-read"] : [])
 				fixture.releaseProvider()
 				fixture.releaseAssistantSave()
+				if (drainsSibling) {
+					// The read began before the independent fence failure was known.
+					// Drain it before publishing history; never erase its actual outcome.
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					expect(fixture.eventOrder).not.toContain("read_result_ready")
+					fixture.releaseRead()
+				}
 				const result = await waitForControlledSignal("failed task step", fixture.run, fixture.debugState)
 				expect(fixture.normalCommandEffectCount()).toBe(0)
 				expect(result).toMatchObject({ status: "failed", reason: fixture.readEffectFenceFailure.message })
 				expect(fixture.attempt).toHaveBeenCalledOnce()
 				expect(fixture.readExecute).not.toHaveBeenCalled()
-				expect(fixture.eventOrder).not.toContain("read_published")
+				expect(fixture.eventOrder.filter((event) => event === "read_published")).toHaveLength(
+					drainsSibling ? 1 : 0,
+				)
 				const expectedIds = [fixture.acceptedCallId, ...(laterCall ? ["later-early-read"] : [])]
 				const toolUses = fixture.task.apiConversationHistory.flatMap((message) =>
 					message.role === "assistant" && Array.isArray(message.content)
@@ -7409,7 +7523,7 @@ describe("Alpha", () => {
 				expect(receipts).toHaveLength(expectedIds.length)
 				for (const id of expectedIds) {
 					expect(receipts.filter((block) => block.tool_use_id === id)).toEqual([
-						expect.objectContaining({ is_error: true }),
+						expect.objectContaining({ is_error: !(drainsSibling && id === "later-early-read") }),
 					])
 					expect(
 						fixture.lifecycleSnapshot().terminalToolCallIds.filter((callId: string) => callId === id),
@@ -7576,6 +7690,324 @@ describe("Alpha", () => {
 				}
 			},
 		)
+
+		const expectOrderedReadReceipts = async (
+			fixture: Awaited<ReturnType<typeof startEarlyReadStream>>,
+			expectedIds: string[],
+		) => {
+			expect(await fixture.task.flushPendingToolResultsToHistory()).toBe(true)
+			const calls = fixture.task.apiConversationHistory.flatMap((message) =>
+				message.role === "assistant" && Array.isArray(message.content)
+					? message.content.filter((block): block is Anthropic.ToolUseBlockParam => block.type === "tool_use")
+					: [],
+			)
+			const receipts = fixture.task.apiConversationHistory.flatMap((message) =>
+				message.role === "user" && Array.isArray(message.content)
+					? message.content.filter(
+							(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
+						)
+					: [],
+			)
+			expect(calls.map((call) => call.id)).toEqual(expectedIds)
+			expect(receipts.map((receipt) => receipt.tool_use_id)).toEqual(expectedIds)
+			return receipts
+		}
+
+		it("replenishes the early-read window during an eight-read controlled stream", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				const started = Date.now()
+				fixture = await startEarlyReadStream({
+					readCount: 8,
+					readIntervalMs: 200,
+					timing: { providerTailMs: 200, readMs: 100, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal("first batched read", fixture.readStarted, fixture.debugState)
+				await vi.advanceTimersByTimeAsync(1800)
+				const result = await waitForControlledSignal("batched task run", fixture.run, fixture.debugState)
+				expect(result).toMatchObject({ status: "completed" })
+				expect({
+					preEofReads: fixture.preEofReadCount(),
+					elapsedMs: fixture.runCompletedAt()! - started,
+				}).toEqual({ preEofReads: 8, elapsedMs: 1700 })
+				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.readEffectCount()).toBe(8)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual(expectedIds)
+				expect(await expectOrderedReadReceipts(fixture, expectedIds)).toEqual(
+					expectedIds.map((tool_use_id) => expect.objectContaining({ tool_use_id, is_error: false })),
+				)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("measures a four-read burst on a frozen controlled stream", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				const started = Date.now()
+				fixture = await startEarlyReadStream({
+					readCount: 4,
+					timing: { providerTailMs: 200, readMs: 300, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal(
+					"four-read provider tail",
+					Promise.all([fixture.readStarted, fixture.providerTailReached]),
+					fixture.debugState,
+				)
+				await vi.advanceTimersByTimeAsync(1400)
+				const result = await waitForControlledSignal("four-read completion", fixture.run, fixture.debugState)
+				process.stdout.write(
+					JSON.stringify({
+						workload: "four-read-burst",
+						elapsedMs: fixture.runCompletedAt()! - started,
+						preEofReads: fixture.preEofReadCount(),
+					}) + "\n",
+				)
+				const expectedIds = Array.from({ length: 4 }, (_, index) => `early-read-${index + 1}`)
+				expect(result).toMatchObject({ status: "completed" })
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.readEffectCount()).toBe(4)
+				expect(fixture.attempt).toHaveBeenCalledOnce()
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual(expectedIds)
+				await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("drains a fast read burst without waiting for a full early-read window", async () => {
+			const fixture = await startEarlyReadStream({ readCount: 8 })
+			try {
+				await waitForControlledSignal("burst provider tail", fixture.providerTailReached, fixture.debugState)
+				await waitForControlledSignal("burst first read", fixture.readStarted, fixture.debugState)
+				expect(fixture.readEffectCount()).toBe(4)
+				fixture.releaseRead()
+				await waitForControlledSignal(
+					"burst first settlement",
+					fixture.earlyDispatchSettled,
+					fixture.debugState,
+				)
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				expect(fixture.providerReachedEof()).toBe(false)
+				expect(fixture.preEofReadCount()).toBe(4)
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				expect(
+					await waitForControlledSignal("burst completion", fixture.run, fixture.debugState),
+				).toMatchObject({
+					status: "completed",
+				})
+				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.earlyDispatchIds).toEqual(expectedIds.slice(0, 4))
+				expect(fixture.readEffectCount()).toBe(8)
+				await expectOrderedReadReceipts(fixture, expectedIds)
+			} finally {
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("bounds retained early-read results and executes the suffix once after EOF", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				const started = Date.now()
+				fixture = await startEarlyReadStream({
+					readCount: 20,
+					readIntervalMs: 200,
+					timing: { providerTailMs: 200, readMs: 100, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal("retention first read", fixture.readStarted, fixture.debugState)
+				await vi.advanceTimersByTimeAsync(4300)
+				expect(
+					await waitForControlledSignal("retention completion", fixture.run, fixture.debugState),
+				).toMatchObject({
+					status: "completed",
+				})
+				const expectedIds = Array.from({ length: 20 }, (_, index) => `early-read-${index + 1}`)
+				expect(fixture.preEofReadCount()).toBe(16)
+				expect(fixture.earlyDispatchIds).toEqual(expectedIds.slice(0, 16))
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.readEffectCount()).toBe(20)
+				expect(fixture.runCompletedAt()! - started).toBe(4200)
+				expect(fixture.lifecycleSnapshot().terminalToolCallIds).toEqual(expectedIds)
+				await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("closes early admission after a yielded read while settling the admitted prefix", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				fixture = await startEarlyReadStream({
+					readCount: 8,
+					readIntervalMs: 50,
+					yieldRead: 1,
+					timing: { providerTailMs: 200, readMs: 100, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal("yielding first read", fixture.readStarted, fixture.debugState)
+				await vi.advanceTimersByTimeAsync(1000)
+				expect(
+					await waitForControlledSignal("yielded read completion", fixture.run, fixture.debugState),
+				).toMatchObject({
+					status: "completed",
+				})
+				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+				expect(fixture.earlyDispatchIds).toEqual(expectedIds.slice(0, 2))
+				expect(fixture.preEofReadCount()).toBe(2)
+				expect(fixture.readStartIds).toEqual(expectedIds)
+				expect(fixture.readEffectCount()).toBe(8)
+				await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it("stops replenished reads and the fallback suffix after an effect fence fails", async () => {
+			let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+			vi.useFakeTimers()
+			try {
+				fixture = await startEarlyReadStream({
+					readCount: 8,
+					readIntervalMs: 200,
+					failReadEffectFence: 6,
+					timing: { providerTailMs: 200, readMs: 100, assistantSaveMs: 100 },
+				})
+				await waitForControlledSignal("failed batch first read", fixture.readStarted, fixture.debugState)
+				await vi.advanceTimersByTimeAsync(1200)
+				await waitForControlledSignal(
+					"replenished read fence",
+					fixture.readEffectFenceEntered,
+					fixture.debugState,
+				)
+				// The seventh read was admitted while the sixth's fence was unresolved.
+				// An observed failure must stop the eighth without erasing completed sibling evidence.
+				expect(fixture.readStartIds).toEqual([
+					"early-read-1",
+					"early-read-2",
+					"early-read-3",
+					"early-read-4",
+					"early-read-5",
+					"early-read-7",
+				])
+				fixture.releaseReadEffectFence()
+				await vi.advanceTimersByTimeAsync(600)
+				expect(
+					await waitForControlledSignal("failed batch completion", fixture.run, fixture.debugState),
+				).toMatchObject({
+					status: "failed",
+					reason: fixture.readEffectFenceFailure.message,
+				})
+				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+				expect(fixture.readStartIds).toEqual([...expectedIds.slice(0, 5), expectedIds[6]])
+				expect(fixture.readEffectCount()).toBe(6)
+				const receipts = await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(receipts.map((receipt) => receipt.is_error)).toEqual([
+					false,
+					false,
+					false,
+					false,
+					false,
+					true,
+					false,
+					true,
+				])
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				fixture?.clearTimingTimers()
+				vi.useRealTimers()
+				await stopEarlyReadStream(fixture)
+			}
+		})
+
+		it.each(["mutation", "lifecycle"] as const)(
+			"preserves a later %s barrier after replenished reads",
+			async (barrier) => {
+				let fixture: Awaited<ReturnType<typeof startEarlyReadStream>> | undefined
+				vi.useFakeTimers()
+				try {
+					fixture = await startEarlyReadStream({
+						readCount: 8,
+						readIntervalMs: 200,
+						...(barrier === "mutation" ? { laterCall: "serial-command" as const } : { barrier: true }),
+						timing: { providerTailMs: 200, readMs: 100, assistantSaveMs: 100 },
+					})
+					await waitForControlledSignal("barrier first read", fixture.readStarted, fixture.debugState)
+					await vi.advanceTimersByTimeAsync(1800)
+					expect(
+						await waitForControlledSignal("barrier completion", fixture.run, fixture.debugState),
+					).toMatchObject({
+						status: "completed",
+					})
+					const readIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+					const laterId = barrier === "mutation" ? "later-early-read" : "later-barrier-1"
+					expect(fixture.preEofReadCount()).toBe(8)
+					expect(fixture.readStartIds).toEqual(readIds)
+					const receipts = await expectOrderedReadReceipts(fixture, [...readIds, laterId])
+					expect(receipts.slice(0, 8).every((receipt) => !receipt.is_error)).toBe(true)
+					if (barrier === "mutation") {
+						expect(fixture.normalCommandEffectCount()).toBe(1)
+						expect(fixture.eventOrder.indexOf("normal_command_started")).toBeGreaterThan(
+							fixture.eventOrder.lastIndexOf("read_published"),
+						)
+					} else {
+						expect(fixture.barrierExecute).not.toHaveBeenCalled()
+						expect(receipts.at(-1)).toMatchObject({ tool_use_id: laterId, is_error: true })
+					}
+					expect(vi.getTimerCount()).toBe(0)
+				} finally {
+					fixture?.clearTimingTimers()
+					vi.useRealTimers()
+					await stopEarlyReadStream(fixture)
+				}
+			},
+		)
+
+		it.each(["cancellation", "steering"] as const)("stops queued streamed reads on %s", async (interruption) => {
+			const fixture = await startEarlyReadStream({ readCount: 8 })
+			try {
+				await waitForControlledSignal(
+					"interrupted provider tail",
+					fixture.providerTailReached,
+					fixture.debugState,
+				)
+				await waitForControlledSignal("interrupted first read", fixture.readStarted, fixture.debugState)
+				const interrupted =
+					interruption === "cancellation"
+						? fixture.task.abortTask(true)
+						: fixture.task.steerUserMessage("Stop inspecting the files and finish the turn.")
+				fixture.releaseRead()
+				fixture.releaseProvider()
+				fixture.releaseAssistantSave()
+				await waitForControlledSignal("read interruption", interrupted, fixture.debugState)
+				await waitForControlledSignal("interrupted completion", fixture.run, fixture.debugState)
+				expect(fixture.readStartIds).toEqual(["early-read-1", "early-read-2", "early-read-3", "early-read-4"])
+				expect(fixture.readEffectCount()).toBe(4)
+				const expectedIds = Array.from({ length: 8 }, (_, index) => `early-read-${index + 1}`)
+				const receipts = await expectOrderedReadReceipts(fixture, expectedIds)
+				expect(receipts.every((receipt) => receipt.is_error)).toBe(true)
+			} finally {
+				await stopEarlyReadStream(fixture)
+			}
+		})
 
 		it.each(["../outside", "../path-sibling"])(
 			"withholds a read from escaping workdir %s until ordinary staging",
@@ -8500,6 +8932,64 @@ describe("Alpha", () => {
 				expect(outcome.results[0]).toMatchObject({ status: "success", content: "Edit completed" })
 				expect(outcome.results[1].status).toBe("error")
 				expect(execute).toHaveBeenCalledOnce()
+			},
+		)
+
+		it.each(["new", "unchanged"] as const)(
+			"lets the model finish twelve search-only steps with %s evidence without a search-count pause",
+			async (evidence) => {
+				const task = createTask()
+				vi.spyOn(task, "flushPendingToolResultsToHistory").mockResolvedValue(true)
+				const suspend = vi.spyOn(task, "suspendAfterCurrentTurn")
+				const completed = vi.fn()
+				task.on(AlphaCodeEventName.TaskCompleted, completed)
+				const ask = vi.spyOn(task, "ask").mockImplementation(async () => {
+					task.abort = true
+					return { response: "noButtonClicked" }
+				})
+				const request = vi.spyOn(task, "runAgentRequests").mockImplementation(async () => {
+					const index = request.mock.calls.length - 1
+					task.userMessageContent = []
+					if (index >= 12) {
+						return {
+							status: "completed",
+							response: createAgentResponse([{ type: "text", text: "Review complete." }]),
+						}
+					}
+					const id = `search-${index}`
+					const commandArgs = { cmd: `rg -n symbol${index} src` }
+					task["toolRepetitionDetector"].recordOutcome({
+						toolName: "exec_command",
+						args: commandArgs,
+						kind: "read",
+						status: "success",
+						trustedProgress: {
+							kind: "read",
+							scope: `/workspace/${evidence === "new" ? index : "same"}.ts`,
+							stateFingerprint: "returned evidence",
+						},
+					})
+					task.userMessageContent = [{ type: "tool_result", tool_use_id: id, content: "Search finished." }]
+					return {
+						status: "completed",
+						response: createAgentResponse([
+							{ type: "tool_call", id, name: "exec_command", arguments: commandArgs },
+						]),
+					}
+				})
+
+				await task["initiateTaskLoop"]([
+					{ type: "text", text: "Inspect the repository and report your findings." },
+				])
+
+				expect(request).toHaveBeenCalledTimes(13)
+				expect(ask).not.toHaveBeenCalled()
+				expect(suspend).not.toHaveBeenCalled()
+				expect(completed).toHaveBeenCalledOnce()
+				expect(task.isCompleted()).toBe(true)
+				expect(JSON.stringify(request.mock.calls.map(([content]) => content))).not.toContain(
+					"Search-loop recovery checkpoint",
+				)
 			},
 		)
 
@@ -10456,10 +10946,10 @@ describe("Alpha", () => {
 		})
 
 		it.each([true, false])(
-			"reports blocked stagnation once and preserves receipt-persistence failure (%s)",
+			"reports an explicit blocked turn once and preserves receipt-persistence failure (%s)",
 			async (persisted) => {
 				const task = createTask()
-				const report = "Task remains incomplete: repeated search outcomes produced no new evidence."
+				const report = "Task remains incomplete: an admitted operation has an unknown outcome."
 				vi.spyOn(task as any, "flushPendingToolResultsToHistory").mockResolvedValue(persisted)
 				const request = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 					task.suspendAfterCurrentTurn(report, "blocked")
@@ -11208,12 +11698,12 @@ describe("Alpha", () => {
 			"repairs a %s text completion without presenting a terminal error or premature completion",
 			async (kind) => {
 				const task = createTask(kind)
-				const message = "Declared acceptance checks need attention: catalog-validation: unavailable."
+				const message = "An applied Worker change needs an approved review."
 				vi.spyOn(task, "waitForCompletionGateDecision")
 					.mockResolvedValueOnce({
 						allowed: false,
 						classification: "repairable",
-						reasonCode: "verification_missing",
+						reasonCode: "review_pending",
 						modelCanResolveRejection: true,
 						message,
 					})
@@ -11232,13 +11722,16 @@ describe("Alpha", () => {
 						expect(task.alphaMessages.some((row) => row.say === "completion_result")).toBe(false)
 						return {
 							status: "completed",
-							response: createAgentResponse([{ type: "text", text: "Catalog validation verified." }]),
+							response: createAgentResponse([{ type: "text", text: "Worker change reviewed." }]),
 						}
 					})
 
 				await task["initiateTaskLoop"]([{ type: "text", text: "Build the catalog." }])
 
 				expect(request).toHaveBeenCalledTimes(2)
+				expect(task.getModelContinuationDiagnostics().receipts).toEqual([
+					{ step: 2, reason: "completion-repair", turnId: expect.any(String) },
+				])
 				expect(request.mock.calls[1]?.[0]).toEqual([
 					expect.objectContaining({ text: expect.stringContaining(message) }),
 				])

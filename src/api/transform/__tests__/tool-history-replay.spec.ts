@@ -3,6 +3,8 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 import { buildOpenAiResponsesInput } from "../../providers/openai-responses"
 import { invalidPersistedApiMessages } from "../../../core/task-persistence/validatePersistedApiMessages"
 import { ToolHistoryError } from "../../../utils/tool-id"
+import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
+import { buildCanonicalAnthropicAssistantHistoryContent } from "../../../core/task-persistence/canonicalAssistantHistory"
 import { filterNonAnthropicBlocks } from "../anthropic-filter"
 import { convertAnthropicMessagesToGemini } from "../gemini-format"
 import { convertToOpenAiMessages } from "../openai-format"
@@ -28,6 +30,68 @@ function patchHistory() {
 }
 
 describe("accepted tool history request projection", () => {
+	it.each(['{"path":', "", "null", "[]"])(
+		"replays rejected arguments through string protocols while keeping object-only inputs valid (%j)",
+		async (rawArguments) => {
+			const accumulator = new AgentResponseAccumulator()
+			await accumulator.add({ type: "reasoning", text: "Retained thinking", signature: "opaque-signature" })
+			await accumulator.add({
+				type: "tool_call",
+				id: "malformed-call",
+				name: "read_file",
+				arguments: rawArguments,
+			})
+			const response = await accumulator.finish()
+			expect(response.outcome?.status).not.toBe("failed")
+			const history = providerHistory(
+				JSON.parse(
+					JSON.stringify([
+						{ role: "assistant", content: buildCanonicalAnthropicAssistantHistoryContent(response) },
+						{
+							role: "user",
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "malformed-call",
+									content: "Error: Unable to parse arguments",
+									is_error: true,
+								},
+							],
+						},
+					]),
+				),
+			)
+			const before = structuredClone(history)
+			expect(buildOpenAiResponsesInput("", [], history, false)).toEqual([
+				{ type: "function_call", call_id: "malformed-call", name: "read_file", arguments: rawArguments },
+				{ type: "function_call_output", call_id: "malformed-call", output: "Error: Unable to parse arguments" },
+			])
+			for (const convert of [convertToOpenAiMessages, convertToR1Format]) {
+				expect(convert(history)[0]).toMatchObject({
+					tool_calls: [
+						{
+							id: "malformed-call",
+							function: { name: "read_file", arguments: rawArguments },
+						},
+					],
+				})
+			}
+			const anthropic = filterNonAnthropicBlocks(history)
+			expect(anthropic[0].content).toEqual([
+				{ type: "thinking", thinking: "Retained thinking", signature: "opaque-signature" },
+				{ type: "tool_use", id: "malformed-call", name: "read_file", input: {} },
+			])
+			expect(anthropic[1]).toEqual(history[1])
+			expect(convertAnthropicMessagesToGemini(history)[0]).toMatchObject({
+				role: "model",
+				parts: [{ functionCall: { id: "malformed-call", name: "read_file", args: {} } }],
+			})
+			expect(JSON.stringify(anthropic)).not.toContain("rawArguments")
+			expect(JSON.stringify(convertAnthropicMessagesToGemini(history))).not.toContain("rawArguments")
+			expect(history).toEqual(before)
+		},
+	)
+
 	it.each(["success", "error", "denied", "cancelled"])(
 		"places existing %s receipts before injected context without changing the saved transaction",
 		(status) => {

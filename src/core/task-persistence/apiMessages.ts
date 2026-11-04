@@ -3,7 +3,7 @@ import * as fs from "fs/promises"
 import crypto from "crypto"
 
 import { Anthropic } from "@anthropic-ai/sdk"
-import type { TaskGoalUsageReceipt } from "@alpha-code/types"
+import type { NativeCompactionCheckpoint, TaskGoalUsageReceipt } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../utils/fs"
 
@@ -18,6 +18,7 @@ import type { ProviderStateScope } from "./providerStateScope"
 import {
 	assertAuthoritativeTranscriptMissing,
 	assertAuthoritativeTranscriptReplacementAllowed,
+	assertAuthoritativeTranscriptPreimage,
 	ProviderTranscriptStoreError,
 	serializeProviderTranscript,
 	withLegacyTranscriptMigration,
@@ -32,6 +33,9 @@ export interface ApiMessagesCommitReceipt {
 	commitId: string
 }
 
+/** Raw bytes observed by this owner, or an explicit initial absence. */
+export type ApiMessagesWritePrecondition = { missing: true } | { digest: string; byteLength: number }
+
 export type ApiMessage = Anthropic.MessageParam & {
 	/** Host-authored provenance; provider role alone does not establish human intent. */
 	input_origin?: "human" | "agent"
@@ -45,6 +49,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	goal_usage_receipts?: TaskGoalUsageReceipt[]
 	ts?: number
 	isSummary?: boolean
+	/** Canonical native window; original messages remain archived for rewind or route fallback. */
+	native_compaction?: NativeCompactionCheckpoint
 	/** Legacy response receipt (or standalone reasoning ID); never an assistant output-message ID. */
 	id?: string
 	/** Optional original assistant message identity for a single-message envelope. */
@@ -87,18 +93,20 @@ export type ApiMessage = Anthropic.MessageParam & {
 export async function readApiMessages({
 	taskId,
 	globalStoragePath,
+	onRead,
 }: {
 	taskId: string
 	globalStoragePath: string
+	onRead?: (precondition: ApiMessagesWritePrecondition) => void
 }): Promise<ApiMessage[]> {
 	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
 	const filePath = path.join(taskDir, GlobalFileNames.apiConversationHistory)
 
 	if (await fileExistsAtPath(filePath)) {
-		const fileContent = await fs.readFile(filePath, "utf8")
+		const fileContent = await fs.readFile(filePath)
 		let parsedData: unknown
 		try {
-			parsedData = JSON.parse(fileContent)
+			parsedData = JSON.parse(fileContent.toString("utf8"))
 		} catch (error) {
 			throw new ProviderTranscriptStoreError(
 				"invalid_messages",
@@ -110,15 +118,20 @@ export async function readApiMessages({
 			)
 		}
 		assertValidHistory(parsedData, taskId)
+		onRead?.(preconditionForBytes(fileContent))
 		return parsedData
 	} else {
 		return withLegacyTranscriptMigration(filePath, taskId, async (existingAuthority) => {
-			if (existingAuthority !== undefined) return existingAuthority
+			if (existingAuthority !== undefined) {
+				onRead?.(existingAuthority.precondition)
+				return existingAuthority.messages
+			}
 			const oldPath = path.join(taskDir, "claude_messages.json")
 
 			if (await fileExistsAtPath(oldPath)) {
 				const fileContent = await fs.readFile(oldPath, "utf8")
 				let parsedData: unknown
+				let migratedPrecondition: ApiMessagesWritePrecondition = { missing: true }
 				try {
 					parsedData = JSON.parse(fileContent)
 				} catch (error) {
@@ -135,7 +148,13 @@ export async function readApiMessages({
 				try {
 					// Commit the replacement before removing the fallback. resumeTaskFromHistory
 					// reads twice, so deleting the only durable copy here loses the task.
-					await writeApiMessages({ messages: parsedData, taskId, globalStoragePath, onlyIfMissing: true })
+					const receipt = await writeApiMessages({
+						messages: parsedData,
+						taskId,
+						globalStoragePath,
+						onlyIfMissing: true,
+					})
+					migratedPrecondition = { digest: receipt.digest, byteLength: receipt.byteLength }
 					await fs.unlink(oldPath)
 				} catch (error) {
 					// An admission conflict is not permission to serve an obsolete prefix.
@@ -147,10 +166,19 @@ export async function readApiMessages({
 					)
 				}
 
+				onRead?.(migratedPrecondition)
 				return parsedData
 			}
+			onRead?.({ missing: true })
 			return []
 		})
+	}
+}
+
+function preconditionForBytes(contents: Buffer | string): ApiMessagesWritePrecondition {
+	return {
+		digest: crypto.createHash("sha256").update(contents).digest("hex"),
+		byteLength: Buffer.byteLength(contents),
 	}
 }
 
@@ -169,6 +197,7 @@ export async function saveApiMessages(input: {
 	messages: ApiMessage[]
 	taskId: string
 	globalStoragePath: string
+	precondition?: ApiMessagesWritePrecondition
 }): Promise<ApiMessagesCommitReceipt> {
 	return writeApiMessages(input)
 }
@@ -178,11 +207,13 @@ async function writeApiMessages({
 	taskId,
 	globalStoragePath,
 	onlyIfMissing = false,
+	precondition,
 }: {
 	messages: ApiMessage[]
 	taskId: string
 	globalStoragePath: string
 	onlyIfMissing?: boolean
+	precondition?: ApiMessagesWritePrecondition
 }): Promise<ApiMessagesCommitReceipt> {
 	// Serialize before awaiting: caller mutation during filesystem I/O cannot
 	// change either the intended snapshot or its receipt. Canonical bytes match
@@ -198,6 +229,7 @@ async function writeApiMessages({
 		// this writer was already queued. All Task generations share this guard.
 		assertAuthoritativeTranscriptReplacementAllowed(filePath)
 		if (onlyIfMissing) await assertAuthoritativeTranscriptMissing(filePath, taskId)
+		if (precondition) await assertAuthoritativeTranscriptPreimage(filePath, taskId, precondition)
 		await atomicWriteText(filePath, contents, { requireAtomicReplace: true })
 	})
 	return Object.freeze({ taskId, filePath: path.resolve(filePath), digest, byteLength, commitId })

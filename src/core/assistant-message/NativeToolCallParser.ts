@@ -1,6 +1,9 @@
 import { parseJSON } from "partial-json"
 
 import {
+	AGENT_CANONICAL_PATH_PATTERN,
+	AGENT_TARGET_REFERENCE_PATTERN,
+	AGENT_MESSAGE_MAX_CHARACTERS,
 	browserToolNames,
 	isSubagentForkTurns,
 	type BrowserToolName,
@@ -88,7 +91,16 @@ export class NativeToolCallParser {
 	private static isExecCommandArgs(value: unknown): value is NativeToolArgs["exec_command"] {
 		if (
 			!this.isArgumentObject(value) ||
-			!this.hasOnlyKeys(value, ["cmd", "workdir", "tty", "yield_time_ms", "max_output_tokens", "verification"])
+			!this.hasOnlyKeys(value, [
+				"cmd",
+				"workdir",
+				"tty",
+				"shell",
+				"login",
+				"yield_time_ms",
+				"max_output_tokens",
+				"verification",
+			])
 		) {
 			return false
 		}
@@ -99,6 +111,8 @@ export class NativeToolCallParser {
 				this.parseCommandVerificationScope(value.verification) !== undefined) &&
 			(value.workdir === undefined || value.workdir === null || typeof value.workdir === "string") &&
 			(value.tty === undefined || value.tty === null || typeof value.tty === "boolean") &&
+			(value.shell === undefined || value.shell === null || typeof value.shell === "string") &&
+			(value.login === undefined || value.login === null || typeof value.login === "boolean") &&
 			(value.yield_time_ms === undefined ||
 				value.yield_time_ms === null ||
 				(typeof value.yield_time_ms === "number" && Number.isInteger(value.yield_time_ms))) &&
@@ -298,19 +312,16 @@ export class NativeToolCallParser {
 		return Object.keys(value).every((key) => allowed.has(key))
 	}
 
-	private static isNonEmptyString(value: unknown): value is string {
-		return typeof value === "string" && value.trim().length > 0 && value.trim().length <= 2_000
+	private static isNonEmptyString(value: unknown, maximum = AGENT_MESSAGE_MAX_CHARACTERS): value is string {
+		return typeof value === "string" && value.trim().length > 0 && value.length <= maximum
 	}
 
 	private static isCanonicalAgentPath(value: unknown): value is string {
-		return typeof value === "string" && /^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/.test(value)
+		return typeof value === "string" && new RegExp(AGENT_CANONICAL_PATH_PATTERN).test(value)
 	}
 
 	private static isAgentTarget(value: unknown): value is string {
-		return (
-			typeof value === "string" &&
-			/^(?:\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$/.test(value)
-		)
+		return typeof value === "string" && new RegExp(AGENT_TARGET_REFERENCE_PATTERN).test(value)
 	}
 
 	private static isCrossTaskId(value: unknown): value is string {
@@ -845,6 +856,8 @@ export class NativeToolCallParser {
 				} else if (partialArgs.command) {
 					nativeArgs = {
 						command: partialArgs.command,
+						shell: partialArgs.shell,
+						login: partialArgs.login,
 						cwd: partialArgs.cwd,
 						timeout: partialArgs.timeout,
 						verification: this.parseCommandVerificationScope(partialArgs.verification),
@@ -1415,6 +1428,8 @@ export class NativeToolCallParser {
 					} else if (args.command) {
 						nativeArgs = {
 							command: args.command,
+							shell: args.shell,
+							login: args.login,
 							cwd: args.cwd,
 							timeout: args.timeout,
 							verification: this.parseCommandVerificationScope(args.verification),
@@ -1536,6 +1551,7 @@ export class NativeToolCallParser {
 				case "create_ticket":
 				case "update_ticket":
 				case "delete_ticket":
+				case "delete_tickets":
 					nativeArgs = args as NativeArgsFor<TName>
 					break
 
@@ -1856,7 +1872,7 @@ export class NativeToolCallParser {
 					if (
 						this.hasOnlyKeys(args, ["target", "reason"]) &&
 						this.isAgentTarget(args.target) &&
-						(args.reason === undefined || args.reason === null || this.isNonEmptyString(args.reason))
+						(args.reason === undefined || args.reason === null || this.isNonEmptyString(args.reason, 2_000))
 					) {
 						nativeArgs = {
 							target: args.target,

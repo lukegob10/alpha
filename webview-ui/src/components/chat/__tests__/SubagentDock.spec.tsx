@@ -10,13 +10,26 @@ import userEvent from "@testing-library/user-event"
 import i18next from "i18next"
 import { initReactI18next } from "react-i18next"
 
-import { render, screen, within } from "@/utils/test-utils"
+import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
 import chat from "@/i18n/locales/en/chat.json"
 
 import { SubagentDock } from "../SubagentDock"
+import type { SubagentGroupCardProps } from "../SubagentGroupCard"
 
 const postMessage = vi.fn()
+const groupCardRenders = vi.hoisted(() => ({ count: 0 }))
 vi.mock("@/utils/vscode", () => ({ vscode: { postMessage: (...args: unknown[]) => postMessage(...args) } }))
+vi.mock("../SubagentGroupCard", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../SubagentGroupCard")>()
+	const { createElement, memo } = await import("react")
+	return {
+		...actual,
+		SubagentGroupCard: memo((props: SubagentGroupCardProps) => {
+			groupCardRenders.count++
+			return createElement(actual.SubagentGroupCard, props)
+		}),
+	}
+})
 
 const agent = (overrides: Partial<SubagentRunState> = {}): SubagentRunState => ({
 	taskId: "child-1",
@@ -101,7 +114,10 @@ describe("SubagentDock", () => {
 	beforeAll(async () => {
 		await i18next.use(initReactI18next).init({ lng: "en", resources: { en: { chat } } })
 	})
-	beforeEach(() => postMessage.mockReset())
+	beforeEach(() => {
+		postMessage.mockReset()
+		groupCardRenders.count = 0
+	})
 
 	it("defers collapsed review capability requests and keeps artifact subscriptions through projection refreshes", async () => {
 		const user = userEvent.setup()
@@ -152,6 +168,7 @@ describe("SubagentDock", () => {
 			)
 
 		for (let tick = 0; tick < 20; tick++) refreshProjection(tick)
+		expect(groupCardRenders.count).toBe(30)
 		expect(capabilityRequests()).toHaveLength(0)
 		expect(screen.getByText("30 sub-agents")).toBeVisible()
 		expect(screen.getByText("30 change sets available")).toBeVisible()
@@ -163,6 +180,122 @@ describe("SubagentDock", () => {
 		expect(capabilityRequests()).toHaveLength(30)
 		expect(screen.getByRole("button", { name: /Open Worker 29 · Completed/ })).toBeVisible()
 	})
+
+	it("refreshes collapsed summaries and reopens with the latest status and attention", async () => {
+		const user = userEvent.setup()
+		const groups = [
+			group({
+				agents: [
+					agent({
+						pendingApproval: {
+							id: "approval-1",
+							type: "command",
+							operation: "pnpm test",
+							createdAt: 4,
+						},
+					}),
+				],
+			}),
+		]
+		const projected = projection()
+		projected.nodes[0].attention = { kind: "approval", label: "Waiting for command approval" }
+		const onShowTask = vi.fn()
+		const props = { groups, parentTaskId: "parent-1", onShowTask }
+		const { rerender } = render(<SubagentDock {...props} projection={projected} />)
+		const toggle = screen.getByRole("button", { name: "Show sub-agents" })
+		expect(within(toggle).getByText("1 approval")).toBeVisible()
+		await user.click(toggle)
+		expect(screen.getByRole("button", { name: /Open Maple · Working · Approval required/ })).toBeVisible()
+		await user.click(toggle)
+		const collapsedRenderCount = groupCardRenders.count
+
+		for (let tick = 0; tick < 20; tick++) {
+			rerender(
+				<SubagentDock
+					{...props}
+					projection={{
+						...projected,
+						observedAt: 6 + tick,
+						nodes: projected.nodes.map((node, index) => ({
+							...node,
+							updatedAt: 6 + tick,
+							status: index === 0 ? "completed" : "running",
+							attention: index === 0 ? undefined : { kind: "input", label: "Waiting for user input" },
+						})),
+					}}
+				/>,
+			)
+		}
+		expect(groupCardRenders.count).toBe(collapsedRenderCount)
+		expect(within(toggle).getByText("1 running")).toBeVisible()
+		expect(within(toggle).getByText("1 awaiting input")).toBeVisible()
+		expect(within(toggle).queryByText("1 approval")).not.toBeInTheDocument()
+
+		await user.click(toggle)
+		const completed = screen.getByRole("button", { name: /Open Maple · Completed/ })
+		expect(completed).toBeVisible()
+		expect(completed.querySelector(".lucide-loader-circle")).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Open Iris · Working · Input/ })).toBeVisible()
+		expect(screen.queryByText("Approval required")).not.toBeInTheDocument()
+		await user.click(completed)
+		expect(onShowTask).toHaveBeenCalledWith("child-1")
+	})
+
+	it.each(["accepted", "rejected"] as const)(
+		"retains steering state and handles a %s receipt while the dock body is hidden",
+		async (status) => {
+			const user = userEvent.setup()
+			const groups = [group()]
+			const projected = projection()
+			const view = (isVisible: boolean, observedAt = 5) => (
+				<SubagentDock
+					groups={groups}
+					parentTaskId="parent-1"
+					isVisible={isVisible}
+					projection={{ ...projected, observedAt }}
+				/>
+			)
+			const { rerender } = render(view(true))
+			await user.click(screen.getByRole("button", { name: "Show sub-agents" }))
+			await user.click(screen.getByRole("button", { name: "Actions for Maple" }))
+			await user.click(screen.getByRole("menuitem", { name: "Steer" }))
+			fireEvent.change(screen.getByRole("textbox", { name: "Steering instruction for Maple" }), {
+				target: { value: "Keep this pending correction" },
+			})
+			await user.click(screen.getByRole("button", { name: "Send steering" }))
+			const request = postMessage.mock.calls.find(([message]) => message.type === "steerSubagent")![0]
+			rerender(view(false))
+			const hiddenRenderCount = groupCardRenders.count
+			for (let tick = 0; tick < 20; tick++) rerender(view(false, 6 + tick))
+			expect(groupCardRenders.count).toBe(hiddenRenderCount)
+			expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: {
+								command: "steerSubagent",
+								taskId: "parent-1",
+								requestId: request.requestId,
+								status,
+							},
+						},
+					}),
+				),
+			)
+			rerender(view(true, 26))
+			expect(screen.getByRole("button", { name: "Hide sub-agents" })).toHaveAttribute("aria-expanded", "true")
+			if (status === "accepted") {
+				expect(screen.queryByRole("dialog", { name: "Steer Maple" })).not.toBeInTheDocument()
+			} else {
+				expect(screen.getByRole("textbox", { name: "Steering instruction for Maple" })).toHaveValue(
+					"Keep this pending correction",
+				)
+				expect(screen.getByRole("button", { name: "Send steering" })).toBeEnabled()
+			}
+		},
+	)
 
 	it("expands rows above the fixed toggle with the requested caret direction", async () => {
 		const user = userEvent.setup()

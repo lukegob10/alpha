@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const { host, sendRequest, selectChatModels } = vi.hoisted(() => ({
-	host: { version: "1.138.0", thinkingAvailable: true },
+	host: { version: "1.141.0", thinkingAvailable: true },
 	sendRequest: vi.fn(),
 	selectChatModels: vi.fn(),
 }))
@@ -111,7 +111,7 @@ const tools = [
 	},
 ]
 
-describe.each(["1.125.0", "1.138.0"])("Claude Copilot streaming on VS Code %s", (version) => {
+describe.each(["1.125.0", "1.138.0", "1.141.0"])("Claude Copilot streaming on VS Code %s", (version) => {
 	let handler: VsCodeLmHandler | undefined
 
 	beforeEach(() => {
@@ -202,7 +202,7 @@ describe.each(["1.125.0", "1.138.0"])("Claude Copilot streaming on VS Code %s", 
 			if (effortSupported) {
 				expect(requestOptions.modelOptions).toEqual({
 					reasoningEffort: "high",
-					...(version === "1.138.0" ? { _enableThinking: true } : {}),
+					...(version === "1.125.0" ? {} : { _enableThinking: true }),
 				})
 			} else {
 				expect(requestOptions.modelOptions).toBeUndefined()

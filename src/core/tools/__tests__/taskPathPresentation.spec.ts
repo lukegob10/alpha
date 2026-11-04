@@ -47,6 +47,21 @@ describe("managed worker path presentation", () => {
 		)
 	})
 
+	it("preserves real paths and output for shared workers even when history names another workspace", () => {
+		const shared = { ...task, subagentContextManifest: { runtimePolicy: { sharedWorkspace: true } } }
+		const parentPath = path.join(logicalWorkspace, "src", "value.ts")
+		const actualPath = path.join(shared.cwd, "src", "value.ts")
+		expect(resolveTaskWorkspacePath(shared, parentPath)).toBe(parentPath)
+		expect(getTaskDisplayPath(shared, actualPath)).toBe(actualPath)
+		expect(
+			normalizeTaskToolArguments(shared, "apply_patch", {
+				patch: `*** Begin Patch\n*** Delete File: ${parentPath}\n*** End Patch`,
+			}),
+		).toEqual({ patch: `*** Begin Patch\n*** Delete File: ${parentPath}\n*** End Patch` })
+		expect(redactTaskPrivatePaths(shared, actualPath)).toBe(actualPath)
+		expect(isTaskPathOutsideWorkspace(shared, parentPath)).toBe(true)
+	})
+
 	it("treats existing and not-yet-created targets through an outward symlink as outside", () => {
 		const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "alpha-task-path-"))
 		try {

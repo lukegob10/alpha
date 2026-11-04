@@ -15,13 +15,14 @@ import { customToolRegistry, formatNative, serializeCustomTool } from "@alpha-co
 
 import type { AlphaProvider } from "../webview/AlphaProvider"
 import { getConfigDirectoriesForCwd } from "../../services/config-paths/index.js"
+import { captureTaskSessionApprovalAuthority } from "../auto-approval/taskSessionApprovalGrants"
 import { getAvailableVSCodeBrowserToolNames } from "../../services/browser/VSCodeBrowserTools"
 import { planModeSlug } from "../../shared/modes"
 import { expandLegacyThreadToolDisables } from "../../shared/tools"
 
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { buildMcpServerTools } from "../prompts/tools/native-tools/mcp_server"
-import { discoverTools, toolSearch } from "../prompts/tools/native-tools/discover_tools"
+import { createToolSearchTool, discoverTools, toolSearch } from "../prompts/tools/native-tools/discover_tools"
 import {
 	filterNativeToolsForMode,
 	filterMcpToolsForMode,
@@ -29,13 +30,13 @@ import {
 } from "../prompts/tools/filter-tools-for-mode"
 import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } from "../tools/TaskToolSurface"
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
-import type { ToolPolicyInput, ToolPolicySnapshot } from "../agent/ToolPolicy"
+import { isToolAllowed, type ToolPolicyInput, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
 import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
-import { buildMcpToolName } from "../../utils/mcp-name"
+import { buildMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { DISCOVERY_OUTPUT_LIMIT, type ToolSearch, type TaskToolCatalogCache } from "./TaskToolCatalogCache"
 import { availableCustomTools } from "./customToolCatalog"
 import {
@@ -79,7 +80,7 @@ export interface BuildToolsOptions {
 	execution?: ToolPolicyInput["execution"]
 	approvalMode?: ApprovalMode
 	autoApprovalEnabled?: boolean
-	/** Captured effective question policy; omitted values keep answers user-owned. */
+	/** Captured blocking-question preference; never gates nonblocking question availability. */
 	waitForQuestionAnswers?: boolean
 	reviewPolicy?: ToolPolicyInput["reviewPolicy"]
 	readGrant?: TaskReadGrant
@@ -145,7 +146,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", "list_provider_profiles", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 20
+const TOOL_CATALOG_SCHEMA_VERSION = 21
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -259,6 +260,7 @@ function captureMcpAvailability(
 			client: unknown
 			catalogRevision: number | undefined
 			schemaDigest: string
+			sessionApprovalAuthority: string
 		}
 	>()
 	for (const server of servers) {
@@ -270,6 +272,7 @@ function captureMcpAvailability(
 			const name = canonicalizeToolName(buildMcpToolName(server.name, tool.name))
 			const schema = schemasByName.get(name)
 			if (!schema || tool.enabledForPrompt === false || captured.has(name)) continue
+			const schemaDigest = digestValue(schema)
 			captured.set(name, {
 				serverName: server.name,
 				toolName: tool.name,
@@ -278,7 +281,16 @@ function captureMcpAvailability(
 				connection,
 				client: connection?.client,
 				catalogRevision,
-				schemaDigest: digestValue(schema),
+				schemaDigest,
+				// The session grant must follow the same executor boundary as isCurrent below.
+				sessionApprovalAuthority: captureTaskSessionApprovalAuthority(
+					[
+						...(mcpHub ? [mcpHub] : []),
+						...(connection ? [connection] : [server]),
+						...(connection?.client ? [connection.client] : []),
+					],
+					[server.name, server.source, tool.name, catalogRevision, schemaDigest],
+				),
 			})
 		}
 	}
@@ -386,9 +398,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		taskKind === "primary" &&
 		includeAllToolsWithRestrictions &&
 		historyContainsToolName(options.discoveryHistory, "request_user_input_async")
-	// Codex c92700d (2026-10-28) keeps async questions nonblocking. Alpha's
-	// indefinite-answer policy selects the existing blocking tool instead.
-	const allowAsyncQuestions = supportsAsyncQuestions && options.waitForQuestionAnswers === false
+	// Codex b75d1e8966 (2026-10-29) exposes nonblocking questions independently
+	// of blocking-question answer timers. Elapsed time never supplies an async answer.
+	const allowAsyncQuestions = supportsAsyncQuestions
 	const disabledTools = orderedNames(
 		expandLegacyThreadToolDisables([
 			...(requestedDisabledTools ?? []),
@@ -427,13 +439,14 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const toolDirs = getConfigDirectoriesForCwd(cwd).map((dir) => path.join(dir, "tools"))
 		const catalog = await awaitCatalogInput(customToolRegistry.loadFromDirectoriesIfStale(toolDirs), options.signal)
 		options.signal?.throwIfAborted()
-		customTools = catalog.catalog
+		const disabledCustomTools = new Set(disabledTools)
+		customTools = availableCustomTools(catalog.catalog)
+			.filter((definition) => !disabledCustomTools.has(canonicalizeToolName(definition.name)))
 			.map((definition) => ({ definition, schema: formatNative(serializeCustomTool(definition)) }))
 			.sort((a, b) =>
 				a.definition.name < b.definition.name ? -1 : a.definition.name > b.definition.name ? 1 : 0,
 			)
 	}
-	customTools = availableCustomTools(customTools)
 	if (!diagnosticSession) {
 		const hub = provider.getMcpHub()
 		if (hub?.awaitCatalogReady) await awaitCatalogInput(hub.awaitCatalogReady(options.signal), options.signal)
@@ -626,9 +639,27 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
 			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
 		)
+		const nativeNames = new Set(taskNativeTools.map((tool) => canonicalizeToolName(getToolName(tool))))
+		const disabledNames = new Set(disabledTools.map(canonicalizeToolName))
+		const availableSources = [...filteredMcpTools, ...nativeCustomTools]
+			.map((tool) => canonicalizeToolName(getToolName(tool)))
+			.filter(
+				(name) =>
+					!nativeNames.has(name) &&
+					!disabledNames.has(name) &&
+					(!taskAllowedNames || taskAllowedNames.has(name)) &&
+					isToolAllowed(options.policy, name),
+			)
+			.map((name) => parseMcpToolName(name)?.serverName ?? "Custom tools")
+		// Capture source guidance with the same schema registered for execution.
+		// Codex tool_search_spec advertises enabled sources (b75d1e89, 2026-10-29).
+		const discoverySchema = createToolSearchTool(availableSources)
+		const withDiscoverySources = (tool: OpenAI.Chat.ChatCompletionTool) =>
+			canDiscover && getToolName(tool) === "tool_search" ? discoverySchema : tool
+		const capturedNativeTools = taskNativeTools.map(withDiscoverySources)
 		const mcpCapture = captureMcpAvailability(provider, servers, mcpHub, connectedMcpTools)
 		const registry = new ToolRegistry({
-			nativeTools: taskNativeTools,
+			nativeTools: capturedNativeTools,
 			supportsImages,
 			mcpTools,
 			customTools,
@@ -642,7 +673,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		// Restricted providers retain declarations for history replay. Only the
 		// policy-filtered allowedFunctionNames are callable on this step.
 		if (includeAllToolsWithRestrictions) {
-			const allTools = [...taskNativeTools, ...mcpTools, ...nativeCustomTools]
+			const allTools = [...capturedNativeTools, ...mcpTools, ...nativeCustomTools]
 			const allowedFunctionNames = filteredTools.map((tool) => resolveToolAlias(getToolName(tool)))
 
 			return createCapturedToolSurface({
@@ -660,7 +691,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			options,
 			disabledTools,
 			registry,
-			schemas: filteredTools,
+			schemas: filteredTools.map(withDiscoverySources),
 			allowedFunctionNames: filteredTools.map((tool) => resolveToolAlias(getToolName(tool))),
 			includeAllToolsWithRestrictions: false,
 		})

@@ -1,10 +1,58 @@
-import { getMcpToolApprovalDecision } from "../mcpApprovalPolicy"
+import type { McpServer } from "@alpha-code/types"
+
+import { captureMcpApprovalPolicy, getMcpToolApprovalDecision } from "../mcpApprovalPolicy"
 
 const toolUse = (annotations?: unknown) => ({
 	type: "use_mcp_tool",
 	serverName: "linear",
 	toolName: "get_issue",
 	annotations,
+})
+
+describe("captureMcpApprovalPolicy", () => {
+	it("retains the first server and first tool for each selected source", () => {
+		const server = (source: McpServer["source"], tools: NonNullable<McpServer["tools"]>): McpServer => ({
+			name: "fixture",
+			source,
+			status: "connected",
+			config: "{}",
+			tools,
+		})
+		const servers = [
+			server("global", [
+				{ name: "blocked", alwaysAllow: false },
+				{ name: "blocked", alwaysAllow: true },
+				{ name: "allowed", alwaysAllow: true },
+			]),
+			server("global", [{ name: "later", alwaysAllow: true }]),
+			server(undefined, [{ name: "legacy", alwaysAllow: true }]),
+			server("project", [{ name: "project", alwaysAllow: true }]),
+		]
+		expect(captureMcpApprovalPolicy(true, servers).grants).toEqual([
+			{ serverName: "fixture", source: "global", toolName: "allowed" },
+			{ serverName: "fixture", source: "project", toolName: "project" },
+		])
+		expect(captureMcpApprovalPolicy(true, [servers[2], ...servers]).grants).toEqual(
+			expect.arrayContaining([{ serverName: "fixture", toolName: "legacy" }]),
+		)
+	})
+
+	it("captures a large catalog with a linear number of tool-name reads", () => {
+		const count = 1_000
+		let reads = 0
+		const tools = Array.from({ length: count }, (_, index) => ({
+			get name() {
+				reads++
+				return `lookup_${index}`
+			},
+			alwaysAllow: true,
+		}))
+		const policy = captureMcpApprovalPolicy(true, [
+			{ name: "fixture", source: "global", status: "connected", config: "{}", tools },
+		])
+		expect(policy.grants).toHaveLength(count)
+		expect(reads).toBeLessThanOrEqual(count * 3)
+	})
 })
 
 describe("getMcpToolApprovalDecision", () => {

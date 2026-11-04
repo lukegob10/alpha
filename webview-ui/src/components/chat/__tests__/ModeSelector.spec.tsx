@@ -107,6 +107,7 @@ describe("ModeSelector", () => {
 		expect(screen.queryByText("Orchestrator")).not.toBeInTheDocument()
 		expect(screen.queryByText("Security Review")).not.toBeInTheDocument()
 		expect(screen.queryByTestId("mode-search-input")).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "chat:modeSelector.settings" })).not.toBeInTheDocument()
 		expect(document.querySelector(".codicon-extensions")).not.toBeInTheDocument()
 		expect(screen.getByText(/Shift \+ Tab/)).toBeInTheDocument()
 

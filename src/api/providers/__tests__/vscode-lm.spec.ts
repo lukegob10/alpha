@@ -114,6 +114,7 @@ import type OpenAI from "openai"
 import { VsCodeLmHandler, getVsCodeLmModels } from "../vscode-lm"
 import type { ApiHandlerOptions } from "../../../shared/api"
 import { resolveTaskReasoning } from "../../../core/agent/TaskReasoning"
+import { applySubagentSpawnOverrides } from "../../../core/agent/SubagentModelRouter"
 import type { ModelRequestPhase, ProviderSettings } from "@alpha-code/types"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
@@ -297,7 +298,7 @@ describe("VsCodeLmHandler", () => {
 				tokensPerTurn: 27_500,
 				automatic: true,
 				status: "reduced",
-				receipt: "truncation",
+				receipt: "retry-summary",
 			},
 			{
 				label: "past the window with automatic summarization disabled",
@@ -323,12 +324,15 @@ describe("VsCodeLmHandler", () => {
 				taskId: "small-copilot-window",
 			})
 			expect(result.status).toBe(status)
-			if (receipt === "summary") expect(result.condenseId).toBeDefined()
+			if (receipt === "summary" || receipt === "retry-summary") expect(result.condenseId).toBeDefined()
 			if (receipt === "truncation") expect(result.truncationId).toBeDefined()
 			if (receipt === "none" || !automatic) expect(model.sendRequest).not.toHaveBeenCalled()
-			if (receipt === "truncation" && automatic) {
-				expect(model.sendRequest).toHaveBeenCalledOnce()
+			if (receipt === "retry-summary") {
+				expect(model.sendRequest).toHaveBeenCalledTimes(2)
 				expect(Math.ceil(JSON.stringify(model.sendRequest.mock.calls[0][0]).length / 4)).toBeGreaterThan(
+					contextWindow,
+				)
+				expect(Math.ceil(JSON.stringify(model.sendRequest.mock.calls[1][0]).length / 4)).toBeLessThanOrEqual(
 					contextWindow,
 				)
 			}
@@ -354,7 +358,7 @@ describe("VsCodeLmHandler", () => {
 			expect(mockCancellationSources.every((source) => source.dispose.mock.calls.length === 1)).toBe(true)
 		})
 
-		it("reports a rejected manual summary without changing the overflowing saved history", async () => {
+		it("recovers a manual summary overflow without changing the original saved history", async () => {
 			const model = await prepareSmallWindow()
 			const messages = history(27_500)
 			const original = structuredClone(messages)
@@ -364,10 +368,13 @@ describe("VsCodeLmHandler", () => {
 				systemPrompt,
 				taskId: "manual-overflow",
 			})
-			expect(model.sendRequest).toHaveBeenCalledOnce()
-			expect(result.errorDetails).toContain("maximum context length")
-			expect(result.status).toBe("no_progress")
-			expect(result.messages).toBe(messages)
+			expect(model.sendRequest).toHaveBeenCalledTimes(2)
+			expect(result.errorDetails).toBeUndefined()
+			expect(result.status).toBe("reduced")
+			expect(result.condenseId).toBeDefined()
+			const retained = result.messages.filter((message) => !message.isSummary)
+			expect(retained).toHaveLength(original.length)
+			for (const [index, message] of retained.entries()) expect(message).toMatchObject(original[index])
 			expect(messages).toEqual(original)
 		})
 
@@ -501,6 +508,80 @@ describe("VsCodeLmHandler", () => {
 			expect(client).toBe(selectedModel)
 		})
 
+		it.each([false, true])(
+			"keeps a spawned exact Haiku model independent of Auto (autoFirst=%s)",
+			async (autoFirst) => {
+				const selectedModel = {
+					...mockLanguageModelChat,
+					vendor: "copilot",
+					id: "claude-haiku-5.5",
+					family: "claude-haiku-5.5",
+					version: "claude-haiku-5.5",
+					name: "Claude Haiku 5.5",
+				}
+				const auto = { ...selectedModel, id: "auto", name: "Auto" }
+				vi.mocked(vscode.lm.selectChatModels).mockResolvedValue(
+					autoFirst ? [auto, selectedModel] : [selectedModel, auto],
+				)
+				const route = applySubagentSpawnOverrides(
+					{
+						apiConfiguration: {
+							apiProvider: "vscode-lm",
+							vsCodeLmModelSelector: { vendor: "copilot", id: "gpt-6-luna" },
+						},
+						apiConfigName: "Parent",
+						route: {
+							source: "parent",
+							resolution: "selected",
+							profileName: "Parent",
+							provider: "vscode-lm",
+							modelId: "gpt-6-luna",
+						},
+					},
+					"claude-haiku-5.5",
+					"high",
+				)
+				await expect(handler.createClient(route.apiConfiguration.vsCodeLmModelSelector!)).resolves.toBe(
+					selectedModel,
+				)
+				expect(route.apiConfiguration.reasoningEffort).toBe("high")
+				expect(route.route.modelId).toBe("claude-haiku-5.5")
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+			},
+		)
+
+		it("does not bind a catalog choice to Auto when it is the only family match", async () => {
+			vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([
+				{
+					...mockLanguageModelChat,
+					vendor: "copilot",
+					family: "claude-haiku-5.5",
+					id: "auto",
+					version: "claude-haiku-5.5",
+					name: "Auto",
+				},
+			])
+			await expect(handler.createClient({ vendor: "copilot", family: "claude-haiku-5.5" })).rejects.toMatchObject(
+				{
+					code: "InvalidModelSelector",
+					retryable: false,
+					phase: "model-selection",
+				},
+			)
+		})
+
+		it.each([{ id: "Claude Haiku 5.5" }, { id: "missing-model" }, { id: "" }, { family: " " }])(
+			"rejects an unavailable or malformed selector %j as configuration",
+			async (selection) => {
+				vi.mocked(vscode.lm.selectChatModels).mockResolvedValue([])
+				await expect(handler.createClient({ vendor: "copilot", ...selection })).rejects.toMatchObject({
+					code: "InvalidModelSelector",
+					retryable: false,
+					phase: "model-selection",
+				})
+			},
+		)
+
 		it("binds a catalog family to its unique Copilot route when the host uses opaque identifiers", async () => {
 			const model = {
 				...mockLanguageModelChat,
@@ -511,7 +592,6 @@ describe("VsCodeLmHandler", () => {
 			}
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockResolvedValueOnce([
 					{ ...model, vendor: "other-provider", id: "unrelated-route" },
 					{ ...model, id: "other-model", name: "Claude Opus 5.5" },
@@ -519,15 +599,11 @@ describe("VsCodeLmHandler", () => {
 				])
 
 			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
-			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(1, {
-				vendor: "copilot",
-				family: "gpt-6.1-sol",
-			})
-			expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+			expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({ vendor: "copilot" })
 			expect(model.sendRequest).not.toHaveBeenCalled()
 		})
 
-		it("binds an exact catalog family with a decorated host name without listing other models", async () => {
+		it("binds an unambiguous catalog family with a decorated host name", async () => {
 			const model = {
 				...mockLanguageModelChat,
 				vendor: "copilot",
@@ -540,22 +616,24 @@ describe("VsCodeLmHandler", () => {
 			await expect(handler.createClient({ vendor: "copilot", family: "gpt-6.1-sol" })).resolves.toBe(model)
 			expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({
 				vendor: "copilot",
-				family: "gpt-6.1-sol",
 			})
 		})
 
 		it("rejects ambiguous Copilot routes for a catalog family instead of choosing a variant", async () => {
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockResolvedValueOnce([
 					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "standard-route" },
 					{ ...mockCopilotGpt55LanguageModelChat, family: "opaque", id: "extended-route" },
 				])
 
-			await expect(handler.createClient({ vendor: "copilot", family: "gpt-5.5" })).rejects.toThrow(
-				/is ambiguous and matched 2 models/,
-			)
+			const request = handler.createClient({ vendor: "copilot", family: "gpt-5.5" })
+			await expect(request).rejects.toThrow(/is ambiguous and matched 2 models/)
+			await expect(request).rejects.toMatchObject({
+				code: "InvalidModelSelector",
+				retryable: false,
+				phase: "model-selection",
+			})
 		})
 
 		it("does not bind an unsupported near-name model to a catalog choice", async () => {
@@ -651,6 +729,44 @@ describe("VsCodeLmHandler", () => {
 	})
 
 	describe("client resolution", () => {
+		it.each(["initialize", "stream", "completion"] as const)(
+			"preserves unavailable-selector metadata through %s startup",
+			async (entry) => {
+				vi.mocked(vscode.lm.selectChatModels).mockReset().mockResolvedValue([])
+				const unavailable = new VsCodeLmHandler({
+					vsCodeLmModelSelector: { vendor: "copilot", id: "missing-model" },
+				})
+				try {
+					const request =
+						entry === "initialize"
+							? unavailable.initializeClient()
+							: entry === "completion"
+								? unavailable.completePrompt("Hello")
+								: unavailable.createMessage("System", []).next()
+					await expect(request).rejects.toMatchObject({
+						code: "InvalidModelSelector",
+						retryable: false,
+						phase: "model-selection",
+					})
+					expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+				} finally {
+					unavailable.dispose()
+				}
+			},
+		)
+
+		it.each([new Error("Model catalog temporarily unavailable"), new vscode.CancellationError()])(
+			"does not classify a rejected discovery operation as selector configuration (%s)",
+			async (failure) => {
+				vi.mocked(vscode.lm.selectChatModels).mockReset().mockRejectedValue(failure)
+				const request = handler.initializeClient()
+				await expect(request).rejects.not.toHaveProperty("code", "InvalidModelSelector")
+				if (!(failure instanceof vscode.CancellationError))
+					await expect(request).rejects.not.toHaveProperty("retryable", false)
+				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
+			},
+		)
+
 		it("shares one in-flight model selection across cold handlers with the same selector", async () => {
 			mockVsCodeVersion.value = "1.125.0"
 			let resolveModels: ((models: (typeof mockLanguageModelChat)[]) => void) | undefined
@@ -1342,6 +1458,69 @@ describe("VsCodeLmHandler", () => {
 			expect(handler.getStatefulMarker()).toBe(Buffer.from(statefulMarker).toString("base64"))
 			expect(warnSpy).not.toHaveBeenCalledWith("Alpha <Language Model API>: Unknown chunk type received")
 			warnSpy.mockRestore()
+		})
+
+		it.each([
+			{
+				label: "reported cache and reasoning details",
+				details: {
+					prompt_tokens_details: { cached_tokens: 40, cache_creation_input_tokens: 12 },
+					completion_tokens_details: { reasoning_tokens: 7 },
+				},
+				expected: { cacheReadTokens: 40, cacheWriteTokens: 12, reasoningTokens: 7 },
+			},
+			{
+				label: "explicit zero details",
+				details: {
+					prompt_tokens_details: { cached_tokens: 0, cache_creation_input_tokens: 0 },
+					completion_tokens_details: { reasoning_tokens: 0 },
+				},
+				expected: { cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0 },
+			},
+			{
+				label: "absent details",
+				details: {},
+				expected: {},
+			},
+			{
+				label: "malformed optional details",
+				details: {
+					prompt_tokens_details: { cached_tokens: "40", cache_creation_input_tokens: null },
+					completion_tokens_details: { reasoning_tokens: "7" },
+				},
+				expected: {},
+			},
+			{
+				label: "unsupported response-specific aliases",
+				details: {
+					input_tokens_details: { cached_tokens: 40, cache_write_tokens: 12 },
+					output_tokens_details: { reasoning_tokens: 7 },
+				},
+				expected: {},
+			},
+		])("preserves host usage totals with $label", async ({ details, expected }) => {
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Verified.")
+					yield {
+						mimeType: "usage",
+						data: new TextEncoder().encode(
+							JSON.stringify({ prompt_tokens: 100, completion_tokens: 20, ...details }),
+						),
+					}
+				})(),
+			})
+			const chunks = []
+			for await (const chunk of handler.createMessage("System", [{ role: "user", content: "Hello" }])) {
+				chunks.push(chunk)
+			}
+			expect(chunks.at(-1)).toEqual({
+				type: "usage",
+				usageSource: "provider",
+				inputTokens: 100,
+				outputTokens: 20,
+				...expected,
+			})
 		})
 
 		it("defers long-input fallback accounting until after sendRequest and skips it for host usage", async () => {
@@ -2212,6 +2391,7 @@ describe("VsCodeLmHandler", () => {
 			["1.135.0", undefined],
 			["1.136.1", true],
 			["1.138.0", true],
+			["1.141.0", true],
 		] as const)("uses the verified Claude thinking bridge on host %s", async (version, enableThinking) => {
 			mockVsCodeVersion.value = version
 			handler.dispose()
@@ -3195,7 +3375,6 @@ describe("VsCodeLmHandler", () => {
 			})
 			vi.mocked(vscode.lm.selectChatModels)
 				.mockReset()
-				.mockResolvedValueOnce([])
 				.mockImplementationOnce(() => {
 					markBindingStarted()
 					return new Promise((resolve) => {
@@ -3235,14 +3414,13 @@ describe("VsCodeLmHandler", () => {
 				mockGetApiRequestTimeoutSetting.mockReturnValue(0)
 				vi.mocked(vscode.lm.selectChatModels)
 					.mockReset()
-					.mockResolvedValueOnce([])
 					.mockImplementationOnce(() => new Promise(() => undefined))
 				const rejected = expect(handler.prepareModel({ deadline: Date.now() + 100 })).rejects.toMatchObject({
 					name: "ApiStreamDeadlineError",
 				})
 				await vi.advanceTimersByTimeAsync(100)
 				await rejected
-				expect(vscode.lm.selectChatModels).toHaveBeenNthCalledWith(2, { vendor: "copilot" })
+				expect(vscode.lm.selectChatModels).toHaveBeenCalledExactlyOnceWith({ vendor: "copilot" })
 				expect(handler["client"]).toBeNull()
 				expect(mockLanguageModelChat.sendRequest).not.toHaveBeenCalled()
 				expect(vi.getTimerCount()).toBe(0)
@@ -3448,6 +3626,60 @@ describe("VsCodeLmHandler", () => {
 				expect.any(Object),
 			)
 		})
+
+		it.each(["1.125.0", "1.138.0", "1.141.0"])(
+			"counts complete assistant tool arguments during context measurement on VS Code %s",
+			async (version) => {
+				mockVsCodeVersion.value = version
+				const history = (patch: string): ApiMessage[] => [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "large-patch", name: "apply_patch", input: { patch } }],
+						ts: 1,
+					},
+				]
+				const largePatch = "x".repeat(50_000)
+				const largeHistory = history(largePatch)
+				const before = structuredClone(largeHistory)
+				mockLanguageModelChat.countTokens.mockImplementation(async (message) => JSON.stringify(message).length)
+				try {
+					const smallCount = await countContextTokens(history("x"), handler, "Instructions")
+					const largeCount = await countContextTokens(largeHistory, handler, "Instructions")
+					const countedInput = JSON.stringify(mockLanguageModelChat.countTokens.mock.calls)
+
+					expect(largeCount).toBeGreaterThan(smallCount + 40_000)
+					expect(countedInput).toContain("large-patch")
+					expect(countedInput).toContain("apply_patch")
+					expect(countedInput).toContain(largePatch)
+					expect(largeHistory).toEqual(before)
+				} finally {
+					mockLanguageModelChat.countTokens.mockReset()
+				}
+			},
+		)
+
+		it.each(["no client", "failed tokenizer"])(
+			"keeps complete tool arguments in the conservative token fallback with %s",
+			async (failure) => {
+				const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined)
+				const patch = "🛠️".repeat(10_000)
+				const content: Anthropic.Messages.ContentBlockParam[] = [
+					{ type: "tool_use", id: "fallback-patch", name: "apply_patch", input: { patch } },
+				]
+				if (failure === "no client") handler["client"] = null
+				else mockLanguageModelChat.countTokens.mockRejectedValueOnce(new Error("Tokenizer unavailable"))
+				try {
+					const count = await handler.countTokens(content)
+
+					expect(count).toBeGreaterThan(new TextEncoder().encode(patch).byteLength)
+					if (failure === "no client") expect(mockLanguageModelChat.countTokens).not.toHaveBeenCalled()
+					else expect(mockLanguageModelChat.countTokens).toHaveBeenCalledOnce()
+				} finally {
+					warnSpy.mockRestore()
+					mockLanguageModelChat.countTokens.mockReset()
+				}
+			},
+		)
 
 		it("should count tokens when called during an active request", async () => {
 			// Simulate an active request with a cancellation token

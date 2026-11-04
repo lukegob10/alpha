@@ -77,7 +77,6 @@ body:
           options:
               - GCP Vertex AI
               - VS Code LM API
-              - Stellar
               - OpenAI Compatible
               - Not Applicable / Other
 

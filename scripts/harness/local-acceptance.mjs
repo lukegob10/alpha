@@ -115,14 +115,14 @@ export async function main(
 			} = require("../../apps/vscode-e2e/out/campaign/hostTerminationCampaign.js")
 			result = await runHostTerminationCampaign({
 				fixtureRoot: path.join(options.output, "fixture"),
-				host: { version: "1.138.0", executable: options.executable },
+				host: { version: "1.141.0", executable: options.executable },
 				signal: abort.signal,
 			})
 		} else if (options.scenario === "shared-workers") {
 			const { runSharedStorageCampaign } = require("../../apps/vscode-e2e/out/campaign/sharedStorageCampaign.js")
 			result = await runSharedStorageCampaign({
 				fixtureRoot: path.join(options.output, "fixture"),
-				host: { version: "1.138.0", executable: options.executable },
+				host: { version: "1.141.0", executable: options.executable },
 				signal: abort.signal,
 				sharedWorkerMailbox: true,
 			})
@@ -132,14 +132,14 @@ export async function main(
 			} = require("../../apps/vscode-e2e/out/campaign/taskHistoryChurnCampaign.js")
 			result = await runTaskHistoryChurnCampaign({
 				fixtureRoot: path.join(options.output, "fixture"),
-				host: { version: "1.138.0", executable: options.executable },
+				host: { version: "1.141.0", executable: options.executable },
 				signal: abort.signal,
 			})
 		} else if (options.scenario === "nested-restart") {
 			const { runNestedRestartCampaign } = require("../../apps/vscode-e2e/out/campaign/nestedRestartCampaign.js")
 			result = await runNestedRestartCampaign({
 				fixtureRoot: path.join(options.output, "fixture"),
-				host: { version: "1.138.0", executable: options.executable },
+				host: { version: "1.141.0", executable: options.executable },
 				signal: abort.signal,
 			})
 		} else if (options.scenario === "rendered-ui") {
@@ -150,7 +150,7 @@ export async function main(
 			const cancellation = options.scenario === "cancellation"
 			result = await runExtensionTests({
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
 				vscodeExecutablePath: options.executable,
 				profileDir: path.join(options.output, "profile"),
 				workspace: path.join(options.output, "workspace"),

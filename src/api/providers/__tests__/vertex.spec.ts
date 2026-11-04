@@ -79,35 +79,14 @@ describe("VertexHandler", () => {
 		restoreEnv("USER", originalUser)
 	})
 
-	describe("constructor", () => {
-		it("should initialize GoogleGenAI with Vertex gateway options", () => {
-			process.env.USERNAME = "soe123"
-
-			new VertexHandler({
-				apiModelId: "gemini-3.7-flash",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
-				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
-				vertexGatewayHelixCommand: "helix auth access-token print -a",
-			})
-
-			expect(mockGoogleGenAI).toHaveBeenLastCalledWith(
-				expect.objectContaining({
-					vertexai: true,
-					project: "test-project",
-					location: "global",
-					httpOptions: {
-						baseUrl: "https://gateway.example.com/vertex",
-					},
-					googleAuthOptions: {
-						authClient: expect.objectContaining({
-							getRequestHeaders: expect.any(Function),
-						}),
-					},
-				}),
-			)
-		})
+	it("uses standard Google Cloud credentials and rejects retired connections", () => {
+		new VertexHandler({ apiModelId: "gemini-3.7-flash", projectId: "project", location: "global" })
+		expect(mockGoogleGenAI).toHaveBeenLastCalledWith(
+			expect.objectContaining({ vertexai: true, project: "project", location: "global" }),
+		)
+		expect(
+			() => new VertexHandler({ projectId: "project", location: "global", gatewayBaseUrl: "https://old.test" }),
+		).toThrow()
 	})
 
 	describe("createMessage", () => {
@@ -471,50 +450,6 @@ describe("VertexHandler", () => {
 			)
 			expect(abortSignal?.aborted).toBe(true)
 		})
-
-		it("should retry auth failures before emitting chunks when Vertex streaming is disabled", async () => {
-			handler = new VertexHandler({
-				apiModelId: "gemini-3.1-flash-lite",
-				vertexProjectId: "test-project",
-				vertexRegion: "us-central1",
-				vertexStreamingEnabled: false,
-			})
-			const generateContent = vitest
-				.fn()
-				.mockRejectedValueOnce(new Error("401 unauthorized"))
-				.mockResolvedValueOnce({
-					candidates: [{ content: { parts: [{ text: "Retried response" }] }, finishReason: "STOP" }],
-					usageMetadata: {
-						promptTokenCount: 3,
-						candidatesTokenCount: 4,
-					},
-				})
-			handler["client"] = {
-				models: {
-					generateContentStream: vitest.fn(),
-					generateContent,
-					getGenerativeModel: vitest.fn(),
-				},
-			} as any
-			vitest.spyOn(handler as any, "shouldRetryWithRefreshedGatewayToken").mockResolvedValueOnce(true)
-
-			const chunks: ApiStreamChunk[] = []
-			for await (const chunk of handler.createMessage(systemPrompt, mockMessages)) {
-				chunks.push(chunk)
-			}
-
-			expect(generateContent).toHaveBeenCalledTimes(2)
-			expect(chunks).toEqual([
-				{ type: "text", text: "Retried response" },
-				expect.objectContaining({ type: "usage", inputTokens: 3, outputTokens: 4 }),
-				{
-					type: "reasoning",
-					text: "",
-					geminiResponse: { modelId: "gemini-3.1-flash-lite", parts: [{ text: "Retried response" }] },
-				},
-				expect.objectContaining({ type: "outcome", status: "completed", terminal: true }),
-			])
-		})
 	})
 
 	describe("completePrompt", () => {
@@ -625,17 +560,6 @@ describe("VertexHandler", () => {
 			const includedCount = modelInfo.info.includedTools!.filter((t: string) => t === "edit").length
 			expect(excludedCount).toBe(0)
 			expect(includedCount).toBe(1)
-		})
-
-		it("should route selected model IDs through the Vertex gateway map", () => {
-			const testHandler = new VertexHandler({
-				apiModelId: "gemini-3.7-flash",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayModelRoutingMap: '{"gemini-3.7-flash":"gateway-gemini-flash"}',
-			})
-
-			expect(testHandler.getModel().id).toBe("gemini-3.7-flash")
 		})
 
 		it("should pass through unknown Vertex Gemini model IDs without cloning reasoning capabilities", () => {

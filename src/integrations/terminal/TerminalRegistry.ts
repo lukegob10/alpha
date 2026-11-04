@@ -2,7 +2,7 @@ import * as vscode from "vscode"
 
 import { arePathsEqual } from "../../utils/path"
 
-import { AlphaTerminal, AlphaTerminalProvider } from "./types"
+import { AlphaTerminal, AlphaTerminalProvider, type CommandShellLaunch } from "./types"
 import { TerminalProcess } from "./TerminalProcess"
 import { BaseTerminal } from "./BaseTerminal"
 import type { AlphaTerminalProcess } from "./types"
@@ -10,6 +10,8 @@ import { Terminal } from "./Terminal"
 import { ExecaTerminal } from "./ExecaTerminal"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
 import { getRipgrepPathOverlay } from "./ripgrepEnvironment"
+import { MAX_RETAINED_TERMINAL_PROCESSES } from "./types"
+import { t } from "../../i18n"
 
 // Although vscode.window.terminals provides a list of all open terminals,
 // there's no way to know whether they're busy or not (exitStatus does not
@@ -26,6 +28,16 @@ export class TerminalRegistry {
 	private static disposables: vscode.Disposable[] = []
 	private static isInitialized = false
 	private static readonly removingTerminalIds = new Set<number>()
+
+	private static assertCommandCapacity(): void {
+		// Codex unified_exec bounds its process store at 64 (b75d1e89665d, 2026-10-29).
+		// Alpha rejects excess launches instead of evicting a live owned command.
+		// Reservations count too: persistence can await before physical process launch.
+		const active = this.getAllTerminals().filter((terminal) => terminal.busy || terminal.running).length
+		if (active >= MAX_RETAINED_TERMINAL_PROCESSES) {
+			throw new Error(t("common:errors.command_capacity_exceeded", { limit: MAX_RETAINED_TERMINAL_PROCESSES }))
+		}
+	}
 
 	/** Session expiry also releases the terminal queue's reference to its output. */
 	public static releaseCompletedProcess(process: AlphaTerminalProcess): void {
@@ -149,13 +161,15 @@ export class TerminalRegistry {
 		cwd: string,
 		provider: AlphaTerminalProvider,
 		commandEnv: Record<string, string> = {},
+		shellLaunch?: CommandShellLaunch,
 	): AlphaTerminal {
+		this.assertCommandCapacity()
 		let newTerminal
 
 		if (provider === "vscode") {
-			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv)
+			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv, shellLaunch)
 		} else {
-			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv)
+			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv, shellLaunch)
 		}
 
 		this.terminals.push(newTerminal)
@@ -175,11 +189,18 @@ export class TerminalRegistry {
 		cwd: string,
 		taskId?: string,
 		provider: AlphaTerminalProvider = "vscode",
+		shellLaunch?: CommandShellLaunch,
 	): Promise<AlphaTerminal> {
+		this.assertCommandCapacity()
 		const findAvailableTerminal = () => {
 			const terminals = this.getAllTerminals()
 			const matches = (t: AlphaTerminal) => {
-				if (t.busy || t.running || t.provider !== provider) {
+				if (
+					t.busy ||
+					t.running ||
+					t.provider !== provider ||
+					t.shellLaunch?.identity !== shellLaunch?.identity
+				) {
 					return false
 				}
 
@@ -202,8 +223,15 @@ export class TerminalRegistry {
 		let terminal = findAvailableTerminal()
 		if (!terminal) {
 			const commandEnv = await getRipgrepPathOverlay()
+			// Capacity may have been consumed by another task during environment lookup.
+			// This check and the reservation below have no asynchronous boundary.
+			this.assertCommandCapacity()
 			// Another request may have created a terminal while binary resolution was pending.
-			terminal = findAvailableTerminal() ?? this.createTerminal(cwd, provider, commandEnv)
+			terminal =
+				findAvailableTerminal() ??
+				(shellLaunch
+					? this.createTerminal(cwd, provider, commandEnv, shellLaunch)
+					: this.createTerminal(cwd, provider, commandEnv))
 		}
 
 		terminal.taskId = taskId
@@ -316,12 +344,25 @@ export class TerminalRegistry {
 				terminal.taskId = undefined
 			}
 		})
+		this.pruneIdleExecaTerminals()
+	}
+
+	private static pruneIdleExecaTerminals(): void {
+		const idle = this.terminals.filter(
+			(terminal): terminal is ExecaTerminal => terminal instanceof ExecaTerminal && terminal.canPruneIdle(),
+		)
+		// Reuse the command retention bound for released, output-free adapters.
+		// Owned commands, finalizers, receipts, and user terminals are never candidates.
+		for (const terminal of idle.slice(0, Math.max(0, idle.length - MAX_RETAINED_TERMINAL_PROCESSES))) {
+			this.removeTerminal(terminal.id)
+		}
 	}
 
 	private static getAllTerminals(): AlphaTerminal[] {
 		for (const terminal of this.terminals) {
 			if (terminal.isClosed()) this.removeTerminal(terminal.id)
 		}
+		this.pruneIdleExecaTerminals()
 		return this.terminals.filter((terminal) => !this.removingTerminalIds.has(terminal.id))
 	}
 

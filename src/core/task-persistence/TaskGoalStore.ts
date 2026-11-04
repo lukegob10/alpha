@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { z } from "zod"
 
-import { taskGoalSchema } from "@alpha-code/types"
+import { MAX_TASK_GOAL_CONTINUATIONS, taskGoalSchema } from "@alpha-code/types"
 
 import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 import { atomicWriteJson, withFileLock } from "./atomicWrite"
@@ -19,12 +19,23 @@ const usageReceiptSchema = z
 	})
 	.strict()
 
+/** A monotonic admitted-continuation index makes progress settlement bounded and replay-safe. */
+export const taskGoalTurnProgressSchema = z
+	.object({
+		goalId: z.string().min(1).max(256),
+		controlVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+		continuationCount: z.number().int().nonnegative().max(MAX_TASK_GOAL_CONTINUATIONS),
+		consecutiveEmptyTurns: z.number().int().nonnegative().max(3),
+	})
+	.strict()
+
 export const taskGoalEnvelopeSchema = z
 	.object({
 		schemaVersion: z.literal(1),
 		taskId: z.string().min(1).max(256),
 		goal: taskGoalSchema.optional(),
 		usageReceipts: z.array(usageReceiptSchema).max(MAX_TASK_GOAL_USAGE_RECEIPTS),
+		turnProgress: taskGoalTurnProgressSchema.optional(),
 	})
 	.strict()
 	.refine((state) => !state.goal || state.goal.taskId === state.taskId, "Goal belongs to a different task")

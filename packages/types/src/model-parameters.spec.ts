@@ -4,9 +4,8 @@ import type { ModelInfo } from "./model.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import { modelInfoSchema } from "./model.js"
 import { providerSettingsSchema } from "./provider-settings.js"
-import { resolveVertexGatewayRoute, resolveVertexOpenAiModelInfo, vertexModels } from "./providers/vertex.js"
+import { resolveVertexOpenAiModelInfo, vertexModels } from "./providers/vertex.js"
 import { openAiModelInfoSaneDefaults } from "./providers/openai.js"
-import { resolveStellarModelInfo } from "./providers/stellar.js"
 import {
 	isMaxOutputTokensIncluded,
 	resolveOptionalOutputTokenLimit,
@@ -98,9 +97,8 @@ describe("model parameter applicability", () => {
 			supportsVerbosity: true,
 		})
 	})
-	it.each(["openai", "stellar"])("keeps %s text-only completions on Chat Completions", (provider) => {
+	it.each(["openai"])("keeps %s text-only completions on Chat Completions", (provider) => {
 		const settings: ProviderSettings = {
-			stellarBaseUrl: "https://api.openai.com/v1",
 			modelTemperature: 0.8,
 			verbosity: "high",
 			includeMaxTokens: true,
@@ -196,7 +194,7 @@ describe("model parameter applicability", () => {
 			supportsVerbosity: false,
 		})
 	})
-	it.each(["vertex", "stellar"])("preserves advertised compatible support on %s", (provider) => {
+	it.each(["vertex"])("preserves advertised compatible support on %s", (provider) => {
 		expect(resolveModelParameterApplicability({ provider, modelId: "partner-model", model })).toMatchObject({
 			supportsTemperature: true,
 			supportsVerbosity: false,
@@ -214,16 +212,6 @@ describe("model parameter applicability", () => {
 			}).supportsTemperature,
 		).toBe(false)
 	})
-	it("resolves Stellar's effective endpoint rather than unrelated saved OpenAI settings", () => {
-		expect(
-			resolveModelParameterApplicability({
-				provider: "stellar",
-				modelId: "gpt-5.5",
-				model,
-				settings: { stellarBaseUrl: "https://api.openai.com/v1", openAiBaseUrl: "https://stale.example/v1" },
-			}),
-		).toMatchObject({ route: "openai-responses", supportsTemperature: false, supportsVerbosity: true })
-	})
 	it.each([
 		{ modelRoutingMap: { "partner-model": " o3-custom " } },
 		{ modelRoutingMap: { "partner-model": { modelOverride: "o4-deployment" } } },
@@ -232,7 +220,7 @@ describe("model parameter applicability", () => {
 		expect(
 			resolveModelParameterApplicability({ provider: "vertex", modelId: "partner-model", model, settings }),
 		).toMatchObject({
-			route: "openai-chat-completions",
+			route: "unsupported",
 			supportsTemperature: false,
 		})
 	})
@@ -244,7 +232,6 @@ describe("model parameter applicability", () => {
 			route: "unsupported",
 			supportsTemperature: false,
 		})
-		expect(() => resolveVertexGatewayRoute(settings, "partner-model")).toThrow("Invalid modelRoutingMap JSON")
 	})
 	it.each(["o1", "o3-mini", "o4-mini"])("reflects the existing reasoning-family route for %s", (modelId) => {
 		expect(resolveModelParameterApplicability({ provider: "openai", modelId, model }).supportsTemperature).toBe(
@@ -286,16 +273,6 @@ describe("model parameter applicability", () => {
 				model: { ...model, supportsTemperature: undefined },
 			}).supportsTemperature,
 		).toBe(false)
-	})
-	it("projects the same existing Stellar fallback for custom gateway IDs", () => {
-		const customId = "custom-deployment"
-		expect(
-			resolveModelParameterApplicability({
-				provider: "stellar",
-				modelId: customId,
-				model: resolveStellarModelInfo(customId),
-			}).supportsTemperature,
-		).toBe(true)
 	})
 	it("projects the same legacy Vertex partner fallback for unknown gateway IDs", () => {
 		const modelId = "partner-future"
@@ -346,7 +323,7 @@ describe("model parameter applicability", () => {
 	it("does not change saved preferences when the provider or route changes", () => {
 		const settings: ProviderSettings = { openAiModelId: "gpt-5.5", modelTemperature: 0.4, verbosity: "high" }
 		const saved = structuredClone(settings)
-		for (const provider of ["openai", "vscode-lm", "stellar", "vertex"]) {
+		for (const provider of ["openai", "vscode-lm", "vertex"]) {
 			resolveModelParameterApplicability({ provider, modelId: "gpt-5.5", model, settings })
 		}
 		expect(settings).toEqual(saved)

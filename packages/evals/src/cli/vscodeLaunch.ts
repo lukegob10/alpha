@@ -17,7 +17,7 @@ export function requireVscodeExecutablePath(value: string | undefined, platform 
 		!paths.isAbsolute(value) ||
 		(platform === "win32" && paths.extname(value).toLowerCase() !== ".exe")
 	) {
-		throw new Error("Local benchmarks require an absolute VS Code 1.138.0 executable in VSCODE_EXECUTABLE_PATH")
+		throw new Error("Local benchmarks require an absolute VS Code 1.141.0 executable in VSCODE_EXECUTABLE_PATH")
 	}
 	return value
 }

@@ -1,10 +1,5 @@
 import type { ProviderName, ModelInfo, ProviderSettings } from "@alpha-code/types"
-import {
-	vertexDefaultModelId,
-	stellarDefaultModelId,
-	curatedProviders,
-	getProviderDefaultModelId,
-} from "@alpha-code/types"
+import { vertexDefaultModelId, curatedProviders, getProviderDefaultModelId } from "@alpha-code/types"
 
 import { MODELS_BY_PROVIDER } from "../constants"
 
@@ -15,7 +10,6 @@ export interface ProviderServiceConfig {
 
 export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServiceConfig>> = {
 	vertex: { serviceName: "GCP Vertex AI", serviceUrl: "https://console.cloud.google.com/vertex-ai" },
-	stellar: { serviceName: "Stellar", serviceUrl: "" },
 	openai: { serviceName: "OpenAI Compatible", serviceUrl: "https://platform.openai.com/docs" },
 	"openai-native": { serviceName: "OpenAI", serviceUrl: "https://developers.openai.com/api/docs" },
 	anthropic: { serviceName: "Anthropic", serviceUrl: "https://platform.claude.com/docs" },
@@ -36,7 +30,6 @@ export const PROVIDER_SERVICE_CONFIG: Partial<Record<ProviderName, ProviderServi
 
 export const PROVIDER_DEFAULT_MODEL_IDS: Partial<Record<ProviderName, string>> = {
 	vertex: vertexDefaultModelId,
-	stellar: stellarDefaultModelId,
 	...Object.fromEntries(curatedProviders.map((provider) => [provider, getProviderDefaultModelId(provider)])),
 }
 

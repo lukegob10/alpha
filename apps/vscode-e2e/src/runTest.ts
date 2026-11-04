@@ -242,7 +242,7 @@ export function readRunOptions(
 	testSuiteMochaOptions({ testGrep, requireAllTests: parsed.has("--require-all-tests") })
 	return {
 		providerMode: providerMode as ProviderMode,
-		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.138.0",
+		vscodeVersion: parsed.get("--vscode-version") ?? env.VSCODE_VERSION ?? "1.141.0",
 		vscodeExecutablePath: parsed.get("--vscode-executable") ?? env.VSCODE_EXECUTABLE_PATH,
 		workspace: parsed.get("--workspace") ?? env.ALPHA_E2E_WORKSPACE_ROOT,
 		profileDir: parsed.get("--profile-dir") ?? env.ALPHA_E2E_PROFILE_ROOT,
@@ -432,14 +432,14 @@ export async function runExtensionTests(
 			(options.scenarioPhase !== undefined && options.scenarioPhase !== "run") ||
 			(options.testFile !== undefined && options.testFile !== "workflow.test") ||
 			!["live-copilot", "scripted"].includes(options.providerMode) ||
-			options.vscodeVersion !== "1.138.0" ||
+			options.vscodeVersion !== "1.141.0" ||
 			!options.workspace ||
 			!options.artifactsDir ||
 			!options.profileDir)
 	)
 		throw new TestRunError(
 			"invalid-options",
-			"Experiment evidence requires one owned VS Code 1.138.0 problem-solving attempt",
+			"Experiment evidence requires one owned VS Code 1.141.0 problem-solving attempt",
 		)
 	if (options.problemSolvingPrompt !== undefined) validateProblemPromptPath(options.problemSolvingPrompt)
 	if (options.executionTimeoutMs !== undefined && launchKind !== "development-sidecar")

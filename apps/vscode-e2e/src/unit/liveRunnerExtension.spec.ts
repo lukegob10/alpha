@@ -7,7 +7,7 @@ import { executeLiveSidecar, type LiveSidecarEffects } from "../liveRunnerExtens
 import type { LiveHostReceipt } from "../liveHostProtocol"
 import { TestRunError } from "../runFailure"
 
-const identity = { runId: "sidecar-test", nonce: randomUUID(), actualVSCodeVersion: "1.138.0", pid: 123, ppid: 45 }
+const identity = { runId: "sidecar-test", nonce: randomUUID(), actualVSCodeVersion: "1.141.0", pid: 123, ppid: 45 }
 
 function deferred() {
 	let resolve!: () => void

@@ -73,6 +73,18 @@ export function reserveTicketMutationReceipt(maxOutputChars?: number): void {
 	boundedJson(minimum, minimum, () => minimum, maxOutputChars)
 }
 
+/** Batch inputs already identify every selected UUID; reserve an exact, bounded completion count. */
+export function reserveTicketBatchMutationReceipt(maxOutputChars?: number): void {
+	serializeTicketBatchDeletionResult(1000, maxOutputChars)
+}
+
+export function serializeTicketBatchDeletionResult(deleted: number, maxOutputChars?: number): SerializedTicketResponse {
+	if (!Number.isSafeInteger(deleted) || deleted < 0 || deleted > 1000)
+		throw new Error("Invalid ticket deletion count")
+	const result = { status: "success", result: { deleted } }
+	return boundedJson(result, result, () => result, maxOutputChars)
+}
+
 /** Reduce content without cutting JSON, ticket identities, revisions, or entries from a list page. */
 export function serializeTicketResult(result: Ticket | TicketList, maxOutputChars?: number): SerializedTicketResponse {
 	const minimum =

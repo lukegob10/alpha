@@ -104,6 +104,13 @@ export function toFunctionToolInput(name: string, input: unknown): unknown {
 	return name === "apply_patch" && typeof input === "string" ? { patch: input } : input
 }
 
+/** String-argument protocols can replay malformed intent exactly; never use this for object-only input. */
+export function toToolArgumentsString(call: { name: string; input: unknown; rawArguments?: unknown }): string {
+	return typeof call.rawArguments === "string"
+		? call.rawArguments
+		: JSON.stringify(toFunctionToolInput(call.name, call.input))
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 }

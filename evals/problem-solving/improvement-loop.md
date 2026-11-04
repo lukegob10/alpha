@@ -56,7 +56,7 @@ pnpm --filter @alpha-code/evals benchmark:improve capture-host --store '<absolut
 
 For future native evidence, explicitly add both `--improvement-evidence` and
 `--improvement-task-id '<public-task-id>@<version>'` to the existing prepared `runTest.js` invocation for a single
-`problem-solving-attempt` in its `run` phase on exact VS Code `1.138.0`. Use explicit owned profile, workspace, and
+`problem-solving-attempt` in its `run` phase on exact VS Code `1.141.0`. Use explicit owned profile, workspace, and
 artifact paths. The public task must resolve in the trusted catalog; setup and unrelated scenarios cannot enable this
 capture. Capture is private and scoped to the requested task; normal privacy projections keep their existing format.
 
@@ -71,7 +71,7 @@ $nativeWorkspace = Join-Path $nativeRoot 'workspace'
 New-Item -ItemType Directory -Path $nativeWorkspace | Out-Null
 Get-ChildItem -LiteralPath 'evals/javascript/repo-cache-invalidation' -Force | Copy-Item -Destination $nativeWorkspace -Recurse
 [System.IO.File]::WriteAllText((Join-Path $nativeWorkspace '.alpha-e2e-owned.json'), '{"schemaVersion":1,"purpose":"alpha-vscode-e2e","kind":"workspace"}', [System.Text.UTF8Encoding]::new($false))
-node apps/vscode-e2e/out/runTest.js --vscode-version 1.138.0 --provider scripted --workspace "$nativeWorkspace" --profile-dir "$nativeRoot/profile" --artifacts-dir "$nativeRoot/artifacts" --init-profile --retain-evidence-for-campaign --run-id native-capture-contract --file workflow.test --scenario-id problem-solving-attempt --scenario-phase run --request-limit 8 --improvement-evidence --improvement-task-id repo-cache-invalidation@1 --require-all-tests
+node apps/vscode-e2e/out/runTest.js --vscode-version 1.141.0 --provider scripted --workspace "$nativeWorkspace" --profile-dir "$nativeRoot/profile" --artifacts-dir "$nativeRoot/artifacts" --init-profile --retain-evidence-for-campaign --run-id native-capture-contract --file workflow.test --scenario-id problem-solving-attempt --scenario-phase run --request-limit 8 --improvement-evidence --improvement-task-id repo-cache-invalidation@1 --require-all-tests
 ```
 
 The producer writes `improvement/context.json`, `improvement/capture-result.json`, and, when capture succeeds,
@@ -305,7 +305,7 @@ $env:PROBLEM_SOLVING_PROFILE_DIR = '<absolute-owned-profile-root>'
 $env:PROBLEM_SOLVING_ATTEMPT_ROOT = '<new-absolute-attempt-root>'
 $env:PROBLEM_SOLVING_TASK_IDS = 'repo-pagination-cursor,repo-cache-invalidation,repo-stream-backpressure'
 $env:PROBLEM_SOLVING_REPETITIONS = '2'
-$env:PROBLEM_SOLVING_HOST_VERSION = '1.138.0'
+$env:PROBLEM_SOLVING_HOST_VERSION = '1.141.0'
 $env:PROBLEM_SOLVING_MODEL_ID = '<exact-discovered-model-id>'
 $env:PROBLEM_SOLVING_EFFORT = '<supported-effort>'
 $env:PROBLEM_SOLVING_REQUEST_LIMIT = '40'
@@ -352,7 +352,7 @@ workspace; it does not establish what a model would have done after an admitted 
 
 A single sample can screen for a defect. Two repetitions of a small selected cohort can diagnose a local gate
 interaction. Neither establishes stable variance or a general quality improvement. Comparative claims need repeated,
-matched observations and an uncertainty analysis appropriate to task selection and clustering. Keep the exact 1.138.0
+matched observations and an uncertainty analysis appropriate to task selection and clustering. Keep the exact 1.141.0
 host gate and 1.125.0 compatibility gate separate from same-host live quality measurements.
 
 Terminal-Bench uses its pinned container verifiers and stays outside the local Node/Copilot score. Preserve historical

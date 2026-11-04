@@ -15,7 +15,7 @@ test("rendered acceptance rejects incomplete selection and host execution indepe
 		ownershipGate: "verified",
 		captureComplete: true,
 		hostExitObserved: true,
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		retention: { status: "complete" },
 		requireAllTests: true,
 		testSelection: { testFile: "composer-ui.test", grep: null, forbidOnly: true },
@@ -72,7 +72,7 @@ for (const testFile of [
 			await assert.rejects(
 				runExtensionTests({
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					rendererDebuggingPort: 0,
 					profileDir: "unused",
 					testFile,
@@ -90,7 +90,7 @@ for (const testFile of [
 			const receipt = await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					rendererDebuggingPort: 0,
 					testFile,
 					profileDir: path.join(root, "profile"),

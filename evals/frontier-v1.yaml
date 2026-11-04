@@ -1,8 +1,8 @@
-# Revision 6 versions the prompt/hash revisions recorded in 8910093c and the new two-module outbox fixture.
+# Revision 7 gives the plugin verifier correction a new task identity and preserves the v1 fixture.
 # Private hashes identify declared assets; calibration and paid/human admission remain separate requirements.
 schemaVersion: 1
 id: frontier-v1
-version: 6
+version: 7
 status: calibrating
 primaryModel: luna-high
 referenceModel: luna-high
@@ -715,15 +715,15 @@ tasks:
     fixtureDigest: sha256:09ce14eadc58485bf15d6f42cc5553a4c6482ceba39adfacc00781f813d146ff
     promptDigest: sha256:158b48bcbe5412d86854d5f529a3cba0d862ef8f42f3f9e06b55d87668777150
   - id: repo-plugin-dependency-cycle
-    version: 1
+    version: 2
     partition: development
     admission: calibrating
-    fixture: javascript/repo-plugin-dependency-cycle
+    fixture: javascript/repo-plugin-dependency-cycle-v2
     prompt: prompt.md
     repository:
       upstream: local-snapshot:real-repository
       commit: frontier-v1-visible-v2
-      snapshotDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
+      snapshotDigest: sha256:04794ef1b150abf288862bce5bf56b32786b31158438c3d6e0fb22a916d2dea1
     family: real-repository
     capabilities:
       - graph-analysis
@@ -782,7 +782,7 @@ tasks:
     evidenceRequirements: *a1
     graderReferenceDigest: sha256:e3d40354d0b5799a4231498a251ab91d1ad003eb7ff13d17dae5a6494dbcaca3
     environmentDigest: sha256:f82ab125abadeb39098278113be33f5944f77758e2e8ae58c2562d40c5506a68
-    fixtureDigest: sha256:0090eed95293a2327bc0ae8ac65dbd0161d525db8f02f0f5fb32e9dd95f936ba
+    fixtureDigest: sha256:04794ef1b150abf288862bce5bf56b32786b31158438c3d6e0fb22a916d2dea1
     promptDigest: sha256:42cf7323b1f8e7029d33679765c1e2f6011dad7307fc66dccff385c389c6d4c4
   - id: repo-transaction-outbox
     version: 2

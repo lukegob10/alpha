@@ -94,7 +94,13 @@ const output = [
 	assistantMessage("message-final", "final_answer", "Done."),
 ]
 const providerResponse = { id: "response-phases", status: "completed", output, usage: null }
-const variants = ["nonstreaming", "added metadata", "receipt metadata", "completed metadata", "completed only"] as const
+const variants = [
+	"nonstreaming",
+	"added metadata",
+	"receipt metadata",
+	"late receipt metadata",
+	"completed only",
+] as const
 type Variant = (typeof variants)[number]
 
 function mockProviderResponse(variant: Variant, items = output) {
@@ -106,13 +112,13 @@ function mockProviderResponse(variant: Variant, items = output) {
 					if (variant !== "completed only") {
 						for (const [output_index, item] of items.entries()) {
 							if (item.type === "message") {
-								if (variant === "added metadata" || variant === "completed metadata") {
+								if (variant === "added metadata" || variant === "late receipt metadata") {
 									yield {
 										type: "response.output_item.added",
 										output_index,
 										item: {
 											...item,
-											phase: variant === "completed metadata" ? undefined : item.phase,
+											phase: variant === "late receipt metadata" ? undefined : item.phase,
 											content: [],
 										},
 									}
@@ -123,13 +129,11 @@ function mockProviderResponse(variant: Variant, items = output) {
 									}
 								}
 							}
-							const receipt =
-								item.type === "message" && variant === "completed metadata"
-									? { ...item, phase: undefined }
-									: item
+							// Codex a0981298 sse/responses.rs (2026-11-02): item receipts carry phase;
+							// the terminal envelope carries response metadata rather than revised output.
 							// Repeated completion receipts belong to the same original item.
-							yield { type: "response.output_item.done", output_index, item: receipt }
-							yield { type: "response.output_item.done", output_index, item: receipt }
+							yield { type: "response.output_item.done", output_index, item }
+							yield { type: "response.output_item.done", output_index, item }
 						}
 					}
 					yield { type: "response.completed", response }
@@ -543,7 +547,22 @@ describe("assistant message phase persistence and replay", () => {
 			])
 			const retried = await collectResponse(handler)
 			expect(buildCanonicalAssistantHistoryItems(retried)).toEqual([
-				{ type: "text", id: "message-recovered", phase: "final_answer", outputIndex: 0, text: "Recovered." },
+				{
+					type: "text",
+					id: "message-recovered",
+					phase: "final_answer",
+					outputIndex: 0,
+					text: "Recovered.",
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-6.1-sol",
+						itemType: "message",
+						id: "message-recovered",
+						status: "completed",
+						content: [{ type: "output_text", length: 10, annotations: [] }],
+					},
+				},
 			])
 		},
 	)

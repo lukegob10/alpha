@@ -19,7 +19,7 @@ import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestWorkspace } from "../testProfile"
 import { record } from "./live-file-tool-support"
-import { finalAssistantResponse } from "./live-transcript-support"
+import { finalAssistantResponse, hasIntegerResult } from "./live-transcript-support"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
@@ -125,8 +125,8 @@ suite("Live conversational model selection", function () {
 						"live-copilot",
 						"Real model decisions are required",
 					)
-					assert.equal(vscode.version, "1.138.0")
-					assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.138.0")
+					assert.equal(vscode.version, "1.141.0")
+					assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.141.0")
 					const workspace = process.env.ALPHA_E2E_WORKSPACE!
 					await assertOwnedTestWorkspace(workspace, process.env.ALPHA_E2E_PROFILE_DIR)
 					const parentModelId = process.env.ALPHA_E2E_ACTUAL_MODEL_ID
@@ -357,7 +357,10 @@ suite("Live conversational model selection", function () {
 									path.join(saved.taskDirPath, "api_conversation_history.json"),
 								)
 								assert.deepEqual(inspectToolTransactions(history).errors, [])
-								assert.match(terminalAnswer(history), new RegExp(`\\b${expected}\\b`))
+								assert.ok(
+									hasIntegerResult(terminalAnswer(history), expected),
+									`The terminal answer must contain the exact integer result ${expected}`,
+								)
 								assert.ok(
 									dispatches.some((request) => request.taskId === task.taskId),
 									"Each task must send a real request",

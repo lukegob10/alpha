@@ -93,7 +93,7 @@ suite("Live Copilot harness quality", function () {
 			await vscode.commands.executeCommand("workbench.action.closeAllEditors")
 			await waitFor(() => vscode.lm.tools.some((tool) => tool.name === "open_browser_page"), {
 				timeout: 15_000,
-				description: "VS Code 1.138.0 browser tools",
+				description: "VS Code 1.141.0 browser tools",
 			})
 		}
 		await runLiveCase(
@@ -118,6 +118,7 @@ suite("Live Copilot harness quality", function () {
 			{
 				scope: "Control only commands started in this fixture. These test commands and a graceful shutdown of the fixture server are authorized. Do not load any skills for this explicit contract probe.",
 				commands: ["node"],
+				...(browser ? { browserSession: { startCommand, urlFile: `${directory}/url.txt` } } : {}),
 				requestLimit: 24,
 				timeoutMs: 420_000,
 			},

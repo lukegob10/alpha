@@ -35,7 +35,7 @@ const MAX_TERMINALS = 32
 const MAX_FIELD_CHARACTERS = 16_000
 const MAX_FACT_CHARACTERS = 48_000
 const MAX_OUTPUT_CHARACTERS = 32_000
-const WORKSPACE_FILES = "Workspace Files (baseline; use list_files for current contents)"
+const WORKSPACE_FILES = "Workspace Files (initial snapshot)"
 const bounded = (value: string, limit = MAX_FIELD_CHARACTERS) =>
 	value.length <= limit ? value : `${value.slice(0, limit)}\n(context limit reached)`
 const countLimit = (value: number | undefined, fallback: number) =>
@@ -190,9 +190,9 @@ export async function captureEnvironmentDetails(
 	let listing: string | undefined
 	if (includeFileDetails || full) {
 		if (arePathsEqual(alphaTask.cwd, path.join(os.homedir(), "Desktop"))) {
-			listing = "(Desktop files not shown automatically. Use list_files to explore if needed.)"
+			listing = "(Desktop files not shown automatically.)"
 		} else if (maxFiles === 0) {
-			listing = "(Workspace files context disabled. Use list_files to explore if needed.)"
+			listing = "(Workspace files context disabled.)"
 		} else {
 			const [files, hitLimit] = await awaitEnvironmentRead(
 				listFiles(alphaTask.cwd, true, maxFiles, signal),

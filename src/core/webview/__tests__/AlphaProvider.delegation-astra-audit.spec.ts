@@ -1,3 +1,8 @@
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+
 import type { AgentControlState, HistoryItem, ProviderSettings, SubagentGroupState } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
@@ -8,6 +13,25 @@ import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
+import type { AgentLifecycleJournal } from "../../agent/lifecycle/AgentLifecycleJournal"
+
+const fixtures: Array<{
+	storagePath: string
+	store: AgentControlStore
+	journals: Map<string, Promise<AgentLifecycleJournal>>
+}> = []
+
+afterEach(async () => {
+	for (const fixture of fixtures.splice(0)) {
+		await fixture.store.shutdown()
+		await Promise.all([...fixture.journals.values()].map(async (journal) => (await journal).close()))
+		const relative = path.relative(os.tmpdir(), fixture.storagePath)
+		if (path.isAbsolute(relative) || relative.startsWith("..") || !relative.startsWith("alpha-delegation-audit-")) {
+			throw new Error("Refusing to remove a fixture path outside its temporary root")
+		}
+		await rm(fixture.storagePath, { recursive: true, force: true })
+	}
+})
 
 class FailingFollowupPersistence extends InMemoryAgentControlPersistence {
 	failFollowupWrite = false
@@ -33,6 +57,8 @@ const makeHarness = (
 	settings: { subagentRootTokenBudget?: number; subagentRootCostBudget?: number } = {},
 	storedState?: AgentControlState,
 ) => {
+	const storagePath = mkdtempSync(path.join(os.tmpdir(), "alpha-delegation-audit-"))
+	const journals = new Map<string, Promise<AgentLifecycleJournal>>()
 	const persistence = new FailingFollowupPersistence(storedState)
 	const store = new AgentControlStore(persistence)
 	const ready = store.initialize()
@@ -109,7 +135,7 @@ const makeHarness = (
 	const runs = new AsyncSubagentRunManager(bounded)
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		agentControlStoreLoadedAt: Date.now(),
-		contextProxy: { getValues: () => settings },
+		contextProxy: { getValues: () => settings, globalStorageUri: { fsPath: storagePath } },
 		providerSettingsManager: {
 			getProfile: vi.fn(async (selection: { id: string } | { name: string }) => {
 				const matches =
@@ -142,12 +168,13 @@ const makeHarness = (
 		agentFollowupAdmissions: new Map(),
 		subagentRunFinalizations: new Map(),
 		subagentResidencyEvictions: new Map(),
-		agentLifecycleJournals: new Map(),
+		agentLifecycleJournals: journals,
 		agentLifecycleProjector: { clear: vi.fn() },
 		agentLifecycleDegradedSignals: new Map(),
 		publishedTaskTranscriptRevisions: new Map(),
 		taskEventListeners: new Map(),
 		taskStack: [],
+		currentView: { type: "newTaskDraft" },
 		pendingManagedTaskCompletions: new Map(),
 		workspaceMutationGate: new WorkspaceMutationGate(),
 		boundedDelegationManager: bounded,
@@ -160,6 +187,7 @@ const makeHarness = (
 		postTaskSessionStateToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	}) as AlphaProvider
+	fixtures.push({ storagePath, store, journals })
 	const launch = async () => {
 		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
 			{ objective: "Inspect the existing source", agent_kind: "review", fork_turns: "none" },
@@ -519,13 +547,6 @@ describe("Astra delegation durability audit", () => {
 			tokensOut: 1_000,
 			totalCost: 5,
 		})
-		harness.sessions.register({
-			taskId: handle.taskId,
-			taskKind: "subagent",
-			rootTaskId: harness.parent.taskId,
-			alphaMessages: [],
-			getTokenUsage: () => ({ totalTokensIn: 5_000, totalTokensOut: 3_000, totalCost: 2, contextTokens: 0 }),
-		} as unknown as Task)
 		let entered!: () => void
 		let release!: () => void
 		const cleaning = new Promise<void>((resolve) => {
@@ -534,25 +555,36 @@ describe("Astra delegation durability audit", () => {
 		const barrier = new Promise<void>((resolve) => {
 			release = resolve
 		})
-		Reflect.set(
-			harness.provider,
-			"removeTaskFromStack",
-			vi.fn(async () => {
+		const child = {
+			taskId: handle.taskId,
+			taskKind: "subagent",
+			rootTaskId: harness.parent.taskId,
+			alphaMessages: [],
+			getTokenUsage: () => ({ totalTokensIn: 5_000, totalTokensOut: 3_000, totalCost: 2, contextTokens: 0 }),
+			abortTask: vi.fn(async () => {
 				entered()
 				await barrier
-				harness.sessions.unregister(handle.taskId)
 			}),
-		)
+			waitForTermination: vi.fn(async () => undefined),
+			emit: vi.fn(),
+		}
+		harness.sessions.register(child as unknown as Task)
 		expect(rootUsage(harness)).toEqual({ tokens: 8_000, cost: 5 })
 		const closing = harness.provider.closeAgent(harness.parent as unknown as Task, handle.taskId)
+		const settled = Promise.allSettled([closing])
 		try {
 			await cleaning
+			expect(harness.sessions.getTask(handle.taskId)).toBe(child)
 			expect(rootUsage(harness)).toEqual({ tokens: 8_000, cost: 5 })
 			harness.history.delete(handle.taskId)
 		} finally {
 			release()
+			await settled
 		}
 		await closing
+		expect(child.abortTask).toHaveBeenCalledWith(true)
+		expect(child.waitForTermination).toHaveBeenCalledOnce()
+		expect(harness.sessions.getTask(handle.taskId)).toBeUndefined()
 		expect(rootUsage(harness)).toEqual({ tokens: 8_000, cost: 5 })
 		expect(rootUsage(await reloadHarness(harness))).toEqual({ tokens: 8_000, cost: 5 })
 	})

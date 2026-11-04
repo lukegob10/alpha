@@ -242,7 +242,7 @@ describe("importExport", () => {
 		)
 
 		it.each([false, true])(
-			"remaps enhancement and delegated profile references after retained import repair (still invalid: %s)",
+			"ignores retired enhancement settings and remaps delegated profile references after retained import repair (still invalid: %s)",
 			async (stillInvalid) => {
 				const migrations = {
 					rateLimitSecondsMigrated: true,
@@ -291,7 +291,6 @@ describe("importExport", () => {
 				})
 				expect(result.success).toBe(true)
 				expect(mockContextProxy.setValues).toHaveBeenCalledWith({
-					enhancementApiConfigId: "stable-id",
 					subagentDefaultApiConfigId: "stable-id",
 					subagentApiConfigByRole: { explore: "stable-id", review: "stable-id", worker: "stable-id" },
 				})

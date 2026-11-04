@@ -76,7 +76,7 @@ describe("AlphaProvider primary verification", () => {
 
 	const primaryObligation = () => store.getVerificationObligations({ parentTaskId: parent.taskId })[0]!
 
-	it.each(["explore", "review"] as const)("settles a shared %s mutation in its parent's ledger", async (role) => {
+	it.each(["explore", "review", "worker"] as const)("tracks shared %s mutations", async (role) => {
 		const child = {
 			taskId: "shared-child",
 			taskKind: "subagent",
@@ -84,7 +84,7 @@ describe("AlphaProvider primary verification", () => {
 			cwd: workspace,
 			subagentContextManifest: {
 				parentTaskId: parent.taskId,
-				runtimePolicy: { role, authorityModel: "parent", mutate: true },
+				runtimePolicy: { role, authorityModel: "parent", mutate: true, sharedWorkspace: true },
 			},
 			getTaskLifetimeCancellationSignal: () => new AbortController().signal,
 		} as Task
@@ -341,6 +341,51 @@ describe("AlphaProvider primary verification", () => {
 		await provider.recordParentVerificationEvidence(parent)
 		expect(primaryObligation().verification).toMatchObject({ executionId: "newer-execution", status: "passed" })
 	})
+
+	it.each([
+		["primary", true],
+		["primary", false],
+		["worker", true],
+		["worker", false],
+	] as const)(
+		"preserves a newer %s receipt when the first content observation fails (prior receipt: %s)",
+		async (origin, priorReceipt) => {
+			if (origin === "worker") await recordAppliedWorker()
+			else await recordPrimaryMutation()
+			const versions = await captureCurrentVerification()
+			setCommandEvidence(versions)
+			if (priorReceipt) await provider.recordParentVerificationEvidence(parent)
+			const newer = {
+				...structuredClone(commandEvidence[0]),
+				executionId: "newer-execution",
+				completedAt: commandEvidence[0].completedAt! + 1,
+			}
+			let observationStarted!: () => void
+			const started = new Promise<void>((resolve) => {
+				observationStarted = resolve
+			})
+			let failObservation!: (error: Error) => void
+			const failedObservation = new Promise<never>((_resolve, reject) => {
+				failObservation = reject
+			})
+			const realpath = vi.spyOn(fs, "realpath").mockImplementationOnce(() => {
+				observationStarted()
+				return failedObservation
+			})
+			try {
+				const reading = provider.recordParentVerificationEvidence(parent)
+				await started
+				await store.recordParentVerificationEvidence(parent.taskId, [newer])
+				const committed = primaryObligation()
+				failObservation(new Error("Content observation failed"))
+				await reading
+				expect(primaryObligation()).toEqual(committed)
+				expect(primaryObligation().verification).toMatchObject({ executionId: "newer-execution", status: "passed" })
+			} finally {
+				realpath.mockRestore()
+			}
+		},
+	)
 
 	const pythonVerification = async () => {
 		await fs.writeFile(path.join(workspace, "app.py"), "answer = 42\n")

@@ -17,6 +17,26 @@ function descriptions(catalog: string): string[] {
 }
 
 describe("captured skill catalog context budget", () => {
+	it.each([{}, { contextWindow: 200_000 }])(
+		"does not read descriptions when the minimum catalog already exceeds its budget: %o",
+		(options) => {
+			let descriptionReads = 0
+			const skills = Array.from({ length: 1_000 }, (_, index) => ({
+				...entry(index, ""),
+				get description() {
+					descriptionReads++
+					return "D".repeat(1_024)
+				},
+			}))
+			const parts = getSkillsCatalogSectionParts(skills, "code", options)
+			const emptyDescriptions = Array.from({ length: skills.length }, (_, index) => entry(index, ""))
+
+			expect(parts).toEqual(getSkillsCatalogSectionParts(emptyDescriptions, "code", options))
+			expect(parts.catalog).toContain("additional skills omitted from this bounded skills list.")
+			expect(descriptionReads).toBe(0)
+		},
+	)
+
 	it("bounds a 1,000-skill repeated catalog at the 8,000-character fallback", () => {
 		const skills = Array.from({ length: 1_000 }, (_, index) => entry(index))
 		const parts = getSkillsCatalogSectionParts(skills, "code")

@@ -13,6 +13,9 @@ export interface GoalAccountingBinding {
 export interface GoalStepAccounting extends GoalAccountingBinding {
 	eventId: string
 	startedAt: number
+	/** Live-only monotonic origin; epoch timestamps and durable receipts remain unchanged. */
+	monotonicStartedAt?: number
+	monotonicNow?: () => number
 	accountElapsed: boolean
 	executionMode?: "code" | "architect"
 	inputIncludesCache?: boolean
@@ -21,6 +24,15 @@ export interface GoalStepAccounting extends GoalAccountingBinding {
 	usageReceipt?: TaskGoalUsageReceipt
 	elapsedReceipt?: TaskGoalUsageReceipt
 	elapsedChargedMs?: number
+}
+
+/** Codex goal accounting uses a monotonic duration clock (b75d1e89, 2026-10-29). */
+export function goalStepElapsedMs(step: GoalStepAccounting, now?: number): number {
+	const elapsed =
+		step.monotonicStartedAt === undefined
+			? (now ?? Date.now()) - step.startedAt
+			: (step.monotonicNow?.() ?? performance.now()) - step.monotonicStartedAt
+	return Math.max(0, Math.trunc(elapsed))
 }
 
 function counter(value: number | undefined): number {
@@ -56,9 +68,7 @@ export async function accountGoalResponse(
 		goalId: step.goalId,
 		eventId: `${step.eventId}:usage`,
 		tokens: goalResponseTokens(response, step.inputIncludesCache),
-		timeMs: step.accountElapsed
-			? Math.max(0, Math.trunc(Date.now() - step.startedAt) - (step.elapsedChargedMs ?? 0))
-			: 0,
+		timeMs: step.accountElapsed ? Math.max(0, goalStepElapsedMs(step) - (step.elapsedChargedMs ?? 0)) : 0,
 	}
 	await step.controller.recordUsage(
 		step.usageReceipt.eventId,
@@ -71,7 +81,7 @@ export async function accountGoalResponse(
 }
 
 /** Freeze the remaining interval without overlapping a response receipt awaiting replay. */
-export function getGoalStepElapsedReceipt(step: GoalStepAccounting, now = Date.now()): TaskGoalUsageReceipt {
+export function getGoalStepElapsedReceipt(step: GoalStepAccounting, now?: number): TaskGoalUsageReceipt {
 	const pendingResponseTimeMs = step.responseAccounted ? 0 : (step.usageReceipt?.timeMs ?? 0)
 	step.elapsedReceipt ??= {
 		goalTaskId: step.goalTaskId,
@@ -79,14 +89,14 @@ export function getGoalStepElapsedReceipt(step: GoalStepAccounting, now = Date.n
 		eventId: `${step.eventId}:elapsed`,
 		tokens: 0,
 		timeMs: step.accountElapsed
-			? Math.max(0, Math.trunc(now - step.startedAt) - (step.elapsedChargedMs ?? 0) - pendingResponseTimeMs)
+			? Math.max(0, goalStepElapsedMs(step, now) - (step.elapsedChargedMs ?? 0) - pendingResponseTimeMs)
 			: 0,
 	}
 	return step.elapsedReceipt
 }
 
 /** The root owns elapsed work time; descendant steps contribute tokens only. */
-export async function finishGoalStep(step: GoalStepAccounting | undefined, now = Date.now()): Promise<void> {
+export async function finishGoalStep(step: GoalStepAccounting | undefined, now?: number): Promise<void> {
 	if (!step || step.executionMode === "architect" || step.finished) return
 	const receipt = getGoalStepElapsedReceipt(step, now)
 	await step.controller.recordUsage(receipt.eventId, 0, receipt.timeMs, step.goalId)

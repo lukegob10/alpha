@@ -67,11 +67,6 @@ vi.mock("../../../services/mcp/McpServerManager", () => ({
 		unregisterProvider: async () => undefined,
 	},
 }))
-vi.mock("../../../services/marketplace", () => ({
-	MarketplaceManager: class {
-		cleanup() {}
-	},
-}))
 vi.mock("../../../services/skills/SkillsManager", () => ({
 	SkillsManager: class {
 		async initialize() {}

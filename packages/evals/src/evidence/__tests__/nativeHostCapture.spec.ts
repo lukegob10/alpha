@@ -81,7 +81,7 @@ async function fixture(canonicalRoot = true) {
 	roots.push(root)
 	const workspace = path.join(root, "workspace")
 	const profile = path.join(root, "profile")
-	const userDataDir = path.join(profile, "1.138.0", "user-data")
+	const userDataDir = path.join(profile, "1.141.0", "user-data")
 	const artifacts = path.join(root, "artifacts")
 	const hostRunId = "owned-native-run"
 	const runDirectory = path.join(artifacts, hostRunId)
@@ -210,7 +210,7 @@ async function preparedFixture(
 		phase: "run",
 		status: "passed",
 		taskIds: [selectedTask],
-		hostVersion: "1.138.0",
+		hostVersion: "1.141.0",
 		providerMode: "scripted",
 		model: { id: "workflow-scripted-observed-id" },
 		usage: { inputTokens: 123, outputTokens: 45, cost: null },
@@ -224,7 +224,7 @@ async function preparedFixture(
 		hostExitObserved: true,
 		hostCleanupVerified: true,
 		ownershipGate: "verified",
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		providerMode: "scripted",
 		userDataDir: data.userDataDir,
 		extensionHostPid: 100,
@@ -262,8 +262,8 @@ async function preparedFixture(
 		finalized: true,
 		metadata: {
 			scenarioId: "problem-solving-attempt",
-			hostVersion: "1.138.0",
-			requestedHostVersion: "1.138.0",
+			hostVersion: "1.141.0",
+			requestedHostVersion: "1.141.0",
 			provider: "scripted",
 			taskIds: [selectedTask],
 			startedAt,
@@ -292,12 +292,12 @@ async function preparedFixture(
 	await json(path.join(data.runDirectory, "manifest.json"), manifest)
 	await json(path.join(data.runDirectory, "host-preflight.json"), {
 		runId: data.hostRunId,
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		status: "passed",
 	})
 	await json(path.join(data.runDirectory, "host-identity.json"), {
 		runId: data.hostRunId,
-		actualVSCodeVersion: "1.138.0",
+		actualVSCodeVersion: "1.141.0",
 		ownershipGate: "verified",
 		pid: 100,
 		ppid: 99,
@@ -518,8 +518,8 @@ describe("native host rich evidence capture", () => {
 	it.each([
 		["minimum host profile", ["profile", "1.125.0", "user-data"]],
 		["direct unversioned profile", ["profile", "user-data"]],
-		["extra nested profile", ["profile", "1.138.0", "nested", "user-data"]],
-		["sibling outside the owned profile", ["outside-profile", "1.138.0", "user-data"]],
+		["extra nested profile", ["profile", "1.141.0", "nested", "user-data"]],
+		["sibling outside the owned profile", ["outside-profile", "1.141.0", "user-data"]],
 	] as const)("rejects %s instead of searching arbitrary ancestors for ownership", async (_name, parts) => {
 		const data = await fixture()
 		const userDataDir = path.join(data.root, ...parts)
@@ -602,7 +602,7 @@ describe("native host rich evidence capture", () => {
 		}
 		await json(path.join(data.runDirectory, "host-preflight.json"), {
 			runId: data.hostRunId,
-			actualVSCodeVersion: "1.138.0",
+			actualVSCodeVersion: "1.141.0",
 			status: "passed",
 			actualModelId: result.actualModelId,
 		})
@@ -899,7 +899,7 @@ describe("native host rich evidence capture", () => {
 		const result = { ...data.result, actualReasoningEffort: "low" }
 		await json(path.join(data.runDirectory, "host-preflight.json"), {
 			runId: data.hostRunId,
-			actualVSCodeVersion: "1.138.0",
+			actualVSCodeVersion: "1.141.0",
 			status: "passed",
 			actualReasoningEffort: "low",
 		})

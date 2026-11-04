@@ -1,3 +1,4 @@
+import { assertNativeVertexSettings } from "./utils/native-vertex-settings"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import {
 	GoogleGenAI,
@@ -48,38 +49,13 @@ import type {
 } from "../index"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { BaseProvider } from "./base-provider"
-import { HelixTokenManager, type HelixParseMode } from "./utils/helix-token-manager"
 import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
-import { configureVertexGatewayTransport } from "./utils/vertex-gateway-transport"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
-
-type VertexGatewayRouteTarget = {
-	projectId?: string
-	location?: string
-	modelOverride?: string
-	extraHeaders?: Record<string, string>
-}
-
-type VertexGatewaySettings = {
-	gatewayBaseUrl: string
-	projectId: string
-	location: string
-	pemCaBundlePath: string
-	helixCommand: string
-	helixParseMode: HelixParseMode
-	helixTokenKey: string
-	refreshIntervalMinutes: number
-	modelRoutingMap: Record<string, VertexGatewayRouteTarget>
-}
 
 type GeminiRequestContext = {
 	client: GoogleGenAI
 	model: string
 	httpOptions?: GenerateContentConfig["httpOptions"]
-}
-
-type VertexGatewayAuthClient = {
-	getRequestHeaders: (url?: string | URL) => Promise<Iterable<[string, string]>>
 }
 
 type ProviderInstructionParts = {
@@ -210,11 +186,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 	private readonly transportProvider: GeminiTransport["provider"]
 
 	private client: GoogleGenAI
-	private readonly vertexGatewaySettings?: VertexGatewaySettings
-	private readonly vertexGatewayClients = new Map<string, GoogleGenAI>()
-	private readonly helixTokenManager?: HelixTokenManager
-	private readonly vertexGatewayAuthClient?: VertexGatewayAuthClient
-	private gatewayTransportSetupPromise?: Promise<void>
 	private lastThoughtSignature?: string
 	private lastResponseId?: string
 	private readonly providerName = "Gemini"
@@ -233,29 +204,9 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			})
 			return
 		}
-		this.vertexGatewaySettings = this.resolveVertexGatewaySettings()
-
+		assertNativeVertexSettings(options)
 		const project = this.getConfiguredProjectId() ?? "not-provided"
 		const location = this.getConfiguredLocation() ?? "not-provided"
-
-		if (this.vertexGatewaySettings) {
-			this.vertexGatewayAuthClient = {
-				getRequestHeaders: async () => [],
-			}
-			this.helixTokenManager = HelixTokenManager.getOrCreate({
-				helixCommand: this.vertexGatewaySettings.helixCommand,
-				helixParseMode: this.vertexGatewaySettings.helixParseMode,
-				helixTokenKey: this.vertexGatewaySettings.helixTokenKey,
-				refreshIntervalMinutes: this.vertexGatewaySettings.refreshIntervalMinutes,
-			})
-
-			this.client = this.createVertexClient({
-				projectId: this.vertexGatewaySettings.projectId,
-				location: this.vertexGatewaySettings.location,
-				useHelixAuth: true,
-			})
-			return
-		}
 
 		this.client = this.options.vertexJsonCredentials
 			? new GoogleGenAI({
@@ -286,306 +237,12 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 		return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
 	}
 
-	private getGatewayString(
-		field: "gatewayBaseUrl" | "pemCaBundlePath" | "helixCommand",
-		legacyField: "vertexGatewayBaseUrl" | "vertexGatewayCaBundlePath" | "vertexGatewayHelixCommand",
-	): string | undefined {
-		const value = this.options[field] ?? this.options[legacyField]
-		return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
-	}
-
-	private resolveVertexGatewaySettings(): VertexGatewaySettings | undefined {
-		const gatewayBaseUrl = this.getGatewayString("gatewayBaseUrl", "vertexGatewayBaseUrl")
-		const pemCaBundlePath = this.getGatewayString("pemCaBundlePath", "vertexGatewayCaBundlePath")
-		const helixCommand = this.getGatewayString("helixCommand", "vertexGatewayHelixCommand")
-		const modelRoutingMap = this.options.modelRoutingMap ?? this.options.vertexGatewayModelRoutingMap
-		const gatewayModeRequested = Boolean(gatewayBaseUrl || pemCaBundlePath || helixCommand)
-
-		if (!gatewayModeRequested) {
-			return undefined
-		}
-
-		const projectId = this.getConfiguredProjectId()
-		const location = this.getConfiguredLocation()
-
-		const missingFields = [
-			!gatewayBaseUrl ? "gatewayBaseUrl" : undefined,
-			!projectId ? "projectId" : undefined,
-			!location ? "location" : undefined,
-			!pemCaBundlePath ? "pemCaBundlePath" : undefined,
-			!helixCommand ? "helixCommand" : undefined,
-		].filter((field): field is string => Boolean(field))
-
-		if (missingFields.length > 0) {
-			throw new Error(`Missing required Vertex gateway settings: ${missingFields.join(", ")}`)
-		}
-
-		let normalizedGatewayBaseUrl: string
-		try {
-			const parsedGatewayBaseUrl = new URL(gatewayBaseUrl!)
-			normalizedGatewayBaseUrl = parsedGatewayBaseUrl.toString()
-		} catch {
-			throw new Error("Invalid Vertex gatewayBaseUrl. Expected a valid absolute URL.")
-		}
-
-		const parseMode: HelixParseMode = this.options.helixParseMode === "json_field" ? "json_field" : "raw_stdout"
-		const helixTokenKey = this.options.helixTokenKey?.trim() || "access_token"
-		const refreshIntervalMinutes = this.normalizeRefreshIntervalMinutes(
-			this.options.refreshIntervalMinutes ?? this.options.vertexGatewayTokenRefreshMinutes,
-		)
-
-		return {
-			gatewayBaseUrl: normalizedGatewayBaseUrl,
-			projectId: projectId!,
-			location: location!,
-			pemCaBundlePath: pemCaBundlePath!,
-			helixCommand: helixCommand!,
-			helixParseMode: parseMode,
-			helixTokenKey,
-			refreshIntervalMinutes,
-			modelRoutingMap: this.parseModelRoutingMap(modelRoutingMap),
-		}
-	}
-
-	private normalizeRefreshIntervalMinutes(value: unknown): number {
-		if (typeof value !== "number" || !Number.isFinite(value)) {
-			return 10
-		}
-
-		return Math.max(1, Math.floor(value))
-	}
-
-	private parseModelRoutingMap(rawModelRoutingMap: unknown): Record<string, VertexGatewayRouteTarget> {
-		if (!rawModelRoutingMap) {
-			return {}
-		}
-
-		let candidate: unknown = rawModelRoutingMap
-		if (typeof rawModelRoutingMap === "string") {
-			if (rawModelRoutingMap.trim().length === 0) {
-				return {}
-			}
-
-			try {
-				candidate = JSON.parse(rawModelRoutingMap)
-			} catch {
-				throw new Error("Invalid modelRoutingMap JSON for Vertex gateway configuration.")
-			}
-		}
-
-		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-			throw new Error("Invalid modelRoutingMap. Expected an object keyed by model name.")
-		}
-
-		const normalizedRoutingMap: Record<string, VertexGatewayRouteTarget> = {}
-
-		for (const [modelKey, routeValue] of Object.entries(candidate as Record<string, unknown>)) {
-			const normalizedModelKey = modelKey.trim()
-			if (!normalizedModelKey) {
-				continue
-			}
-
-			if (typeof routeValue === "string") {
-				const modelOverride = routeValue.trim()
-				if (modelOverride.length > 0) {
-					normalizedRoutingMap[normalizedModelKey] = { modelOverride }
-				}
-				continue
-			}
-
-			if (!routeValue || typeof routeValue !== "object" || Array.isArray(routeValue)) {
-				throw new Error(`Invalid modelRoutingMap entry for "${modelKey}".`)
-			}
-
-			const routeRecord = routeValue as Record<string, unknown>
-			const normalizedRoute: VertexGatewayRouteTarget = {}
-
-			if (typeof routeRecord.projectId === "string" && routeRecord.projectId.trim().length > 0) {
-				normalizedRoute.projectId = routeRecord.projectId.trim()
-			}
-
-			if (typeof routeRecord.location === "string" && routeRecord.location.trim().length > 0) {
-				normalizedRoute.location = routeRecord.location.trim()
-			}
-
-			if (typeof routeRecord.modelOverride === "string" && routeRecord.modelOverride.trim().length > 0) {
-				normalizedRoute.modelOverride = routeRecord.modelOverride.trim()
-			}
-
-			if (routeRecord.extraHeaders !== undefined) {
-				if (
-					typeof routeRecord.extraHeaders !== "object" ||
-					!routeRecord.extraHeaders ||
-					Array.isArray(routeRecord.extraHeaders)
-				) {
-					throw new Error(`Invalid extraHeaders for modelRoutingMap entry "${modelKey}".`)
-				}
-
-				const normalizedHeaders = Object.fromEntries(
-					Object.entries(routeRecord.extraHeaders as Record<string, unknown>)
-						.filter(
-							(entry): entry is [string, string] =>
-								entry[0].trim().length > 0 && typeof entry[1] === "string",
-						)
-						.map(([key, value]) => [key.trim(), value]),
-				)
-
-				if (Object.keys(normalizedHeaders).length > 0) {
-					normalizedRoute.extraHeaders = normalizedHeaders
-				}
-			}
-
-			if (Object.keys(normalizedRoute).length > 0) {
-				normalizedRoutingMap[normalizedModelKey] = normalizedRoute
-			}
-		}
-
-		return normalizedRoutingMap
-	}
-
-	private createVertexClient({
-		projectId,
-		location,
-		useHelixAuth,
-	}: {
-		projectId: string
-		location: string
-		useHelixAuth: boolean
-	}): GoogleGenAI {
-		if (useHelixAuth) {
-			if (!this.vertexGatewaySettings || !this.vertexGatewayAuthClient) {
-				throw new Error("Vertex gateway authentication is not configured.")
-			}
-
-			return new GoogleGenAI({
-				vertexai: true,
-				project: projectId,
-				location,
-				googleAuthOptions: {
-					authClient: this.vertexGatewayAuthClient as any,
-				},
-				httpOptions: {
-					baseUrl: this.vertexGatewaySettings.gatewayBaseUrl,
-				},
-			})
-		}
-
-		return new GoogleGenAI({
-			vertexai: true,
-			project: projectId,
-			location,
-		})
-	}
-
 	private async getRequestContext(
 		model: string,
 		metadata?: ApiHandlerSingleCompletionMetadata,
 	): Promise<GeminiRequestContext> {
 		throwIfSingleCompletionAborted(metadata)
-		if (!this.vertexGatewaySettings) {
-			return { client: this.client, model }
-		}
-
-		await awaitSingleCompletion(this.ensureGatewayTransportConfigured(), metadata)
-		throwIfSingleCompletionAborted(metadata)
-		const accessToken = await awaitSingleCompletion(this.ensureGatewayAccessToken(false), metadata)
-
-		const route =
-			this.vertexGatewaySettings.modelRoutingMap[model] ??
-			(this.options.apiModelId ? this.vertexGatewaySettings.modelRoutingMap[this.options.apiModelId] : undefined)
-
-		const routedProjectId = route?.projectId ?? this.vertexGatewaySettings.projectId
-		const routedLocation = route?.location ?? this.vertexGatewaySettings.location
-		const routedModel = route?.modelOverride ?? model
-
-		const client =
-			routedProjectId === this.vertexGatewaySettings.projectId &&
-			routedLocation === this.vertexGatewaySettings.location
-				? this.client
-				: this.getOrCreateVertexGatewayClient(routedProjectId, routedLocation)
-
-		const httpOptions: GenerateContentConfig["httpOptions"] = {
-			baseUrl: this.vertexGatewaySettings.gatewayBaseUrl,
-			headers: {
-				Authorization: `Bearer ${accessToken}`,
-				...(route?.extraHeaders ?? {}),
-			},
-		}
-
-		return { client, model: routedModel, httpOptions }
-	}
-
-	private getOrCreateVertexGatewayClient(projectId: string, location: string): GoogleGenAI {
-		const cacheKey = `${projectId}::${location}`
-		const existingClient = this.vertexGatewayClients.get(cacheKey)
-
-		if (existingClient) {
-			return existingClient
-		}
-
-		const nextClient = this.createVertexClient({
-			projectId,
-			location,
-			useHelixAuth: true,
-		})
-		this.vertexGatewayClients.set(cacheKey, nextClient)
-		return nextClient
-	}
-
-	private async ensureGatewayTransportConfigured(): Promise<void> {
-		if (!this.vertexGatewaySettings) {
-			return
-		}
-
-		if (!this.gatewayTransportSetupPromise) {
-			this.gatewayTransportSetupPromise = configureVertexGatewayTransport(
-				this.vertexGatewaySettings.pemCaBundlePath,
-			).then(() => undefined)
-		}
-
-		const transportSetup = this.gatewayTransportSetupPromise
-		try {
-			await transportSetup
-		} catch (error) {
-			// Retain successful setup, but let the next request retry repaired gateway configuration.
-			if (this.gatewayTransportSetupPromise === transportSetup) this.gatewayTransportSetupPromise = undefined
-			throw error
-		}
-	}
-
-	private async ensureGatewayAccessToken(forceRefresh: boolean): Promise<string> {
-		if (!this.helixTokenManager) {
-			throw new Error("Vertex gateway token manager is not configured.")
-		}
-
-		const token = forceRefresh
-			? await this.helixTokenManager.forceRefreshToken()
-			: await this.helixTokenManager.getToken()
-
-		return token
-	}
-
-	private async shouldRetryWithRefreshedGatewayToken(error: unknown): Promise<boolean> {
-		if (!this.vertexGatewaySettings || !this.isGatewayAuthFailure(error)) {
-			return false
-		}
-
-		await this.ensureGatewayAccessToken(true)
-		return true
-	}
-
-	private isGatewayAuthFailure(error: unknown): boolean {
-		const status = this.extractStatusCode(error)
-		if (status === 401 || status === 403) {
-			return true
-		}
-
-		const message = error instanceof Error ? error.message : String(error)
-		return (
-			/\b401\b/.test(message) ||
-			/\b403\b/.test(message) ||
-			/unauthorized|forbidden|authentication|permission denied|invalid token/i.test(message)
-		)
+		return { client: this.client, model }
 	}
 
 	private extractStatusCode(error: unknown): number | undefined {
@@ -853,8 +510,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				},
 			}
 		}
-
-		let didRetryForGatewayAuth = false
 		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
@@ -1192,15 +847,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 				if (error instanceof ApiStreamDeadlineError || error instanceof ApiRequestTimeoutError) throw error
 
-				if (
-					!didRetryForGatewayAuth &&
-					!emittedAnyStreamChunk &&
-					(await this.shouldRetryWithRefreshedGatewayToken(error))
-				) {
-					didRetryForGatewayAuth = true
-					continue
-				}
-
 				const errorMessage = error instanceof Error ? error.message : String(error)
 				const apiError = new ApiProviderError(
 					errorMessage,
@@ -1301,7 +947,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			this.transportProvider === "gemini" && model === "gemini-4-argon" && requestedMaxOutputTokens !== undefined
 				? Math.min(requestedMaxOutputTokens, 32_768)
 				: requestedMaxOutputTokens
-		let didRetryForGatewayAuth = false
 		const requestTimeoutMs = getApiRequestTimeout()
 
 		while (true) {
@@ -1368,13 +1013,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				return text
 			} catch (error) {
 				throwIfSingleCompletionAborted(metadata)
-				if (
-					!didRetryForGatewayAuth &&
-					(await awaitSingleCompletion(this.shouldRetryWithRefreshedGatewayToken(error), metadata))
-				) {
-					didRetryForGatewayAuth = true
-					continue
-				}
 
 				const errorMessage = error instanceof Error ? error.message : String(error)
 				const apiError = new ApiProviderError(

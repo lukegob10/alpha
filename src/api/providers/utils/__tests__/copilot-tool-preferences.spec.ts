@@ -94,7 +94,6 @@ describe("Copilot edit-tool preferences", () => {
 	it.each([
 		[{ provider: "vertex", id: "gpt-5.5" }, "apply_patch"],
 		[{ provider: "vertex", id: "xai/grok-4.6" }, "edit"],
-		[{ provider: "stellar", id: "Meta-Llama-3.3-70B-Instruct" }, "edit"],
 		[{ provider: "openai", id: "o3" }, "apply_patch"],
 		[{ provider: "openai", id: "gemini-custom" }, "edit"],
 	] as const)("routes %j to the safe canonical editor %s", (identity, preferred) => {

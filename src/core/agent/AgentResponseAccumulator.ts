@@ -2,6 +2,8 @@ import {
 	normalizeAssistantMessageMetadata,
 	snapshotGeminiResponse,
 	snapshotVscodeLmThinking,
+	snapshotProviderResponseItem,
+	type ProviderResponseItem,
 	type AssistantMessageMetadata,
 	type GeminiResponse,
 } from "@alpha-code/types"
@@ -17,6 +19,7 @@ import {
 } from "./AgentResponse"
 
 interface PendingToolCall {
+	providerItem?: ProviderResponseItem
 	id: string
 	name: string
 	arguments: string
@@ -272,6 +275,7 @@ export class AgentResponseAccumulator {
 					pending.arguments = incomingArguments
 					pending.preflightAnnounced = false
 				}
+				pending.providerItem = snapshotProviderResponseItem(chunk.providerItem) ?? pending.providerItem
 				pending.hasCompletePayload = true
 				this.acceptPendingToolCall(pending)
 				if (geminiResponse && pending.accepted) await this.retainGeminiState(geminiResponse, onItem)
@@ -312,6 +316,7 @@ export class AgentResponseAccumulator {
 				const geminiResponse = this.snapshotGeminiState(chunk.geminiResponse)
 				const pending = this.pendingTools.get(asString(chunk.id))
 				if (pending) {
+					pending.providerItem = snapshotProviderResponseItem(chunk.providerItem) ?? pending.providerItem
 					pending.ended = true
 					this.acceptPendingToolCall(pending)
 					if (geminiResponse && pending.accepted) await this.retainGeminiState(geminiResponse, onItem)
@@ -448,7 +453,8 @@ export class AgentResponseAccumulator {
 			merged ||
 			previous.id !== message.metadata.id ||
 			previous.phase !== message.metadata.phase ||
-			previous.outputIndex !== message.metadata.outputIndex
+			previous.outputIndex !== message.metadata.outputIndex ||
+			previous.providerItem !== message.metadata.providerItem
 		) {
 			// Late completion metadata enriches the same fragments. It is not a new
 			// visible message and does not produce another onItem notification.
@@ -572,6 +578,7 @@ export class AgentResponseAccumulator {
 			primary.preflightAnnounced = false
 			if (!primary.name) primary.name = secondary.name
 			if (!primary.arguments.trim()) primary.arguments = secondary.arguments
+			primary.providerItem ??= secondary.providerItem
 			primary.hasCompletePayload ||= secondary.hasCompletePayload
 			primary.ended ||= secondary.ended
 			if (secondary.index !== undefined) {
@@ -679,6 +686,7 @@ export class AgentResponseAccumulator {
 			id: pending.id,
 			name: pending.name,
 			arguments: parsed.value,
+			...(pending.providerItem ? { providerItem: snapshotProviderResponseItem(pending.providerItem) } : {}),
 		})
 	}
 
@@ -721,6 +729,7 @@ export class AgentResponseAccumulator {
 			id: pending.id,
 			name: pending.name,
 			arguments: parsed.value,
+			...(pending.providerItem ? { providerItem: snapshotProviderResponseItem(pending.providerItem) } : {}),
 		})
 	}
 
@@ -765,25 +774,6 @@ export class AgentResponseAccumulator {
 			)
 			return
 		}
-		if (!parsed.ok) {
-			const message = pending.arguments.trim()
-				? `Unable to parse arguments for tool call "${pending.name}" (${pending.id}).`
-				: `Tool call "${pending.name}" (${pending.id}) did not provide complete arguments.`
-			this.recordOutcome({ status: "failed", reason: message, retryable: false })
-			await this.emitBufferedToolItem(
-				pending,
-				{
-					type: "error",
-					message,
-					callId: pending.id,
-					toolName: pending.name,
-					retryable: false,
-				},
-				onItem,
-			)
-			return
-		}
-
 		const normalizedId = sanitizeToolUseId(pending.id)
 		const conflictingId = this.emittedNormalizedToolIds.get(normalizedId)
 		if (conflictingId && conflictingId !== pending.id) {
@@ -793,6 +783,36 @@ export class AgentResponseAccumulator {
 			this.recordOutcome({ status: "failed", reason: message, retryable: false })
 			await this.emitBufferedToolItem(
 				pending,
+				{ type: "error", message, callId: pending.id, toolName: pending.name, retryable: false },
+				onItem,
+			)
+			return
+		}
+		this.emittedNormalizedToolIds.set(normalizedId, pending.id)
+		if (!parsed.ok) {
+			const message = pending.arguments.trim()
+				? `Unable to parse arguments for tool call "${pending.name}" (${pending.id}).`
+				: `Tool call "${pending.name}" (${pending.id}) did not provide complete arguments.`
+			if (pending.hasCompletePayload || pending.ended) {
+				// Codex returns malformed completed calls to the model as correlated tool errors.
+				// Keep object-only provider history valid; the scheduler rejects this marker before effects.
+				await this.emitBufferedToolItem(
+					pending,
+					{
+						type: "tool_call",
+						id: pending.id,
+						name: pending.name,
+						arguments: {},
+						argumentParseError: message,
+						rawArguments: pending.arguments.slice(0, 8_192),
+					},
+					onItem,
+				)
+				return
+			}
+			this.recordOutcome({ status: "failed", reason: message, retryable: false })
+			await this.emitBufferedToolItem(
+				pending,
 				{
 					type: "error",
 					message,
@@ -804,7 +824,6 @@ export class AgentResponseAccumulator {
 			)
 			return
 		}
-		this.emittedNormalizedToolIds.set(normalizedId, pending.id)
 
 		await this.emitBufferedToolItem(
 			pending,
@@ -818,6 +837,7 @@ export class AgentResponseAccumulator {
 		item: AgentResponseItem,
 		onItem?: (item: AgentResponseItem) => Promise<void> | void,
 	): Promise<void> {
+		if (item.type === "tool_call" && pending.providerItem) item.providerItem = pending.providerItem
 		this.flushedToolItems.set(pending.id, item)
 		await this.emit(item, onItem, false, pending.index)
 	}

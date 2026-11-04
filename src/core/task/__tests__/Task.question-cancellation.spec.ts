@@ -39,6 +39,7 @@ function createTask(
 ) {
 	const task = Object.create(Task.prototype) as Task
 	Object.defineProperty(task, "cwd", { value: "F:/workspace" })
+	const taskCancellation = new AbortController()
 	const say = vi.fn(async () => {})
 	const addToAlphaMessages = vi.fn(async (message: AlphaMessage) => {
 		await options.beforePublish?.(message)
@@ -50,6 +51,7 @@ function createTask(
 		taskKind: "primary",
 		_taskMode: "architect",
 		taskApprovalMode: "ask",
+		taskCancellationController: taskCancellation,
 		abort: false,
 		alphaMessages: [],
 		apiConversationHistory: [],
@@ -68,7 +70,7 @@ function createTask(
 		emit: vi.fn(),
 		say,
 	})
-	return { task, say, addToAlphaMessages }
+	return { task, say, addToAlphaMessages, taskCancellation }
 }
 
 function runQuestion(task: Task) {
@@ -106,6 +108,57 @@ async function releaseAsk(task: Task) {
 describe("question cancellation owns its Task ask", () => {
 	beforeEach(() => vi.useFakeTimers())
 	afterEach(() => vi.useRealTimers())
+
+	it.each(["resolve", "reject"] as const)(
+		"releases a host-owned resume ask and termination while provider state is held, including a late %s",
+		async (late) => {
+			const entered = deferred<void>()
+			const state = deferred<undefined>()
+			const { task, taskCancellation, addToAlphaMessages } = createTask({
+				getState: () => {
+					entered.resolve()
+					return state.promise
+				},
+			})
+			let failure: unknown
+			let settled = false
+			const pending = task.ask("resume_task").then(
+				() => {
+					settled = true
+				},
+				(error: unknown) => {
+					failure = error
+					settled = true
+				},
+			)
+			Reflect.set(task, "ownedLifecyclePromise", pending)
+			let terminated = false
+			const termination = task.waitForTermination().then(() => {
+				terminated = true
+			})
+			try {
+				await entered.promise
+				const reason = new Error("The task was stopped")
+				task.abort = true
+				taskCancellation.abort(reason)
+				await vi.advanceTimersByTimeAsync(0)
+
+				expect(settled).toBe(true)
+				expect(failure).toBe(reason)
+				expect(terminated).toBe(true)
+				expect(addToAlphaMessages).not.toHaveBeenCalled()
+				expect(getEventListeners(taskCancellation.signal, "abort")).toHaveLength(0)
+
+				if (late === "resolve") state.resolve(undefined)
+				else state.reject(new Error("Late state load failed"))
+				await vi.advanceTimersByTimeAsync(0)
+				expect(addToAlphaMessages).not.toHaveBeenCalled()
+			} finally {
+				state.resolve(undefined)
+				await Promise.all([pending, termination])
+			}
+		},
+	)
 
 	it.each(["resolve", "reject"] as const)(
 		"cancels before provider state returns, including a late %s",

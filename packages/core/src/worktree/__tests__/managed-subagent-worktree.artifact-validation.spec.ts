@@ -14,6 +14,9 @@ import {
 const execFileAsync = promisify(execFile)
 const TIMEOUT = 30_000
 
+// Artifact recovery exercises real Git processes; use the fixture's I/O budget on Windows too.
+vi.setConfig({ testTimeout: TIMEOUT })
+
 describe("Managed worker artifact validation", () => {
 	let fixtureRoot: string
 	let originalArtifact: ManagedWorkerArtifact

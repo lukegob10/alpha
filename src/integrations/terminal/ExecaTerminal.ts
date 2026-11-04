@@ -1,13 +1,21 @@
-import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, DirectTerminalCommand } from "./types"
+import type {
+	AlphaTerminalCallbacks,
+	AlphaTerminalProcessResultPromise,
+	DirectTerminalCommand,
+	CommandShellLaunch,
+} from "./types"
 import { BaseTerminal } from "./BaseTerminal"
 import { ExecaTerminalProcess } from "./ExecaTerminalProcess"
 import { mergePromise } from "./mergePromise"
 
 export class ExecaTerminal extends BaseTerminal {
+	private readonly pendingProcesses = new Set<ExecaTerminalProcess>()
+
 	constructor(
 		id: number,
 		cwd: string,
 		readonly commandEnv: Record<string, string> = {},
+		readonly shellLaunch?: CommandShellLaunch,
 	) {
 		super("execa", id, cwd)
 	}
@@ -17,6 +25,18 @@ export class ExecaTerminal extends BaseTerminal {
 	 */
 	public override isClosed(): boolean {
 		return false
+	}
+
+	/** Shell exit may clear process before completion observers and archival finish. */
+	public canPruneIdle(): boolean {
+		return (
+			this.taskId === undefined &&
+			!this.busy &&
+			!this.running &&
+			!this.process &&
+			this.pendingProcesses.size === 0 &&
+			this.completedProcesses.length === 0
+		)
 	}
 
 	public override runCommand(
@@ -29,6 +49,8 @@ export class ExecaTerminal extends BaseTerminal {
 		const process = new ExecaTerminalProcess(this)
 		process.command = command
 		this.process = process
+		this.pendingProcesses.add(process)
+		process.once("finalized", () => this.pendingProcesses.delete(process))
 		if (callbacks.onOutput) process.setOutputWriter((chunk, signal) => callbacks.onOutput!(chunk, process, signal))
 		if (callbacks.onOutputClosed) process.setOutputFinalizer(() => callbacks.onOutputClosed!(process))
 		try {

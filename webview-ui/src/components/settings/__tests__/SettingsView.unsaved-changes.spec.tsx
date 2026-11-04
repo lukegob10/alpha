@@ -185,11 +185,6 @@ vi.mock("@src/components/ui", async () => {
 	}
 })
 
-// Mock ModesView and McpView since they're rendered during indexing
-vi.mock("@src/components/modes/ModesView", () => ({
-	default: () => null,
-}))
-
 vi.mock("@src/components/mcp/McpView", () => ({
 	default: ({ mcpEnabled, onMcpEnabledChange }: any) => (
 		<button
@@ -313,12 +308,6 @@ vi.mock("../LanguageSettings", () => ({
 vi.mock("../About", () => ({
 	About: vi.fn(() => <div>About</div>),
 }))
-vi.mock("../PromptsSettings", () => ({
-	default: vi.fn(() => <div>PromptsSettings</div>),
-}))
-vi.mock("../SlashCommandsSettings", () => ({
-	SlashCommandsSettings: vi.fn(() => <div>SlashCommandsSettings</div>),
-}))
 vi.mock("../UISettings", () => ({
 	UISettings: vi.fn(() => <div>UISettings</div>),
 }))
@@ -395,7 +384,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		followupAutoApproveTimeoutMs: undefined,
 		includeDiagnosticMessages: false,
 		maxDiagnosticMessages: 50,
-		includeTaskHistoryInEnhance: true,
 		openRouterImageApiKey: undefined,
 		openRouterImageGenerationSelectedModel: undefined,
 		reasoningBlockCollapsed: true,
@@ -781,7 +769,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
 				<button
 					onClick={() => {
-						setApiConfigurationField("apiProvider", "stellar")
+						setApiConfigurationField("apiProvider", "vertex")
 						setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
 						setApiConfigurationField("openAiApiKey", "buffered-key")
 						setApiConfigurationField("openAiModelId", "buffered-model")
@@ -804,7 +792,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			type: "renameApiConfiguration",
 			apiConfigurationRename: { requestId: expect.any(String), id: "profile-a", newName: "renamed" },
 		})
-		expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+		expect(screen.getByTestId("cached-provider")).toHaveTextContent("vertex")
 		expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
 		expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
 		expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
@@ -849,7 +837,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 						<span data-testid="cached-model">{apiConfiguration.openAiModelId}</span>
 						<button
 							onClick={() => {
-								setApiConfigurationField("apiProvider", "stellar")
+								setApiConfigurationField("apiProvider", "vertex")
 								setApiConfigurationField("openAiBaseUrl", "https://buffered.example/v1")
 								setApiConfigurationField("openAiApiKey", "buffered-key")
 								setApiConfigurationField("openAiModelId", "buffered-model")
@@ -925,7 +913,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				result.rerender(view())
 			}
 			const expectDraft = () => {
-				expect(screen.getByTestId("cached-provider")).toHaveTextContent("stellar")
+				expect(screen.getByTestId("cached-provider")).toHaveTextContent("vertex")
 				expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
 				expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
 				expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
@@ -962,7 +950,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 							apiConfigurationId: "profile-a",
 							text: "default",
 							apiConfiguration: expect.objectContaining({
-								apiProvider: "stellar",
+								apiProvider: "vertex",
 								openAiBaseUrl: "https://buffered.example/v1",
 								openAiApiKey: "buffered-key",
 								openAiModelId: "buffered-model",
@@ -1384,7 +1372,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 					apiConfigurationId: "profile-a",
 					text: "renamed",
 					apiConfiguration: expect.objectContaining({
-						apiProvider: "stellar",
+						apiProvider: "vertex",
 						openAiBaseUrl: "https://buffered.example/v1",
 						openAiApiKey: "buffered-key",
 						openAiModelId: "buffered-model",

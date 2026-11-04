@@ -162,6 +162,50 @@ const renderedRows = () =>
 		.map((row) => ({ ts: Number(row.dataset.messageTs), text: row.textContent ?? "" }))
 
 describe("ChatView transcript derivation", () => {
+	it("preserves a typed new-chat draft when deferred history arrives", async () => {
+		renderView()
+		const draft: Partial<ExtensionState> = {
+			currentView: { type: "newTaskDraft" },
+			currentTaskId: undefined,
+			alphaMessages: [],
+			taskStateSeq: 1,
+			alphaMessagesSeq: 1,
+			apiConfiguration: { apiProvider: "openai", openAiModelId: "fixture-model" },
+		}
+		await act(async () =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state: draft } })),
+		)
+		const composer = input()
+		fireEvent.change(composer, { target: { value: "Draft written while history recovers" } })
+		await act(async () =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							...draft,
+							taskStateSeq: 2,
+							alphaMessagesSeq: 2,
+							taskHistory: [
+								{
+									id: "saved",
+									number: 1,
+									ts: 1,
+									task: "Saved chat",
+									tokensIn: 0,
+									tokensOut: 0,
+									totalCost: 0,
+								},
+							],
+						},
+					},
+				}),
+			),
+		)
+		expect(input()).toBe(composer)
+		expect(input()).toHaveValue("Draft written while history recovers")
+	})
+
 	it("does not inspect old prompt text while typing against an unchanged long transcript", async () => {
 		let promptTextReads = 0
 		const oldPrompt = feedback(2, "A saved request")

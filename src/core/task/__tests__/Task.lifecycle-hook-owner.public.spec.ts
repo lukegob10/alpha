@@ -227,7 +227,7 @@ async function harness(
 		if (!askCommandApproval) throw new Error("Task scheduler did not supply native command approval")
 		if (!(await askCommandApproval("command", params.command)).approved) return
 		effects.push(params.command)
-		callbacks.setResultMetadata?.({ status: "success", executionStatus: "success" })
+		callbacks.setResultMetadata?.({ status: "success", executionStatus: "success", exitCode: 0 })
 		callbacks.pushToolResult("OWNER_BOUNDARY_READ_RESULT")
 	})
 	let requests = 0
@@ -768,15 +768,19 @@ describe("public Task-built scheduler lifecycle-hook ownership", () => {
 			const [, payload, hookSignal] = vi.mocked(runLifecycleHooks).mock.calls[0]
 			expect(payload).toMatchObject({
 				hook_event_name: event,
-				tool_name: "exec_command",
-				tool_input: { cmd: readCommand, command: readCommand },
+				tool_name: "Bash",
+				tool_input: { command: readCommand },
 			})
 			expect(hookSignal.aborted).toBe(false)
 			expect(fixture.approval).toHaveBeenCalledTimes(event === "PostToolUse" ? 1 : 0)
 			expect(fixture.executor).toHaveBeenCalledTimes(event === "PreToolUse" ? 0 : 1)
 			expect(fixture.effects).toEqual(event === "PostToolUse" ? [readCommand] : [])
 			if (payload.hook_event_name === "PostToolUse") {
-				expect(payload.tool_response).toMatchObject({ status: "success", execution_status: "success" })
+				expect(payload.tool_response).toMatchObject({
+					status: "success",
+					execution_status: "success",
+					exit_code: 0,
+				})
 				expect(JSON.stringify(payload.tool_response)).toContain("OWNER_BOUNDARY_READ_RESULT")
 			}
 			expect(operation.onPersisted).toHaveBeenCalledTimes(1)
@@ -914,7 +918,8 @@ describe("public Task termination hook identity and independent deadline", () =>
 				}),
 			])
 			expect(fixture.task["getTaskLifetimeCancellationSignal"]().aborted).toBe(true)
-			expect(deadlines.some(({ milliseconds }) => milliseconds === 3_000)).toBe(true)
+			const cleanupDeadline = deadlines.find(({ milliseconds }) => milliseconds === 3_000)
+			expect(cleanupDeadline).toBeDefined()
 			if (replaced) fixture.replace(identity)
 			fixture.release()
 			const result = await operation.settled
@@ -923,9 +928,17 @@ describe("public Task termination hook identity and independent deadline", () =>
 			expect(calls.map(([, payload]) => payload.hook_event_name)).toEqual(
 				replaced ? (boundary === "transcript lookup" ? [] : ["Interrupt"]) : ["Interrupt", "SessionEnd"],
 			)
-			for (const [, , cleanupSignal] of calls) {
+			for (const [, payload, cleanupSignal, runtime] of calls) {
 				expect(cleanupSignal).not.toBe(fixture.task["getTaskLifetimeCancellationSignal"]())
+				expect(cleanupSignal).toBe(cleanupDeadline!.controller.signal)
 				expect(cleanupSignal.aborted).toBe(false)
+				if (payload.hook_event_name === "Interrupt") {
+					expect(runtime).toMatchObject({
+						advisory: true,
+						executeMcp: expect.any(Function),
+						scheduleAsync: expect.any(Function),
+					})
+				} else expect(runtime).toBeUndefined()
 			}
 			expect(fixture.dispatch).not.toHaveBeenCalled()
 			expect(fixture.approval).not.toHaveBeenCalled()
@@ -934,7 +947,9 @@ describe("public Task termination hook identity and independent deadline", () =>
 			expect(fixture.task.apiConversationHistory.some((message) => message.hook_prompt)).toBe(false)
 			expect(warningMessages(fixture.task.alphaMessages)).toEqual([])
 			if (replaced) expect(fixture.owns()).toBe(false)
-			else expect(deadlines.some(({ milliseconds }) => milliseconds === 1_000)).toBe(true)
+			// This mock replaces the executor that owns each handler's default one-second timeout.
+			// Task owns only the shared cleanup deadline so configured three-second hooks can finish.
+			else expect(deadlines.some(({ milliseconds }) => milliseconds === 1_000)).toBe(false)
 		} finally {
 			fixture.release()
 			await operation.settled

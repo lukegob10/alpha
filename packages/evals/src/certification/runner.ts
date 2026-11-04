@@ -343,41 +343,61 @@ async function certifyEvidence(scenario: CertificationScenario): Promise<{
 	artifactsComplete: boolean
 }> {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), `alpha-cert-${scenario.id}-`))
-	const store = new FilesystemArtifactStore(root)
-	const secret = `secret-${scenario.seed}`
-	const journal = new EventJournal(
-		{ runId: "certification", trialId: scenario.id, attemptId: "1" },
-		{ secrets: scenario.kind === "secret_redaction" ? [secret] : [] },
-	)
-	journal.append("certification.executed", {
-		kind: scenario.kind,
-		nested: { token: scenario.kind === "secret_redaction" ? secret : "none" },
-	})
-	const values = Object.fromEntries(
-		REQUIRED_ARTIFACT_KINDS.map((kind) => [kind, `${scenario.id}:${kind}`]),
-	) as RequiredEvidence
-	const artifacts = await collectRequiredEvidence("1", values, store, { secrets: [secret] })
-	const bundle: EvidenceBundle = {
-		schemaVersion: 1,
-		runId: "certification",
-		trialId: scenario.id,
-		attemptId: "1",
-		taskIdentity: `${scenario.id}@1`,
-		variantIdentity: "certification-runtime@1",
-		events: journal.all(),
-		artifacts,
+	let failure: { error: unknown } | undefined
+	let cleanupFailure: { error: unknown } | undefined
+	let result: Awaited<ReturnType<typeof certifyEvidence>> | undefined
+	try {
+		const store = new FilesystemArtifactStore(root)
+		const secret = `secret-${scenario.seed}`
+		const journal = new EventJournal(
+			{ runId: "certification", trialId: scenario.id, attemptId: "1" },
+			{ secrets: scenario.kind === "secret_redaction" ? [secret] : [] },
+		)
+		journal.append("certification.executed", {
+			kind: scenario.kind,
+			nested: { token: scenario.kind === "secret_redaction" ? secret : "none" },
+		})
+		const values = Object.fromEntries(
+			REQUIRED_ARTIFACT_KINDS.map((kind) => [kind, `${scenario.id}:${kind}`]),
+		) as RequiredEvidence
+		const artifacts = await collectRequiredEvidence("1", values, store, { secrets: [secret] })
+		const bundle: EvidenceBundle = {
+			schemaVersion: 1,
+			runId: "certification",
+			trialId: scenario.id,
+			attemptId: "1",
+			taskIdentity: `${scenario.id}@1`,
+			variantIdentity: "certification-runtime@1",
+			events: journal.all(),
+			artifacts,
+		}
+		if (scenario.kind === "missing_event") bundle.events = []
+		if (scenario.kind === "duplicate_event") bundle.events.push({ ...bundle.events[0]! })
+		if (scenario.kind === "artifact_corruption") bundle.artifacts[0]!.digest = `sha256:${"0".repeat(64)}`
+		const integrity = await validateEvidenceBundle(bundle, store)
+		const noSecretLeak = !containsSecret(bundle, [secret])
+		result = {
+			valid: integrity.valid && noSecretLeak,
+			eventIntegrityValid: !integrity.issues.some(({ code }) => code.startsWith("event_")),
+			artifactsComplete: !integrity.issues.some(({ code }) => code.startsWith("artifact_")),
+		}
+	} catch (error) {
+		failure = { error }
+	} finally {
+		try {
+			// Only the exact directory created by this invocation is owned for cleanup.
+			await fs.rm(root, { recursive: true, force: true })
+		} catch (error) {
+			cleanupFailure = { error }
+		}
 	}
-	if (scenario.kind === "missing_event") bundle.events = []
-	if (scenario.kind === "duplicate_event") bundle.events.push({ ...bundle.events[0]! })
-	if (scenario.kind === "artifact_corruption") bundle.artifacts[0]!.digest = `sha256:${"0".repeat(64)}`
-	const integrity = await validateEvidenceBundle(bundle, store)
-	const noSecretLeak = !containsSecret(bundle, [secret])
-	const result = {
-		valid: integrity.valid && noSecretLeak,
-		eventIntegrityValid: !integrity.issues.some(({ code }) => code.startsWith("event_")),
-		artifactsComplete: !integrity.issues.some(({ code }) => code.startsWith("artifact_")),
-	}
-	await fs.rm(root, { recursive: true, force: true })
+	if (failure && cleanupFailure)
+		throw new AggregateError([failure.error, cleanupFailure.error], "Certification evidence and cleanup failed", {
+			cause: failure.error,
+		})
+	if (failure) throw failure.error
+	if (cleanupFailure) throw cleanupFailure.error
+	if (!result) throw new Error("Certification evidence produced no result")
 	return result
 }
 

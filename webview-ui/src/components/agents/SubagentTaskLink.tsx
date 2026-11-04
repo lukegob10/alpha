@@ -1,8 +1,10 @@
-import type { SubagentRunState, SubagentRunStatus } from "@alpha-code/types"
+import type { SubagentModelRouteState, SubagentRunState, SubagentRunStatus } from "@alpha-code/types"
+import { useId } from "react"
 import { ChevronRight, LoaderCircle } from "lucide-react"
 import { useTranslation } from "react-i18next"
 
 import { cn } from "@/lib/utils"
+import { SubagentModelStamp } from "./SubagentModelStamp"
 
 type SubagentTaskLinkStatus = SubagentRunStatus | "unknown"
 
@@ -36,6 +38,7 @@ interface SubagentTaskLinkProps {
 	status: SubagentTaskLinkStatus
 	attention?: string
 	detail?: string
+	modelRoute?: SubagentModelRouteState
 	descriptionId?: string
 	variant?: "chip" | "row" | "dock"
 	className?: string
@@ -49,6 +52,7 @@ export function SubagentTaskLink({
 	status,
 	attention,
 	detail,
+	modelRoute,
 	descriptionId,
 	variant = "row",
 	className,
@@ -56,6 +60,7 @@ export function SubagentTaskLink({
 	onOpen,
 }: SubagentTaskLinkProps) {
 	const { t } = useTranslation("chat")
+	const modelStampId = useId()
 	const statusLabel = t(`subagentRow.status.${status}`)
 	const accessibleLabel = [
 		t(disabled ? "subagentRow.taskUnavailable" : "subagentRow.open", { name }),
@@ -73,7 +78,9 @@ export function SubagentTaskLink({
 		<button
 			type="button"
 			aria-label={accessibleLabel}
-			aria-describedby={descriptionId}
+			aria-describedby={
+				[descriptionId, modelRoute ? modelStampId : undefined].filter(Boolean).join(" ") || undefined
+			}
 			title={title}
 			disabled={disabled}
 			onClick={onOpen}
@@ -83,7 +90,7 @@ export function SubagentTaskLink({
 				"focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
 				"disabled:cursor-default disabled:opacity-60 disabled:hover:border-transparent disabled:hover:bg-transparent",
 				variant === "chip"
-					? "h-7 max-w-56 shrink-0 rounded-full px-2"
+					? cn("max-w-56 shrink-0 rounded-full px-2", modelRoute ? "min-h-7 py-0.5" : "h-7")
 					: isDock
 						? "min-h-7 flex-1 rounded-lg px-1.5 py-0.5"
 						: "min-h-8 flex-1 rounded-md px-2 py-1",
@@ -97,7 +104,18 @@ export function SubagentTaskLink({
 					"min-w-0 truncate",
 					isDock ? "flex-1 text-[length:var(--chat-ui-font-size,13px)] font-normal" : "text-xs font-medium",
 				)}>
-				{name}
+				{modelRoute ? (
+					<>
+						<span className="block truncate">{name}</span>
+						<span
+							id={modelStampId}
+							className="block truncate text-[10px] font-normal text-vscode-descriptionForeground">
+							<SubagentModelStamp modelRoute={modelRoute} />
+						</span>
+					</>
+				) : (
+					name
+				)}
 			</span>
 			{attention && (
 				<span className="max-w-24 shrink-0 truncate rounded-full bg-vscode-editorWarning-foreground/15 px-1.5 py-0.5 text-[10px] font-medium text-vscode-editorWarning-foreground">

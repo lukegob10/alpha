@@ -11,7 +11,6 @@ const createProps = (overrides: Partial<ChatToolbarProps> = {}): ChatToolbarProp
 	onOpenTickets: vi.fn(),
 	onOpenIncidents: vi.fn(),
 	onOpenScheduledTasks: vi.fn(),
-	onOpenMarketplace: vi.fn(),
 	...overrides,
 })
 
@@ -58,21 +57,16 @@ describe("ChatToolbar", () => {
 		expect(props.onOpenIncidents).not.toHaveBeenCalled()
 	})
 
-	it("limits the standard More menu to Scheduled Tasks and Marketplace", () => {
+	it("limits the standard More menu to Scheduled Tasks", () => {
 		const props = createProps()
 		render(<ChatToolbar {...props} />)
 		openMenu()
 
-		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-			"Scheduled Tasks",
-			"Marketplace",
-		])
+		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["Scheduled Tasks"])
 		fireEvent.click(screen.getByRole("menuitem", { name: "Scheduled Tasks" }))
 		expect(props.onOpenScheduledTasks).toHaveBeenCalledTimes(1)
 		expect(screen.queryByRole("menu")).not.toBeInTheDocument()
-		openMenu()
-		fireEvent.click(screen.getByRole("menuitem", { name: "Marketplace" }))
-		expect(props.onOpenMarketplace).toHaveBeenCalledTimes(1)
+		expect(screen.queryByRole("menuitem", { name: "Marketplace" })).not.toBeInTheDocument()
 		expect(props.onOpenIncidents).not.toHaveBeenCalled()
 	})
 
@@ -84,14 +78,13 @@ describe("ChatToolbar", () => {
 		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
 			"Alpha: Incident Dashboard",
 			"Scheduled Tasks",
-			"Marketplace",
 		])
 		fireEvent.click(screen.getByRole("menuitem", { name: "Alpha: Incident Dashboard" }))
 		expect(props.onOpenIncidents).toHaveBeenCalledTimes(1)
 		openMenu()
 		rerender(<ChatToolbar {...props} debug={false} />)
 		expect(screen.queryByRole("menuitem", { name: "Alpha: Incident Dashboard" })).not.toBeInTheDocument()
-		expect(screen.getAllByRole("menuitem")).toHaveLength(2)
+		expect(screen.getAllByRole("menuitem")).toHaveLength(1)
 	})
 
 	it("supports keyboard menu navigation, selection, Escape, and focus return", async () => {
@@ -119,9 +112,9 @@ describe("ChatToolbar", () => {
 			await user.keyboard("{Enter}")
 			await waitFor(() => expect(screen.getByRole("menuitem", { name: "Scheduled Tasks" })).toHaveFocus())
 			await user.keyboard("{ArrowDown}")
-			expect(screen.getByRole("menuitem", { name: "Marketplace" })).toHaveFocus()
+			expect(screen.getByRole("menuitem", { name: "Scheduled Tasks" })).toHaveFocus()
 			await user.keyboard("{Enter}")
-			expect(props.onOpenMarketplace).toHaveBeenCalledTimes(1)
+			expect(props.onOpenScheduledTasks).toHaveBeenCalledTimes(1)
 			await waitFor(() => expect(trigger).toHaveFocus())
 
 			await user.keyboard("{Enter}")
@@ -131,7 +124,7 @@ describe("ChatToolbar", () => {
 				expect(screen.queryByRole("menu")).not.toBeInTheDocument()
 				expect(trigger).toHaveFocus()
 			})
-			expect(props.onOpenScheduledTasks).not.toHaveBeenCalled()
+			expect(props.onOpenScheduledTasks).toHaveBeenCalledTimes(1)
 		} finally {
 			cleanup()
 			if (previousFocus) Object.defineProperty(HTMLElement.prototype, "focus", previousFocus)

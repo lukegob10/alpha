@@ -22,7 +22,6 @@ import { DEFAULT_LINE_LIMIT } from "../prompts/tools/native-tools/read_file"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
-import { getCommand, type Command } from "../../services/command/commands"
 import { buildSkillResult, resolveSkillContentForMode, type SkillLookup } from "../../services/skills/skillInvocation"
 import { SkillSelectionError } from "../../services/skills/SkillSelectionError"
 import { digestValue } from "../agent/StepContext"
@@ -67,7 +66,7 @@ export async function openMention(cwd: string, mention?: string): Promise<void> 
  * proper formatting as distinct message blocks.
  */
 export interface MentionContentBlock {
-	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "command" | "ticket"
+	type: "file" | "folder" | "url" | "diagnostics" | "git_changes" | "git_commit" | "terminal" | "skill" | "ticket"
 	/** Path for file/folder mentions */
 	path?: string
 	/** The content to display */
@@ -94,7 +93,7 @@ export interface ParseMentionsResult {
 	/** Separate content blocks for each mention (file content, URLs, etc.) */
 	contentBlocks: MentionContentBlock[]
 	slashCommandHelp?: string
-	mode?: string // Mode from the first slash command that has one
+	mode?: string // Host-owned /plan admission
 	loadedSkills?: readonly LoadedMentionSkill[]
 }
 
@@ -182,52 +181,30 @@ export async function parseMentions(
 ): Promise<ParseMentionsResult> {
 	signal?.throwIfAborted()
 	const mentions: Set<string> = new Set()
-	const validCommands: Map<string, Command> = new Map()
 	const validSkills: Map<string, SkillContent> = new Map()
 	const contentBlocks: MentionContentBlock[] = []
 	const explicitSkillHelp: string[] = []
 	const planCommand = parsePlanModeCommand(text)
 	let parsedText = planCommand?.rewrittenText ?? text
-	let commandMode: string | undefined = planCommand ? planModeSlug : undefined
+	const commandMode = planCommand ? planModeSlug : undefined
 
-	// First pass: check which command mentions exist and cache the results
-	// `/plan <prompt>` is one atomic built-in command. Its remainder is user
-	// prompt text, not another slash-command/skill invocation to resolve under
-	// the mode that was active before Plan admission.
+	// /plan owns its entire prompt remainder; only other slash requests load skills.
 	const commandMatches = planCommand ? [] : Array.from(parsedText.matchAll(commandRegexGlobal))
-	const uniqueCommandNames = new Set(commandMatches.map(([, commandName]) => commandName))
-
-	const commandExistenceChecks = await Promise.all(
-		Array.from(uniqueCommandNames).map(async (commandName) => {
+	const uniqueSkillNames = new Set(commandMatches.map(([, name]) => name))
+	const slashSkills = await Promise.all(
+		Array.from(uniqueSkillNames).map(async (name) => {
 			try {
-				const command = await getCommand(cwd, commandName)
-				if (command) {
-					return { commandName, command, skillContent: null }
-				}
-
-				const skillContent = await resolveSkillContentForMode(skillsManager, commandName, currentMode)
-				return { commandName, command: undefined, skillContent }
-			} catch (error) {
-				// If there's an error checking command existence, treat it as non-existent
-				return { commandName, command: undefined, skillContent: null }
+				const content = await resolveSkillContentForMode(skillsManager, name, currentMode)
+				signal?.throwIfAborted()
+				return [name, content] as const
+			} catch {
+				signal?.throwIfAborted()
+				return [name, null] as const
 			}
 		}),
 	)
-
-	// Store valid commands for later use and capture the first mode found
-	for (const { commandName, command, skillContent } of commandExistenceChecks) {
-		if (command) {
-			validCommands.set(commandName, command)
-			// Capture the mode from the first command that has one
-			if (!commandMode && command.mode) {
-				commandMode = command.mode
-			}
-			continue
-		}
-
-		if (skillContent) {
-			validSkills.set(commandName, skillContent)
-		}
+	for (const [name, content] of slashSkills) {
+		if (content) validSkills.set(name, content)
 	}
 
 	// Resolve explicit skill requests in the host before the model sees the turn.
@@ -259,10 +236,10 @@ export async function parseMentions(
 		}
 	}
 
-	// Only replace text for commands that actually exist (keep "see below" for commands)
+	// Expand only skills found in the effective catalog; unknown slash text stays literal.
 	for (const [match, commandName] of commandMatches) {
-		if (validCommands.has(commandName) || validSkills.has(commandName)) {
-			parsedText = parsedText.replace(match, `Command '${commandName}' (see below for command content)`)
+		if (validSkills.has(commandName)) {
+			parsedText = parsedText.replace(match, `Skill '${commandName}' (see below for skill instructions)`)
 		}
 	}
 
@@ -356,21 +333,7 @@ export async function parseMentions(
 		}
 	}
 
-	// Process valid command mentions using cached results
 	let slashCommandHelp = ""
-	for (const [commandName, command] of validCommands) {
-		try {
-			let commandOutput = ""
-			if (command.description) {
-				commandOutput += `Description: ${command.description}\n\n`
-			}
-			commandOutput += command.content
-			slashCommandHelp += `\n\n<command name="${commandName}">\n${commandOutput}\n</command>`
-		} catch (error) {
-			slashCommandHelp += `\n\n<command name="${commandName}">\nError loading command '${commandName}': ${error.message}\n</command>`
-		}
-	}
-
 	const includedSkillPaths = new Set<string>()
 	const loadedSkills: LoadedMentionSkill[] = []
 	for (const skillContent of validSkills.values()) {

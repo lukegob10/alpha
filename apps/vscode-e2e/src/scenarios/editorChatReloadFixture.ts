@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage } from "node:http"
 import type { Socket } from "node:net"
 import { editorChatStateSchema } from "@alpha-code/types"
 
-export const EDITOR_RELOAD_VERSION = "1.138.0"
+export const EDITOR_RELOAD_VERSION = "1.141.0"
 export const EDITOR_RELOAD_MODEL = "editor-reload-fixture"
 export const EDITOR_RELOAD_COMPLETION = "EDITOR_RELOAD_CONTINUATION_COMPLETE"
 export const EDITOR_RELOAD_FRESH_INPUT = "Continue the first editor chat now. EDITOR_RELOAD_FRESH_INPUT"

@@ -20,7 +20,7 @@ import {
 	type ProblemSolvingPromptVariant,
 } from "./problemSolvingCampaign"
 
-const DEFAULT_HOST_VERSION = "1.138.0"
+const DEFAULT_HOST_VERSION = "1.141.0"
 const DEFAULT_MODEL_ID = "gpt-5.6-luna"
 const DEFAULT_EFFORT = "high"
 const DEFAULT_REQUEST_LIMIT = 40

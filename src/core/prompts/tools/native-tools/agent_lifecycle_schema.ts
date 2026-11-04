@@ -1,6 +1,8 @@
-export const CANONICAL_AGENT_PATH_PATTERN = "^/root(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*$"
+import { AGENT_CANONICAL_PATH_PATTERN, AGENT_TARGET_REFERENCE_PATTERN } from "@alpha-code/types"
 
-export const AGENT_TARGET_PATTERN = "^(?:/root(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$"
+export const CANONICAL_AGENT_PATH_PATTERN = AGENT_CANONICAL_PATH_PATTERN
+
+export const AGENT_TARGET_PATTERN = AGENT_TARGET_REFERENCE_PATTERN
 
 export const canonicalAgentPathSchema = {
 	type: "string",
@@ -13,5 +15,5 @@ export const agentTargetSchema = {
 	minLength: 1,
 	pattern: AGENT_TARGET_PATTERN,
 	description:
-		"A stable task_name, task ID, or canonical agent path such as /root/review; the host checks recipient or control scope.",
+		"A task ID, caller-relative agent path such as worker/code_review, or canonical path such as /root/code_review; the host checks recipient or control scope.",
 } as const

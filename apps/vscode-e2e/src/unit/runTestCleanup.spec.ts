@@ -19,7 +19,7 @@ test("a pre-host helper cleanup failure retains the lease and forbids later evid
 			const result = await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					profileDir: join(root, "profile"),
 					workspace: join(root, "workspace"),
 					artifactsDir: join(root, "artifacts"),
@@ -72,7 +72,7 @@ test("an automatic timeout releases a profile lease only after both root close a
 			const result = await runExtensionTests(
 				{
 					providerMode: "scripted",
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					profileDir: join(root, "profile"),
 					workspace: join(root, "workspace"),
 					artifactsDir: join(root, "artifacts"),
@@ -102,7 +102,7 @@ test("an automatic timeout releases a profile lease only after both root close a
 test("automatic execution deadlines are explicit bounded options and cannot alter interactive setup", async () => {
 	const options = {
 		providerMode: "live-copilot" as const,
-		vscodeVersion: "1.138.0",
+		vscodeVersion: "1.141.0",
 		modelId: "model",
 		profileDir: join(tmpdir(), "deadline-options-profile"),
 		workspace: join(tmpdir(), "deadline-options-workspace"),

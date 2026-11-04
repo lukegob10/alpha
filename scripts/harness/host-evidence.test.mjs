@@ -5,6 +5,8 @@ import { test } from "node:test"
 import {
 	confidenceHostFiles,
 	extendedHostFiles,
+	managedHostFiles,
+	minimumHostFiles,
 	hostSuiteVerdict,
 	hostSuiteCleanupVerified,
 	outcomeCampaignVerdict,
@@ -113,12 +115,47 @@ test("legacy schema-one receipts stay readable without proving a complete gate",
 	assert.equal(outcomeCampaignVerdict(campaign, receipts, campaign.id).reason, "incomplete_host_selection")
 })
 
+test("minimum host evidence is exact and cannot satisfy the reference-host gate", () => {
+	const receipts = minimumHostFiles.map((file) => ({
+		...hostReceipt(file),
+		requestedHostVersion: "1.125.0",
+		actualHostVersion: "1.125.0",
+	}))
+	assert.equal(hostSuiteVerdict(receipts, "minimum").status, "passed")
+	assert.equal(hostSuiteCleanupVerified(receipts, "minimum", 0), true)
+	assert.throws(() => validateHostReceipt(receipts[0]), /receipt/)
+	assert.equal(hostSuiteVerdict(receipts, "smoke").status, "failed")
+	assert.equal(hostSuiteVerdict(minimumHostFiles.map(hostReceipt), "minimum").status, "failed")
+	for (const mutate of [
+		(values) => (values[0].requestedHostVersion = "1.141.0"),
+		(values) => (values[0].actualHostVersion = "1.126.0"),
+		(values) => (values[0].testCounts = { total: 2, passed: 1, pending: 1, executed: 1, failed: 0 }),
+		(values) => (values[0].testSelection.grep = "subset"),
+	]) {
+		const invalid = structuredClone(receipts)
+		mutate(invalid)
+		assert.equal(hostSuiteVerdict(invalid, "minimum").status, "failed")
+	}
+})
+
+test("managed automated host evidence requires all four existing host files and owned shutdown", async () => {
+	const receipts = managedHostFiles.map(hostReceipt)
+	assert.equal(hostSuiteVerdict(receipts, "managed").status, "passed")
+	assert.equal(hostSuiteVerdict(receipts.slice(0, 2), "managed").status, "failed")
+	receipts[3].hostExitObserved = false
+	assert.equal(hostSuiteCleanupVerified(receipts, "managed", 0), false)
+	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
+	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
+	assert.deepEqual(managedHostFiles, files(manifest.scripts["test:managed-agents:run"]))
+	assert.deepEqual(minimumHostFiles, files(manifest.scripts["test:compatibility:1250:run"]))
+})
+
 test("host inventory matches the canonical runner scripts and requires background launch receipts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
 	const files = (script) => [...script.matchAll(/--file ([\w.-]+)/g)].map((match) => match[1])
-	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1380:run"]))
-	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1380:run"])])
-	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1380:run"]))
+	assert.deepEqual(smokeHostFiles, files(manifest.scripts["test:smoke:1410:run"]))
+	assert.deepEqual(confidenceHostFiles, [...smokeHostFiles, ...files(manifest.scripts["test:core:1410:run"])])
+	assert.deepEqual(extendedHostFiles, files(manifest.scripts["test:extended:1410:run"]))
 	for (const [suite, expected] of [
 		["smoke", smokeHostFiles],
 		["confidence", confidenceHostFiles],
@@ -235,7 +272,7 @@ test("a completed disposable smoke receipt cannot infer ownership from passed te
 
 test("smoke contracts require the provider selected by their canonical scripts", async () => {
 	const manifest = JSON.parse(await readFile(new URL("../../apps/vscode-e2e/package.json", import.meta.url), "utf8"))
-	const receipts = manifest.scripts["test:smoke:1380:run"]
+	const receipts = manifest.scripts["test:smoke:1410:run"]
 		.split(" && ")
 		.filter((command) => command.includes("--file "))
 		.map((command) => ({

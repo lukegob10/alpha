@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
 	clearTaskSessionApprovalGrants,
+	captureTaskSessionApprovalAuthority,
 	createTaskSessionApprovalKey,
 	grantTaskSessionApproval,
 	hasTaskSessionApproval,
@@ -18,6 +19,91 @@ const identity = (overrides: Partial<Parameters<typeof createTaskSessionApproval
 })
 
 describe("task-scoped exact approval grants", () => {
+	it("captures opaque executor identity without inspecting live connection fields", () => {
+		const connection = {
+			get config() {
+				throw new Error("Connection configuration must not be serialized")
+			},
+		}
+		const first = captureTaskSessionApprovalAuthority([connection], ["schema", 1])
+		expect(first).toMatch(/^[a-f0-9]{64}$/)
+		expect(captureTaskSessionApprovalAuthority([connection], ["schema", 1])).toBe(first)
+		expect(captureTaskSessionApprovalAuthority([{}], ["schema", 1])).not.toBe(first)
+		expect(captureTaskSessionApprovalAuthority([connection], ["schema", 2])).not.toBe(first)
+	})
+
+	it("uses the native command's resolved workdir without dropping unknown authority fields", () => {
+		const native = identity({
+			toolName: "exec_command",
+			argumentsValue: { cmd: "git status --short", workdir: "." },
+		})
+		const key = createTaskSessionApprovalKey(native)
+		expect(
+			createTaskSessionApprovalKey({
+				...native,
+				argumentsValue: { cmd: "git status --short", yield_time_ms: 5000 },
+			}),
+		).toBe(key)
+		expect(
+			createTaskSessionApprovalKey({
+				...native,
+				argumentsValue: { cmd: "git status --short", workdir: "other" },
+			}),
+		).not.toBe(key)
+		expect(
+			createTaskSessionApprovalKey({
+				...native,
+				argumentsValue: { cmd: "git status --short", additional_permissions: { write: true } },
+			}),
+		).not.toBe(key)
+	})
+
+	it("reuses command grants when only output and wait controls change", () => {
+		const key = createTaskSessionApprovalKey(
+			identity({
+				argumentsValue: {
+					command: "git status --short",
+					cwd: ".",
+					yield_time_ms: 1000,
+					max_output_tokens: 100,
+				},
+			}),
+		)!
+		grantTaskSessionApproval(key, "task-1", new AbortController().signal)
+		expect(
+			hasTaskSessionApproval(
+				createTaskSessionApprovalKey(
+					identity({
+						argumentsValue: {
+							command: "git status --short",
+							cwd: ".",
+							yield_time_ms: 30000,
+							max_output_tokens: 1000,
+						},
+					}),
+				)!,
+			),
+		).toBe(true)
+		clearTaskSessionApprovalGrants("task-1")
+	})
+
+	it.each([
+		{ argumentsValue: { command: "git diff", cwd: "." } },
+		{ argumentsValue: { command: "git status --short", cwd: "other" } },
+		{ argumentsValue: { command: "git status --short", cwd: ".", tty: true } },
+		{ policyDigest: "changed" },
+		{ authorityValue: { outsidePaths: ["other"], unresolved: false } },
+	])("invalidates a command grant when authority changes: %j", (overrides) => {
+		expect(createTaskSessionApprovalKey(identity(overrides))).not.toBe(createTaskSessionApprovalKey(identity()))
+	})
+
+	it("keeps non-command arguments exact even for fields named like presentation controls", () => {
+		const base = identity({ toolName: "custom_tool", askType: "tool", argumentsValue: { yield_time_ms: 1000 } })
+		expect(createTaskSessionApprovalKey({ ...base, argumentsValue: { yield_time_ms: 30000 } })).not.toBe(
+			createTaskSessionApprovalKey(base),
+		)
+	})
+
 	it("binds a grant to the task, exact command, complete arguments, and cwd", () => {
 		const key = createTaskSessionApprovalKey(identity())!
 		expect(createTaskSessionApprovalKey(identity({ cwd: undefined }))).toBeUndefined()

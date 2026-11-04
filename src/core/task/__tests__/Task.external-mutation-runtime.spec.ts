@@ -281,7 +281,7 @@ describe("Task external mutation runtime state", () => {
 		expect(await task.getCompletionGateDecision()).toMatchObject({
 			allowed: false,
 			classification: "repairable",
-			reasonCode: "verification_missing",
+			reasonCode: "review_pending",
 		})
 	})
 

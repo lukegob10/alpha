@@ -377,7 +377,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				appendText(t("tools:mcpMedia.contentUnsupported"))
 			}
 		}
-		if (toolResult.structuredContent !== undefined) {
+		if (toolResult.structuredContent != null) {
 			appendText(`Structured content:\n${JSON.stringify(toolResult.structuredContent, null, 2)}`)
 		}
 
@@ -431,13 +431,46 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			if (!mcpHub) {
 				throw new Error("No MCP hub is available")
 			}
-			const toolResult = await (source === undefined
-				? signal === undefined
-					? mcpHub.callTool(serverName, toolName, parsedArguments)
-					: mcpHub.callTool(serverName, toolName, parsedArguments, undefined, signal)
-				: signal === undefined
-					? mcpHub.callTool(serverName, toolName, parsedArguments, source)
-					: mcpHub.callTool(serverName, toolName, parsedArguments, source, signal))
+			const dispatch = () =>
+				source === undefined
+					? signal === undefined
+						? mcpHub.callTool(serverName, toolName, parsedArguments)
+						: mcpHub.callTool(serverName, toolName, parsedArguments, undefined, signal)
+					: signal === undefined
+						? mcpHub.callTool(serverName, toolName, parsedArguments, source)
+						: mcpHub.callTool(serverName, toolName, parsedArguments, source, signal)
+			const toolResult =
+				task.taskKind === "primary" && mcpHub.withElicitation
+					? await mcpHub.withElicitation(
+							serverName,
+							source,
+							{
+								signal: signal ?? task.getTaskLifetimeCancellationSignal(),
+								ask: async (message, schema, questionSignal) => {
+									const answer = await task.ask(
+										"followup",
+										JSON.stringify({
+											question: t("tools:mcpElicitation.question", {
+												serverName,
+												message,
+												schema: JSON.stringify(schema),
+											}),
+											suggest: [],
+										}),
+										false,
+										undefined,
+										undefined,
+										undefined,
+										undefined,
+										undefined,
+										questionSignal,
+									)
+									return answer.response === "messageResponse" ? answer.text : undefined
+								},
+							},
+							dispatch,
+						)
+					: await dispatch()
 			signal?.throwIfAborted()
 
 			if (!toolResult) {
@@ -476,14 +509,18 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 			signal?.throwIfAborted()
 			await task.say("mcp_server_response", toolResultPretty, images)
 			signal?.throwIfAborted()
+			// Codex ac558e2a (protocol/models.rs, 2026-11-03) selects structured JSON for model input.
+			// Preserve the complete display evidence above without mixing it into that authoritative result.
 			pushToolResult(
-				images.length > 0
-					? formatResponse.toolResult(
-							toolResultPretty,
-							images,
-							toolResult.isError ? [{ type: "text", text: "Error:\n" }, ...content] : content,
-						)
-					: formatResponse.toolResult(toolResultPretty, images),
+				toolResult.structuredContent != null
+					? formatResponse.toolResult(JSON.stringify(toolResult.structuredContent))
+					: images.length > 0
+						? formatResponse.toolResult(
+								toolResultPretty,
+								images,
+								toolResult.isError ? [{ type: "text", text: "Error:\n" }, ...content] : content,
+							)
+						: formatResponse.toolResult(toolResultPretty, images),
 			)
 			if (!toolResult.isError)
 				callbacks.setResultMetadata?.({

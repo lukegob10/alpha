@@ -8,7 +8,6 @@ import { FileContextTracker } from "../../context-tracking/FileContextTracker"
 import type { SkillContent } from "../../../shared/skills"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { getHumanFeedbackToolResultIds } from "../../../services/skills/skillInvocationProvenance"
-import * as commands from "../../../services/command/commands"
 
 // Mock the parseMentions function
 vi.mock("../index", () => ({
@@ -51,7 +50,7 @@ describe("processUserContentMentions", () => {
 					const content = await lookup?.getSkillContent("explicit-review", mode)
 					return {
 						text,
-						contentBlocks: content ? [{ type: "command", content: content.instructions }] : [],
+						contentBlocks: content ? [{ type: "skill", content: content.instructions }] : [],
 					}
 				},
 			)
@@ -176,7 +175,7 @@ describe("processUserContentMentions", () => {
 		it("does not restrict ordinary command content or its existing mode projection", async () => {
 			vi.mocked(parseMentions).mockResolvedValue({
 				text: "Existing command invocation",
-				contentBlocks: [{ type: "command", content: "EXISTING_COMMAND_CONTENT" }],
+				contentBlocks: [{ type: "skill", content: "EXISTING_COMMAND_CONTENT" }],
 				mode: "architect",
 			})
 			const result = await processUserContentMentions({
@@ -218,7 +217,6 @@ describe("processUserContentMentions", () => {
 		beforeEach(async () => {
 			const actual = await vi.importActual<typeof import("../index")>("../index")
 			vi.mocked(parseMentions).mockImplementation(actual.parseMentions)
-			vi.spyOn(commands, "getCommand").mockResolvedValue(undefined)
 		})
 
 		it.each([

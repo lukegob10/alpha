@@ -21,7 +21,7 @@ import {
 } from "../liveHostProtocol"
 import { TestRunError } from "../runFailure"
 
-const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.138.0" }
+const expected = { runId: "normal-host-test", nonce: randomUUID(), actualVSCodeVersion: "1.141.0" }
 const receipt: LiveHostReceipt = {
 	...expected,
 	schemaVersion: 1,
@@ -35,6 +35,16 @@ test("terminal receipts reject extra fields rather than retain arbitrary provide
 	assert.throws(() => validateLiveHostReceipt({ ...receipt, secret: "must-not-retain" }, expected, "terminal"), {
 		code: "host-completion-invalid",
 	})
+})
+
+test("older exact-host receipts remain readable without satisfying the new reference host", () => {
+	for (const actualVSCodeVersion of ["1.125.0", "1.138.0"]) {
+		const previous = { ...receipt, actualVSCodeVersion }
+		assert.deepEqual(validateLiveHostReceipt(previous, previous, "terminal"), previous)
+		assert.throws(() => validateLiveHostReceipt(previous, expected, "terminal"), {
+			code: "host-completion-invalid",
+		})
+	}
 })
 
 test("receipts require exact run, nonce, host version, mode, status and process identity", () => {

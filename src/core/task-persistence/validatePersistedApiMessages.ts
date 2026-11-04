@@ -1,7 +1,13 @@
-import { snapshotGeminiResponse, snapshotVscodeLmThinking, taskGoalUsageReceiptsSchema } from "@alpha-code/types"
+import {
+	nativeCompactionCheckpointSchema,
+	snapshotGeminiResponse,
+	snapshotVscodeLmThinking,
+	taskGoalUsageReceiptsSchema,
+} from "@alpha-code/types"
 
 import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/tool-id"
 import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
+import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
 import { providerStateScopeSchema } from "./providerStateScope"
 
 /**
@@ -65,6 +71,20 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		}
 		if (candidate.reasoning_content !== undefined && typeof candidate.reasoning_content !== "string") {
 			return `${location} has invalid reasoning content`
+		}
+		if (candidate.native_compaction !== undefined) {
+			const checkpoint = nativeCompactionCheckpointSchema.safeParse(candidate.native_compaction)
+			if (
+				!checkpoint.success ||
+				candidate.role !== "assistant" ||
+				candidate.isSummary !== true ||
+				!hasNonemptyId(candidate.condenseId) ||
+				!isRecord(candidate.provider_state_scope) ||
+				candidate.provider_state_scope.provider !== checkpoint.data.provider ||
+				candidate.provider_state_scope.modelId !== checkpoint.data.modelId
+			) {
+				return `${location} has invalid native compaction state`
+			}
 		}
 		if (candidate.type === "reasoning") {
 			const problem = invalidReasoningRecord(candidate, true)
@@ -165,7 +185,7 @@ function invalidReasoningRecord(value: Record<string, unknown>, requireEncrypted
 	return undefined
 }
 
-function isHookPromptProvenance(value: unknown): boolean {
+export function isHookPromptProvenance(value: unknown): value is CompletionHookPromptProvenance {
 	if (!isRecord(value) || !isLifecycleHookTarget(value.event)) return false
 	if (!Array.isArray(value.fragments) || value.fragments.length === 0) return false
 	return value.fragments.every(

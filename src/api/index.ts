@@ -2,6 +2,8 @@ import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 
 import {
+	type NativeCompactionCheckpoint,
+	type NativeCompactionScope,
 	type ProviderSettings,
 	type ModelInfo,
 	type ModelRequestPhase,
@@ -12,7 +14,12 @@ import {
 	getUnsupportedCuratedProviderSettings,
 } from "@alpha-code/types"
 
-import { ApiStream, type ApiStreamCapabilities, type ApiStreamRequestMetadata } from "./transform/stream"
+import {
+	ApiStream,
+	type ApiStreamCapabilities,
+	type ApiStreamRequestMetadata,
+	type ApiStreamUsageChunk,
+} from "./transform/stream"
 
 import {
 	VertexHandler,
@@ -28,9 +35,8 @@ import {
 	XAIHandler,
 	OpenRouterHandler,
 	VsCodeLmHandler,
-	StellarHandler,
 } from "./providers"
-import { assertSupportedApiProvider, type TaskReasoningRuntimeOptions } from "../shared/api"
+import { assertSupportedApiProvider } from "../shared/api"
 import { FakeAIHandler } from "./providers/fake-ai"
 import type { ModelToolIdentity } from "./providers/utils/router-tool-preferences"
 
@@ -114,7 +120,19 @@ export interface ApiHandlerCountTokensMetadata {
 	remoteDeadline?: number | Date
 }
 
+export interface ApiNativeCompactionCapability {
+	readonly scope: NativeCompactionScope
+	compact(
+		systemPrompt: string,
+		messages: readonly Anthropic.Messages.MessageParam[],
+		metadata?: ApiHandlerCreateMessageMetadata & { observeUsage?: (usage: ApiStreamUsageChunk) => void },
+	): Promise<NativeCompactionCheckpoint>
+}
+
 export interface ApiHandler {
+	/** Absent for providers or host APIs without a verified native compaction route. */
+	readonly nativeCompaction?: ApiNativeCompactionCapability
+
 	/** Release adapter listeners after all captured requests using it have finished. */
 	dispose?(): void
 	/** Additive capability declaration; absent means legacy stream semantics. */
@@ -154,7 +172,7 @@ export interface ApiHandler {
 	): Promise<number>
 }
 
-export function buildApiHandler(configuration: ProviderSettings & TaskReasoningRuntimeOptions): ApiHandler {
+export function buildApiHandler(configuration: ProviderSettings): ApiHandler {
 	const { apiProvider, ...options } = configuration
 	assertSupportedApiProvider(apiProvider)
 	if (isCuratedProvider(apiProvider)) {
@@ -204,8 +222,6 @@ export function buildApiHandler(configuration: ProviderSettings & TaskReasoningR
 			return new VsCodeLmHandler(options)
 		case "fake-ai":
 			return new FakeAIHandler(options)
-		case "stellar":
-			return new StellarHandler(options)
 		default:
 			throw new Error(`Unsupported API provider: ${String(apiProvider)}`)
 	}

@@ -39,7 +39,7 @@ export interface EmbeddingResponse {
 	}
 }
 
-export type AvailableEmbedders = "vertex" | "gemini"
+export type AvailableEmbedders = import("@alpha-code/types").EmbedderProvider
 
 export interface EmbedderInfo {
 	name: AvailableEmbedders

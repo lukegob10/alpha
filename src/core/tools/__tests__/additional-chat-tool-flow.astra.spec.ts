@@ -77,8 +77,9 @@ afterEach(() => {
 describe("additional Astra audit: completed command output discoverability", () => {
 	it("reports when a completed poll leaves unread output and identifies how to fetch it", async () => {
 		const tail = "FINAL_DIAGNOSTIC: migration removed the expected table\n"
-		const fixture = await completedCommand(`${"build progress\n".repeat(600)}${tail}`)
-		const first = (await fixture.poll("first")).results[0]!
+		const output = `${"build progress\n".repeat(600)}${tail}`
+		const fixture = await completedCommand(output)
+		const first = (await fixture.poll("first", 2_000)).results[0]!
 
 		expect(first.status).toBe("success")
 		expect(first.commandResult?.exit_code).toBe(0)
@@ -87,6 +88,7 @@ describe("additional Astra audit: completed command output discoverability", () 
 		expect(commandSessionRegistry.resolve(fixture.task, fixture.sessionId)).toBeDefined()
 		const second = (await fixture.poll("second")).results[0]!
 		expect(second.content).toContain(tail)
+		expect(first.commandResult!.output + second.commandResult!.output).toBe(output)
 		expect(fixture.command.hasUnretrievedOutput()).toBe(false)
 		expect(commandSessionRegistry.resolve(fixture.task, fixture.sessionId)).toBeUndefined()
 

@@ -460,19 +460,18 @@ describe("AgentResponseAccumulator", () => {
 		await accumulator.add({ type: "tool_call", id: "bad", name: "second", arguments: "not-json" })
 		const result = await accumulator.finish()
 
-		expect(result.toolCalls).toEqual([{ type: "tool_call", id: "valid", name: "first", arguments: {} }])
-		expect(result.items).toContainEqual({
-			type: "error",
-			message: 'Unable to parse arguments for tool call "second" (bad).',
-			callId: "bad",
-			toolName: "second",
-			retryable: false,
-		})
-		expect(result.outcome).toEqual({
-			status: "failed",
-			reason: 'Unable to parse arguments for tool call "second" (bad).',
-			retryable: false,
-		})
+		expect(result.toolCalls).toEqual([
+			{ type: "tool_call", id: "valid", name: "first", arguments: {} },
+			{
+				type: "tool_call",
+				id: "bad",
+				name: "second",
+				arguments: {},
+				argumentParseError: 'Unable to parse arguments for tool call "second" (bad).',
+				rawArguments: "not-json",
+			},
+		])
+		expect(result.outcome).toBeUndefined()
 	})
 
 	it("marks provider error responses as failed rather than completed", async () => {
@@ -532,9 +531,17 @@ describe("AgentResponseAccumulator", () => {
 
 		const response = await accumulator.finish()
 
-		expect(response.toolCalls).toEqual([])
-		expect(response.items.at(-1)).toMatchObject({ type: "error", retryable: false })
-		expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+		if (call.id && call.name) {
+			expect(response.toolCalls).toEqual([
+				expect.objectContaining({ id: call.id, name: call.name, arguments: {}, rawArguments: call.arguments }),
+			])
+			expect(response.toolCalls[0].argumentParseError).toBeDefined()
+			expect(response.outcome).toEqual({ status: "completed" })
+		} else {
+			expect(response.toolCalls).toEqual([])
+			expect(response.items.at(-1)).toMatchObject({ type: "error", retryable: false })
+			expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+		}
 	})
 
 	it("does not hide colliding call IDs behind a successful provider outcome", async () => {
@@ -641,14 +648,16 @@ describe("AgentResponseAccumulator", () => {
 		const response = await accumulator.finish()
 
 		expect(readyCalls).toEqual([])
-		expect(response.toolCalls).toEqual([])
-		expect(response.items).toContainEqual({
-			type: "error",
-			message: 'Unable to parse arguments for tool call "read_file" (call-invalid-root).',
-			callId: "call-invalid-root",
-			toolName: "read_file",
-			retryable: false,
-		})
-		expect(response.outcome).toMatchObject({ status: "failed", retryable: false })
+		expect(response.toolCalls).toEqual([
+			{
+				type: "tool_call",
+				id: "call-invalid-root",
+				name: "read_file",
+				arguments: {},
+				argumentParseError: 'Unable to parse arguments for tool call "read_file" (call-invalid-root).',
+				rawArguments: argumentsText,
+			},
+		])
+		expect(response.outcome).toBeUndefined()
 	})
 })

@@ -3,6 +3,8 @@ import type { ProviderSettings } from "@alpha-code/types"
 
 export type VectorStoreProvider = "qdrant" | "lancedb"
 
+export type EmbeddingConnectionOptions = { apiKey?: string; baseUrl?: string; region?: string; profile?: string }
+
 /**
  * Configuration state for the code indexing feature
  */
@@ -11,9 +13,10 @@ export interface CodeIndexConfig {
 	embedderProvider: EmbedderProvider
 	vectorStoreProvider?: VectorStoreProvider
 	modelId?: string
-	modelDimension?: number // Optional override for custom Vertex models
+	modelDimension?: number // Optional dimension for custom embedding models
 	vertexOptions?: ProviderSettings
 	geminiApiKey?: string
+	embeddingOptions?: EmbeddingConnectionOptions
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string
@@ -38,11 +41,7 @@ export type PreviousConfigSnapshot = {
 	vertexKeyFile?: string
 	vertexJsonCredentials?: string
 	geminiApiKey?: string
-	vertexGatewayBaseUrl?: string
-	vertexGatewayCaBundlePath?: string
-	vertexGatewayHelixCommand?: string
-	vertexGatewayTokenRefreshMinutes?: number
-	vertexGatewayModelRoutingMap?: string
+	embeddingOptions?: EmbeddingConnectionOptions
 	qdrantUrl?: string
 	qdrantApiKey?: string
 	localIndexPath?: string

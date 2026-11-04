@@ -5,33 +5,50 @@ import { resolve, dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { unzipSync } from "fflate"
 import { SaxesParser } from "saxes"
+import { createHash } from "node:crypto"
+import * as console from "node:console"
+import process from "node:process"
+import { TextDecoder } from "node:util"
 
 import { lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
+import { assertExtensionBuildSource, extensionBuildProvenancePath } from "./extension-build-provenance.mjs"
 
 const archiveArgument = process.argv[2]
 
 if (!archiveArgument) {
-	console.error("Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix> [--check-source] [--target <platform>]")
+	console.error(
+		"Usage: node scripts/verify-vsix-contents.mjs <path-to-vsix> [--check-source] [--target <platform>] [--require-clean-build [--repository-root <path>]]",
+	)
 	process.exit(1)
 }
 
 let expectedTarget
 let checkSource = false
+let requireCleanBuild = false
+let repositoryRoot
 try {
 	for (let index = 3; index < process.argv.length; index++) {
 		const argument = process.argv[index]
 		if (argument === "--check-source") checkSource = true
-		else if (argument === "--target" && expectedTarget === undefined) {
+		else if (argument === "--require-clean-build" && !requireCleanBuild) requireCleanBuild = true
+		else if (argument === "--repository-root" && repositoryRoot === undefined) {
+			const value = process.argv[++index]
+			if (!value || value.startsWith("--")) throw new Error("Missing release repository root")
+			repositoryRoot = resolve(value)
+		} else if (argument === "--target" && expectedTarget === undefined) {
 			expectedTarget = process.argv[++index]
 			lanceDbBindingForTarget(expectedTarget)
 		} else throw new Error(`Unknown or repeated VSIX verification argument: ${argument}`)
 	}
+	if (repositoryRoot && !requireCleanBuild) throw new Error("--repository-root requires --require-clean-build")
 } catch (error) {
 	console.error(error.message)
 	process.exit(1)
 }
 
 const archivePath = resolve(archiveArgument)
+const repository = repositoryRoot ?? resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const provenanceEntry = `extension/${extensionBuildProvenancePath}`
 
 if (!existsSync(archivePath)) {
 	console.error(`VSIX archive does not exist: ${archivePath}`)
@@ -52,7 +69,6 @@ const noticeEntries = thirdPartyNotices.flatMap(([, name, files]) =>
 
 const sourceAssets = new Map()
 if (checkSource) {
-	const repository = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 	const publicRoot = join(repository, "webview-ui", "public")
 	function collect(relative) {
 		for (const item of readdirSync(join(publicRoot, relative), { withFileTypes: true })) {
@@ -82,6 +98,11 @@ try {
 				if (entry.originalSize > 64 * 1024 || (entry.compression === 0 && entry.size > 64 * 1024)) {
 					throw new Error("VSIX manifest exceeds the 64 KiB inspection limit")
 				}
+				return true
+			}
+			if (requireCleanBuild && entry.name === provenanceEntry) {
+				if (entry.originalSize > 16 * 1024 * 1024 || (entry.compression === 0 && entry.size > 16 * 1024 * 1024))
+					throw new Error("Build provenance exceeds the 16 MiB inspection limit")
 				return true
 			}
 			const source = sourceAssets.get(entry.name)
@@ -240,4 +261,56 @@ if (checkSource) {
 		}
 	}
 	console.log(`Verified ${sourceAssets.size} document assets and third-party notices match current source bytes.`)
+}
+
+if (requireCleanBuild) {
+	try {
+		if (!packagedAssets[provenanceEntry]) throw new Error("VSIX is missing clean build provenance")
+		const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(packagedAssets[provenanceEntry]))
+		await assertExtensionBuildSource({ repositoryRoot: repository, manifest })
+		// VSCE renames documentation and rewrites README links. The webview entry/manifest are build-only files
+		// excluded by src/.vscodeignore; every shipped runtime payload must retain its recorded build bytes.
+		const unshipped = new Set([
+			"README.md",
+			"webview-ui/build/index.html",
+			"webview-ui/build/sourcemap-manifest.json",
+		])
+		const renamed = { "CHANGELOG.md": "changelog.md", LICENSE: "LICENSE.txt" }
+		const expected = new Map(
+			manifest.artifacts.files
+				.filter((row) => !unshipped.has(row.path))
+				.map((row) => [`extension/${renamed[row.path] ?? row.path}`, row]),
+		)
+		for (const entry of entries)
+			if (
+				entry.toLowerCase().startsWith("extension/") &&
+				entry !== provenanceEntry &&
+				entry !== "extension/readme.md" &&
+				!expected.has(entry)
+			)
+				throw new Error(`VSIX payload has no build identity: ${entry}`)
+		let totalBytes = 0
+		const payloads = unzipSync(readFileSync(archivePath), {
+			filter: (entry) => {
+				const row = expected.get(entry.name)
+				if (!row) return false
+				totalBytes += row.size
+				if (
+					entry.originalSize !== row.size ||
+					(entry.compression === 0 && entry.size !== row.size) ||
+					totalBytes > 512 * 1024 * 1024
+				)
+					throw new Error("VSIX build payload exceeds its recorded size or the 512 MiB inspection limit")
+				return true
+			},
+		})
+		for (const [entry, row] of expected) {
+			if (!payloads[entry] || createHash("sha256").update(payloads[entry]).digest("hex") !== row.sha256)
+				throw new Error(`VSIX payload differs from its clean build: ${entry}`)
+		}
+		console.log(`Verified clean source ${manifest.source.revision} and ${expected.size} build payload hashes.`)
+	} catch (error) {
+		console.error(`Invalid clean VSIX build: ${error instanceof Error ? error.message : String(error)}`)
+		process.exit(1)
+	}
 }

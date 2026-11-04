@@ -201,7 +201,7 @@ export async function createWorkflowConfirmation(input: {
 	}
 	const sourceRoots = { control: input.sourceRoot, candidate: candidateRoot }
 	const provider = { mode: "scripted" as const }
-	const hostVersions = ["1.138.0"] as const
+	const hostVersions = ["1.141.0"] as const
 	const configDigest = sha256("workflow-frozen-configuration")
 	const variant = (arm: ConfirmationArm) => {
 		const context = contexts[arm]
@@ -234,7 +234,7 @@ export async function createWorkflowConfirmation(input: {
 		id: "host-scenarios",
 		version: 1,
 		tasks: scenarios
-			.map((scenario) => `${scenario}:vscode-1.138.0`)
+			.map((scenario) => `${scenario}:vscode-1.141.0`)
 			.sort()
 			.map((id) => ({
 				id,
@@ -328,8 +328,8 @@ export async function createWorkflowConfirmation(input: {
 		control: { runId: "fresh-control", context: contexts.control, variant: variants.control, provider },
 		candidate: { runId: "fresh-candidate", context: contexts.candidate, variant: variants.candidate, provider },
 		requirements: {
-			targeted: [{ regressionId: input.proposal.draft.id, taskId: `${input.proposal.draft.id}:vscode-1.138.0` }],
-			neighbors: ["cache-initial-port:vscode-1.138.0"],
+			targeted: [{ regressionId: input.proposal.draft.id, taskId: `${input.proposal.draft.id}:vscode-1.141.0` }],
+			neighbors: ["cache-initial-port:vscode-1.141.0"],
 		},
 		limits: { maxRequestsPerArm: 2, maxDurationMsPerArm: 30_000 },
 		promotionPolicy: "pr-v1",
@@ -390,7 +390,7 @@ export async function createWorkflowConfirmation(input: {
 					scenarioId: scenarios[index],
 					sample: 1,
 					phase: "sample",
-					host: { version: "1.138.0" },
+					host: { version: "1.141.0" },
 					decisionPlanDigest: request.decisionPlanDigest,
 					startedAt,
 					timeWindow: request.timeWindow,
@@ -405,7 +405,7 @@ export async function createWorkflowConfirmation(input: {
 					...(result.decision !== "passed"
 						? { failure: { class: result.decision === "grader_error" ? "infrastructure" : "assertion" } }
 						: {}),
-					actualHostVersion: "1.138.0",
+					actualHostVersion: "1.141.0",
 					usage: { cost: null, inputTokens: null, outputTokens: null },
 				},
 				elapsedMs: Math.round(performance.now() - started),

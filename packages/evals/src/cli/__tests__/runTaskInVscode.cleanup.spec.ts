@@ -131,7 +131,7 @@ const benchmarkInput = () => {
 
 const exactIdentity = (): import("@alpha-code/types").ExecutionIdentity => ({
 	schemaVersion: 1,
-	hostVersion: "1.138.0",
+	hostVersion: "1.141.0",
 	extensionId: "Alpha.alpha",
 	extensionVersion: "1.0.0",
 	entrypointDigest: `sha256:${"a".repeat(64)}`,
@@ -756,10 +756,10 @@ it("binds local paid execution to a fresh owned profile and the current developm
 	expect(spawnOptions.env.VSCODE_IPC_HOOK_CLI).toBeUndefined()
 	expect(spawnOptions.env.VSCODE_PORTABLE).toBeUndefined()
 	expect(spawnOptions.env.ALPHA_CODE_IPC_SOCKET_PATH).toMatch(/evals-1-2-[a-f0-9]{16}\.sock$/)
-	expect(mocks.prepareProfile).toHaveBeenCalledExactlyOnceWith({ vscodeVersion: "1.138.0" })
+	expect(mocks.prepareProfile).toHaveBeenCalledExactlyOnceWith({ vscodeVersion: "1.141.0" })
 	expect(mocks.assertAncestry).toHaveBeenCalledExactlyOnceWith(process.pid, 100)
 	expect(mocks.assertAncestry.mock.invocationCallOrder[0]).toBeLessThan(mocks.send.mock.invocationCallOrder[0]!)
-	expect(mocks.readIdentity).toHaveBeenCalledWith(path.resolve("../../src"), "1.138.0")
+	expect(mocks.readIdentity).toHaveBeenCalledWith(path.resolve("../../src"), "1.141.0")
 	expect(mocks.reap).toHaveBeenCalledOnce()
 })
 
@@ -849,7 +849,7 @@ it.each(["wrong version", "missing server process"])(
 		mocks.wait.mockResolvedValue(undefined)
 		const pending = runTaskInVscode(benchmarkInput())
 		const rejection = expect(pending).rejects.toThrow(
-			reason === "wrong version" ? /exact VS Code 1.138.0/ : /process identity/,
+			reason === "wrong version" ? /exact VS Code 1.141.0/ : /process identity/,
 		)
 		await vi.advanceTimersByTimeAsync(3000)
 		await rejection
@@ -1121,7 +1121,7 @@ it("preserves the caller's logger after successful execution", async () => {
 it("captures exact-host execution identity before dispatch, preserving process cleanup", async () => {
 	mocks.identity = {
 		schemaVersion: 1,
-		hostVersion: "1.138.0",
+		hostVersion: "1.141.0",
 		extensionId: "Alpha.alpha",
 		extensionVersion: "1.0.0",
 		entrypointDigest: `sha256:${"a".repeat(64)}`,
@@ -1157,7 +1157,7 @@ it("rejects another host version before dispatch", async () => {
 	}
 	mocks.wait.mockResolvedValue(undefined)
 	const pending = runTaskInVscode(input())
-	const rejection = expect(pending).rejects.toThrow("exact VS Code 1.138.0")
+	const rejection = expect(pending).rejects.toThrow("exact VS Code 1.141.0")
 	await vi.advanceTimersByTimeAsync(3000)
 	await rejection
 	expect(mocks.send).not.toHaveBeenCalled()

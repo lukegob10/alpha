@@ -73,8 +73,5 @@ export const taskReasoningStateSchema = z.object({
 
 export type TaskReasoningState = z.infer<typeof taskReasoningStateSchema>
 
-/** Narrow runtime-only extension used by the Stellar adapter for custom tokens. */
-export type TaskReasoningCustomEffort = Extract<TaskReasoningPreference, { kind: "custom" }>["value"]
-
 export const isReasoningEffort = (value: unknown): value is ReasoningEffortExtended =>
 	reasoningEffortExtendedSchema.safeParse(value).success

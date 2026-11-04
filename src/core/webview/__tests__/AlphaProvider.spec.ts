@@ -701,13 +701,16 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the v3.2.17 announcement once per installation", async () => {
-		const announcementId = "october-2026-v3.2.17-copilot-models"
+	test("shows the current release announcement once per installation", async () => {
+		const announcementId = "november-2026-v3.2.22-simpler-settings-and-reliable-tools"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
-		await provider.contextProxy.setValue("lastShownAnnouncementId", "october-2026-v3.2.16-reasoning-state")
+		await provider.contextProxy.setValue(
+			"lastShownAnnouncementId",
+			"november-2026-v3.2.21-command-and-history-reliability",
+		)
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
@@ -1471,9 +1474,98 @@ describe("AlphaProvider", () => {
 		expect(mockPostMessage).toHaveBeenCalled()
 	})
 
+	test("launches the new-chat sidebar while saved-history recovery is held", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const startup = provider as unknown as {
+			taskHistoryStoreReady: Promise<void>
+			taskHistoryStoreInitialized: boolean
+		}
+		await startup.taskHistoryStoreReady
+		const ready = startup.taskHistoryStoreReady
+		let finishRecovery!: () => void
+		startup.taskHistoryStoreReady = new Promise<void>((resolve) => (finishRecovery = resolve))
+		startup.taskHistoryStoreInitialized = false
+		mockPostMessage.mockClear()
+		const receive = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+		const launching = receive({ type: "webviewDidLaunch" })
+		try {
+			await vi.waitFor(() => expect(provider.viewLaunched).toBe(true))
+			const initialState = (mockPostMessage.mock.calls as [ExtensionMessage][]).find(
+				([message]) => message.type === "state",
+			)?.[0].state
+			expect(initialState).toMatchObject({ currentView: { type: "newTaskDraft" } })
+			expect(initialState).not.toHaveProperty("taskHistory")
+		} finally {
+			finishRecovery()
+			await launching
+			startup.taskHistoryStoreReady = ready
+			startup.taskHistoryStoreInitialized = true
+		}
+		await vi.waitFor(() =>
+			expect(mockPostMessage).toHaveBeenCalledWith({
+				type: "state",
+				state: expect.objectContaining({ taskHistory: expect.any(Array) }),
+			}),
+		)
+	})
+
+	test("publishes startup history at catalog readiness instead of waiting for task recovery", async () => {
+		await provider.resolveWebviewView(mockWebviewView)
+		const startup = provider as unknown as {
+			taskHistoryMetadataReady: Promise<void>
+			taskHistoryStoreReady: Promise<void>
+			taskHistoryStoreInitialized: boolean
+		}
+		await startup.taskHistoryStoreReady
+		Object.assign(provider, { currentWorkspacePath: "/test/workspace" })
+		const previous = {
+			taskHistoryMetadataReady: startup.taskHistoryMetadataReady,
+			taskHistoryStoreReady: startup.taskHistoryStoreReady,
+			taskHistoryStoreInitialized: startup.taskHistoryStoreInitialized,
+		}
+		const history = [
+			{
+				id: "saved",
+				number: 1,
+				ts: 1,
+				task: "Saved chat",
+				workspace: provider.cwd,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			},
+		]
+		vi.spyOn(provider.taskHistoryStore, "getByWorkspace").mockReturnValue(history)
+		vi.useFakeTimers()
+		const startedAt = Date.now()
+		let firstHistoryAt: number | undefined
+		mockPostMessage.mockClear()
+		mockPostMessage.mockImplementation((message: ExtensionMessage) => {
+			if (message.taskHistory?.length || message.state?.taskHistory?.length) {
+				firstHistoryAt ??= Date.now() - startedAt
+			}
+		})
+		startup.taskHistoryMetadataReady = new Promise<void>((resolve) => setTimeout(resolve, 50))
+		startup.taskHistoryStoreReady = new Promise<void>((resolve) => setTimeout(resolve, 3_000))
+		startup.taskHistoryStoreInitialized = false
+		try {
+			const receive = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
+			await receive({ type: "webviewDidLaunch" })
+			expect(firstHistoryAt).toBeUndefined()
+			await vi.advanceTimersByTimeAsync(3_000)
+			expect(firstHistoryAt, "50ms catalog load followed by 2,950ms task recovery").toBe(50)
+		} finally {
+			startup.taskHistoryMetadataReady = previous.taskHistoryMetadataReady
+			startup.taskHistoryStoreReady = previous.taskHistoryStoreReady
+			startup.taskHistoryStoreInitialized = previous.taskHistoryStoreInitialized
+			vi.useRealTimers()
+		}
+	})
+
 	test.each(["enabled", "disabled", "unset", undefined] as const)(
-		"initializes %s telemetry without assembling a second startup state",
+		"initializes %s telemetry without assembling a second warm-startup state",
 		async (telemetrySetting) => {
+			await (provider as unknown as { taskHistoryStoreReady: Promise<void> }).taskHistoryStoreReady
 			await provider.contextProxy.setValue("telemetrySetting", telemetrySetting)
 			await provider.resolveWebviewView(mockWebviewView)
 			const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
@@ -2142,12 +2234,12 @@ describe("AlphaProvider", () => {
 		expect(webviewState.managedAgentTree).toBe(projection)
 	})
 
-	test("language is set to VSCode language", async () => {
-		// Mock VSCode language as Spanish
+	test("a retired VSCode language falls back to English", async () => {
+		// Keep a retired host locale to verify the English fallback.
 		;(vscode.env as any).language = "pt-BR"
 
 		const state = await provider.getState()
-		expect(state.language).toBe("pt-BR")
+		expect(state.language).toBe("en")
 	})
 
 	test("writeDelayMs defaults to 1000ms", async () => {

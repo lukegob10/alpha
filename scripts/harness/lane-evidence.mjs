@@ -11,6 +11,7 @@ import {
 	readHostReceipts,
 } from "./host-evidence.mjs"
 import { collectOutcomeBuild, OutcomeProofError, readOutcomeProofs } from "./outcome-proof.mjs"
+import { benchmarkVerdict } from "./audit-benchmarks.mjs"
 
 const { rejectSymlinkComponents } = tsRequire("../../apps/vscode-e2e/src/evidence/paths.ts", import.meta.url)
 
@@ -89,6 +90,7 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 	)
 	const commands = lane.commands.map((args, index) => {
 		const descriptor = descriptors[index]
+		if (args.includes("benchmark:author-check")) return [...args, "--output", path.join(directory, "authoring")]
 		if (descriptor?.runner === "vitest")
 			return [
 				...args,
@@ -117,6 +119,10 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 					? path.join(directory, `step-${index}.execution.json`)
 					: undefined,
 			ALPHA_HARNESS_EVIDENCE_DIR: hostDirectories.get(index),
+			ALPHA_HARNESS_BENCHMARK_FILE:
+				descriptors[index]?.runner === "benchmark"
+					? path.join(directory, `step-${index}.benchmark.json`)
+					: undefined,
 		}),
 		verify: async ({ index, args, step }) => {
 			const descriptor = descriptors[index]
@@ -128,6 +134,10 @@ export async function configureLaneEvidence({ lane, name, root, directory, id })
 				}
 			let stage = "test-execution"
 			try {
+				if (descriptor.runner === "benchmark")
+					return benchmarkVerdict(
+						await readExecutionJson(path.join(directory, `step-${index}.benchmark.json`), 1024 * 1024),
+					)
 				if (["node", "vitest"].includes(descriptor.runner)) {
 					const rawFile = path.join(directory, `step-${index}.raw.json`)
 					let failureDiagnostics

@@ -7,11 +7,9 @@ export * from "./anthropic.js"
 export * from "./gemini.js"
 export * from "./xai.js"
 export * from "./openrouter.js"
-export * from "./stellar.js"
 export * from "./vertex.js"
 export * from "./vscode-llm.js"
 
-import { stellarDefaultModelId } from "./stellar.js"
 import { openAiNativeDefaultModelId } from "./openai-native.js"
 import { openAiCodexDefaultModelId } from "./openai-codex.js"
 import { metaDefaultModelId } from "./meta.js"
@@ -33,8 +31,6 @@ export function getProviderDefaultModelId(provider: ProviderName): string {
 	switch (provider) {
 		case "vertex":
 			return vertexDefaultModelId
-		case "stellar":
-			return stellarDefaultModelId
 		case "vscode-lm":
 			return vscodeLlmDefaultModelId
 		case "openai":

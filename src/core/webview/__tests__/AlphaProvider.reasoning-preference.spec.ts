@@ -1,15 +1,18 @@
 import type {
 	ApprovalMode,
+	AgentLifecycleSnapshot,
+	ExtensionMessage,
 	HistoryItem,
 	ProviderSettings,
 	TaskReasoningPreference,
 	TaskReasoningProjection,
 } from "@alpha-code/types"
-import { openAiModelInfoSaneDefaults } from "@alpha-code/types"
+import { openAiModelInfoSaneDefaults, TaskStatus } from "@alpha-code/types"
 
 import { buildApiHandler } from "../../../api"
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
+import { AgentLifecycleProjector } from "../AgentLifecycleProjection"
 import { Task } from "../../task/Task"
 
 const providerTestState = vi.hoisted(() => ({
@@ -314,6 +317,78 @@ describe("AlphaProvider reasoning preference boundaries", () => {
 			canDisable: true,
 		})
 	})
+
+	it.each(["usage", "lifecycle"] as const)(
+		"publishes background %s to an idle draft without resolving reasoning or rebuilding settings",
+		async (trigger) => {
+			const background = Object.assign(fakeTask("background"), {
+				alphaMessages: [],
+				taskStatus: TaskStatus.Running,
+				isTurnActive: () => true,
+				tokenUsage: { totalTokensIn: 120, totalTokensOut: 30, totalCost: 0.01 },
+			})
+			const { provider } = providerHarness([background])
+			const sessions = Reflect.get(provider, "taskSessions") as TaskSessionRegistry
+			sessions.clearFocus()
+			const post = vi.fn(async (_message: ExtensionMessage) => undefined)
+			Object.assign(provider, {
+				currentView: { type: "newTaskDraft" },
+				taskNavigationGeneration: 0,
+				taskStateSeq: 0,
+				agentLifecycleMessageQueue: Promise.resolve(),
+				getHostProviders: () => [provider],
+				getAgentLifecycleDegraded: () => ({}),
+				getAgentLifecycleJournal: async () => ({ getSnapshot: () => undefined }),
+				postMessageToWebview: post,
+				agentLifecycleProjector: new AgentLifecycleProjector({
+					onSnapshotUpdated: (snapshot) => sessions.markLifecycleSnapshot(snapshot.taskId, snapshot),
+				}),
+			})
+			const fullState = vi.spyOn(provider, "getStateToPostToWebview")
+			vi.mocked(buildApiHandler).mockClear()
+
+			if (trigger === "lifecycle") {
+				const snapshot: AgentLifecycleSnapshot = {
+					version: 1,
+					taskId: background.taskId,
+					runId: "background-run",
+					turnId: "background-turn",
+					status: "in_progress",
+					phase: "working",
+					lastSequence: 0,
+					items: [],
+					steps: [],
+					acceptedToolCallIds: [],
+					effectStartedToolCallIds: [],
+					terminalToolCallIds: [],
+					processedEvents: [],
+				}
+				expect((await provider.publishAgentLifecycleSnapshot(snapshot)).accepted).toBe(true)
+			} else {
+				// Token-usage notifications call this shared publication entrypoint.
+				await provider.postTaskSessionStateToWebview()
+			}
+
+			expect(post).toHaveBeenCalledOnce()
+			const message = post.mock.calls[0][0]
+			expect(message).toMatchObject({
+				type: "state",
+				state: {
+					currentView: { type: "newTaskDraft" },
+					taskStateSeq: 1,
+					liveTasksById: { background: { isActive: false, tokensIn: 120, tokensOut: 30 } },
+				},
+			})
+			if (message.type !== "state") throw new Error("Expected compact lifecycle state")
+			// Omission is a partial update; the receiver must retain its acknowledged draft reasoning.
+			expect(message.state).not.toHaveProperty("taskReasoning")
+			expect(message.state).not.toHaveProperty("apiConfiguration")
+			expect(fullState).not.toHaveBeenCalled()
+			expect(provider.getState).not.toHaveBeenCalled()
+			expect(Reflect.get(provider, "getReasoningProjection")).not.toHaveBeenCalled()
+			expect(buildApiHandler).not.toHaveBeenCalled()
+		},
+	)
 
 	it.each([
 		{ provider: "openai-native", efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "medium" },

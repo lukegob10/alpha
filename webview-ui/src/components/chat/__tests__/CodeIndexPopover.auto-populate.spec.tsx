@@ -62,6 +62,54 @@ function renderPopover(
 }
 
 describe("CodeIndexPopover Vertex configuration", () => {
+	it.each([
+		["OpenAI", "openai-native", "codebaseIndexOpenAiApiKey", "text-embedding-3-large"],
+		["OpenRouter", "openrouter", "codebaseIndexOpenRouterApiKey", "qwen/qwen3-embedding-8b"],
+		["Amazon Bedrock", "bedrock", "codebaseIndexBedrockApiKey", "cohere.embed-v4:0"],
+		["OpenAI Compatible", "openai", "codebaseIndexOpenAiCompatibleApiKey", "custom-model"],
+	] as const)(
+		"offers all embedding providers and saves independent %s settings",
+		async (_label, provider, field, model) => {
+			await renderPopover(undefined)
+			fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
+			fireEvent.keyDown(screen.getAllByRole("combobox")[1], { key: "ArrowDown" })
+			expect(await screen.findAllByRole("option")).toHaveLength(6)
+			fireEvent.click(screen.getByRole("option", { name: `settings:codeIndex.embeddingProviders.${provider}` }))
+			fireEvent.input(screen.getByPlaceholderText("settings:codeIndex.embeddingApiKeyPlaceholder"), {
+				target: { value: "index-secret" },
+			})
+			if (provider === "openai") {
+				fireEvent.input(screen.getByPlaceholderText("settings:placeholders.baseUrl"), {
+					target: { value: "https://embeddings.test/v1" },
+				})
+				fireEvent.input(screen.getByPlaceholderText("settings:codeIndex.embeddingModelIdLabel"), {
+					target: { value: model },
+				})
+				fireEvent.input(screen.getByPlaceholderText("settings:codeIndex.embeddingDimensionLabel"), {
+					target: { value: "1024" },
+				})
+			}
+			fireEvent.click(screen.getByRole("button", { name: "settings:codeIndex.saveSettings" }))
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "saveCodeIndexSettingsAtomic",
+				codeIndexSettings: expect.objectContaining({
+					codebaseIndexEmbedderProvider: provider,
+					codebaseIndexEmbedderModelId: model,
+					[field]: "index-secret",
+				}),
+			})
+			const saved = vi
+				.mocked(vscode.postMessage)
+				.mock.calls.find(([message]) => message.type === "saveCodeIndexSettingsAtomic")?.[0].codeIndexSettings
+			expect(saved).not.toHaveProperty("codebaseIndexGeminiApiKey")
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "codeIndexSettingsSaved", success: true } }),
+				)
+			})
+			expect(screen.getByPlaceholderText("settings:codeIndex.savedSecretPlaceholder")).toHaveValue("")
+		},
+	)
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -79,13 +127,13 @@ describe("CodeIndexPopover Vertex configuration", () => {
 		}
 	})
 
-	it("offers only Vertex embedding settings and populates them from active Vertex chat settings", async () => {
+	it("populates only standard Google Cloud fields from active Vertex chat settings", async () => {
 		await renderPopover({
 			apiProvider: "vertex",
 			projectId: "index-project",
 			location: "global",
 			gatewayBaseUrl: "https://gateway.example.com/vertex",
-			helixCommand: "helix auth access-token print -a",
+			helixCommand: "company-auth print-token",
 		})
 
 		fireEvent.click(await screen.findByRole("button", { name: "settings:codeIndex.setupConfigLabel" }))
@@ -94,10 +142,10 @@ describe("CodeIndexPopover Vertex configuration", () => {
 		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
 
 		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("index-project")
-		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveValue(
-			"https://gateway.example.com/vertex",
-		)
-		expect(screen.getByPlaceholderText("helix auth access-token print -a")).toBeInTheDocument()
+		expect(screen.queryByPlaceholderText("settings:placeholders.baseUrl")).not.toBeInTheDocument()
+		expect(
+			screen.queryByPlaceholderText("settings:providers.vertexGatewayCommandPlaceholder"),
+		).not.toBeInTheDocument()
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestCodeIndexSecretStatus" })
 	})
@@ -114,7 +162,10 @@ describe("CodeIndexPopover Vertex configuration", () => {
 		fireEvent.click(await screen.findByRole("option", { name: "settings:codeIndex.vertexProvider" }))
 
 		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("")
-		expect(screen.getByPlaceholderText("settings:placeholders.baseUrl")).toHaveValue("")
+		expect(screen.queryByPlaceholderText("settings:placeholders.baseUrl")).not.toBeInTheDocument()
+		expect(
+			screen.queryByPlaceholderText("settings:providers.vertexGatewayCommandPlaceholder"),
+		).not.toBeInTheDocument()
 	})
 
 	it("clears a legacy embedding dimension when migrating to Vertex", async () => {

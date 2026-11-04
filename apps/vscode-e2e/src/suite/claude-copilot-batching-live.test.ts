@@ -12,7 +12,7 @@ suite("Live Claude independent command batching", function () {
 
 	test("records three identical workloads through the actual selected Copilot model", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot")
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.match(process.env.ALPHA_E2E_ACTUAL_MODEL_FAMILY ?? "", /^claude-/i)
 		const samples: Array<{
 			taskId: string

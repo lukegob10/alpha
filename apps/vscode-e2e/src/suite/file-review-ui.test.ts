@@ -26,7 +26,7 @@ const observedTasks = new WeakMap<object, ReviewTask>()
 
 function textDiffs(input: unknown): readonly vscode.TabInputTextDiff[] {
 	if (input instanceof vscode.TabInputTextDiff) return [input]
-	// Exact-host tab projection: VS Code 1.138.0 exposes multi-diff resources as textDiffs on an unknown input.
+	// Exact-host tab projection: VS Code 1.141.0 exposes multi-diff resources as textDiffs on an unknown input.
 	if (
 		input &&
 		typeof input === "object" &&
@@ -80,7 +80,7 @@ suite("Rendered file review", function () {
 	this.timeout(180_000)
 	test("opens the persisted command change from the activity trace and file panel", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
@@ -116,9 +116,10 @@ suite("Rendered file review", function () {
 		}
 		const assertSnapshot = async (diff: vscode.TabInputTextDiff, snapshot: (typeof snapshots)[number]) => {
 			assert.equal(diff.original.scheme, "alpha-diff")
+			assert.equal(diff.original.path, diff.modified.path)
 			assert.equal(diff.modified.scheme, "alpha-diff")
-			assert.ok(diff.original.path.endsWith(`/${snapshot.fileName}/before`))
-			assert.ok(diff.modified.path.endsWith(`/${snapshot.fileName}/after`))
+			assert.ok(diff.original.path.endsWith(`/${snapshot.fileName}`))
+			assert.ok(diff.modified.path.endsWith(`/${snapshot.fileName}`))
 			assert.equal((await vscode.workspace.openTextDocument(diff.original)).getText(), snapshot.originalContent)
 			assert.equal((await vscode.workspace.openTextDocument(diff.modified)).getText(), snapshot.finalContent)
 		}
@@ -217,10 +218,11 @@ suite("Rendered file review", function () {
 			const diffs = textDiffs(multiTab.input)
 			assert.equal(diffs.length, snapshots.length)
 			for (const snapshot of snapshots) {
-				const diff = diffs.find((candidate) => candidate.modified.path.endsWith(`/${snapshot.fileName}/after`))
+				const diff = diffs.find((candidate) => candidate.modified.path.endsWith(`/${snapshot.fileName}`))
 				assert.ok(diff, `Review must include ${snapshot.fileName}`)
 				await assertSnapshot(diff, snapshot)
 			}
+			await uiFixtureBarrier("file-review-controls", { version: vscode.version })
 			await closeOwnedTabs()
 
 			const requested = snapshots[1]!
@@ -231,7 +233,7 @@ suite("Rendered file review", function () {
 						ownsTab(tab) &&
 						tab.label === `Alpha Diff: ${requested.fileName}` &&
 						tab.input instanceof vscode.TabInputTextDiff &&
-						tab.input.modified.path.endsWith(`/${requested.fileName}/after`),
+						tab.input.modified.path.endsWith(`/${requested.fileName}`),
 				)
 			await waitFor(() => fileTab() !== undefined, {
 				description: "new native diff for the requested middle file",

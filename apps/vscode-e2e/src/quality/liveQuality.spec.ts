@@ -8,6 +8,9 @@ import {
 	scoreStepEfficiency,
 	scoreToolCorrectness,
 	visibleAnswer,
+	qualityDigest,
+	qualityConfigurationDigest,
+	qualityWorkCounters,
 	type QualityCall,
 	type QualityCase,
 	type QualityObservation,
@@ -309,12 +312,198 @@ test("transformed command output cannot manufacture grounding for an unread defi
 		)
 })
 
-test("each case can be passed by a minimal retrieval and does not leak the answer into the prompt", () => {
+test("the tiny real edit is judged by final contents, including the unchanged companion", () => {
+	const spec = LIVE_QUALITY_CASES.find((item) => item.expectedFiles)!
+	const observation = {
+		answer: "Updated the label.",
+		calls: [call("apply_patch", "applied")],
+		finalFiles: spec.expectedFiles,
+	}
+	assert.equal(scoreQuality(spec, observation).passed, true)
+	assert.equal(scoreQuality(spec, { ...observation, finalFiles: spec.files }).passed, false)
+	assert.equal(
+		scoreQuality(spec, {
+			...observation,
+			finalFiles: { ...spec.expectedFiles, [Object.keys(spec.expectedFiles!)[1]!]: "changed" },
+		}).passed,
+		false,
+	)
+})
+
+test("a permitted shell edit earns correctness from final files rather than a prescribed editing tool", () => {
+	const spec = LIVE_QUALITY_CASES.find((item) => item.expectedFiles)!
+	const observation = {
+		answer: "Updated the label.",
+		calls: [{ name: "exec_command", input: { cmd: "node update-label.cjs" }, result: "updated", isError: false }],
+		finalFiles: spec.expectedFiles,
+	}
+	assert.equal(scoreQuality(spec, observation).correctnessPassed, true)
+	assert.equal(scoreQuality(spec, observation).passed, true)
+	assert.equal(scoreQuality(spec, { ...observation, finalFiles: spec.files }).correctnessPassed, false)
+})
+
+test("ordinary read tools and shell readers can establish the same source evidence", () => {
+	const spec = LIVE_QUALITY_CASES[0]!
+	for (const cmd of [
+		`cat ${spec.sourcePath}`,
+		`Get-Content -LiteralPath ${spec.sourcePath}`,
+		`type ${spec.sourcePath}`,
+	])
+		assert.equal(
+			scoreQuality(spec, {
+				answer: spec.expected,
+				calls: [{ name: "exec_command", input: { cmd }, result: spec.files[spec.sourcePath]!, isError: false }],
+			}).passed,
+			true,
+		)
+	assert.equal(
+		scoreQuality(spec, {
+			answer: spec.expected,
+			calls: [call("read_file", spec.files[spec.sourcePath]!, false, spec.sourcePath)],
+		}).passed,
+		true,
+	)
+	assert.equal(
+		scoreQuality(spec, {
+			answer: spec.expected,
+			calls: [
+				{
+					name: "search_files",
+					input: { path: "live-quality/supported-total" },
+					result: `${spec.sourcePath}:1:${spec.evidence}`,
+					isError: false,
+				},
+			],
+		}).passed,
+		true,
+	)
+	assert.equal(
+		scoreQuality(spec, {
+			answer: spec.expected,
+			calls: [
+				{
+					name: "search_files",
+					input: { path: "live-quality/supported-total" },
+					result: `other.cjs:1:${spec.evidence}`,
+					isError: false,
+				},
+			],
+		}).passed,
+		false,
+	)
+})
+
+test("reissued checks are measured without treating one post-edit validation as repetition", () => {
+	const check = {
+		name: "exec_command",
+		input: { cmd: "pnpm test", workdir: "fixture" },
+		result: "passed",
+		isError: false,
+	}
+	assert.deepEqual(qualityWorkCounters([check, check]), {
+		toolCalls: 2,
+		commandCount: 2,
+		repeatedCommands: 1,
+		repeatedChecks: 1,
+	})
+	assert.deepEqual(qualityWorkCounters([check, call("apply_patch", "applied"), check]), {
+		toolCalls: 3,
+		commandCount: 2,
+		repeatedCommands: 0,
+		repeatedChecks: 0,
+	})
+	assert.equal(qualityWorkCounters([check, call("apply_patch", "failed", true), check]).repeatedChecks, 1)
+})
+
+test("correct but wasteful candidates retain separate correctness evidence for before/after cost comparison", () => {
+	const spec = LIVE_QUALITY_CASES[0]!
+	const read = commandRead(spec.sourcePath, spec.files[spec.sourcePath]!)
+	const report = scoreQuality(spec, { answer: spec.expected, calls: Array(6).fill(read) })
+	assert.equal(report.passed, false)
+	assert.equal(report.correctnessPassed, true)
+	assert.equal(report.scores.find((item) => item.name === "step_efficiency")!.passed, false)
+})
+
+test("settings identity is stable across key ordering and does not depend on credential values", () => {
+	assert.equal(
+		qualityDigest({ apiProvider: "route", apiKey: "one", config: { effort: "high", password: "a" } }),
+		qualityDigest({ config: { password: "b", effort: "high" }, apiKey: "two", apiProvider: "route" }),
+	)
+	assert.notEqual(qualityDigest({ model: "one" }), qualityDigest({ model: "two" }))
+})
+
+test("configuration identity ignores changing task history, UI markers and provider profile bookkeeping", () => {
+	const settings = {
+		apiProvider: "openai",
+		openAiModelId: "chosen",
+		openAiBaseUrl: "https://endpoint.example/v1",
+		reasoningEffort: "high",
+		customInstructions: "Keep the requested scope.",
+	}
+	const before = qualityConfigurationDigest({
+		...settings,
+		taskHistory: [{ id: "old" }],
+		currentApiConfigName: "Old profile",
+		listApiConfigMeta: [{ id: "old", name: "Old" }],
+		lastShownAnnouncementId: "old",
+		id: "old",
+		name: "Old",
+	})
+	const after = qualityConfigurationDigest({
+		...settings,
+		taskHistory: [{ id: "new" }, { id: "old" }],
+		currentApiConfigName: "Cloned profile",
+		listApiConfigMeta: [{ id: "clone", name: "Cloned" }],
+		lastShownAnnouncementId: "new",
+		id: "clone",
+		name: "Cloned",
+		historyPreviewCollapsed: true,
+	})
+	assert.equal(before, after)
+	assert.equal(before, qualityConfigurationDigest(settings))
+})
+
+test("configuration identity retains provider route, generation, instructions, reasoning and execution policy", () => {
+	const settings = {
+		apiProvider: "openai",
+		openAiModelId: "chosen",
+		openAiBaseUrl: "https://endpoint.example/v1",
+		modelTemperature: 0.2,
+		enableReasoningEffort: true,
+		reasoningEffort: "high",
+		customInstructions: "Keep the requested scope.",
+	}
+	const baseline = qualityConfigurationDigest(settings)
+	for (const changed of [
+		{ apiProvider: "openai-native" },
+		{ openAiModelId: "other" },
+		{ openAiBaseUrl: "https://other.example/v1" },
+		{ modelTemperature: 0.7 },
+		{ modelMaxTokens: 8192 },
+		{ customInstructions: "Inspect related work." },
+		{ reasoningEffort: "low" },
+		{ enableReasoningEffort: false },
+		{ newTaskReasoningPreference: { kind: "effort", effort: "high" } },
+		{ deniedCommands: ["git"] },
+		{ memorySettings: { enabled: true } },
+	])
+		assert.notEqual(qualityConfigurationDigest({ ...settings, ...changed }), baseline)
+	assert.equal(
+		qualityConfigurationDigest({ ...settings, openAiApiKey: "first-secret" }),
+		qualityConfigurationDigest({ ...settings, openAiApiKey: "second-secret" }),
+	)
+	assert.match(baseline, /^[a-f0-9]{64}$/)
+	assert.equal(JSON.stringify({ configurationDigest: baseline }).includes("first-secret"), false)
+})
+
+test("read cases allow equivalent retrieval, prescribe no commands and do not leak the answer", () => {
 	const seen = new Set<string>()
 	for (const item of LIVE_QUALITY_CASES) {
 		assert.equal(seen.has(item.id), false)
 		seen.add(item.id)
-		assert.deepEqual(item.tools, ["exec_command"], `${item.id} must expose the current read entry point`)
+		assert.equal(/\b(?:rg|exec_command|read_file|apply_patch)\b/.test(`${item.prompt}\n${item.scope}`), false)
+		if (item.expectedFiles) continue
+		assert.deepEqual(item.tools, ["exec_command", "read_file", "search_files"])
 		assert.ok(item.evidence.length > 0)
 		assert.ok(item.maxSteps >= item.milestones.length)
 		const body = Object.values(item.files).join("\n")

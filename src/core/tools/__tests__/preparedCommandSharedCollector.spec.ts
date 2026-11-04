@@ -1571,6 +1571,7 @@ describe("prepared commands through the shared collector", () => {
 					return undefined
 				})
 				await process.write("2:needle background I/O barrier\n")
+				await vi.advanceTimersByTimeAsync(150)
 				await entered.promise
 				if (ownership === "revoked") {
 					current.lifetime.abort()

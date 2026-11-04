@@ -246,7 +246,8 @@ describe("agent lifecycle tools", () => {
 	})
 
 	it.each([
-		[{ timedOut: false, interrupted: true, reason: "steered_input" }, "cancelled"],
+		[{ timedOut: false, interrupted: true, reason: "steered_input" }, "success"],
+		[{ timedOut: false, interrupted: true, reason: "cancelled" }, "cancelled"],
 		[{ timedOut: false, cancelled: true, events: [] }, "cancelled"],
 		[{ timedOut: true, events: [] }, "success"],
 	] as const)("keeps wait termination outcome %j distinct in its result", async (outcome, status) => {
@@ -257,16 +258,16 @@ describe("agent lifecycle tools", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith(expect.objectContaining({ status }))
 	})
 
-	it("presents a steered wait with the existing cancellation state", async () => {
+	it("completes a steered wait successfully without presenting it as cancellation", async () => {
 		const { provider, task, say, callbacks } = harness()
 		provider.waitForAgent.mockResolvedValueOnce({ timedOut: false, interrupted: true, reason: "steered_input" })
 
 		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
 
-		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "cancelled" })
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success", waitOutcome: "active" })
 		expect(JSON.parse(say.mock.calls[1][1] as string)).toMatchObject({
 			lifecycleStatus: "completed",
-			cancelled: true,
+			cancelled: false,
 			timedOut: false,
 		})
 	})
@@ -307,7 +308,7 @@ describe("agent lifecycle tools", () => {
 		const { provider, task, callbacks, pushToolResult } = harness()
 
 		await sendMessageTool.execute({ target: "/root/Review", message: "Check this." }, task, callbacks)
-		await reportProgressTool.execute({ message: "x".repeat(2_001) }, task, callbacks)
+		await reportProgressTool.execute({ message: "x".repeat(32_769) }, task, callbacks)
 		await waitAgentTool.execute({ timeout_ms: 3_600_001 }, task, callbacks)
 		await waitAgentTool.execute({ target: "/root/review" }, task, callbacks)
 
@@ -316,7 +317,7 @@ describe("agent lifecycle tools", () => {
 		expect(provider.waitForAgent).not.toHaveBeenCalled()
 		expect(task.recordToolError).toHaveBeenCalledTimes(4)
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("canonical agent path"))
-		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("2,000 characters"))
+		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("32,768 characters"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("timeout_ms"))
 		expect(pushToolResult).toHaveBeenCalledWith(expect.stringContaining("until_terminal"))
 		expect(task.didToolFailInCurrentTurn).toBe(true)

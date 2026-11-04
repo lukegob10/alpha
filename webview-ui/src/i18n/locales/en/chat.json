@@ -47,6 +47,15 @@
 		"finished": "Finished"
 	},
 	"subagentRow": {
+		"inheritedPermissions": "Parent-managed sub-agent · inherited permissions",
+		"reasoning": {
+			"effort": "Reasoning: {{effort}}",
+			"off": "Reasoning: off",
+			"on": "Reasoning: on",
+			"default": "Reasoning: default",
+			"custom": "Reasoning: {{value}}",
+			"unknown": "Reasoning: unknown"
+		},
 		"open": "Open {{name}}",
 		"taskUnavailable": "{{name}} task unavailable",
 		"attention": {
@@ -256,16 +265,11 @@
 	"selectApiConfig": "Select API configuration",
 	"lockApiConfigAcrossModes": "Lock API configuration across all modes in this workspace",
 	"unlockApiConfigAcrossModes": "API configuration is locked across all modes in this workspace (click to unlock)",
-	"enhancePrompt": "Enhance prompt with additional context",
 	"modeSelector": {
-		"title": "Modes",
-		"marketplace": "Mode Marketplace",
-		"settings": "Mode Settings",
 		"description": "Specialized personas that tailor Alpha's behavior.",
 		"searchPlaceholder": "Search modes...",
 		"noResults": "No results found"
 	},
-	"enhancePromptDescription": "The 'Enhance Prompt' button helps improve your prompt by providing additional context, clarification, or rephrasing. Try typing a prompt in here and clicking the button again to see how it works.",
 	"addImages": "Add images to message",
 	"sendMessage": "Send message",
 	"pressToSend": "Press {{keyCombination}} to send",
@@ -275,9 +279,6 @@
 	"typeTask": "What should I work on?",
 	"composer": {
 		"settings": "Composer settings",
-		"draftActions": "Draft actions",
-		"improvePrompt": "Improve prompt",
-		"cancelImprovePrompt": "Cancel prompt improvement",
 		"help": "@ context · Shift+Enter for a new line",
 		"helpSend": "@ context · {{keyCombination}} to send",
 		"mode": "Mode",
@@ -554,11 +555,11 @@
 		},
 		"release": {
 			"heading": "Welcome:",
-			"welcome": "Alpha v{{version}} expands GitHub Copilot model choices and preserves reasoning settings.",
-			"taskContinuity": "Keep the resolved reasoning level visible throughout a chat.",
-			"toolsAndProviders": "Choose Grok 4.6, Grok 4.7, and Claude Haiku 5.5 in GitHub Copilot.",
-			"delegation": "Use each model's supported reasoning levels for delegated work.",
-			"workspaceExperience": "Select the full GPT-5.6 family, GPT-6 Astra, Luna and Sol, and GPT-6.1 Terra and Sol."
+			"welcome": "Alpha v{{version}} simplifies settings, skill access, and file review.",
+			"taskContinuity": "Keep parallel reads moving with ordered approvals and reliable task recovery.",
+			"toolsAndProviders": "Call skills with /skill-name without a separate command setup.",
+			"delegation": "Work in Code or Plan with a focused English interface.",
+			"workspaceExperience": "Review changes in VS Code and configure more embedding models for code search."
 		}
 	},
 	"crossTasks": {
@@ -700,26 +701,6 @@
 	"command": {
 		"triggerDescription": "Trigger the {{name}} command"
 	},
-	"slashCommands": {
-		"tooltip": "Manage slash commands",
-		"title": "Slash Commands",
-		"description": "Use built-in slash commands or create custom ones for quick access to frequently used prompts and workflows. <DocsLink>Docs</DocsLink>",
-		"manageCommands": "Manage slash commands in settings",
-		"builtInCommands": "Built-in Commands",
-		"globalCommands": "Global Commands",
-		"workspaceCommands": "Workspace Commands",
-		"globalCommand": "Global command",
-		"editCommand": "Edit command",
-		"deleteCommand": "Delete command",
-		"newGlobalCommandPlaceholder": "New global command...",
-		"newWorkspaceCommandPlaceholder": "New workspace command...",
-		"deleteDialog": {
-			"title": "Delete Command",
-			"description": "Are you sure you want to delete the command \"{{name}}\"? This action cannot be undone.",
-			"cancel": "Cancel",
-			"confirm": "Delete"
-		}
-	},
 	"slashCommand": {
 		"wantsToRun": "Alpha wants to run a slash command",
 		"didRun": "Alpha ran a slash command"
@@ -822,11 +803,16 @@
 	},
 	"retiredProvider": {
 		"title": "Provider no longer supported",
-		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, Stellar, or OpenAI Compatible in Settings.",
+		"message": "This saved provider is no longer supported. Select GCP Vertex AI, VS Code LM API, or OpenAI Compatible in Settings.",
 		"openSettings": "Open Settings"
 	},
 	"transcript": {
 		"loadOlder": "Load older messages",
 		"loadAll": "Load all messages"
+	},
+	"slashSkills": {
+		"title": "Skills",
+		"description": "Type / followed by a skill name to use its instructions and workflow.",
+		"manageSkills": "Manage skills in settings"
 	}
 }

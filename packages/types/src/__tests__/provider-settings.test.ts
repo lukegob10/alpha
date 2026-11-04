@@ -13,7 +13,6 @@ import {
 	providerSettingsEntrySchema,
 } from "../provider-settings.js"
 import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS } from "../global-settings.js"
-import { stellarDefaultModelId } from "../providers/stellar.js"
 import { getProviderDefaultModelId } from "../providers/index.js"
 
 describe("supported provider settings", () => {
@@ -47,7 +46,6 @@ describe("supported provider settings", () => {
 		expect(providerNames).toEqual([
 			"vertex",
 			"vscode-lm",
-			"stellar",
 			"openai",
 			"openai-native",
 			"openai-codex",
@@ -60,7 +58,6 @@ describe("supported provider settings", () => {
 		])
 		expect(Object.keys(MODELS_BY_PROVIDER)).toEqual([
 			"vertex",
-			"stellar",
 			"vscode-lm",
 			"openai-native",
 			"openai-codex",
@@ -140,32 +137,6 @@ describe("supported provider settings", () => {
 		)
 	})
 
-	it("retains Stellar connection and Helix settings in provider profiles", () => {
-		const parsed = providerSettingsSchemaDiscriminated.parse({
-			apiProvider: "stellar",
-			apiModelId: stellarDefaultModelId,
-			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
-			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
-			stellarHelixCommand: "helix auth access-token print -a",
-			stellarHelixParseMode: "json_field",
-			stellarHelixTokenKey: "token.value",
-			stellarTokenRefreshMinutes: 15,
-			stellarStreamingEnabled: false,
-		})
-
-		expect(parsed).toMatchObject({
-			apiProvider: "stellar",
-			apiModelId: stellarDefaultModelId,
-			stellarBaseUrl: "https://gateway.example.com/stellar/v1",
-			stellarPemCaBundlePath: "C:\\certs\\corp.pem",
-			stellarHelixCommand: "helix auth access-token print -a",
-			stellarHelixParseMode: "json_field",
-			stellarHelixTokenKey: "token.value",
-			stellarTokenRefreshMinutes: 15,
-			stellarStreamingEnabled: false,
-		})
-	})
-
 	it("accepts an internal fake-ai profile only through the discriminated harness schema", () => {
 		expect(
 			providerSettingsSchemaDiscriminated.parse({ apiProvider: "fake-ai", fakeAi: { id: "fixture" } }),
@@ -214,7 +185,6 @@ describe("getApiProtocol", () => {
 	it("uses OpenAI semantics for all other approved providers and missing settings", () => {
 		expect(getApiProtocol("openrouter", "anthropic/claude-sonnet-5")).toBe("openai")
 		expect(getApiProtocol("openai", "claude-3-sonnet")).toBe("openai")
-		expect(getApiProtocol("stellar", "Meta-Llama-3.3-70B-Instruct")).toBe("openai")
 		expect(getApiProtocol("vscode-lm")).toBe("openai")
 		expect(getApiProtocol(undefined, "claude-3-opus")).toBe("openai")
 	})

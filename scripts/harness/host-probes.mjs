@@ -35,7 +35,7 @@ export function probeHostReceipt(result, testFile, startedAt, completedAt) {
 		testFile,
 		startedAt,
 		completedAt,
-		requestedHostVersion: "1.138.0",
+		requestedHostVersion: "1.141.0",
 		actualHostVersion: result.actualVSCodeVersion,
 		retentionStatus: result.retention?.status,
 		profile: {
@@ -73,7 +73,7 @@ export async function runHostProbes(mode, { directory, executable, signal }, dep
 			const startedAt = new Date().toISOString()
 			const result = await dependencies.runExtensionTests({
 				providerMode: "scripted",
-				vscodeVersion: "1.138.0",
+				vscodeVersion: "1.141.0",
 				vscodeExecutablePath: executable,
 				testFile: scenario.testFile,
 				requireAllTests: true,
@@ -99,7 +99,7 @@ async function main(args) {
 	const require = createRequire(path.join(root, "apps/vscode-e2e/package.json"))
 	const drivers = loadHostProbeDrivers(root, require)
 	const { downloadAndUnzipVSCode } = require("@vscode/test-electron")
-	const executable = await downloadAndUnzipVSCode({ version: "1.138.0" })
+	const executable = await downloadAndUnzipVSCode({ version: "1.141.0" })
 	const temporaryRoot = await realpath(process.env.RUNNER_TEMP || os.tmpdir())
 	const directory = await mkdtemp(path.join(temporaryRoot, "alpha-harness-host-probes-"))
 	const abort = new AbortController()

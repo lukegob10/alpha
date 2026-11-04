@@ -1,3 +1,8 @@
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
+import * as os from "node:os"
+import * as path from "node:path"
+
 import type {
 	AgentControlState,
 	HistoryItem,
@@ -13,10 +18,31 @@ import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/
 import { AsyncSubagentRunManager } from "../../agent/AsyncSubagentRunManager"
 import { BoundedDelegationManager, type InternalTaskRunner } from "../../agent/BoundedDelegationManager"
 import { SubagentNicknameRegistry } from "../../agent/SubagentNicknameRegistry"
+import type { AgentLifecycleJournal } from "../../agent/lifecycle/AgentLifecycleJournal"
+
+const fixtures: Array<{
+	storagePath: string
+	store: AgentControlStore
+	journals: Map<string, Promise<AgentLifecycleJournal>>
+}> = []
+
+afterEach(async () => {
+	for (const fixture of fixtures.splice(0)) {
+		await fixture.store.shutdown()
+		await Promise.all([...fixture.journals.values()].map(async (journal) => (await journal).close()))
+		const relative = path.relative(os.tmpdir(), fixture.storagePath)
+		if (path.isAbsolute(relative) || relative.startsWith("..") || !relative.startsWith("alpha-closed-budget-")) {
+			throw new Error("Refusing to remove a fixture path outside its temporary root")
+		}
+		await rm(fixture.storagePath, { recursive: true, force: true })
+	}
+})
 
 // Same real provider/ledger/run-manager boundary as the delegation durability audit.
 // The runner is deterministic; child history deletion uses the public provider path.
 const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?: AgentControlState) => {
+	const storagePath = mkdtempSync(path.join(os.tmpdir(), "alpha-closed-budget-"))
+	const journals = new Map<string, Promise<AgentLifecycleJournal>>()
 	const persistence = new InMemoryAgentControlPersistence(storedState)
 	const store = new AgentControlStore(persistence)
 	const ready = store.initialize()
@@ -65,7 +91,7 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 	const runs = new AsyncSubagentRunManager(bounded)
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		agentControlStoreLoadedAt: Date.now(),
-		contextProxy: { getValues: () => settings },
+		contextProxy: { getValues: () => settings, globalStorageUri: { fsPath: storagePath } },
 		providerSettingsManager: {
 			getProfile: vi.fn(async () => {
 				throw new Error("Profile not found")
@@ -97,7 +123,7 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		agentFollowupAdmissions: new Map(),
 		subagentRunFinalizations: new Map(),
 		subagentResidencyEvictions: new Map(),
-		agentLifecycleJournals: new Map(),
+		agentLifecycleJournals: journals,
 		agentLifecycleProjector: { clear: vi.fn() },
 		agentLifecycleDegradedSignals: new Map(),
 		publishedTaskTranscriptRevisions: new Map(),
@@ -116,6 +142,7 @@ const makeHarness = (settings: SubagentOrchestrationSettings = {}, storedState?:
 		postTaskSessionStateToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	}) as AlphaProvider
+	fixtures.push({ storagePath, store, journals })
 	return { provider, persistence, store, history, parent, parentAbort, runs, ready }
 }
 

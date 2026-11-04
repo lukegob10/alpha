@@ -3,6 +3,8 @@ import nock from "nock"
 import { OpenAiCodexHandler } from "../openai-codex"
 import { getNativeTools } from "../../../core/prompts/tools/native-tools"
 import { NativeToolCallParser } from "../../../core/assistant-message/NativeToolCallParser"
+import { AgentResponseAccumulator } from "../../../core/agent/AgentResponseAccumulator"
+import type { ApiStreamChunk } from "../../transform/stream"
 
 vi.mock("../../../services/chatgpt/ChatGptAuthService", () => ({
 	ChatGptAuthService: {
@@ -18,6 +20,186 @@ const profileSelectionTools = () =>
 	getNativeTools().filter(
 		(tool) => tool.type === "function" && ["list_provider_profiles", "spawn_agent"].includes(tool.function.name),
 	)
+
+it.each(["omitted", "empty", "compact", "conflicting"] as const)(
+	"preserves streamed ticket calls when the terminal output is %s",
+	async (shape) => {
+		const reasoning = {
+			type: "reasoning",
+			id: "rs_ticket_fixture",
+			encrypted_content: "opaque-ticket-fixture",
+			summary: [{ type: "summary_text", text: "Preparing test tickets." }],
+		}
+		const commentary = {
+			type: "message",
+			id: "msg_ticket_fixture",
+			role: "assistant",
+			status: "completed",
+			phase: "commentary",
+			content: [{ type: "output_text", text: "Creating test tickets.", annotations: [] }],
+		}
+		const args = { name: "Synthetic ticket", type: "testing", description: "Disposable fixture content." }
+		const call = {
+			type: "function_call",
+			id: "fc_ticket_fixture",
+			call_id: "call_ticket_fixture",
+			namespace: "alpha",
+			name: "create_ticket",
+			arguments: JSON.stringify(args),
+			status: "completed",
+		}
+		const terminalOutput =
+			shape === "empty"
+				? []
+				: shape === "compact"
+					? [call]
+					: [
+							reasoning,
+							commentary,
+							{ ...call, call_id: "call_replaced_fixture", name: "delete_ticket", arguments: "{}" },
+						]
+		const events = [
+			{ type: "response.output_item.done", output_index: 0, item: reasoning },
+			{ type: "response.output_item.added", output_index: 1, item: { ...commentary, content: [] } },
+			{
+				type: "response.output_text.delta",
+				output_index: 1,
+				item_id: commentary.id,
+				content_index: 0,
+				delta: "Creating test tickets.",
+			},
+			{ type: "response.output_item.done", output_index: 1, item: commentary },
+			{ type: "response.output_item.added", output_index: 2, item: { ...call, arguments: "" } },
+			{ type: "response.function_call_arguments.delta", output_index: 2, delta: call.arguments },
+			{ type: "response.output_item.done", output_index: 2, item: call },
+			{
+				type: "response.completed",
+				response: {
+					id: "resp_ticket_fixture",
+					status: "completed",
+					end_turn: false,
+					usage: { input_tokens: 27, output_tokens: 11 },
+					...(shape === "omitted" ? {} : { output: terminalOutput }),
+				},
+			},
+		]
+		const scope = nock("https://api.openai.com", { reqheaders: { authorization: "Bearer alpha-oauth-token" } })
+			.post("/v1/responses")
+			.reply(200, events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+				"Content-Type": "text/event-stream",
+			})
+		const handler = new OpenAiCodexHandler({ apiModelId: "gpt-6.1-sol" })
+		const accumulator = new AgentResponseAccumulator()
+		const chunks: ApiStreamChunk[] = []
+		for await (const chunk of handler.createMessage("Instructions", [
+			{ role: "user", content: "Create test tickets." },
+		])) {
+			chunks.push(chunk)
+			await accumulator.add(chunk)
+		}
+		const canonical = await accumulator.finish()
+		expect(canonical.text).toBe("Creating test tickets.")
+		expect(canonical.items.filter((item) => item.type === "tool_call")).toEqual([
+			{
+				type: "tool_call",
+				id: call.call_id,
+				name: call.name,
+				arguments: args,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-codex",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: call.id,
+					status: call.status,
+					namespace: call.namespace,
+				},
+			},
+		])
+		expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
+			{
+				type: "tool_call_end",
+				id: call.call_id,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai-codex",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: call.id,
+					status: call.status,
+					namespace: call.namespace,
+				},
+			},
+		])
+		expect(chunks.filter((chunk) => chunk.type === "reasoning" && chunk.encryptedContent)).toHaveLength(1)
+		expect(handler.getReasoningItems()).toEqual([
+			{ id: reasoning.id, encrypted_content: reasoning.encrypted_content, summary: reasoning.summary },
+		])
+		expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+			expect.objectContaining({ inputTokens: 27, outputTokens: 11 }),
+		])
+		expect(canonical.outcome).toMatchObject({ status: "completed", requiresContinuation: true })
+		expect(scope.isDone()).toBe(true)
+	},
+)
+
+it.each([false, true])(
+	"does not complete an unfinished ticket call from terminal replay (prior receipt=%s)",
+	async (priorReceipt) => {
+		const commentary = {
+			type: "message",
+			id: "msg_unfinished_fixture",
+			role: "assistant",
+			status: "completed",
+			content: [{ type: "output_text", text: "Creating test tickets.", annotations: [] }],
+		}
+		const call = {
+			type: "function_call",
+			id: "fc_unfinished_fixture",
+			call_id: "call_unfinished_fixture",
+			namespace: "alpha",
+			name: "create_ticket",
+			arguments: JSON.stringify({ name: "Synthetic ticket" }),
+			status: "completed",
+		}
+		const outputIndex = priorReceipt ? 1 : 0
+		const events = [
+			...(priorReceipt ? [{ type: "response.output_item.done", output_index: 0, item: commentary }] : []),
+			{
+				type: "response.output_item.added",
+				output_index: outputIndex,
+				item: { ...call, arguments: "", status: "in_progress" },
+			},
+			{ type: "response.function_call_arguments.delta", output_index: outputIndex, delta: call.arguments },
+			{
+				type: "response.completed",
+				response: {
+					id: "resp_unfinished_fixture",
+					status: "completed",
+					output: priorReceipt ? [commentary, call] : [call],
+					usage: { input_tokens: 17, output_tokens: 7 },
+				},
+			},
+		]
+		const scope = nock("https://api.openai.com", { reqheaders: { authorization: "Bearer alpha-oauth-token" } })
+			.post("/v1/responses")
+			.reply(200, events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(""), {
+				"Content-Type": "text/event-stream",
+			})
+		const chunks: ApiStreamChunk[] = []
+		await expect(
+			(async () => {
+				for await (const chunk of new OpenAiCodexHandler({ apiModelId: "gpt-6.1-sol" }).createMessage(
+					"Instructions",
+					[{ role: "user", content: "Create test tickets." }],
+				))
+					chunks.push(chunk)
+			})(),
+		).rejects.toThrow("OpenAI Responses completed before its streamed tool call was complete")
+		expect(chunks.some((chunk) => chunk.type === "tool_call_end")).toBe(false)
+		expect(scope.isDone()).toBe(true)
+	},
+)
 
 it.each(["task", "auxiliary"] as const)(
 	"sends app-owned %s requests without ambient API account headers through the actual SDK",

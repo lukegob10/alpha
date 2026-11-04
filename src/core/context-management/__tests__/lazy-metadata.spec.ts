@@ -146,7 +146,7 @@ describe("context management tool metadata admission", () => {
 		expect(JSON.stringify(countTokens.mock.calls[0][0])).toContain("read_file")
 	})
 
-	it("reuses prepared metadata when over-limit retained input falls back to truncation", async () => {
+	it("reuses prepared metadata when failed compaction preserves over-limit input", async () => {
 		const { options, prepareTools, countTokens } = fixture()
 		// Put the excess in a removable middle step, preserving the first step and latest user input.
 		countTokens.mockImplementation(async (blocks) =>
@@ -159,9 +159,12 @@ describe("context management tool metadata admission", () => {
 			error: "Summary unavailable",
 		})
 		const result = await manageContext({ ...options, totalTokens: 801 })
-		expect(result.messagesRemoved).toBeGreaterThan(0)
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(options.messages)
+		expect(result.messagesRemoved).toBeUndefined()
+		expect(result.truncationId).toBeUndefined()
 		expect(result.prevContextTokens).toBeGreaterThan(800)
-		expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
+		expect(result.error).toBe("Summary unavailable")
 		expect(prepareTools).toHaveBeenCalledOnce()
 		expect(countTokens.mock.calls.some(([blocks]) => JSON.stringify(blocks).includes("read_file"))).toBe(true)
 	})

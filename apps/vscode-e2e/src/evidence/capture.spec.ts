@@ -16,7 +16,7 @@ import type { CaptureRunEvidenceOptions, EvidenceManifest, RunEvidenceMetadata }
 let root: string
 const metadata = (): RunEvidenceMetadata => ({
 	scenarioId: "review-edit-test-commit-followup",
-	hostVersion: "1.138.0",
+	hostVersion: "1.141.0",
 	provider: "live-copilot",
 	modelId: "gpt-5.6-luna",
 	reasoningEffort: "max",
@@ -556,6 +556,45 @@ test("projects every canonical lifecycle event variant while omitting private pa
 	)
 	assert.ok(!JSON.stringify(projection).includes(secret))
 	assert.equal(await fs.readFile(path.join(task, "agent_lifecycle_events.jsonl"), "utf8"), journal)
+})
+
+test("captures model continuation events without dropping journal sequences or private diagnostics", async () => {
+	const storage = await ownedSource("storage")
+	const task = path.join(storage, "tasks", "task-1")
+	await fs.mkdir(task, { recursive: true })
+	const identity = { taskId: "task-1", runId: "run-1", turnId: "turn-1" }
+	await fs.writeFile(
+		path.join(task, "agent_lifecycle_events.jsonl"),
+		JSON.stringify({ ...identity, sequence: 1, type: "turn_terminal", payload: { status: "completed" } }) + "\n",
+	)
+	const events = [
+		{ type: "model_request_started", attempt: 1 },
+		{ type: "model_continuation", step: 2, reason: "private-continuation-diagnostic" },
+		{ type: "turn_completed", status: "completed" },
+	]
+	await fs.writeFile(
+		path.join(task, "agent_turn_events.jsonl"),
+		events.map((event, index) => JSON.stringify({ ...identity, sequence: index + 1, event })).join("\n") + "\n",
+	)
+	await fs.writeFile(path.join(task, "api_conversation_history.json"), "[]")
+	const result = await captureRunEvidence({
+		...options(),
+		storagePath: storage,
+		assertSourceOwned: assertFixtureOwned,
+	})
+	assert.equal(result.captureComplete, true)
+	const text = await fs.readFile(
+		path.join(result.artifactDirectory, "task-1-agent_turn_events.jsonl.projection.json"),
+		"utf8",
+	)
+	const projected = JSON.parse(text).projection
+	assert.equal(projected.validationStatus, "validated")
+	assert.deepEqual(projected.warnings, [])
+	assert.deepEqual(
+		projected.events.map((event: { type: string }) => event.type),
+		events.map((event) => event.type),
+	)
+	assert.ok(!text.includes("private-continuation-diagnostic"))
 })
 
 test("reports closed journal budget and parse warnings and never marks rejected sources captured", async () => {

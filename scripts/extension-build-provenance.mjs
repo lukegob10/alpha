@@ -347,12 +347,43 @@ function revision(repositoryRoot) {
 	return value
 }
 
+function sourceTreeState(repositoryRoot, files) {
+	const status = execFileSync(
+		"git",
+		["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all", "--", ...sourceRoots],
+		{ cwd: repositoryRoot, encoding: "utf8", windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+	)
+	const records = status.split("\0").filter(Boolean)
+	const changes = []
+	for (let index = 0; index < records.length; index++) {
+		const record = records[index]
+		const paths = [record.slice(3)]
+		if (/^[RC]|^.[RC]/u.test(record)) paths.push(records[++index])
+		if (paths.some((file) => typeof file !== "string")) throw new Error("invalid source status")
+		if (paths.some((file) => !sourceExcluded(file))) changes.push([record.slice(0, 2), ...paths])
+	}
+	const tracked = new Set(
+		execFileSync("git", ["ls-files", "-z", "--cached", "--", ...sourceRoots], {
+			cwd: repositoryRoot,
+			encoding: "utf8",
+			windowsHide: true,
+			maxBuffer: 16 * 1024 * 1024,
+		}).split("\0"),
+	)
+	// Generated workspace outputs are captured by content; ignored handwritten sources still cannot claim a commit.
+	for (const row of files)
+		if (!tracked.has(row.path) && !/^(?:packages\/(?:types|build)\/dist)\//u.test(row.path))
+			changes.push(["uncommitted", row.path])
+	return { sourceTreeState: changes.length ? "modified" : "clean", sourceChangesDigest: digest(changes) }
+}
+
 /** Capture before the official esbuild invocation; a later checkout hash cannot attest an old bundle. */
 export async function captureExtensionBuildSource(repositoryRoot) {
 	const root = await realpath(repositoryRoot)
 	const files = await inventory(root, sourceRoots, sourceExcluded)
 	return {
 		revision: revision(root),
+		...sourceTreeState(root, files),
 		roots: [...sourceRoots],
 		files,
 		digest: digest(files),
@@ -384,7 +415,7 @@ export async function completeExtensionBuildProvenance({ repositoryRoot, before,
 		kind: "alpha-extension-build-provenance",
 		producer: "src/esbuild.mjs",
 		identityScope: "conservative-whole-source",
-		scopeVersion: 2,
+		scopeVersion: 3,
 		sourceAssociation: extensionBuildSourceAssociation,
 		source: {
 			...source,
@@ -411,17 +442,91 @@ export async function completeExtensionBuildProvenance({ repositoryRoot, before,
 	return manifest
 }
 
+function validateManifest(manifest) {
+	const { digest: manifestDigest, ...body } = manifest
+	if (
+		manifestDigest !== digest(body) ||
+		manifest.schemaVersion !== 1 ||
+		manifest.kind !== "alpha-extension-build-provenance" ||
+		manifest.producer !== "src/esbuild.mjs" ||
+		manifest.identityScope !== "conservative-whole-source" ||
+		![2, 3].includes(manifest.scopeVersion) ||
+		!same(manifest.sourceAssociation, extensionBuildSourceAssociation) ||
+		manifest.source?.boundarySnapshotsUnchanged !== true ||
+		!/^[a-f0-9]{40}$/u.test(manifest.source.revision) ||
+		!same(manifest.source.roots, sourceRoots) ||
+		!same(manifest.artifacts?.roots, artifactRoots) ||
+		!validRows(manifest.source.files) ||
+		!validRows(manifest.artifacts.files) ||
+		!validRows(manifest.compilerInputs?.files) ||
+		manifest.compilerInputs.loaderBytesVerified !== true ||
+		!hashPattern.test(manifest.compilerInputs.metafileDigest) ||
+		manifest.compilerInputs.digest !== digest(manifest.compilerInputs.files) ||
+		manifest.source.snapshotDigest !== digest(manifest.source.files) ||
+		manifest.source.digest !==
+			digest({
+				snapshotDigest: manifest.source.snapshotDigest,
+				compilerInputDigest: manifest.compilerInputs.digest,
+			}) ||
+		manifest.artifacts.digest !== digest(manifest.artifacts.files) ||
+		(manifest.scopeVersion === 3 &&
+			(!["clean", "modified"].includes(manifest.source.sourceTreeState) ||
+				!hashPattern.test(manifest.source.sourceChangesDigest) ||
+				(manifest.source.sourceTreeState === "clean" && manifest.source.sourceChangesDigest !== digest([]))))
+	)
+		throw new Error("invalid manifest contract")
+	return manifestDigest
+}
+
+function requireCleanBuild(manifest, validateLegacySource = false) {
+	if (
+		(manifest.scopeVersion !== 3 && !validateLegacySource) ||
+		(manifest.scopeVersion === 3 && manifest.source.sourceTreeState !== "clean")
+	)
+		throw new Error("clean build source is required; rebuild from committed source")
+	if (manifest.runtimeDependencies?.missing?.length !== 0)
+		throw new Error("release runtime dependencies are incomplete")
+}
+
+/** Independently match a release checkout to the recorded source and compiler bytes at the same clean commit. */
+export async function assertExtensionBuildSource({ repositoryRoot, manifest }) {
+	validateManifest(manifest)
+	requireCleanBuild(manifest, true)
+	const root = await realpath(repositoryRoot)
+	const current = await captureExtensionBuildSource(root)
+	if (
+		current.sourceTreeState !== "clean" ||
+		current.revision !== manifest.source.revision ||
+		(manifest.scopeVersion === 3 && current.sourceChangesDigest !== manifest.source.sourceChangesDigest) ||
+		current.digest !== manifest.source.snapshotDigest ||
+		!same(current.files, manifest.source.files) ||
+		!same(current.runtimeDependencies, manifest.runtimeDependencies)
+	)
+		throw new Error("release source differs from the clean build source")
+	for (const row of manifest.compilerInputs.files) {
+		if (row.path.startsWith("external/")) throw new Error("release compiler input is outside the checkout")
+		const absolute = await realpath(path.join(root, ...row.path.split("/")))
+		if (path.relative(root, absolute).split(path.sep).join("/") !== row.path)
+			throw new Error("release compiler input path changed")
+		if (!same(row, await stableFile(absolute, row.path))) throw new Error("release compiler input bytes changed")
+	}
+}
+
 /** Rehash installed/development artifact bytes and actual external resolution. This does not authenticate the builder. */
 export async function verifyExtensionBuildProvenance({
 	extensionPath,
 	expectedEntrypointSha256,
 	expectedPackageJsonSha256,
+	requireCleanSource = false,
+	repositoryRoot,
 }) {
 	const result = {
 		status: "unavailable",
 		identityScope: "conservative-whole-source",
 		provenance: "build-owned-content-association",
 		sourceAssociation: extensionBuildSourceAssociation,
+		sourceTreeState: "unknown",
+		recordedSourceTreeState: "unknown",
 		missing: [],
 	}
 	try {
@@ -431,34 +536,15 @@ export async function verifyExtensionBuildProvenance({
 		if (!info.isFile() || info.isSymbolicLink() || info.size > 16 * 1024 * 1024)
 			throw new Error("invalid manifest file")
 		const manifest = JSON.parse(await readFile(file, "utf8"))
-		const { digest: manifestDigest, ...body } = manifest
-		if (
-			manifestDigest !== digest(body) ||
-			manifest.schemaVersion !== 1 ||
-			manifest.kind !== "alpha-extension-build-provenance" ||
-			manifest.producer !== "src/esbuild.mjs" ||
-			manifest.identityScope !== "conservative-whole-source" ||
-			manifest.scopeVersion !== 2 ||
-			!same(manifest.sourceAssociation, extensionBuildSourceAssociation) ||
-			manifest.source?.boundarySnapshotsUnchanged !== true ||
-			!/^[a-f0-9]{40}$/u.test(manifest.source.revision) ||
-			!same(manifest.source.roots, sourceRoots) ||
-			!same(manifest.artifacts?.roots, artifactRoots) ||
-			!validRows(manifest.source.files) ||
-			!validRows(manifest.artifacts.files) ||
-			!validRows(manifest.compilerInputs?.files) ||
-			manifest.compilerInputs.loaderBytesVerified !== true ||
-			!hashPattern.test(manifest.compilerInputs.metafileDigest) ||
-			manifest.compilerInputs.digest !== digest(manifest.compilerInputs.files) ||
-			manifest.source.snapshotDigest !== digest(manifest.source.files) ||
-			manifest.source.digest !==
-				digest({
-					snapshotDigest: manifest.source.snapshotDigest,
-					compilerInputDigest: manifest.compilerInputs.digest,
-				}) ||
-			manifest.artifacts.digest !== digest(manifest.artifacts.files)
-		)
-			throw new Error("invalid manifest contract")
+		const manifestDigest = validateManifest(manifest)
+		result.sourceTreeState = manifest.scopeVersion === 3 ? manifest.source.sourceTreeState : "unknown"
+		result.recordedSourceTreeState = result.sourceTreeState
+		if (repositoryRoot) {
+			await assertExtensionBuildSource({ repositoryRoot, manifest })
+			// Legacy receipts cannot attest past workspace cleanliness. Matching every captured input to the
+			// same currently clean commit establishes source association without rewriting the historical receipt.
+			result.sourceTreeState = "clean"
+		} else if (requireCleanSource) requireCleanBuild(manifest)
 		const files = await inventory(root, artifactRoots, (relative) => relative === extensionBuildProvenancePath)
 		if (!same(files, manifest.artifacts.files)) throw new Error("extension artifact bytes changed")
 		const entrypoint = files.find((row) => row.path === "dist/extension.js")
@@ -483,6 +569,7 @@ export async function verifyExtensionBuildProvenance({
 		return {
 			...result,
 			status: "verified",
+			sourceValidation: repositoryRoot ? "current-checkout" : "build-receipt",
 			manifestDigest,
 			sourceRevision: manifest.source.revision,
 			sourceTreeDigest: manifest.source.digest,

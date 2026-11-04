@@ -36,9 +36,24 @@ export type AgentControlRole = z.infer<typeof agentControlRoleSchema>
 export const agentRuntimeOwnerIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/)
 export type AgentRuntimeOwnerId = z.infer<typeof agentRuntimeOwnerIdSchema>
 
+/** Keep historical hyphenated paths readable while preserving Codex V2 underscore names. */
+export const AGENT_CANONICAL_PATH_PATTERN = "^/root(?:/[a-z0-9_]+(?:-[a-z0-9_]+)*)*$"
+export const AGENT_RELATIVE_PATH_PATTERN = "^[a-z0-9_]+(?:-[a-z0-9_]+)*(?:/[a-z0-9_]+(?:-[a-z0-9_]+)*)*$"
+export const AGENT_TARGET_REFERENCE_PATTERN =
+	"^(?:/root(?:/[a-z0-9_]+(?:-[a-z0-9_]+)*)*|[a-z0-9_]+(?:-[a-z0-9_]+)*(?:/[a-z0-9_]+(?:-[a-z0-9_]+)*)*|[A-Za-z0-9][A-Za-z0-9._:-]*)$"
+export const AGENT_MESSAGE_MAX_CHARACTERS = 32_768
+
 /** A canonical path is scoped to one root task. Different roots may both contain `/root/review`. */
-export const agentCanonicalPathSchema = z.string().regex(/^\/root(?:\/[a-z0-9]+(?:-[a-z0-9]+)*)*$/)
+export const agentCanonicalPathSchema = z.string().regex(new RegExp(AGENT_CANONICAL_PATH_PATTERN))
 export type AgentCanonicalPath = z.infer<typeof agentCanonicalPathSchema>
+
+/** Resolve references inside a managed tree; filesystem traversal is never an agent reference. */
+export function resolveAgentPathReference(callerPath: AgentCanonicalPath, reference: string): AgentCanonicalPath {
+	agentCanonicalPathSchema.parse(callerPath)
+	if (reference.startsWith("/")) return agentCanonicalPathSchema.parse(reference)
+	if (!new RegExp(AGENT_RELATIVE_PATH_PATTERN).test(reference)) throw new Error("Invalid relative agent path")
+	return agentCanonicalPathSchema.parse(`${callerPath}/${reference}`)
+}
 
 /** Credential-free runtime data useful for list/status views. */
 export const agentRuntimeSnapshotSchema = z.object({

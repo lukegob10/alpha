@@ -12,7 +12,7 @@ parallel implementations.
 Use this priority order when requirements compete:
 
 1. Correctness, data integrity, security, and the user's explicit intent.
-2. Compatibility with the minimum supported host **VS Code 1.125.0** and exact reference host **VS Code 1.138.0**.
+2. Compatibility with the minimum supported host **VS Code 1.125.0** and exact reference host **VS Code 1.141.0**.
 3. Close behavioral alignment with current Codex CLI across applicable agent capabilities.
 4. Provider-neutral behavior shared across all VS Code extension surfaces.
 5. Deterministic lifecycle, cancellation, persistence, and tool-policy semantics.
@@ -53,8 +53,9 @@ Before changing code:
 - For a bug, reproduce it with a focused test or deterministic script when practical. Establish the root cause rather
   than patching only the visible symptom.
 - For a performance change, capture a meaningful baseline and define the metric and workload before optimizing.
-- Follow the Codex CLI source-first rule above for agent behavior. Consult current primary sources for VS Code or other
-  external contracts, and record the upstream version, commit, or retrieval date with the change.
+- Follow the Codex CLI source-first rule above, especially for loop, retry, verification, or stopping changes. State the
+  intended behavior before editing and record the upstream commit or retrieval date and any intentional divergence.
+  Consult current primary sources for VS Code and other external contracts.
 - Verify behavior against current code, tests, schemas, manifests, and primary sources rather than historical writeups.
 
 While implementing:
@@ -64,7 +65,10 @@ While implementing:
 - Keep refactors behavior-preserving unless the requested behavior change requires otherwise.
 - Keep model/provider selection independent from execution policy, tool availability, and approval authority.
 - Add or update tests in the same change. Prefer observable behavior and stable contracts over private implementation
-  details.
+  details. Review failing expectations against the behavior contract; explain changes to assertions, expected fixtures,
+  or evaluator goldens instead of changing behavior merely to make a test pass.
+- Keep evaluation measurement separate from proposed repairs: preserve the workload, graders, and baseline while
+  measuring, then compare the same workload after implementing a repair.
 - Validate incrementally with the narrowest useful command, then widen validation according to risk.
 
 Before finishing:
@@ -72,13 +76,15 @@ Before finishing:
 - Inspect the final diff for scope creep, generated artifacts, stale names, debug output, secrets, and accidental lockfile
   churn.
 - Run the checks required by the validation matrix below.
+- For behavior comparisons, use a clean source-built Alpha reference at a recorded commit and identify both builds;
+  stale installed extensions or unrelated worktree outputs cannot establish the baseline.
 - Report what changed, why, what was verified, and any residual risk. Never claim a check passed unless it ran.
 
 ## Runtime and toolchain baseline
 
 - Package manager: `pnpm@11.24.0`. Use pnpm only; do not create npm or Yarn lockfiles.
 - Development Node.js: `24.21.0`, with its bundled npm `11.19.0`, as declared in the root and extension manifests.
-  The extension supports VS Code `1.125.0` and newer; the exact reference and primary release host is `1.138.0`.
+  The extension supports VS Code `1.125.0` and newer; the exact reference and primary release host is `1.141.0`.
 - TypeScript: `5.8.3` through the workspace configuration.
 - Formatting: tabs, width 4, 120-column print width, and no semicolons; see `.prettierrc.json`.
 - Build orchestration: Turborepo. Prefer existing root or package scripts over hand-built command sequences.
@@ -99,7 +105,7 @@ timeouts, approvals, or saved-provider restoration.
 
 ## VS Code minimum and reference hosts
 
-VS Code **1.125.0** is the minimum supported editor. VS Code **1.138.0** is the exact reference product and primary
+VS Code **1.125.0** is the minimum supported editor. VS Code **1.141.0** is the exact reference product and primary
 release-gating host. Moving the reference host does not by itself raise the installation minimum.
 
 - Keep `src/package.json` compatible with `engines.vscode: ^1.125.0` and compile the extension against `@types/vscode@1.125.0`.
@@ -116,13 +122,16 @@ release-gating host. Moving the reference host does not by itself raise the inst
 - A deliberate reference-host migration must update E2E defaults, exact-host tests, workflows, runner types, and
   documentation together. Raising the installation minimum additionally requires an explicit compatibility decision,
   a demonstrated dependency, and corresponding extension manifest/types and minimum-host test updates.
-- Primary automated extension-host tests and live GitHub Copilot evaluations use exact VS Code 1.138.0. Explicit
-  minimum-host compatibility tests use exact VS Code 1.125.0 and cannot satisfy a 1.138.0 gate. Live runs use
-  a dedicated, signed-in Alpha-owned 1.138.0 profile. Record the exact host version, selected model ID, profile, and run
+- Primary automated extension-host tests and live GitHub Copilot evaluations use exact VS Code 1.141.0. Explicit
+  minimum-host compatibility tests use exact VS Code 1.125.0 and cannot satisfy a 1.141.0 gate. Live runs use
+  a dedicated, signed-in Alpha-owned 1.141.0 profile. Record the exact host version, selected model ID, profile, and run
   conditions with the result. A live run does not replace the deterministic exact-host gate:
 
+  A previously captured real extension live smoke may be explicitly reviewed and reused for a release. Preserve its
+  original host, model, date, and known or unknown source identity; current exact-host gates still run in full.
+
 ```sh
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1410
 pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250
 ```
 
@@ -152,7 +161,7 @@ version. Changes to the installation minimum or host adapters also require the m
 - `packages/types/`: shared schemas and public contracts. Put cross-package message, lifecycle, configuration, and API
   types here rather than duplicating shapes.
 - `packages/core/`: platform-agnostic reusable functionality. Do not introduce `vscode` imports here.
-- `apps/vscode-e2e/`: real extension-host contract tests, including the exact 1.138.0 gate.
+- `apps/vscode-e2e/`: real extension-host contract tests, including the exact 1.141.0 gate.
 - `packages/evals/`, `evals/`, and `scripts/`: deterministic evaluation, certification, benchmark, and release tooling.
 - `README.md`: essential setup, usage, testing, and packaging. This guide owns durable engineering requirements;
   implementation contracts belong in their owning code, schemas, and tests.
@@ -201,6 +210,10 @@ inform a specific decision, but they do not replace Codex CLI as the target for 
   strategy but is not a security or correctness boundary.
 - Keep prompts lean, stable, and non-duplicative. Measure prompt or tool-schema changes against representative evals and
   inspect cache/token effects rather than assuming more instructions improve performance.
+- Agent-affecting releases require one reviewed successful real extension live task on one provider/model; a Luna run
+  qualifies. A recorded pass may be explicitly reused with its original execution identity. The evidence review is bound
+  to the candidate commit; it does not relabel historical execution as a test of that candidate. Broader model matrices
+  and baseline comparisons are optional. Missing evidence remains unavailable, never a live pass.
 
 ## State, concurrency, and messaging rules
 
@@ -273,7 +286,7 @@ amplification, webview commit/render counts, indexing throughput, memory growth,
   sidebar layouts.
 - Put new user-visible text in the English `package.nls.json` or English locale files. Alpha ships English only; do not add additional locale files or `package.nls.<locale>.json` overlays.
 - Add focused Testing Library/Vitest coverage for interaction and state behavior. For material visual changes, also verify
-  the result manually in the Extension Development Host on VS Code 1.138.0 when available.
+  the result manually in the Extension Development Host on VS Code 1.141.0 when available.
 
 ## Security and privacy
 
@@ -300,7 +313,8 @@ Use the smallest relevant checks during development and the full affected-surfac
 | Webview                  | Focused webview Vitest file, then `pnpm --dir webview-ui check-types`                                    |
 | Shared package           | Package tests and typecheck, plus affected consumer tests                                                |
 | Provider/stream/history  | Provider transform tests, task persistence/turn tests, and cancellation/error cases                      |
-| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1380`; also `test:compatibility:1250` for minimum-host or adapter changes |
+| Turn/retry/verification/stopping | `pnpm harness run turns`, then `pnpm harness matrix --require turns`, plus affected exact-host gates |
+| VS Code integration      | `pnpm --filter @alpha-code/vscode-e2e test:smoke:1410`; also `test:compatibility:1250` for minimum-host or adapter changes |
 | Managed agents           | Focused lifecycle/delegation tests and `pnpm certify:managed-agents:automated` when the contract changes |
 | Performance              | Focused correctness tests plus a recorded before/after benchmark on the same workload                    |
 | Release/package contents | `pnpm bundle`, `pnpm vsix`, then `node scripts/verify-vsix-contents.mjs <path-to-vsix>`                  |
@@ -324,7 +338,7 @@ pnpm check-types
 pnpm test
 pnpm knip
 pnpm bundle
-pnpm --filter @alpha-code/vscode-e2e test:smoke:1380
+pnpm --filter @alpha-code/vscode-e2e test:smoke:1410
 ```
 
 `pnpm test` bundles the extension and runs extension/dependency unit tests. Default lint and type checks use the same
@@ -344,7 +358,7 @@ checks during development, then the affected-surface and exact-host gates before
   to shell-specific assumptions.
 - Comments should explain invariants, ownership, or non-obvious compatibility constraints, not restate the code.
 - A task is done only when the requested behavior works, relevant regressions are covered, required validation passes,
-  VS Code 1.138.0 compatibility is preserved, and the final diff contains no unrelated changes.
+  VS Code 1.141.0 compatibility is preserved, and the final diff contains no unrelated changes.
 
 ## Maintaining these instructions
 

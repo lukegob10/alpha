@@ -332,6 +332,7 @@ interface ObservedTool {
 	effectStarted: boolean
 	outcome?: ToolOutcome
 	output?: unknown
+	outputTruncated?: boolean
 }
 
 interface ObservedApproval {
@@ -444,7 +445,13 @@ function inspectToolEvent(
 		return
 	}
 	const outcome = toolOutcome(item?.status)
-	if (!item || item.type !== "tool_result" || !outcome || (item.output === undefined && item.result === undefined)) {
+	if (
+		!item ||
+		item.type !== "tool_result" ||
+		!outcome ||
+		(item.output === undefined && item.result === undefined) ||
+		(item.outputTruncated !== undefined && typeof item.outputTruncated !== "boolean")
+	) {
 		addError(errors, "lifecycle_tool_payload_invalid")
 		return
 	}
@@ -463,11 +470,25 @@ function inspectToolEvent(
 		addError(errors, "lifecycle_tool_status_mismatch")
 	tool.outcome = outcome
 	tool.output = item.output !== undefined ? item.output : item.result
+	tool.outputTruncated = item.outputTruncated as boolean | undefined
 }
 
 function comparableOutput(value: unknown): unknown {
 	const text = resultText(value)
 	return text === "" ? "(tool did not return anything)" : (text ?? value)
+}
+
+function matchesRetainedOutput(tool: ObservedTool, receipt: unknown): boolean {
+	const retained = comparableOutput(tool.output)
+	const complete = comparableOutput(receipt)
+	if (isDeepStrictEqual(retained, complete)) return true
+	if (tool.outputTruncated === false || typeof retained !== "string" || typeof complete !== "string") return false
+	// Journal output is a bounded diagnostic preview; provider history keeps the
+	// complete receipt. Older journals use the suffix without the typed flag.
+	const suffix = "\n[truncated]"
+	if (!retained.endsWith(suffix)) return false
+	const prefix = retained.slice(0, -suffix.length)
+	return prefix.length > 0 && complete.length > prefix.length && complete.startsWith(prefix)
 }
 
 function inspectTranscriptCorrelation(
@@ -494,7 +515,7 @@ function inspectTranscriptCorrelation(
 					!tool.outcome ||
 					(tool.outcome === "success" ? block.is_error === true : block.is_error !== true) ||
 					(outcome !== undefined && tool.outcome !== "indeterminate" && outcome !== tool.outcome) ||
-					!isDeepStrictEqual(comparableOutput(tool.output), comparableOutput(block.content))
+					!matchesRetainedOutput(tool, block.content)
 				)
 					addError(errors, "lifecycle_transcript_result_mismatch")
 			}

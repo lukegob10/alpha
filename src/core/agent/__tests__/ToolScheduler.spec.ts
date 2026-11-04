@@ -3309,7 +3309,7 @@ describe("ToolScheduler", () => {
 			preserveAbortedResults: true,
 			policy: createToolPolicySnapshot({ visibleTools: ["read"], autoApprovalEnabled: true }),
 			readGrant: { enabled: true, workspaceRoot: tmpdir(), showIgnoredFiles: false },
-		}).run(response({ id: "prepared", name: "read" }, { id: "running", name: "read" }))
+		}).run(response({ id: "running", name: "read" }, { id: "prepared", name: "read" }))
 
 		await siblingStarted.promise
 		controller.abort()
@@ -3318,7 +3318,7 @@ describe("ToolScheduler", () => {
 		expect(outcome.status).toBe("aborted")
 		expect(outcome.results.map((result) => result.status)).toEqual(["cancelled", "cancelled"])
 		expect(finalize).not.toHaveBeenCalled()
-		expect(resultIds(task)).toEqual(["prepared", "running"])
+		expect(resultIds(task)).toEqual(["running", "prepared"])
 	})
 
 	it("publishes cancelled running and pending receipts without changing earlier completed receipts", async () => {
@@ -3517,7 +3517,7 @@ describe("ToolScheduler", () => {
 			},
 			onEvent: async (event) => {
 				events.push(event)
-				if (event.type === "progress" && event.callId === "held-progress" && ask.mock.calls.length === 2) {
+				if (event.type === "progress" && event.callId === "held-progress" && ask.mock.calls.length === 3) {
 					progressEntered.resolve()
 					await releaseProgress.promise
 				}
@@ -3554,7 +3554,7 @@ describe("ToolScheduler", () => {
 				"held-progress",
 				"queued-read",
 			])
-			expect(ask).toHaveBeenCalledTimes(2)
+			expect(ask).toHaveBeenCalledTimes(3)
 			expect(startedEffects).toEqual(["failing-effect"])
 			expect(actualDispatch).not.toHaveBeenCalled()
 			expect(vi.getTimerCount()).toBe(0)
@@ -3810,7 +3810,7 @@ describe("ToolScheduler", () => {
 		expect(resultIds(task)).toEqual(["1", "2"])
 	})
 
-	it("bounds selective-parallel windows and keeps completion commits in model order", async () => {
+	it("bounds rolling selective-parallel workers and keeps completion commits in model order", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		let active = 0
@@ -3839,7 +3839,7 @@ describe("ToolScheduler", () => {
 
 		expect(peak).toBeLessThanOrEqual(3)
 		expect(peak).toBeGreaterThan(1)
-		expect(outcome.parallelBatchCount).toBe(3)
+		expect(outcome.parallelBatchCount).toBe(1)
 		expect(outcome.parallelToolCount).toBe(7)
 		expect(resultIds(task)).toEqual(["0", "1", "2", "3", "4", "5", "6"])
 		expect((task.userMessageContent as any[]).map((item) => item.content)).toEqual([

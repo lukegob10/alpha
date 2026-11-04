@@ -66,10 +66,11 @@ const planBodySchema = z
 			.strict(),
 		taskSet: taskSetManifestSchema.strict(),
 		experiment: experimentManifestSchema.strict(),
+		// Saved confirmations retain their declared host identity when replayed.
 		hostVersions: z
-			.array(z.enum(["1.125.0", "1.138.0"]))
+			.array(z.enum(["1.125.0", "1.138.0", "1.141.0"]))
 			.min(1)
-			.max(2),
+			.max(3),
 		control: armSchema,
 		candidate: armSchema,
 		requirements: z
@@ -243,7 +244,7 @@ export function parseConfirmationPlan(value: unknown): ConfirmationPlan {
 	if (
 		decision.plannedPairs > plan.limits.maxRequestsPerArm ||
 		new Set(plan.hostVersions).size !== plan.hostVersions.length ||
-		!plan.hostVersions.includes("1.138.0") ||
+		(!plan.hostVersions.includes("1.141.0") && !plan.hostVersions.includes("1.138.0")) ||
 		(plan.mode === "live-quality" && plan.hostVersions.length !== 1)
 	)
 		throw new Error("Confirmation host or request limits do not cover the declared workload")

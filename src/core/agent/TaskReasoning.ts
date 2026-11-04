@@ -1,6 +1,5 @@
 import {
 	reasoningEffortsExtended,
-	taskReasoningCustomTokenPattern,
 	resolveOpenAiCustomModelInfo,
 	resolveModelReasoningEffort,
 	type TaskReasoningCapabilities,
@@ -16,11 +15,7 @@ import {
 	DEFAULT_HYBRID_REASONING_MODEL_THINKING_TOKENS,
 	GEMINI_25_PRO_MIN_THINKING_TOKENS,
 	getModelMaxOutputTokens,
-	type TaskReasoningRuntimeOptions,
 } from "../../shared/api"
-
-/** The provider configuration plus ephemeral task-only reasoning controls. */
-export type TaskReasoningConfiguration = ProviderSettings & TaskReasoningRuntimeOptions
 
 export type TaskReasoningModel = {
 	id: string
@@ -28,7 +23,7 @@ export type TaskReasoningModel = {
 }
 
 export type TaskReasoningResolution = {
-	configuration: TaskReasoningConfiguration
+	configuration: ProviderSettings
 	state: TaskReasoningState
 }
 
@@ -82,8 +77,7 @@ export function assertTaskReasoningEffortSupported(
 /**
  * Resolve one task preference against the model descriptor captured for the
  * next step. The profile is the input and is never persisted with task-only
- * overrides; Stellar's custom token is carried only on the returned runtime
- * configuration.
+ * overrides.
  */
 export function resolveTaskReasoning(
 	configuration: ProviderSettings,
@@ -119,12 +113,6 @@ function getTaskReasoningCapabilities(
 	model: TaskReasoningModel,
 ): TaskReasoningCapabilities {
 	const { info: modelInfo } = model
-	// Stellar is intentionally a constrained custom-token surface. Do not let a
-	// future catalog field accidentally turn it into a generic named-level UI.
-	if (configuration.apiProvider === "stellar") {
-		return { kind: "custom", canDisable: true }
-	}
-
 	if (modelInfo.requiredReasoningBudget || modelInfo.supportsReasoningBudget) {
 		return {
 			kind: "budget",
@@ -162,7 +150,7 @@ function getNamedEfforts(modelInfo: ModelInfo): ReasoningEffortExtended[] {
 type PreferenceResolution = {
 	effective: TaskReasoningPreference
 	fallbackReason?: TaskReasoningFallbackReason
-	patch: Partial<TaskReasoningConfiguration>
+	patch: Partial<ProviderSettings>
 }
 
 function resolvePreference(
@@ -181,18 +169,17 @@ function resolvePreference(
 			return activeResolution(capabilities, configuration, model.info, "required")
 		case "on":
 			return resolveOnPreference(capabilities, configuration, model.info)
-		case "custom":
-			if (capabilities.kind !== "custom") {
-				const fallback = resolveDefaultPreference(capabilities, configuration, model)
-				return {
-					effective: fallback.effective,
-					fallbackReason:
-						fallback.fallbackReason ??
-						(capabilities.kind === "unavailable" ? "unavailable" : "unsupported"),
-					patch: fallback.patch,
-				}
+		case "custom": {
+			// Historical task preferences remain readable; active providers use their
+			// declared capabilities instead of forwarding arbitrary reasoning tokens.
+			const fallback = resolveDefaultPreference(capabilities, configuration, model)
+			return {
+				effective: fallback.effective,
+				fallbackReason:
+					fallback.fallbackReason ?? (capabilities.kind === "unavailable" ? "unavailable" : "unsupported"),
+				patch: fallback.patch,
 			}
-			return resolveCustomPreference(requested.value, capabilities)
+		}
 	}
 }
 
@@ -250,7 +237,7 @@ function resolveDefaultPreference(
 ): {
 	effective: TaskReasoningPreference
 	fallbackReason?: TaskReasoningFallbackReason
-	patch: Partial<TaskReasoningConfiguration>
+	patch: Partial<ProviderSettings>
 } {
 	if (!capabilities.canDisable && (capabilities.kind === "budget" || capabilities.kind === "effort")) {
 		return activeResolution(capabilities, configuration, model.info, "required")
@@ -280,7 +267,7 @@ function resolveDefaultPreference(
 					patch: disabledPatch(),
 				}
 			}
-			return { effective: { kind: "default" }, patch: clearTaskOverridePatch() }
+			return { effective: { kind: "default" }, patch: {} }
 		}
 
 		const effort = selectEffort(configuration, model.info, efforts, hasExplicitEnable)
@@ -292,25 +279,22 @@ function resolveDefaultPreference(
 					patch: disabledPatch(),
 				}
 			}
-			return { effective: { kind: "default" }, patch: clearTaskOverridePatch() }
+			return { effective: { kind: "default" }, patch: {} }
 		}
 
 		// An omitted setting lets adapters use their catalogued model default.
-		// Only materialize a patch when a legacy selection is invalid or when a
-		// task override left a custom runtime token behind.
-		const hasRuntimeCustom = (configuration as TaskReasoningConfiguration).taskReasoningCustomEffort !== undefined
+		// Only materialize a patch when a legacy selection is invalid.
 		if (
 			configuration.reasoningEffort === undefined &&
-			!hasRuntimeCustom &&
 			!hasExplicitEnable &&
 			model.info.reasoningEffort === undefined
 		) {
 			return { effective: { kind: "default" }, patch: {} }
 		}
-		if (configuration.reasoningEffort === undefined && !hasRuntimeCustom && !hasExplicitEnable) {
+		if (configuration.reasoningEffort === undefined && !hasExplicitEnable) {
 			return { effective: { kind: "effort", effort }, patch: {} }
 		}
-		if (hasRuntimeCustom === false && hasExplicitEnable && validConfiguredEffort) {
+		if (hasExplicitEnable && validConfiguredEffort) {
 			return { effective: { kind: "effort", effort }, patch: {} }
 		}
 		return {
@@ -324,27 +308,17 @@ function resolveDefaultPreference(
 
 	if (capabilities.kind === "budget") {
 		return configuration.enableReasoningEffort
-			? { effective: { kind: "on" }, patch: clearTaskOverridePatch() }
-			: { effective: { kind: "off" }, patch: clearTaskOverridePatch() }
+			? { effective: { kind: "on" }, patch: {} }
+			: { effective: { kind: "off" }, patch: {} }
 	}
 
 	if (capabilities.kind === "binary") {
 		return configuration.enableReasoningEffort
-			? { effective: { kind: "on" }, patch: clearTaskOverridePatch() }
-			: { effective: { kind: "off" }, patch: clearTaskOverridePatch() }
+			? { effective: { kind: "on" }, patch: {} }
+			: { effective: { kind: "off" }, patch: {} }
 	}
 
-	return {
-		effective: { kind: "off" },
-		fallbackReason:
-			(configuration as TaskReasoningConfiguration).taskReasoningCustomEffort === undefined
-				? undefined
-				: "unsupported",
-		patch:
-			(configuration as TaskReasoningConfiguration).taskReasoningCustomEffort === undefined
-				? {}
-				: disabledPatch(),
-	}
+	return { effective: { kind: "off" }, patch: {} }
 }
 
 function resolveOnPreference(
@@ -375,25 +349,6 @@ function resolveOnPreference(
 	return {
 		effective: { kind: "off" },
 		fallbackReason: capabilities.kind === "custom" ? "unsupported" : "unavailable",
-		patch: disabledPatch(),
-	}
-}
-
-function resolveCustomPreference(value: string, capabilities: TaskReasoningCapabilities): PreferenceResolution {
-	if (capabilities.kind === "custom" && taskReasoningCustomTokenPattern.test(value)) {
-		return {
-			effective: { kind: "custom", value },
-			patch: {
-				enableReasoningEffort: false,
-				reasoningEffort: "disable",
-				taskReasoningCustomEffort: value,
-			},
-		}
-	}
-
-	return {
-		effective: { kind: "off" },
-		fallbackReason: taskReasoningCustomTokenPattern.test(value) ? "unsupported" : "invalid-custom",
 		patch: disabledPatch(),
 	}
 }
@@ -435,33 +390,26 @@ function selectEffort(
 	)
 }
 
-function activeEffortPatch(effort: ReasoningEffortExtended): Partial<TaskReasoningConfiguration> {
-	return { enableReasoningEffort: true, reasoningEffort: effort, taskReasoningCustomEffort: undefined }
+function activeEffortPatch(effort: ReasoningEffortExtended): Partial<ProviderSettings> {
+	return { enableReasoningEffort: true, reasoningEffort: effort }
 }
 
-function activeBinaryPatch(): Partial<TaskReasoningConfiguration> {
-	return { enableReasoningEffort: true, reasoningEffort: undefined, taskReasoningCustomEffort: undefined }
+function activeBinaryPatch(): Partial<ProviderSettings> {
+	return { enableReasoningEffort: true, reasoningEffort: undefined }
 }
 
-function disabledPatch(): Partial<TaskReasoningConfiguration> {
-	return { enableReasoningEffort: false, reasoningEffort: "disable", taskReasoningCustomEffort: undefined }
+function disabledPatch(): Partial<ProviderSettings> {
+	return { enableReasoningEffort: false, reasoningEffort: "disable" }
 }
 
-function clearTaskOverridePatch(): Partial<TaskReasoningConfiguration> {
-	return { taskReasoningCustomEffort: undefined }
-}
-
-function applyRuntimeChanges(
-	configuration: ProviderSettings,
-	patch: Partial<TaskReasoningConfiguration>,
-): TaskReasoningConfiguration {
+function applyRuntimeChanges(configuration: ProviderSettings, patch: Partial<ProviderSettings>): ProviderSettings {
 	const current = configuration as Record<string, unknown>
 	const hasChange = Object.entries(patch).some(([key, value]) =>
 		value === undefined ? key in current : current[key] !== value,
 	)
 	if (!hasChange) return configuration
 
-	const next = { ...configuration, ...patch } as TaskReasoningConfiguration
+	const next = { ...configuration, ...patch }
 	for (const [key, value] of Object.entries(patch)) {
 		if (value === undefined) delete (next as Record<string, unknown>)[key]
 	}

@@ -23,7 +23,6 @@ import { threadOrchestrationTools } from "./thread_orchestration"
 import { createWriteStdinTool } from "./manage_command"
 import { createReadFileTool } from "./read_file"
 import { viewImageToolSchema } from "./view_image"
-import runSlashCommand from "./run_slash_command"
 import skill from "./skill"
 import searchFiles from "./search_files"
 import updatePlan from "./update_plan"
@@ -155,7 +154,6 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		followupTask,
 		interruptAgent,
 		createWriteStdinTool(planMode),
-		runSlashCommand,
 		skill,
 		...(taskKind === "primary" && !planMode ? [updatePlan] : []),
 	] satisfies OpenAI.Chat.ChatCompletionTool[]

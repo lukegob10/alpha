@@ -393,6 +393,117 @@ describe("official ChatGPT authentication", () => {
 		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/models"))).toHaveLength(3)
 	})
 
+	it("refreshes a rejected credential before scheduled refresh when the issuer permits it", async () => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const admitted = await f.service.authorizeRequest()
+		f.setTokenHandler(() =>
+			json({ access_token: "access-two", refresh_token: "refresh-two", token_type: "Bearer", expires_in: 3600 }),
+		)
+		const recovered = await f.service.recoverUnauthorizedRequest(admitted)
+		expect(recovered).toEqual({ accessToken: "access-two", signal: admitted.signal })
+		expect(f.stored().accounts[0].tokens.refreshToken).toBe("refresh-two")
+		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/oauth/token"))).toHaveLength(2)
+	})
+
+	it.each(["issuer", "legacy"] as const)("honors the %s not-before limit during 401 recovery", async (kind) => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const saved = f.stored()
+		if (kind === "issuer") saved.accounts[0].tokens.earliestRefreshAt = now + 120_000
+		else delete saved.accounts[0].tokens.earliestRefreshAt
+		f.secrets.set(SECRET_KEY, JSON.stringify(saved))
+		const service = f.create()
+		const admitted = await service.authorizeRequest()
+		await expect(service.recoverUnauthorizedRequest(admitted)).resolves.toEqual(admitted)
+		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/oauth/token"))).toHaveLength(1)
+	})
+
+	it("rejects recovery from an older account generation", async () => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const admitted = await f.service.authorizeRequest()
+		await f.service.selectAccount("oaiapp_one")
+		await expect(f.service.recoverUnauthorizedRequest(admitted)).rejects.toMatchObject({ name: "AbortError" })
+		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/oauth/token"))).toHaveLength(1)
+	})
+
+	it("shares concurrent admission recovery while a cancelled caller leaves token rotation owned", async () => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const admitted = await f.service.authorizeRequest()
+		const entered = deferred<void>()
+		const response = deferred<Response>()
+		f.setTokenHandler(() => {
+			entered.resolve()
+			return response.promise
+		})
+		const controller = new AbortController()
+		const first = f.service.recoverUnauthorizedRequest(admitted, controller.signal)
+		const cancelled = expect(first).rejects.toMatchObject({ name: "AbortError" })
+		await entered.promise
+		const other = f.service.recoverUnauthorizedRequest(admitted)
+		controller.abort()
+		await cancelled
+		response.resolve(
+			json({ access_token: "access-two", refresh_token: "refresh-two", token_type: "Bearer", expires_in: 3600 }),
+		)
+		await expect(other).resolves.toEqual({ accessToken: "access-two", signal: admitted.signal })
+		expect(f.stored().accounts[0].tokens.refreshToken).toBe("refresh-two")
+		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/oauth/token"))).toHaveLength(2)
+	})
+
+	it("does not return recovered credentials after the selected account generation changes mid-refresh", async () => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const admitted = await f.service.authorizeRequest()
+		const entered = deferred<void>()
+		const response = deferred<Response>()
+		f.setTokenHandler(() => {
+			entered.resolve()
+			return response.promise
+		})
+		const recovery = f.service.recoverUnauthorizedRequest(admitted)
+		const rejected = expect(recovery).rejects.toMatchObject({ name: "AbortError" })
+		await entered.promise
+		const generationChanged = new Promise<void>((resolve) =>
+			admitted.signal.addEventListener("abort", () => resolve(), { once: true }),
+		)
+		const selected = f.service.selectAccount("oaiapp_one")
+		await generationChanged
+		await rejected
+		response.resolve(
+			json({ access_token: "access-two", refresh_token: "refresh-two", token_type: "Bearer", expires_in: 3600 }),
+		)
+		await selected
+		expect(f.stored().accounts[0].tokens.refreshToken).toBe("refresh-two")
+	})
+
+	it("reuses another window's rotated token instead of refreshing its replacement", async () => {
+		const f = fixture()
+		await (
+			await f.login()
+		).operation
+		const service = f.create({ observe: false })
+		const admitted = await service.authorizeRequest()
+		const saved = f.stored()
+		saved.accounts[0].tokens.accessToken = "access-two"
+		saved.accounts[0].tokens.refreshToken = "refresh-two"
+		f.secrets.set(SECRET_KEY, JSON.stringify(saved))
+		await expect(service.recoverUnauthorizedRequest(admitted)).resolves.toMatchObject({ accessToken: "access-two" })
+		expect(f.fetcher.mock.calls.filter(([url]) => String(url).endsWith("/oauth/token"))).toHaveLength(1)
+	})
+
 	it("serializes rotating refresh and persists its result after one caller cancels", async () => {
 		const f = fixture()
 		const first = await f.login()

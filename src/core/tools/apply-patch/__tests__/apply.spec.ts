@@ -154,7 +154,7 @@ describe("apply-patch apply", () => {
 			expect(result).toBe("foo\nbar\nadded\n")
 		})
 
-		it("inserts a pure addition after its explicit context", () => {
+		it("appends a pure addition even after locating explicit context, matching Codex", () => {
 			const original = "before\nanchor\nafter\n"
 			const chunks: UpdateFileChunk[] = [
 				{
@@ -165,7 +165,7 @@ describe("apply-patch apply", () => {
 				},
 			]
 
-			expect(applyChunksToContent(original, "test.txt", chunks)).toBe("before\nanchor\ninserted\nafter\n")
+			expect(applyChunksToContent(original, "test.txt", chunks)).toBe("before\nanchor\nafter\ninserted\n")
 		})
 
 		it("should handle isEndOfFile flag", () => {
@@ -221,6 +221,30 @@ describe("apply-patch apply", () => {
 			]
 			const result = applyChunksToContent(original, "test.txt", chunks)
 			expect(result).toBe("a\nB\nc\nd\nE\nf\n")
+		})
+
+		it("applies a replacement larger than the JavaScript argument limit", () => {
+			const lineCount = 150_000
+			const result = applyChunksToContent("old\n", "test.txt", [
+				{
+					changeContext: null,
+					oldLines: ["old"],
+					newLines: Array.from({ length: lineCount }, () => "x"),
+					isEndOfFile: false,
+				},
+			])
+
+			expect(result.length).toBe(lineCount * 2)
+			expect(result === "x\n".repeat(lineCount)).toBe(true)
+		})
+
+		it("retains source order for multiple additions at the same position", () => {
+			const result = applyChunksToContent("old\n", "test.txt", [
+				{ changeContext: null, oldLines: [], newLines: ["first"], isEndOfFile: false },
+				{ changeContext: null, oldLines: [], newLines: ["second"], isEndOfFile: false },
+			])
+
+			expect(result).toBe("old\nfirst\nsecond\n")
 		})
 
 		it("preserves the absence of a trailing newline", () => {
@@ -286,8 +310,8 @@ describe("apply-patch apply", () => {
 			},
 		)
 
-		it("rejects mixed endings instead of rewriting untouched lines", () => {
-			expect(() =>
+		it("preserves untouched mixed line endings", () => {
+			expect(
 				applyChunksToContent("foo\r\nbar\nbaz", "test.txt", [
 					{
 						changeContext: null,
@@ -296,7 +320,20 @@ describe("apply-patch apply", () => {
 						isEndOfFile: false,
 					},
 				]),
-			).toThrow(/mixed line endings/i)
+			).toBe("changed\r\nbar\nbaz")
+		})
+
+		it("preserves CR-only line endings and uses the first ending for inserted lines", () => {
+			expect(
+				applyChunksToContent("one\rtwo\rthree\r", "test.txt", [
+					{
+						changeContext: null,
+						oldLines: ["two"],
+						newLines: ["TWO", "extra"],
+						isEndOfFile: false,
+					},
+				]),
+			).toBe("one\rTWO\rextra\rthree\r")
 		})
 
 		it("should handle trailing empty line in pattern", () => {

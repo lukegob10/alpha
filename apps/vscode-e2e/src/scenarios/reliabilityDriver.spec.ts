@@ -16,7 +16,7 @@ const options = {
 	scenarioId: "completion-admission" as const,
 	phase: "run" as const,
 	workspace: "fixture",
-	hostVersion: "1.138.0",
+	hostVersion: "1.141.0",
 	providerMode: "live-copilot",
 	model: { id: "model" },
 	turns: 6,

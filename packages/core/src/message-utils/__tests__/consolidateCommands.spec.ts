@@ -5,6 +5,67 @@ import type { AlphaMessage } from "@alpha-code/types"
 import { consolidateCommands, COMMAND_OUTPUT_STRING } from "../consolidateCommands.js"
 
 describe("consolidateCommands", () => {
+	it.each(["command", "use_mcp_server"] as const)(
+		"reuses completed %s projections and invalidates mutable source fields and output changes",
+		(ask) => {
+			const request: AlphaMessage = {
+				ts: 1000,
+				type: "ask",
+				ask,
+				text: ask === "command" ? "git status" : JSON.stringify({ server: "fixture", tool: "read" }),
+				isAnswered: true,
+			}
+			const output: AlphaMessage = {
+				ts: 1001,
+				type: "say",
+				say: ask === "command" ? "command_output" : "mcp_server_response",
+				text: "first\r\nsecond",
+			}
+			const messages = [request, output]
+			const first = consolidateCommands(messages)[0]!
+			expect(consolidateCommands([...messages, { ts: 1002, type: "say", say: "text", text: "tail" }])[0]).toBe(
+				first,
+			)
+
+			request.isAnswered = false
+			const pending = consolidateCommands(messages)[0]!
+			expect(pending).not.toBe(first)
+			expect(pending.isAnswered).toBe(false)
+			delete request.isAnswered
+			expect(consolidateCommands(messages)[0]).not.toHaveProperty("isAnswered")
+			request.text = ask === "command" ? "git diff" : JSON.stringify({ server: "fixture", tool: "changed" })
+			output.text = "edited\r\noutput"
+			const edited = consolidateCommands(messages)[0]!
+			expect(edited.text).toContain(ask === "command" ? "git diff" : "changed")
+			expect(ask === "command" ? edited.text : JSON.parse(edited.text!).response).toContain("edited\r\noutput")
+			expect(consolidateCommands([request])[0]!.text).toBe(request.text)
+			expect(consolidateCommands(messages)[0]!.text).toBe(edited.text)
+			const reloaded = JSON.parse(JSON.stringify(messages)) as AlphaMessage[]
+			expect(consolidateCommands(reloaded)).toEqual(consolidateCommands(messages))
+			expect(consolidateCommands(reloaded)[0]).not.toBe(edited)
+			const exposed = consolidateCommands(messages)[0]!
+			exposed.text = "caller edit"
+			exposed.isAnswered = true
+			expect(consolidateCommands(messages)[0]!.text).toBe(edited.text)
+			expect(consolidateCommands(messages)[0]).not.toHaveProperty("isAnswered")
+		},
+	)
+
+	it("invalidates reordered outputs and never reuses partial projections", () => {
+		const request: AlphaMessage = { ts: 1000, type: "ask", ask: "command", text: "inspect" }
+		const first: AlphaMessage = { ts: 1001, type: "say", say: "command_output", text: "first" }
+		const second: AlphaMessage = { ts: 1002, type: "say", say: "command_output", text: "second" }
+		const completed = consolidateCommands([request, first, second])[0]!
+		const reordered = consolidateCommands([request, second, first])[0]!
+		expect(reordered).not.toBe(completed)
+		expect(reordered.text).toBe(`inspect\n${COMMAND_OUTPUT_STRING}second\nfirst`)
+		first.partial = true
+		expect(consolidateCommands([request, first])[0]).not.toBe(consolidateCommands([request, first])[0])
+		first.partial = false
+		request.partial = true
+		expect(consolidateCommands([request, first])[0]).not.toBe(consolidateCommands([request, first])[0])
+	})
+
 	it("associates batched outputs with their own approvals across other commands and reload", () => {
 		const messages: AlphaMessage[] = [
 			{ type: "ask", ask: "command", text: "git status", ts: 1000 },

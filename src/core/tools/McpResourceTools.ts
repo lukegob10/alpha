@@ -10,6 +10,7 @@ import {
 	validateMcpPaginationCursor,
 } from "../../services/mcp/pagination"
 import { formatResponse } from "../prompts/responses"
+import { captureTaskSessionApprovalAuthority } from "../auto-approval/taskSessionApprovalGrants"
 import { BaseTool, type ToolCallbacks } from "./BaseTool"
 
 type ListParams = { server?: string; cursor?: string }
@@ -27,13 +28,53 @@ function connectedServers(hub: McpHub): McpServer[] {
 	return hub.getServers().filter((server) => !server.disabled && server.status === "connected")
 }
 
-async function approveResourceRequest(callbacks: ToolCallbacks, server: McpServer, uri: string): Promise<boolean> {
+/** Resource handlers select their target at execution; reusable approvals must bind that exact connection. */
+export function captureMcpResourceAuthority(task: Task, hub: McpHub, server: McpServer) {
+	const serverName = server.name
+	const source = server.source
+	const connection = hub.connections?.find((candidate) => candidate.server === server)
+	const client = connection?.client
+	return {
+		sessionApprovalAuthority: captureTaskSessionApprovalAuthority(
+			[hub, server, ...(connection ? [connection] : []), ...(client ? [client] : [])],
+			[serverName, source],
+		),
+		assertCurrent: () => {
+			const currentConnection = hub.connections?.find((candidate) => candidate.server === server)
+			if (
+				task.providerRef.deref()?.getMcpHub() !== hub ||
+				!connectedServers(hub).includes(server) ||
+				server.name !== serverName ||
+				server.source !== source ||
+				currentConnection !== connection ||
+				currentConnection?.client !== client
+			) {
+				throw new Error(`MCP server "${serverName}" changed during resource access`)
+			}
+		},
+	}
+}
+
+async function approveResourceRequest(
+	callbacks: ToolCallbacks,
+	server: McpServer,
+	uri: string,
+	sessionApprovalAuthority: string,
+): Promise<boolean> {
 	const request = {
 		type: "access_mcp_resource",
 		serverName: server.name,
+		source: server.source,
 		uri,
 	} satisfies AlphaAskUseMcpServer
-	const approved = await callbacks.askApproval("use_mcp_server", JSON.stringify(request))
+	const approved = await callbacks.askApproval(
+		"use_mcp_server",
+		JSON.stringify(request),
+		undefined,
+		undefined,
+		undefined,
+		sessionApprovalAuthority,
+	)
 	callbacks.signal?.throwIfAborted()
 	if (!approved) {
 		callbacks.setResultMetadata?.({ status: "denied" })
@@ -62,21 +103,23 @@ async function listResources<T extends object>(
 			: available.sort((left, right) => left.name.localeCompare(right.name))
 		if (params.server && targets.length === 0)
 			throw new Error(`MCP server "${params.server}" is not connected or enabled`)
+		const authorities = new Map(targets.map((server) => [server, captureMcpResourceAuthority(task, hub, server)]))
 		const assertCurrentServer = (server: McpServer) => {
 			signal?.throwIfAborted()
-			if (!connectedServers(hub).includes(server)) {
-				throw new Error(`MCP server "${server.name}" changed during resource listing`)
-			}
+			authorities.get(server)!.assertCurrent()
 		}
 		for (const server of targets) {
+			assertCurrentServer(server)
 			if (
 				!(await approveResourceRequest(
 					callbacks,
 					server,
 					field === "resources" ? "resources/list" : "resources/templates/list",
+					authorities.get(server)!.sessionApprovalAuthority,
 				))
 			)
 				return
+			assertCurrentServer(server)
 		}
 		if (params.server) {
 			const server = targets[0]
@@ -160,13 +203,13 @@ export class ReadMcpResourceTool extends BaseTool<"read_mcp_resource"> {
 			const hub = mcpHub(task)
 			const server = connectedServers(hub).find((candidate) => candidate.name === params.server)
 			if (!server) throw new Error(`MCP server "${params.server}" is not connected or enabled`)
+			const authority = captureMcpResourceAuthority(task, hub, server)
 			const assertCurrentServer = () => {
 				signal?.throwIfAborted()
-				if (!connectedServers(hub).includes(server)) {
-					throw new Error(`MCP server "${server.name}" changed during resource read`)
-				}
+				authority.assertCurrent()
 			}
-			if (!(await approveResourceRequest(callbacks, server, params.uri))) return
+			if (!(await approveResourceRequest(callbacks, server, params.uri, authority.sessionApprovalAuthority)))
+				return
 			assertCurrentServer()
 			await task.markMemoryExternalContext?.()
 			assertCurrentServer()

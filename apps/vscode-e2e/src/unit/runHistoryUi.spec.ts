@@ -12,7 +12,7 @@ const verifiedHost = {
 	ownershipGate: "verified",
 	captureComplete: true,
 	hostExitObserved: true,
-	actualVSCodeVersion: "1.138.0",
+	actualVSCodeVersion: "1.141.0",
 } as const
 
 function pointerDocumentFixture() {
@@ -107,6 +107,28 @@ test("history pointer receipts preserve trusted flags with bounded metadata and 
 	assert.equal(replaced.events.length, 8)
 	assert.equal(fixture.listeners.size, 0)
 	fixture.observe("dispose")
+	assert.equal(fixture.listeners.size, 0)
+})
+
+test("history pointer receipts distinguish trusted clicks from synthetic clicks", () => {
+	const fixture = pointerDocumentFixture()
+	fixture.observe("install")
+	try {
+		const receive = fixture.listeners.get("click")
+		assert.equal(typeof receive, "function", "Record click delivery as well as hover")
+		for (const isTrusted of [false, true])
+			receive!({ type: "click", isTrusted, clientX: 120, clientY: 52, target: fixture.target })
+		const observed = fixture.observe("snapshot")
+		assert.deepEqual(
+			observed.events.map((event: { type: string; trusted: boolean }) => [event.type, event.trusted]),
+			[
+				["click", false],
+				["click", true],
+			],
+		)
+	} finally {
+		fixture.observe("dispose")
+	}
 	assert.equal(fixture.listeners.size, 0)
 })
 

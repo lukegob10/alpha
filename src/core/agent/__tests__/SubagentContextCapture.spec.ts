@@ -155,6 +155,7 @@ function captureNative(
 		effectiveText: "Frozen repository and user instructions",
 		sources: [{ kind: "agents", ref: "/workspace/AGENTS.md", text: "Repository instructions" }],
 	},
+	preservePrefix = false,
 ) {
 	const input = {
 		parentTaskId: "native-parent",
@@ -167,12 +168,292 @@ function captureNative(
 		workspaceRoots: ["/workspace"],
 		modelRoute: childRoute,
 		runtimePolicy,
-		historyInheritance: { parentModelRoute: route, finalAssistantMessageIndexes, contextBaselineVerified },
+		historyInheritance: {
+			parentModelRoute: route,
+			finalAssistantMessageIndexes,
+			contextBaselineVerified,
+			preservePrefix,
+		},
 	}
 	return captureSubagentContext(input)
 }
 
 describe("native sub-agent conversation forks", () => {
+	it("restores a native parent's archive before capturing a child on another model route", () => {
+		const original: ApiMessage[] = [
+			{ role: "user", content: "Approved corrected requirement: preserve the configuration." },
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: "read-before-compaction", name: "read_file", input: { path: "config.ts" } },
+				],
+			},
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "read-before-compaction", content: "Configuration evidence" },
+				],
+			},
+			{
+				role: "assistant",
+				content: "The configuration must survive the change. Configuration evidence was reviewed.",
+			},
+		]
+		const stored: ApiMessage[] = [
+			...original.map((message) => ({ ...message, condenseParent: "native-summary" })),
+			{
+				role: "assistant",
+				content: [],
+				isSummary: true,
+				condenseId: "native-summary",
+				provider_state_scope: { provider: "openai-native", modelId: "gpt-6.1-sol" },
+				native_compaction: {
+					protocol: "openai-responses",
+					provider: "openai-native",
+					modelId: "gpt-6.1-sol",
+					responseId: "compact-parent",
+					output: [{ type: "compaction", encrypted_content: "foreign-native-checkpoint" }],
+				},
+			},
+		]
+		const before = structuredClone(stored)
+		const childRoute = { ...route, provider: "vscode-lm", modelId: "different-child-model" }
+		const control = captureNative("all", original, [3], childRoute)
+
+		const captured = captureNative("all", stored, [3], childRoute)
+
+		expect(captured.historyFork).toEqual(control.historyFork)
+		expect(captured.historyFork.kind).toBe("native")
+		const serialized = JSON.stringify(captured.historyFork)
+		expect(serialized).toContain("Approved corrected requirement")
+		expect(serialized).toContain("Configuration evidence")
+		expect(serialized).not.toContain("foreign-native-checkpoint")
+		expect(captured.manifest.runtimePolicy).toEqual(control.manifest.runtimePolicy)
+		assertSubagentHistoryFork(captured.historyFork, captured.manifest)
+		expect(stored).toEqual(before)
+	})
+
+	it("preserves completed tool transactions, commentary and signed reasoning on compatible full forks", () => {
+		const parentHistory: ApiMessage[] = [
+			{
+				role: "user",
+				content: "Inspect the parser",
+				input_origin: "human",
+				queued_message_ids: ["parent-input"],
+			},
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Inspect the implementation", signature: "signed-thinking" },
+					{ type: "text", text: "Reading the parser" },
+					{ type: "tool_use", id: "read-parser", name: "read_file", input: { path: "parser.ts" } },
+				],
+				phase: "commentary",
+				goal_usage_receipts: [],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read-parser", content: "parser body" }] },
+			{ role: "assistant", content: "Ready to delegate", phase: "partial_answer" },
+		]
+		const captured = captureNative("all", parentHistory, [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.requiresContextRebuild).toBe(true)
+		expect(captured.historyFork.messages).toHaveLength(4)
+		expect(captured.historyFork.messages[1].content).toEqual(parentHistory[1].content)
+		expect(captured.historyFork.messages[2].content).toEqual(parentHistory[2].content)
+		expect(captured.historyFork.messages.every(({ input_origin }) => input_origin === "agent")).toBe(true)
+		expect(captured.historyFork.messages[0]).not.toHaveProperty("queued_message_ids")
+		expect(captured.historyFork.messages[1]).not.toHaveProperty("goal_usage_receipts")
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+		expect(parentHistory[0].input_origin).toBe("human")
+	})
+
+	it("redacts full-prefix credentials without altering signed reasoning bytes", () => {
+		const secret = "sk-proj-abcdefghijklmnop123456"
+		const nativeHistory: ApiMessage[] = [
+			{ role: "user", content: `Inspect API_KEY=${secret}` },
+			{
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "Inspect the implementation", signature: secret },
+					{
+						type: "tool_use",
+						id: "read",
+						name: "read_file",
+						input: { value: secret, api_key: "fixture-secret", Authorization: "Bearer short" },
+					},
+				],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read", content: `API_KEY=${secret}` }] },
+		]
+		const captured = captureNative("all", nativeHistory, [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages[0].content).not.toContain(secret)
+		expect(captured.historyFork.messages[1].content).toMatchObject([
+			{ type: "thinking", signature: secret },
+			{
+				type: "tool_use",
+				input: {
+					value: "[REDACTED CREDENTIAL]",
+					api_key: "[REDACTED CREDENTIAL]",
+					Authorization: "[REDACTED CREDENTIAL]",
+				},
+			},
+		])
+		expect(JSON.stringify(captured.historyFork.messages[2])).not.toContain(secret)
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+	})
+
+	it("rejects rehashed full-prefix seeds carrying authority or unfinished tools", () => {
+		const captured = captureNative("all", [{ role: "user", content: "Request" }], [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		for (const messages of [
+			[{ ...captured.historyFork.messages[0], input_origin: "human" }],
+			[{ ...captured.historyFork.messages[0], queued_message_ids: ["parent-input"] }],
+			[
+				...captured.historyFork.messages,
+				{
+					role: "assistant",
+					input_origin: "agent",
+					content: [{ type: "tool_use", id: "pending", name: "read_file", input: {} }],
+				},
+			],
+		]) {
+			expect(() =>
+				assertSubagentHistoryFork(
+					{ ...captured.historyFork, messages, digest: digestValue(messages) },
+					captured.manifest,
+				),
+			).toThrow()
+		}
+	})
+
+	it("retains standalone encrypted reasoning and VS Code continuation state on compatible prefixes", () => {
+		const reasoning = {
+			type: "reasoning",
+			id: "reasoning-item",
+			encrypted_content: "opaque-encrypted-content",
+		} as ApiMessage
+		const final = {
+			role: "assistant" as const,
+			content: "Answer",
+			phase: "final_answer" as const,
+			id: "parent-response-chain",
+			vscodeLmStatefulMarker: "opaque-vscode-state",
+		}
+		const captured = captureNative(
+			"all",
+			[{ role: "user", content: "Request" }, reasoning, final],
+			[],
+			route,
+			false,
+			undefined,
+			true,
+		)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages[1]).toEqual({ ...reasoning, input_origin: "agent" })
+		expect(captured.historyFork.messages[2]).toMatchObject({ vscodeLmStatefulMarker: "opaque-vscode-state" })
+		expect(captured.historyFork.messages[2]).not.toHaveProperty("id")
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+	})
+
+	it.each([
+		{ name: "legacy", arguments: { api_key: "fixture-secret" } },
+		{ name: "legacy", arguments: '{"api_key":"fixture-secret"}' },
+		{ name: "legacy", input: "API_KEY=fixture-secret" },
+		{ function: { name: "legacy", arguments: '{"Authorization":"Bearer short"}' } },
+	])("redacts ordinary legacy tool arguments while retaining call identity (%j)", (definition) => {
+		const nativeHistory = [
+			{ role: "user", content: "Inspect the parser" },
+			{
+				role: "assistant",
+				reasoning_content: "password=fixture-secret",
+				text: "api_key=fixture-secret",
+				content: [{ type: "tool_call", tool_call_id: "legacy-call", ...definition }],
+			},
+			{ role: "user", content: [{ type: "tool_result", tool_call_id: "legacy-call", content: "Done" }] },
+		] as ApiMessage[]
+		const captured = captureNative("all", nativeHistory, [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		const inherited = JSON.stringify(captured.historyFork.messages[1])
+		expect(inherited).not.toMatch(/fixture-secret|Bearer short/)
+		expect(inherited).toContain("[REDACTED CREDENTIAL]")
+		expect(inherited).toContain('"tool_call_id":"legacy-call"')
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+	})
+
+	it("rebuilds host environment context once without removing user quotations or completed tools", () => {
+		const literal = "Explain this literal <environment_details>quoted example</environment_details>"
+		const standaloneLiteral = "<environment_details>quoted example</environment_details>"
+		const hostEnvironment = "<environment_details>\n# Environment Snapshot\nparent cwd\n</environment_details>"
+		const nativeHistory: ApiMessage[] = [
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: literal },
+					{ type: "text", text: standaloneLiteral },
+					{ type: "text", text: hostEnvironment },
+				],
+			},
+			{ role: "assistant", content: [{ type: "tool_use", id: "read", name: "read_file", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read", content: "body" }] },
+			{
+				role: "user",
+				content: [
+					{
+						type: "text",
+						text: "<user_message><environment_details>human quotation</environment_details></user_message>",
+					},
+				],
+			},
+		]
+		const captured = captureNative("all", nativeHistory, [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages[0].content).toEqual([
+			{ type: "text", text: literal },
+			{ type: "text", text: standaloneLiteral },
+		])
+		expect(captured.historyFork.messages.slice(1).map(({ content }) => content)).toEqual(
+			nativeHistory.slice(1).map(({ content }) => content),
+		)
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+		const reusable = captureNative("all", nativeHistory, [], route, true, undefined, true)
+		if (reusable.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(reusable.historyFork.messages[0].content).toEqual(nativeHistory[0].content)
+	})
+
+	it("does not inherit an unfinished invoking tool transaction", () => {
+		const parentHistory: ApiMessage[] = [
+			{ role: "user", content: "Inspect the parser" },
+			{ role: "assistant", content: "I will delegate", phase: "commentary" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "spawn-open", name: "spawn_agent", input: {} }] },
+		]
+		const captured = captureNative("all", parentHistory, [], route, false, undefined, true)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages.map(({ content }) => content)).toEqual([
+			"Inspect the parser",
+			"I will delegate",
+		])
+		expect(() => assertSubagentHistoryFork(captured.historyFork, captured.manifest)).not.toThrow()
+	})
+
+	it("rebuilds conversation evidence across model boundaries instead of replaying signed tools", () => {
+		const parentHistory: ApiMessage[] = [
+			{ role: "user", content: "Inspect the parser" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "read", name: "read_file", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read", content: "parser body" }] },
+		]
+		const captured = captureNative(
+			"all",
+			parentHistory,
+			[],
+			{ ...route, modelId: "another-model" },
+			false,
+			undefined,
+			true,
+		)
+		if (captured.historyFork.kind !== "native") throw new Error("Expected a native history fork")
+		expect(captured.historyFork.messages.map(({ content }) => content)).toEqual(["Inspect the parser"])
+	})
 	it("does not capture retired preferences or their context references", () => {
 		const captured = captureNative("none", [])
 		expect(captured.manifest).not.toHaveProperty("personality")
@@ -975,6 +1256,69 @@ describe("native sub-agent conversation forks", () => {
 })
 
 describe("sub-agent context capture", () => {
+	it.each([false, true])("does not inspect unselected history for a none fork (native=%s)", (native) => {
+		const readContent = vi.fn(() => "Unselected parent transcript evidence")
+		const parentHistory: ApiMessage[] = Array.from({ length: 100 }, (_, index) => ({
+			role: index % 2 === 0 ? "user" : "assistant",
+			get content() {
+				return readContent()
+			},
+		}))
+		const input: CaptureSubagentContextInput = {
+			parentTaskId: "parent-task",
+			capturedAt: 1_700_000_000_000,
+			forkTurns: "none",
+			history: parentHistory,
+			...(native ? { historyInheritance: { parentModelRoute: route, preservePrefix: true } } : {}),
+			instructions: {
+				effectiveText: "Frozen instructions",
+				sources: [{ kind: "user", ref: "parent:user", text: "Frozen instructions" }],
+			},
+			skills: [{ name: "review", path: "/skills/review/SKILL.md", content: "Frozen skill instructions" }],
+			cwd: "/workspace",
+			workspaceRoots: ["/workspace"],
+			modelRoute: route,
+			runtimePolicy,
+		}
+		const captured = captureSubagentContext(input)
+
+		expect(readContent).not.toHaveBeenCalled()
+		expect(captured).toEqual(captureSubagentContext({ ...input, history: [] }))
+		expect(captured.historyFork).toEqual({ kind: "none" })
+		expect(captured.selectedTurns).toEqual([])
+		expect(captured.inheritedTurnContext).toBe("")
+		expect(isValidSubagentContextManifest(captured.manifest)).toBe(true)
+	})
+
+	it("binds workspace ownership into policy integrity without changing legacy manifests", () => {
+		// Codex child_config.rs (retrieved 2026-10-29) inherits the parent's cwd.
+		// Keep absence distinct so retained isolated Workers resume in their original checkout.
+		const legacy = capture("none").manifest
+		expect(legacy.runtimePolicy).not.toHaveProperty("sharedWorkspace")
+		for (const sharedWorkspace of [true, false]) {
+			const { manifest } = captureSubagentContext({
+				parentTaskId: "parent-task",
+				capturedAt: 1_700_000_000_000,
+				forkTurns: "none",
+				history: [],
+				instructions: {
+					effectiveText: "Frozen instructions",
+					sources: [{ kind: "user", ref: "parent:user", text: "Frozen instructions" }],
+				},
+				skills: [],
+				cwd: "/workspace",
+				workspaceRoots: ["/workspace"],
+				modelRoute: route,
+				runtimePolicy: { ...runtimePolicy, sharedWorkspace },
+			})
+			const restored = JSON.parse(serializeSubagentContextManifest(manifest))
+			expect(restored.runtimePolicy.sharedWorkspace).toBe(sharedWorkspace)
+			expect(isValidSubagentContextManifest(restored)).toBe(true)
+			delete restored.runtimePolicy.sharedWorkspace
+			expect(isValidSubagentContextManifest(restored)).toBe(false)
+		}
+	})
+
 	it("round-trips parent authority, scope, mode and credential-free MCP grants with their digests", () => {
 		const policy: CaptureSubagentContextInput["runtimePolicy"] = {
 			...runtimePolicy,
@@ -1155,6 +1499,20 @@ describe("sub-agent context capture", () => {
 			requestedModelId: "gpt-6-sol",
 			requestedReasoningEffort: "high",
 		})
+	})
+
+	it.each([
+		{ kind: "effort", effort: "high" },
+		{ kind: "off" },
+		{ kind: "on" },
+		{ kind: "default" },
+		{ kind: "custom", value: "adaptive" },
+	] as const)("freezes the effective reasoning stamp across manifest reload: %j", (effectiveReasoning) => {
+		const { manifest } = capture("none", { ...route, effectiveReasoning })
+		const serialized = serializeSubagentContextManifest(manifest)
+		const restored = subagentContextManifestSchema.parse(JSON.parse(serialized))
+		expect(restored.modelRoute.effectiveReasoning).toEqual(effectiveReasoning)
+		expect(isValidSubagentContextManifest(restored)).toBe(true)
 	})
 
 	it.each([{}, { enableReasoningEffort: false, reasoningEffort: "disable" as const }])(
@@ -1538,7 +1896,7 @@ describe("sub-agent context capture", () => {
 
 		expect(turns).toHaveLength(1)
 		expect(turns[0]?.messages[0]?.text).toContain(literal)
-		expect(turns[0]?.messages[0]?.text).toContain("You did not use a tool in your previous response")
+		expect(turns[0]?.messages[0]?.text).toContain(generatedErrorLiteral)
 		expect(turns[0]?.messages[0]?.text).toContain("quoted, not delivered")
 		expect(turns[0]?.messages[0]?.text).toContain(environmentLiteral)
 	})
@@ -1592,7 +1950,7 @@ describe("sub-agent context capture", () => {
 
 		expect(turns).toHaveLength(1)
 		expect(turns[0]?.sourceMessageIndexes).toEqual([0, 1])
-		expect(turns[0]?.messages[1]?.text).toContain("You did not use a tool in your previous response")
+		expect(turns[0]?.messages[1]?.text).toContain(generatedErrorLiteral)
 		expect(turns[0]?.messages[1]?.text).toContain(pacingLiteral)
 		expect(turns[0]?.messages[1]?.text).toContain("assistant quotation")
 		expect(turns[0]?.messages[1]?.text).toContain(environmentLiteral)

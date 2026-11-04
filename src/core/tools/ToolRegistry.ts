@@ -43,7 +43,7 @@ import { askFollowupQuestionTool } from "./AskFollowupQuestionTool"
 import { requestUserInputTool } from "./RequestUserInputTool"
 import { requestUserInputAsyncTool } from "./RequestUserInputAsyncTool"
 import { attemptCompletionTool, type AttemptCompletionCallbacks } from "./AttemptCompletionTool"
-import { BaseTool, formatCommandToolResult, type ToolCallbacks } from "./BaseTool"
+import { BaseTool, formatCommandToolResult, type PostToolUseInvocation, type ToolCallbacks } from "./BaseTool"
 import { createToolFailure } from "./ToolFailure"
 import { cancelAgentTool } from "./CancelAgentTool"
 import { closeAgentTool } from "./CloseAgentTool"
@@ -80,7 +80,6 @@ import { newTaskTool } from "./NewTaskTool"
 import { manageCommandTool } from "./ManageCommandTool"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { viewImageTool } from "./ViewImageTool"
-import { runSlashCommandTool } from "./RunSlashCommandTool"
 import { searchReplaceTool } from "./SearchReplaceTool"
 import { sendMessageTool } from "./SendMessageTool"
 import { reportProgressTool } from "./ReportProgressTool"
@@ -90,6 +89,7 @@ import { updateTodoListTool } from "./UpdateTodoListTool"
 import { useMcpToolTool } from "./UseMcpToolTool"
 import { waitAgentTool } from "./WaitAgentTool"
 import { writeToFileTool } from "./WriteToFileTool"
+import { captureTaskSessionApprovalAuthority } from "../auto-approval/taskSessionApprovalGrants"
 import {
 	clickElementTool,
 	dragElementTool,
@@ -160,6 +160,8 @@ export interface PreparedCommandRead {
 
 export interface ToolDescriptor {
 	name: string
+	/** Opaque captured executor authority; session grants cannot transfer to a replacement executor. */
+	sessionApprovalAuthority?: string
 	/** Handler metadata owns execution status when result text is opaque external data. */
 	statusSource?: "handler" | "structured_output"
 	/** Alternate model-facing names. All entries resolve to `name`. */
@@ -202,7 +204,13 @@ export interface ToolRegistryOptions {
 	/** Original targets owned by the same captured schemas, including sanitized-name collisions. */
 	mcpToolTargets?: ReadonlyMap<
 		string,
-		{ serverName: string; toolName: string; source?: "global" | "project"; parallelRead?: boolean }
+		{
+			serverName: string
+			toolName: string
+			source?: "global" | "project"
+			parallelRead?: boolean
+			sessionApprovalAuthority?: string
+		}
 	>
 	includeCustomTools?: boolean
 	/** Captured custom definitions and schemas from one catalog boundary. */
@@ -297,7 +305,31 @@ class ExecCommandToolAdapter extends BaseTool<"exec_command"> {
 
 	async execute(params: NativeToolArgs["exec_command"], task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const invocation = normalizeExecCommandInvocation(params as unknown as Record<string, unknown>, callbacks)
-		await this.legacyTool.execute(invocation.params, task, invocation.callbacks)
+		if (!callbacks.capturePostToolUse) return this.legacyTool.execute(invocation.params, task, invocation.callbacks)
+		const origin: PostToolUseInvocation | undefined = callbacks.toolCallId
+			? { callId: callbacks.toolCallId, name: this.name, arguments: structuredClone(params) }
+			: undefined
+		let sessionId: number | undefined
+		let completedOrigin: PostToolUseInvocation | undefined
+		await this.legacyTool.execute(invocation.params, task, {
+			...invocation.callbacks,
+			setResultMetadata: (metadata) => {
+				if (origin && typeof metadata.commandResult?.session_id === "number") {
+					sessionId = metadata.commandResult.session_id
+					commandSessionRegistry.bindPostToolUse(task, sessionId, origin)
+				}
+				if (
+					origin &&
+					metadata.status === "success" &&
+					metadata.executionStatus !== "running" &&
+					typeof metadata.exitCode === "number"
+				) {
+					completedOrigin ??=
+						sessionId === undefined ? origin : commandSessionRegistry.takePostToolUse(task, sessionId)
+				}
+				invocation.callbacks.setResultMetadata?.({ ...metadata, postToolUse: completedOrigin ?? null })
+			},
+		})
 	}
 
 	override async handlePartial(task: Task, block: ToolUse<"exec_command">): Promise<void> {
@@ -334,6 +366,10 @@ function normalizeExecCommandInvocation(
 	const usesExecCommandArgs = typeof raw.cmd === "string"
 	const command = typeof raw.cmd === "string" ? raw.cmd : typeof raw.command === "string" ? raw.command : ""
 	const workdir = typeof raw.workdir === "string" ? raw.workdir : typeof raw.cwd === "string" ? raw.cwd : undefined
+	const requestedShell = raw.shell
+	const requestedLogin = raw.login
+	if (requestedShell != null && typeof requestedShell !== "string") throw new Error("shell must be a string")
+	if (requestedLogin != null && typeof requestedLogin !== "boolean") throw new Error("login must be a boolean")
 	const normalizedYield = normalizeExecCommandYieldTimeMs(raw.yield_time_ms)
 	const legacyTimeout = typeof raw.timeout === "number" ? raw.timeout : undefined
 	const maxOutputTokens =
@@ -344,6 +380,8 @@ function normalizeExecCommandInvocation(
 				: undefined
 	const nativeParams: NativeToolArgs["execute_command"] = {
 		command,
+		...(requestedShell != null ? { shell: requestedShell } : {}),
+		...(requestedLogin != null ? { login: requestedLogin } : {}),
 		...(workdir ? { cwd: workdir } : {}),
 		...(usesExecCommandArgs ? { tty: raw.tty === true } : {}),
 		...(usesExecCommandArgs
@@ -441,6 +479,7 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 				: Math.max(5_000, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
 		const boundedCallbacks = withMaxOutputTokens(callbacks, maxOutputTokens, true)
 		let returnedResult = false
+		let completedOrigin: PostToolUseInvocation | undefined
 		await manageCommandTool.execute(
 			{
 				execution_id: session.executionId,
@@ -451,6 +490,20 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 			task,
 			{
 				...boundedCallbacks,
+				setResultMetadata: (metadata) => {
+					if (!callbacks.capturePostToolUse) {
+						boundedCallbacks.setResultMetadata?.(metadata)
+						return
+					}
+					if (
+						metadata.status === "success" &&
+						metadata.executionStatus !== "running" &&
+						typeof metadata.exitCode === "number"
+					) {
+						completedOrigin ??= commandSessionRegistry.takePostToolUse(task, params.session_id)
+					}
+					boundedCallbacks.setResultMetadata?.({ ...metadata, postToolUse: completedOrigin ?? null })
+				},
 				pushToolResult: (content) => {
 					boundedCallbacks.pushToolResult(content)
 					returnedResult = true
@@ -661,7 +714,6 @@ const TOOL_NAMES = [
 	"new_task",
 	"read_command_output",
 	"view_image",
-	"run_slash_command",
 	"search_replace",
 	"skill",
 	"update_plan",
@@ -713,6 +765,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 				: name === "create_ticket" ||
 					  name === "update_ticket" ||
 					  name === "delete_ticket" ||
+					  name === "delete_tickets" ||
 					  name === "memories_add_ad_hoc_note" ||
 					  name === "use_mcp_tool" ||
 					  name.startsWith("mcp") ||
@@ -725,7 +778,7 @@ export function getToolCapabilities(name: string, options: ToolCapabilityOptions
 		concurrency,
 		sideEffects,
 		...(name === "exec_command" && options.parallelExecutionEnabled !== false ? { parallelCommandRead: true } : {}),
-		controlFlow: BARRIER_TOOLS.has(name) || name === "run_slash_command" || name === "skill",
+		controlFlow: BARRIER_TOOLS.has(name) || name === "skill",
 		// Individual tool handlers own the exact approval prompt. This flag is
 		// metadata for scheduling and future policy decisions, not a second prompt.
 		requiresApproval:
@@ -1091,7 +1144,6 @@ export class ToolRegistry {
 		this.registerBuiltIn("view_image", viewImageTool, schemas, (context) =>
 			executeViewImage({ ...context, callbacks: { ...context.callbacks, supportsImages } }),
 		)
-		this.registerBuiltIn("run_slash_command", runSlashCommandTool, schemas)
 		this.registerBuiltIn("search_replace", searchReplaceTool, schemas)
 		this.registerBuiltIn("skill", skillTool, schemas)
 		this.registerBuiltIn("update_plan", updateTodoListTool, schemas)
@@ -1136,6 +1188,7 @@ export class ToolRegistry {
 			this.register({
 				name,
 				aliases: [],
+				sessionApprovalAuthority: capturedTarget?.sessionApprovalAuthority,
 				schema: canonicalizeSchema(schema),
 				capabilities: {
 					...getToolCapabilities(name),
@@ -1211,6 +1264,10 @@ export class ToolRegistry {
 				this.register({
 					name: customTool.name,
 					aliases: [],
+					sessionApprovalAuthority: captureTaskSessionApprovalAuthority(
+						[execute, ...(parameters ? [parameters] : [])],
+						schema,
+					),
 					schema,
 					capabilities: getToolCapabilities("custom_tool"),
 					statusSource: "handler",

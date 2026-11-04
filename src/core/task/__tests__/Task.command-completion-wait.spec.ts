@@ -9,8 +9,10 @@ function trackLiveBackgroundProcess(task: Task) {
 	const evidence = task.getCommandExecutionEvidence()[0]!
 	const process = { executionId: evidence.executionId, isSettled: false }
 	const terminal = { taskId: task.taskId, process, running: true }
-	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as unknown as AlphaTerminal])
-	return { process, terminal }
+	const getTerminals = vi
+		.spyOn(TerminalRegistry, "getTerminals")
+		.mockReturnValue([terminal as unknown as AlphaTerminal])
+	return { process, terminal, getTerminals }
 }
 
 function createFixture(request: string, command: string, overrides: Partial<CommandExecutionEvidence> = {}) {
@@ -92,7 +94,7 @@ async function attachMutationLedger(task: Task) {
 	return { store, persistence, executionId }
 }
 
-describe("bounded completion command observation", () => {
+describe("completion command observation", () => {
 	beforeEach(() => {
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
 	})
@@ -248,7 +250,7 @@ describe("bounded completion command observation", () => {
 		})
 	})
 
-	it("reaches a bounded recoverable boundary when a ready preview service intentionally remains alive", async () => {
+	it("bounds command observation when a preview has no live process owner", async () => {
 		const fixture = createFixture(
 			"Build a website and launch its development preview.",
 			"pnpm dev --host 127.0.0.1",
@@ -259,11 +261,14 @@ describe("bounded completion command observation", () => {
 			return decision
 		})
 		try {
-			// The service has yielded, its browser preview succeeded, and it deliberately has no exit.
-			// A bounded pause is sufficient here; this test does not demand unverified completion.
+			// A successful browser preview alone cannot establish ownership of a live process.
 			await vi.advanceTimersByTimeAsync(60_000)
-			expect(result, "Ready preview service must not retain the final candidate indefinitely").toBeDefined()
-			expect(result?.classification).not.toBe("waiting")
+			expect(result).toMatchObject({
+				allowed: false,
+				classification: "blocked",
+				reasonCode: "runtime_timeout",
+			})
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
 		} finally {
 			fixture.cancellation.abort(new Error("Probe cleanup"))
 			await waiting
@@ -271,7 +276,10 @@ describe("bounded completion command observation", () => {
 	})
 
 	it("does not complete finite verification early while its process remains healthy", async () => {
-		const fixture = createFixture("Implement the website and verify it.", "pnpm exec vitest run")
+		const fixture = createFixture("Implement the website and verify it.", "pnpm exec vitest run", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		trackLiveBackgroundProcess(fixture.task)
 		let settled = false
 		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
 			settled = true
@@ -279,19 +287,149 @@ describe("bounded completion command observation", () => {
 		})
 		try {
 			await vi.advanceTimersByTimeAsync(60_000)
-			expect(settled).toBe(true)
-			expect(await waiting).toMatchObject({
-				allowed: false,
-				classification: "blocked",
-				reasonCode: "runtime_timeout",
-			})
+			expect(settled).toBe(false)
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
 			expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
 			fixture.task.completeCommandExecution("command-call", { exitCode: 0 }, "physical-command")
 			await vi.advanceTimersByTimeAsync(250)
-			expect(await fixture.task.waitForCompletionGateDecision()).toMatchObject({
+			expect(await waiting).toMatchObject({
 				allowed: true,
 				classification: "ready",
 			})
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "succeeded", exitCode: 0 })
+		} finally {
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it.each(["missing", "settled", "foreign-task", "reused-execution", "stopped"])(
+		"starts bounded observation only after a healthy process loses ownership: %s",
+		async (loss) => {
+			const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+				verificationChangeSetIds: ["changed-files"],
+			})
+			const { process, terminal, getTerminals } = trackLiveBackgroundProcess(fixture.task)
+			// A process can settle asynchronously while its terminal has returned to the idle set.
+			getTerminals.mockImplementation((busy) => (busy ? [] : [terminal as unknown as AlphaTerminal]))
+			let result: Awaited<ReturnType<Task["waitForCompletionGateDecision"]>> | undefined
+			const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
+				result = decision
+				return decision
+			})
+			try {
+				await vi.advanceTimersByTimeAsync(60_000)
+				expect(result).toBeUndefined()
+				if (loss === "missing") getTerminals.mockReturnValue([])
+				else if (loss === "settled") process.isSettled = true
+				else if (loss === "foreign-task") terminal.taskId = "another-task"
+				else if (loss === "reused-execution") process.executionId = "another-execution"
+				else terminal.running = false
+
+				await vi.advanceTimersByTimeAsync(29_000)
+				expect(result).toBeUndefined()
+				await vi.advanceTimersByTimeAsync(2_000)
+				expect(result).toMatchObject({
+					allowed: false,
+					classification: "blocked",
+					reasonCode: "runtime_timeout",
+				})
+				expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({
+					executionId: "physical-command",
+					status: "running",
+				})
+				expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
+			} finally {
+				fixture.cancellation.abort(new Error("Probe cleanup"))
+				await waiting
+			}
+		},
+	)
+
+	it("interrupts a healthy command wait after the observation window without changing its execution evidence", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		trackLiveBackgroundProcess(fixture.task)
+		let settled = false
+		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
+			settled = true
+			return decision
+		})
+		try {
+			await vi.advanceTimersByTimeAsync(60_000)
+			expect(settled).toBe(false)
+			fixture.cancellation.abort(new Error("User interrupted command observation"))
+			expect(await waiting).toMatchObject({
+				allowed: false,
+				classification: "blocked",
+				reasonCode: "interrupted",
+			})
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
+		} finally {
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("ignores lookup-exempt background evidence while waiting for a healthy scoped command", async () => {
+		const fixture = createFixture("Where is the retry limit defined?", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		const orphan: CommandExecutionEvidence = {
+			toolCallId: "orphan-call",
+			executionId: "orphan-execution",
+			command: "node preview.cjs",
+			status: "running",
+			startedAt: Date.now(),
+			returnedInBackground: true,
+		}
+		Object.assign(fixture.task, {
+			commandExecutionEvidence: new Map([
+				["command-call", fixture.task.getCommandExecutionEvidence()[0]!],
+				[orphan.toolCallId, orphan],
+			]),
+		})
+		trackLiveBackgroundProcess(fixture.task)
+		let result: Awaited<ReturnType<Task["waitForCompletionGateDecision"]>> | undefined
+		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
+			result = decision
+			return decision
+		})
+		try {
+			await vi.advanceTimersByTimeAsync(60_000)
+			expect(result).toBeUndefined()
+			fixture.task.completeCommandExecution("command-call", { exitCode: 0 }, "physical-command")
+			await vi.advanceTimersByTimeAsync(250)
+			expect(await waiting).toMatchObject({ allowed: true, classification: "ready" })
+			expect(orphan).toMatchObject({ status: "running", executionId: "orphan-execution" })
+		} finally {
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("ends observation on a command timeout receipt while preserving its failed status", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		trackLiveBackgroundProcess(fixture.task)
+		let settled = false
+		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
+			settled = true
+			return decision
+		})
+		try {
+			await vi.advanceTimersByTimeAsync(60_000)
+			expect(settled).toBe(false)
+			fixture.task.completeCommandExecution("command-call", { signalName: "SIGTERM" }, "physical-command")
+			await vi.advanceTimersByTimeAsync(250)
+			expect(await waiting).toMatchObject({ allowed: true, classification: "ready" })
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({
+				status: "failed",
+				signalName: "SIGTERM",
+			})
+			expect(fixture.task.getCommandExecutionEvidence()[0]?.exitCode).toBeUndefined()
 		} finally {
 			fixture.cancellation.abort(new Error("Probe cleanup"))
 			await waiting

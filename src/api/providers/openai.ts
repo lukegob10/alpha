@@ -1,14 +1,14 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import OpenAI, { AzureOpenAI } from "openai"
+import { APIConnectionError } from "openai/error"
 import type { ResponseCreateParamsBase } from "openai/resources/responses/responses"
 import axios from "axios"
-import { isDeepStrictEqual } from "node:util"
 
 import {
 	type ModelInfo,
 	type AssistantMessageMetadata,
 	normalizeAssistantMessageMetadata,
-	taskReasoningCustomTokenPattern,
+	snapshotProviderResponseItem,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
 	resolveOpenAiCustomModelInfo,
@@ -25,6 +25,7 @@ import type { ApiHandlerOptions } from "../../shared/api"
 import { TagMatcher } from "../../utils/tag-matcher"
 import type { AgentRetryCategory } from "../../core/agent/AgentRetryPolicy"
 import { readRetryAfterMs } from "../../core/agent/RequestPacing"
+import { checkContextWindowExceededError } from "../../core/context/context-management/context-error-handling"
 
 import { convertToOpenAiMessages } from "../transform/openai-format"
 import { convertToR1Format } from "../transform/r1-format"
@@ -86,6 +87,20 @@ function hasOpenAiResponsesUsage(usage: unknown): boolean {
 	)
 }
 
+const PERMANENT_OPENAI_ERROR_CODES = new Set([
+	"insufficient_quota",
+	"credit_balance_exhausted",
+	"organization_spend_limit_exceeded",
+	"project_spend_limit_exceeded",
+	"usage_not_included",
+	"cyber_policy",
+	"bio_policy",
+	"misalignment_policy_violation",
+	"invalid_prompt",
+	"invalid_request_error",
+	"flex_unavailable",
+])
+
 /** Normalize native SSE failures before the generic provider wrapper sees them. */
 function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Responses request failed") {
 	const envelope = providerRecord(error)
@@ -93,22 +108,9 @@ function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Re
 	const code = typeof source?.code === "string" ? source.code : undefined
 	const message = typeof source?.message === "string" && source.message.trim() ? source.message : fallbackMessage
 	const rateLimited = code === "rate_limit_exceeded" || code === "slow_down"
+	const capacityUnavailable = code === "server_is_overloaded" || code === "policy_capacity_unavailable"
 	const contextExceeded = code === "context_length_exceeded"
-	const permanent =
-		code !== undefined &&
-		[
-			"insufficient_quota",
-			"credit_balance_exhausted",
-			"organization_spend_limit_exceeded",
-			"project_spend_limit_exceeded",
-			"usage_not_included",
-			"cyber_policy",
-			"bio_policy",
-			"misalignment_policy_violation",
-			"invalid_prompt",
-			"invalid_request_error",
-			"flex_unavailable",
-		].includes(code)
+	const permanent = code !== undefined && PERMANENT_OPENAI_ERROR_CODES.has(code)
 	let retryAfterMs = readRetryAfterMs(source?.headers)
 	// Only a native rate-limit code authorizes plaintext delay advice.
 	if (retryAfterMs === undefined && rateLimited) {
@@ -125,9 +127,7 @@ function createOpenAiResponsesError(error: unknown, fallbackMessage = "OpenAI Re
 		...(code !== undefined ? { code } : {}),
 		retryCategory,
 		// Context failures retain Alpha's bounded compaction recovery.
-		...(!contextExceeded
-			? { retryable: !permanent && (code !== "server_is_overloaded" || retryAfterMs !== undefined) }
-			: {}),
+		...(!contextExceeded ? { retryable: !permanent && (!capacityUnavailable || retryAfterMs !== undefined) } : {}),
 		...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
 	})
 }
@@ -182,7 +182,14 @@ function createOpenAiChatCompletionOutcome(
 	}
 
 	if (finishReason === "stop" || finishReason === "tool_calls") {
-		return createApiStreamOutcome({ status: "completed", terminal: true, semanticOutputObserved })
+		// OpenAI Chat finish_reason is authoritative (API reference, 2026-11-03).
+		// Match Codex ac558e2a32's completed sampling boundary without inferring success from EOF.
+		return createApiStreamOutcome({
+			status: "completed",
+			terminal: true,
+			semanticOutputObserved,
+			requiresContinuation: finishReason === "tool_calls",
+		})
 	}
 
 	return createApiStreamOutcome({
@@ -435,33 +442,70 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const reportsLifecycle = this.reportsResponsesLifecycle()
 		let terminalOutcomeObserved = false
 		let semanticOutputObserved = false
+		let pendingChatUsage: ApiStreamUsageChunk | undefined
 		try {
 			control?.signal.throwIfAborted()
 			const stream = this.createMessageInternal(
 				systemPrompt,
 				messages,
 				control && metadata ? { ...metadata, signal: control.signal } : metadata,
+				(usage) => {
+					pendingChatUsage = usage
+				},
 			)
 			for await (const chunk of control ? iterateApiStreamWithAbort(stream, control.signal) : stream) {
+				if (chunk.type === "usage") pendingChatUsage = undefined
 				terminalOutcomeObserved ||= chunk.type === "outcome"
 				semanticOutputObserved ||= isApiStreamSemanticChunk(chunk)
-				yield chunk
+				yield chunk.type === "outcome"
+					? { ...chunk, semanticOutputObserved: chunk.semanticOutputObserved || semanticOutputObserved }
+					: chunk
 			}
 			control?.signal.throwIfAborted()
 			if (reportsLifecycle && !terminalOutcomeObserved) {
 				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved })
 			}
 		} catch (error) {
-			const cancelled = isApiStreamAbortError(error, control?.signal ?? metadata?.signal)
+			const signal = control?.signal ?? metadata?.signal
+			const connectionFailure = error instanceof APIConnectionError
+			const cancelled = signal?.aborted === true || (!connectionFailure && isApiStreamAbortError(error, signal))
+			// The abort iterator closes its source without entering the source's catch.
+			// Retain received Chat billing here; consumer return still emits nothing.
+			if (pendingChatUsage) {
+				const usage = pendingChatUsage
+				pendingChatUsage = undefined
+				yield usage
+			}
 			if (reportsLifecycle && !terminalOutcomeObserved) {
 				yield createApiStreamOutcome({
 					status: cancelled ? "cancelled" : "failed",
+					// No terminal provider event was observed; Task owns bounded exception recovery.
+					// Codex 67f0994b, core/src/session/turn.rs (2026-11-01).
+					terminal: cancelled,
 					semanticOutputObserved,
 				})
 			}
 			if (cancelled) throw error
 			// Request admission and asynchronous stream iteration share one metadata-preserving boundary.
-			throw handleOpenAIError(error, this.providerName)
+			const failure = handleOpenAIError(error, this.providerName)
+			const details = providerRecord(failure)
+			if (details?.retryable === undefined) {
+				if (connectionFailure) {
+					Object.assign(failure, { retryable: true, retryCategory: "transport" })
+				} else if (
+					(typeof details?.code === "string" && PERMANENT_OPENAI_ERROR_CODES.has(details.code)) ||
+					(typeof details?.status === "number" &&
+						details.status >= 400 &&
+						details.status < 500 &&
+						![408, 409, 425, 429].includes(details.status) &&
+						details.code !== "context_length_exceeded" &&
+						details.retryCategory !== "context" &&
+						(details.status !== 400 || !checkContextWindowExceededError(failure)))
+				) {
+					Object.assign(failure, { retryable: false })
+				}
+			}
+			throw failure
 		} finally {
 			control?.controller.abort()
 			control?.dispose()
@@ -472,13 +516,14 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
+		onChatUsageObserved?: (usage: ApiStreamUsageChunk) => void,
 	): ApiStream {
 		this.responsesResponseId = undefined
 		this.responsesEncryptedContent = undefined
 		this.responsesReasoningItems.clear()
 		this.responsesSummary = undefined
 		const { info: modelInfo, reasoning, temperature } = this.getModel()
-		const effectiveReasoning = this.getRuntimeReasoning(reasoning)
+		const effectiveReasoning = reasoning
 		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
 		const enabledR1Format = this.options.openAiR1FormatEnabled ?? false
@@ -514,7 +559,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (usesOpenAiReasoningFamilyChat(modelId)) {
-			yield* this.handleO3FamilyMessage(modelId, systemPrompt, messages, metadata)
+			yield* this.handleO3FamilyMessage(modelId, systemPrompt, messages, metadata, onChatUsageObserved)
 			return
 		}
 		const instructionFragments = metadata?.instructionFragments
@@ -619,7 +664,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					}) as const,
 			)
 
-			let lastUsage
+			let lastUsage: ApiStreamUsageChunk | undefined
 			const activeToolCallIds = new Set<string>()
 			let finishReason: string | null | undefined
 			let sawTerminalFinishReason = false
@@ -628,6 +673,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			try {
 				for await (const chunk of stream) {
+					if (chunk.usage) {
+						lastUsage = this.processUsageMetrics(chunk.usage, modelInfo)
+						onChatUsageObserved?.(lastUsage)
+					}
 					const delta = chunk.choices?.[0]?.delta ?? {}
 					const chunkFinishReason = chunk.choices?.[0]?.finish_reason
 					if (chunkFinishReason) {
@@ -653,13 +702,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					}
 
 					yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
-
-					if (chunk.usage) {
-						lastUsage = chunk.usage
-					}
 				}
 			} catch (error) {
-				if (lastUsage) yield this.processUsageMetrics(lastUsage, modelInfo)
+				if (lastUsage) yield lastUsage
 				throw error
 			}
 			for (const chunk of matcher.final()) {
@@ -667,7 +712,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 
 			if (lastUsage) {
-				yield this.processUsageMetrics(lastUsage, modelInfo)
+				yield lastUsage
 			}
 
 			yield createOpenAiChatCompletionOutcome(
@@ -703,6 +748,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
+			const usage = this.processUsageMetrics(response.usage, modelInfo)
+			if (response.usage) onChatUsageObserved?.(usage)
 			const message = response.choices?.[0]?.message
 			const finishReason = response.choices?.[0]?.finish_reason
 			const outcome = createOpenAiChatCompletionOutcome(
@@ -735,7 +782,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				text: message?.content || "",
 			}
 
-			yield this.processUsageMetrics(response.usage, modelInfo)
+			yield usage
 			if (outcome.status === "completed") yield outcome
 		}
 	}
@@ -827,7 +874,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				messages,
 				store,
 				freeformApplyPatch,
-				{ preserveReasoningIds: this.preserveResponsesReasoningIds() },
+				{ preserveReasoningIds: this.preserveResponsesReasoningIds(), providerId: this.providerId, modelId },
 			),
 			...(tools !== undefined ? { tools } : {}),
 			parallel_tool_calls: metadata?.parallelToolCalls ?? true,
@@ -1003,7 +1050,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (receivedTerminalEvent) return
 		}
 
-		if (!receivedTerminalEvent) throw new Error("OpenAI Responses stream ended without a terminal event")
+		if (!receivedTerminalEvent) {
+			throw Object.assign(new Error("OpenAI Responses stream ended without a terminal event"), {
+				retryable: true,
+				retryCategory: "transport",
+			})
+		}
 	}
 
 	private async *handleOpenAiResponsesResult(response: OpenAI.Responses.Response): ApiStream {
@@ -1059,7 +1111,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (!terminalEvent && !interrupted && response.output === undefined) {
 			throw new Error("OpenAI Responses result did not include output")
 		}
-		const output = response.output ?? []
+		// Codex 67f0994b, codex-api/src/sse/responses.rs (2026-10-31): item-done
+		// receipts own streamed output; the terminal envelope only finalizes metadata.
+		// Keep the full-output fallback for nonstreaming and terminal-only endpoints.
+		const output =
+			terminalEvent && (handledOutputIdentities.size > 0 || toolCalls.size > 0) ? [] : (response.output ?? [])
 		if (
 			!interrupted &&
 			(incompleteOutputItemObserved || output.some((item) => "status" in item && item.status === "incomplete"))
@@ -1074,15 +1130,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			)
 			return
 		}
-		// A minimal completion can omit output; otherwise its items must agree with streamed receipts.
-		if (response.output !== undefined) {
-			for (const [index, identity] of handledOutputIdentities) {
-				const item = output[index]
-				if (!item && interrupted) continue
-				if (!item || openAiResponsesOutputIdentity(item) !== identity) {
-					throw new Error("OpenAI Responses completed item did not match its final output")
-				}
-			}
+		if (handledOutputIdentities.size === 0 && response.output !== undefined) {
 			for (const index of messageText.keys()) {
 				if (!output[index] && interrupted) continue
 				if (output[index]?.type !== "message") {
@@ -1095,21 +1143,9 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			if (
 				interrupted &&
 				(item.type === "function_call" || item.type === "custom_tool_call") &&
-				!handledOutputIdentities.has(index) &&
 				(!("status" in item) || item.status !== "completed")
 			) {
 				continue
-			}
-			if (handledOutputIdentities.has(index) && item.type !== "message") {
-				if (item.type !== "reasoning" || !item.encrypted_content) continue
-				const streamed = this.responsesReasoningItems.get(index)
-				if (
-					streamed?.encrypted_content === item.encrypted_content &&
-					streamed.id === item.id &&
-					isDeepStrictEqual(streamed.summary, item.summary)
-				) {
-					continue
-				}
 			}
 			yield* this.emitOpenAiResponsesOutputItem(
 				item,
@@ -1124,12 +1160,14 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			throw new Error("OpenAI Responses completed before its streamed tool call was complete")
 		}
 
-		this.captureOpenAiResponsesState(response)
+		this.captureOpenAiResponsesState({ ...response, output })
 		if (!interrupted) yield this.processOpenAiResponsesUsage(response.usage)
-		// Codex can finish this response while requesting another model step.
-		if (interrupted || response.end_turn === false) {
-			yield createApiStreamOutcome({ status: "completed", requiresContinuation: true })
-		}
+		// An authoritative terminal distinguishes successful empty output from unsupported EOF.
+		yield createApiStreamOutcome({
+			status: "completed",
+			terminal: true,
+			requiresContinuation: interrupted || response.end_turn === false,
+		})
 	}
 
 	private async *rejectOpenAiResponsesResult(
@@ -1175,7 +1213,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					arguments: item.arguments,
 					outputIndex,
 				}
-				yield { type: "tool_call_end", id: item.call_id }
+				yield {
+					type: "tool_call_end",
+					id: item.call_id,
+					providerItem: this.captureOpenAiResponsesProviderItem(item),
+				}
 				return
 			}
 			const finalArguments = item.arguments
@@ -1184,7 +1226,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 			const remainder = finalArguments.slice(active.functionArguments.length)
 			if (remainder) yield { type: "tool_call_partial", index: outputIndex, arguments: remainder }
-			yield { type: "tool_call_end", id: item.call_id }
+			yield {
+				type: "tool_call_end",
+				id: item.call_id,
+				providerItem: this.captureOpenAiResponsesProviderItem(item),
+			}
 			toolCalls.delete(outputIndex)
 			return
 		}
@@ -1198,7 +1244,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 					arguments: normalizeOpenAiCustomToolInput(item.name, item.input),
 					outputIndex,
 				}
-				yield { type: "tool_call_end", id: item.call_id }
+				yield {
+					type: "tool_call_end",
+					id: item.call_id,
+					providerItem: this.captureOpenAiResponsesProviderItem(item),
+				}
 				return
 			}
 			if (!item.input.startsWith(active.customInput)) {
@@ -1213,7 +1263,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				}
 			}
 			if (item.name === "apply_patch") yield { type: "tool_call_partial", index: outputIndex, arguments: '"}' }
-			yield { type: "tool_call_end", id: item.call_id }
+			yield {
+				type: "tool_call_end",
+				id: item.call_id,
+				providerItem: this.captureOpenAiResponsesProviderItem(item),
+			}
 			toolCalls.delete(outputIndex)
 			return
 		}
@@ -1244,7 +1298,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 
 		if (item.type !== "message") return
-		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata)
+		const metadata = this.captureOpenAiResponsesMessageMetadata(item, outputIndex, messageMetadata, true)
 		const previous = messageText.get(outputIndex)
 		for (const [contentIndex, part] of previous?.parts ?? []) {
 			if (item.content[contentIndex]?.type !== part.type) {
@@ -1338,10 +1392,44 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return remainder || previous === undefined ? remainder : undefined
 	}
 
+	private captureOpenAiResponsesProviderItem(item: unknown) {
+		const source = providerRecord(item)
+		if (!source) return undefined
+		const content = Array.isArray(source.content)
+			? source.content.map((part) => {
+					const value = providerRecord(part)
+					return {
+						type: value?.type,
+						length:
+							typeof value?.text === "string"
+								? value.text.length
+								: typeof value?.refusal === "string"
+									? value.refusal.length
+									: -1,
+						...(value?.annotations !== undefined ? { annotations: value.annotations } : {}),
+						...(value?.logprobs !== undefined ? { logprobs: value.logprobs } : {}),
+					}
+				})
+			: undefined
+		// Codex ac558e2a32, models.rs:899/1141 (2026-11-03): retain supported
+		// sampled metadata. Private ciphertext/authority fields are not imported.
+		return snapshotProviderResponseItem({
+			protocol: "openai-responses",
+			providerId: this.providerId,
+			modelId: this.getModel().id,
+			itemType: source.type,
+			...(source.id !== undefined ? { id: source.id } : {}),
+			...(source.status !== undefined ? { status: source.status } : {}),
+			...(source.namespace !== undefined ? { namespace: source.namespace } : {}),
+			...(content !== undefined ? { content } : {}),
+		})
+	}
+
 	private captureOpenAiResponsesMessageMetadata(
 		item: unknown,
 		outputIndex: number,
 		messages: Map<number, AssistantMessageMetadata>,
+		completed = false,
 	): AssistantMessageMetadata {
 		if (!Number.isSafeInteger(outputIndex) || outputIndex < 0) {
 			throw new Error("OpenAI Responses message has an invalid index")
@@ -1351,7 +1439,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		if (previous?.id !== undefined && incoming.id !== undefined && previous.id !== incoming.id) {
 			throw new Error("OpenAI Responses streamed message changed identity")
 		}
-		const metadata = { ...previous, ...incoming, outputIndex }
+		const source = providerRecord(item)
+		const providerItem =
+			completed && source?.type === "message" ? this.captureOpenAiResponsesProviderItem(item) : undefined
+		const metadata = { ...previous, ...incoming, outputIndex, ...(providerItem ? { providerItem } : {}) }
 		messages.set(outputIndex, metadata)
 		return metadata
 	}
@@ -1395,13 +1486,26 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 	protected processOpenAiResponsesUsage(usage: unknown): ApiStreamUsageChunk {
 		const source = providerRecord(usage)
+		const inputTokens = providerTokenCount(source?.input_tokens)
+		const outputTokens = providerTokenCount(source?.output_tokens)
+		const cacheWriteTokens = providerTokenCount(providerRecord(source?.input_tokens_details)?.cache_write_tokens)
+		const cacheReadTokens = providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens)
+		const reasoningTokens = providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens)
 		return {
 			type: "usage",
-			inputTokens: providerTokenCount(source?.input_tokens) ?? 0,
-			outputTokens: providerTokenCount(source?.output_tokens) ?? 0,
-			cacheWriteTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cache_write_tokens),
-			cacheReadTokens: providerTokenCount(providerRecord(source?.input_tokens_details)?.cached_tokens),
-			reasoningTokens: providerTokenCount(providerRecord(source?.output_tokens_details)?.reasoning_tokens),
+			usageSource:
+				Number.isSafeInteger(inputTokens) &&
+				Number.isSafeInteger(outputTokens) &&
+				[cacheWriteTokens, cacheReadTokens, reasoningTokens].every(
+					(value) => value === undefined || Number.isSafeInteger(value),
+				)
+					? "provider"
+					: "unknown",
+			inputTokens: inputTokens ?? 0,
+			outputTokens: outputTokens ?? 0,
+			cacheWriteTokens,
+			cacheReadTokens,
+			reasoningTokens,
 		}
 	}
 
@@ -1426,28 +1530,32 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		return this.responsesSummary
 	}
 
-	/** Apply an ephemeral task token without mutating the saved provider profile. */
-	private getRuntimeReasoning(
-		fallback: { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined,
-	): { reasoning_effort: OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] } | undefined {
-		const value = this.options.taskReasoningCustomEffort
-		if (!value || !taskReasoningCustomTokenPattern.test(value)) return fallback
-		return { reasoning_effort: value as OpenAI.Chat.ChatCompletionCreateParams["reasoning_effort"] }
-	}
-
 	protected processUsageMetrics(usage: unknown, _modelInfo?: ModelInfo): ApiStreamUsageChunk {
 		const source = providerRecord(usage)
+		const inputTokens = providerTokenCount(source?.prompt_tokens)
+		const outputTokens = providerTokenCount(source?.completion_tokens)
+		const cacheWriteTokens = providerTokenCount(source?.cache_creation_input_tokens)
+		// A valid legacy counter, including zero, takes precedence on compatible endpoints.
+		const cacheReadTokens =
+			providerTokenCount(source?.cache_read_input_tokens) ??
+			providerTokenCount(providerRecord(source?.prompt_tokens_details)?.cached_tokens)
+		// Reasoning is already included in completion_tokens; report it as a subset only.
+		const reasoningTokens = providerTokenCount(providerRecord(source?.completion_tokens_details)?.reasoning_tokens)
 		return {
 			type: "usage",
-			inputTokens: providerTokenCount(source?.prompt_tokens) ?? 0,
-			outputTokens: providerTokenCount(source?.completion_tokens) ?? 0,
-			cacheWriteTokens: providerTokenCount(source?.cache_creation_input_tokens),
-			// A valid legacy counter, including zero, takes precedence on compatible endpoints.
-			cacheReadTokens:
-				providerTokenCount(source?.cache_read_input_tokens) ??
-				providerTokenCount(providerRecord(source?.prompt_tokens_details)?.cached_tokens),
-			// Reasoning is already included in completion_tokens; report it as a subset only.
-			reasoningTokens: providerTokenCount(providerRecord(source?.completion_tokens_details)?.reasoning_tokens),
+			usageSource:
+				Number.isSafeInteger(inputTokens) &&
+				Number.isSafeInteger(outputTokens) &&
+				[cacheWriteTokens, cacheReadTokens, reasoningTokens].every(
+					(value) => value === undefined || Number.isSafeInteger(value),
+				)
+					? "provider"
+					: "unknown",
+			inputTokens: inputTokens ?? 0,
+			outputTokens: outputTokens ?? 0,
+			cacheWriteTokens,
+			cacheReadTokens,
+			reasoningTokens,
 		}
 	}
 
@@ -1506,7 +1614,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 			const model = this.getModel()
 			const modelInfo = model.info
-			const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+			const effectiveReasoning = model.reasoning
 			if (this.usesResponsesForSingleCompletion()) {
 				const response = await awaitSingleCompletion(
 					this.client.responses.create(
@@ -1605,10 +1713,11 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		systemPrompt: string,
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
+		onChatUsageObserved?: (usage: ApiStreamUsageChunk) => void,
 	): ApiStream {
 		const model = this.getModel()
 		const modelInfo = model.info
-		const effectiveReasoning = this.getRuntimeReasoning(model.reasoning)
+		const effectiveReasoning = model.reasoning
 		const methodIsAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 		const instructionMessages =
 			metadata?.instructionFragments !== undefined
@@ -1641,7 +1750,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
-			yield* this.handleStreamResponse(stream)
+			yield* this.handleStreamResponse(stream, onChatUsageObserved)
 		} else {
 			const requestOptions: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
 				model: modelId,
@@ -1664,6 +1773,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
+			const usage = this.processUsageMetrics(response.usage)
+			if (response.usage) onChatUsageObserved?.(usage)
 			const message = response.choices?.[0]?.message
 			const finishReason = response.choices?.[0]?.finish_reason
 			const outcome = createOpenAiChatCompletionOutcome(
@@ -1694,14 +1805,17 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 				type: "text",
 				text: message?.content || "",
 			}
-			yield this.processUsageMetrics(response.usage)
+			yield usage
 			if (outcome.status === "completed") yield outcome
 		}
 	}
 
-	private async *handleStreamResponse(stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>): ApiStream {
+	private async *handleStreamResponse(
+		stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
+		onChatUsageObserved?: (usage: ApiStreamUsageChunk) => void,
+	): ApiStream {
 		const activeToolCallIds = new Set<string>()
-		let lastUsage: OpenAI.CompletionUsage | undefined
+		let lastUsage: ApiStreamUsageChunk | undefined
 		let finishReason: string | null | undefined
 		let sawTerminalFinishReason = false
 		let semanticOutputObserved = false
@@ -1709,6 +1823,10 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		try {
 			for await (const chunk of stream) {
+				if (chunk.usage) {
+					lastUsage = this.processUsageMetrics(chunk.usage)
+					onChatUsageObserved?.(lastUsage)
+				}
 				const delta = chunk.choices?.[0]?.delta
 				const chunkFinishReason = chunk.choices?.[0]?.finish_reason
 				if (chunkFinishReason) {
@@ -1736,16 +1854,12 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 					yield* this.processToolCalls(delta, chunkFinishReason, activeToolCallIds)
 				}
-
-				if (chunk.usage) {
-					lastUsage = chunk.usage
-				}
 			}
 		} catch (error) {
-			if (lastUsage) yield this.processUsageMetrics(lastUsage)
+			if (lastUsage) yield lastUsage
 			throw error
 		}
-		if (lastUsage) yield this.processUsageMetrics(lastUsage)
+		if (lastUsage) yield lastUsage
 
 		yield createOpenAiChatCompletionOutcome(
 			finishReason,

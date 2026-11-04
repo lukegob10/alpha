@@ -128,7 +128,7 @@ suite("Alpha canonical tool_search acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("discovers and invokes a configured local MCP peer, pages resources, cancels and reconnects", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: SearchHost }).sidebarProvider

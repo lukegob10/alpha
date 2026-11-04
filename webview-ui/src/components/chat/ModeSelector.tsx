@@ -14,8 +14,6 @@ import { useAppTranslation } from "@/i18n/TranslationContext"
 import { useAlphaPortal } from "@/components/ui/hooks/useAlphaPortal"
 import { Popover, PopoverContent, PopoverTrigger, StandardTooltip } from "@/components/ui"
 
-import { IconButton } from "./IconButton"
-
 interface ModeSelectorProps {
 	value: Mode
 	onChange: (value: Mode) => void
@@ -204,30 +202,6 @@ export const ModeSelector = ({
 									</button>
 								)
 							})}
-						</div>
-					</div>
-
-					{/* Bottom bar with settings on the left and title on the right */}
-					<div className="flex flex-row items-center justify-between px-2 py-2 border-t border-vscode-dropdown-border">
-						<div>
-							<IconButton
-								iconClass="codicon-settings-gear"
-								title={t("chat:modeSelector.settings")}
-								onClick={() => {
-									vscode.postMessage({
-										type: "switchTab",
-										tab: "settings",
-										values: { section: "modes" },
-									})
-									setOpen(false)
-								}}
-							/>
-						</div>
-
-						<div className="flex items-center gap-1 pr-1">
-							<h4 className="m-0 font-medium text-sm text-vscode-descriptionForeground">
-								{t("chat:modeSelector.title")}
-							</h4>
 						</div>
 					</div>
 				</div>

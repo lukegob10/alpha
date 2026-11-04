@@ -1,4 +1,11 @@
-import type { CreateTicket, UpdateTicket, DeleteTicket, TicketStatus, TicketType } from "@alpha-code/types"
+import type {
+	CreateTicket,
+	UpdateTicket,
+	DeleteTicket,
+	DeleteTickets,
+	TicketStatus,
+	TicketType,
+} from "@alpha-code/types"
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import type {
@@ -70,6 +77,8 @@ export type AskApproval = (
 	progressStatus?: ToolProgressStatus,
 	forceApproval?: boolean,
 	requiresExplicitApproval?: boolean,
+	/** Opaque authority captured by the host handler; never supplied by model arguments. */
+	sessionApprovalAuthority?: string,
 ) => Promise<boolean>
 
 export type HandleError = (action: string, error: Error) => Promise<void>
@@ -161,6 +170,8 @@ export const toolParamNames = [
 	"replace_all", // edit tool parameter for replacing all occurrences
 	"expected_replacements", // edit_file parameter for multiple occurrences
 	"timeout", // execute_command parameter
+	"shell", // exec_command interpreter selection
+	"login", // exec_command startup selection
 	"tty", // exec_command terminal transport
 	"yield_time_ms", // exec_command and write_stdin wait interval
 	"max_output_tokens", // exec_command and write_stdin result budget
@@ -260,6 +271,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 		  }
 	shell: {
 		command: string
+		shell?: string | null
+		login?: boolean | null
 		cwd?: string | null
 		timeout?: number | null
 		/** Internal and historical verification metadata; omitted from the model-facing schema. */
@@ -269,6 +282,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 		cmd: string
 		workdir?: string | null
 		tty?: boolean | null
+		shell?: string | null
+		login?: boolean | null
 		yield_time_ms?: number | null
 		max_output_tokens?: number | null
 		/** Host-injected verification scope; omitted from the model-facing schema. */
@@ -277,6 +292,8 @@ export type NativeToolArgs = BrowserToolArgs & {
 	attempt_completion: { result: string; outcome?: "completed" | "blocked" }
 	execute_command: {
 		command: string
+		shell?: string | null
+		login?: boolean | null
 		cwd?: string | null
 		timeout?: number | null
 		/** Native exec transport selection; omitted historical calls retain their configured provider. */
@@ -352,6 +369,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	}
 	codebase_search: { query: string; path?: string }
 	generate_image: GenerateImageParams
+	// Decode saved tool transactions without restoring the retired tool.
 	run_slash_command: { command: string; args?: string }
 	skill: {
 		skill?: string | null
@@ -360,7 +378,14 @@ export type NativeToolArgs = BrowserToolArgs & {
 		cursor?: string | null
 	}
 	search_files: SearchFilesParams
-	list_tickets: { query?: string; status?: TicketStatus; type?: TicketType | null; offset?: number; limit?: number }
+	list_tickets: {
+		query?: string | null
+		status?: TicketStatus | null
+		typeFilter?: TicketType | "untagged" | null
+		type?: TicketType | null
+		offset?: number | null
+		limit?: number | null
+	}
 	read_ticket: { id: string }
 	memories_list: { path?: string; cursor?: string; max_results?: number }
 	memories_read: { path: string; line_offset?: number; max_lines?: number }
@@ -378,6 +403,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	create_ticket: CreateTicket
 	update_ticket: UpdateTicket
 	delete_ticket: DeleteTicket
+	delete_tickets: DeleteTickets
 	update_todo_list: { todos: string; work_plan?: import("@alpha-code/types").TaskWorkPlan | null }
 	update_plan: {
 		explanation?: string | null
@@ -527,11 +553,6 @@ export interface NewTaskToolUse extends ToolUse<"new_task"> {
 	params: Partial<Pick<Record<ToolParamName, string>, "mode" | "message" | "todos">>
 }
 
-export interface RunSlashCommandToolUse extends ToolUse<"run_slash_command"> {
-	name: "run_slash_command"
-	params: Partial<Pick<Record<ToolParamName, string>, "command" | "args">>
-}
-
 export interface SkillToolUse extends ToolUse<"skill"> {
 	name: "skill"
 	params: Partial<Pick<Record<ToolParamName, string>, "skill" | "args" | "action" | "cursor">>
@@ -619,6 +640,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	create_ticket: "create a ticket",
 	update_ticket: "update a ticket",
 	delete_ticket: "delete a ticket",
+	delete_tickets: "delete tickets",
 	update_todo_list: "update todo list",
 	update_plan: "update plan",
 	run_slash_command: "run slash command",
@@ -662,6 +684,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"create_ticket",
 			"update_ticket",
 			"delete_ticket",
+			"delete_tickets",
 			"memories_add_ad_hoc_note",
 			"create_goal",
 			"update_goal",
@@ -735,7 +758,6 @@ export const ALWAYS_AVAILABLE_TOOLS: ToolName[] = [
 	"attempt_completion",
 	"new_task",
 	"update_plan",
-	"run_slash_command",
 	"skill",
 	"tool_search",
 ] as const

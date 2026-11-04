@@ -1,7 +1,7 @@
 import type { ModelInfo } from "./model.js"
 import type { ProviderSettings } from "./provider-settings.js"
 import { getNativeOpenAiModelCapabilities } from "./providers/openai.js"
-import { resolveVertexGatewayRoute } from "./providers/vertex.js"
+import { hasCustomVertexConnection } from "./providers/vertex.js"
 import { getCuratedModelInfo, isCuratedProvider } from "./provider-settings.js"
 import { getBedrockModelRoute } from "./providers/bedrock.js"
 
@@ -73,7 +73,7 @@ export function resolveModelParameterApplicability({
 		if (!model) return { route: "unsupported", supportsTemperature: false, supportsVerbosity: false }
 	}
 	let route: ModelParameterRoute = "unsupported"
-	let requestModelId = modelId
+	const requestModelId = modelId
 	let hasNativeOpenAiRoute = false
 	if (selectedProvider === "openai-native" || selectedProvider === "openai-codex" || selectedProvider === "xai") {
 		hasNativeOpenAiRoute = selectedProvider !== "xai"
@@ -92,12 +92,6 @@ export function resolveModelParameterApplicability({
 	} else if (selectedProvider === "openai") {
 		hasNativeOpenAiRoute = usesOpenAiResponsesApi(modelId, settings)
 		route = hasNativeOpenAiRoute && requestKind === "task" ? "openai-responses" : "openai-chat-completions"
-	} else if (selectedProvider === "stellar") {
-		hasNativeOpenAiRoute = Boolean(
-			settings.stellarBaseUrl &&
-				usesOpenAiResponsesApi(modelId, { ...settings, openAiBaseUrl: settings.stellarBaseUrl }),
-		)
-		route = hasNativeOpenAiRoute && requestKind === "task" ? "openai-responses" : "openai-chat-completions"
 	} else if (selectedProvider === "vertex") {
 		const family = modelId.trim().toLowerCase()
 		route = family.includes("claude")
@@ -105,15 +99,7 @@ export function resolveModelParameterApplicability({
 			: family.startsWith("gemini")
 				? "vertex-gemini"
 				: "openai-chat-completions"
-		if (route === "openai-chat-completions") {
-			try {
-				requestModelId = resolveVertexGatewayRoute(settings, modelId.trim()).modelOverride ?? modelId.trim()
-			} catch {
-				// The request validator reports malformed maps. An incomplete settings
-				// edit must not advertise controls for a route that cannot be sent.
-				route = "unsupported"
-			}
-		}
+		if (hasCustomVertexConnection(settings)) route = "unsupported"
 	} else if (selectedProvider === "vscode-lm") {
 		route = "vscode-lm"
 	}

@@ -15,7 +15,7 @@ export const UNATTENDED_TRANSCRIPT_CASES = [
 	{ mode: "held-frames", selection: true },
 ] as const
 
-export const unattendedStage = (phase: "start" | "complete" | "returned", round: number): string =>
+export const unattendedStage = (phase: "start" | "streaming" | "complete" | "returned", round: number): string =>
 	`unattended-${phase}-${String.fromCharCode(97 + round)}`
 
 interface UnattendedSample {
@@ -104,6 +104,17 @@ export async function exerciseUnattendedLifecycle(
 				"The owned Alpha webview must match host visibility",
 			)
 			await acknowledge(unattendedStage("start", round))
+			await ready(unattendedStage("streaming", round))
+			if (testCase.mode === "held-frames") {
+				// A synchronous fixture stream can otherwise finish before the host delivers a partial update.
+				// Keep completion gated until actual application work reaches the controlled renderer scheduler.
+				await waitUntil(
+					async () => (await read(round)).heldFrameRequests > before.heldFrameRequests,
+					Date.now() + 20_000,
+					"Actual application frame work must be queued",
+				)
+			}
+			await acknowledge(unattendedStage("streaming", round))
 			// Only the host's file barrier is polled while the task completes; no synthetic UI input is sent.
 			await ready(unattendedStage("complete", round))
 			const completed = await read(round)

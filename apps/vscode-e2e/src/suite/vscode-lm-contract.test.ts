@@ -290,7 +290,7 @@ const acceptCompletionBoundary = async (
 
 const settleCancelledFixtureRequest = async (fixture: VsCodeLmFixtureControl, hostVersion: ExactTestHostVersion) => {
 	assert.equal(fixture.getRequests().length, 1, "Cancellation must not trigger another model request")
-	if (hostVersion === "1.138.0") {
+	if (hostVersion === "1.141.0") {
 		await waitFor(
 			() =>
 				fixture
@@ -299,11 +299,11 @@ const settleCancelledFixtureRequest = async (fixture: VsCodeLmFixtureControl, ho
 			{
 				timeout: 10_000,
 				interval: 25,
-				description: "VS Code 1.138.0 to forward cancellation after sendRequest returned",
+				description: "VS Code 1.141.0 to forward cancellation after sendRequest returned",
 				onTimeout: () => ({ events: fixture.getEvents() }),
 			},
 		)
-		assert.equal(fixture.getRequests()[0]?.cancelled, true, "VS Code 1.138.0 must cancel the provider token")
+		assert.equal(fixture.getRequests()[0]?.cancelled, true, "VS Code 1.141.0 must cancel the provider token")
 	} else {
 		// The 1.125 host's startup RPC does not retain late cancellation. Release only this owned fixture,
 		// after the caller has verified its local cancellation boundary, to observe the provider through completion.
@@ -321,13 +321,13 @@ const settleCancelledFixtureRequest = async (fixture: VsCodeLmFixtureControl, ho
 			timeout: 10_000,
 			interval: 25,
 			description:
-				hostVersion === "1.138.0"
+				hostVersion === "1.141.0"
 					? "the cancelled provider to return without manual release"
 					: "the legacy provider to return after explicit fixture release",
 			onTimeout: () => ({ events: fixture.getEvents() }),
 		},
 	)
-	assert.equal(fixture.getRequests()[0]?.cancelled, hostVersion === "1.138.0")
+	assert.equal(fixture.getRequests()[0]?.cancelled, hostVersion === "1.141.0")
 	assert.equal(
 		fixture.getEvents().some(({ type, requestIndex }) => type === "provider-wait-released" && requestIndex === 0),
 		hostVersion === "1.125.0",

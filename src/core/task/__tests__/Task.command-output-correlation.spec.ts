@@ -56,6 +56,7 @@ function createTask(seed: AlphaMessage[] = []) {
 		updateAlphaMessage,
 		providerRef: { deref: () => undefined },
 		getStepApprovalMode: () => "ask",
+		getApprovalModeForAsk: Task.prototype["getApprovalModeForAsk"],
 		approvalStateForAsk: () => undefined,
 		getOffscreenAutoAskResponse: () => undefined,
 		messageQueueService: { isEmpty: () => true, releaseMessage: vi.fn(), flush: vi.fn(async () => {}) },

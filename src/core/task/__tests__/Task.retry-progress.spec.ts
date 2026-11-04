@@ -1,7 +1,4 @@
 import { Task } from "../Task"
-import { SearchLoopRecoveryPolicy } from "../../agent/SearchLoopRecoveryPolicy"
-import { createAgentResponse } from "../../agent/AgentResponse"
-import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import { handleProviderError } from "../../../api/providers/utils/error-handler"
 import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 
@@ -253,16 +250,6 @@ it("still exhausts an expired automatic budget when the retry backoff is already
 	expect(vi.getTimerCount()).toBe(0)
 })
 
-function searchTask() {
-	return Object.assign(Object.create(Task.prototype), {
-		toolRepetitionDetector: new ToolRepetitionDetector(),
-		searchLoopRecoveryPolicy: new SearchLoopRecoveryPolicy(),
-		lastSearchProgressVersion: 0,
-		userMessageContent: [],
-		suspendAfterCurrentTurn: vi.fn(),
-	}) as Task
-}
-
 it("propagates a failed retry notification instead of returning early to another provider attempt", async () => {
 	vi.useFakeTimers()
 	vi.setSystemTime(0)
@@ -281,32 +268,4 @@ it("propagates a failed retry notification instead of returning early to another
 	).rejects.toThrow("retry notification write failed")
 	expect(waits).toEqual([])
 	expect(Date.now()).toBe(0)
-})
-
-function searchStep(task: Task, scope: string) {
-	Reflect.get(task, "toolRepetitionDetector").recordOutcome({
-		toolName: "search_files",
-		kind: "read",
-		status: "success",
-		trustedProgress: { kind: "read", scope, stateFingerprint: "returned lines" },
-	})
-	Reflect.get(task, "observeSearchLoopStep").call(
-		task,
-		createAgentResponse([{ type: "tool_call", id: scope, name: "search_files", arguments: { regex: scope } }]),
-	)
-}
-
-it("allows more than nine search steps when host-admitted read receipts keep progressing", () => {
-	const task = searchTask()
-	for (let step = 0; step < 24; step++) searchStep(task, `/workspace/file-${step}.ts`)
-	expect(task.userMessageContent).toEqual([])
-	expect(task.suspendAfterCurrentTurn).not.toHaveBeenCalled()
-})
-
-it("still pauses after nine searches without renewed admitted progress", () => {
-	const task = searchTask()
-	searchStep(task, "/workspace/same-file.ts")
-	for (let step = 0; step < 9; step++) searchStep(task, "/workspace/same-file.ts")
-	expect(task.userMessageContent).toHaveLength(2)
-	expect(task.suspendAfterCurrentTurn).toHaveBeenCalledOnce()
 })

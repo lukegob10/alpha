@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { Buffer } from "node:buffer"
+import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -9,12 +10,53 @@ import test from "node:test"
 import * as esbuild from "esbuild"
 
 import {
+	assertExtensionBuildSource,
 	captureExtensionBuildSource,
 	completeExtensionBuildProvenance,
 	createExtensionBuildInputCapture,
 	extensionBuildProvenancePath,
 	verifyExtensionBuildProvenance,
 } from "./extension-build-provenance.mjs"
+
+function commitSource(root) {
+	execFileSync("git", ["add", "--all"], { cwd: root, windowsHide: true })
+	execFileSync(
+		"git",
+		[
+			"-c",
+			"core.hooksPath=empty-hooks",
+			"-c",
+			"user.name=Build Fixture",
+			"-c",
+			"user.email=build-fixture@example.invalid",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"--quiet",
+			"-m",
+			"committed source",
+		],
+		{ cwd: root, windowsHide: true },
+	)
+}
+
+function legacyReceipt(manifest) {
+	const legacy = JSON.parse(JSON.stringify(manifest))
+	legacy.scopeVersion = 2
+	delete legacy.source.sourceTreeState
+	delete legacy.source.sourceChangesDigest
+	const { digest: _digest, ...body } = legacy
+	legacy.digest = createHash("sha256")
+		.update(
+			JSON.stringify(body, (_key, value) =>
+				value && typeof value === "object" && !Array.isArray(value)
+					? Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+					: value,
+			),
+		)
+		.digest("hex")
+	return legacy
+}
 
 const build = {
 	nodeVersion: process.version,
@@ -96,6 +138,7 @@ async function fixture(t) {
 	)
 	await write("src/node_modules/bundled-only/index.js", "module.exports = 'compiler input'\n")
 	execFileSync("git", ["init", "--quiet"], { cwd: root, windowsHide: true })
+	execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: root, windowsHide: true })
 	execFileSync(
 		"git",
 		[
@@ -169,6 +212,7 @@ test("completed build binds actual source, packaged assets, workers, metadata an
 	assert.equal(result.sourceAssociation.immutableFilesystem, false)
 	assert.equal(result.sourceAssociation.authentication, "none")
 	assert.equal(result.sourceRevision, f.before.revision)
+	assert.equal(result.sourceTreeState, "modified")
 	assert.equal(result.sourceTreeDigest, f.manifest.source.digest)
 	assert.equal(f.manifest.source.snapshotDigest, f.before.digest)
 	assert(
@@ -180,6 +224,103 @@ test("completed build binds actual source, packaged assets, workers, metadata an
 	assert(f.manifest.artifacts.files.some((row) => row.path === "dist/workers/worker.js"))
 	assert.equal(f.manifest.runtimeDependencies.packages.length, 3)
 	assert.deepEqual(f.manifest.runtimeDependencies.missing, [])
+})
+
+test("dirty development builds stay verifiable and honestly labeled, but cannot become clean release evidence", async (t) => {
+	const f = await built(t)
+	assert.equal(f.manifest.source.sourceTreeState, "modified")
+	assert.equal((await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath })).status, "verified")
+	assert.equal(
+		(await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath, requireCleanSource: true })).status,
+		"invalid",
+	)
+	commitSource(f.root)
+	await assert.rejects(
+		assertExtensionBuildSource({ repositoryRoot: f.root, manifest: f.manifest }),
+		/clean build source/u,
+	)
+})
+
+test("clean source captures and validates the same committed build and compiler inputs", async (t) => {
+	const f = await fixture(t)
+	commitSource(f.root)
+	const before = await captureExtensionBuildSource(f.root)
+	assert.equal(before.sourceTreeState, "clean")
+	const manifest = await complete(f, before)
+	const proof = await verifyExtensionBuildProvenance({
+		extensionPath: f.extensionPath,
+		requireCleanSource: true,
+		repositoryRoot: f.root,
+	})
+	assert.equal(proof.status, "verified")
+	assert.equal(proof.sourceTreeState, "clean")
+	await assertExtensionBuildSource({ repositoryRoot: f.root, manifest })
+})
+
+test("release validation rejects staged, untracked, restored-source mixed inputs and a different HEAD", async (t) => {
+	for (const mutation of ["staged", "untracked", "ignored-source", "bundled-input", "generated-input", "head"]) {
+		const f = await fixture(t)
+		commitSource(f.root)
+		const before = await captureExtensionBuildSource(f.root)
+		const manifest = await complete(f, before)
+		if (mutation === "staged") {
+			await f.write("src/extension.ts", "staged source change")
+			execFileSync("git", ["add", "src/extension.ts"], { cwd: f.root, windowsHide: true })
+		} else if (mutation === "untracked") await f.write("src/new-helper.ts", "untracked source")
+		else if (mutation === "ignored-source") {
+			await f.write(".git/info/exclude", "src/new-helper.ts\n")
+			await f.write("src/new-helper.ts", "ignored source still affects build identity")
+			assert.equal((await captureExtensionBuildSource(f.root)).sourceTreeState, "modified")
+		} else if (mutation === "bundled-input")
+			await f.write("src/node_modules/bundled-only/index.js", "different dependency at the same HEAD")
+		else if (mutation === "generated-input") await f.write("packages/types/dist/index.js", "stale generated input")
+		else {
+			await f.write("unrelated.txt", "next commit")
+			commitSource(f.root)
+		}
+		// Artifact verification remains usable after source moves; release association is a separate opt-in contract.
+		assert.equal((await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath })).status, "verified")
+		await assert.rejects(
+			assertExtensionBuildSource({ repositoryRoot: f.root, manifest }),
+			/source differs|compiler input bytes changed/u,
+			mutation,
+		)
+	}
+})
+
+test("legacy content receipts remain readable but never assert clean source identity", async (t) => {
+	const f = await built(t)
+	const legacy = legacyReceipt(f.manifest)
+	await f.write("src/" + extensionBuildProvenancePath, JSON.stringify(legacy))
+	const proof = await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath })
+	assert.equal(proof.status, "verified")
+	assert.equal(proof.sourceTreeState, "unknown")
+	assert.equal(
+		(await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath, requireCleanSource: true })).status,
+		"invalid",
+	)
+})
+
+test("legacy source can be independently verified against the same clean checkout without claiming past cleanliness", async (t) => {
+	const f = await fixture(t)
+	commitSource(f.root)
+	const manifest = await complete(f, await captureExtensionBuildSource(f.root))
+	await f.write("src/" + extensionBuildProvenancePath, JSON.stringify(legacyReceipt(manifest)))
+	const options = { extensionPath: f.extensionPath, repositoryRoot: f.root, requireCleanSource: true }
+	const proof = await verifyExtensionBuildProvenance(options)
+	assert.equal(proof.status, "verified")
+	assert.equal(proof.sourceTreeState, "clean")
+	assert.equal(proof.recordedSourceTreeState, "unknown")
+	assert.equal(proof.sourceValidation, "current-checkout")
+	assert.equal(
+		(await verifyExtensionBuildProvenance({ extensionPath: f.extensionPath, requireCleanSource: true })).status,
+		"invalid",
+	)
+	await f.write("src/extension.ts", "dirty source")
+	assert.equal((await verifyExtensionBuildProvenance(options)).status, "invalid")
+	await f.write("src/extension.ts", "fixture")
+	await f.write("src/node_modules/bundled-only/index.js", "mixed compiler input at the same clean HEAD")
+	assert.equal((await verifyExtensionBuildProvenance(options)).status, "invalid")
 })
 
 test("changed source or compiled workspace input cannot be stamped onto the resulting bundle", async (t) => {

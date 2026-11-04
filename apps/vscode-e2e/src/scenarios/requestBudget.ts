@@ -163,19 +163,21 @@ export function guardVsCodeLmHandler(
 export function guardTaskApi(
 	task: { api: unknown; createReasoningSummaryHandler?: unknown },
 	budget: WorkflowRequestBudget,
+	mode: "vscode-lm" | "generic" = "vscode-lm",
 ): () => void {
 	const descriptor = Object.getOwnPropertyDescriptor(task, "api")
 	if (!descriptor || !descriptor.configurable || !("value" in descriptor)) {
 		throw new WorkflowFailure("configuration", "request_guard_unsupported_task", true)
 	}
 	let api = task.api
-	let release = guardVsCodeLmHandler(api, budget)
+	const guard = mode === "generic" ? guardProviderDispatch : guardVsCodeLmHandler
+	let release = guard(api, budget)
 	const summaryFactory = task.createReasoningSummaryHandler
 	const summaryDescriptor = Object.getOwnPropertyDescriptor(task, "createReasoningSummaryHandler")
 	const summaryReleases: Array<() => void> = []
 	const guardedSummaryFactory = (...args: unknown[]) => {
 		const handler: unknown = Reflect.apply(summaryFactory as (...args: unknown[]) => unknown, task, args)
-		summaryReleases.push(guardVsCodeLmHandler(handler, budget, "reasoning-summary"))
+		summaryReleases.push(guard(handler, budget, "reasoning-summary"))
 		return handler
 	}
 	if (typeof summaryFactory === "function")
@@ -191,7 +193,7 @@ export function guardTaskApi(
 		get,
 		set(value: unknown) {
 			if (value === api) return
-			const nextRelease = guardVsCodeLmHandler(value, budget)
+			const nextRelease = guard(value, budget)
 			release()
 			api = value
 			release = nextRelease
@@ -207,5 +209,44 @@ export function guardTaskApi(
 		if (Object.getOwnPropertyDescriptor(task, "api")?.get === get) {
 			Object.defineProperty(task, "api", { ...descriptor, value: api })
 		}
+	}
+}
+
+/**
+ * Generic adapters use their real streaming method. These are logical provider
+ * dispatches, not a claim to observe retries inside a provider SDK or service.
+ */
+export function guardProviderDispatch(
+	handler: unknown,
+	budget: WorkflowRequestBudget,
+	purpose: keyof WorkflowRequestBudget["usedByPurpose"] = "task",
+): () => void {
+	if (
+		!handler ||
+		typeof handler !== "object" ||
+		!("createMessage" in handler) ||
+		typeof handler.createMessage !== "function" ||
+		!("getModel" in handler) ||
+		typeof handler.getModel !== "function"
+	)
+		throw new WorkflowFailure("configuration", "request_guard_unsupported_handler", true)
+	const target = handler as {
+		createMessage: (...args: unknown[]) => AsyncIterable<unknown>
+		getModel: () => Record<string, unknown>
+	}
+	const descriptor = Object.getOwnPropertyDescriptor(target, "createMessage")
+	const original = target.createMessage
+	const guarded = async function* (...args: unknown[]) {
+		const model = target.getModel()
+		budget.observeModel(model)
+		if (purpose === "task") budget.onTaskRequest?.(model, args[1], args[2])
+		budget.consume(purpose)
+		yield* original.apply(target, args)
+	}
+	Object.defineProperty(target, "createMessage", { configurable: true, writable: true, value: guarded })
+	return () => {
+		if (target.createMessage !== guarded) return
+		if (descriptor) Object.defineProperty(target, "createMessage", descriptor)
+		else Reflect.deleteProperty(target, "createMessage")
 	}
 }

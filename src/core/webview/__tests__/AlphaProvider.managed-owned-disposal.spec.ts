@@ -10,6 +10,7 @@ import { OutputInterceptor } from "../../../integrations/terminal/OutputIntercep
 import { getTaskDirectoryPath } from "../../../utils/storage"
 import type { AgentLifecycleJournal } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { Task } from "../../task/Task"
+import type { AgentLifecycleProjector } from "../AgentLifecycleProjection"
 
 type Harness = Awaited<ReturnType<typeof createManagedPublicLifecycleHarness>>
 type Child = Awaited<ReturnType<Harness["spawnCompletedChild"]>>
@@ -126,6 +127,171 @@ async function expectDurableCompletion(fixture: Harness, child: Child, summary: 
 }
 
 describe("AlphaProvider automatic owned Task disposal with WS01 handler ownership", () => {
+	it("keeps explicit close retryable when its owned runtime cleanup fails once", async () => {
+		const fixture = await createFixture()
+		const child = await fixture.spawnCompletedChild("explicit-close-cleanup-failure")
+		const terminal = structuredClone(fixture.store.getAgent(child.taskId)?.terminalResult)
+		const failure = new Error("Explicit close runtime cleanup failed once")
+		const abort = vi.spyOn(child.task, "abortTask").mockRejectedValueOnce(failure)
+
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).rejects.toBe(failure)
+
+		expect(fixture.store.getAgent(child.taskId)?.terminalResult).toEqual(terminal)
+		expect(fixture.provider.getLiveTask(child.taskId)).toBe(child.task)
+		expect(fixture.runs.getResult(child.taskId)?.status).toBe("completed")
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).resolves.toMatchObject({
+			taskId: child.taskId,
+			status: "completed",
+		})
+		expect(abort).toHaveBeenCalledTimes(2)
+		expect(fixture.provider.getLiveTask(child.taskId) === undefined).toBe(true)
+		expect(fixture.store.getAgent(child.taskId)).toBeUndefined()
+		await expectDurableCompletion(fixture, child, child.turn.summary)
+	})
+
+	it("retries durable close after runtime cleanup without retaining a disposed runtime", async () => {
+		const fixture = await createFixture()
+		const child = await fixture.spawnCompletedChild("close-persistence-failure")
+		const terminal = structuredClone(fixture.store.getAgent(child.taskId)?.terminalResult)
+		const failure = new Error("Explicit close persistence failed once")
+		const close = vi.spyOn(fixture.store, "closeAgent").mockRejectedValueOnce(failure)
+		const abort = vi.spyOn(child.task, "abortTask")
+
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).rejects.toBe(failure)
+
+		expect(fixture.provider.getLiveTask(child.taskId) === undefined).toBe(true)
+		expect(fixture.store.getAgent(child.taskId)?.terminalResult).toEqual(terminal)
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).resolves.toMatchObject({
+			taskId: child.taskId,
+			status: "completed",
+		})
+		expect(close).toHaveBeenCalledTimes(2)
+		expect(abort).toHaveBeenCalledOnce()
+		expect(fixture.store.getAgent(child.taskId)).toBeUndefined()
+		await expectDurableCompletion(fixture, child, child.turn.summary)
+	})
+
+	it("reopens durable lifecycle evidence after an explicit journal close failure", async () => {
+		const fixture = await createFixture()
+		const child = await fixture.spawnCompletedChild("close-journal-failure")
+		const terminal = structuredClone(fixture.store.getAgent(child.taskId)?.terminalResult)
+		const journal = await observeChildJournal(fixture, child)
+		const failure = new Error("Explicit close journal snapshot failed once")
+		journal.close.mockRejectedValueOnce(failure)
+
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).rejects.toBe(failure)
+
+		expect(fixture.provider.getLiveTask(child.taskId) === undefined).toBe(true)
+		expect(fixture.store.getAgent(child.taskId)?.terminalResult).toEqual(terminal)
+		expect(journal.journals.has(child.taskId)).toBe(false)
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).resolves.toMatchObject({
+			taskId: child.taskId,
+			status: "completed",
+		})
+		expect(journal.close).toHaveBeenCalledOnce()
+		expect(journal.journals.has(child.taskId)).toBe(false)
+		await expectDurableCompletion(fixture, child, child.turn.summary)
+	})
+
+	it("keeps a terminal parent's runtime while it still has retained children", async () => {
+		const fixture = await createFixture()
+		const child = await fixture.spawnCompletedChild("close-retained-parent")
+		const terminal = fixture.store.getAgent(child.taskId)?.terminalResult
+		await fixture.store.updateAgentStatus(child.taskId, "pending")
+		const nested = await fixture.store.createAgent({
+			taskId: "retained-nested-child",
+			parentTaskId: child.taskId,
+			nickname: "nested",
+			role: "review",
+			objective: "Retained nested fixture",
+			status: "completed",
+		})
+		await fixture.store.updateAgentStatus(child.taskId, "completed", { terminalResult: terminal })
+		const abort = vi.spyOn(child.task, "abortTask")
+
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).rejects.toThrow("retained children")
+
+		expect(abort).not.toHaveBeenCalled()
+		expect(fixture.provider.getLiveTask(child.taskId)).toBe(child.task)
+		expect(fixture.store.getAgent(child.taskId)?.status).toBe("completed")
+		await fixture.provider.closeAgent(fixture.root, nested.path)
+		await expect(fixture.provider.closeAgent(fixture.root, child.path)).resolves.toMatchObject({
+			taskId: child.taskId,
+			status: "completed",
+		})
+	})
+
+	it("serializes a concurrent follow-up behind explicit close before it can readmit the child", async () => {
+		const fixture = await createFixture()
+		const child = await fixture.spawnCompletedChild("close-followup-race")
+		const cleanupEntered = barrier()
+		const releaseCleanup = barrier()
+		const followupResolved = barrier()
+		const abort = child.task.abortTask.bind(child.task)
+		vi.spyOn(child.task, "abortTask").mockImplementationOnce(async (...args) => {
+			cleanupEntered.resolve()
+			await releaseCleanup.promise
+			return abort(...args)
+		})
+		const closing = fixture.provider.closeAgent(fixture.root, child.path)
+		const closed = Promise.allSettled([closing])
+		await cleanupEntered.promise
+		const resolveReference = fixture.store.resolveAgentReference.bind(fixture.store)
+		vi.spyOn(fixture.store, "resolveAgentReference").mockImplementation((...args) => {
+			const record = resolveReference(...args)
+			followupResolved.resolve()
+			return record
+		})
+		const turn = fixture.queueTurn(child.taskId, "The concurrent follow-up must not start.")
+		const followup = fixture.provider.followupAgentTask(fixture.root, child.path, "Inspect again")
+		const followed = Promise.allSettled([followup])
+		try {
+			await followupResolved.promise
+			expect(fixture.store.getAgent(child.taskId)?.status).toBe("completed")
+			releaseCleanup.resolve()
+			await expect(closing).resolves.toMatchObject({ taskId: child.taskId, status: "completed" })
+			await expect(followup).rejects.toThrow("Unknown child agent target")
+			expect(turn.request).toBeUndefined()
+			expect(fixture.provider.getLiveTask(child.taskId) === undefined).toBe(true)
+		} finally {
+			releaseCleanup.resolve()
+			turn.release()
+			await closed
+			await followed
+		}
+	})
+
+	it("releases canonical runtime caches across repeated explicit child closes", async () => {
+		const fixture = await createFixture()
+		const journals = Reflect.get(fixture.provider, "agentLifecycleJournals") as Map<
+			string,
+			Promise<AgentLifecycleJournal>
+		>
+		const projector = Reflect.get(fixture.provider, "agentLifecycleProjector") as AgentLifecycleProjector
+		const initialJournalCount = journals.size
+		const initialSnapshotCount = Object.keys(fixture.taskSessions.getLifecycleSnapshots()).length
+
+		for (let index = 0; index < 4; index++) {
+			const child = await fixture.spawnCompletedChild(`explicit-close-cache-${index}`)
+			const journal = await observeChildJournal(fixture, child)
+			expect(projector.getSnapshot(child.taskId)).toBeDefined()
+			expect(fixture.taskSessions.getLifecycleSnapshot(child.taskId)).toBeDefined()
+			fixture.taskSessions.markLifecycleDegraded(child.taskId)
+
+			await fixture.provider.closeAgent(fixture.root, child.path)
+
+			expect(journal.close).toHaveBeenCalledOnce()
+			expect(journals.has(child.taskId)).toBe(false)
+			expect(journals.size).toBe(initialJournalCount)
+			expect(projector.getSnapshot(child.taskId)).toBeUndefined()
+			expect(fixture.taskSessions.getLifecycleSnapshot(child.taskId)).toBeUndefined()
+			expect(fixture.taskSessions.isLifecycleDegraded(child.taskId)).toBe(false)
+			expect(Object.keys(fixture.taskSessions.getLifecycleSnapshots())).toHaveLength(initialSnapshotCount)
+			expect(fixture.runs.getSnapshot(child.taskId)).toBeUndefined()
+			await expectDurableCompletion(fixture, child, child.turn.summary)
+		}
+	})
+
 	it("joins owned persistence before automatic disposal and keeps later public controls idempotent", async () => {
 		const fixture = await createFixture()
 		const child = await fixture.spawnCompletedChild("owned-disposal-target")

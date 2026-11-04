@@ -11,5 +11,6 @@ export const handleNewTask = async (params: { prompt?: string } | null | undefin
 		return
 	}
 
-	await AlphaProvider.handleCodeAction("newTask", "NEW_TASK", { userInput: prompt })
+	const provider = await AlphaProvider.getInstance()
+	await provider?.createTask(prompt)
 }

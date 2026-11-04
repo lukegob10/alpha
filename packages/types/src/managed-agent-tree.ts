@@ -14,6 +14,7 @@ import {
 	subagentStopReasonSchema,
 	subagentUsageSchema,
 } from "./subagent-orchestration.js"
+import { subagentModelRouteStateSchema } from "./subagent.js"
 
 export const MAX_MANAGED_AGENT_TREE_NODES = 256
 export const MAX_MANAGED_AGENT_TREE_ACTIVITY = 50
@@ -39,6 +40,8 @@ export const managedAgentTreeNodeProjectionSchema = z
 		objective: z.string().max(1_000),
 		status: agentLifecycleStatusSchema,
 		phase: z.string().min(1).max(100).optional(),
+		/** Frozen child selection, including effective reasoning when captured by its runtime. */
+		modelRoute: subagentModelRouteStateSchema.optional(),
 		createdAt: z.number().nonnegative(),
 		updatedAt: z.number().nonnegative(),
 		startedAt: z.number().nonnegative().optional(),

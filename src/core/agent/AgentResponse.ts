@@ -1,4 +1,9 @@
-import type { AssistantMessageMetadata, GeminiResponse, VscodeLmThinking } from "@alpha-code/types"
+import type {
+	AssistantMessageMetadata,
+	GeminiResponse,
+	ProviderResponseItem,
+	VscodeLmThinking,
+} from "@alpha-code/types"
 
 /**
  * Provider-neutral source information attached to a response.
@@ -68,7 +73,17 @@ export type AgentResponseItem =
 			id?: string
 			summary?: unknown[]
 	  }
-	| { type: "tool_call"; id: string; name: string; arguments: unknown }
+	| {
+			type: "tool_call"
+			id: string
+			name: string
+			arguments: unknown
+			/** A completed, identified call whose payload must produce an error receipt without execution. */
+			argumentParseError?: string
+			/** Bounded original malformed payload retained as evidence, never an object-only provider input. */
+			rawArguments?: string
+			providerItem?: ProviderResponseItem
+	  }
 	| ({ type: "usage" } & AgentResponseUsage)
 	| { type: "grounding"; sources: GroundingSource[] }
 	| AgentResponseError

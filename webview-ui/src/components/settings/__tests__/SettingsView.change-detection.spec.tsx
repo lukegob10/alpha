@@ -162,29 +162,6 @@ vi.mock("@src/components/ui", () => ({
 	),
 }))
 
-// Mock ModesView and McpView since they're rendered during indexing
-vi.mock("@src/components/modes/ModesView", () => ({
-	default: ({ customModePrompts, customInstructions, setCustomModePrompts, setCustomInstructions }: any) => (
-		<div>
-			<div data-testid="cached-mode-prompts">{JSON.stringify(customModePrompts)}</div>
-			<div data-testid="cached-global-instructions">{customInstructions}</div>
-			<button
-				data-testid="change-mode-prompt"
-				onClick={() =>
-					setCustomModePrompts({
-						...customModePrompts,
-						code: { ...customModePrompts?.code, roleDefinition: "Unsaved code role" },
-					})
-				}>
-				Change prompt
-			</button>
-			<button data-testid="clear-global-instructions" onClick={() => setCustomInstructions("")}>
-				Clear global instructions
-			</button>
-		</div>
-	),
-}))
-
 vi.mock("@src/components/mcp/McpView", () => ({
 	default: () => null,
 }))
@@ -253,10 +230,6 @@ vi.mock("../LanguageSettings", () => ({
 }))
 vi.mock("../About", () => ({
 	About: () => null,
-}))
-vi.mock("../PromptsSettings", () => ({ default: () => null }))
-vi.mock("../SlashCommandsSettings", () => ({
-	SlashCommandsSettings: () => null,
 }))
 vi.mock("../UISettings", () => ({
 	UISettings: ({
@@ -341,7 +314,6 @@ describe("SettingsView - Change Detection Fix", () => {
 		followupAutoApproveTimeoutMs: undefined,
 		includeDiagnosticMessages: false,
 		maxDiagnosticMessages: 50,
-		includeTaskHistoryInEnhance: true,
 		openRouterImageApiKey: undefined,
 		openRouterImageGenerationSelectedModel: undefined,
 		reasoningBlockCollapsed: true,
@@ -505,27 +477,27 @@ describe("SettingsView - Change Detection Fix", () => {
 		expect(onDone).toHaveBeenCalled()
 	})
 
-	it("buffers mode prompt edits and persists them only through Settings Save", async () => {
-		;(useExtensionState as any).mockReturnValue(
-			createExtensionState({
-				customModePrompts: {
-					code: { description: "Existing description" },
-					debug: { roleDefinition: "Preserved legacy role" },
-				},
-				customInstructions: "Existing global instructions",
-			}),
-		)
+	it("saves unrelated preferences without overwriting stored prompt customizations", async () => {
+		const promptSettings = {
+			customModePrompts: {
+				code: { roleDefinition: "Existing Code role", customInstructions: "Existing Code instructions" },
+				architect: { description: "Existing Plan description" },
+				debug: { roleDefinition: "Preserved legacy role" },
+			},
+			customInstructions: "Existing global instructions",
+		}
+		const liveState = createExtensionState({ didHydrateState: true, autoSteer: false, ...promptSettings })
+		;(useExtensionState as any).mockReturnValue(liveState)
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} targetSection="modes" />
+				<SettingsView onDone={vi.fn()} targetSection="ui" />
 			</QueryClientProvider>,
 		)
 
-		await waitFor(() => expect(screen.getByTestId("change-mode-prompt")).toBeInTheDocument())
+		await waitFor(() => expect(screen.getByTestId("auto-steer-checkbox")).not.toBeChecked())
 		mockPostMessage.mockClear()
-		fireEvent.click(screen.getByTestId("change-mode-prompt"))
-		fireEvent.click(screen.getByTestId("clear-global-instructions"))
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
 
 		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
 		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
@@ -536,12 +508,9 @@ describe("SettingsView - Change Detection Fix", () => {
 		const updateSettings = mockPostMessage.mock.calls
 			.map(([message]) => message)
 			.find((message) => message.type === "updateSettings")
-		expect(updateSettings.updatedSettings).toMatchObject({
-			customModePrompts: {
-				code: { description: "Existing description", roleDefinition: "Unsaved code role" },
-				debug: { roleDefinition: "Preserved legacy role" },
-			},
-			customInstructions: "",
-		})
+		expect(updateSettings.updatedSettings).toMatchObject({ autoSteer: true })
+		expect(updateSettings.updatedSettings).not.toHaveProperty("customModePrompts")
+		expect(updateSettings.updatedSettings).not.toHaveProperty("customInstructions")
+		expect(liveState).toMatchObject(promptSettings)
 	})
 })

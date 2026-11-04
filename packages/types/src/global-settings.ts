@@ -255,8 +255,6 @@ export const globalSettingsSchema = z.object({
 	customModes: z.array(modeConfigSchema).optional(),
 	customModePrompts: customModePromptsSchema.optional(),
 	customSupportPrompts: customSupportPromptsSchema.optional(),
-	enhancementApiConfigId: z.string().optional(),
-	includeTaskHistoryInEnhance: z.boolean().optional(),
 	historyPreviewCollapsed: z.boolean().optional(),
 	reasoningBlockCollapsed: z.boolean().optional(),
 	newTaskReasoningPreference: taskReasoningPreferenceSchema.optional(),
@@ -327,6 +325,10 @@ export const SECRET_STATE_KEYS = [
 	"codeIndexQdrantApiKey",
 	"codebaseIndexVertexJsonCredentials",
 	"codebaseIndexGeminiApiKey",
+	"codebaseIndexOpenAiApiKey",
+	"codebaseIndexOpenAiCompatibleApiKey",
+	"codebaseIndexOpenRouterApiKey",
+	"codebaseIndexBedrockApiKey",
 ] as const
 
 type ProviderSecretKey = (typeof SECRET_STATE_KEYS)[number]

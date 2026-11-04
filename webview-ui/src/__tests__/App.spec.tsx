@@ -103,23 +103,6 @@ vi.mock("@src/components/mcp/McpView", () => ({
 	},
 }))
 
-vi.mock("@src/components/modes/ModesView", () => ({
-	__esModule: true,
-	default: function ModesView() {
-		return <div data-testid="prompts-view">Modes View</div>
-	},
-}))
-
-vi.mock("@src/components/marketplace/MarketplaceView", () => ({
-	MarketplaceView: function MarketplaceView({ onDone }: { onDone: () => void }) {
-		return (
-			<div data-testid="marketplace-view" onClick={onDone}>
-				Marketplace View
-			</div>
-		)
-	},
-}))
-
 vi.mock("@src/components/cloud/CloudView", () => ({
 	CloudView: function CloudView() {
 		return <div data-testid="cloud-view">Cloud View</div>
@@ -548,6 +531,20 @@ describe("App", () => {
 		expect(screen.queryByTestId("chat-view")).not.toBeInTheDocument()
 	})
 
+	it.each([
+		{ type: "action", action: "marketplaceButtonClicked" },
+		{ type: "action", action: "switchTab", tab: "marketplace" },
+	])("ignores retired Marketplace navigation without losing the chat draft ($action)", (message) => {
+		render(<AppWithProviders />)
+		fireEvent.change(screen.getByRole("textbox", { name: "Draft" }), { target: { value: "Keep this draft" } })
+
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: message })))
+
+		expect(screen.getByTestId("chat-view")).toBeVisible()
+		expect(screen.getByRole("textbox", { name: "Draft" })).toHaveValue("Keep this draft")
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "fetchMarketplaceData" }))
+	})
+
 	it("has no duplicate toolbar row on a new sidebar chat", () => {
 		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
 		render(<AppWithProviders />)
@@ -560,7 +557,6 @@ describe("App", () => {
 
 	it.each([
 		{ tab: "settings", pane: "settings-view", label: "settings" },
-		{ tab: "marketplace", pane: "marketplace-view", label: "marketplace" },
 		{ tab: "scheduledTasks", pane: "scheduled-tasks-view", label: "scheduledTasks" },
 	])("keeps the sidebar secondary $tab title without duplicating native actions", async ({ tab, pane, label }) => {
 		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), renderContext: "sidebar" })
@@ -584,7 +580,6 @@ describe("App", () => {
 
 	it.each([
 		{ tab: "settings", pane: "settings-view", label: "settings" },
-		{ tab: "marketplace", pane: "marketplace-view", label: "marketplace" },
 		{ tab: "scheduledTasks", pane: "scheduled-tasks-view", label: "scheduledTasks" },
 	])("keeps one visible shared toolbar when visiting $tab and starting a new chat", async ({ tab, pane, label }) => {
 		render(<AppWithProviders />)
@@ -692,7 +687,7 @@ describe("App", () => {
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.settings" }))
 		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.tickets" }))
-		for (const label of ["incidentDashboard", "scheduledTasks", "marketplace"]) {
+		for (const label of ["incidentDashboard", "scheduledTasks"]) {
 			fireEvent.keyDown(screen.getByRole("button", { name: "common:chatToolbar.more" }), { key: "Enter" })
 			fireEvent.click(screen.getByRole("menuitem", { name: `common:chatToolbar.${label}` }))
 		}
@@ -705,7 +700,6 @@ describe("App", () => {
 			{ type: "openTickets" },
 			{ type: "openIncidentDashboard" },
 			{ type: "switchTab", tab: "scheduledTasks" },
-			{ type: "switchTab", tab: "marketplace" },
 		])
 	})
 
@@ -806,37 +800,5 @@ describe("App", () => {
 		const chatView = screen.getByTestId("chat-view")
 		expect(chatView.getAttribute("data-hidden")).toBe("false")
 		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
-	})
-
-	it("switches to marketplace view when receiving marketplaceButtonClicked action", async () => {
-		render(<AppWithProviders />)
-
-		act(() => {
-			triggerMessage("marketplaceButtonClicked")
-		})
-
-		const marketplaceView = await screen.findByTestId("marketplace-view")
-		expect(marketplaceView).toBeInTheDocument()
-
-		const chatView = screen.getByTestId("chat-view")
-		expect(chatView.getAttribute("data-hidden")).toBe("true")
-	})
-
-	it("returns to chat view when clicking done in marketplace view", async () => {
-		render(<AppWithProviders />)
-
-		act(() => {
-			triggerMessage("marketplaceButtonClicked")
-		})
-
-		const marketplaceView = await screen.findByTestId("marketplace-view")
-
-		act(() => {
-			marketplaceView.click()
-		})
-
-		const chatView = screen.getByTestId("chat-view")
-		expect(chatView.getAttribute("data-hidden")).toBe("false")
-		expect(screen.queryByTestId("marketplace-view")).not.toBeInTheDocument()
 	})
 })

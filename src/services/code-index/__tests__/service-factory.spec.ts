@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { CodeIndexServiceFactory } from "../service-factory"
 import { VertexGeminiEmbedder } from "../embedders/vertex"
 import { GeminiEmbedder } from "../embedders/gemini"
+import { HttpEmbedder } from "../embedders/http"
 import { LanceDbVectorStore } from "../vector-store/lancedb-client"
 import { QdrantVectorStore } from "../vector-store/qdrant-client"
 import { getDefaultModelId, getModelDimension } from "../../../shared/embeddingModels"
 
 vi.mock("../embedders/vertex", () => ({ VertexGeminiEmbedder: vi.fn() }))
 vi.mock("../embedders/gemini", () => ({ GeminiEmbedder: vi.fn() }))
+vi.mock("../embedders/http", () => ({ HttpEmbedder: vi.fn() }))
 vi.mock("../vector-store/lancedb-client", () => ({ LanceDbVectorStore: vi.fn() }))
 vi.mock("../vector-store/qdrant-client", () => ({ QdrantVectorStore: vi.fn() }))
 vi.mock("../../../shared/embeddingModels", () => ({
@@ -50,6 +52,22 @@ describe("CodeIndexServiceFactory", () => {
 
 		expect(VertexGeminiEmbedder).toHaveBeenCalledWith(vertexOptions, "gemini-embedding-2", 0.5)
 	})
+	it.each(["openai-native", "openai", "openrouter", "bedrock"] as const)(
+		"creates %s with its own connection and dimension",
+		(embedderProvider) => {
+			const embeddingOptions = { apiKey: "index-key", baseUrl: "https://embeddings.test/v1", region: "us-west-2" }
+			configManager.getConfig.mockReturnValue({
+				isConfigured: true,
+				embedderProvider,
+				modelId: "embedding-model",
+				modelDimension: 1024,
+				embeddingOptions,
+				embeddingRateLimitSeconds: 1,
+			})
+			factory.createEmbedder()
+			expect(HttpEmbedder).toHaveBeenCalledWith(embedderProvider, "embedding-model", embeddingOptions, 1, 1024)
+		},
+	)
 
 	it("does not fall back to Vertex when a legacy provider is loaded", () => {
 		configManager.isFeatureConfigured = false
@@ -117,6 +135,23 @@ describe("CodeIndexServiceFactory", () => {
 			"http://localhost:6333",
 			3072,
 			"secret",
+			expect.any(String),
+		)
+	})
+	it("preserves a compatible deployment's explicit dimensions when a preset is added", () => {
+		configManager.getConfig.mockReturnValue({
+			isConfigured: true,
+			embedderProvider: "openai",
+			modelId: "nomic-ai/nomic-embed-text-v1.5",
+			modelDimension: 384,
+			vectorStoreProvider: "lancedb",
+			localIndexPath: ".alpha/code-index/lancedb",
+		})
+		factory.createVectorStore()
+		expect(LanceDbVectorStore).toHaveBeenCalledWith(
+			"/workspace",
+			".alpha/code-index/lancedb",
+			384,
 			expect.any(String),
 		)
 	})

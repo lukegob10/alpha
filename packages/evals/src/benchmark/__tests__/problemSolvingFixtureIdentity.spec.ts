@@ -54,7 +54,7 @@ function attempt(root: string, copiedEvalRoot: string) {
 		taskId: "repo-cache-invalidation",
 		attemptRoot: path.join(root, "attempts"),
 		attemptId: "fixture-identity",
-		hostVersion: "1.138.0",
+		hostVersion: "1.141.0",
 		provider: "live-copilot" as const,
 		modelId: "controlled-model",
 		effort: "high",

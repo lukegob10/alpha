@@ -283,16 +283,36 @@ describe("OpenAiHandler", () => {
 				.map((chunk) => chunk.arguments ?? "")
 				.join("")
 			expect(JSON.parse(partialArguments)).toEqual({ patch })
-			expect(chunks).toContainEqual({ type: "tool_call_end", id: "call_patch" })
+			expect(chunks).toContainEqual({
+				type: "tool_call_end",
+				id: "call_patch",
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-5.6-sol",
+					itemType: "custom_tool_call",
+					id: "item_patch",
+				},
+			})
 			expect(chunks).toContainEqual({
 				type: "text",
 				text: "Applying the patch.",
 				id: "message_1",
 				outputIndex: 2,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-5.6-sol",
+					itemType: "message",
+					id: "message_1",
+					status: "completed",
+					content: [{ type: "output_text", length: 19 }],
+				},
 			})
 			expect(chunks).toContainEqual({ type: "reasoning", text: "Reviewed the patch.", outputIndex: 0 })
 			expect(chunks).toContainEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 120,
 				outputTokens: 30,
 				cacheReadTokens: 40,
@@ -376,7 +396,17 @@ describe("OpenAiHandler", () => {
 				outputIndex: 0,
 				arguments: '{"path":"."}',
 			})
-			expect(chunks[toolCallEndIndex]).toEqual({ type: "tool_call_end", id: "call_list" })
+			expect(chunks[toolCallEndIndex]).toEqual({
+				type: "tool_call_end",
+				id: "call_list",
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-5.6-sol",
+					itemType: "function_call",
+					id: "item_list",
+				},
+			})
 			expect(toolCallEndIndex).toBeGreaterThan(toolCallIndex)
 			expect(tailIndex).toBeGreaterThan(toolCallEndIndex)
 		})
@@ -424,9 +454,25 @@ describe("OpenAiHandler", () => {
 				},
 			])
 			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
-				{ type: "tool_call_end", id: "call_minimal" },
+				{
+					type: "tool_call_end",
+					id: "call_minimal",
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-5.6-sol",
+						itemType: "function_call",
+						id: "item_minimal",
+					},
+				},
 			])
-			expect(chunks).toContainEqual({ type: "usage", inputTokens: 8, outputTokens: 3, cacheReadTokens: 2 })
+			expect(chunks).toContainEqual({
+				type: "usage",
+				usageSource: "provider",
+				inputTokens: 8,
+				outputTokens: 3,
+				cacheReadTokens: 2,
+			})
 			expect(provider.getResponseId()).toBe("resp_minimal")
 			expect(provider.getEncryptedContent()).toEqual({
 				encrypted_content: "opaque-minimal",
@@ -525,13 +571,13 @@ describe("OpenAiHandler", () => {
 				},
 			})
 			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
-			const chunks: unknown[] = []
+			const chunks: ApiStreamChunk[] = []
 			await expect(async () => {
 				for await (const chunk of provider.createMessage("system", [], { taskId: "responses-open-tool" })) {
 					chunks.push(chunk)
 				}
 			}).rejects.toThrow("streamed tool call was complete")
-			expect(chunks).not.toContainEqual({ type: "tool_call_end", id: "call_open" })
+			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([])
 		})
 
 		it.each([
@@ -618,7 +664,17 @@ describe("OpenAiHandler", () => {
 			}
 
 			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([
-				{ type: "tool_call_end", id: "replayed-call" },
+				{
+					type: "tool_call_end",
+					id: "replayed-call",
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-6-sol",
+						itemType: type,
+						...(itemId ? { id: itemId } : {}),
+					},
+				},
 			])
 			expect(chunks.filter((chunk) => chunk.type === "tool_call")).toEqual([])
 			const argumentsText = chunks
@@ -627,19 +683,27 @@ describe("OpenAiHandler", () => {
 				.join("")
 			expect(JSON.parse(argumentsText)).toEqual(isCustom ? { patch } : { cmd: "pwd" })
 			expect(chunks.filter((chunk) => chunk.type === "text")).toEqual([
-				{ type: "text", text: "Finished.", id: "final-message", outputIndex: 1 },
+				{
+					type: "text",
+					text: "Finished.",
+					id: "final-message",
+					outputIndex: 1,
+					providerItem: {
+						protocol: "openai-responses",
+						providerId: "openai",
+						modelId: "gpt-6-sol",
+						itemType: "message",
+						id: "final-message",
+						status: "completed",
+						content: [{ type: "output_text", length: 9 }],
+					},
+				},
 			])
 		})
 
-		it.each([
-			{ outputIndex: "0", finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: -1, finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: 0.5, finalCallId: "call-1", reason: "invalid index" },
-			{ outputIndex: 1, finalCallId: "call-1", reason: "final output" },
-			{ outputIndex: 0, finalCallId: "different-call", reason: "final output" },
-		])(
-			"rejects mismatched output identity at $outputIndex ($finalCallId)",
-			async ({ outputIndex, finalCallId, reason }) => {
+		it.each(["0", -1, 0.5])(
+			"rejects an invalid output index %s before accepting its receipt",
+			async (outputIndex) => {
 				const call = {
 					id: "tool-item",
 					type: "function_call",
@@ -655,7 +719,7 @@ describe("OpenAiHandler", () => {
 							response: {
 								id: "mismatched-response",
 								status: "completed",
-								output: [{ ...call, call_id: finalCallId }],
+								output: [call],
 								usage: null,
 							},
 						}
@@ -671,7 +735,7 @@ describe("OpenAiHandler", () => {
 					})) {
 						chunks.push(chunk)
 					}
-				}).rejects.toThrow(reason)
+				}).rejects.toThrow("invalid index")
 				expect(chunks.filter((chunk) => chunk.type === "tool_call_end").length).toBeLessThanOrEqual(1)
 				expect(chunks.some((chunk) => chunk.type === "usage")).toBe(false)
 			},
@@ -734,7 +798,21 @@ describe("OpenAiHandler", () => {
 			expect(mockResponsesCreate).toHaveBeenCalledOnce()
 			expect(mockCreate).not.toHaveBeenCalled()
 			expect(mockResponsesCreate.mock.calls[0]?.[0].tools).toEqual(expectedTools)
-			expect(chunks).toContainEqual({ type: "text", text: "Ready.", id: "message_1", outputIndex: 0 })
+			expect(chunks).toContainEqual({
+				type: "text",
+				text: "Ready.",
+				id: "message_1",
+				outputIndex: 0,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6-sol",
+					itemType: "message",
+					id: "message_1",
+					status: "completed",
+					content: [{ type: "output_text", length: 6 }],
+				},
+			})
 		})
 
 		it("normalizes freeform input in non-streaming mode", async () => {
@@ -859,7 +937,7 @@ describe("OpenAiHandler", () => {
 				},
 			})
 			const provider = new OpenAiHandler({ ...mockOptions, openAiModelId: "gpt-5.6-sol" })
-			const chunks: unknown[] = []
+			const chunks: ApiStreamChunk[] = []
 			await expect(async () => {
 				for await (const chunk of provider.createMessage("system", [], {
 					taskId: "responses-incomplete-stream",
@@ -867,7 +945,7 @@ describe("OpenAiHandler", () => {
 				}))
 					chunks.push(chunk)
 			}).rejects.toThrow("incomplete")
-			expect(chunks).not.toContainEqual({ type: "tool_call_end", id: "call_patch" })
+			expect(chunks.filter((chunk) => chunk.type === "tool_call_end")).toEqual([])
 		})
 
 		it.each(["response", "tool item"] as const)(

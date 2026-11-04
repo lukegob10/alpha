@@ -7,8 +7,15 @@ import {
 } from "../embeddingModels"
 
 describe("Google embedding model profiles", () => {
-	it("contains supported Vertex and Gemini models", () => {
-		expect(Object.keys(EMBEDDING_MODEL_PROFILES).sort()).toEqual(["gemini", "vertex"])
+	it("retains Google model profiles alongside dedicated embedding providers", () => {
+		expect(Object.keys(EMBEDDING_MODEL_PROFILES).sort()).toEqual([
+			"bedrock",
+			"gemini",
+			"openai",
+			"openai-native",
+			"openrouter",
+			"vertex",
+		])
 		expect(EMBEDDING_MODEL_PROFILES.gemini).toEqual({
 			"gemini-embedding-001": { dimension: 3072, scoreThreshold: 0.4 },
 			"gemini-embedding-2": { dimension: 3072, scoreThreshold: 0.4 },

@@ -3,33 +3,20 @@ import { OpenAiHandler } from "../openai"
 import { OpenAiNativeHandler } from "../openai-native"
 import { OpenRouterHandler } from "../openrouter"
 import { XAIHandler } from "../xai"
-import { StellarHandler } from "../stellar"
 import { VertexOpenAiHandler } from "../vertex-openai"
 
-const { getToken, forceRefreshToken } = vi.hoisted(() => ({ getToken: vi.fn(), forceRefreshToken: vi.fn() }))
-
-vi.mock("../utils/helix-token-manager", () => ({
-	HelixTokenManager: { getOrCreate: () => ({ getToken, forceRefreshToken }) },
-}))
-vi.mock("../utils/vertex-gateway-transport", () => ({
-	configurePemCaTransport: vi.fn().mockResolvedValue("fixture.pem"),
-	configureVertexGatewayTransport: vi.fn().mockResolvedValue("fixture.pem"),
+vi.mock("google-auth-library", () => ({
+	GoogleAuth: vi.fn(function () {
+		return { getAccessToken: vi.fn().mockResolvedValue("fixture-token") }
+	}),
 }))
 
-const stellar = () =>
-	new StellarHandler({
-		stellarBaseUrl: "https://fixture.test/v1",
-		stellarPemCaBundlePath: "fixture.pem",
-		apiModelId: "fixture-model",
-	})
 const vertex = () =>
 	new VertexOpenAiHandler({
 		apiModelId: "xai/grok-4.6",
-		gatewayBaseUrl: "https://fixture.test/v1",
+
 		projectId: "fixture-project",
 		location: "global",
-		pemCaBundlePath: "fixture.pem",
-		helixCommand: "fixture-token-command",
 	})
 
 async function consume(handler: ApiHandler) {
@@ -48,8 +35,7 @@ function errorResponse(status: number) {
 describe("provider SDK retry ownership", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
-		getToken.mockResolvedValue("fixture-token")
-		forceRefreshToken.mockResolvedValue("refreshed-fixture-token")
+
 		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 
@@ -83,7 +69,6 @@ describe("provider SDK retry ownership", () => {
 		["native OpenAI", () => new OpenAiNativeHandler({ openAiNativeApiKey: "fixture-key" })],
 		["OpenRouter", () => new OpenRouterHandler({ openRouterApiKey: "fixture-key" })],
 		["xAI", () => new XAIHandler({ xaiApiKey: "fixture-key" })],
-		["Stellar", stellar],
 		["Vertex compatible", vertex],
 	] satisfies Array<[string, () => ApiHandler]>)(
 		"makes one HTTP attempt per %s invocation",
@@ -94,25 +79,6 @@ describe("provider SDK retry ownership", () => {
 			await expect(consume(create())).rejects.toMatchObject({ status: 503 })
 
 			expect(fetch).toHaveBeenCalledOnce()
-		},
-	)
-
-	it.each([
-		["Stellar", stellar],
-		["Vertex compatible", vertex],
-	] satisfies Array<[string, () => ApiHandler]>)(
-		"preserves the explicit %s credential-refresh retry",
-		async (_name, create) => {
-			const fetch = vi
-				.fn()
-				.mockImplementation(async () => errorResponse(503))
-				.mockResolvedValueOnce(errorResponse(401))
-			vi.stubGlobal("fetch", fetch)
-
-			await expect(consume(create())).rejects.toMatchObject({ status: 503 })
-
-			expect(forceRefreshToken).toHaveBeenCalledOnce()
-			expect(fetch).toHaveBeenCalledTimes(2)
 		},
 	)
 })

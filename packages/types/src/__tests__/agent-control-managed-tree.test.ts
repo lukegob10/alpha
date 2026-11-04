@@ -1,4 +1,8 @@
-import { MAX_MANAGED_AGENT_TREE_ACTIVITY, managedAgentTreeProjectionSchema } from "../managed-agent-tree.js"
+import {
+	MAX_MANAGED_AGENT_TREE_ACTIVITY,
+	managedAgentTreeNodeProjectionSchema,
+	managedAgentTreeProjectionSchema,
+} from "../managed-agent-tree.js"
 
 const usage = { inputTokens: 10, outputTokens: 5, cost: 0.02, durationMs: 1_000 }
 
@@ -18,6 +22,22 @@ const root = {
 }
 
 describe("managed-agent live-tree projection", () => {
+	it("retains a child's frozen model and reasoning label while keeping legacy nodes readable", () => {
+		expect(managedAgentTreeNodeProjectionSchema.parse(root)).not.toHaveProperty("modelRoute")
+		const modelRoute = {
+			source: "parent",
+			resolution: "selected",
+			profileName: "Captured child",
+			modelId: "child-model",
+			effectiveReasoning: { kind: "effort", effort: "high" },
+		}
+		expect(managedAgentTreeNodeProjectionSchema.parse({ ...root, modelRoute }).modelRoute).toEqual(modelRoute)
+		expect(
+			managedAgentTreeNodeProjectionSchema.parse({ ...root, modelRoute: { ...modelRoute, apiKey: "secret" } })
+				.modelRoute,
+		).not.toHaveProperty("apiKey")
+	})
+
 	it("parses a bounded nested registry projection without raw manifests or report bodies", () => {
 		const projection = managedAgentTreeProjectionSchema.parse({
 			version: 1,

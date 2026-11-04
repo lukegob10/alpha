@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createApiStreamOutcome } from "../../../api/transform/stream"
+import { createAgentResponse } from "../AgentResponse"
 
 import {
 	AgentResponseAccumulator,
@@ -8,6 +9,7 @@ import {
 	type AgentResponse,
 	type AgentTurnHost,
 	type AgentTurnStagedHost,
+	type AgentTurnStepResult,
 } from "../AgentTurnEngine"
 
 const emptyResponse = (): AgentResponse => ({
@@ -16,6 +18,27 @@ const emptyResponse = (): AgentResponse => ({
 	reasoning: "",
 	toolCalls: [],
 })
+
+function scriptedStoppingHost(adapter: "legacy" | "staged", steps: readonly AgentTurnStepResult<string>[]) {
+	let nextStep = 0
+	const sample = vi.fn(async (_input: string) => {
+		const step = steps[nextStep++]
+		if (!step) throw new Error("Unexpected model request after the scripted final answer.")
+		return step
+	})
+	const selectIdleContinuation = vi.fn(async () => "automatic-idle-work")
+	const onContinuation = vi.fn<NonNullable<AgentTurnHost<string>["onContinuation"]>>()
+	const common = { shouldAbort: () => false, selectIdleContinuation, onContinuation }
+	const host: AgentTurnHost<string> | AgentTurnStagedHost<string> =
+		adapter === "legacy"
+			? { ...common, runStep: sample }
+			: {
+					...common,
+					sampleStep: sample,
+					selectContinuation: async (_sample, step) => steps[step - 1]!,
+				}
+	return { host, sample, selectIdleContinuation, onContinuation }
+}
 
 describe("AgentResponseAccumulator", () => {
 	it("forwards text and reasoning while keeping tool calls buffered", async () => {
@@ -57,30 +80,104 @@ describe("AgentResponseAccumulator", () => {
 		expect(response.toolCalls).toHaveLength(1)
 	})
 
-	it("returns a structured error for malformed tool arguments", async () => {
+	it("retains a correlated rejected call for malformed tool arguments without failing independent calls", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {
 				yield { type: "tool_call", id: "call-1", name: "read_file", arguments: "not-json" } as const
+				yield { type: "tool_call", id: "call-2", name: "read_file", arguments: '{"path":"a.ts"}' } as const
 			})(),
 		)
 
-		expect(response.toolCalls).toHaveLength(0)
-		expect(response.items).toContainEqual({
-			type: "error",
-			message: 'Unable to parse arguments for tool call "read_file" (call-1).',
-			callId: "call-1",
-			toolName: "read_file",
-			retryable: false,
-		})
-		expect(response.outcome).toEqual({
-			status: "failed",
-			reason: 'Unable to parse arguments for tool call "read_file" (call-1).',
-			retryable: false,
-		})
+		expect(response.toolCalls).toEqual([
+			{
+				type: "tool_call",
+				id: "call-1",
+				name: "read_file",
+				arguments: {},
+				argumentParseError: 'Unable to parse arguments for tool call "read_file" (call-1).',
+				rawArguments: "not-json",
+			},
+			{ type: "tool_call", id: "call-2", name: "read_file", arguments: { path: "a.ts" } },
+		])
+		expect(response.items.some((item) => item.type === "error")).toBe(false)
+		expect(response.outcome).toBeUndefined()
+	})
+
+	it("bounds malformed payload evidence without exposing it as executable arguments", async () => {
+		const accumulator = new AgentResponseAccumulator()
+		await accumulator.add({ type: "tool_call", id: "bad", name: "read_file", arguments: "x".repeat(20_000) })
+		const response = await accumulator.finish()
+		expect(response.toolCalls[0]).toMatchObject({ id: "bad", arguments: {}, rawArguments: "x".repeat(8_192) })
+		expect(response.toolCalls[0].argumentParseError).not.toContain("xxxxxxxx")
+		expect(response.outcome).toBeUndefined()
 	})
 })
 
 describe("AgentTurnEngine", () => {
+	it.each(["legacy", "staged"] as const)("authoritatively completes a reasoning-only %s response", async (kind) => {
+		const response = await collectAgentResponse(
+			(async function* () {
+				yield { type: "reasoning", text: "", signature: "retained-state" } as const
+				yield createApiStreamOutcome({ status: "completed", requiresContinuation: false })
+			})(),
+		)
+		const sample = vi.fn().mockResolvedValueOnce({ response }).mockRejectedValue(new Error("Unexpected follow-up"))
+		const admitCompletion = vi.fn()
+		const common = { shouldAbort: () => false, admitCompletion }
+		const engine =
+			kind === "staged"
+				? new AgentTurnEngine<string>({
+						...common,
+						sampleStep: sample,
+						selectContinuation: async () => ({ nextInput: "follow-up" }),
+					})
+				: new AgentTurnEngine<string>({
+						...common,
+						runStep: async (input) => ({ ...(await sample(input)), nextInput: "follow-up" }),
+					})
+
+		expect(await engine.run("request")).toMatchObject({
+			status: "completed",
+			steps: 1,
+			completionReason: "assistant",
+			response,
+		})
+		expect(sample).toHaveBeenCalledOnce()
+		expect(admitCompletion).toHaveBeenCalledOnce()
+	})
+
+	it.each(["legacy", "staged"] as const)(
+		"admits an authoritative successful empty %s response once",
+		async (kind) => {
+			const response = createAgentResponse([], { status: "completed", requiresContinuation: false })
+			const sample = vi
+				.fn()
+				.mockResolvedValueOnce({ response })
+				.mockRejectedValue(new Error("Unexpected follow-up"))
+			const admission = vi.fn()
+			const common = { shouldAbort: () => false, admitCompletion: admission }
+			const engine =
+				kind === "staged"
+					? new AgentTurnEngine<string>({
+							...common,
+							sampleStep: sample,
+							selectContinuation: async () => ({ nextInput: "follow-up" }),
+						})
+					: new AgentTurnEngine<string>({
+							...common,
+							runStep: async (input) => ({ ...(await sample(input)), nextInput: "follow-up" }),
+						})
+
+			expect(await engine.run("request")).toMatchObject({
+				status: "completed",
+				steps: 1,
+				completionReason: "assistant",
+			})
+			expect(sample).toHaveBeenCalledOnce()
+			expect(admission).toHaveBeenCalledOnce()
+		},
+	)
+
 	it("runs pending tools and the follow-up step even when assistant text declares a final answer", async () => {
 		const firstResponse = await collectAgentResponse(
 			(async function* () {
@@ -193,7 +290,7 @@ describe("AgentTurnEngine", () => {
 		expect(host.runStep).toHaveBeenNthCalledWith(2, "second")
 	})
 
-	it("does not run effects or complete when a successful stream hides malformed tool arguments", async () => {
+	it("settles malformed tool receipts before allowing a successful response to continue", async () => {
 		const response = await collectAgentResponse(
 			(async function* () {
 				yield { type: "text", text: "Finished." } as const
@@ -203,20 +300,24 @@ describe("AgentTurnEngine", () => {
 		)
 		const host: AgentTurnStagedHost<string> = {
 			shouldAbort: () => false,
-			sampleStep: async () => ({ response }),
+			sampleStep: async (input) => ({
+				response: input === "first" ? response : { ...emptyResponse(), text: "Recovered." },
+			}),
 			commitResponse: vi.fn(),
 			executeEffects: vi.fn(),
-			selectContinuation: vi.fn(async () => ({ nextInput: "complete" as const })),
+			selectContinuation: vi.fn(async (_sample, step) => ({
+				nextInput: step === 1 ? "tool-result" : "complete",
+			})),
 			releaseStep: vi.fn(),
 		}
 
 		const result = await new AgentTurnEngine(host).run("first")
 
-		expect(result).toMatchObject({ status: "failed", steps: 1 })
-		expect(host.commitResponse).toHaveBeenCalledOnce()
-		expect(host.executeEffects).not.toHaveBeenCalled()
-		expect(host.selectContinuation).not.toHaveBeenCalled()
-		expect(host.releaseStep).toHaveBeenCalledOnce()
+		expect(result).toMatchObject({ status: "completed", steps: 2 })
+		expect(host.commitResponse).toHaveBeenCalledTimes(2)
+		expect(host.executeEffects).toHaveBeenCalledTimes(2)
+		expect(host.selectContinuation).toHaveBeenCalledTimes(2)
+		expect(host.releaseStep).toHaveBeenCalledTimes(2)
 	})
 
 	it("preserves cancellation received while the final step releases its runtime ownership", async () => {
@@ -290,60 +391,20 @@ describe("AgentTurnEngine", () => {
 		expect(result).toMatchObject({ status: "incomplete", steps: 1, reason: "output token limit" })
 	})
 
-	it("treats a visible assistant response without tool calls as a completed turn", async () => {
-		const host: AgentTurnHost<string> = {
-			shouldAbort: () => false,
-			runStep: vi.fn(async () => ({
-				response: { ...emptyResponse(), text: "The requested explanation." },
-				nextInput: "synthetic-recovery",
-			})),
-		}
-
-		const result = await new AgentTurnEngine(host).run("first")
-
-		expect(result).toEqual({
-			status: "completed",
-			steps: 1,
-			completionReason: "assistant",
-			response: { ...emptyResponse(), text: "The requested explanation." },
-		})
-		expect(host.runStep).toHaveBeenCalledOnce()
-	})
-
-	it("continues after a normally completed response requires another step despite final-answer text", async () => {
-		const firstResponse = await collectAgentResponse(
-			(async function* () {
-				yield { type: "text", text: "Intermediate answer.", phase: "final_answer", id: "intermediate" } as const
-				yield createApiStreamOutcome({
-					status: "completed",
-					terminal: true,
-					semanticOutputObserved: true,
-					requiresContinuation: true,
-				})
-			})(),
-		)
-		const finalResponse = { ...emptyResponse(), text: "The final answer." }
+	it("does not invent continuation work after a staged acknowledgement-only response", async () => {
+		// Codex 8801b9a8 (2026-10-30), core/src/session/turn.rs: only pending input,
+		// provider continuation, or an explicit host hook keeps a completed sample running.
+		const response = { ...emptyResponse(), text: "Ready. What should I work on?" }
 		const host: AgentTurnStagedHost<string> = {
 			shouldAbort: () => false,
-			sampleStep: vi.fn(async (input) => ({
-				response: input === "first" ? firstResponse : finalResponse,
-			})),
-			selectContinuation: vi.fn(async (_sample, step) => ({
-				nextInput: step === 1 ? "provider-follow-up" : "complete",
-			})),
+			sampleStep: vi.fn(async () => ({ response })),
+			selectContinuation: vi.fn(async () => ({ nextInput: "synthetic-recovery" })),
 		}
 
-		const result = await new AgentTurnEngine(host).run("first")
+		const result = await new AgentTurnEngine(host).run("Work on the parent ticket and all five children")
 
-		expect(firstResponse.outcome).toEqual({ status: "completed", requiresContinuation: true })
-		expect(host.sampleStep).toHaveBeenNthCalledWith(1, "first")
-		expect(host.sampleStep).toHaveBeenNthCalledWith(2, "provider-follow-up")
-		expect(result).toEqual({
-			status: "completed",
-			steps: 2,
-			completionReason: "host",
-			response: finalResponse,
-		})
+		expect(result).toEqual({ status: "completed", steps: 1, completionReason: "assistant", response })
+		expect(host.sampleStep).toHaveBeenCalledOnce()
 	})
 
 	it("lets hosts require an explicit completion boundary", async () => {
@@ -461,34 +522,6 @@ describe("AgentTurnEngine", () => {
 			expect(onStepComplete).toHaveBeenCalledWith(response, 1)
 		},
 	)
-
-	it("runs selected continuation input before implicit completion", async () => {
-		const host: AgentTurnHost<string> = {
-			shouldAbort: () => false,
-			canCompleteWithoutTools: () => true,
-			runStep: vi
-				.fn()
-				.mockResolvedValueOnce({
-					response: { ...emptyResponse(), text: "First answer." },
-					nextInput: "queued-user-message",
-					requiresContinuation: true,
-				})
-				.mockResolvedValueOnce({
-					response: { ...emptyResponse(), text: "Answer with queued context." },
-					nextInput: "unused-recovery",
-				}),
-		}
-
-		const result = await new AgentTurnEngine(host).run("first")
-
-		expect(result).toEqual({
-			status: "completed",
-			steps: 2,
-			completionReason: "assistant",
-			response: { ...emptyResponse(), text: "Answer with queued context." },
-		})
-		expect(host.runStep).toHaveBeenNthCalledWith(2, "queued-user-message")
-	})
 
 	it("sequences steps and stops when the host completes", async () => {
 		const calls: string[] = []
@@ -636,5 +669,147 @@ describe("AgentTurnEngine", () => {
 			error: releaseError,
 			response,
 		})
+	})
+})
+
+// Verified 2026-11-03 against openai/codex 079e17a422347e49d02501304f79fade7e569362,
+// core/src/session/turn.rs and tests/suite/scenarios_partial_answers.rs: settled output
+// ends sampling unless tool work, provider continuation, pending input, or a Stop hook requires another step.
+describe.each(["legacy", "staged"] as const)("AgentTurnEngine %s stopping contract", (adapter) => {
+	it.each([
+		{ label: "ordinary text", phase: undefined, explicitOutcome: false },
+		{ label: "provider-settled text", phase: undefined, explicitOutcome: true },
+		{ label: "commentary", phase: "commentary", explicitOutcome: true },
+		{ label: "final answer", phase: "final_answer", explicitOutcome: true },
+	] as const)(
+		"ends $label without synthetic recovery, idle work, or a completion tool",
+		async ({ phase, explicitOutcome }) => {
+			const response = createAgentResponse(
+				[{ type: "text", text: "The requested explanation.", phase }],
+				explicitOutcome ? { status: "completed", requiresContinuation: false } : undefined,
+			)
+			const { host, sample, selectIdleContinuation, onContinuation } = scriptedStoppingHost(adapter, [
+				{ response, nextInput: "synthetic-recovery" },
+			])
+			const admitCompletion = vi.fn()
+			host.admitCompletion = admitCompletion
+
+			expect(await new AgentTurnEngine(host).run("first")).toEqual({
+				status: "completed",
+				steps: 1,
+				completionReason: "assistant",
+				response,
+			})
+			expect(sample).toHaveBeenCalledExactlyOnceWith("first")
+			expect(admitCompletion).toHaveBeenCalledOnce()
+			expect(selectIdleContinuation).not.toHaveBeenCalled()
+			expect(onContinuation).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["provider", "host"] as const)(
+		"runs only the %s requested follow-up before accepting the final answer",
+		async (source) => {
+			const firstResponse = await collectAgentResponse(
+				(async function* () {
+					yield {
+						type: "text",
+						text: "Intermediate answer.",
+						phase: "final_answer",
+						id: "intermediate",
+					} as const
+					yield createApiStreamOutcome({ status: "completed", requiresContinuation: source === "provider" })
+				})(),
+			)
+			const finalResponse = createAgentResponse(
+				[{ type: "text", text: "Answer with the remaining context.", phase: "final_answer" }],
+				{ status: "completed", requiresContinuation: false },
+			)
+			const followupInput = `${source}-follow-up`
+			const { host, sample, selectIdleContinuation, onContinuation } = scriptedStoppingHost(adapter, [
+				{
+					response: firstResponse,
+					nextInput: followupInput,
+					requiresContinuation: source === "host",
+				},
+				{ response: finalResponse, nextInput: "unused-recovery" },
+			])
+			host.canCompleteWithoutTools = () => true
+			const admitCompletion = vi.fn()
+			host.admitCompletion = admitCompletion
+
+			expect(await new AgentTurnEngine(host).run("first")).toEqual({
+				status: "completed",
+				steps: 2,
+				completionReason: "assistant",
+				response: finalResponse,
+			})
+			expect(sample.mock.calls.map(([input]) => input)).toEqual(["first", followupInput])
+			expect(admitCompletion).toHaveBeenCalledExactlyOnceWith({
+				status: "completed",
+				steps: 2,
+				completionReason: "assistant",
+				response: finalResponse,
+			})
+			expect(selectIdleContinuation).not.toHaveBeenCalled()
+			expect(onContinuation).toHaveBeenCalledExactlyOnceWith({
+				step: 2,
+				reason: source === "provider" ? "model-continuation" : "host-pending-input",
+			})
+		},
+	)
+
+	it("uses the selected tool-result input after commentary before ending on ordinary text", async () => {
+		const toolResponse = createAgentResponse(
+			[
+				{ type: "text", text: "Inspecting the requested file.", phase: "commentary" },
+				{ type: "tool_call", id: "read-file", name: "read_file", arguments: { path: "a.ts" } },
+			],
+			{ status: "completed", requiresContinuation: false },
+		)
+		const finalResponse = createAgentResponse([
+			{ type: "text", text: "The file already has the requested behavior." },
+		])
+		const { host, sample, selectIdleContinuation, onContinuation } = scriptedStoppingHost(adapter, [
+			{ response: toolResponse, nextInput: "read-file-result" },
+			{ response: finalResponse, nextInput: "unused-check" },
+		])
+		const admitCompletion = vi.fn()
+		host.admitCompletion = admitCompletion
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "assistant",
+			response: finalResponse,
+		})
+		expect(sample.mock.calls.map(([input]) => input)).toEqual(["first", "read-file-result"])
+		expect(admitCompletion).toHaveBeenCalledOnce()
+		expect(selectIdleContinuation).not.toHaveBeenCalled()
+		expect(onContinuation).toHaveBeenCalledExactlyOnceWith({ step: 2, reason: "model-tool-call" })
+	})
+
+	it("runs one host completion repair and stops when its next candidate is accepted", async () => {
+		const candidate = createAgentResponse([{ type: "text", text: "Candidate answer.", phase: "final_answer" }])
+		const finalResponse = createAgentResponse([{ type: "text", text: "Repaired answer.", phase: "final_answer" }])
+		const { host, sample, selectIdleContinuation, onContinuation } = scriptedStoppingHost(adapter, [
+			{ response: candidate, nextInput: "unused-recovery" },
+			{ response: finalResponse, nextInput: "unused-extra-check" },
+		])
+		const admitCompletion = vi
+			.fn<NonNullable<typeof host.admitCompletion>>(async () => undefined)
+			.mockResolvedValueOnce({ nextInput: "completion-repair", requiresContinuation: true })
+		host.admitCompletion = admitCompletion
+
+		expect(await new AgentTurnEngine(host).run("first")).toEqual({
+			status: "completed",
+			steps: 2,
+			completionReason: "assistant",
+			response: finalResponse,
+		})
+		expect(sample.mock.calls.map(([input]) => input)).toEqual(["first", "completion-repair"])
+		expect(admitCompletion.mock.calls.map(([outcome]) => outcome.response)).toEqual([candidate, finalResponse])
+		expect(selectIdleContinuation).not.toHaveBeenCalled()
+		expect(onContinuation).toHaveBeenCalledExactlyOnceWith({ step: 2, reason: "completion-repair" })
 	})
 })

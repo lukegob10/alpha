@@ -144,6 +144,9 @@ function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<vo
 	return entry && ("promise" in entry ? entry.promise : entry)
 }
 
+// This integration fixture joins real owned processes and persists multiple task generations.
+vi.setConfig({ testTimeout: 60_000 })
+
 describe("AlphaProvider public automatic eviction and cold follow-up", () => {
 	it("restores the same durable child only after real owned cleanup, then integrates its native wait receipt", async () => {
 		const fixture = await createFixture()

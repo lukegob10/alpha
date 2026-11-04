@@ -2,23 +2,30 @@ import Anthropic from "@anthropic-ai/sdk"
 import crypto from "crypto"
 
 import { TelemetryService } from "@alpha-code/telemetry"
+import { snapshotNativeCompactionCheckpoint, type NativeCompactionScope } from "@alpha-code/types"
 
 import { t } from "../../i18n"
 import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
+import { NativeCompactionInvalidResultError, NativeCompactionUnavailableError } from "../../api/native-compaction"
 import { getApiStreamErrorMessage } from "../../api/transform/stream"
-import type { ApiStreamError, ApiStreamOutcomeChunk } from "../../api/transform/stream"
+import type { ApiStreamError, ApiStreamOutcomeChunk, ApiStreamUsageChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
-import { isOpaqueProviderContentBlock } from "../task-persistence/providerStateScope"
+import { digestProviderTranscript } from "../task-persistence/ProviderTranscriptStore"
+import { isOpaqueProviderContentBlock, stripProviderResponseItemMetadata } from "../task-persistence/providerStateScope"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import { findLast, findLastIndex } from "../../shared/array"
-import { supportPrompt } from "../../shared/support-prompt"
+import { DEFAULT_CONDENSING_PROMPT } from "../../shared/condense-prompt"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { generateFoldedFileContext } from "./foldedFileContext"
 import type { ContextRecoveryStatus } from "../context-management/recovery"
-import { evaluateCompactionProgress, getCompactionTargetTokens } from "../context-management/recovery"
+import { evaluateCompactionProgress, getCompactionTargetTokens, getContextLimits } from "../context-management/recovery"
 import { getModelReservedOutputTokens } from "../../shared/api"
 import { createTokenCountContext, TokenCountContext } from "./tokenCountContext"
 import { getToolCallId, getToolResultId } from "../../utils/tool-id"
+import { aggregateCompactionUsage, type CompactionUsageObserver } from "./usage"
+export type { CompactionUsageObserver } from "./usage"
+
+import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
 
 export {
 	createTokenCountContext,
@@ -28,6 +35,12 @@ export {
 export type { CreateTokenCountContextOptions, TokenCountContext } from "./tokenCountContext"
 
 export type { FoldedFileContextResult, FoldedFileContextOptions } from "./foldedFileContext"
+
+// Codex f7167ac8 retains structured call IDs during compaction. Keep the same
+// association in tool-free text without letting identifier bytes create new lines.
+function formatToolCallId(id: string | undefined): string {
+	return id === undefined ? "" : `\nTool call ID: ${JSON.stringify(id)}`
+}
 
 /**
  * Converts a tool_use block to a text representation.
@@ -46,7 +59,7 @@ export function toolUseToText(block: Anthropic.Messages.ToolUseBlockParam): stri
 	} else {
 		input = String(block.input)
 	}
-	return `[Tool Use: ${block.name}]\n${input}`
+	return `[Tool Use: ${block.name}]${formatToolCallId(getToolCallId(block))}\n${input}`
 }
 
 /** Converts an OpenAI-style `tool_call` block to the same text form. */
@@ -56,7 +69,7 @@ export function toolCallToText(block: Record<string, unknown>): string {
 	const name = block.name ?? functionRecord?.name ?? "unknown"
 	const input = block.input ?? functionRecord?.arguments ?? ""
 	const renderedInput = typeof input === "object" && input !== null ? JSON.stringify(input, null, 2) : String(input)
-	return `[Tool Use: ${String(name)}]\n${renderedInput}`
+	return `[Tool Use: ${String(name)}]${formatToolCallId(getToolCallId(block))}\n${renderedInput}`
 }
 
 /**
@@ -65,8 +78,9 @@ export function toolCallToText(block: Record<string, unknown>): string {
  */
 export function toolResultToText(block: Anthropic.Messages.ToolResultBlockParam): string {
 	const errorSuffix = block.is_error ? " (Error)" : ""
+	const header = `[Tool Result${errorSuffix}]${formatToolCallId(getToolResultId(block))}`
 	if (typeof block.content === "string") {
-		return `[Tool Result${errorSuffix}]\n${block.content}`
+		return `${header}\n${block.content}`
 	} else if (Array.isArray(block.content)) {
 		const contentText = block.content
 			.map((contentBlock) => {
@@ -80,9 +94,9 @@ export function toolResultToText(block: Anthropic.Messages.ToolResultBlockParam)
 				return `[${(contentBlock as { type: string }).type}]`
 			})
 			.join("\n")
-		return `[Tool Result${errorSuffix}]\n${contentText}`
+		return `${header}\n${contentText}`
 	}
-	return `[Tool Result${errorSuffix}]`
+	return header
 }
 
 /**
@@ -123,7 +137,7 @@ export function convertToolBlocksToText(
 					text: toolResultToText(block),
 				}
 			}
-			return block
+			return stripProviderResponseItemMetadata(block)
 		})
 }
 
@@ -821,6 +835,12 @@ export type SummarizeConversationOptions = {
 	countContext?: TokenCountContext
 	/** A provider rejection requires progress even when the local estimate fits. */
 	forceCompaction?: boolean
+	/** Captured goal admission, checked before each provider effect after any previous attempt was charged. */
+	beforeAttempt?: () => Promise<void>
+	/** Finalized actual usage per request, including failed or cancelled attempts. */
+	observeUsage?: CompactionUsageObserver
+	/** Whether the local compactor's input counter already includes cache reads/writes. */
+	inputIncludesCache?: boolean
 	/** Latest provider-reported summary cost, retained even when the result is discarded. */
 	observeCost?: (cost: number) => void
 }
@@ -906,7 +926,12 @@ export async function summarizeConversation(options: SummarizeConversationOption
 
 	// Summarize only the history that would be sent to the model. The stored history
 	// also contains messages hidden by prior truncation and condensation markers.
-	const activeMessages = getMessagesSinceLastSummary(getEffectiveApiHistory(messages))
+	const nativeCompaction = apiHandler?.nativeCompaction
+	const useNativeCompaction =
+		nativeCompaction && compactionApiHandler === apiHandler && !customCondensingPrompt?.trim()
+	let activeMessages = getMessagesSinceLastSummary(
+		getEffectiveApiHistory(messages, useNativeCompaction ? nativeCompaction.scope : null),
+	)
 	const startedAt = Date.now()
 	const diagnostic: CompactionDiagnostic = {
 		reason: "insufficient_history",
@@ -955,7 +980,7 @@ export async function summarizeConversation(options: SummarizeConversationOption
 		})
 	const maxContextTokens = Number.isFinite(requestedTarget) ? Math.max(0, requestedTarget) : 0
 	diagnostic.targetTokens = maxContextTokens
-	const beforeTokens = await countContextTokens(activeMessages, apiHandler, systemPrompt, metadata, countContext)
+	let beforeTokens = await countContextTokens(activeMessages, apiHandler, systemPrompt, metadata, countContext)
 	response.prevContextTokens = beforeTokens
 	diagnostic.beforeTokens = beforeTokens
 	if (!Number.isFinite(beforeTokens) || beforeTokens < 0) {
@@ -964,8 +989,8 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			"invalid_candidate_count",
 		)
 	}
-	const canLeaveUnchanged = !options.forceCompaction && beforeTokens <= maxContextTokens
-	const unchanged = (cost = 0, reason: CompactionDiagnostic["reason"] = "already_compact") =>
+	let canLeaveUnchanged = !options.forceCompaction && beforeTokens <= maxContextTokens
+	const unchanged = (cost = response.cost, reason: CompactionDiagnostic["reason"] = "already_compact") =>
 		finish(
 			{
 				...response,
@@ -982,6 +1007,155 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			{ ...response, error: t("common:errors.condense_not_enough_messages"), status: "exhausted" },
 			"insufficient_history",
 		)
+	}
+	// Native compaction consumes the canonical window; custom summary instructions
+	// and previous-model recovery retain the existing local summarizer.
+	let nativeAttemptCost = 0
+	let compactAdmission: Promise<void> | undefined
+	const beforeCompact = () => (compactAdmission ??= Promise.resolve().then(() => options.beforeCompact?.()))
+	if (useNativeCompaction) {
+		let cost = 0
+		const historyDigest = digestProviderTranscript(messages)
+		await beforeCompact()
+		signal?.throwIfAborted()
+		await options.beforeAttempt?.()
+		const nativeAttemptId = crypto.randomUUID()
+		let nativeUsage: ApiStreamUsageChunk | undefined
+		try {
+			signal?.throwIfAborted()
+			const checkpoint = snapshotNativeCompactionCheckpoint(
+				await nativeCompaction.compact(systemPrompt, activeMessages, {
+					taskId,
+					...metadata,
+					observeUsage: (usage) => {
+						if (
+							typeof usage.totalCost === "number" &&
+							Number.isFinite(usage.totalCost) &&
+							usage.totalCost >= 0
+						) {
+							cost = usage.totalCost
+							options.observeCost?.(cost)
+						}
+						nativeUsage = aggregateCompactionUsage(nativeUsage, usage)
+					},
+				}),
+			)
+			signal?.throwIfAborted()
+			if (!checkpoint) throw new NativeCompactionInvalidResultError()
+			const currentScope = apiHandler.nativeCompaction?.scope
+			if (
+				checkpoint.provider !== nativeCompaction.scope.provider ||
+				checkpoint.modelId !== nativeCompaction.scope.modelId ||
+				currentScope?.provider !== checkpoint.provider ||
+				currentScope.modelId !== checkpoint.modelId ||
+				apiHandler.getModel().id !== checkpoint.modelId ||
+				digestProviderTranscript(messages) !== historyDigest
+			) {
+				return finish(
+					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+					"invalid_history",
+				)
+			}
+			const condenseId = crypto.randomUUID()
+			const marker: ApiMessage = {
+				role: "assistant",
+				content: [],
+				ts: messages.reduce((latest, message) => Math.max(latest, message.ts ?? 0), Date.now()) + 1,
+				isSummary: true,
+				condenseId,
+				native_compaction: checkpoint,
+				provider_state_scope: { ...nativeCompaction.scope },
+			}
+			const newContextTokens = await countContextTokens(
+				[marker],
+				apiHandler,
+				systemPrompt,
+				metadata,
+				countContext,
+			)
+			signal?.throwIfAborted()
+			if (
+				digestProviderTranscript(messages) !== historyDigest ||
+				apiHandler.getModel().id !== checkpoint.modelId
+			) {
+				return finish(
+					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+					"invalid_history",
+				)
+			}
+			if (
+				!Number.isFinite(newContextTokens) ||
+				newContextTokens < 0 ||
+				newContextTokens > maxContextTokens ||
+				newContextTokens >= beforeTokens
+			) {
+				throw new NativeCompactionInvalidResultError()
+			}
+			const active = new Set(activeMessages)
+			return finish(
+				{
+					messages: [
+						...messages.map((message) =>
+							active.has(message) && !message.condenseParent
+								? { ...message, condenseParent: condenseId }
+								: message,
+						),
+						marker,
+					],
+					summary: t("common:compaction.native_summary"),
+					cost,
+					condenseId,
+					prevContextTokens: beforeTokens,
+					newContextTokens,
+					targetContextTokens: maxContextTokens,
+					status: "reduced",
+				},
+				"candidate_ready",
+			)
+		} catch (error) {
+			signal?.throwIfAborted()
+			if (error instanceof Error && error.name === "AbortError") throw error
+			if (
+				!(error instanceof NativeCompactionUnavailableError) &&
+				!(error instanceof NativeCompactionInvalidResultError)
+			) {
+				return finish(
+					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+					"provider_error",
+				)
+			}
+			if (
+				digestProviderTranscript(messages) !== historyDigest ||
+				apiHandler.getModel().id !== nativeCompaction.scope.modelId
+			) {
+				return finish(
+					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+					"invalid_history",
+				)
+			}
+			nativeAttemptCost = cost
+			response.cost = cost
+			// Restore plaintext source steps before the local fallback. An opaque
+			// checkpoint by itself is insufficient input to a text summarizer.
+			activeMessages = getMessagesSinceLastSummary(getEffectiveApiHistory(messages, null))
+			beforeTokens = await countContextTokens(activeMessages, apiHandler, systemPrompt, metadata, countContext)
+			response.prevContextTokens = beforeTokens
+			diagnostic.beforeTokens = beforeTokens
+			diagnostic.activeMessages = activeMessages.length
+			canLeaveUnchanged = !options.forceCompaction && beforeTokens <= maxContextTokens
+			if (!Number.isFinite(beforeTokens) || beforeTokens < 0 || !hasToolCallResultIntegrity(activeMessages)) {
+				return finish(
+					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
+					"invalid_history",
+				)
+			}
+		} finally {
+			await options.observeUsage?.(
+				nativeUsage ?? { type: "usage", usageSource: "unknown", inputTokens: 0, outputTokens: 0 },
+				nativeAttemptId,
+				true,
+			)
+		}
 	}
 	const commandBlocks = messages[0] ? extractCommandBlocks(messages[0]) : ""
 	const mandatoryContent: Anthropic.Messages.ContentBlockParam[] = []
@@ -1073,7 +1247,7 @@ ${commandBlocks}
 
 	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
 	// This respects user's custom condensing prompt setting
-	const condenseInstructions = customCondensingPrompt?.trim() || supportPrompt.default.CONDENSE
+	const condenseInstructions = customCondensingPrompt?.trim() || DEFAULT_CONDENSING_PROMPT
 	const summaryBudgetTokens = Math.max(
 		0,
 		Math.floor(availableHistoryTokens - tail.tokens - verbatimUserSelection.tokens),
@@ -1089,21 +1263,64 @@ ${commandBlocks}
 	// This is necessary because some providers (like Bedrock via LiteLLM) require the `tools` parameter
 	// when tool blocks are present. By converting them to text, we can send the conversation for
 	// summarization without needing to pass the tools parameter.
-	const messagesWithTextToolBlocks = transformMessagesForCondensing(
-		maybeRemoveImageBlocks([...messagesToSummarize, finalRequestMessage], compactionApiHandler),
-	)
-
-	const requestMessages = messagesWithTextToolBlocks.map(({ role, content }) => ({ role, content }))
+	let summaryInput = messagesToSummarize
+	let overflowRetries = 0
+	let previousAttemptCost = nativeAttemptCost
 
 	// Note: this doesn't need to be a stream, consider using something like apiHandler.completePrompt
 	const promptToUse = SUMMARY_PROMPT
 
 	let summary = ""
-	let cost = 0
+	let cost = nativeAttemptCost
 	let completedOutcomeObserved = false
 	let unsuccessfulOutcome: ApiStreamOutcomeChunk | undefined
 	let streamError: ApiStreamError | undefined
 	let unexpectedToolOutput = false
+	const summaryMetadata = getToolFreeMetadata(metadata)
+	const compactionModel = compactionApiHandler.getModel()
+	const { allowedTokens: summaryInputLimit } = getContextLimits(
+		compactionModel.info.contextWindow,
+		getModelReservedOutputTokens({ modelId: compactionModel.id, model: compactionModel.info }),
+	)
+	const retryContextOverflow = async (error: unknown): Promise<boolean> => {
+		if (!checkContextWindowExceededError(error) || overflowRetries >= 2) return false
+		const stepStarts = getLogicalStepStarts(summaryInput)
+		const nextStep = stepStarts[1]
+		if (nextStep === undefined) return false
+		// Codex ac558e2a, core/src/compact.rs:363 shrinks overflowed summary input.
+		// Prune enough complete steps for this compactor's measured input budget
+		// while keeping Alpha's three-attempt bound and untouched exact recent tail.
+		const fixedInputTokens = await countContextTokens(
+			[finalRequestMessage],
+			compactionApiHandler,
+			promptToUse,
+			summaryMetadata,
+			countContext,
+		)
+		if (!Number.isFinite(fixedInputTokens) || fixedInputTokens < 0) return false
+		const selected = await selectRecentTail(
+			summaryInput,
+			compactionApiHandler,
+			Math.max(0, summaryInputLimit - fixedInputTokens),
+			nextStep,
+			signal,
+			countContext,
+		)
+		if (!Number.isFinite(selected.tokens) || selected.tokens < 0) return false
+		// A conservative count can reject the newest whole step. Let the provider
+		// try that minimum once, without ever splitting its tool transactions.
+		const startIndex =
+			selected.startIndex < summaryInput.length ? selected.startIndex : (stepStarts.at(-1) ?? nextStep)
+		summaryInput = summaryInput.slice(startIndex)
+		overflowRetries++
+		previousAttemptCost = cost
+		summary = ""
+		completedOutcomeObserved = false
+		unsuccessfulOutcome = undefined
+		streamError = undefined
+		unexpectedToolOutput = false
+		return true
+	}
 	const getStreamErrorResponse = (errorChunk: ApiStreamError): SummarizeResponse => {
 		const errorDetails = getCondenseStreamErrorDetail(errorChunk)
 		return finish(
@@ -1119,109 +1336,132 @@ ${commandBlocks}
 	}
 
 	// Keep host stop/cancellation outside the provider-error fallback boundary.
-	await options.beforeCompact?.()
+	await beforeCompact()
 	signal?.throwIfAborted()
-	try {
-		// Historical tool blocks were converted to text above.  Do not let the
-		// active task tool registry leak into this summarization-only request.
-		const stream = compactionApiHandler.createMessage(promptToUse, requestMessages, getToolFreeMetadata(metadata))
-		const iterator = stream[Symbol.asyncIterator]()
-		let reachedEof = false
+	while (true) {
+		await options.beforeAttempt?.()
+		const attemptId = crypto.randomUUID()
+		let attemptUsage: ApiStreamUsageChunk | undefined
 		try {
-			while (true) {
-				const next = await nextStreamItem(iterator, signal)
-				if (next.done) {
-					reachedEof = true
-					break
-				}
-				const chunk = next.value
-				if (chunk.type === "usage") {
-					// Preserve delivered accounting before cancellation can discard the summary.
-					if (
-						typeof chunk.totalCost === "number" &&
-						Number.isFinite(chunk.totalCost) &&
-						chunk.totalCost >= 0
-					) {
-						cost = chunk.totalCost
-						options.observeCost?.(cost)
-					}
-					signal?.throwIfAborted()
-					continue
-				}
-				signal?.throwIfAborted()
-				if (chunk.type === "text") {
-					diagnostic.textParts++
-					diagnostic.summaryCharacters += chunk.text.length
-				} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
-				else if (
-					chunk.type === "tool_call" ||
-					chunk.type === "tool_call_start" ||
-					chunk.type === "tool_call_delta" ||
-					chunk.type === "tool_call_end" ||
-					chunk.type === "tool_call_partial"
-				) {
-					diagnostic.toolParts++
-					unexpectedToolOutput = true
-				}
-				if (chunk.type === "error") {
-					streamError ??= chunk
-					continue
-				}
-				if (chunk.type === "outcome") {
-					if (!streamError) {
-						if (chunk.status === "completed" && chunk.terminal && !chunk.requiresContinuation) {
-							completedOutcomeObserved = true
-						} else {
-							// An incomplete declaration cannot be repaired by a later completion.
-							unsuccessfulOutcome ??= chunk
+			signal?.throwIfAborted()
+			const requestMessages = transformMessagesForCondensing(
+				maybeRemoveImageBlocks([...summaryInput, finalRequestMessage], compactionApiHandler),
+			).map(({ role, content }) => ({ role, content }))
+			try {
+				// Historical tool blocks were converted to text above.  Do not let the
+				// active task tool registry leak into this summarization-only request.
+				const stream = compactionApiHandler.createMessage(promptToUse, requestMessages, summaryMetadata)
+				const iterator = stream[Symbol.asyncIterator]()
+				let reachedEof = false
+				try {
+					while (true) {
+						const next = await nextStreamItem(iterator, signal)
+						if (next.done) {
+							reachedEof = true
+							break
 						}
+						const chunk = next.value
+						if (chunk.type === "usage") {
+							// Preserve delivered accounting before cancellation can discard the summary.
+							if (
+								typeof chunk.totalCost === "number" &&
+								Number.isFinite(chunk.totalCost) &&
+								chunk.totalCost >= 0
+							) {
+								cost = previousAttemptCost + chunk.totalCost
+								options.observeCost?.(cost)
+							}
+							attemptUsage = aggregateCompactionUsage(attemptUsage, chunk)
+							signal?.throwIfAborted()
+							continue
+						}
+						signal?.throwIfAborted()
+						if (chunk.type === "text") {
+							diagnostic.textParts++
+							diagnostic.summaryCharacters += chunk.text.length
+						} else if (chunk.type === "reasoning") diagnostic.reasoningParts++
+						else if (
+							chunk.type === "tool_call" ||
+							chunk.type === "tool_call_start" ||
+							chunk.type === "tool_call_delta" ||
+							chunk.type === "tool_call_end" ||
+							chunk.type === "tool_call_partial"
+						) {
+							diagnostic.toolParts++
+							unexpectedToolOutput = true
+						}
+						if (chunk.type === "error") {
+							streamError ??= chunk
+							continue
+						}
+						if (chunk.type === "outcome") {
+							if (!streamError) {
+								if (chunk.status === "completed" && chunk.terminal && !chunk.requiresContinuation) {
+									completedOutcomeObserved = true
+								} else {
+									// An incomplete declaration cannot be repaired by a later completion.
+									unsuccessfulOutcome ??= chunk
+								}
+							}
+							// A canonical terminal outcome ends the response. Further reads can
+							// stall indefinitely or append text belonging to a different response.
+							if (chunk.terminal) break
+							continue
+						}
+						if (!streamError && chunk.type === "text") summary += chunk.text
 					}
-					// A canonical terminal outcome ends the response. Further reads can
-					// stall indefinitely or append text belonging to a different response.
-					if (chunk.terminal) break
-					continue
+				} finally {
+					if (!reachedEof) closeSummaryIterator(iterator)
 				}
-				if (!streamError && chunk.type === "text") summary += chunk.text
-			}
-		} finally {
-			if (!reachedEof) closeSummaryIterator(iterator)
-		}
-	} catch (error) {
-		signal?.throwIfAborted()
-		if (error instanceof Error && error.name === "AbortError") throw error
-		if (streamError) return getStreamErrorResponse(streamError)
-		const errorMessage = getCondenseStreamErrorDetail({
-			type: "error",
-			error: "CondenseProviderError",
-			message: error instanceof Error ? error.message : typeof error === "string" ? error : "Provider error",
-		})
-		// Error response/body objects can include credentials or echoed input. Keep
-		// only bounded message text and scalar transport identifiers for diagnosis.
-		let errorDetails = errorMessage
-		if (error instanceof Error) {
-			const anyError = error as unknown as Record<string, unknown>
-			if (typeof anyError.status === "number" && Number.isInteger(anyError.status)) {
-				errorDetails += `\n\nHTTP Status: ${anyError.status}`
-			}
-			if (typeof anyError.code === "string" && /^[\w.-]{1,64}$/.test(anyError.code)) {
-				errorDetails += `\nError Code: ${anyError.code}`
-			}
-		}
-		console.error("Error during condensing API call:", errorDetails)
+			} catch (error) {
+				signal?.throwIfAborted()
+				if (error instanceof Error && error.name === "AbortError") throw error
+				if (await retryContextOverflow(streamError ? getCondenseStreamErrorDetail(streamError) : error))
+					continue
+				if (streamError) return getStreamErrorResponse(streamError)
+				const errorMessage = getCondenseStreamErrorDetail({
+					type: "error",
+					error: "CondenseProviderError",
+					message:
+						error instanceof Error ? error.message : typeof error === "string" ? error : "Provider error",
+				})
+				// Error response/body objects can include credentials or echoed input. Keep
+				// only bounded message text and scalar transport identifiers for diagnosis.
+				let errorDetails = errorMessage
+				if (error instanceof Error) {
+					const anyError = error as unknown as Record<string, unknown>
+					if (typeof anyError.status === "number" && Number.isInteger(anyError.status)) {
+						errorDetails += `\n\nHTTP Status: ${anyError.status}`
+					}
+					if (typeof anyError.code === "string" && /^[\w.-]{1,64}$/.test(anyError.code)) {
+						errorDetails += `\nError Code: ${anyError.code}`
+					}
+				}
+				console.error("Error during condensing API call:", errorDetails)
 
-		return finish(
-			{
-				...response,
-				cost,
-				error: t("common:errors.condense_api_failed", { message: errorMessage }),
-				errorDetails,
-				status: "no_progress",
-			},
-			"provider_error",
-		)
+				return finish(
+					{
+						...response,
+						cost,
+						error: t("common:errors.condense_api_failed", { message: errorMessage }),
+						errorDetails,
+						status: "no_progress",
+					},
+					"provider_error",
+				)
+			}
+			signal?.throwIfAborted()
+			if (streamError && (await retryContextOverflow(getCondenseStreamErrorDetail(streamError)))) continue
+			if (streamError) return getStreamErrorResponse(streamError)
+			break
+		} finally {
+			await options.observeUsage?.(
+				attemptUsage ?? { type: "usage", usageSource: "unknown", inputTokens: 0, outputTokens: 0 },
+				attemptId,
+				options.inputIncludesCache ?? true,
+			)
+		}
 	}
-	signal?.throwIfAborted()
-	if (streamError) return getStreamErrorResponse(streamError)
 	diagnostic.lifecycleRequired = compactionApiHandler.streamCapabilities?.lifecycle === true
 	diagnostic.completedOutcomeObserved = completedOutcomeObserved
 	diagnostic.unsuccessfulOutcome = unsuccessfulOutcome?.status
@@ -1263,6 +1503,12 @@ ${commandBlocks}
 		{ type: "text", text: `## Conversation Summary\n${summary}` },
 		...mandatoryContent,
 	]
+	if (overflowRetries > 0) {
+		summaryContent.push({
+			type: "text",
+			text: "[Older complete steps were omitted from summary input after a context-window overflow. Original records remain in saved history.]",
+		})
+	}
 	if (tail.newestStepTooLarge) {
 		summaryContent.push({
 			type: "text",
@@ -1384,8 +1630,8 @@ ${commandBlocks}
  * Returns the list of all messages since the last summary message, including the summary.
  * Returns all messages if there is no summary.
  *
- * Note: Summary messages are always created with role: "user" (fresh-start model),
- * so the first message since the last summary is guaranteed to be a user message.
+ * Local summaries are user messages. Native summaries are scoped assistant
+ * checkpoints whose canonical provider window is projected by the adapter.
  */
 export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[] {
 	const lastSummaryIndex = findLastIndex(messages, (message) => !!message.isSummary)
@@ -1408,17 +1654,31 @@ export function getMessagesSinceLastSummary(messages: ApiMessage[]): ApiMessage[
  * @param messages - The full API conversation history including tagged messages
  * @returns The filtered history that should be sent to the API
  */
-export function getEffectiveApiHistory(messages: ApiMessage[]): ApiMessage[] {
-	const lastSummary = findLast(messages, (msg) => msg.isSummary === true)
+export function getEffectiveApiHistory(
+	messages: ApiMessage[],
+	nativeScope?: NativeCompactionScope | null,
+): ApiMessage[] {
+	// Revoked or incompatible native summaries cannot replace their archive.
+	// Restoring the original complete history lets the new route compact locally.
+	const availableMessages = messages.filter(
+		(message) =>
+			!message.native_compaction ||
+			(message.provider_state_replay_disabled !== true &&
+				(nativeScope === undefined ||
+					(nativeScope !== null &&
+						message.native_compaction.provider === nativeScope.provider &&
+						message.native_compaction.modelId === nativeScope.modelId))),
+	)
+	const lastSummary = findLast(availableMessages, (msg) => msg.isSummary === true)
 	const existingSummaryIds = new Set<string>()
-	for (const msg of messages) {
+	for (const msg of availableMessages) {
 		if (msg.isSummary && msg.condenseId) existingSummaryIds.add(msg.condenseId)
 	}
 	// Filter orphan results against the fresh-start history before truncation and
 	// again afterward: a truncation marker can hide the only matching call.
 	const activeMessages = lastSummary
-		? filterOrphanToolResults(messages.slice(messages.indexOf(lastSummary)))
-		: messages
+		? filterOrphanToolResults(availableMessages.slice(availableMessages.indexOf(lastSummary)))
+		: availableMessages
 
 	const existingTruncationIds = new Set<string>()
 	for (const msg of activeMessages) {

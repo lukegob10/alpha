@@ -539,6 +539,14 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		getTaskDraft,
 		updateTaskDraft,
 	} = useTaskComposer(visibleCurrentTaskId)
+	const restoreHistoryDraft = useCallback(
+		(taskId: string | undefined, recalledPrompt: string, originalDraft: string) => {
+			updateTaskDraft(taskId, (draft) =>
+				draft.inputValue === recalledPrompt ? { ...draft, inputValue: originalDraft } : draft,
+			)
+		},
+		[updateTaskDraft],
+	)
 	const newTaskSubmission = getTaskDraft(undefined).pendingNewTaskRequest
 	const visibleNewTaskSubmission =
 		newTaskSubmission && (!visibleCurrentTaskId || visibleCurrentTaskId === newTaskSubmission.taskId)
@@ -2811,37 +2819,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		() => getCompletedTurnActivity(groupedMessages, task, hasCompletedTranscriptBoundary),
 		[groupedMessages, task, hasCompletedTranscriptBoundary],
 	)
-	const expandedTraces = useMemo(() => {
-		const choices = { ...disclosure.traces }
-		for (const turn of new Set(completedTurnActivity.values())) {
-			const key = traceDisclosureKey(turn)
-			if (choices[key] !== undefined) continue
-			// Preserve work the reader already opened when its canonical parent first appears.
-			choices[key] = (turn.memberIndices ?? []).some((index) => {
-				const message = groupedMessages[index]
-				const action = actionActivity.get(index)
-				return (
-					disclosure.rows[message.ts] === true ||
-					Object.values(disclosure.facets[message.ts] ?? {}).some(Boolean) ||
-					(action && disclosure.traces[traceDisclosureKey(action)] === true)
-				)
-			})
-		}
-		return choices
-	}, [disclosure, completedTurnActivity, groupedMessages, actionActivity])
-	useLayoutEffect(() => {
-		updateDisclosure((current) => {
-			const available = MAX_DISCLOSURES_PER_KIND - Object.keys(current.traces).length
-			if (available <= 0) return current
-			// Inferred closed defaults need no entry. Only inherit opened work into
-			// spare slots: refilling evicted defaults would loop and displace explicit choices.
-			const missing = Object.entries(expandedTraces)
-				.filter(([key, expanded]) => expanded && current.traces[key] === undefined)
-				.slice(-available)
-			if (!missing.length) return current
-			return { ...current, traces: { ...current.traces, ...Object.fromEntries(missing) } }
-		})
-	}, [expandedTraces, updateDisclosure])
+	// Completed work starts folded; opening live details does not open their completed-turn parent.
+	const expandedTraces = disclosure.traces
 	const focusedActivityRef = useRef<{ taskKey?: string; messageTs: number; element: HTMLElement }>()
 	const setTraceExpanded = useCallback(
 		(id: number | string, expanded: boolean, kind: ActionActivity["kind"]) => {
@@ -2863,12 +2842,17 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [groupedMessages])
 
 	const hasLatestCheckpoint = checkpointIndices.length > 0
+	const checkpointSequence = useMemo(
+		() => JSON.stringify(checkpointIndices.map((index) => groupedMessages[index].ts)),
+		[checkpointIndices, groupedMessages],
+	)
 	const checkpointJumpCursorRef = useRef<number | null>(null)
 	const pendingCheckpointIndexRef = useRef<number | null>(null)
 
 	useEffect(() => {
+		// Stream updates replace the projection array without changing checkpoint navigation.
 		checkpointJumpCursorRef.current = null
-	}, [task?.ts, checkpointIndices])
+	}, [transcriptTaskKey, task?.ts, checkpointSequence])
 
 	// Native DOM geometry keeps the scrollbar range exact while chat rows stream,
 	// expand, or load asynchronous content. This controller is the sole owner of
@@ -3945,6 +3929,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						enqueueDisabled={Boolean(pendingQueueRequest)}
 						conversationAlphaMessages={conversationPromptMessages}
 						conversationTaskId={visibleCurrentTaskId}
+						onRestoreHistoryDraft={restoreHistoryDraft}
 						isInTask={Boolean(task)}
 						isTaskDraft={isDraftView}
 						draftApprovalMode={draftApprovalMode}

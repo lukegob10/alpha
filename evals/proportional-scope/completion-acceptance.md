@@ -6,7 +6,7 @@ schedule, and quality oracle when comparing source revisions.
 
 ## Fixed workloads and provider policy
 
-Use `apps/vscode-e2e/src/suite/proportional-completion.test.ts` on exact VS Code 1.138.0. Each revision runs
+Use `apps/vscode-e2e/src/suite/proportional-completion.test.ts` on exact VS Code 1.141.0. Each revision runs
 three fresh Tasks per scenario in one shared host, using identical fixture source, input, configuration, conditional
 provider policy, and settlement schedule. Record each source revision and loaded extension bundle digest. Run builds
 and host measurements serially.
@@ -20,7 +20,7 @@ changes the provider policy or settlement timing. Compile the same fixture for b
 `apps/vscode-e2e` in the directory without spaces:
 
 ```sh
-node ./out/runTest.js --vscode-version 1.138.0 --provider scripted --file proportional-completion.test
+node ./out/runTest.js --vscode-version 1.141.0 --provider scripted --file proportional-completion.test
 ```
 
 Require matching reported fixture and policy digests for the pair. The fixture digest covers the loaded test JavaScript

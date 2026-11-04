@@ -268,6 +268,121 @@ describe("McpHub complete paginated catalogs", () => {
 		expect(connectionFor(hub).server.tools?.[0].alwaysAllow).toBe(false)
 	})
 
+	it.each(["writing", "cooldown"])(
+		"reconciles coalesced external project grant revocations during a global settings %s",
+		async (phase) => {
+			const globalClient = createClient("allowed")
+			await connect(globalClient, "global", { ...config, alwaysAllow: ["allowed"], timeout: 60 })
+			const projectClient = createClient("allowed")
+			await connect(projectClient, "project", { ...config, alwaysAllow: ["allowed"] })
+			const writing = deferred<void>()
+			const release = deferred<void>()
+			mocks.beforeWrite = async () => {
+				writing.resolve()
+				await release.promise
+			}
+			vi.useFakeTimers()
+			const updating = hub.updateServerTimeout("shared", 120, "global")
+			await writing.promise
+			if (phase === "cooldown") {
+				release.resolve()
+				await updating
+			}
+			writeSettings("project", { ...config, alwaysAllow: [] })
+			mocks.clients.push(createClient("allowed"))
+			for (let index = 0; index < 3; index++) hub["debounceConfigChange"](projectSettingsPath, "project")
+			await vi.advanceTimersByTimeAsync(500)
+			expect(projectClient.close).not.toHaveBeenCalled()
+			if (phase === "writing") {
+				release.resolve()
+				await updating
+			}
+			await vi.runAllTimersAsync()
+
+			expect(connectionFor(hub, "project").server.tools?.[0].alwaysAllow).toBe(false)
+			expect(projectClient.close).toHaveBeenCalledOnce()
+			expect(globalClient.close).not.toHaveBeenCalled()
+			expect(mocks.clients).toHaveLength(0)
+		},
+	)
+
+	it("reconciles an external revocation merged into a queued programmatic write", async () => {
+		const client = createClient("allowed")
+		await connect(client, "global", { ...config, alwaysAllow: ["allowed"], timeout: 60 })
+		const precedingWrite = deferred<void>()
+		const queued = deferred<void>()
+		mocks.writeQueues.set(settingsPath, precedingWrite.promise)
+		mocks.writeQueued.mockImplementation(() => queued.resolve())
+		vi.useFakeTimers()
+		const updating = hub.updateServerTimeout("shared", 120, "global")
+		await queued.promise
+		writeSettings("global", { ...config, alwaysAllow: [], timeout: 60 })
+		hub["debounceConfigChange"](settingsPath, "global")
+		mocks.clients.push(createClient("allowed"))
+		precedingWrite.resolve()
+		await updating
+		await vi.runAllTimersAsync()
+
+		expect(JSON.parse(mocks.files.get(settingsPath)!).mcpServers.shared).toMatchObject({
+			alwaysAllow: [],
+			timeout: 120,
+		})
+		expect(connectionFor(hub).server.tools?.[0].alwaysAllow).toBe(false)
+		expect(client.close).toHaveBeenCalledOnce()
+	})
+
+	it("keeps injected connections alive when reconciling their own settings write echoes", async () => {
+		const declared = { ...config, args: ["${env:FIXTURE_SCRIPT}"], timeout: 60 }
+		mocks.injectVariables.mockImplementation(async (value: unknown) => ({
+			...(value as object),
+			args: ["resolved-fixture.js"],
+		}))
+		const client = createClient("allowed")
+		const connection = await connect(client, "global", declared)
+		vi.useFakeTimers()
+		await hub.updateServerTimeout("shared", 120, "global")
+		client.request.mockClear()
+		hub["debounceConfigChange"](settingsPath, "global")
+		await vi.runAllTimersAsync()
+
+		expect(connectionFor(hub)).toBe(connection)
+		expect(client.close).not.toHaveBeenCalled()
+		expect(client.request).not.toHaveBeenCalled()
+		expect(JSON.parse(connection.server.config)).toMatchObject({ args: ["resolved-fixture.js"], timeout: 120 })
+	})
+
+	it.each(["approval", "enabled"])("suppresses reconnects for its own %s policy write echo", async (setting) => {
+		const client = createClient("allowed")
+		const connection = await connect(client)
+		vi.useFakeTimers()
+		if (setting === "approval") await hub.toggleToolAlwaysAllow("shared", "global", "allowed", true)
+		else await hub.toggleToolEnabledForPrompt("shared", "global", "allowed", false)
+		client.request.mockClear()
+		hub["debounceConfigChange"](settingsPath, "global")
+		await vi.runAllTimersAsync()
+
+		expect(connectionFor(hub)).toBe(connection)
+		expect(client.close).not.toHaveBeenCalled()
+		expect(client.request).not.toHaveBeenCalled()
+		expect(connection.server.tools?.[0]).toMatchObject(
+			setting === "approval" ? { alwaysAllow: true } : { enabledForPrompt: false },
+		)
+	})
+
+	it("discards suppressed configuration events when the hub is disposed", async () => {
+		await connect(createClient("allowed"), "global", { ...config, timeout: 60 })
+		vi.useFakeTimers()
+		await hub.updateServerTimeout("shared", 120, "global")
+		hub["debounceConfigChange"](settingsPath, "global")
+		await hub.dispose()
+		mocks.readFile.mockClear()
+		await vi.runAllTimersAsync()
+
+		expect(mocks.readFile).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+		expect(hub.connections).toEqual([])
+	})
+
 	it.each(["global", "project"] as const)("uses a saved %s timeout on the next live tool call", async (source) => {
 		const client = createClient()
 		await connect(client, source, { ...config, timeout: 60 })

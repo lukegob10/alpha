@@ -269,7 +269,7 @@ describe("fresh source repair confirmation", () => {
 	])(
 		"classifies observed $task $status with decision $decision and replays its legacy receipt",
 		async ({ status, index, decision, legacyDigest }) => {
-			const fixture = await createConfirmationFixture()
+			const fixture = await createConfirmationFixture({ hostVersion: "1.138.0" })
 			const campaigns = fixture.campaigns()
 			campaigns.candidate = alterCampaign(campaigns.candidate, (body) => {
 				body.observations[index]!.status = status

@@ -17,6 +17,7 @@ vitest.mock("@anthropic-ai/vertex-sdk", () => ({
 						return {
 							id: "test-completion",
 							content: [{ type: "text", text: "Test response" }],
+							stop_reason: "end_turn",
 							role: "assistant",
 							model: options.model,
 							usage: {
@@ -80,10 +81,6 @@ describe("VertexHandler", () => {
 		;(targetHandler as any)["directClient"] = { messages: { create: mockCreate } }
 	}
 
-	function setGatewayClientCreate(targetHandler: AnthropicVertexHandler, mockCreate: unknown) {
-		;(targetHandler as any)["client"].messages.create = mockCreate
-	}
-
 	afterAll(() => {
 		restoreEnv("USERNAME", originalUsername)
 		restoreEnv("USER", originalUser)
@@ -122,32 +119,7 @@ describe("VertexHandler", () => {
 			)
 		})
 
-		it("should initialize with Vertex gateway config for Claude", () => {
-			process.env.USERNAME = "soe123"
-
-			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-sonnet-4-5@20250929",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayBaseUrl: " https://gateway.example.com/vertex/v1/ ",
-				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
-				vertexGatewayHelixCommand: "helix auth access-token print -a",
-			})
-
-			expect(mockOAuth2Client).not.toHaveBeenCalled()
-			expect(mockGoogleAuth).not.toHaveBeenCalled()
-			expect(AnthropicVertex).toHaveBeenCalledWith({
-				baseURL: "https://gateway.example.com/vertex/v1/",
-				projectId: "test-project",
-				region: "global",
-				fetch: expect.any(Function),
-				googleAuth: expect.objectContaining({
-					getClient: expect.any(Function),
-				}),
-			})
-		})
-
-		it("should preserve JSON credentials auth when gateway is not configured", async () => {
+		it("should preserve JSON credentials with standard Google credentials", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -163,7 +135,7 @@ describe("VertexHandler", () => {
 			})
 		})
 
-		it("should preserve key file auth when gateway is not configured", async () => {
+		it("should preserve key file with standard Google credentials", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
 				vertexProjectId: "test-project",
@@ -268,7 +240,7 @@ describe("VertexHandler", () => {
 			const mockCreate = vitest
 				.fn()
 				.mockImplementation(async (request: { stream?: boolean }, options?: Anthropic.RequestOptions) => {
-					expect(options?.signal).toBe(controller.signal)
+					expect(options?.signal?.aborted).toBe(false)
 					if (request.stream) {
 						return { async *[Symbol.asyncIterator]() {} }
 					}
@@ -285,46 +257,7 @@ describe("VertexHandler", () => {
 			}
 
 			expect(mockCreate).toHaveBeenCalledOnce()
-			expect(mockCreate.mock.calls[0]?.[1]).toEqual({ signal: controller.signal })
-		})
-
-		it("does not retry an aborted gateway request as an authentication failure", async () => {
-			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-sonnet-4-6",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayBaseUrl: "https://gateway.example.com/vertex/v1/",
-				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
-				vertexGatewayHelixCommand: "helix auth access-token print -a",
-			})
-
-			vitest.spyOn(handler as any, "ensureGatewayTransportConfigured").mockResolvedValue(undefined)
-			const ensureGatewayAccessToken = vitest
-				.spyOn(handler as any, "ensureGatewayAccessToken")
-				.mockResolvedValue("test-token")
-			const controller = new AbortController()
-			const abortedAuthError = Object.assign(new Error("Request was aborted."), {
-				name: "AbortError",
-				status: 401,
-			})
-			const mockCreate = vitest
-				.fn()
-				.mockImplementation(async (_request: unknown, options?: Anthropic.RequestOptions) => {
-					expect(options?.signal).toBe(controller.signal)
-					controller.abort()
-					throw abortedAuthError
-				})
-			setGatewayClientCreate(handler, mockCreate)
-
-			const stream = handler.createMessage(systemPrompt, mockMessages, {
-				taskId: "gateway-abort",
-				signal: controller.signal,
-			})
-
-			await expect(stream.next()).rejects.toBe(abortedAuthError)
-			expect(mockCreate).toHaveBeenCalledOnce()
-			expect(ensureGatewayAccessToken).toHaveBeenCalledOnce()
-			expect(ensureGatewayAccessToken).toHaveBeenCalledWith(false)
+			expect(mockCreate.mock.calls[0]?.[1]).toEqual({ signal: expect.any(AbortSignal) })
 		})
 
 		it("should handle streaming responses correctly for Claude", async () => {
@@ -391,6 +324,7 @@ describe("VertexHandler", () => {
 			expect(chunks.length).toBe(5)
 			expect(chunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 0,
 			})
@@ -405,6 +339,7 @@ describe("VertexHandler", () => {
 			})
 			expect(chunks[3]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 0,
 				outputTokens: 5,
 			})
@@ -444,7 +379,7 @@ describe("VertexHandler", () => {
 					tools: expect.any(Array),
 					tool_choice: expect.any(Object),
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -483,11 +418,12 @@ describe("VertexHandler", () => {
 				expect.objectContaining({
 					stream: false,
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 			expect(chunks).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 12,
 					outputTokens: 7,
 					cacheWriteTokens: 3,
@@ -662,6 +598,7 @@ describe("VertexHandler", () => {
 			expect(usageChunks).toHaveLength(2)
 			expect(usageChunks[0]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 10,
 				outputTokens: 0,
 				cacheWriteTokens: 3,
@@ -669,6 +606,7 @@ describe("VertexHandler", () => {
 			})
 			expect(usageChunks[1]).toEqual({
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 0,
 				outputTokens: 5,
 			})
@@ -716,7 +654,7 @@ describe("VertexHandler", () => {
 						}),
 					],
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1180,6 +1118,7 @@ describe("VertexHandler", () => {
 
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "image" }],
+				stop_reason: "end_turn",
 			})
 			setDirectClientCreate(handler, mockCreate)
 
@@ -1196,6 +1135,7 @@ describe("VertexHandler", () => {
 
 			const mockCreate = vitest.fn().mockResolvedValue({
 				content: [{ type: "text", text: "" }],
+				stop_reason: "end_turn",
 			})
 			setDirectClientCreate(handler, mockCreate)
 
@@ -1258,7 +1198,7 @@ describe("VertexHandler", () => {
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({ model: unknownModelId, thinking: undefined }),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1287,20 +1227,6 @@ describe("VertexHandler", () => {
 			expect(result.maxTokens).toBe(128_000)
 			expect(result.reasoningBudget).toBeUndefined()
 			expect(result.temperature).toBeUndefined()
-		})
-
-		it("should route Claude model IDs through the Vertex gateway map", () => {
-			const handler = new AnthropicVertexHandler({
-				apiModelId: "claude-sonnet-4-6",
-				enableReasoningEffort: true,
-				vertexProjectId: "test-project",
-				vertexRegion: "us-central1",
-				vertexGatewayModelRoutingMap: '{"claude-sonnet-4-6":"gateway-claude-sonnet-4-6"}',
-			})
-
-			const result = handler.getModel()
-			expect(result.id).toBe("claude-sonnet-4-6")
-			expect(result.reasoningBudget).toBeDefined()
 		})
 
 		it("should return native Vertex model info for Claude Opus 4.8", () => {
@@ -1504,7 +1430,7 @@ describe("VertexHandler", () => {
 			}
 
 			// Verify the API was called without the beta header
-			expect(mockCreate).toHaveBeenCalledWith(expect.anything(), undefined)
+			expect(mockCreate).toHaveBeenCalledWith(expect.anything(), { signal: expect.any(AbortSignal) })
 		})
 	})
 
@@ -1547,7 +1473,7 @@ describe("VertexHandler", () => {
 
 			expect(mockCreate).toHaveBeenCalledWith(
 				expect.objectContaining({ model: "claude-sonnet-5", thinking: undefined }),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1624,7 +1550,7 @@ describe("VertexHandler", () => {
 					thinking: { type: "enabled", budget_tokens: 4096 },
 					temperature: 1.0, // Thinking requires temperature 1.0
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 	})
@@ -1711,59 +1637,7 @@ describe("VertexHandler", () => {
 					]),
 					tool_choice: { type: "auto", disable_parallel_tool_use: false },
 				}),
-				undefined,
-			)
-		})
-
-		it("should require a tool choice for Vertex gateway requests when tools are available", async () => {
-			handler = new AnthropicVertexHandler({
-				apiModelId: "claude-sonnet-4-6",
-				vertexProjectId: "test-project",
-				vertexRegion: "global",
-				vertexGatewayBaseUrl: "https://gateway.example.com/vertex/v1/",
-				vertexGatewayCaBundlePath: "C:\\certs\\gateway.pem",
-				vertexGatewayHelixCommand: "helix auth access-token print -a",
-			})
-
-			vitest.spyOn(handler as any, "ensureGatewayTransportConfigured").mockResolvedValue(undefined)
-			vitest.spyOn(handler as any, "ensureGatewayAccessToken").mockResolvedValue("test-token")
-
-			const asyncIterator = {
-				async *[Symbol.asyncIterator]() {
-					yield {
-						type: "message_start",
-						message: {
-							usage: {
-								input_tokens: 10,
-								output_tokens: 0,
-							},
-						},
-					}
-				},
-			}
-
-			const mockCreate = vitest.fn().mockResolvedValue(asyncIterator)
-			setGatewayClientCreate(handler, mockCreate)
-
-			const stream = handler.createMessage(systemPrompt, messages, {
-				taskId: "test-task",
-				tools: mockTools,
-				tool_choice: "auto",
-			})
-
-			for await (const _chunk of stream) {
-				// Just consume
-			}
-
-			expect(mockCreate).toHaveBeenCalledWith(
-				expect.objectContaining({
-					tool_choice: { type: "any", disable_parallel_tool_use: false },
-				}),
-				expect.objectContaining({
-					headers: expect.objectContaining({
-						Authorization: "Bearer test-token",
-					}),
-				}),
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1816,7 +1690,7 @@ describe("VertexHandler", () => {
 						}),
 					]),
 				}),
-				undefined,
+				{ signal: expect.any(AbortSignal) },
 			)
 		})
 
@@ -1987,7 +1861,7 @@ describe("VertexHandler", () => {
 			})
 		})
 
-		it("should preserve complete tool input from content_block_start for gateway-buffered streams", async () => {
+		it("should preserve complete tool input from content_block_start for buffered streams", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-sonnet-4-6",
 				vertexProjectId: "test-project",

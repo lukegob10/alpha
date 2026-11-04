@@ -78,8 +78,10 @@ describe("buildNativeToolsArrayWithRestrictions - asynchronous spawning", () => 
 		expect(spawnTool?.function?.description).toContain("asynchronously")
 		expect(spawnTool?.function?.description).toContain("return its handle immediately")
 		expect(spawnTool?.function?.description).toContain(
-			"Collect the terminal result through wait_agent before completing",
+			"Use wait_agent to receive agent messages and completion notifications",
 		)
+		expect(spawnTool?.function?.description).toContain("in the parent's workspace")
+		expect(spawnTool?.function?.description).toContain("Agents share files, so coordinate concurrent edits")
 		expect(spawnTool?.function?.parameters?.required).toEqual(["task_name", "message"])
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("fork_turns")
 		expect(spawnTool?.function?.parameters?.properties).toHaveProperty("agent_type")

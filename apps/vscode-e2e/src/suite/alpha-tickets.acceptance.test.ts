@@ -5,7 +5,10 @@ import * as path from "node:path"
 
 import {
 	AlphaCodeEventName,
+	ticketSchema,
 	type AlphaCodeSettings,
+	type CreateTicket,
+	type DeleteTickets,
 	type Ticket,
 	type TicketRequest,
 	type SkillMetadata,
@@ -25,7 +28,14 @@ import {
 import { updateFilePatch } from "../scenarios/scriptedPatch"
 
 const LIST_CALL_ID = "alpha-tickets-eager-list"
-const TICKET_TOOLS = ["list_tickets", "read_ticket", "create_ticket", "update_ticket", "delete_ticket"]
+const TICKET_TOOLS = [
+	"list_tickets",
+	"read_ticket",
+	"create_ticket",
+	"update_ticket",
+	"delete_ticket",
+	"delete_tickets",
+]
 
 type HistoryMessage = { role: string; content: unknown }
 type TicketHost = {
@@ -96,7 +106,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("offers all Ticket tools immediately and executes a real list with paired history", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: TicketHost }).sidebarProvider
@@ -137,8 +147,135 @@ suite("Alpha Tickets eager tool acceptance", function () {
 		}
 	})
 
+	test("deletes an owned parent and tagged children with one nullable lookup and one batch", async () => {
+		assert.equal(vscode.version, "1.141.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const workspace = process.env.ALPHA_E2E_WORKSPACE
+		assert.ok(workspace)
+		assert.equal(path.relative(workspace, vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ""), "")
+		type Store = {
+			workspace: string
+			create(input: CreateTicket): Promise<Ticket>
+			list(): Promise<{ tickets: Pick<Ticket, "id" | "revision">[]; total: number }>
+			deleteMany(input: DeleteTickets): Promise<Ticket[]>
+		}
+		type Panel = {
+			projects: Map<string, Store>
+			panel?: vscode.WebviewPanel
+			open(): Promise<void>
+			receive(message: { type: "ticketsReady" }): Promise<void>
+		}
+		const api = globalThis.api
+		const internals = api as unknown as { context: { subscriptions: unknown[] }; sidebarProvider: TicketHost }
+		const panel = internals.context.subscriptions.find((entry): entry is Panel => {
+			if (!entry || typeof entry !== "object") return false
+			const candidate = entry as Partial<Panel>
+			return (
+				candidate.projects instanceof Map &&
+				typeof candidate.open === "function" &&
+				typeof candidate.receive === "function"
+			)
+		})
+		assert.ok(panel, "The activated Ticket panel must expose its production project store")
+		const original = api.getConfiguration()
+		const ownedIds = new Set<string>()
+		const nullableFilters = { query: null, status: null, typeFilter: null, offset: null, limit: null }
+		const completions: string[] = []
+		const onCompleted = (taskId: string) => completions.push(taskId)
+		let store: Store | undefined
+		let deletion: DeleteTickets | undefined
+		const model: FeatureScriptedAI = new FeatureScriptedAI(async (request) => {
+			if (request.ordinal === 1) return { name: "list_tickets", arguments: nullableFilters }
+			if (request.ordinal === 2) {
+				assertFeatureToolCall(request.messages, `${model.id}-1`, "list_tickets", nullableFilters)
+				const listing = assertFeatureTicketListResult(request.messages, `${model.id}-1`)
+				assert.equal(listing.total, 3)
+				const listed = listing.tickets.map((ticket) =>
+					ticketSchema.pick({ id: true, revision: true, parentId: true, type: true }).parse(ticket),
+				)
+				assert.deepEqual(
+					new Set(listed.map(({ id }) => id)),
+					ownedIds,
+					"The batch must contain only owned fixture tickets",
+				)
+				const parent = listed.find((ticket) => !ticket.parentId && !ticket.type)
+				assert.ok(parent, "An all-types nullable lookup must include the untagged parent")
+				deletion = {
+					tickets: [parent, ...listed.filter(({ id }) => id !== parent.id)].map(({ id, revision }) => ({
+						id,
+						expectedRevision: revision,
+					})),
+				}
+				return { name: "delete_tickets", arguments: deletion }
+			}
+			assert.equal(request.ordinal, 3, "The complete workflow must use exactly three model requests")
+			const receipt = assertFeatureToolResult(request.messages, `${model.id}-2`, { error: false })
+			assert.equal(typeof receipt.content, "string")
+			assert.deepEqual(JSON.parse(receipt.content as string), { status: "success", result: { deleted: 3 } })
+			return undefined
+		})
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			await panel.open()
+			await panel.receive({ type: "ticketsReady" })
+			store = [...panel.projects.values()].find(
+				(candidate) => path.relative(workspace, candidate.workspace) === "",
+			)
+			assert.ok(store)
+			assert.equal((await store.list()).total, 0, "The isolated fixture project must start empty")
+			const parent = await store.create({ name: "Owned batch parent" })
+			ownedIds.add(parent.id)
+			ownedIds.add((await store.create({ name: "Owned tagged child", type: "bug", parentId: parent.id })).id)
+			ownedIds.add((await store.create({ name: "Owned independent ticket", type: "feature" })).id)
+			const taskId = await api.startNewTask({
+				configuration: {
+					...original,
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "code",
+					approvalMode: "auto",
+					requestDelaySeconds: 0,
+					writeDelayMs: 0,
+					enableCheckpoints: false,
+				},
+				text: "Delete all Alpha Tickets in this isolated fixture project.",
+			})
+			await waitFor(
+				() => {
+					model.assertHealthy()
+					const task = internals.sidebarProvider.getLiveTask(taskId)
+					if (task?.taskAsk?.ask === "completion_result") task.approveAsk()
+					return completions.filter((id) => id === taskId).length === 1
+				},
+				{ timeout: 60_000, description: "the owned Ticket batch deletion to complete once" },
+			)
+			model.assertHealthy()
+			assert.equal(model.requests.length, 3)
+			assert.deepEqual((await store.list()).tickets, [])
+			assert.ok(deletion)
+			const history = (await internals.sidebarProvider.getTaskWithId(taskId)).apiConversationHistory
+			assertFeatureToolCall(history, `${model.id}-1`, "list_tickets", nullableFilters)
+			assertFeatureToolCall(history, `${model.id}-2`, "delete_tickets", deletion)
+			assertFeatureToolResult(history, `${model.id}-1`, { error: false })
+			assertFeatureToolResult(history, `${model.id}-2`, { error: false })
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await api.clearCurrentTask()
+			if (store && ownedIds.size) {
+				const survivors = (await store.list()).tickets.filter(({ id }) => ownedIds.has(id))
+				if (survivors.length)
+					await store.deleteMany({
+						tickets: survivors.map(({ id, revision }) => ({ id, expectedRevision: revision })),
+					})
+			}
+			panel.panel?.dispose()
+			await api.setConfiguration(original)
+			model.dispose()
+		}
+	})
+
 	test("links a Ticket repair to a real skill task, rejects stale completion, reloads and preserves cancelled edits", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

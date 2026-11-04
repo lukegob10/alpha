@@ -39,6 +39,10 @@ class InspectableExecaProcess extends ExecaTerminalProcess {
 		this.fullOutput = output
 	}
 
+	append(chunk: string): Promise<void> {
+		return this.appendOutput(chunk)
+	}
+
 	get retainedBytes(): number {
 		return Buffer.byteLength(this.fullOutput)
 	}
@@ -51,6 +55,10 @@ class InspectableVscodeProcess extends TerminalProcess {
 
 	seed(output: string): void {
 		this.fullOutput = output
+	}
+
+	append(chunk: string): Promise<void> {
+		return this.appendOutput(chunk)
 	}
 }
 
@@ -101,6 +109,27 @@ afterEach(() => {
 })
 
 describe("explicit command output polling", () => {
+	it.each(["vscode", "execa"] as const)("previews %s output without consuming a model receipt", async (provider) => {
+		const process = provider === "vscode" ? createVscodeProcess() : createExecaProcess()
+		await process.append("visible progress")
+		expect(process.getOutputPreview()).toBe("visible progress")
+		expect(process.hasUnretrievedOutput()).toBe(true)
+		const receipt = process.captureUnretrievedOutput()
+		expect(receipt.output).toBe("visible progress")
+		receipt.release()
+	})
+
+	it("does not expose incomplete shell control sequences in progress snapshots", async () => {
+		const process = createVscodeProcess()
+		await process.append("first\x1b]633;P;hidden")
+		expect(process.getOutputPreview()).toBe("first")
+		await process.append("\x07second")
+		expect(process.getOutputPreview()).toBe("firstsecond")
+		const receipt = process.captureUnretrievedOutput()
+		expect(receipt.output).toBe("firstsecond")
+		receipt.release()
+	})
+
 	it.each([
 		["Execa", createExecaProcess],
 		["VS Code", createVscodeProcess],

@@ -1,4 +1,6 @@
-import React, { memo, useState } from "react"
+import { memo } from "react"
+import { useTranslation } from "react-i18next"
+import { openFileDiffs } from "@src/utils/openDiff"
 import CodeAccordion from "../common/CodeAccordion"
 
 interface FileDiff {
@@ -6,6 +8,8 @@ interface FileDiff {
 	changeCount: number
 	key: string
 	content: string
+	originalContent?: string
+	finalContent?: string
 	diffStats?: { added: number; removed: number }
 	diffs?: Array<{
 		content: string
@@ -19,17 +23,10 @@ interface BatchDiffApprovalProps {
 }
 
 export const BatchDiffApproval = memo(({ files = [], ts }: BatchDiffApprovalProps) => {
-	const [expandedFiles, setExpandedFiles] = useState<Record<string, boolean>>({})
+	const { t } = useTranslation()
 
 	if (!files?.length) {
 		return null
-	}
-
-	const handleToggleExpand = (filePath: string) => {
-		setExpandedFiles((prev) => ({
-			...prev,
-			[filePath]: !prev[filePath],
-		}))
 	}
 
 	return (
@@ -45,8 +42,13 @@ export const BatchDiffApproval = memo(({ files = [], ts }: BatchDiffApprovalProp
 								path={file.path}
 								code={unified}
 								language="diff"
-								isExpanded={expandedFiles[file.path] || false}
-								onToggleExpand={() => handleToggleExpand(file.path)}
+								onOpenDiff={() =>
+									openFileDiffs(
+										[{ ...file, diff: unified }],
+										t("chat:fileChangesInConversation.diffTitleForFile", { path: file.path }),
+										t("chat:fileChangesInConversation.diffTitle"),
+									)
+								}
 								diffStats={file.diffStats ?? undefined}
 							/>
 						</div>

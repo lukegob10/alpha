@@ -102,8 +102,8 @@ export function historyPointerProbeExpression(selector: string, action: "install
 			probe={events:[],eventCount:0,dispose:()=>{}};
 			if(row){
 				const receive=event=>{probe.eventCount=Math.min(1000000,probe.eventCount+1);if(probe.events.length<8)probe.events.push({type:String(event.type).slice(0,32),trusted:event.isTrusted===true,x:Number.isFinite(event.clientX)?event.clientX:null,y:Number.isFinite(event.clientY)?event.clientY:null,target:describe(event.target,row)})};
-				for(const type of ['pointerover','mouseover'])row.addEventListener(type,receive,true);
-				probe.dispose=()=>{for(const type of ['pointerover','mouseover'])row.removeEventListener(type,receive,true)};
+				for(const type of ['pointerover','mouseover','click'])row.addEventListener(type,receive,true);
+				probe.dispose=()=>{for(const type of ['pointerover','mouseover','click'])row.removeEventListener(type,receive,true)};
 			}
 			window[key]=probe;
 		}
@@ -138,7 +138,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 	directory: string,
 	output: string,
 	runId: string,
-	expectedHostVersion = "1.138.0",
+	expectedHostVersion = "1.141.0",
 ) {
 	const savedDirectory = path.join(output, runId)
 	await fs.cp(directory, savedDirectory, { recursive: true })
@@ -155,7 +155,7 @@ export async function completeHistoryUiRun<T extends HistoryUiHost>(
 }
 
 /** Exercises the built extension in an isolated exact-host profile, with trusted renderer input. */
-export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.138.0") {
+export async function runHistoryUi(executable: string, output: string, expectedHostVersion = "1.141.0") {
 	await fs.mkdir(output, { recursive: true })
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-chats-ui-"))
 	const nonce = randomUUID()
@@ -615,13 +615,13 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			pageSession,
 			false,
 		)
+		assert.ok(!menuEntries.includes("Marketplace"), "Marketplace must not appear in the toolbar")
 		const alphaMenuEntries = menuEntries.filter((label) =>
-			["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"].includes(label),
+			["Alpha: Incident Dashboard", "Scheduled Tasks"].includes(label),
 		)
 		assert.ok(
-			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks", "Marketplace"]) ||
-				JSON.stringify(alphaMenuEntries) ===
-					JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks", "Marketplace"]),
+			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks"]) ||
+				JSON.stringify(alphaMenuEntries) === JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks"]),
 			`Only approved toolbar entries remain: ${JSON.stringify(menuEntries)}`,
 		)
 		assert.ok(
@@ -1094,36 +1094,46 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			})()`,
 		)
 		await capture("ticket-mention-preview")
-		const { frameTree: ticketFrameTree } = await connection.request<{ frameTree: { frame: { id: string } } }>(
-			"Page.getFrameTree",
-			{},
-			sessionId,
-		)
-		const { backendNodeId: ticketFrameNode } = await connection.request<{ backendNodeId: number }>(
-			"DOM.getFrameOwner",
-			{ frameId: ticketFrameTree.frame.id },
-			pageSession,
-		)
-		const { model: ticketFrameBounds } = await connection.request<{ model: { content: number[] } }>(
-			"DOM.getBoxModel",
-			{ backendNodeId: ticketFrameNode },
-			pageSession,
-		)
-		for (const type of ["mousePressed", "mouseReleased"]) {
-			await connection.request(
-				"Input.dispatchMouseEvent",
-				{
-					type,
-					x: ticketFrameBounds.content[0]! + mentionPoint.x,
-					y: ticketFrameBounds.content[1]! + mentionPoint.y,
-					button: "left",
-					clickCount: 1,
-				},
-				pageSession,
-			)
-		}
-		await check(
-			`d.querySelector(${javascriptLiteral(ticketSelector)}).querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')==='true'`,
+		await evaluate(historyPointerProbeExpression(ticketSelector, "install"))
+		await withHistoryPointerEvidence(
+			async () => {
+				// The measured point belongs to the webview viewport. Route real input
+				// to that target, as the shared rendered controls do.
+				for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+					await connection.request(
+						"Input.dispatchMouseEvent",
+						{
+							type,
+							x: mentionPoint.x,
+							y: mentionPoint.y,
+							button: type === "mouseMoved" ? "none" : "left",
+							buttons: type === "mousePressed" ? 1 : 0,
+							clickCount: type === "mouseMoved" ? 0 : 1,
+						},
+						sessionId,
+					)
+				}
+				const pointer = await evaluate<{ events: Array<{ type: string; trusted: boolean }> }>(
+					historyPointerProbeExpression(ticketSelector, "snapshot"),
+				)
+				assert.ok(
+					pointer.events.some((event) => event.type === "click" && event.trusted),
+					"Collapsed ticket preview receives a trusted pointer click",
+				)
+				await check(
+					`d.querySelector(${javascriptLiteral(ticketSelector)}).querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')==='true'`,
+				)
+			},
+			async (status) => {
+				await fs.writeFile(
+					path.join(directory, "ticket-pointer.json"),
+					JSON.stringify(
+						{ status, observed: await evaluate(historyPointerProbeExpression(ticketSelector, "dispose")) },
+						null,
+						2,
+					),
+				)
+			},
 		)
 		const pointerExpanded = await sampleTicketFrames(ticketGeometry.crossoverWidth)
 		assertStableTicketFrames(pointerExpanded, "true")
@@ -1176,7 +1186,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 
 if (require.main === module) {
 	void (async () => {
-		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.138.0"
+		const expectedHostVersion = process.env.ALPHA_HISTORY_UI_VSCODE_VERSION ?? "1.141.0"
 		const executable =
 			process.env.VSCODE_EXECUTABLE_PATH ?? (await downloadAndUnzipVSCode({ version: expectedHostVersion }))
 		const output = process.env.ALPHA_HISTORY_UI_OUTPUT ?? path.join(os.tmpdir(), "alpha-code-history-ux")

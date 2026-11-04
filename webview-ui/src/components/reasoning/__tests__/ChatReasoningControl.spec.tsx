@@ -1,6 +1,6 @@
-import { fireEvent, render, screen, waitFor } from "@/utils/test-utils"
+import { act, fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 
-import type { TaskReasoningPreference, TaskReasoningProjection } from "@alpha-code/types"
+import type { ExtensionState, TaskReasoningPreference, TaskReasoningProjection } from "@alpha-code/types"
 
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { vscode } from "@/utils/vscode"
@@ -45,6 +45,7 @@ vi.mock("../ReasoningSelector", () => ({
 			data-visible={String(isVisible)}
 			data-saving={String(Boolean(saving))}
 			data-error={String(Boolean(error))}
+			data-capability={state?.capabilities.kind}
 			data-effective={state?.effective.kind === "effort" ? state.effective.effort : state?.effective.kind}>
 			<button data-testid="choose-high" onClick={() => onChange({ kind: "effort", effort: "high" })} />
 			<button data-testid="choose-low" onClick={() => onChange({ kind: "effort", effort: "low" })} />
@@ -373,5 +374,52 @@ describe("ChatReasoningControl", () => {
 				preference: { kind: "effort", effort: "low" },
 			},
 		})
+	})
+
+	it("keeps draft reasoning through real compact state delivery and accepts an explicit capability downgrade", async () => {
+		const { ExtensionStateContextProvider, useShellState } = await vi.importActual<
+			typeof import("@/context/ExtensionStateContext")
+		>("@/context/ExtensionStateContext")
+		mockUseExtensionState.mockImplementation(useShellState)
+		render(
+			<ExtensionStateContextProvider>
+				<ChatReasoningControl isDraft />
+			</ExtensionStateContextProvider>,
+		)
+		const sendState = (state: Partial<ExtensionState>) => {
+			act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
+		}
+		const draftReasoning = { ...stateFor("task-1", "high"), taskId: undefined }
+		sendState({
+			currentView: { type: "newTaskDraft" },
+			currentApiConfigName: "profile-a",
+			apiConfiguration: { apiProvider: "openai", apiModelId: "profile-a" },
+			taskStateSeq: 1,
+			taskReasoning: draftReasoning,
+		})
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+
+		// This is the host's lifecycle/usage patch: it carries navigation and sequence,
+		// while omitting the unchanged provider settings and draft reasoning projection.
+		sendState({
+			currentView: { type: "newTaskDraft" },
+			liveTaskIds: [],
+			liveTasksById: {},
+			taskStateSeq: 2,
+		})
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "high")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-capability", "effort")
+
+		sendState({
+			taskStateSeq: 3,
+			taskReasoning: {
+				requested: { kind: "default" },
+				effective: { kind: "off" },
+				capabilities: { kind: "unavailable", canDisable: false },
+				fallbackReason: "unavailable",
+			},
+		})
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-capability", "unavailable")
+		expect(screen.getByTestId("reasoning-selector")).toHaveAttribute("data-effective", "off")
 	})
 })

@@ -352,6 +352,9 @@ interface CatalogEntry {
 	schemaDigests: ReadonlyMap<string, string>
 	projected?: TaskToolSurface
 	selectionKey?: string
+	/** Receipt capacity only; persisted transactions still exclusively own promotion. */
+	offeredTools: Set<string>
+	discoveryBoundary?: string
 }
 
 /** Task-owned, bounded cache. Selections are hints; the captured policy is always the authority. */
@@ -390,6 +393,7 @@ export class TaskToolCatalogCache {
 				full,
 				deferred,
 				searchIndex: buildSearchIndex(deferred),
+				offeredTools: new Set(),
 				schemaDigests: new Map(
 					full.schemas
 						.filter((schema) => deferredSchema(schema, full))
@@ -401,6 +405,14 @@ export class TaskToolCatalogCache {
 		}
 
 		const entry = this.entry
+		// Retries retain their captured history boundary. Only a new host capture
+		// releases receipt reservations; it does not promote unpersisted results.
+		const lastMessage = history.at(-1)
+		const discoveryBoundary = `${history.length}:${lastMessage ? this.identity(lastMessage) : 0}`
+		if (entry.discoveryBoundary !== discoveryBoundary) {
+			entry.offeredTools.clear()
+			entry.discoveryBoundary = discoveryBoundary
+		}
 		this.restoreSelections(entry.schemaDigests, history)
 		const deferredNames = new Set(entry.deferred.map((schema) => schema.function.name))
 		const selectionKey = JSON.stringify([...this.selected].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
@@ -454,11 +466,22 @@ export class TaskToolCatalogCache {
 		for (const { document } of ranked) {
 			if (tools.length === limit) break
 			const candidate = reference(document.schema)
-			if (JSON.stringify(success([...tools, candidate])).length <= outputLimit) tools.push(candidate)
+			if (!entry.offeredTools.has(candidate.name) && entry.offeredTools.size === MAX_SELECTED_TOOLS) continue
+			if (JSON.stringify(success([...tools, candidate])).length <= outputLimit) {
+				tools.push(candidate)
+				entry.offeredTools.add(candidate.name)
+			}
 		}
 		// Returning a result does not mutate the current surface or queue authority. Only a successful
 		// persisted call/result transaction can promote these definitions at the next capture boundary.
-		return JSON.stringify(success(tools))
+		return JSON.stringify(
+			success(
+				tools,
+				tools.length === 0 && ranked.length > 0 && entry.offeredTools.size === MAX_SELECTED_TOOLS
+					? "Discovery activation capacity reached for this step. Use the returned tools, then search again in the next step."
+					: undefined,
+			),
+		)
 	}
 
 	private restoreSelections(current: ReadonlyMap<string, string>, history: readonly ApiMessage[]): void {

@@ -56,28 +56,38 @@ describe("WS06 interrupted response tool boundaries", () => {
 		expect(result.outcome).toEqual({ status: "completed", requiresContinuation: true })
 	})
 
-	it.each(["complete payload", "end marker"])("rejects malformed finalized intent from a %s", async (completion) => {
-		const accumulator = new AgentResponseAccumulator()
-		if (completion === "complete payload") {
-			await accumulator.add({ type: "tool_call", id: "malformed", name: "read_file", arguments: '{"path":' })
-		} else {
-			await accumulator.add({
-				type: "tool_call_partial",
-				index: 0,
-				id: "malformed",
-				name: "read_file",
-				arguments: '{"path":',
-			})
-			await accumulator.add({ type: "tool_call_end", id: "malformed" })
-		}
-		const result = await accumulator.finish(undefined, { status: "completed", requiresContinuation: true })
+	it.each(["complete payload", "end marker"])(
+		"retains a correlated rejected call from a malformed %s",
+		async (completion) => {
+			const accumulator = new AgentResponseAccumulator()
+			if (completion === "complete payload") {
+				await accumulator.add({ type: "tool_call", id: "malformed", name: "read_file", arguments: '{"path":' })
+			} else {
+				await accumulator.add({
+					type: "tool_call_partial",
+					index: 0,
+					id: "malformed",
+					name: "read_file",
+					arguments: '{"path":',
+				})
+				await accumulator.add({ type: "tool_call_end", id: "malformed" })
+			}
+			const result = await accumulator.finish(undefined, { status: "completed", requiresContinuation: true })
 
-		expect(result.toolCalls).toEqual([])
-		expect(result.items).toContainEqual(
-			expect.objectContaining({ type: "error", callId: "malformed", retryable: false }),
-		)
-		expect(result.outcome).toMatchObject({ status: "failed", retryable: false })
-	})
+			expect(result.toolCalls).toEqual([
+				{
+					type: "tool_call",
+					id: "malformed",
+					name: "read_file",
+					arguments: {},
+					argumentParseError: 'Unable to parse arguments for tool call "read_file" (malformed).',
+					rawArguments: '{"path":',
+				},
+			])
+			expect(result.items.some((item) => item.type === "error")).toBe(false)
+			expect(result.outcome).toEqual({ status: "completed", requiresContinuation: true })
+		},
+	)
 
 	it("fails conflicting persisted identities even when finalized calls were not accepted early", async () => {
 		const accumulator = new AgentResponseAccumulator()

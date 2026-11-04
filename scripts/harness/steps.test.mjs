@@ -205,6 +205,7 @@ test("the harness bounds Vitest 4 workers even when the parent requests more", a
 		const input = fixture({
 			runProcess: async (command) => {
 				workers.push(command.env.VITEST_MAX_WORKERS)
+				assert.equal(command.env.npm_config_verify_deps_before_run, "false")
 				return { exitCode: 0, signal: null, cleanupVerified: true }
 			},
 		})

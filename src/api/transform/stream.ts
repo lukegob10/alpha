@@ -1,4 +1,9 @@
-import type { AssistantMessageMetadata, GeminiResponse, VscodeLmThinking } from "@alpha-code/types"
+import type {
+	AssistantMessageMetadata,
+	GeminiResponse,
+	ProviderResponseItem,
+	VscodeLmThinking,
+} from "@alpha-code/types"
 
 /**
  * The stream boundary is intentionally provider-neutral. Providers that have
@@ -517,6 +522,7 @@ export interface ApiStreamGroundingChunk {
 }
 
 export interface ApiStreamToolCallChunk {
+	providerItem?: ProviderResponseItem
 	type: "tool_call"
 	id: string
 	name: string
@@ -540,6 +546,7 @@ export interface ApiStreamToolCallDeltaChunk {
 }
 
 export interface ApiStreamToolCallEndChunk {
+	providerItem?: ProviderResponseItem
 	type: "tool_call_end"
 	id: string
 	/** Complete provider parts sealed atomically with this accepted Gemini call. */

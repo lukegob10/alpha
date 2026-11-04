@@ -652,7 +652,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("truncates over-limit retained input when automatic summarization fails", async () => {
+		it("preserves over-limit retained input when automatic summarization fails", async () => {
 			// Mock the summarizeConversation function to return an error
 			const mockSummarizeResponse: condenseModule.SummarizeResponse = {
 				messages: messages, // Original messages unchanged
@@ -674,14 +674,6 @@ describe("Context Management", () => {
 				{ ...messages[messages.length - 1], content: "" },
 			]
 
-			// When truncating, always uses 0.5 fraction
-			// With 4 messages after the first, 0.5 fraction means remove 2 messages
-			const expectedMessages = [
-				messagesWithSmallContent[0],
-				messagesWithSmallContent[3],
-				messagesWithSmallContent[4],
-			]
-
 			const result = await manageContext({
 				messages: messagesWithSmallContent,
 				totalTokens,
@@ -699,18 +691,19 @@ describe("Context Management", () => {
 			// Verify summarizeConversation was called
 			expect(summarizeSpy).toHaveBeenCalled()
 
-			// Verify it fell back to truncation (non-destructive)
-			expect(result.truncationId).toBeDefined()
-			expect(result.messagesRemoved).toBe(2)
+			expect(result.status).toBe("no_progress")
+			expect(result.messages).toBe(messagesWithSmallContent)
+			expect(result.truncationId).toBeUndefined()
+			expect(result.messagesRemoved).toBeUndefined()
 			expect(result.prevContextTokens).toBeGreaterThan(800)
-			expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(800)
+			expect(result.newContextTokensAfterTruncation).toBeUndefined()
 			expect(result.summary).toBe("")
+			expect(result.error).toBe("Summarization failed")
 			expect(result.prevContextTokens).toBe(
 				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
 			)
-			// Should have all original messages + truncation marker
-			expect(result.messages.length).toBe(6) // 5 original + 1 marker
-			// The cost might be different than expected, so we don't check it
+			expect(result.messages).toHaveLength(messagesWithSmallContent.length)
+			expect(result.cost).toBe(0.01)
 
 			// Clean up
 			summarizeSpy.mockRestore()
@@ -877,7 +870,7 @@ describe("Context Management", () => {
 			summarizeSpy.mockRestore()
 		})
 
-		it("should force truncation when automatic condensation fails with a context-window error", async () => {
+		it("preserves history when automatic condensation fails with a context-window error", async () => {
 			const summarizeSpy = vi.spyOn(condenseModule, "summarizeConversation").mockResolvedValue({
 				messages,
 				summary: "",
@@ -907,12 +900,12 @@ describe("Context Management", () => {
 			})
 
 			expect(summarizeSpy).toHaveBeenCalled()
-			expect(result.truncationId).toBeDefined()
-			expect(result.messagesRemoved).toBe(2)
+			expect(result.status).toBe("no_progress")
+			expect(result.messages).toBe(messagesWithSmallContent)
+			expect(result.truncationId).toBeUndefined()
+			expect(result.messagesRemoved).toBeUndefined()
 			expect(result.error).toContain("max input tokens exceeded")
-			expect(result.prevContextTokens).toBe(
-				await condenseModule.countContextTokens(messagesWithSmallContent, mockApiHandler, "System prompt"),
-			)
+			expect(result.errorDetails).toContain("prompt is too long")
 
 			summarizeSpy.mockRestore()
 		})

@@ -1,7 +1,8 @@
 import * as vscode from "vscode"
 import pWaitFor from "p-wait-for"
 
-import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise } from "./types"
+import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, CommandShellLaunch } from "./types"
+import { terminalShellArgs } from "../../utils/shell"
 import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -18,12 +19,21 @@ export class Terminal extends BaseTerminal {
 		terminal: vscode.Terminal | undefined,
 		cwd: string,
 		commandEnv: Record<string, string> = {},
+		readonly shellLaunch?: CommandShellLaunch,
 	) {
 		super("vscode", id, cwd)
 
 		const env = { ...Terminal.getEnv(), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
-		this.terminal = terminal ?? vscode.window.createTerminal({ cwd, name: "Alpha", iconPath, env })
+		this.terminal =
+			terminal ??
+			vscode.window.createTerminal({
+				cwd,
+				name: "Alpha",
+				iconPath,
+				env,
+				...(shellLaunch ? { shellPath: shellLaunch.shellPath, shellArgs: terminalShellArgs(shellLaunch) } : {}),
+			})
 
 		if (Terminal.getTerminalZdotdir()) {
 			ShellIntegrationManager.terminalTmpDirs.set(id, env.ZDOTDIR)
@@ -162,62 +172,6 @@ export class Terminal extends BaseTerminal {
 		})
 
 		return mergePromise(process, promise)
-	}
-
-	/**
-	 * Gets the terminal contents based on the number of commands to include
-	 * @param commands Number of previous commands to include (-1 for all)
-	 * @returns The selected terminal contents
-	 */
-	public static async getTerminalContents(commands = -1): Promise<string> {
-		// Save current clipboard content
-		const tempCopyBuffer = await vscode.env.clipboard.readText()
-
-		try {
-			// Select terminal content
-			if (commands < 0) {
-				await vscode.commands.executeCommand("workbench.action.terminal.selectAll")
-			} else {
-				for (let i = 0; i < commands; i++) {
-					await vscode.commands.executeCommand("workbench.action.terminal.selectToPreviousCommand")
-				}
-			}
-
-			// Copy selection and clear it
-			await vscode.commands.executeCommand("workbench.action.terminal.copySelection")
-			await vscode.commands.executeCommand("workbench.action.terminal.clearSelection")
-
-			// Get copied content
-			let terminalContents = (await vscode.env.clipboard.readText()).trim()
-
-			// Restore original clipboard content
-			await vscode.env.clipboard.writeText(tempCopyBuffer)
-
-			if (tempCopyBuffer === terminalContents) {
-				// No terminal content was copied
-				return ""
-			}
-
-			// Process multi-line content
-			const lines = terminalContents.split("\n")
-			const lastLine = lines.pop()?.trim()
-
-			if (lastLine) {
-				let i = lines.length - 1
-
-				while (i >= 0 && !lines[i].trim().startsWith(lastLine)) {
-					i--
-				}
-
-				terminalContents = lines.slice(Math.max(i, 0)).join("\n")
-			}
-
-			return terminalContents
-		} catch (error) {
-			// Ensure clipboard is restored even if an error occurs
-			await vscode.env.clipboard.writeText(tempCopyBuffer)
-			throw error
-		}
 	}
 
 	public static getEnv(): Record<string, string> {

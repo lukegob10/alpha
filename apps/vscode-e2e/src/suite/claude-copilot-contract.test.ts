@@ -127,7 +127,7 @@ suite("Claude Copilot deterministic extension-host contract", function () {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "vscode-lm-fixture")
 		assert.equal(
 			assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION),
-			"1.138.0",
+			"1.141.0",
 		)
 		const fixtureId = process.env.ALPHA_E2E_VSCODE_LM_FIXTURE_ID
 		assert.ok(fixtureId, "The deterministic Claude suite requires the runner-owned fixture")

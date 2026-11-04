@@ -93,7 +93,7 @@ export async function exerciseRenderedFirstPrompt(
 		JSON.stringify(
 			{
 				schemaVersion: 1,
-				hostVersion: "1.138.0",
+				hostVersion: "1.141.0",
 				visibleBeforeAdmissionCompleted: true,
 				rejectedDraftRestored: true,
 				observedKeyToVisibleMs: visibleAt - submittedAt,

@@ -5,10 +5,95 @@ import { isPromise } from "node:util/types"
 import { createContext, runInContext } from "node:vm"
 
 import { type CdpConnection } from "./cdp"
-import { createRenderedAcceptanceControls } from "./renderedAcceptance"
+import { createRenderedAcceptanceControls, revealRenderedReviewActions } from "./renderedAcceptance"
 
 const sessionId = "owned-renderer"
 const optionExpression = "d.querySelector('[role=option]')"
+
+function reviewActionFixture(surface: "collapsed-dock" | "transcript" | "hidden-transcript") {
+	let expanded = surface === "transcript"
+	let groupArrived = false
+	const clicked: string[] = []
+	const hiddenRows = { id: "review-rows" }
+	const action = {
+		getAttribute: (name: string) => (name === "aria-label" ? "Actions for discard_worker" : null),
+		closest: (selector: string) => (selector === "[hidden]" && !expanded ? hiddenRows : null),
+	}
+	const toggle = {
+		getAttribute: (name: string) =>
+			name === "aria-controls" ? hiddenRows.id : name === "aria-expanded" ? String(expanded) : null,
+		activate: () => {
+			clicked.push(surface === "collapsed-dock" ? "Show sub-agents" : "Expand transcript group")
+			expanded = true
+		},
+	}
+	const buttons = () => [
+		...(surface === "transcript" ? [] : [toggle]),
+		...(groupArrived && (surface !== "collapsed-dock" || expanded) ? [action] : []),
+	]
+	const document = {
+		querySelector: (selector: string) =>
+			selector === ".subagent-dock > button[aria-expanded]" && surface === "collapsed-dock" ? toggle : null,
+		querySelectorAll: (selector: string) => {
+			if (selector === "button") return buttons()
+			assert.equal(selector, "button[aria-controls]")
+			return surface === "transcript" ? [] : [toggle]
+		},
+	}
+	const context = createContext({ d: document })
+	const controls = {
+		async evaluate<T>(expression: string): Promise<T> {
+			return runInContext(expression, context) as T
+		},
+		async check(expression: string) {
+			assert.equal(await controls.evaluate(expression), true, `Renderer check failed: ${expression}`)
+		},
+		async click(expression: string) {
+			const control = await controls.evaluate<typeof toggle | undefined>(expression)
+			assert.ok(control, "Only an available public disclosure control can be clicked")
+			control.activate()
+		},
+	}
+	return {
+		controls,
+		clicked,
+		publishReviewGroup: () => {
+			groupArrived = true
+		},
+		isActionMounted: () => buttons().includes(action),
+		isActionVisible: () => buttons().includes(action) && !action.closest("[hidden]"),
+	}
+}
+
+test("review actions arriving in a collapsed dock become discoverable through its public toggle", async () => {
+	const fixture = reviewActionFixture("collapsed-dock")
+	fixture.publishReviewGroup()
+	assert.equal(fixture.isActionMounted(), false, "A retained hidden body may not render newly arrived groups")
+	const action = await revealRenderedReviewActions(fixture.controls, "discard_worker")
+	assert.deepEqual(fixture.clicked, ["Show sub-agents"])
+	assert.equal(fixture.isActionVisible(), true)
+	assert.ok(await fixture.controls.evaluate(action))
+})
+
+test("review actions in a nested transcript remain discoverable without a dock", async () => {
+	const fixture = reviewActionFixture("transcript")
+	fixture.publishReviewGroup()
+	const action = await revealRenderedReviewActions(fixture.controls, "discard_worker")
+	assert.deepEqual(fixture.clicked, [])
+	assert.equal(fixture.isActionVisible(), true)
+	assert.ok(await fixture.controls.evaluate(action))
+})
+
+test("review actions in a hidden transcript group retain their existing disclosure fallback", async () => {
+	const fixture = reviewActionFixture("hidden-transcript")
+	fixture.publishReviewGroup()
+	assert.equal(fixture.isActionMounted(), true)
+	assert.equal(fixture.isActionVisible(), false)
+	await revealRenderedReviewActions(fixture.controls, "discard_worker")
+	assert.deepEqual(fixture.clicked, ["Expand transcript group"])
+	assert.equal(fixture.isActionVisible(), true)
+})
+
 type Scenario =
 	| "moving"
 	| "covered"

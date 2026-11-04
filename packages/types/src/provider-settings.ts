@@ -9,7 +9,6 @@ import {
 } from "./model.js"
 import { codebaseIndexProviderSchema } from "./codebase-index.js"
 import {
-	stellarModels,
 	vertexModels,
 	vscodeLlmModels,
 	openAiNativeModels,
@@ -70,7 +69,7 @@ export const isCuratedProvider = (value: unknown): value is CuratedProvider =>
 	typeof value === "string" && curatedProviders.includes(value as CuratedProvider)
 
 /** Public provider IDs. Keep this list in sync with the executable factory. */
-export const providerNames = ["vertex", "vscode-lm", "stellar", "openai", ...curatedProviders] as const
+export const providerNames = ["vertex", "vscode-lm", "openai", ...curatedProviders] as const
 export const providerNamesSchema = z.enum(providerNames)
 export type ProviderName = z.infer<typeof providerNamesSchema>
 export const isProviderName = (key: unknown): key is ProviderName =>
@@ -177,6 +176,7 @@ const vertexSchema = apiModelIdProviderModelSchema.extend({
 	vertexJsonCredentials: z.string().optional(),
 	vertexProjectId: z.string().optional(),
 	vertexRegion: z.string().optional(),
+	// Historical connection fields stay readable so requests can reject them before using native credentials.
 	gatewayBaseUrl: z.string().optional(),
 	projectId: z.string().optional(),
 	location: z.string().optional(),
@@ -193,16 +193,6 @@ const vertexSchema = apiModelIdProviderModelSchema.extend({
 	vertexGatewayModelRoutingMap: z.string().optional(),
 	vertexStreamingEnabled: z.boolean().optional(),
 	vertex1MContext: z.boolean().optional(),
-})
-
-const stellarSchema = apiModelIdProviderModelSchema.extend({
-	stellarBaseUrl: z.string().optional(),
-	stellarPemCaBundlePath: z.string().optional(),
-	stellarHelixCommand: z.string().optional(),
-	stellarHelixParseMode: z.enum(["raw_stdout", "json_field"]).optional(),
-	stellarHelixTokenKey: z.string().optional(),
-	stellarTokenRefreshMinutes: z.number().int().min(1).optional(),
-	stellarStreamingEnabled: z.boolean().optional(),
 })
 
 const openAiSchema = baseProviderSettingsSchema.extend({
@@ -287,7 +277,6 @@ const fakeAiSchema = baseProviderSettingsSchema.extend({
 
 export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProvider", [
 	vertexSchema.merge(z.object({ apiProvider: z.literal("vertex") })),
-	stellarSchema.merge(z.object({ apiProvider: z.literal("stellar") })),
 	openAiSchema.merge(z.object({ apiProvider: z.literal("openai") })),
 	openAiNativeSchema.merge(z.object({ apiProvider: z.literal("openai-native") })),
 	openAiCodexSchema.merge(z.object({ apiProvider: z.literal("openai-codex") })),
@@ -305,7 +294,6 @@ export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProv
 export const providerSettingsSchema = z.object({
 	apiProvider: providerNamesWithRetiredSchema.optional(),
 	...vertexSchema.shape,
-	...stellarSchema.shape,
 	...openAiSchema.shape,
 	...openAiNativeSchema.shape,
 	...openAiCodexSchema.shape,
@@ -436,7 +424,6 @@ export const isTypicalProvider = (key: unknown): key is TypicalProvider =>
 
 export const modelIdKeysByProvider: Record<TypicalProvider, ModelIdKey> = {
 	vertex: "apiModelId",
-	stellar: "apiModelId",
 	"openai-native": "apiModelId",
 	"openai-codex": "apiModelId",
 	meta: "apiModelId",
@@ -472,11 +459,6 @@ export const MODELS_BY_PROVIDER: Record<
 		id: "vertex",
 		label: "GCP Vertex AI",
 		models: Object.keys(vertexModels),
-	},
-	stellar: {
-		id: "stellar",
-		label: "Stellar",
-		models: Object.keys(stellarModels),
 	},
 	"vscode-lm": {
 		id: "vscode-lm",

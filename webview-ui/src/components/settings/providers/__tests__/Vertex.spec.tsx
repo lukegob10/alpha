@@ -1,9 +1,11 @@
 import { fireEvent, render, screen } from "@testing-library/react"
+import { useState } from "react"
 import { Vertex } from "../Vertex"
 import type { ProviderSettings } from "@alpha-code/types"
 import { VERTEX_REGIONS } from "@alpha-code/types"
 
 vi.mock("@vscode/webview-ui-toolkit/react", () => ({
+	VSCodeButton: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button>,
 	VSCodeTextField: ({ children, value, onInput, type, ...props }: any) => (
 		<div>
 			{children}
@@ -33,6 +35,9 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 				"settings:providers.googleCloudSetup.step1": "Enable Vertex AI and model access",
 				"settings:providers.googleCloudSetup.step2": "Set up Application Default Credentials",
 				"settings:providers.googleCloudSetup.step3": "Create a service account key",
+				"settings:providers.vertexAdditionalSetup": "Additional setup",
+				"settings:providers.vertexGatewayCommand": "Access token command",
+				"settings:providers.vertexGatewayCommandPlaceholder": "Enter a command that prints an access token",
 			}
 
 			return translations[key] ?? key
@@ -40,7 +45,8 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 	}),
 }))
 
-vi.mock("@src/components/ui", () => ({
+vi.mock("@src/components/ui", async () => ({
+	...(await import("@src/components/ui/collapsible")),
 	SearchableSelect: ({ value, onValueChange, options, allowCustomValue, "data-testid": testId }: any) => (
 		<div>
 			<input
@@ -68,6 +74,31 @@ vi.mock("@src/components/ui", () => ({
 }))
 
 describe("Vertex", () => {
+	it("shows standard fields and clears removed connection settings only in the edit buffer", () => {
+		function Form() {
+			const [settings, setSettings] = useState<ProviderSettings>({
+				projectId: "project",
+				location: "global",
+				gatewayBaseUrl: "https://old.test",
+				helixCommand: "old-command",
+			})
+			return (
+				<Vertex
+					apiConfiguration={settings}
+					setApiConfigurationField={(field, value) =>
+						setSettings((current) => ({ ...current, [field]: value }))
+					}
+				/>
+			)
+		}
+		render(<Form />)
+		expect(screen.queryByRole("button", { name: "Additional setup" })).not.toBeInTheDocument()
+		expect(screen.queryByTestId("vertex-gateway-command")).not.toBeInTheDocument()
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("project")
+		fireEvent.click(screen.getByRole("button", { name: "settings:providers.useStandardVertex" }))
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+		expect(screen.getByPlaceholderText("settings:placeholders.projectId")).toHaveValue("project")
+	})
 	const defaultApiConfiguration: ProviderSettings = {
 		vertexKeyFile: "",
 		vertexJsonCredentials: "",
@@ -183,31 +214,6 @@ describe("Vertex", () => {
 		expect(screen.queryByTestId("checkbox-grounding-search")).not.toBeInTheDocument()
 	})
 
-	it("should render Vertex gateway settings", () => {
-		render(
-			<Vertex
-				apiConfiguration={{
-					...defaultApiConfiguration,
-					vertexGatewayBaseUrl: "https://gateway.example.com/vertex",
-					vertexGatewayCaBundlePath: "/certs/corp.pem",
-					vertexGatewayHelixCommand: "helix auth access-token print -a",
-					vertexGatewayTokenRefreshMinutes: 15,
-					vertexGatewayModelRoutingMap: '{"gemini-3.7-flash":"gateway-gemini-flash"}',
-				}}
-				setApiConfigurationField={mockSetApiConfigurationField}
-			/>,
-		)
-
-		expect(screen.getByText("settings:providers.vertexGatewayBaseUrl")).toBeInTheDocument()
-		expect(screen.getByTestId("vertex-gateway-base-url")).toHaveValue("https://gateway.example.com/vertex")
-		expect(screen.getByTestId("vertex-gateway-ca-bundle-path")).toHaveValue("/certs/corp.pem")
-		expect(screen.getByTestId("vertex-gateway-helix-command")).toHaveValue("helix auth access-token print -a")
-		expect(screen.getByTestId("vertex-gateway-token-refresh-minutes")).toHaveValue("15")
-		expect(screen.getByTestId("vertex-gateway-model-routing-map")).toHaveValue(
-			'{"gemini-3.7-flash":"gateway-gemini-flash"}',
-		)
-	})
-
 	it("should render readable Google Cloud setup text", () => {
 		render(
 			<Vertex
@@ -245,42 +251,5 @@ describe("Vertex", () => {
 		fireEvent.click(screen.getByTestId("checkbox-vertex-streaming-enabled").querySelector("input")!)
 
 		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("vertexStreamingEnabled", false)
-	})
-
-	it("should update Vertex gateway settings through cached api configuration callbacks", () => {
-		render(
-			<Vertex
-				apiConfiguration={defaultApiConfiguration}
-				setApiConfigurationField={mockSetApiConfigurationField}
-			/>,
-		)
-
-		fireEvent.change(screen.getByTestId("vertex-gateway-base-url"), {
-			target: { value: "https://gateway.example.com/vertex" },
-		})
-		fireEvent.change(screen.getByTestId("vertex-gateway-ca-bundle-path"), {
-			target: { value: "/certs/corp.pem" },
-		})
-		fireEvent.change(screen.getByTestId("vertex-gateway-helix-command"), {
-			target: { value: "helix auth access-token print -a" },
-		})
-		fireEvent.change(screen.getByTestId("vertex-gateway-token-refresh-minutes"), {
-			target: { value: "20" },
-		})
-		fireEvent.change(screen.getByTestId("vertex-gateway-model-routing-map"), {
-			target: { value: '{"gemini-3.7-flash":"gateway-gemini-flash"}' },
-		})
-
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
-			"gatewayBaseUrl",
-			"https://gateway.example.com/vertex",
-		)
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("pemCaBundlePath", "/certs/corp.pem")
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("helixCommand", "helix auth access-token print -a")
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith("refreshIntervalMinutes", 20)
-		expect(mockSetApiConfigurationField).toHaveBeenCalledWith(
-			"modelRoutingMap",
-			'{"gemini-3.7-flash":"gateway-gemini-flash"}',
-		)
 	})
 })

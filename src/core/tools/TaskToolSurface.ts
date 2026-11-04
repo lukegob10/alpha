@@ -10,13 +10,7 @@ import {
 	type UserExecutionProfile,
 	type UserExecutionProfileId,
 } from "../agent/ExecutionProfile"
-import {
-	canonicalizeToolName,
-	ToolRegistry,
-	type ToolCapabilities,
-	type ToolDescriptor,
-	type TaskReadGrant,
-} from "./ToolRegistry"
+import { ToolRegistry, type ToolCapabilities, type ToolDescriptor, type TaskReadGrant } from "./ToolRegistry"
 import {
 	createToolPolicySnapshot,
 	isToolAllowed,
@@ -152,7 +146,7 @@ function asPolicySource(policy: TaskToolSurfaceInput["policy"]): PolicySource | 
 	}
 }
 
-function canonicalSchema(schema: TaskToolSchema): TaskToolSchema {
+function canonicalSchema(schema: TaskToolSchema, registry: ToolRegistry): TaskToolSchema {
 	if (schema.type !== "function") return freezeValue(structuredClone(schema))
 	if (
 		schema.function.name === "exec_command" ||
@@ -162,7 +156,7 @@ function canonicalSchema(schema: TaskToolSchema): TaskToolSchema {
 		schema.function.name === "discover_tools"
 	)
 		return freezeValue(structuredClone(schema))
-	const name = canonicalizeToolName(schema.function.name)
+	const name = registry.canonicalName(schema.function.name)
 	const normalized = name === schema.function.name ? schema : { ...schema, function: { ...schema.function, name } }
 	return freezeValue(structuredClone(normalized))
 }
@@ -190,13 +184,13 @@ function normalizeSchemas(
 	const result: TaskToolSchema[] = []
 	const indexes = new Map<string, number>()
 	for (const source of schemas) {
-		const schema = canonicalSchema(source)
+		const schema = canonicalSchema(source, registry)
 		if (schema.type !== "function") {
 			result.push(schema)
 			continue
 		}
 
-		const canonicalName = canonicalizeToolName(schema.function.name)
+		const canonicalName = registry.canonicalName(schema.function.name)
 		if (!registry.resolve(canonicalName)) continue
 		if (!includeAllToolsWithRestrictions && allowedNames && !allowedNames.has(canonicalName)) continue
 		// Saved-history declarations keep their wire names but share one canonical executable.
@@ -219,12 +213,12 @@ function normalizeSchemas(
 	return result
 }
 
-function functionNames(schemas: readonly TaskToolSchema[]): string[] {
+function functionNames(schemas: readonly TaskToolSchema[], registry: ToolRegistry): string[] {
 	return [
 		...new Set(
 			schemas
 				.filter((schema): schema is OpenAI.Chat.ChatCompletionFunctionTool => schema.type === "function")
-				.map((schema) => canonicalizeToolName(schema.function.name)),
+				.map((schema) => registry.canonicalName(schema.function.name)),
 		),
 	].sort()
 }
@@ -248,7 +242,10 @@ function descriptorOutputLimits(
 ): Readonly<Record<string, number>> {
 	const result: Record<string, number> = {}
 	for (const [name, limit] of Object.entries(provided ?? {})) {
-		result[canonicalizeToolName(name)] = limit
+		if (!Number.isFinite(limit)) continue
+		const canonical = registry.canonicalName(name)
+		const existing = result[canonical]
+		result[canonical] = existing === undefined ? limit : Math.min(existing, limit)
 	}
 	for (const descriptor of registry.list()) {
 		if (descriptor.maxOutputChars === undefined) continue
@@ -352,6 +349,10 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 	// registration from making the digest and executable surface disagree.
 	registry.seal()
 
+	// Descriptor aliases belong to this sealed registry, just as they do at
+	// scheduler dispatch. Global spellings alone cannot normalize its policy.
+	const canonicalName = (name: string) => registry.canonicalName(name)
+
 	const allSchemas = diagnosticSession
 		? DIAGNOSTIC_SESSION_ALLOWED_TOOLS.flatMap((name) => {
 				const schema = registry.getSchema(name)
@@ -360,18 +361,18 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		: normalizeSchemas(providerSchemas, registry, true).filter(
 				(schema) =>
 					schema.type !== "function" ||
-					(canonicalizeToolName(schema.function.name) !== "read_diagnostic_evidence" &&
-						(memoryToolsEnabled || !MEMORY_TOOL_NAMES.has(canonicalizeToolName(schema.function.name)))),
+					(canonicalName(schema.function.name) !== "read_diagnostic_evidence" &&
+						(memoryToolsEnabled || !MEMORY_TOOL_NAMES.has(canonicalName(schema.function.name)))),
 			)
-	const schemaNames = functionNames(allSchemas)
+	const schemaNames = functionNames(allSchemas, registry)
 	const schemaNameSet = new Set(schemaNames)
 	const requestedVisibleNames = input.visibleToolNames ?? input.visibleTools ?? source?.visibleTools ?? schemaNames
-	const policyVisibleSet = source ? new Set(source.visibleTools.map(canonicalizeToolName)) : undefined
+	const policyVisibleSet = source ? new Set(source.visibleTools.map(canonicalName)) : undefined
 	const diagnosticAllowedNames: ReadonlySet<string> = new Set(DIAGNOSTIC_SESSION_ALLOWED_TOOLS)
 	const diagnosticToolAllowed = (name: string) => {
 		if (!diagnosticSession || input.taskKind === "subagent") return false
 		if (!diagnosticTaskIdentitySchema.safeParse(input.diagnosticSourceTaskId).success) return false
-		if (!diagnosticAllowedNames.has(canonicalizeToolName(name))) return false
+		if (!diagnosticAllowedNames.has(canonicalName(name))) return false
 		const capability = registry.resolve(name)?.capabilities
 		return (
 			capability?.sideEffects === "none" &&
@@ -380,7 +381,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		)
 	}
 	const visibleNames = requestedVisibleNames
-		.map(canonicalizeToolName)
+		.map(canonicalName)
 		.filter(
 			(name) =>
 				schemaNameSet.has(name) &&
@@ -390,9 +391,9 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 	const visibleSet = new Set(visibleNames)
 	const requestedAllowedNames =
 		input.allowedToolNames ?? input.allowedFunctionNames ?? source?.allowedTools ?? visibleNames
-	const policyAllowedSet = source ? new Set(source.allowedTools.map(canonicalizeToolName)) : undefined
+	const policyAllowedSet = source ? new Set(source.allowedTools.map(canonicalName)) : undefined
 	const candidateAllowedNames = requestedAllowedNames
-		.map(canonicalizeToolName)
+		.map(canonicalName)
 		.filter(
 			(name) =>
 				visibleSet.has(name) &&
@@ -403,7 +404,7 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		...(input.disabledTools ?? []),
 		...(input.disabledToolNames ?? []),
 		...(source?.disabledTools ?? []),
-	].map(canonicalizeToolName)
+	].map(canonicalName)
 
 	const basePolicy = createToolPolicySnapshot({
 		visibleTools: visibleNames,
@@ -429,17 +430,17 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 					includeAllToolsWithRestrictions,
 				})
 
-	const allowedNames = new Set(profileResult.allowedFunctionNames.map(canonicalizeToolName))
+	const allowedNames = new Set(profileResult.allowedFunctionNames.map(canonicalName))
 	const modelSchemas = normalizeSchemas(
 		allSchemas,
 		registry,
 		includeAllToolsWithRestrictions,
 		includeAllToolsWithRestrictions ? undefined : allowedNames,
 	)
-	const modelSchemaNames = functionNames(modelSchemas)
+	const modelSchemaNames = functionNames(modelSchemas, registry)
 	const modelSchemaNameSet = new Set(modelSchemaNames)
 	const allowedFunctionNames = [...new Set(profileResult.allowedFunctionNames)]
-		.map(canonicalizeToolName)
+		.map(canonicalName)
 		.filter((name) => modelSchemaNameSet.has(name) && isToolAllowed(basePolicy, name) && allowedNames.has(name))
 		.sort()
 
@@ -494,13 +495,13 @@ export function createTaskToolSurface(input: TaskToolSurfaceInput = {}): TaskToo
 		diagnosticSourceTaskId: input.diagnosticSourceTaskId,
 		includeAllToolsWithRestrictions,
 		resolve: (name: string) => {
-			const canonical = canonicalizeToolName(name)
+			const canonical = canonicalName(name)
 			return frozenAllowedNames.includes(canonical) && isToolAllowed(finalPolicy, canonical)
 				? registry.resolve(canonical)
 				: undefined
 		},
 		isCallable: (name: string) => {
-			const canonical = canonicalizeToolName(name)
+			const canonical = canonicalName(name)
 			return frozenAllowedNames.includes(canonical) && isToolAllowed(finalPolicy, canonical)
 		},
 	}

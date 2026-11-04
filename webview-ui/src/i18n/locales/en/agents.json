@@ -1,6 +1,6 @@
 {
 	"title": "Agents",
-	"description": "Configure subagents with the same agent settings as Codex CLI.",
+	"description": "Configure subagents with the same agent settings as Codex CLI. Subagents share the parent's working directory and inherit its approval policy, permissions, and workspace scope.",
 	"timing": "Agents run until they finish, fail, or are stopped. Waiting can time out without stopping an agent. Delegation follows your requests and applicable project or skill instructions. New launches capture model settings; existing agents keep their captured model.",
 	"inherit": "Inherit",
 	"enabled": {

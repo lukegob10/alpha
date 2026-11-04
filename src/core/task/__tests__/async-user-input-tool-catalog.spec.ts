@@ -62,27 +62,32 @@ describe("user input tool catalog", () => {
 	it.each([
 		["code", undefined],
 		["code", true],
+		["code", false],
 		["architect", undefined],
 		["architect", true],
-	] as const)("keeps %s questions blocking with waitForQuestionAnswers=%s", async (mode, waitForQuestionAnswers) => {
-		const surface = await buildTaskToolSurface(
-			options({ mode, modelInfo: capableModel, waitForQuestionAnswers, discoveryHistory: asyncHistory }),
-		)
+		["architect", false],
+	] as const)(
+		"keeps %s async questions available with waitForQuestionAnswers=%s",
+		async (mode, waitForQuestionAnswers) => {
+			const surface = await buildTaskToolSurface(
+				options({ mode, modelInfo: capableModel, waitForQuestionAnswers, discoveryHistory: asyncHistory }),
+			)
 
-		expect(namesOf(surface.schemas)).toContain("request_user_input")
-		expect(namesOf(surface.schemas)).not.toContain("request_user_input_async")
-		expect(surface.allowedFunctionNames).toContain("request_user_input")
-		expect(surface.allowedFunctionNames).not.toContain("request_user_input_async")
-		expect(surface.isCallable("request_user_input")).toBe(true)
-		expect(surface.isCallable("request_user_input_async")).toBe(false)
-		expect(surface.resolve("request_user_input_async")).toBeUndefined()
-	})
+			expect(namesOf(surface.schemas)).toContain("request_user_input")
+			expect(namesOf(surface.schemas)).toContain("request_user_input_async")
+			expect(surface.allowedFunctionNames).toContain("request_user_input")
+			expect(surface.allowedFunctionNames).toContain("request_user_input_async")
+			expect(surface.isCallable("request_user_input")).toBe(true)
+			expect(surface.isCallable("request_user_input_async")).toBe(true)
+			expect(surface.resolve("request_user_input_async")).toBeDefined()
+		},
+	)
 
-	it("gates opt-in async questions by model metadata while retaining blocking questions", async () => {
+	it("gates async questions by model metadata while retaining blocking questions", async () => {
 		expect(await getCatalogNames()).toContain("request_user_input")
 		expect(await getCatalogNames()).not.toContain("request_user_input_async")
 		expect(await getCatalogNames({ waitForQuestionAnswers: false })).not.toContain("request_user_input_async")
-		expect(await getCatalogNames({ modelInfo: capableModel, waitForQuestionAnswers: false })).toEqual(
+		expect(await getCatalogNames({ modelInfo: capableModel })).toEqual(
 			expect.arrayContaining(["request_user_input", "request_user_input_async"]),
 		)
 		expect(
@@ -121,17 +126,22 @@ describe("user input tool catalog", () => {
 		expect(surface.isCallable("request_user_input")).toBe(true)
 	})
 
-	it.each([undefined, capableModel])(
-		"retains a restricted-provider historical async declaration without restoring callable authority (modelInfo=%j)",
-		async (modelInfo) => {
+	it.each([
+		{ modelInfo: undefined, disabledTools: undefined },
+		{ modelInfo: capableModel, disabledTools: ["request_user_input_async"] },
+	])(
+		"retains a restricted-provider historical async declaration without restoring callable authority (%j)",
+		async ({ modelInfo, disabledTools }) => {
 			const captured = options({
 				apiConfiguration: { apiProvider: "vertex" },
 				includeAllToolsWithRestrictions: true,
 				modelInfo,
+				disabledTools,
 				waitForQuestionAnswers: true,
 			})
 			const fresh = await buildNativeToolsArrayWithRestrictions(captured)
-			expect(namesOf(fresh.tools)).not.toContain("request_user_input_async")
+			// Restricted providers retain supported declarations even when execution is disabled.
+			expect(namesOf(fresh.tools).includes("request_user_input_async")).toBe(modelInfo !== undefined)
 			expect(fresh.allowedFunctionNames).not.toContain("request_user_input_async")
 
 			const historical = await buildNativeToolsArrayWithRestrictions({
@@ -148,7 +158,7 @@ describe("user input tool catalog", () => {
 	)
 
 	it.each(["openai", "vscode-lm", "vertex"] as const)(
-		"captures a changed wait policy on the next %s catalog without changing the prior step",
+		"keeps async authority independent of answer timing across cached %s catalogs",
 		async (apiProvider) => {
 			const captured = options({
 				apiConfiguration: { apiProvider },
@@ -160,18 +170,17 @@ describe("user input tool catalog", () => {
 			expect(nonblocking.isCallable("request_user_input_async")).toBe(true)
 
 			const waiting = await buildTaskToolSurface({ ...captured, waitForQuestionAnswers: true })
-			expect(waiting).not.toBe(nonblocking)
-			expect(waiting.digest).not.toBe(nonblocking.digest)
-			expect(namesOf(waiting.schemas)).not.toContain("request_user_input_async")
-			expect(waiting.allowedFunctionNames).not.toContain("request_user_input_async")
-			expect(waiting.isCallable("request_user_input_async")).toBe(false)
-			expect(waiting.resolve("request_user_input_async")).toBeUndefined()
+			expect(waiting.digest).toBe(nonblocking.digest)
+			expect(namesOf(waiting.schemas)).toContain("request_user_input_async")
+			expect(waiting.allowedFunctionNames).toContain("request_user_input_async")
+			expect(waiting.isCallable("request_user_input_async")).toBe(true)
+			expect(waiting.resolve("request_user_input_async")).toBeDefined()
 			expect(waiting.isCallable("request_user_input")).toBe(true)
 			expect(nonblocking.isCallable("request_user_input_async")).toBe(true)
 
 			const optedInAgain = await buildTaskToolSurface({ ...captured, waitForQuestionAnswers: false })
 			expect(optedInAgain.isCallable("request_user_input_async")).toBe(true)
-			expect(waiting.isCallable("request_user_input_async")).toBe(false)
+			expect(waiting.isCallable("request_user_input_async")).toBe(true)
 		},
 	)
 })

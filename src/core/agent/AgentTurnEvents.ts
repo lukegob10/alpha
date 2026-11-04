@@ -1,5 +1,23 @@
 import type { AgentResponse, AgentResponseStatus } from "./AgentResponse"
 
+export const agentTurnContinuationReasons = [
+	"model-tool-call",
+	"model-continuation",
+	"host-pending-input",
+	"host-continuation",
+	"host-idle-continuation",
+	"completion-repair",
+	"provider-recovery",
+] as const
+
+export type AgentTurnContinuationReason = (typeof agentTurnContinuationReasons)[number]
+
+/** The next logical model step selected by the engine, without its input or provider payload. */
+export interface AgentTurnContinuationDiagnostic {
+	step: number
+	reason: AgentTurnContinuationReason
+}
+
 /** States which may be observed at a response/turn boundary. */
 export type AgentTurnTerminalStatus = AgentResponseStatus | "aborted"
 
@@ -77,6 +95,7 @@ export type AgentTurnEvent =
 	| { type: "progress"; callId?: string; icon?: string; text?: string }
 	| { type: "retry"; attempt: number; reason: string; delayMs?: number }
 	| { type: "model_request_started"; attempt: number; purpose?: "task" | "reasoning-summary" }
+	| ({ type: "model_continuation" } & AgentTurnContinuationDiagnostic)
 	| ({ type: "model_request_failed"; purpose?: "task" | "reasoning-summary" } & AgentTurnFailure)
 	| {
 			type: "task_performance"

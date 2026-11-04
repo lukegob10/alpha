@@ -58,7 +58,7 @@ describe("captured diff provider dispatch", () => {
 		const pendingDiff = receive(diffMessage)
 		await drain()
 		try {
-			expect(webviewMessageHandler).toHaveBeenCalledWith(provider, diffMessage, undefined)
+			expect(webviewMessageHandler).toHaveBeenCalledWith(provider, diffMessage)
 		} finally {
 			compaction.resolve()
 			await Promise.all([pendingCompaction, pendingDiff])
@@ -77,7 +77,7 @@ describe("captured diff provider dispatch", () => {
 		const pendingAction = receive(laterAction)
 		await drain()
 		try {
-			expect(webviewMessageHandler).toHaveBeenCalledWith(provider, laterAction, undefined)
+			expect(webviewMessageHandler).toHaveBeenCalledWith(provider, laterAction)
 		} finally {
 			opening.resolve()
 			await Promise.all([pendingDiff, pendingAction])
@@ -91,6 +91,6 @@ describe("captured diff provider dispatch", () => {
 		expect(log).toHaveBeenCalledWith("[webviewMessageHandler] openDiff failed: Controlled editor failure")
 		const laterAction: WebviewMessage = { type: "playSound", text: "notification" }
 		await receive(laterAction)
-		expect(webviewMessageHandler).toHaveBeenCalledWith(provider, laterAction, undefined)
+		expect(webviewMessageHandler).toHaveBeenCalledWith(provider, laterAction)
 	})
 })

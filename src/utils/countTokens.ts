@@ -22,14 +22,14 @@ export async function countTokens(
 		})
 	}
 
-	// If the worker pool doesn't exist or the caller doesn't want to use it
-	// then, use the non-worker implementation.
-	if (!useWorker || !pool) {
+	const activePool = pool
+	// A retiring pool blocks replacement until its workers have been released.
+	if (!useWorker || !activePool) {
 		return tiktoken(content)
 	}
 
 	try {
-		const data = await pool.exec("countTokens", [content])
+		const data = await activePool.exec("countTokens", [content])
 		const result = countTokensResultSchema.parse(data)
 
 		if (!result.success) {
@@ -38,8 +38,20 @@ export async function countTokens(
 
 		return result.count
 	} catch (error) {
-		pool = null
 		console.error(error)
+		// workerpool rejects admission at its queue limit without invalidating the pool.
+		const queueIsFull =
+			error instanceof Error && error.message === `Max queue size of ${activePool.maxQueueSize} reached`
+		if (!queueIsFull && pool === activePool) {
+			pool = null
+			try {
+				await activePool.terminate(true)
+			} catch (terminationError) {
+				console.error(terminationError)
+			} finally {
+				pool = undefined
+			}
+		}
 		return tiktoken(content)
 	}
 }

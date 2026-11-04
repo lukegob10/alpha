@@ -19,6 +19,7 @@ export type {
 export {
 	AgentLifecycleJournal,
 	AgentLifecycleRecoveryError,
+	isAgentLifecycleToolResultOutputTruncated,
 	redactAgentLifecycleEvent,
 	readAgentLifecycleEvents,
 	readAgentLifecycleSnapshot,

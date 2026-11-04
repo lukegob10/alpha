@@ -24,6 +24,7 @@ import { t } from "../../i18n"
 import { readSkillInvocationPolicy } from "./skillPolicy"
 import { SkillSelectionError } from "./SkillSelectionError"
 import { updateSkillModesInDocument } from "./skillMutation"
+import { parseImportedSkillDocument } from "./skillDocument"
 
 // Re-export for convenience
 export type { SkillMetadata, SkillContent, SkillSource }
@@ -212,7 +213,15 @@ export class SkillsManager {
 						}
 						visited.add(identity)
 					}
-					await this.loadSkillMetadata(entryPath, source, discovered, discoveredByPath, mode, entryName)
+					await this.loadSkillMetadata(
+						entryPath,
+						source,
+						discovered,
+						discoveredByPath,
+						mode,
+						entryName,
+						recursive,
+					)
 					if (recursive && depth + 2 < MAX_PORTABLE_SKILL_DEPTH) {
 						queue.push({ directory: entryPath, depth: depth + 1 })
 					}
@@ -237,6 +246,7 @@ export class SkillsManager {
 		discoveredByPath: Map<string, SkillMetadata>,
 		mode?: string,
 		skillName?: string,
+		portableImport = false,
 	): Promise<void> {
 		const skillMdPath = path.join(skillDir, "SKILL.md")
 		if (!(await fileExists(skillMdPath))) return
@@ -245,10 +255,10 @@ export class SkillsManager {
 			const fileContent = await fs.readFile(skillMdPath, "utf-8")
 
 			// Use gray-matter to parse frontmatter
-			const { data: frontmatter, content: body } = matter(fileContent)
+			const { data: frontmatter } = parseImportedSkillDocument(fileContent)
 
 			// Validate required fields (only name and description for now)
-			if (!frontmatter.name || typeof frontmatter.name !== "string") {
+			if (!portableImport && (!frontmatter.name || typeof frontmatter.name !== "string")) {
 				console.error(`Skill at ${skillDir} is missing required 'name' field`)
 				return
 			}
@@ -256,18 +266,27 @@ export class SkillsManager {
 				console.error(`Skill at ${skillDir} is missing required 'description' field`)
 				return
 			}
+			if (portableImport && frontmatter.name != null && typeof frontmatter.name !== "string") return
 
 			// Validate that frontmatter name matches the skill name (directory name or symlink name)
 			// Per the Agent Skills spec: "name field must match the parent directory name"
-			const effectiveSkillName = skillName || path.basename(skillDir)
-			if (frontmatter.name !== effectiveSkillName) {
+			const directoryName = skillName || path.basename(skillDir)
+			// Imported portable packages follow Codex's discovery compatibility; authoring stays strict.
+			const effectiveSkillName = portableImport
+				? (typeof frontmatter.name === "string" ? frontmatter.name.trim().replace(/\s+/g, " ") : "") ||
+					directoryName
+				: directoryName
+			// Skill labels must never become traversal or absolute-path inputs to legacy settings actions.
+			if (portableImport && (/[\\/:\0]/.test(effectiveSkillName) || [".", ".."].includes(effectiveSkillName)))
+				return
+			if (!portableImport && frontmatter.name !== effectiveSkillName) {
 				console.error(`Skill name "${frontmatter.name}" doesn't match directory "${effectiveSkillName}"`)
 				return
 			}
 
 			// Validate skill name per agentskills.io spec using shared validation
 			const nameValidation = validateSkillNameShared(effectiveSkillName)
-			if (!nameValidation.valid) {
+			if ((!portableImport && !nameValidation.valid) || effectiveSkillName.length > SKILL_NAME_MAX_LENGTH) {
 				const errorMessage = this.getSkillNameErrorMessage(effectiveSkillName, nameValidation.error!)
 				console.error(`Skill name "${effectiveSkillName}" is invalid: ${errorMessage}`)
 				return
@@ -276,8 +295,10 @@ export class SkillsManager {
 			// Description constraints:
 			// - 1-1024 chars
 			// - non-empty (after trimming)
-			const description = frontmatter.description.trim()
-			if (description.length < 1 || description.length > 1024) {
+			const description = portableImport
+				? frontmatter.description.trim().replace(/\s+/g, " ")
+				: frontmatter.description.trim()
+			if (description.length < 1 || (!portableImport && description.length > 1024)) {
 				console.error(
 					`Skill "${effectiveSkillName}" has an invalid description length: must be 1-1024 characters (got ${description.length})`,
 				)
@@ -491,7 +512,7 @@ export class SkillsManager {
 
 		// Read skill content from disk
 		const fileContent = await fs.readFile(skill.path, "utf-8")
-		const { content: body } = matter(fileContent)
+		const { content: body } = parseImportedSkillDocument(fileContent)
 
 		return {
 			...skill,
@@ -566,7 +587,7 @@ export class SkillsManager {
 		if (!skill || skill.name !== name) return null
 
 		const fileContent = await fs.readFile(skill.path, "utf-8")
-		const { content: body } = matter(fileContent)
+		const { content: body } = parseImportedSkillDocument(fileContent)
 		return { ...skill, instructions: body.trim() }
 	}
 
@@ -812,6 +833,9 @@ Add your skill instructions here.
 		const sourceDirName = currentMode ? `skills-${currentMode}` : "skills"
 		const destDirName = newMode ? `skills-${newMode}` : "skills"
 		const sourceDir = path.join(baseDir, sourceDirName, name)
+		if (this.normalizeSkillPath(sourceDir) !== this.normalizeSkillPath(path.dirname(skill.path))) {
+			throw new Error(t("skills:errors.move_requires_exact_location"))
+		}
 		const destSkillsDir = path.join(baseDir, destDirName)
 		const destDir = path.join(destSkillsDir, name)
 		const destSkillMdPath = path.join(destDir, "SKILL.md")

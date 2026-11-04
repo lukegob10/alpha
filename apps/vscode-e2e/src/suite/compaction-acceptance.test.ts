@@ -428,7 +428,7 @@ suite("Alpha native compaction acceptance", function () {
 
 	for (const automatic of [true, false]) {
 		test(`settles a full 200k Copilot window and accepts another prompt (automatic summary=${automatic})`, async () => {
-			assert.equal(vscode.version, "1.138.0")
+			assert.equal(vscode.version, "1.141.0")
 			assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 			const api = globalThis.api
 			const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -477,12 +477,40 @@ suite("Alpha native compaction acceptance", function () {
 					assert.equal(task.isTaskLoopActive, false)
 				}
 				const summaries = model.requests.filter(({ summary }) => summary)
-				assert.equal(summaries.length, automatic ? 1 : 0)
-				if (automatic) assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
+				// Budget-aware complete-step pruning reaches a fitting suffix in one retry;
+				// the previous one-step-at-a-time path needed two.
+				assert.equal(
+					summaries.length,
+					automatic ? 2 : 0,
+					"Budget-aware overflow recovery must finish after one reduced-input retry",
+				)
+				assert.ok(summaries.length <= 3, "Overflow recovery permits at most two reduced-input retries")
+				assert.equal(
+					model.requests.filter(({ summary }) => !summary).length,
+					5,
+					"Each completed turn must use one normal model request without hidden retries",
+				)
+				if (automatic) {
+					assert.ok(summaries[0]!.rejected, "The full window must also reject the summary input")
+					assert.ok(summaries[1]!.tokens < summaries[0]!.tokens, "The first retry must shrink summary input")
+					assert.equal(summaries[1]!.rejected, false, "The reduced summary must fit the provider window")
+					assert.ok(
+						summaries[1]!.tokens <= 200_000,
+						"The reduced summary must fit the exact 200k input limit",
+					)
+				}
 				const task = provider.getLiveTask(taskId)!
-				assert.ok(task.alphaMessages.some(({ say }) => say === "sliding_window_truncation"))
+				assert.equal(
+					task.alphaMessages.some(({ say }) => say === "sliding_window_truncation"),
+					!automatic,
+				)
+				assert.ok(!task.alphaMessages.some(({ say }) => say === "condense_context_error"))
 				assert.ok(!task.alphaMessages.some(({ ask }) => ask === "api_req_failed" || ask === "resume_task"))
 				const persisted = (await provider.getTaskWithId(taskId)).apiConversationHistory
+				assert.equal(
+					persisted.some((message) => message.isSummary),
+					automatic,
+				)
 				assert.equal(
 					persisted.filter(
 						(message) =>
@@ -505,7 +533,7 @@ suite("Alpha native compaction acceptance", function () {
 	}
 
 	test("makes irreducible 200k overflow resumable and can start a healthy task", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -572,7 +600,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("recovers a long completed-thread follow-up in ask mode and accepts the next prompt", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const api = globalThis.api
 		const provider = (api as unknown as { sidebarProvider?: CompactionHost }).sidebarProvider
@@ -684,7 +712,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("compacts after a turn, reloads the archive, and sends reduced context on follow-up", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)
@@ -835,7 +863,7 @@ suite("Alpha native compaction acceptance", function () {
 	})
 
 	test("recovers an overflowed tool continuation before delivering queued steering", async () => {
-		assert.equal(vscode.version, "1.138.0")
+		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
 		const workspace = process.env.ALPHA_E2E_WORKSPACE
 		assert.ok(workspace)

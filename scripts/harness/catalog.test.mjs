@@ -1,10 +1,59 @@
 import assert from "node:assert/strict"
+import { execFileSync } from "node:child_process"
 import { test } from "node:test"
 import { readFileSync } from "node:fs"
 import { glob } from "node:fs/promises"
+import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
 import { expectedTestFiles } from "./lane-evidence.mjs"
+import { releaseValidationPlatforms } from "./release-evidence.mjs"
+
+test(
+	"canonical bundle prepares one cached webview build without duplicate host preparation",
+	{ timeout: 25_000 },
+	() => {
+		const root = fileURLToPath(new URL("../../", import.meta.url))
+		const require = createRequire(import.meta.url)
+		const manifest = (file) => JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"))
+		assert.match(manifest("package.json").scripts.bundle, /^turbo bundle --filter=\.\/src(?:\s|$)/u)
+		const graph = JSON.parse(
+			execFileSync(
+				process.execPath,
+				[require.resolve("turbo/bin/turbo"), "run", "bundle", "--filter=./src", "--dry=json"],
+				{
+					cwd: root,
+					encoding: "utf8",
+					timeout: 20_000,
+					maxBuffer: 4 * 1024 * 1024,
+					windowsHide: true,
+					env: { ...process.env, TURBO_TELEMETRY_DISABLED: "1", DO_NOT_TRACK: "1" },
+				},
+			),
+		)
+		const webview = manifest("webview-ui/package.json")
+		const webviewTasks = graph.tasks.filter((task) => task.taskId === `${webview.name}#build`)
+		assert.equal(webviewTasks.length, 1, "The actual Turbo graph must build the webview exactly once")
+		assert.equal(webviewTasks[0].command, webview.scripts.build)
+		assert.deepEqual(webviewTasks[0].outputs, ["../src/webview-ui/build/**"])
+		const bundle = graph.tasks.find((task) => task.taskId === `${manifest("src/package.json").name}#bundle`)
+		assert.ok(bundle?.dependencies.includes(webviewTasks[0].taskId), "Bundle must await its cached webview output")
+		const redundantBuild = "pnpm --filter @alpha-code/vscode-webview build"
+		for (const [name, command] of Object.entries(manifest("apps/vscode-e2e/package.json").scripts)) {
+			const steps = command.split(" && ")
+			if (steps[0] === "pnpm -w bundle")
+				assert.notEqual(steps[1], redundantBuild, `${name} must use the bundle's prepared webview`)
+		}
+		for (const [name, lane] of Object.entries(lanes)) {
+			if (lane.commands[0]?.[0] === "bundle")
+				assert.notDeepEqual(
+					lane.commands[1],
+					["--filter", webview.name, "build"],
+					`${name} repeats webview preparation`,
+				)
+		}
+	},
+)
 
 test("tooling execution includes every Node test in its script owners", async () => {
 	const root = fileURLToPath(new URL("../../", import.meta.url))
@@ -19,7 +68,7 @@ test("tooling execution includes every Node test in its script owners", async ()
 	assert.deepEqual(observed, expected.sort())
 })
 
-test("the VS Code 1.125 minimum is independent from the exact 1.138 reference host", () => {
+test("the VS Code 1.125 minimum is independent from the exact 1.141 reference host", () => {
 	const manifest = (file) => JSON.parse(readFileSync(new URL(`../../${file}`, import.meta.url), "utf8"))
 	const extension = manifest("src/package.json")
 	const runner = manifest("apps/vscode-e2e/package.json")
@@ -27,17 +76,18 @@ test("the VS Code 1.125 minimum is independent from the exact 1.138 reference ho
 	assert.equal(extension.engines.vscode, "^1.125.0")
 	assert.equal(extension.devDependencies["@types/vscode"], "1.125.0")
 	assert.equal(fixture.engines.vscode, "^1.125.0")
-	assert.equal(runner.devDependencies["@types/vscode"], "1.138.0")
+	// The registry skips 1.141.0; use the newest published declarations below the reference host.
+	assert.equal(runner.devDependencies["@types/vscode"], "1.140.0")
 	for (const name of [
 		"test:compatibility:1250",
 		"test:compatibility:1250:run",
-		"test:smoke:1380",
-		"test:smoke:1380:run",
+		"test:smoke:1410",
+		"test:smoke:1410:run",
 	]) {
 		assert.ok(runner.scripts[name], `${name} must remain available`)
 	}
 	for (const [name, command] of Object.entries(runner.scripts)) {
-		const expectedVersion = name.includes(":1380") ? "1.138.0" : name.includes(":1250") ? "1.125.0" : undefined
+		const expectedVersion = name.includes(":1410") ? "1.141.0" : name.includes(":1250") ? "1.125.0" : undefined
 		if (!expectedVersion) continue
 		for (const [, version] of command.matchAll(/--vscode-version (\S+)/g)) {
 			assert.equal(version, expectedVersion, `${name} selected a different host`)
@@ -48,6 +98,14 @@ test("the VS Code 1.125 minimum is independent from the exact 1.138 reference ho
 test("every lane delegates to an existing package command", () => {
 	for (const lane of Object.values(lanes)) {
 		for (const args of lane.commands) {
+			if (args[0] === "exec") {
+				assert.equal(args[1], "node")
+				assert.ok(
+					["scripts/harness/audit-benchmarks.mjs", "scripts/verify-vsix-contents.mjs"].includes(args[2]),
+				)
+				assert.ok(readFileSync(new URL(`../../${args[2]}`, import.meta.url)).length)
+				continue
+			}
 			const packagePath =
 				args[0] === "--dir"
 					? `${args[1]}/package.json`
@@ -75,6 +133,42 @@ test("focused selection preserves argument boundaries and requires explicit test
 	assert.throws(() => selectLane("host", [path]), /does not accept/)
 	assert.throws(() => selectLane("constructor"), /Unknown lane/)
 })
+
+test("required stopping contracts execute the shared loop and reproduced regressions", async () => {
+	assert.ok(lanes.turns, "Stopping contracts must have their own required gate")
+	assert.equal(lanes.turns.decisions, "scripted")
+	assert.equal(lanes.turns.receipts.at(-1).requireAllTests, true)
+	const args = lanes.turns.commands.at(-1)
+	for (const owner of [
+		"core/agent/__tests__/AgentTurnEngine.spec.ts",
+		"core/agent/__tests__/AgentRetryPolicy.spec.ts",
+		"core/task/__tests__/completionDiagnostics.spec.ts",
+		"core/task/__tests__/Task.completion-obligations.spec.ts",
+		"core/task/__tests__/Task.spec.ts",
+		"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
+		"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
+		"core/condense/__tests__/index.spec.ts",
+	])
+		assert.ok(args.includes(owner), `Stopping gate must retain ${owner}`)
+	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
+		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
+		if (file === "code-qa.yml") {
+			assert.match(workflow, /run: pnpm harness run turns/, `${file} must execute stopping contracts`)
+			assert.match(workflow, /--require turns/, `${file} must require current stopping evidence`)
+		} else {
+			assert.equal(releaseValidationPlatforms.turns, "win32")
+			assert.match(workflow, /lane: turns, os: windows-latest/u)
+			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
+			assert.match(workflow, /pnpm release:evidence aggregate/u)
+		}
+	}
+	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	assert.match(
+		release,
+		/verify-vsix-contents\.mjs[^\n]+--require-clean-build/,
+		"Release artifacts need clean source proof",
+	)
+})
 test("offline selection cannot start services or provider campaigns", () => {
 	assert.deepEqual(selectLane("offline").commands, [
 		["--filter", "@alpha-code/types", "build"],
@@ -100,8 +194,8 @@ test("hard offline and host lanes require explicit execution receipts", () => {
 	assert.ok(lanes.unit.receipts.some((receipt) => receipt?.packageDir === "packages/telemetry"))
 	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.host.receipts[0].runner, "extension-host")
-	assert.equal(lanes.outcomes.receipts[2].runner, "task-outcomes")
-	assert.ok(lanes.outcomes.commands[2].includes("scripted"))
+	assert.equal(lanes.outcomes.receipts[1].runner, "task-outcomes")
+	assert.ok(lanes.outcomes.commands[1].includes("scripted"))
 	assert.deepEqual(
 		lanes.services.receipts.slice(2).map(({ config }) => config),
 		["integration", "services"],
@@ -146,17 +240,26 @@ test("every evaluator test belongs to exactly one executable suite", async () =>
 
 test("minimum-host compatibility and extended reference-host coverage are mandatory in QA and release", async () => {
 	assert.equal(lanes.extended.exclusiveBuild, true)
-	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1380"]])
+	assert.deepEqual(lanes.extended.commands, [["--filter", "@alpha-code/vscode-e2e", "test:extended:1410"]])
 	assert.deepEqual(lanes.extended.receipts, [{ runner: "extension-host", suite: "extended" }])
 	for (const file of ["code-qa.yml", "release-vsix.yml"]) {
 		const workflow = readFileSync(new URL(`../../.github/workflows/${file}`, import.meta.url), "utf8")
-		assert.match(
-			workflow,
-			/run: pnpm --filter @alpha-code\/vscode-e2e test:compatibility:1250:run/,
-			`${file} must execute the separate minimum-host compatibility gate`,
-		)
-		assert.match(workflow, /run: pnpm harness run extended/, `${file} must execute the extended host lane`)
-		assert.match(workflow, /--require extended/, `${file} must reject missing extended execution evidence`)
+		if (file === "code-qa.yml") {
+			assert.match(workflow, /run: pnpm --filter @alpha-code\/vscode-e2e test:compatibility:1250:run/)
+			assert.match(workflow, /run: pnpm harness run extended/)
+			assert.match(workflow, /--require extended/)
+		} else {
+			for (const lane of ["minimum", "extended"]) {
+				assert.equal(releaseValidationPlatforms[lane], "win32")
+				assert.match(workflow, new RegExp(`lane: ${lane}, os: windows-latest`, "u"))
+			}
+			assert.deepEqual(lanes.minimum.commands, [
+				["--filter", "@alpha-code/vscode-e2e", "test:compatibility:1250"],
+			])
+			assert.deepEqual(lanes.minimum.receipts, [{ runner: "extension-host", suite: "minimum" }])
+			assert.match(workflow, /run: pnpm harness run "\$\{\{ matrix.lane \}\}"/u)
+			assert.match(workflow, /pnpm release:evidence aggregate/u)
+		}
 	}
 })
 
@@ -164,8 +267,11 @@ test("platform unit and tooling checks retain Windows, Linux and macOS execution
 	const workflow = readFileSync(new URL("../../.github/workflows/code-qa.yml", import.meta.url), "utf8")
 	const platformJob = workflow.split("    unit-test:")[1]?.split("    offline-evaluator:")[0]
 	assert.ok(platformJob)
-	for (const platform of ["ubuntu-latest", "windows-latest", "macos-latest"])
+	for (const platform of ["ubuntu-latest", "windows-latest", "macos-15"])
 		assert.ok(platformJob.includes(`os: ${platform}`), `Platform regressions must run on ${platform}`)
+	assert.match(platformJob, /os: macos-15\s+name: macos-latest/u, "Keep the protected macOS check name stable")
+	const release = readFileSync(new URL("../../.github/workflows/release-vsix.yml", import.meta.url), "utf8")
+	assert.match(release, /os: macos-15\s+target: darwin-arm64/u, "Use the matching native release host")
 	assert.match(platformJob, /run: pnpm harness run unit/)
 	assert.match(platformJob, /run: pnpm harness run tooling/)
 })

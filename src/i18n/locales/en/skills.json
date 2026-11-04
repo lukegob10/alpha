@@ -22,6 +22,11 @@
 		"catalog_invalid_cursor": "Invalid or stale skill catalog cursor. Restart with action \"list\" and no cursor.",
 		"catalog_output_budget": "Skill catalog output budget leaves no room for its pagination envelope.",
 		"catalog_more_available": "More skills are available through skill action \"list\".",
+		"instruction_invalid_cursor": "Invalid, expired, or changed skill instruction cursor. Restart action \"load\" without a cursor.",
+		"instruction_output_budget": "Skill instruction output budget leaves no room for a complete pagination envelope and instruction content.",
+		"instruction_size_limit": "Skill instructions exceed the supported limit of 524288 formatted characters. Split the skill into focused references.",
+		"move_requires_exact_location": "This imported skill cannot be moved through the legacy directory layout. Update its mode associations instead.",
+		"yaml_frontmatter_only": "Skills support plain YAML frontmatter only. Executable or alternate frontmatter languages are not allowed.",
 		"unsupported_action": "Unknown skill action: {{action}}"
 	}
 }

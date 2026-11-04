@@ -21,7 +21,7 @@ describe("high-value benchmark subset", () => {
 			historyBasis: "mixed",
 			measurementRunIds: [12],
 		})
-		expect(active).toMatchObject({ suiteIdentity: "frontier-v1@6", historyBasis: "mixed", measurementRunIds: [12] })
+		expect(active).toMatchObject({ suiteIdentity: "frontier-v1@7", historyBasis: "mixed", measurementRunIds: [12] })
 		expect(active.requiredCoverage).toEqual(historical.requiredCoverage)
 		expect(active.hardCapUsd).toBe(historical.hardCapUsd)
 		expect(active.taskReservationUsd).toBe(historical.taskReservationUsd)

@@ -38,7 +38,7 @@ test("local, extension, CI and evaluator toolchain pins agree", () => {
 	assert.equal(runnerArg("NPM_VERSION"), engines.npm)
 	assert.equal(runnerArg("PNPM_VERSION"), requiredVersion)
 	// Evaluations use the reference host independently of the extension's installation minimum.
-	assert.equal(runnerArg("VSCODE_VERSION"), "1.138.0")
+	assert.equal(runnerArg("VSCODE_VERSION"), "1.141.0")
 	for (const workspace of [
 		"src",
 		"webview-ui",

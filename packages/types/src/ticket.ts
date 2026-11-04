@@ -69,6 +69,18 @@ export const createTicketSchema = ticketFieldsSchema
 	.extend({ parentId: ticketIdSchema.optional() })
 	.strict()
 export const deleteTicketSchema = z.object({ id: ticketLocatorSchema, expectedRevision: z.string().min(1) }).strict()
+export const deleteTicketsSchema = z
+	.object({
+		tickets: z
+			.array(deleteTicketSchema.extend({ id: ticketIdSchema }))
+			.min(1)
+			.max(1000)
+			.refine(
+				(tickets) => new Set(tickets.map((ticket) => ticket.id.toLowerCase())).size === tickets.length,
+				"Each ticket must appear only once in a deletion batch",
+			),
+	})
+	.strict()
 export const updateTicketSchema = ticketFieldsSchema
 	.partial()
 	.extend({
@@ -91,6 +103,7 @@ export type Ticket = z.infer<typeof ticketSchema>
 export type TicketFields = z.infer<typeof ticketFieldsSchema>
 export type CreateTicket = z.infer<typeof createTicketSchema>
 export type DeleteTicket = z.infer<typeof deleteTicketSchema>
+export type DeleteTickets = z.infer<typeof deleteTicketsSchema>
 export type UpdateTicket = z.infer<typeof updateTicketSchema>
 export type TicketStatus = z.infer<typeof ticketStatusSchema>
 export type TicketType = z.infer<typeof ticketTypeSchema>
@@ -174,6 +187,100 @@ export interface TicketList {
 	invalidFiles: string[]
 }
 
+export const ticketOverviewSchema = z
+	.object({
+		total: z.number().int().nonnegative(),
+		complete: z.number().int().nonnegative(),
+		inProgress: z.number().int().nonnegative(),
+		backlog: z.number().int().nonnegative(),
+		canceled: z.number().int().nonnegative(),
+		points: z
+			.array(
+				z.object({
+					date: z
+						.string()
+						.regex(/^\d{4}-\d{2}-\d{2}$/)
+						.refine(
+							(value) =>
+								!Number.isNaN(Date.parse(value)) &&
+								new Date(value).toISOString().slice(0, 10) === value,
+						),
+					total: z.number().int().nonnegative(),
+					complete: z.number().int().nonnegative(),
+				}),
+			)
+			.max(3660),
+		invalidFiles: z.array(z.string()).max(100),
+		historyStartedAt: z.string().datetime().optional(),
+	})
+	.refine(
+		(overview) =>
+			overview.total === overview.complete + overview.inProgress + overview.backlog &&
+			overview.points.every(
+				(point, index) =>
+					point.complete <= point.total && (index === 0 || point.date > overview.points[index - 1]!.date),
+			),
+	)
+export type TicketOverview = z.infer<typeof ticketOverviewSchema>
+
+export const ticketExportInputSchema = z
+	.object({
+		ids: z.array(ticketIdSchema).min(1).max(1000).optional(),
+		filter: listTicketsSchema.optional(),
+		includeDescendants: z.boolean().default(true),
+	})
+	.strict()
+	.refine((value) => !(value.ids && value.filter), "Choose selected tickets or a filter, not both")
+export type TicketExportInput = z.input<typeof ticketExportInputSchema>
+export type TicketTransferEntry = { path: string; markdown: string; status: TicketStatus }
+
+export const ticketImportPreviewItemSchema = z.object({
+	id: ticketIdSchema,
+	reference: ticketReferenceSchema.optional(),
+	name: ticketFieldsSchema.shape.name,
+	status: ticketStatusSchema,
+	disposition: z.enum(["new", "duplicate", "conflict"]),
+	changes: z
+		.array(
+			z.object({
+				field: z.enum([
+					"name",
+					"type",
+					"priority",
+					"description",
+					"context",
+					"successCriteria",
+					"implementationSummary",
+					"status",
+					"parentId",
+				]),
+				before: z.string().max(2000),
+				after: z.string().max(2000),
+			}),
+		)
+		.max(9)
+		.optional(),
+})
+export type TicketImportPreviewItem = z.infer<typeof ticketImportPreviewItemSchema>
+export const ticketImportPreviewSchema = z.object({
+	kind: z.literal("importPreview"),
+	token: z.string().uuid(),
+	tickets: z.array(ticketImportPreviewItemSchema).min(1).max(1000),
+	warnings: z.array(z.string().max(1000)).max(1000),
+})
+export type TicketImportPreview = z.infer<typeof ticketImportPreviewSchema>
+export const ticketTransferResultSchema = z.discriminatedUnion("kind", [
+	ticketImportPreviewSchema,
+	z.object({ kind: z.literal("cancelled") }),
+	z.object({ kind: z.literal("exported"), count: z.number().int().nonnegative(), fileName: z.string() }),
+	z.object({
+		kind: z.literal("imported"),
+		imported: z.number().int().nonnegative(),
+		skipped: z.number().int().nonnegative(),
+	}),
+])
+export type TicketTransferResult = z.infer<typeof ticketTransferResultSchema>
+
 export const ticketRequestSchema = z
 	.object({
 		type: z.literal("ticketRequest"),
@@ -181,6 +288,16 @@ export const ticketRequestSchema = z
 		project: z.string().max(200),
 		operation: z.discriminatedUnion("action", [
 			z.object({ action: z.literal("list"), input: listTicketsSchema }),
+			z.object({ action: z.literal("overview") }),
+			z.object({ action: z.literal("export"), input: ticketExportInputSchema }),
+			z.object({ action: z.literal("previewImport") }),
+			z.object({
+				action: z.literal("import"),
+				token: z.string().uuid(),
+				mode: z.enum(["copy", "update"]),
+				resetStatus: z.boolean(),
+			}),
+			z.object({ action: z.literal("discardImport"), token: z.string().uuid() }),
 			z.object({ action: z.literal("read"), id: ticketIdSchema }),
 			z.object({ action: z.literal("create"), input: createTicketSchema }),
 			z.object({ action: z.literal("update"), input: updateTicketSchema }),
@@ -201,4 +318,9 @@ export type TicketResponse =
 	| { type: "ticketOpen"; target: TicketTarget }
 	| { type: "ticketProjects"; projects: { id: string; name: string }[]; language: string; error?: string }
 	| { type: "ticketChanged"; project: string }
-	| { type: "ticketResponse"; requestId: string; result?: Ticket | TicketList | TicketRelations; error?: string }
+	| {
+			type: "ticketResponse"
+			requestId: string
+			result?: Ticket | TicketList | TicketRelations | TicketOverview | TicketTransferResult
+			error?: string
+	  }

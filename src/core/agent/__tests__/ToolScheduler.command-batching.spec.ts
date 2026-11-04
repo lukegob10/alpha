@@ -141,6 +141,45 @@ describe("approved command batches", () => {
 		expect(outcome.results.map(({ callId }) => callId)).toEqual(test.calls.map(({ id }) => id))
 	})
 
+	it("measures twelve unequal-duration inspections with four bounded workers", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 12, "read", (id) => (id === "command-0" ? 1_000 : 100))
+		const started = Date.now()
+		const pending = test.scheduler.run(test.calls)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		const elapsed = Date.now() - started
+		console.info(JSON.stringify({ commands: 12, elapsedMs: elapsed, peakProcesses: test.peak() }))
+		// The same fixture took 1,200 ms with fixed four-call windows.
+		expect(elapsed).toBe(1_000)
+		expect(test.peak()).toBe(4)
+		expect(test.host.askApproval).toHaveBeenCalledTimes(12)
+		expect(test.active()).toBe(0)
+		expect(outcome.results.map(({ callId }) => callId)).toEqual(test.calls.map(({ id }) => id))
+	})
+
+	it("bounds the preapproved queue while replenishing workers behind a slow read", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 35, "read", (id) => (id === "command-0" ? 1_000 : 100))
+		const pending = test.scheduler.run(test.calls)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(test.host.askApproval).toHaveBeenCalledTimes(16)
+		expect(test.active()).toBe(4)
+		await vi.advanceTimersByTimeAsync(100)
+		expect(test.trace).toContain("start:command-4")
+		expect(test.trace).not.toContain("end:command-0")
+		expect(test.host.askApproval).toHaveBeenCalledTimes(16)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		expect(test.peak()).toBe(4)
+		expect(test.active()).toBe(0)
+		expect(outcome.parallelBatchCount).toBe(3)
+		expect(outcome.results.map(({ callId }) => callId)).toEqual(test.calls.map(({ id }) => id))
+		expect(test.trace.filter((entry) => entry.startsWith("publish:"))).toEqual(
+			test.calls.map(({ id }) => `publish:${id}`),
+		)
+	})
+
 	it("joins active processes on cancellation and closes queued calls without starting them", async () => {
 		vi.useFakeTimers()
 		const test = fixture("selective-parallel")

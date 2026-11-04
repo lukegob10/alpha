@@ -107,6 +107,33 @@ describe("CodeAccordion", () => {
 		},
 	)
 
+	it("uses a single action row for editor diffs even when previously expanded", async () => {
+		const user = userEvent.setup()
+		const onOpenDiff = vi.fn()
+		const onToggleExpand = vi.fn()
+		const { container } = render(
+			<CodeAccordion
+				path="src/example.ts"
+				code="saved patch"
+				language="diff"
+				isExpanded
+				onToggleExpand={onToggleExpand}
+				onOpenDiff={onOpenDiff}
+				onJumpToFile={vi.fn()}
+			/>,
+		)
+		const row = screen.getByRole("button", { name: /src\/example.ts/ })
+		expect(screen.getAllByRole("button")).toHaveLength(1)
+		expect(row).not.toHaveAttribute("aria-expanded")
+		expect(row).not.toHaveAttribute("aria-controls")
+		expect(screen.queryByText("saved patch")).not.toBeInTheDocument()
+		expect(container.querySelector(".codicon-chevron-up, .codicon-link-external")).toBeNull()
+		await user.tab()
+		await user.keyboard("{Enter}")
+		expect(onOpenDiff).toHaveBeenCalledTimes(1)
+		expect(onToggleExpand).not.toHaveBeenCalled()
+	})
+
 	it("keeps disclosure targets distinct and mounted while collapsed", () => {
 		render(
 			<>

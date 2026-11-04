@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert"
 import { test } from "node:test"
 
-import { guardTaskApi, guardVsCodeLmHandler, WorkflowRequestBudget } from "./requestBudget"
+import { guardTaskApi, guardVsCodeLmHandler, guardProviderDispatch, WorkflowRequestBudget } from "./requestBudget"
 
 test("live effort is verified on outgoing options before an actual request is counted or sent", async () => {
 	let sends = 0
@@ -30,6 +30,71 @@ test("live effort is verified on outgoing options before an actual request is co
 		)
 		assert.equal(budget.model.reasoningEffort, "high")
 		assert.equal(budget.used, 1)
+	} finally {
+		restore()
+	}
+})
+
+test("generic real adapters retain stream ordering and close on consumer cancellation", async () => {
+	let closed = 0
+	let dispatched = 0
+	const handler = {
+		getModel: () => ({ id: "chosen-model" }),
+		async *createMessage() {
+			dispatched++
+			try {
+				yield "first"
+				yield "second"
+			} finally {
+				closed++
+			}
+		},
+	}
+	const original = handler.createMessage
+	const budget = new WorkflowRequestBudget(1, "chosen-model")
+	const restore = guardProviderDispatch(handler, budget)
+	for await (const chunk of handler.createMessage()) {
+		assert.equal(chunk, "first")
+		break
+	}
+	assert.equal(closed, 1)
+	assert.equal(dispatched, 1)
+	assert.equal(budget.used, 1)
+	await assert.rejects(async () => {
+		for await (const _ of handler.createMessage()) {
+			/* consume */
+		}
+	}, /request_limit_reached/)
+	assert.equal(dispatched, 1)
+	restore()
+	assert.equal(handler.createMessage, original)
+})
+
+test("generic handler replacement cannot silently change the declared model", async () => {
+	const make = (id: string) => ({
+		getModel: () => ({ id }),
+		async *createMessage() {
+			yield "value"
+		},
+	})
+	const task = { api: make("chosen"), createReasoningSummaryHandler: () => make("chosen") }
+	const budget = new WorkflowRequestBudget(5, "chosen")
+	const restore = guardTaskApi(task, budget, "generic")
+	try {
+		for await (const _ of task.api.createMessage()) {
+			/* consume */
+		}
+		for await (const _ of task.createReasoningSummaryHandler().createMessage()) {
+			/* consume */
+		}
+		assert.deepEqual(budget.usedByPurpose, { task: 1, "reasoning-summary": 1 })
+		task.api = make("fallback")
+		await assert.rejects(async () => {
+			for await (const _ of task.api.createMessage()) {
+				/* consume */
+			}
+		}, /actual_model_mismatch/)
+		assert.equal(budget.used, 2)
 	} finally {
 		restore()
 	}

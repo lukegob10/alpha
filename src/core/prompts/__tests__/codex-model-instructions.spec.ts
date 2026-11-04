@@ -17,6 +17,7 @@ import {
 
 const codexModelIds = [
 	["gpt-6.1-sol", "gpt-6.1-sol"],
+	["gpt-6.1-terra", "gpt-6.1-terra"],
 	["gpt-6-astra", "gpt-6-astra"],
 	["gpt-6-sol", "gpt-6-sol"],
 	["gpt-6-luna", "gpt-6-luna"],
@@ -31,6 +32,7 @@ const codexModelIds = [
 
 const pinnedSourceSha256 = {
 	"gpt-6.1-sol": "e1bdd4f8f0df4b20f4a0ffc8a861ce819df45325d8cecdfb92e80379cf8d142e",
+	"gpt-6.1-terra": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a",
 	"gpt-6-astra": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a",
 	"gpt-6-sol": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d",
 	"gpt-6-luna": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12",
@@ -42,6 +44,18 @@ const pinnedSourceSha256 = {
 } as const
 
 describe("pinned Codex model instructions", () => {
+	it("reuses the retained Astra template for the byte-identical GPT-6.1 Terra catalog entry", () => {
+		const result = resolveCodexModelPrompt("vscode-lm:gpt-6.1-terra")
+
+		expect(result).toMatchObject({
+			matchedModelId: "vscode-lm:gpt-6.1-terra",
+			promptSlug: "gpt-6.1-terra",
+			isFallback: false,
+		})
+		expect(result.instructions).toBe(CODEX_MODEL_INSTRUCTIONS["gpt-6-astra"])
+		expect(resolveCodexModelPrompt("  GPT-6.1-TERRA  ").promptSlug).toBe("gpt-6.1-terra")
+	})
+
 	it("recognizes GPT-6.1 Sol without selecting the unsupported-model fallback", () => {
 		const result = resolveCodexModelPrompt("copilot/gpt-6.1-sol")
 
@@ -91,6 +105,8 @@ describe("pinned Codex model instructions", () => {
 		"gemini-2.5-pro",
 		"gpt-5.3-codex",
 		"custom-gpt-5.6-sol-wrapper",
+		"gpt-6.1-terra-preview",
+		"fakegpt-6.1-terra",
 		"constructor",
 	])("uses the pinned GPT-6 Sol fallback for unsupported id %s", (modelId) => {
 		const result = resolveCodexModelPrompt(modelId)

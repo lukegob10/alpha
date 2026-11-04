@@ -231,6 +231,8 @@ export const subagentContextRuntimePolicySchema = z
 		role: subagentRoleSchema,
 		/** Omission retains historical role ceilings. New agents inherit parent authority. */
 		authorityModel: z.literal("parent").optional(),
+		/** Omission preserves isolated-worker recovery for historical manifests. */
+		sharedWorkspace: z.boolean().optional(),
 		mode: z.enum(["code", "architect"]).optional(),
 		read: z.boolean(),
 		execute: z.boolean(),

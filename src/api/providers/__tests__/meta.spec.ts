@@ -114,7 +114,6 @@ describe("native Meta Responses provider", () => {
 			openAiUseAzure: true,
 			openAiR1FormatEnabled: true,
 			openAiStreamingEnabled: false,
-			taskReasoningCustomEffort: "unverified-effort",
 			verbosity: "high" as const,
 		}
 		const before = structuredClone(options)
@@ -249,9 +248,17 @@ describe("native Meta Responses provider", () => {
 				id: "msg_meta",
 				role: "assistant",
 				phase: "commentary",
+				status: "completed",
 				content: [{ type: "output_text", text: "I will inspect the file.", annotations: [] }],
 			},
-			{ type: "function_call", call_id: "call_meta", name: "read_file", arguments: '{"path":"a.ts"}' },
+			{
+				type: "function_call",
+				id: "fc_meta",
+				call_id: "call_meta",
+				name: "read_file",
+				arguments: '{"path":"a.ts"}',
+				status: "completed",
+			},
 			{ type: "function_call_output", call_id: "call_meta", output: "File contents." },
 		])
 	})
@@ -287,6 +294,7 @@ describe("native Meta Responses provider", () => {
 		expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 			{
 				type: "usage",
+				usageSource: "provider",
 				inputTokens: 100,
 				outputTokens: 40,
 				cacheReadTokens: 25,

@@ -129,6 +129,13 @@ function resultText(block: Anthropic.ToolResultBlockParam): string {
 }
 
 describe("native tool-surface refactor contract", () => {
+	it("does not restore the retired slash tool from a persisted experiment flag", () => {
+		const savedExperiments = { runSlashCommand: true, customTools: false }
+		const names = namesOf(filterNativeToolsForMode(getNativeTools(), "code", undefined, savedExperiments))
+		expect(names).not.toContain("run_slash_command")
+		expect(names).toContain("skill")
+	})
+
 	describe("phase 0: locked advertised surface", () => {
 		it("matches the exact Code catalog, including only the live browser tools", () => {
 			const liveBrowserToolNames = ["open_browser_page", "read_page", "run_playwright_code"] as const
@@ -145,7 +152,7 @@ describe("native tool-surface refactor contract", () => {
 					}),
 					"code",
 					undefined,
-					{ runSlashCommand: true },
+					undefined,
 					codeIndexManager as unknown as CodeIndexManager,
 					{
 						todoListEnabled: true,
@@ -162,6 +169,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 				"apply_patch",
 				"codebase_search",
 				"exec_command",
@@ -169,7 +177,6 @@ describe("native tool-surface refactor contract", () => {
 				"view_image",
 				"write_stdin",
 				"update_plan",
-				"run_slash_command",
 				"skill",
 				"list_provider_profiles",
 				"spawn_agent",
@@ -338,6 +345,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 			]) {
 				expect(names).not.toContain(name)
 			}
@@ -537,6 +545,7 @@ describe("native tool-surface refactor contract", () => {
 				"create_ticket",
 				"update_ticket",
 				"delete_ticket",
+				"delete_tickets",
 				"memories_add_ad_hoc_note",
 				"create_goal",
 				"update_goal",

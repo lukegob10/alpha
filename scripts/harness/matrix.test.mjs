@@ -16,10 +16,19 @@ import {
 	stressHostFiles,
 } from "./host-evidence.mjs"
 import { proofFixture } from "./fixtures/outcome-proof.mjs"
+import { benchmarkReceipt } from "./fixtures/audit.mjs"
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const source = { commit: "a".repeat(40), dirty: false, treeSha256: "a".repeat(64), lockfileSha256: "a".repeat(64) }
 const context = { source, node: "24.21.0", pnpm: "11.24.0", now: Date.parse("2026-10-02T11:00:00.000Z"), strict: true }
+
+test("benchmark receipts preserve operation bounds without promoting diagnostic timing to speed equivalence", async () => {
+	const value = report("benchmarks")
+	value.steps[1].evidence = { status: "passed", kind: "offline-benchmark", receipt: await benchmarkReceipt(root) }
+	assert.equal(admitHarnessReport(value, context).state, "executed-pass")
+	value.steps[1].evidence.receipt.workloads[1].measurements.observations[2].contentReads++
+	assert.equal(admitHarnessReport(value, context).reason, "invalid_benchmark_receipt")
+})
 function report(lane = "static", id = "report-test") {
 	return {
 		schemaVersion: 2,
@@ -127,14 +136,16 @@ test("persisted host and outcome summaries are revalidated instead of trusting a
 		build: fixture.build,
 	})
 	const outcomeContext = { ...context, outcomeBuild: fixture.build }
-	outcome.steps[2].evidence = evidence()
+	const outcomeStep = outcome.steps.at(-1)
+	assert.ok(outcomeStep)
+	outcomeStep.evidence = evidence()
 	assert.equal(admitHarnessReport(outcome, outcomeContext).state, "executed-pass")
-	outcome.steps[2].evidence.scenarios[0].state = "skipped"
+	outcomeStep.evidence.scenarios[0].state = "skipped"
 	assert.equal(admitHarnessReport(outcome, outcomeContext).reason, "tampered_outcome_projection")
-	outcome.steps[2].evidence = evidence()
-	outcome.steps[2].evidence.receipts[0].failure = "host-failed"
+	outcomeStep.evidence = evidence()
+	outcomeStep.evidence.receipts[0].failure = "host-failed"
 	assert.notEqual(admitHarnessReport(outcome, outcomeContext).state, "executed-pass")
-	outcome.steps[2].evidence.receipts[0] = fixture.receipts[0] = hostReceipt("workflow.test")
+	outcomeStep.evidence.receipts[0] = fixture.receipts[0] = hostReceipt("workflow.test")
 	assert.notEqual(admitHarnessReport(outcome, outcomeContext).state, "executed-pass")
 })
 
@@ -207,12 +218,14 @@ test("corrupt saved host and campaign members reject without crashing matrix adm
 	assert.notEqual(admitHarnessReport(host, context).state, "executed-pass")
 	const outcome = report("outcomes", "campaign-test")
 	const fixture = proofFixture(outcome.id)
-	outcome.steps[2].evidence = {
+	const outcomeStep = outcome.steps.at(-1)
+	assert.ok(outcomeStep)
+	outcomeStep.evidence = {
 		...outcomeCampaignVerdict(fixture.campaign, fixture.receipts, outcome.id),
 		proofs: fixture.proofs,
 		build: fixture.build,
 	}
-	outcome.steps[2].evidence.campaign.attempts[0] = null
+	outcomeStep.evidence.campaign.attempts[0] = null
 	assert.notEqual(admitHarnessReport(outcome, { ...context, outcomeBuild: fixture.build }).state, "executed-pass")
 })
 

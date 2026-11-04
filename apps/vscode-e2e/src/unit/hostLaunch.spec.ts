@@ -171,7 +171,7 @@ test("a startup deadline terminates its owned child and reports verified cleanup
 					launchArgs: ["-e", "setInterval(() => {}, 1000)", "--"],
 					liveHost: {
 						artifactsDir: root,
-						expected: { runId: "unknown-close", nonce: randomUUID(), actualVSCodeVersion: "1.138.0" },
+						expected: { runId: "unknown-close", nonce: randomUUID(), actualVSCodeVersion: "1.141.0" },
 					},
 				},
 				(pid) => {

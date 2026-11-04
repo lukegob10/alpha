@@ -1,3 +1,4 @@
+import { codebaseIndexConfigSchema, codebaseIndexProviderSchema } from "@alpha-code/types"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import * as path from "path"
 import * as os from "os"
@@ -13,11 +14,9 @@ import pWaitFor from "p-wait-for"
 import * as vscode from "vscode"
 
 import {
-	type Language,
 	type GlobalState,
 	type AlphaMessage,
 	type TelemetrySetting,
-	type Command as SlashCommand,
 	type WebviewMessage,
 	type EditQueuedMessagePayload,
 	type ReorderQueuedMessagePayload,
@@ -38,9 +37,9 @@ import {
 	sendAndSteerMessageSchema,
 	steerNextQueuedMessageSchema,
 	webviewFocusChangedMessageSchema,
-	cancelEnhancePromptMessageSchema,
 	subagentAgentTypesSchema,
 	globalSettingsSchema,
+	languagesSchema,
 	RETIRED_SUBAGENT_SETTING_KEYS,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
@@ -77,11 +76,9 @@ import {
 	handleUpdateSkillModes,
 	handleOpenSkillFile,
 } from "./skillsMessageHandler"
+import { getSkillCommands } from "../../services/skills/skillInvocation"
 import { changeLanguage, t } from "../../i18n"
 import { Package } from "../../shared/package"
-import { MessageEnhancer } from "./messageEnhancer"
-import { beginPromptEnhancement, cancelPromptEnhancement, cancelPromptEnhancements } from "./promptEnhancementRequests"
-import { awaitSingleCompletion } from "../../api/transform/single-completion"
 
 import { CodeIndexManager } from "../../services/code-index/manager"
 import { checkExistKey } from "../../shared/checkExistApiConfig"
@@ -109,7 +106,6 @@ import { Mode, defaultModeSlug } from "../../shared/modes"
 import { generateSystemPrompt } from "./generateSystemPrompt"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getCommand } from "../../utils/commands"
-import { MarketplaceManager, MarketplaceItemType } from "../../services/marketplace"
 import { setPendingTodoList } from "../tools/UpdateTodoListTool"
 import {
 	handleListWorktrees,
@@ -185,8 +181,11 @@ function getRequiredTaskForMessage(provider: AlphaProvider, message: WebviewMess
 export const webviewMessageHandler = async (
 	provider: AlphaProvider,
 	message: WebviewMessage,
-	marketplaceManager?: MarketplaceManager,
-	options?: { ticketSearch?: { signal: AbortSignal; cwd: string }; isCurrentWebview?: () => boolean },
+	options?: {
+		ticketSearch?: { signal: AbortSignal; cwd: string }
+		fileSearch?: { signal: AbortSignal; cwd: string }
+		isCurrentWebview?: () => boolean
+	},
 ) => {
 	// Utility functions provided for concise get/update of global state via contextProxy API.
 	const getGlobalState = <K extends keyof GlobalState>(key: K) => provider.contextProxy.getValue(key)
@@ -224,43 +223,16 @@ export const webviewMessageHandler = async (
 		return defaultModeSlug
 	}
 
-	const getDiscoveredCommands = async (): Promise<SlashCommand[]> => {
-		const { getCommands } = await import("../../services/command/commands")
-		const commands = await getCommands(getCurrentCwd())
-
-		const commandList: SlashCommand[] = commands.map((command) => ({
-			name: command.name,
-			source: command.source,
-			filePath: command.filePath,
-			description: command.description,
-			argumentHint: command.argumentHint,
-		}))
-
-		const existingCommandNames = new Set(commandList.map((command) => command.name))
-		const skillsManager = provider.getSkillsManager()
+	const getDiscoveredCommands = async () => {
+		const task = provider.getCurrentTask()
+		const skillsManager = task ? await provider.getSkillsManager(task) : provider.getSkillsManager()
 
 		if (!skillsManager) {
-			return commandList
+			return []
 		}
 
-		const currentMode = await getCurrentMode()
-		const availableSkills = skillsManager.getSkillsForMode(currentMode)
-
-		for (const skill of availableSkills) {
-			if (existingCommandNames.has(skill.name)) {
-				continue
-			}
-
-			existingCommandNames.add(skill.name)
-			commandList.push({
-				name: skill.name,
-				source: skill.source === "builtin" ? "built-in" : skill.source,
-				filePath: skill.path,
-				description: skill.description,
-			})
-		}
-
-		return commandList
+		const mode = task ? await task.getTaskMode() : await getCurrentMode()
+		return getSkillCommands(skillsManager.getSkillsForMode(mode))
 	}
 
 	/**
@@ -643,7 +615,7 @@ export const webviewMessageHandler = async (
 			await updateGlobalState("customModes", customModes)
 			if (!isCurrentWebview()) break
 
-			await provider.postStateToWebview()
+			await provider.postStateToWebview({ deferTaskHistory: true })
 			if (!isCurrentWebview()) break
 			if (process.env.ALPHA_TASK_OBSERVABILITY === "1") {
 				provider.log(
@@ -736,7 +708,14 @@ export const webviewMessageHandler = async (
 				)
 			}
 
-			if (isCurrentWebview()) provider.isViewLaunched = true
+			if (isCurrentWebview()) {
+				provider.isViewLaunched = true
+				void provider.broadcastTaskHistoryUpdate().catch((error) => {
+					provider.log(
+						`Failed to load chat history: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				})
+			}
 			break
 		case "newTask": {
 			if (
@@ -1044,8 +1023,9 @@ export const webviewMessageHandler = async (
 					if (key === "memorySettings") {
 						newValue = globalSettingsSchema.shape.memorySettings.parse(value)
 					} else if (key === "language") {
-						newValue = value ?? "en"
-						changeLanguage(newValue as Language)
+						const language = languagesSchema.parse(value)
+						newValue = language
+						changeLanguage(language)
 					} else if (key === "allowedCommands") {
 						newValue = sanitizeCommandList(value)
 					} else if (key === "deniedCommands") {
@@ -1517,12 +1497,6 @@ export const webviewMessageHandler = async (
 				provider.log("[webviewMessageHandler] Ignoring cancelTask: missing taskId")
 				break
 			}
-			if (
-				message.expectedTurnId === undefined ||
-				provider.getLiveTask(message.taskId)?.matchesExpectedTurn?.(message.expectedTurnId)
-			) {
-				cancelPromptEnhancements(provider, message.taskId)
-			}
 			await provider.cancelTask(message.taskId, "webview_stop", message.expectedTurnId)
 			break
 		case "stopIndependentTask": {
@@ -1958,108 +1932,10 @@ export const webviewMessageHandler = async (
 				await provider.postStateToWebview()
 			}
 			break
-		case "enhancementApiConfigId":
-			await updateGlobalState("enhancementApiConfigId", message.text)
-			await provider.postStateToWebview()
-			break
-
 		case "autoApprovalEnabled":
 			await updateGlobalState("autoApprovalEnabled", message.bool ?? false)
 			await provider.postStateToWebview()
 			break
-		case "cancelEnhancePrompt": {
-			const parsed = cancelEnhancePromptMessageSchema.safeParse(message)
-			if (parsed.success) cancelPromptEnhancement(provider, parsed.data.requestId, parsed.data.taskId)
-			else provider.log("[PromptEnhancement] Ignoring invalid cancellation request")
-			break
-		}
-		case "enhancePrompt": {
-			if (message.text) {
-				if (
-					message.requestId !== undefined &&
-					!cancelEnhancePromptMessageSchema.shape.requestId.safeParse(message.requestId).success
-				) {
-					provider.log("[PromptEnhancement] Ignoring invalid request ID")
-					break
-				}
-				const response = {
-					type: "enhancedPrompt" as const,
-					...(message.requestId === undefined ? {} : { requestId: message.requestId }),
-				}
-				let request: ReturnType<typeof beginPromptEnhancement> | undefined
-				let outcome: { text?: string; enhancementStatus: "success" | "error" | "cancelled" }
-				try {
-					// The selected task may change while configuration or the provider is awaited.
-					const currentAlpha = getTaskForMessage(provider, message, { allowActiveFallback: true })
-					request = beginPromptEnhancement(
-						provider,
-						message.requestId,
-						message.taskId ?? currentAlpha?.taskId,
-					)
-					const metadata = { signal: request.signal }
-					const state = await awaitSingleCompletion(provider.getState(), metadata)
-
-					const {
-						apiConfiguration,
-						customSupportPrompts,
-						listApiConfigMeta = [],
-						enhancementApiConfigId,
-						includeTaskHistoryInEnhance,
-					} = state
-					const enhancementApiConfigIdOverride = message.enhancementOptions?.apiConfigId
-					const includeTaskHistoryOverride = message.enhancementOptions?.includeTaskHistory
-					const supportPromptOverride = message.enhancementOptions?.supportPrompt
-					const effectiveCustomSupportPrompts =
-						supportPromptOverride === undefined
-							? customSupportPrompts
-							: { ...customSupportPrompts, ENHANCE: supportPromptOverride }
-					const effectiveEnhancementApiConfigId = enhancementApiConfigIdOverride ?? enhancementApiConfigId
-					const effectiveIncludeTaskHistory = includeTaskHistoryOverride ?? includeTaskHistoryInEnhance
-
-					const result = await awaitSingleCompletion(
-						MessageEnhancer.enhanceMessage({
-							text: message.text,
-							apiConfiguration,
-							customSupportPrompts: effectiveCustomSupportPrompts,
-							listApiConfigMeta,
-							enhancementApiConfigId: effectiveEnhancementApiConfigId,
-							includeTaskHistoryInEnhance: effectiveIncludeTaskHistory,
-							currentAlphaMessages: currentAlpha?.alphaMessages,
-							providerSettingsManager: provider.providerSettingsManager,
-							signal: request.signal,
-						}),
-						metadata,
-					)
-
-					if (result.success && result.enhancedText) {
-						if (request.isOwned()) {
-							MessageEnhancer.captureTelemetry(currentAlpha?.taskId, effectiveIncludeTaskHistory)
-						}
-						outcome = { text: result.enhancedText, enhancementStatus: "success" }
-					} else {
-						throw new Error(result.error || "Unknown error")
-					}
-				} catch {
-					if (request?.signal.aborted) {
-						outcome = { enhancementStatus: "cancelled" }
-					} else {
-						provider.log("[PromptEnhancement] Request failed")
-						vscode.window.showErrorMessage(t("common:errors.enhance_prompt"))
-						outcome = { enhancementStatus: "error" }
-					}
-				}
-				try {
-					if (!request || request.isOwned()) {
-						await provider.postMessageToWebview({ ...response, ...outcome })
-					}
-				} catch {
-					provider.log("[PromptEnhancement] Acknowledgement delivery failed")
-				} finally {
-					request?.finish()
-				}
-			}
-			break
-		}
 		case "getSystemPrompt":
 			try {
 				const systemPrompt = await generateSystemPrompt(provider, message)
@@ -2108,7 +1984,12 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "searchFiles": {
-			const workspacePath = getCurrentCwd()
+			const signal = options?.fileSearch?.signal
+			const workspacePath = options?.fileSearch?.cwd ?? getCurrentCwd()
+			const isCurrent = () => !signal?.aborted && (options?.isCurrentWebview?.() ?? true)
+			if (!isCurrent()) break
+			// Navigation can change the foreground task while discovery is pending.
+			const currentTask = message.taskId ? provider.getLiveTask(message.taskId) : provider.getCurrentTask()
 
 			if (!workspacePath) {
 				// Handle case where workspace path is not available
@@ -2120,18 +2001,19 @@ export const webviewMessageHandler = async (
 				})
 				break
 			}
+			let tempController: AlphaIgnoreController | undefined
 			try {
 				// Call file search service with query from message
 				const results = await searchWorkspaceFiles(
 					message.query || "",
 					workspacePath,
 					20, // Use default limit, as filtering is now done in the backend
+					signal,
 				)
+				if (!isCurrent()) break
 
 				// Get the AlphaIgnoreController from the current task, or create a new one
-				const currentTask = provider.getCurrentTask()
 				let alphaIgnoreController = currentTask?.alphaIgnoreController
-				let tempController: AlphaIgnoreController | undefined
 
 				// If no current task or no controller, create a temporary one
 				if (!alphaIgnoreController) {
@@ -2139,29 +2021,27 @@ export const webviewMessageHandler = async (
 					await tempController.initialize()
 					alphaIgnoreController = tempController
 				}
+				if (!isCurrent()) break
 
-				try {
-					// Get showAlphaIgnoredFiles setting from state
-					const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
+				// Get showAlphaIgnoredFiles setting from state
+				const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
+				if (!isCurrent()) break
 
-					// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
-					let filteredResults = results
-					if (!showAlphaIgnoredFiles && alphaIgnoreController) {
-						const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
-						filteredResults = results.filter((r) => allowedPaths.includes(r.path))
-					}
-
-					// Send results back to webview
-					await provider.postMessageToWebview({
-						type: "fileSearchResults",
-						results: filteredResults,
-						requestId: message.requestId,
-					})
-				} finally {
-					// Dispose temporary controller to prevent resource leak
-					tempController?.dispose()
+				// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
+				let filteredResults = results
+				if (!showAlphaIgnoredFiles && alphaIgnoreController) {
+					const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
+					filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 				}
+
+				// Send results back to webview
+				await provider.postMessageToWebview({
+					type: "fileSearchResults",
+					results: filteredResults,
+					requestId: message.requestId,
+				})
 			} catch (error) {
+				if (!isCurrent()) break
 				const errorMessage = error instanceof Error ? error.message : String(error)
 
 				// Send error response to webview
@@ -2171,6 +2051,8 @@ export const webviewMessageHandler = async (
 					error: errorMessage,
 					requestId: message.requestId,
 				})
+			} finally {
+				tempController?.dispose()
 			}
 			break
 		}
@@ -2879,11 +2761,29 @@ export const webviewMessageHandler = async (
 				break
 			}
 
-			const settings = message.codeIndexSettings
-
+			const parsedSettings = codebaseIndexConfigSchema
+				.merge(codebaseIndexProviderSchema)
+				.safeParse(message.codeIndexSettings)
+			if (!parsedSettings.success) {
+				await provider.postMessageToWebview({
+					type: "codeIndexSettingsSaved",
+					success: false,
+					error: "Invalid code indexing configuration.",
+				})
+				break
+			}
+			const settings = parsedSettings.data
 			try {
-				const currentConfig = getGlobalState("codebaseIndexConfig") || {}
+				const currentConfig = { ...(getGlobalState("codebaseIndexConfig") || {}) }
 
+				for (const field of [
+					"codebaseIndexVertexGatewayBaseUrl",
+					"codebaseIndexVertexGatewayCaBundlePath",
+					"codebaseIndexVertexGatewayHelixCommand",
+					"codebaseIndexVertexGatewayTokenRefreshMinutes",
+					"codebaseIndexVertexGatewayModelRoutingMap",
+				] as const)
+					delete currentConfig[field]
 				// Save global state settings atomically
 				const globalStateConfig = {
 					...currentConfig,
@@ -2897,12 +2797,9 @@ export const webviewMessageHandler = async (
 					codebaseIndexVertexProjectId: settings.codebaseIndexVertexProjectId,
 					codebaseIndexVertexRegion: settings.codebaseIndexVertexRegion,
 					codebaseIndexVertexKeyFile: settings.codebaseIndexVertexKeyFile,
-					codebaseIndexVertexGatewayBaseUrl: settings.codebaseIndexVertexGatewayBaseUrl,
-					codebaseIndexVertexGatewayCaBundlePath: settings.codebaseIndexVertexGatewayCaBundlePath,
-					codebaseIndexVertexGatewayHelixCommand: settings.codebaseIndexVertexGatewayHelixCommand,
-					codebaseIndexVertexGatewayTokenRefreshMinutes:
-						settings.codebaseIndexVertexGatewayTokenRefreshMinutes,
-					codebaseIndexVertexGatewayModelRoutingMap: settings.codebaseIndexVertexGatewayModelRoutingMap,
+					codebaseIndexOpenAiCompatibleBaseUrl: settings.codebaseIndexOpenAiCompatibleBaseUrl,
+					codebaseIndexBedrockRegion: settings.codebaseIndexBedrockRegion,
+					codebaseIndexBedrockProfile: settings.codebaseIndexBedrockProfile,
 					codebaseIndexSearchMaxResults: settings.codebaseIndexSearchMaxResults,
 					codebaseIndexSearchMinScore: settings.codebaseIndexSearchMinScore,
 					codebaseIndexEmbeddingRateLimitEnabled: settings.codebaseIndexEmbeddingRateLimitEnabled,
@@ -2929,6 +2826,26 @@ export const webviewMessageHandler = async (
 					)
 				}
 
+				if (settings.codebaseIndexOpenAiApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenAiApiKey",
+						settings.codebaseIndexOpenAiApiKey,
+					)
+				if (settings.codebaseIndexOpenAiCompatibleApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenAiCompatibleApiKey",
+						settings.codebaseIndexOpenAiCompatibleApiKey,
+					)
+				if (settings.codebaseIndexOpenRouterApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexOpenRouterApiKey",
+						settings.codebaseIndexOpenRouterApiKey,
+					)
+				if (settings.codebaseIndexBedrockApiKey !== undefined)
+					await provider.contextProxy.storeSecret(
+						"codebaseIndexBedrockApiKey",
+						settings.codebaseIndexBedrockApiKey,
+					)
 				// Send success response first - settings are saved regardless of validation
 				await provider.postMessageToWebview({
 					type: "codeIndexSettingsSaved",
@@ -3042,12 +2959,22 @@ export const webviewMessageHandler = async (
 			))
 			const hasGeminiApiKey = !!(await provider.context.secrets.get("codebaseIndexGeminiApiKey"))
 
+			const hasOpenAiApiKey = !!(await provider.context.secrets.get("codebaseIndexOpenAiApiKey"))
+			const hasOpenAiCompatibleApiKey = !!(await provider.context.secrets.get(
+				"codebaseIndexOpenAiCompatibleApiKey",
+			))
+			const hasOpenRouterApiKey = !!(await provider.context.secrets.get("codebaseIndexOpenRouterApiKey"))
+			const hasBedrockApiKey = !!(await provider.context.secrets.get("codebaseIndexBedrockApiKey"))
 			provider.postMessageToWebview({
 				type: "codeIndexSecretStatus",
 				values: {
 					hasQdrantApiKey,
 					hasVertexJsonCredentials,
 					hasGeminiApiKey,
+					hasOpenAiApiKey,
+					hasOpenAiCompatibleApiKey,
+					hasOpenRouterApiKey,
+					hasBedrockApiKey,
 				},
 			})
 			break
@@ -3205,126 +3132,6 @@ export const webviewMessageHandler = async (
 			await vscode.commands.executeCommand(getCommand("focusPanel"))
 			break
 		}
-		case "filterMarketplaceItems": {
-			if (marketplaceManager && message.filters) {
-				try {
-					await marketplaceManager.updateWithFilteredItems({
-						type: message.filters.type as MarketplaceItemType | undefined,
-						search: message.filters.search,
-						tags: message.filters.tags,
-					})
-					await provider.postStateToWebview()
-				} catch (error) {
-					console.error("Marketplace: Error filtering items:", error)
-					vscode.window.showErrorMessage("Failed to filter marketplace items")
-				}
-			}
-			break
-		}
-
-		case "fetchMarketplaceData": {
-			// Fetch marketplace data on demand
-			await provider.fetchMarketplaceData()
-			break
-		}
-
-		case "installMarketplaceItem": {
-			if (marketplaceManager && message.mpItem && message.mpInstallOptions) {
-				try {
-					const configFilePath = await marketplaceManager.installMarketplaceItem(
-						message.mpItem,
-						message.mpInstallOptions,
-					)
-					await provider.postStateToWebview()
-					console.log(`Marketplace item installed and config file opened: ${configFilePath}`)
-
-					// Send success message to webview
-					provider.postMessageToWebview({
-						type: "marketplaceInstallResult",
-						success: true,
-						slug: message.mpItem.id,
-					})
-				} catch (error) {
-					console.error(`Error installing marketplace item: ${error}`)
-					// Send error message to webview
-					provider.postMessageToWebview({
-						type: "marketplaceInstallResult",
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-						slug: message.mpItem.id,
-					})
-				}
-			}
-			break
-		}
-
-		case "removeInstalledMarketplaceItem": {
-			if (marketplaceManager && message.mpItem && message.mpInstallOptions) {
-				try {
-					await marketplaceManager.removeInstalledMarketplaceItem(message.mpItem, message.mpInstallOptions)
-					await provider.postStateToWebview()
-
-					// Send success message to webview
-					provider.postMessageToWebview({
-						type: "marketplaceRemoveResult",
-						success: true,
-						slug: message.mpItem.id,
-					})
-				} catch (error) {
-					console.error(`Error removing marketplace item: ${error}`)
-
-					// Show error message to user
-					vscode.window.showErrorMessage(
-						`Failed to remove marketplace item: ${error instanceof Error ? error.message : String(error)}`,
-					)
-
-					// Send error message to webview
-					provider.postMessageToWebview({
-						type: "marketplaceRemoveResult",
-						success: false,
-						error: error instanceof Error ? error.message : String(error),
-						slug: message.mpItem.id,
-					})
-				}
-			} else {
-				// MarketplaceManager not available or missing required parameters
-				const errorMessage = !marketplaceManager
-					? "Marketplace manager is not available"
-					: "Missing required parameters for marketplace item removal"
-				console.error(errorMessage)
-
-				vscode.window.showErrorMessage(errorMessage)
-
-				if (message.mpItem?.id) {
-					provider.postMessageToWebview({
-						type: "marketplaceRemoveResult",
-						success: false,
-						error: errorMessage,
-						slug: message.mpItem.id,
-					})
-				}
-			}
-			break
-		}
-
-		case "installMarketplaceItemWithParameters": {
-			if (marketplaceManager && message.payload && "item" in message.payload && "parameters" in message.payload) {
-				try {
-					const configFilePath = await marketplaceManager.installMarketplaceItem(message.payload.item, {
-						parameters: message.payload.parameters,
-					})
-					await provider.postStateToWebview()
-					console.log(`Marketplace item with parameters installed and config file opened: ${configFilePath}`)
-				} catch (error) {
-					console.error(`Error installing marketplace item with parameters: ${error}`)
-					vscode.window.showErrorMessage(
-						`Failed to install marketplace item: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}
-			break
-		}
-
 		case "switchTab": {
 			if (message.tab) {
 				// Capture tab shown event for all switchTab messages (which are user-initiated).
@@ -3474,165 +3281,6 @@ export const webviewMessageHandler = async (
 			await handleOpenSkillFile(provider, message)
 			break
 		}
-		case "openCommandFile": {
-			try {
-				if (message.text) {
-					const { getCommand } = await import("../../services/command/commands")
-					const command = await getCommand(getCurrentCwd(), message.text)
-
-					if (command && command.filePath) {
-						openFile(command.filePath)
-					} else {
-						vscode.window.showErrorMessage(t("common:errors.command_not_found", { name: message.text }))
-					}
-				}
-			} catch (error) {
-				provider.log(
-					`Error opening command file: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-				)
-				vscode.window.showErrorMessage(t("common:errors.open_command_file"))
-			}
-			break
-		}
-		case "deleteCommand": {
-			try {
-				if (message.text && message.values?.source) {
-					const { getCommand } = await import("../../services/command/commands")
-					const command = await getCommand(getCurrentCwd(), message.text)
-
-					if (command && command.filePath) {
-						// Delete the command file
-						await fs.unlink(command.filePath)
-						provider.log(`Deleted command file: ${command.filePath}`)
-					} else {
-						vscode.window.showErrorMessage(t("common:errors.command_not_found", { name: message.text }))
-					}
-				}
-			} catch (error) {
-				provider.log(`Error deleting command: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`)
-				vscode.window.showErrorMessage(t("common:errors.delete_command"))
-			}
-			break
-		}
-		case "createCommand": {
-			try {
-				const source = message.values?.source as "global" | "project"
-				const fileName = message.text // Custom filename from user input
-
-				if (!source) {
-					provider.log("Missing source for createCommand")
-					break
-				}
-
-				// Determine the commands directory based on source
-				let commandsDir: string
-				if (source === "global") {
-					commandsDir = path.join(getGlobalConfigDirectory(), "commands")
-				} else {
-					if (!vscode.workspace.workspaceFolders?.length) {
-						vscode.window.showErrorMessage(t("common:errors.no_workspace"))
-						return
-					}
-					// Project commands
-					const workspaceRoot = getCurrentCwd()
-					if (!workspaceRoot) {
-						vscode.window.showErrorMessage(t("common:errors.no_workspace_for_project_command"))
-						break
-					}
-					commandsDir = path.join(getProjectConfigDirectory(workspaceRoot), "commands")
-				}
-
-				// Ensure the commands directory exists
-				await fs.mkdir(commandsDir, { recursive: true })
-
-				// Use provided filename or generate a unique one
-				let commandName: string
-				if (fileName && fileName.trim()) {
-					let cleanFileName = fileName.trim()
-
-					// Strip leading slash if present
-					if (cleanFileName.startsWith("/")) {
-						cleanFileName = cleanFileName.substring(1)
-					}
-
-					// Remove .md extension if present BEFORE slugification
-					if (cleanFileName.toLowerCase().endsWith(".md")) {
-						cleanFileName = cleanFileName.slice(0, -3)
-					}
-
-					// Slugify the command name: lowercase, replace spaces with dashes, remove special characters
-					commandName = cleanFileName
-						.toLowerCase()
-						.replace(/\s+/g, "-") // Replace spaces with dashes
-						.replace(/[^a-z0-9-]/g, "") // Remove special characters except dashes
-						.replace(/-+/g, "-") // Replace multiple dashes with single dash
-						.replace(/^-|-$/g, "") // Remove leading/trailing dashes
-
-					// Ensure we have a valid command name
-					if (!commandName || commandName.length === 0) {
-						commandName = "new-command"
-					}
-				} else {
-					// Generate a unique command name
-					commandName = "new-command"
-					let counter = 1
-					let filePath = path.join(commandsDir, `${commandName}.md`)
-
-					while (
-						await fs
-							.access(filePath)
-							.then(() => true)
-							.catch(() => false)
-					) {
-						commandName = `new-command-${counter}`
-						filePath = path.join(commandsDir, `${commandName}.md`)
-						counter++
-					}
-				}
-
-				const filePath = path.join(commandsDir, `${commandName}.md`)
-
-				// Check if file already exists
-				if (
-					await fs
-						.access(filePath)
-						.then(() => true)
-						.catch(() => false)
-				) {
-					vscode.window.showErrorMessage(t("common:errors.command_already_exists", { commandName }))
-					break
-				}
-
-				// Create the command file with template content
-				const templateContent = t("common:errors.command_template_content")
-
-				await fs.writeFile(filePath, templateContent, "utf8")
-				provider.log(`Created new command file: ${filePath}`)
-
-				// Open the new file in the editor
-				openFile(filePath)
-
-				// Refresh commands list
-				const { getCommands } = await import("../../services/command/commands")
-				const commands = await getCommands(getCurrentCwd() || "")
-				const commandList = commands.map((command) => ({
-					name: command.name,
-					source: command.source,
-					filePath: command.filePath,
-					description: command.description,
-					argumentHint: command.argumentHint,
-				}))
-				await provider.postMessageToWebview({
-					type: "commands",
-					commands: commandList,
-				})
-			} catch (error) {
-				provider.log(`Error creating command: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`)
-				vscode.window.showErrorMessage(t("common:errors.create_command_failed"))
-			}
-			break
-		}
-
 		case "insertTextIntoTextarea": {
 			const text = message.text
 			if (text) {
@@ -4390,7 +4038,6 @@ export const webviewMessageHandler = async (
 			//
 			// "currentApiConfigName" |
 			// "codebaseIndexEnabled" |
-			// "enhancedPrompt" |
 			// "systemPrompt" |
 			// "exportModeResult" |
 			// "importModeResult" |
@@ -4399,14 +4046,11 @@ export const webviewMessageHandler = async (
 			// "vsCodeSetting" |
 			// "indexingStatusUpdate" |
 			// "indexCleared" |
-			// "marketplaceInstallResult" |
 			// "shareTaskSuccess" |
 			// "playSound" |
 			// "draggedImages" |
 			// "setApiConfigPassword" |
 			// "setopenAiCustomModelInfo" |
-			// "marketplaceButtonClicked" |
-			// "cancelMarketplaceInstall" |
 			// "imageGenerationSettings"
 			break
 		}

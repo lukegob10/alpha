@@ -82,6 +82,21 @@ describe("legacy subagent manifest compatibility", () => {
 })
 
 describe("inherited subagent authority", () => {
+	it("preserves legacy workspace omission and accepts explicit workspace ownership", () => {
+		const manifest = makeManifest()
+		expect(subagentContextManifestSchema.parse(manifest).runtimePolicy).not.toHaveProperty("sharedWorkspace")
+		for (const sharedWorkspace of [true, false]) {
+			manifest.runtimePolicy.sharedWorkspace = sharedWorkspace
+			expect(subagentContextManifestSchema.parse(manifest).runtimePolicy.sharedWorkspace).toBe(sharedWorkspace)
+		}
+		expect(
+			subagentContextManifestSchema.safeParse({
+				...manifest,
+				runtimePolicy: { ...manifest.runtimePolicy, sharedWorkspace: "true" },
+			}).success,
+		).toBe(false)
+	})
+
 	it.each(["explore", "review", "worker"] as const)("retains parent authority for a new %s role", (role) => {
 		const manifest = makeManifest()
 		manifest.runtimePolicy = {

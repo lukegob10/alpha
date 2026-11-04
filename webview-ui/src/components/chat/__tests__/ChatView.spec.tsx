@@ -1189,6 +1189,94 @@ describe("ChatView activity trace", () => {
 		expect(restored.getByTestId("chat-message-6")).toBeVisible()
 	})
 
+	it.each(["canonical", "legacy"] as const)(
+		"folds all completed work after live details were opened (%s)",
+		async (source) => {
+			const id = `fold-open-work-${source}`
+			const first = turn(id)
+			const view = renderChatView()
+			const messages: AlphaMessage[] = [
+				{
+					ts: 100,
+					type: "say",
+					say: "task",
+					text: "Inspect the project",
+					turn: { ...first, inputKind: "start" },
+				},
+				{ ts: 200, type: "say", say: "text", text: "Inspecting the project", turn: first },
+				{ ts: 250, type: "say", say: "reasoning", text: "Inspection details", turn: first },
+				{ ts: 300, type: "ask", ask: "command", text: "git status", isAnswered: true, turn: first },
+				{ ts: 350, type: "say", say: "command_output", text: "Working tree clean", turn: first },
+				{
+					ts: 400,
+					type: "say",
+					say: "tool",
+					text: JSON.stringify({ tool: "ticket", operation: "list" }),
+					turn: first,
+				},
+				{ ts: 450, type: "say", say: "mcp_server_response", text: "Fetched details", turn: first },
+			]
+			const publish = (rows: AlphaMessage[]) =>
+				act(() => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "state",
+								state: {
+									currentTaskId: id,
+									alphaMessages:
+										source === "canonical"
+											? rows
+											: rows.map((message) => ({ ...message, turn: undefined })),
+									liveTasksById: { [id]: runningTask(id) },
+								},
+							},
+						}),
+					)
+				})
+			publish(messages)
+			fireEvent.click(
+				await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.runningCommands/ })),
+			)
+			fireEvent.click(view.getByTestId("reasoning-disclosure-250"))
+			expect(view.getByTestId("reasoning-disclosure-250")).toHaveAttribute("aria-expanded", "true")
+			const completed: AlphaMessage[] = [
+				...messages,
+				{
+					ts: 500,
+					type: "say",
+					say: source === "canonical" ? "text" : "completion_result",
+					text: "Inspection complete",
+					turn: { ...first, terminalStatus: "completed" },
+				},
+			]
+			publish(completed)
+			const parent = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+			expect(parent).toHaveAttribute("aria-expanded", "false")
+			const workRows = [...view.container.querySelectorAll<HTMLElement>("[data-chat-message-ts]")].filter(
+				(row) => row.dataset.chatMessageTs !== "500",
+			)
+			expect(workRows.length).toBeGreaterThan(0)
+			for (const row of workRows) expect(row.querySelector("[data-chat-message-index]")).not.toBeVisible()
+			expect(view.queryByTestId("reasoning-disclosure-250")).not.toBeInTheDocument()
+			expect(view.container.querySelector('[data-chat-message-ts="500"]')).toBeVisible()
+			expect(view.getByText("Inspect the project")).toBeVisible()
+			const lateOutput: AlphaMessage = {
+				ts: 550,
+				type: "say",
+				say: "command_output",
+				text: "Late captured output",
+				turn: first,
+			}
+			publish([...completed, lateOutput])
+			expect(parent).toHaveAttribute("aria-expanded", "false")
+			fireEvent.click(parent)
+			expect(parent).toHaveAttribute("aria-expanded", "true")
+			publish([...completed, lateOutput, { ...lateOutput, ts: 560, text: "Another captured result" }])
+			expect(parent).toHaveAttribute("aria-expanded", "true")
+		},
+	)
+
 	it("restores nested disclosure choices after its completed parent unmounts the details", async () => {
 		const first = turn("nested")
 		const view = renderChatView()
@@ -1742,7 +1830,7 @@ describe("ChatView activity trace", () => {
 		expect(within(liveAction).getByTestId("chat-row")).toBe(liveRow)
 	})
 
-	it("preserves an opened action group when the task completes and still allows closing it", async () => {
+	it("folds an opened action group when the task completes and permits reopening", async () => {
 		const view = renderChatView()
 		const taskId = "completed-actions"
 		const messages: AlphaMessage[] = [
@@ -1784,15 +1872,16 @@ describe("ChatView activity trace", () => {
 				},
 			},
 		})
-		await waitFor(() => expect(toggle).not.toHaveAttribute("aria-busy"))
-		expect(toggle).toHaveAttribute("aria-expanded", "true")
-		expect(view.getByTestId("chat-message-0")).toBeVisible()
-		fireEvent.click(toggle)
-		expect(toggle).toHaveAttribute("aria-expanded", "false")
+		const parent = await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ }))
+		expect(parent).toHaveAttribute("aria-expanded", "false")
+		expect(toggle).not.toBeInTheDocument()
 		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
+		expect(view.getByTestId("chat-message-1")).toBeVisible()
+		fireEvent.click(parent)
+		expect(view.getByTestId("chat-message-0")).toBeVisible()
 	})
 
-	it("preserves an opened action group at the completion prompt before lifecycle state catches up", async () => {
+	it("folds an opened action group at the completion prompt before lifecycle state catches up", async () => {
 		const view = renderChatView()
 		const taskId = "completion-prompt-actions"
 		const messages: AlphaMessage[] = [
@@ -1814,11 +1903,15 @@ describe("ChatView activity trace", () => {
 			],
 		})
 		await waitFor(() => expect(view.getByTestId("chat-message-2")).toBeVisible())
-		expect(toggle).toHaveAttribute("aria-expanded", "true")
-		expect(view.getByTestId("chat-message-0")).toBeVisible()
+		expect(view.getByRole("button", { name: /chat:activityTrace.workedFor/ })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		expect(toggle).not.toBeInTheDocument()
+		expect(view.getByTestId("chat-message-0")).not.toBeVisible()
 	})
 
-	it("keeps independent action disclosure choices when a completed turn gains a worked summary", async () => {
+	it("folds completed turns and retains independent action choices for reopening", async () => {
 		const view = renderChatView()
 		const messages: AlphaMessage[] = [
 			{ ts: 100, type: "say", say: "task", text: "Check and edit" },
@@ -1863,14 +1956,9 @@ describe("ChatView activity trace", () => {
 		})
 		await waitFor(() => expect(view.getByTestId("chat-message-6")).toBeVisible())
 		const parent = view.getByRole("button", { name: /chat:activityTrace.workedFor/ })
-		expect(parent).toHaveAttribute("aria-expanded", "true")
-		expect(commands).toBeInTheDocument()
-		expect(commands).toHaveAttribute("aria-expanded", "false")
-		expect(edits).toBeInTheDocument()
-		expect(edits).toHaveAttribute("aria-expanded", "true")
-		expect(view.getByTestId("chat-message-1")).not.toBeVisible()
-		expect(view.getByTestId("chat-message-3")).toBeVisible()
-		fireEvent.click(parent)
+		expect(parent).toHaveAttribute("aria-expanded", "false")
+		expect(commands).not.toBeInTheDocument()
+		expect(edits).not.toBeInTheDocument()
 		for (const index of [0, 1, 2, 3, 4, 5]) expect(view.getByTestId(`chat-message-${index}`)).not.toBeVisible()
 		fireEvent.click(parent)
 		const reopenedCommands = view.getAllByRole("button", { name: /chat:activityTrace.runningCommands/ })[0]

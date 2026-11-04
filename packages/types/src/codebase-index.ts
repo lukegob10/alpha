@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { embedderProviders, type EmbedderProvider } from "./embedding.js"
 
 /** Default provider for new code indexes. */
 export const CODEBASE_INDEX_EMBEDDER_PROVIDER = "vertex" as const
@@ -11,8 +12,8 @@ export const CODEBASE_INDEX_EMBEDDER_PROVIDER = "vertex" as const
  */
 export type CodebaseIndexEmbedderProvider = string
 
-export function isSupportedCodebaseIndexEmbedderProvider(value: unknown): value is "vertex" | "gemini" {
-	return value === CODEBASE_INDEX_EMBEDDER_PROVIDER || value === "gemini"
+export function isSupportedCodebaseIndexEmbedderProvider(value: unknown): value is EmbedderProvider {
+	return typeof value === "string" && embedderProviders.includes(value as EmbedderProvider)
 }
 
 /**
@@ -131,6 +132,10 @@ export const codebaseIndexConfigSchema = z
 		codebaseIndexVertexProjectId: z.string().optional(),
 		codebaseIndexVertexRegion: z.string().optional(),
 		codebaseIndexVertexKeyFile: z.string().optional(),
+		codebaseIndexOpenAiCompatibleBaseUrl: z.string().optional(),
+		codebaseIndexBedrockRegion: z.string().optional(),
+		codebaseIndexBedrockProfile: z.string().optional(),
+		// Compatibility readers only: custom Vertex connections cannot execute and are cleared on explicit save.
 		codebaseIndexVertexGatewayBaseUrl: z.string().optional(),
 		codebaseIndexVertexGatewayCaBundlePath: z.string().optional(),
 		codebaseIndexVertexGatewayHelixCommand: z.string().optional(),
@@ -151,6 +156,10 @@ export const codebaseIndexModelsSchema = z
 	.object({
 		vertex: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 		gemini: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+		"openai-native": z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+		openai: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+		openrouter: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
+		bedrock: z.record(z.string(), z.object({ dimension: z.number() })).optional(),
 	})
 	// Preserve legacy provider model maps while they are being migrated. They
 	// are never selected by the supported runtime.
@@ -166,6 +175,10 @@ export const codebaseIndexProviderSchema = z.object({
 	codeIndexQdrantApiKey: z.string().optional(),
 	codebaseIndexVertexJsonCredentials: z.string().optional(),
 	codebaseIndexGeminiApiKey: z.string().optional(),
+	codebaseIndexOpenAiApiKey: z.string().optional(),
+	codebaseIndexOpenAiCompatibleApiKey: z.string().optional(),
+	codebaseIndexOpenRouterApiKey: z.string().optional(),
+	codebaseIndexBedrockApiKey: z.string().optional(),
 })
 
 export type CodebaseIndexProvider = z.infer<typeof codebaseIndexProviderSchema>

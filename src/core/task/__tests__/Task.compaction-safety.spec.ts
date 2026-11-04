@@ -141,7 +141,10 @@ function harness() {
 		agentStepContextBuilder: new AgentStepContextBuilder<ApiHandler, unknown>(),
 		toolCatalogCache: new TaskToolCatalogCache(),
 		userMessageContent: [],
-		alphaMessages: [],
+		alphaMessages: [
+			{ ts: 1, type: "say", say: "text", text: "Original task" },
+			{ ts: 2, type: "say", say: "text", text: "Existing retained response" },
+		],
 		getTaskMode: vi.fn(async () => "code"),
 		getSystemPrompt: vi.fn(async () => "System prompt"),
 		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
@@ -170,6 +173,21 @@ function harness() {
 			return true
 		},
 	}) as Task
+	// Account finalized summary usage through the same guarded snapshot/commit fence.
+	Reflect.set(
+		task,
+		"enqueueAlphaMessagesSave",
+		vi.fn<Task["enqueueAlphaMessagesSave"]>(
+			async (snapshot = () => task.alphaMessages, committed, _handoff, _reasoning, ownership) => {
+				if (ownership && !ownership.guard()) return false
+				snapshot()
+				const saved = await task["saveAlphaMessages"](ownership)
+				if (!saved || (ownership && !ownership.guard())) return false
+				committed?.()
+				return true
+			},
+		),
+	)
 	vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({
 		tools: [],
 		surface: createTaskToolSurface({
@@ -647,20 +665,26 @@ describe("Task small Copilot context exhaustion", () => {
 				if (chunk.type === "text") text.push(chunk.text)
 			}
 			expect(text.join("")).toContain("task can continue")
-			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 2 : 1)
-			expect(task.say).toHaveBeenCalledWith(
-				"sliding_window_truncation",
-				undefined,
-				undefined,
-				false,
-				undefined,
-				undefined,
-				expect.any(Object),
-				undefined,
-				expect.objectContaining({ messagesRemoved: expect.any(Number) }),
-			)
+			expect(api.createMessage).toHaveBeenCalledTimes(automatic ? 3 : 1)
+			if (automatic) {
+				const requests = api.createMessage.mock.calls
+				expect(JSON.stringify(requests[1][1]).length).toBeLessThan(JSON.stringify(requests[0][1]).length)
+				expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).not.toContain("sliding_window_truncation")
+				expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
+			} else
+				expect(task.say).toHaveBeenCalledWith(
+					"sliding_window_truncation",
+					undefined,
+					undefined,
+					false,
+					undefined,
+					undefined,
+					expect.any(Object),
+					undefined,
+					expect.objectContaining({ messagesRemoved: expect.any(Number) }),
+				)
 			expect(history).toEqual(original)
-			expect(task.apiConversationHistory.some((message) => message.isTruncationMarker)).toBe(true)
+			expect(task.apiConversationHistory.some((message) => message.isTruncationMarker)).toBe(!automatic)
 			if (automatic) {
 				expect(provider.postMessageToWebview).toHaveBeenCalledTimes(2)
 				expect(provider.postMessageToWebview).toHaveBeenNthCalledWith(1, {
@@ -675,21 +699,17 @@ describe("Task small Copilot context exhaustion", () => {
 		},
 	)
 
-	it("releases manual compaction admission when the smaller model rejects its summary", async () => {
+	it("retries smaller manual summary input and releases compaction admission on success", async () => {
 		const { task, api, provider, history, save } = await smallWindowFixture(true)
+		const original = structuredClone(history)
 		await task.condenseContext()
-		expect(task.say).toHaveBeenCalledWith(
-			"condense_context_error",
-			expect.any(String),
-			undefined,
-			false,
-			undefined,
-			undefined,
-			expect.any(Object),
-		)
-		expect(api.createMessage).toHaveBeenCalledOnce()
-		expect(save).not.toHaveBeenCalled()
-		expect(task.apiConversationHistory).toBe(history)
+		expect(vi.mocked(task.say).mock.calls.map(([type]) => type)).not.toContain("condense_context_error")
+		expect(api.createMessage).toHaveBeenCalledTimes(2)
+		const requests = api.createMessage.mock.calls
+		expect(JSON.stringify(requests[1][1]).length).toBeLessThan(JSON.stringify(requests[0][1]).length)
+		expect(save).toHaveBeenCalledOnce()
+		expect(history).toEqual(original)
+		expect(task.apiConversationHistory.some((message) => message.isSummary)).toBe(true)
 		expect(Reflect.get(task, "contextCondenseAbortController")).toBeUndefined()
 		expect(Reflect.get(task, "manualContextCondenseSettlement")).toBeUndefined()
 		// AlphaProvider owns the manual response notification; Task owns releasing its admission guard.
@@ -1267,6 +1287,49 @@ describe("Task manual compaction boundary", () => {
 
 		expect(queueHook).toHaveBeenCalledOnce()
 		expect(task.messageQueueService.messages).toEqual([queued])
+	})
+
+	it("rejects a native checkpoint when the provider instance changes before installation", async () => {
+		const { task, api, save, history } = harness()
+		Object.defineProperty(api, "nativeCompaction", {
+			get: () => ({
+				scope: { provider: "openai-native", modelId: "test-model" },
+				compact: vi.fn(),
+			}),
+		})
+		const original = structuredClone(history)
+		vi.mocked(summarizeConversation).mockImplementationOnce(async () => {
+			Object.assign(task, { api: { ...api } })
+			return {
+				messages: [
+					...history.map((message) => ({ ...message, condenseParent: "native-summary" })),
+					{
+						role: "assistant",
+						content: [],
+						isSummary: true,
+						condenseId: "native-summary",
+						provider_state_scope: { provider: "openai-native", modelId: "test-model" },
+						native_compaction: {
+							protocol: "openai-responses",
+							provider: "openai-native",
+							modelId: "test-model",
+							responseId: "compact-1",
+							output: [{ type: "compaction", encrypted_content: "old-account-checkpoint" }],
+						},
+					},
+				],
+				summary: "Native checkpoint",
+				cost: 0.25,
+				condenseId: "native-summary",
+				status: "reduced",
+			}
+		})
+
+		await expect(task.condenseContext()).rejects.toThrow(
+			"Native compaction provider changed before history installation",
+		)
+		expect(save).not.toHaveBeenCalled()
+		expect(task.apiConversationHistory).toEqual(original)
 	})
 
 	it("persists a stable compaction without changing the retained message objects", async () => {
@@ -2589,6 +2652,56 @@ describe("Task context recovery admission", () => {
 			text: task.taskId,
 		})
 	})
+	it.each(["automatic", "forced"] as const)(
+		"keeps human corrections installed after actual failed %s compaction",
+		async (trigger) => {
+			const { task, api, save, history, provider } = harness()
+			const { TelemetryService } = await import("@alpha-code/telemetry")
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const actualContext =
+				await vi.importActual<typeof import("../../context-management")>("../../context-management")
+			const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")
+			vi.mocked(manageContext).mockImplementation(actualContext.manageContext)
+			vi.mocked(summarizeConversation).mockImplementation(actualCondense.summarizeConversation)
+			provider.getState.mockResolvedValue({ autoCondenseContext: true, autoCondenseContextPercent: 80 })
+			vi.mocked(task.getTokenUsage).mockReturnValue({ contextTokens: 200_000 } as ReturnType<
+				Task["getTokenUsage"]
+			>)
+			history.splice(
+				0,
+				history.length,
+				{ role: "user", content: "Original request", input_origin: "human", ts: 1 },
+				{ role: "assistant", content: "Initial implementation.", ts: 2 },
+				{ role: "user", content: "Preserve the existing public API.", input_origin: "human", ts: 3 },
+				{ role: "assistant", content: "Implementation details. ".repeat(30_000), ts: 4 },
+				{ role: "user", content: "Continue.", input_origin: "human", ts: 5 },
+			)
+			const before = structuredClone(history)
+			api.countTokens.mockImplementation(async (blocks) => Math.ceil(JSON.stringify(blocks).length / 4))
+			api.createMessage.mockImplementation(async function* () {
+				yield { type: "usage", inputTokens: 1, outputTokens: 1, totalCost: 0.01 }
+				throw new Error("Summary provider unavailable")
+			})
+
+			await expect(runRecovery(task, trigger)).rejects.toMatchObject({
+				name: "ContextRecoveryExhaustedError",
+				retryCategory: "context",
+				retryable: false,
+			})
+			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(save).not.toHaveBeenCalled()
+			expect(task.apiConversationHistory).toBe(history)
+			expect(history).toEqual(before)
+			expect(getEffectiveApiHistory(history)).toContainEqual(
+				expect.objectContaining({ role: "user", content: "Preserve the existing public API." }),
+			)
+			const result = await vi.mocked(manageContext).mock.results[0].value
+			expect(result.status).toBe("no_progress")
+			expect(result.truncationId).toBeUndefined()
+			expect(result.errorDetails).toContain("Summary provider unavailable")
+		},
+	)
+
 	it.each([60_000, 200_000])(
 		"dispatches after actual proactive summary failure with reported usage %s",
 		async (contextTokens) => {

@@ -1,4 +1,11 @@
-import type { TokenUsage, ToolUsage, ToolName, AlphaMessage } from "@alpha-code/types"
+import {
+	compactionUsageReceiptSchema,
+	MAX_COMPACTION_USAGE_RECEIPTS,
+	type TokenUsage,
+	type ToolUsage,
+	type ToolName,
+	type AlphaMessage,
+} from "@alpha-code/types"
 
 export type ParsedApiReqStartedTextType = {
 	tokensIn: number
@@ -7,6 +14,27 @@ export type ParsedApiReqStartedTextType = {
 	cacheReads: number
 	cost?: number // Only present if consolidateApiRequests has been called
 	apiProtocol?: "anthropic" | "openai"
+}
+
+const completedUsage = new WeakMap<AlphaMessage, { text: string; value: ParsedApiReqStartedTextType }>()
+
+function parseApiRequestUsage(message: AlphaMessage): ParsedApiReqStartedTextType {
+	const text = message.text ?? ""
+	const cached = message.partial === true ? undefined : completedUsage.get(message)
+	if (cached && cached.text === text) return cached.value
+	const parsed: ParsedApiReqStartedTextType = JSON.parse(text)
+	const { tokensIn, tokensOut, cacheWrites, cacheReads, cost } = parsed
+	const value = { tokensIn, tokensOut, cacheWrites, cacheReads, cost }
+	// Retain only numeric usage fields from the parsed payload, excluding provider request bodies.
+	if (
+		message.partial !== true &&
+		Object.values(value).every((field) => field === undefined || typeof field === "number")
+	) {
+		completedUsage.set(message, { text, value })
+	} else {
+		completedUsage.delete(message)
+	}
+	return value
 }
 
 /**
@@ -36,8 +64,38 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 		contextTokens: 0,
 	}
 
+	const compactionAttempts = new Set<string>()
 	// Calculate running totals.
 	messages.forEach((message) => {
+		const receipts = message.compactionUsageReceipts
+		if (Array.isArray(receipts) && receipts.length <= MAX_COMPACTION_USAGE_RECEIPTS) {
+			for (const receipt of receipts) {
+				const parsed = compactionUsageReceiptSchema.safeParse(receipt)
+				if (!parsed.success || compactionAttempts.has(parsed.data.attemptId)) continue
+				const usage = parsed.data
+				// Task totals include cache input. Reasoning is already part of output;
+				// monetary evidence belongs to existing success/error cost anchors.
+				const input = usage.inputIncludesCache
+					? usage.inputTokens
+					: usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+				const totals = {
+					input: result.totalTokensIn + input,
+					output: result.totalTokensOut + usage.outputTokens,
+					cacheReads: (result.totalCacheReads ?? 0) + (usage.cacheReadTokens ?? 0),
+					cacheWrites: (result.totalCacheWrites ?? 0) + (usage.cacheWriteTokens ?? 0),
+				}
+				if (![input, ...Object.values(totals)].every((value) => Number.isSafeInteger(value) && value >= 0)) {
+					continue
+				}
+				// Receipts are finalized even while their presentation anchor is partial.
+				// The attempt identity survives repeated anchors and cold transcript replay.
+				compactionAttempts.add(usage.attemptId)
+				result.totalTokensIn = totals.input
+				result.totalTokensOut = totals.output
+				if (usage.cacheReadTokens !== undefined) result.totalCacheReads = totals.cacheReads
+				if (usage.cacheWriteTokens !== undefined) result.totalCacheWrites = totals.cacheWrites
+			}
+		}
 		if (
 			message.type === "say" &&
 			message.partial !== true &&
@@ -58,7 +116,7 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 		}
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
-				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)
+				const parsedText = parseApiRequestUsage(message)
 				const { tokensIn, tokensOut, cacheWrites, cacheReads, cost } = parsedText
 
 				if (typeof tokensIn === "number") {
@@ -97,7 +155,7 @@ export function consolidateTokenUsage(messages: AlphaMessage[]): TokenUsage {
 
 		if (message.type === "say" && message.say === "api_req_started" && message.text) {
 			try {
-				const parsedText: ParsedApiReqStartedTextType = JSON.parse(message.text)
+				const parsedText = parseApiRequestUsage(message)
 				const { tokensIn, tokensOut } = parsedText
 
 				// Since tokensIn now stores TOTAL input tokens (including cache tokens),

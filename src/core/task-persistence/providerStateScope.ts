@@ -41,6 +41,13 @@ export function invalidateOpaqueProviderStateReplay(messages: readonly ApiMessag
 	})
 }
 
+/** Strip account/model-bound source metadata while preserving visible text and tool transactions. */
+export function stripProviderResponseItemMetadata<T>(block: T): T {
+	if (typeof block !== "object" || block === null || !("providerItem" in block)) return block
+	const { providerItem: _providerItem, ...content } = block
+	return content as T
+}
+
 export function isOpaqueProviderContentBlock(value: unknown): boolean {
 	if (typeof value !== "object" || value === null) return false
 	const block = value as Record<string, unknown>
@@ -58,9 +65,15 @@ export function hasOpaqueProviderState(value: unknown): boolean {
 	if (typeof value !== "object" || value === null) return false
 	const message = value as Record<string, unknown>
 	return (
+		message.native_compaction !== undefined ||
 		message.encrypted_content !== undefined ||
 		message.vscodeLmStatefulMarker !== undefined ||
 		(Array.isArray(message.reasoning_details) && message.reasoning_details.length > 0) ||
-		(Array.isArray(message.content) && message.content.some(isOpaqueProviderContentBlock))
+		(Array.isArray(message.content) &&
+			message.content.some(
+				(block) =>
+					isOpaqueProviderContentBlock(block) ||
+					(typeof block === "object" && block !== null && "providerItem" in block),
+			))
 	)
 }

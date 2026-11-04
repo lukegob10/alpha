@@ -1,7 +1,7 @@
 import type { PatchPlan, PatchReceipt } from "./patchPlan"
 import type { LiveProviderIdentityReceipt } from "../liveProviderIdentity"
 
-export const HOST_VERSIONS = ["1.138.0"] as const
+export const HOST_VERSIONS = ["1.141.0"] as const
 export type HostVersion = (typeof HOST_VERSIONS)[number]
 export const FAILURE_CLASSES = [
 	"provider",

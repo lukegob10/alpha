@@ -38,8 +38,8 @@ suite("Live Claude through GitHub Copilot", function () {
 
 	test("reads, patches, verifies, and resumes the same Claude task with its emitted thinking state", async () => {
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "live-copilot")
-		assert.equal(vscode.version, "1.138.0", "Claude live acceptance requires the exact reference host")
-		assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.138.0")
+		assert.equal(vscode.version, "1.141.0", "Claude live acceptance requires the exact reference host")
+		assert.equal(process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION, "1.141.0")
 		const modelId = process.env.ALPHA_E2E_ACTUAL_MODEL_ID
 		const family = process.env.ALPHA_E2E_ACTUAL_MODEL_FAMILY
 		assert.ok(modelId && family, "An actually discovered Claude model must be selected explicitly")

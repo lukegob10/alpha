@@ -124,6 +124,7 @@ export const agentLifecycleAssistantTextItemSchema = z
 		/** Message phase never substitutes for explicit turn status. */
 		phase: assistantMessagePhaseSchema.optional(),
 		outputIndex: assistantMessageMetadataSchema.shape.outputIndex,
+		memoryCitation: assistantMessageMetadataSchema.shape.memoryCitation,
 	})
 	.strict()
 
@@ -178,6 +179,8 @@ const agentLifecycleToolResultItemShapeSchema = z
 		output: z.unknown().optional(),
 		/** `result` is accepted as a neutral alias for hosts that use that term. */
 		result: z.unknown().optional(),
+		/** The journal retained a bounded diagnostic preview rather than the complete tool output. */
+		outputTruncated: z.boolean().optional(),
 	})
 	.strict()
 

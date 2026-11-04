@@ -22,7 +22,15 @@ interface Tokens {
 	idToken: string
 	expiresAt: number
 	refreshAt: number
+	/** Issuer refresh floor, retained separately from the proactive expiry margin. */
+	earliestRefreshAt?: number
 	scopes: string[]
+}
+
+export interface ChatGptRequestAuthorization {
+	readonly accessToken: string
+	/** Captures the selected account/session generation for the entire request. */
+	readonly signal: AbortSignal
 }
 
 interface Registration {
@@ -235,6 +243,10 @@ export class ChatGptAuthService {
 						!Number.isFinite(tokens.expiresAt) ||
 						typeof tokens.refreshAt !== "number" ||
 						!Number.isFinite(tokens.refreshAt) ||
+						(tokens.earliestRefreshAt !== undefined &&
+							(typeof tokens.earliestRefreshAt !== "number" ||
+								!Number.isFinite(tokens.earliestRefreshAt) ||
+								tokens.earliestRefreshAt < 0)) ||
 						!Array.isArray(tokens.scopes) ||
 						!tokens.scopes.every((scope) => typeof scope === "string"))
 				)
@@ -501,7 +513,7 @@ export class ChatGptAuthService {
 		}
 		const expiresAt = this.now() + expires * 1000
 		const earliest = typeof source?.earliest_refresh_at === "number" ? source.earliest_refresh_at * 1000 : 0
-		if (!Number.isFinite(expiresAt) || !Number.isFinite(earliest))
+		if (!Number.isFinite(expiresAt) || !Number.isFinite(earliest) || earliest < 0)
 			throw authError("ChatGPT returned an invalid credential expiry.")
 		return {
 			accessToken,
@@ -510,6 +522,7 @@ export class ChatGptAuthService {
 			scopes,
 			expiresAt,
 			refreshAt: Math.max(expiresAt - 60_000, earliest),
+			earliestRefreshAt: earliest,
 		}
 	}
 
@@ -789,7 +802,7 @@ export class ChatGptAuthService {
 		return this.status()
 	}
 
-	async authorizeRequest(signal?: AbortSignal): Promise<{ accessToken: string; signal: AbortSignal }> {
+	async authorizeRequest(signal?: AbortSignal): Promise<ChatGptRequestAuthorization> {
 		await this.load()
 		signal?.throwIfAborted()
 		this.lifetime.signal.throwIfAborted()
@@ -810,14 +823,46 @@ export class ChatGptAuthService {
 		return { accessToken, signal: session }
 	}
 
+	/** One admission recovery; account changes cannot redirect a rejected request. */
+	async recoverUnauthorizedRequest(
+		authorization: ChatGptRequestAuthorization,
+		signal?: AbortSignal,
+	): Promise<ChatGptRequestAuthorization> {
+		await this.load()
+		signal?.throwIfAborted()
+		this.lifetime.signal.throwIfAborted()
+		this.assertAuthorizationCurrent(authorization)
+		const account = this.saved.accounts.find(({ id }) => id === this.saved.activeId)
+		if (
+			this.signingOut ||
+			!account?.tokens?.scopes.includes(DIRECT_SCOPE) ||
+			this.disconnectedAccounts.has(account.id)
+		)
+			throw authError("Sign in with ChatGPT before starting a request.")
+		const accessToken = await withAbort(
+			this.refresh(account, authorization),
+			AbortSignal.any([authorization.signal, ...(signal ? [signal] : [])]),
+		)
+		signal?.throwIfAborted()
+		this.assertAuthorizationCurrent(authorization)
+		return { accessToken, signal: authorization.signal }
+	}
+
+	private assertAuthorizationCurrent(authorization: ChatGptRequestAuthorization): void {
+		authorization.signal.throwIfAborted()
+		if (authorization.signal !== this.session.signal)
+			throw authError("The ChatGPT account session changed. Retry with the selected account.")
+	}
+
 	async getAccessToken(signal?: AbortSignal): Promise<string> {
 		return (await this.authorizeRequest(signal)).accessToken
 	}
 
-	private refresh(account: Registration): Promise<string> {
+	private refresh(account: Registration, rejected?: ChatGptRequestAuthorization): Promise<string> {
 		const pending = this.refreshes.get(account.id)
 		if (pending) return pending
 		const operation = this.credentialTransaction(async () => {
+			if (rejected) this.assertAuthorizationCurrent(rejected)
 			if (this.saved.activeId !== account.id)
 				throw authError("The active ChatGPT account changed. Retry with the selected account.")
 			const current = this.saved.accounts.find(({ id }) => id === account.id)
@@ -825,8 +870,13 @@ export class ChatGptAuthService {
 				throw authError("Sign in with ChatGPT before starting a request.")
 			const previous = current.tokens
 			let tokens = this.pendingRotations.get(account.id)
-			if (!tokens && previous.expiresAt > this.now() && previous.refreshAt > this.now())
-				return previous.accessToken
+			if (!tokens && previous.expiresAt > this.now() && previous.refreshAt > this.now()) {
+				// Another window's replacement is usable without rotating it again. Legacy
+				// token sets did not retain the issuer floor, so keep their scheduled bound.
+				const rejectedCurrentToken = rejected && sameSecret(previous.accessToken, rejected.accessToken)
+				if (!rejectedCurrentToken || (previous.earliestRefreshAt ?? previous.refreshAt) > this.now())
+					return previous.accessToken
+			}
 			try {
 				if (!tokens) {
 					const result = await this.request(TOKEN_ENDPOINT, {

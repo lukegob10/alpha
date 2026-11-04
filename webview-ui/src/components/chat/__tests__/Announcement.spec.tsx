@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.17",
+		version: "3.2.22",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.17" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.22" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.17")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.22")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.17 expands GitHub Copilot model choices and preserves reasoning settings."),
+			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
 		).toBeInTheDocument()
 	})
 
@@ -50,13 +50,13 @@ describe("Announcement", () => {
 		renderAnnouncement()
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(4)
-		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Choose Grok 4.6, Grok 4.7, and Claude Haiku 5.5 in GitHub Copilot."),
+			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Use each model's supported reasoning levels for delegated work.")).toBeInTheDocument()
+		expect(screen.getByText("Call skills with /skill-name without a separate command setup.")).toBeInTheDocument()
+		expect(screen.getByText("Work in Code or Plan with a focused English interface.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Select the full GPT-5.6 family, GPT-6 Astra, Luna and Sol, and GPT-6.1 Terra and Sol."),
+			screen.getByText("Review changes in VS Code and configure more embedding models for code search."),
 		).toBeInTheDocument()
 	})
 
@@ -64,8 +64,10 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.17 expands GitHub Copilot model choices and preserves reasoning settings."),
+			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
 		).toBeInTheDocument()
-		expect(screen.getByText("Keep the resolved reasoning level visible throughout a chat.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
+		).toBeInTheDocument()
 	})
 })

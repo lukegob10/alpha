@@ -191,7 +191,7 @@ describe("native tickets", () => {
 	})
 	it("exposes read tools in Plan while restricting writes", () => {
 		const registry = new ToolRegistry()
-		for (const name of ["create_ticket", "update_ticket", "list_tickets"] as const) {
+		for (const name of ["create_ticket", "update_ticket"] as const) {
 			expect(registry.resolve(name)?.schema).toMatchObject({
 				function: {
 					parameters: {
@@ -237,13 +237,28 @@ describe("native tickets", () => {
 			function: {
 				parameters: {
 					properties: {
-						type: {
-							description: "Filter by classification; null finds untagged tickets. Omit for all types.",
+						typeFilter: {
+							type: ["string", "null"],
+							enum: [
+								"bug",
+								"feature",
+								"improvement",
+								"testing",
+								"performance",
+								"ux",
+								"decision",
+								"review",
+								"untagged",
+								null,
+							],
+							description:
+								"Filter by classification; untagged finds tickets with no type. Omit or use null for all types.",
 						},
 					},
 				},
 			},
 		})
+		expect(registry.resolve("list_tickets")?.schema).not.toHaveProperty("function.parameters.properties.type")
 		for (const name of ["list_tickets", "update_ticket"] as const) {
 			expect(registry.resolve(name)?.schema).toMatchObject({
 				function: {
@@ -263,7 +278,7 @@ describe("native tickets", () => {
 			expect(registry.resolve(name)?.capabilities.sideEffects).toBe("none")
 			expect(isToolAllowedForMode(name, "architect", [])).toBe(true)
 		}
-		for (const name of ["create_ticket", "update_ticket", "delete_ticket"] as const) {
+		for (const name of ["create_ticket", "update_ticket", "delete_ticket", "delete_tickets"] as const) {
 			expect(registry.resolve(name)?.capabilities).toMatchObject({
 				concurrency: "serial",
 				sideEffects: "external",

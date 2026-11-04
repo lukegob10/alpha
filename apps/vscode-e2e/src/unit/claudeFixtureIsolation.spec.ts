@@ -15,7 +15,7 @@ for (const providerMode of ["vscode-lm-fixture", "scripted", "live-copilot"] as 
 			const result = await runExtensionTests(
 				{
 					providerMode,
-					vscodeVersion: "1.138.0",
+					vscodeVersion: "1.141.0",
 					profileDir: path.join(root, "profile"),
 					workspace: path.join(root, "workspace"),
 					artifactsDir: path.join(root, "artifacts"),

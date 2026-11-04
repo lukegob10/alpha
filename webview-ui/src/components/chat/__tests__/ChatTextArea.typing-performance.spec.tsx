@@ -5,6 +5,7 @@ import { defaultModeSlug } from "@alpha/modes"
 import { act, fireEvent, render, screen } from "@src/utils/test-utils"
 
 import { ChatTextArea } from "../ChatTextArea"
+import type { RestoreHistoryDraft } from "../hooks/usePromptHistory"
 
 const { mockUseShellState } = vi.hoisted(() => ({ mockUseShellState: vi.fn() }))
 
@@ -50,10 +51,14 @@ function DraftComposer({
 	onSubmit,
 	inputRef,
 	isStreaming = false,
+	isEditMode = false,
+	onRestoreHistoryDraft,
 }: {
 	onSubmit: (draft: string) => void
 	inputRef?: Ref<HTMLTextAreaElement>
 	isStreaming?: boolean
+	isEditMode?: boolean
+	onRestoreHistoryDraft?: RestoreHistoryDraft
 }) {
 	const [inputValue, setInputValue] = useState("")
 	return (
@@ -64,6 +69,8 @@ function DraftComposer({
 			setInputValue={setInputValue}
 			onSend={() => onSubmit(inputValue)}
 			isStreaming={isStreaming}
+			isEditMode={isEditMode}
+			onRestoreHistoryDraft={onRestoreHistoryDraft}
 		/>
 	)
 }
@@ -199,6 +206,61 @@ describe("composer typing resources", () => {
 		expect(onSubmit).not.toHaveBeenCalled()
 		fireEvent.keyDown(textarea, { key: "Enter" })
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith("Draft with an IME")
+	})
+
+	it.each([false, true])("leaves completion-menu keys with the active IME (edit=%s)", (isEditMode) => {
+		vi.useFakeTimers()
+		mockUseShellState.mockReturnValue({
+			...shellState,
+			openedTabs: [{ path: "fixture.ts" }, { path: "fixture-two.ts" }],
+		})
+		const onSubmit = vi.fn()
+		render(<DraftComposer onSubmit={onSubmit} isEditMode={isEditMode} />)
+		const textarea = screen.getByRole("textbox")
+		fireEvent.change(textarea, { target: { value: "@f", selectionStart: 2 } })
+		const menu = screen.getByRole("listbox")
+		expect(screen.getAllByRole("option")).toHaveLength(2)
+		const selectedOption = textarea.getAttribute("aria-activedescendant")
+		expect(selectedOption).toBeTruthy()
+		for (const key of ["Enter", "ArrowUp", "ArrowDown", "Tab", "Escape"]) {
+			expect(fireEvent.keyDown(textarea, { key, isComposing: true })).toBe(true)
+			expect(textarea).toHaveValue("@f")
+			expect(screen.getByRole("listbox")).toBe(menu)
+			expect(textarea).toHaveAttribute("aria-activedescendant", selectedOption)
+		}
+		expect(onSubmit).not.toHaveBeenCalled()
+		fireEvent.keyDown(textarea, { key: "Enter" })
+		expect(textarea).toHaveValue("@/fixture.ts ")
+		expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+		expect(onSubmit).not.toHaveBeenCalled()
+	})
+
+	it.each(["keyboard", "button"])("ends draft recovery after a %s submission", (submission) => {
+		vi.useFakeTimers()
+		mockUseShellState.mockReturnValue({
+			...shellState,
+			alphaMessages: [{ type: "say", say: "user_feedback", text: "previous prompt", ts: 1 }],
+		})
+		const onSubmit = vi.fn()
+		const restore = vi.fn()
+		const view = render(<DraftComposer onSubmit={onSubmit} onRestoreHistoryDraft={restore} />)
+		const textarea = screen.getByRole("textbox") as HTMLTextAreaElement
+		fireEvent.change(textarea, { target: { value: "unsent draft" } })
+		textarea.setSelectionRange(0, 0)
+		fireEvent.keyDown(textarea, { key: "ArrowUp" })
+		expect(textarea).toHaveValue("previous prompt")
+		if (submission === "keyboard") {
+			fireEvent.keyDown(textarea, { key: "Enter" })
+		} else {
+			fireEvent.click(
+				screen.getByRole("button", {
+					name: (_, button) => button.querySelector(".lucide-send-horizontal") !== null,
+				}),
+			)
+		}
+		expect(onSubmit).toHaveBeenCalledExactlyOnceWith("previous prompt")
+		view.unmount()
+		expect(restore).not.toHaveBeenCalled()
 	})
 
 	it("preserves Enter=newline and the Ctrl+Enter send shortcut", () => {

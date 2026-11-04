@@ -358,6 +358,15 @@ const renderSettingsView = (targetSection?: string, initialState: Record<string,
 describe("SettingsView - Startup rendering", () => {
 	beforeEach(() => vi.clearAllMocks())
 
+	it.each(["modes", "prompts"])("opens the default section for the retired %s settings page", (section) => {
+		const { getSettingsContent } = renderSettingsView(section)
+
+		expect(sectionNames).not.toContain(section)
+		expect(screen.queryByTestId(`tab-${section}`)).not.toBeInTheDocument()
+		expect(screen.getByTestId("tab-providers")).toHaveAttribute("data-selected", "true")
+		expect(within(getSettingsContent()).getByTestId("api-config-management")).toBeInTheDocument()
+	})
+
 	it("opens the discoverable Agents route with its buffered controls", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
 		expect(sectionNames).toContain("agents")
@@ -400,16 +409,21 @@ describe("SettingsView - Startup rendering", () => {
 			}
 			const search = screen.getByTestId("settings-search-input")
 			fireEvent.focus(search)
-			for (const section of ["providers", "slashCommands", "skills", "modes", "mcp", "worktrees"]) {
+			for (const section of ["providers", "skills", "mcp", "worktrees"]) {
 				fireEvent.change(search, { target: { value: `settings:sections.${section}` } })
 				expect(screen.getByRole("option", { name: `settings:sections.${section}` })).toHaveAttribute(
 					"id",
 					`settings-search-result-tab-${section}`,
 				)
 			}
+			fireEvent.change(search, { target: { value: "settings:sections.slashCommands" } })
+			expect(screen.queryByRole("option", { name: "settings:sections.slashCommands" })).not.toBeInTheDocument()
+			fireEvent.change(search, { target: { value: "settings:sections.modes" } })
+			expect(screen.queryByRole("option", { name: "settings:sections.modes" })).not.toBeInTheDocument()
+			fireEvent.change(search, { target: { value: "settings:sections.prompts" } })
+			expect(screen.queryByRole("option", { name: "settings:sections.prompts" })).not.toBeInTheDocument()
 
 			for (const { section, requests } of [
-				{ section: "slashCommands", requests: ["requestCommands"] },
 				{ section: "skills", requests: ["requestSkills"] },
 				{ section: "worktrees", requests: ["listWorktrees", "getWorktreeIncludeStatus"] },
 			]) {

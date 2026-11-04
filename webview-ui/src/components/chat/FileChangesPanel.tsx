@@ -1,19 +1,19 @@
-import { memo, useEffect, useMemo, useState, useCallback, useRef, useId } from "react"
+import { memo, useEffect, useLayoutEffect, useMemo, useState, useCallback, useRef } from "react"
 import { useTranslation } from "react-i18next"
 import { ChevronDown, ChevronRight, FileDiff } from "lucide-react"
-import { createTwoFilesPatch, diffLines } from "diff"
+import { diffLines } from "diff"
 
-import type { AlphaMessage, OpenDiffFile } from "@alpha-code/types"
+import type { AlphaMessage } from "@alpha-code/types"
 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui"
 import { cn } from "@/lib/utils"
-import { vscode } from "@src/utils/vscode"
+import { openFileDiffs, type ReviewFile } from "@src/utils/openDiff"
 import {
 	fileChangesFromMessages,
 	normalizedFileChangePath,
 	type FileChangeEntry,
 } from "./utils/fileChangesFromMessages"
-import DiffView from "../common/DiffView"
+import { projectTranscriptTurns } from "./utils/transcriptTurns"
 
 interface FileChangesPanelProps {
 	alphaMessages: AlphaMessage[] | undefined
@@ -22,9 +22,6 @@ interface FileChangesPanelProps {
 	onExpandedChange?: () => void
 }
 
-// Larger reviews remain available inline; the host limits each native review request.
-const MAX_NATIVE_DIFF_FILES = 128
-const MAX_NATIVE_DIFF_TITLE_LENGTH = 256
 const MAX_CACHED_NET_STATS = 128
 
 function countChangedLines(originalContent: string, finalContent: string): { added: number; removed: number } {
@@ -37,31 +34,12 @@ function countChangedLines(originalContent: string, finalContent: string): { add
 	return { added, removed }
 }
 
-interface CapturedDiffViewProps {
-	filePath: string
-	originalContent: string
-	finalContent: string
-}
-
-// Transcript updates recreate the edit projection; unchanged snapshots retain their rendered patch.
-const CapturedDiffView = memo(function CapturedDiffView({
-	filePath,
-	originalContent,
-	finalContent,
-}: CapturedDiffViewProps) {
-	return (
-		<DiffView source={createTwoFilesPatch(filePath, filePath, originalContent, finalContent)} filePath={filePath} />
-	)
-})
-
 const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedChange }: FileChangesPanelProps) => {
 	const { t } = useTranslation()
 	const [panelExpanded, setPanelExpanded] = useState(false)
 	const [showAllFiles, setShowAllFiles] = useState(false)
-	const panelId = useId()
-	const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set())
-	const reviewInitializedRef = useRef(false)
-	const userToggledPathsRef = useRef(new Set<string>())
+	const triggerRef = useRef<HTMLButtonElement>(null)
+	const contentRef = useRef<HTMLDivElement>(null)
 	const netStatsCacheRef = useRef(
 		new Map<string, { originalContent: string; finalContent: string; stats: { added: number; removed: number } }>(),
 	)
@@ -70,11 +48,18 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 	useEffect(() => {
 		setPanelExpanded(false)
 		setShowAllFiles(false)
-		setExpandedPaths(new Set())
-		reviewInitializedRef.current = false
-		userToggledPathsRef.current.clear()
 		netStatsCacheRef.current.clear()
 	}, [taskId])
+
+	const turnCompleted = useMemo(
+		() => projectTranscriptTurns(alphaMessages ?? []).some((turn) => turn.terminalStatus === "completed"),
+		[alphaMessages],
+	)
+	useLayoutEffect(() => {
+		if (!turnCompleted) return
+		if (contentRef.current?.contains(document.activeElement)) triggerRef.current?.focus({ preventScroll: true })
+		setPanelExpanded(false)
+	}, [turnCompleted])
 
 	const fileChanges = useMemo(() => fileChangesFromMessages(alphaMessages), [alphaMessages])
 
@@ -144,69 +129,27 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 		[summariesByPath],
 	)
 
-	const diffFilesByPath = useMemo(() => {
-		const snapshots = new Map<string, OpenDiffFile>()
-		for (const [path, entries] of byPath) {
-			const originalContent = entries[0].originalContent
-			const finalContent = entries[entries.length - 1].finalContent
-			if (originalContent !== undefined && finalContent !== undefined) {
-				snapshots.set(path, { path, originalContent, finalContent })
-			}
-		}
-		return snapshots
-	}, [byPath])
+	const reviewFiles = useMemo<ReviewFile[]>(
+		() =>
+			Array.from(byPath, ([path, entries]) => ({
+				path,
+				diff: entries.map((entry) => entry.diff).join("\n\n"),
+				originalContent: entries[0].originalContent,
+				finalContent: entries[entries.length - 1].finalContent,
+			})),
+		[byPath],
+	)
 
 	const openDiff = useCallback(
-		(files: OpenDiffFile[]) => {
-			if (files.length === 0 || files.length > MAX_NATIVE_DIFF_FILES) return
+		(files: ReviewFile[]) => {
+			const fallbackTitle = t("chat:fileChangesInConversation.diffTitle")
 			const title =
 				files.length === 1
 					? t("chat:fileChangesInConversation.diffTitleForFile", { path: files[0].path })
-					: t("chat:fileChangesInConversation.diffTitle")
-			vscode.postMessage({
-				type: "openDiff",
-				payload: {
-					title:
-						title.length <= MAX_NATIVE_DIFF_TITLE_LENGTH
-							? title
-							: t("chat:fileChangesInConversation.diffTitle"),
-					files,
-				},
-			})
+					: fallbackTitle
+			openFileDiffs(files, title, fallbackTitle)
 		},
 		[t],
-	)
-
-	const reviewChanges = useCallback(() => {
-		const files = Array.from(diffFilesByPath.values())
-		openDiff(files)
-		if (byPath.size === 1 && files.length > 0) return
-
-		onExpandedChange?.()
-		setPanelExpanded(true)
-		setShowAllFiles(true)
-		// Initialize the bottom displayed file once; explicit choices before Review also remain authoritative.
-		if (!reviewInitializedRef.current) {
-			reviewInitializedRef.current = true
-			const bottomPath = Array.from(byPath.keys()).at(-1)
-			if (bottomPath && !userToggledPathsRef.current.has(bottomPath)) {
-				setExpandedPaths((previous) => new Set(previous).add(bottomPath))
-			}
-		}
-	}, [byPath, diffFilesByPath, onExpandedChange, openDiff])
-
-	const togglePath = useCallback(
-		(path: string) => {
-			onExpandedChange?.()
-			userToggledPathsRef.current.add(path)
-			setExpandedPaths((prev) => {
-				const next = new Set(prev)
-				if (next.has(path)) next.delete(path)
-				else next.add(path)
-				return next
-			})
-		},
-		[onExpandedChange],
 	)
 
 	if (fileChanges.length === 0) return null
@@ -223,6 +166,7 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 			className={cn("mx-[15px] my-3 overflow-hidden rounded-xl border border-[var(--border-subtle)]", className)}>
 			<div className="flex items-stretch bg-[var(--surface-raised)]">
 				<CollapsibleTrigger
+					ref={triggerRef}
 					className={cn(
 						"flex min-w-0 flex-1 items-center gap-3 px-3 py-3 text-left text-vscode-foreground transition-colors",
 						"hover:bg-vscode-list-hoverBackground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder",
@@ -263,78 +207,34 @@ const FileChangesPanel = memo(({ alphaMessages, taskId, className, onExpandedCha
 				<button
 					type="button"
 					aria-label={t("chat:fileChangesInConversation.openAllDiffs")}
-					onClick={reviewChanges}
+					onClick={() => openDiff(reviewFiles)}
 					className="my-auto mr-3 shrink-0 rounded-lg border border-[var(--border-subtle)] bg-vscode-editor-background px-2.5 py-1 text-xs text-vscode-foreground hover:bg-vscode-list-hoverBackground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder">
 					{t("chat:fileChangesInConversation.openAllDiffs")}
 				</button>
 			</div>
-			<CollapsibleContent>
+			<CollapsibleContent ref={contentRef}>
 				<div className="border-t border-[var(--border-subtle)]">
-					{Array.from(byPath.entries())
-						.slice(0, showAllFiles ? undefined : 3)
-						.map(([path, entries], index) => {
-							const originalContent = entries[0].originalContent
-							const finalContent = entries[entries.length - 1].finalContent
-							const diffSnapshot = diffFilesByPath.get(path)
-							const isExpanded = expandedPaths.has(path)
-							const combinedStats = summariesByPath.get(path)!
-							return (
-								<div key={path}>
-									<div className="flex items-center px-3 hover:bg-vscode-list-hoverBackground">
-										<button
-											type="button"
-											aria-expanded={isExpanded}
-											aria-controls={`${panelId}-file-${index}`}
-											onClick={() => togglePath(path)}
-											className="flex min-w-0 flex-1 items-center gap-3 py-2 text-left text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
-											<span className="min-w-0 flex-1 truncate" title={path}>
-												{path}
-											</span>
-										</button>
-										<button
-											type="button"
-											aria-label={t("chat:fileChangesInConversation.openDiff", { path })}
-											aria-expanded={diffSnapshot ? undefined : isExpanded}
-											aria-controls={diffSnapshot ? undefined : `${panelId}-file-${index}`}
-											onClick={() => {
-												if (diffSnapshot) openDiff([diffSnapshot])
-												else togglePath(path)
-											}}
-											className="ml-2 flex h-6 shrink-0 items-center gap-2 rounded px-1 text-vscode-descriptionForeground hover:text-vscode-foreground focus-visible:outline focus-visible:outline-1 focus-visible:outline-vscode-focusBorder">
-											{(combinedStats.added > 0 || combinedStats.removed > 0) && (
-												<span className="flex shrink-0 gap-1 text-xs tabular-nums">
-													<span className="text-vscode-charts-green">
-														+{combinedStats.added}
-													</span>
-													<span className="text-vscode-charts-red">
-														-{combinedStats.removed}
-													</span>
-												</span>
-											)}
-											<FileDiff className="size-3.5" aria-hidden />
-										</button>
-									</div>
-									<div
-										id={`${panelId}-file-${index}`}
-										hidden={!isExpanded}
-										className="max-h-80 overflow-auto border-t border-[var(--border-subtle)]">
-										{isExpanded &&
-											(originalContent !== undefined && finalContent != null ? (
-												<CapturedDiffView
-													filePath={path}
-													originalContent={originalContent}
-													finalContent={finalContent}
-												/>
-											) : (
-												<DiffView
-													source={entries.map((entry) => entry.diff).join("\n\n")}
-													filePath={path}
-												/>
-											))}
-									</div>
-								</div>
-							)
-						})}
+					{reviewFiles.slice(0, showAllFiles ? undefined : 3).map((file) => {
+						const stats = summariesByPath.get(file.path)!
+						return (
+							<button
+								key={file.path}
+								type="button"
+								aria-label={t("chat:fileChangesInConversation.openDiff", { path: file.path })}
+								onClick={() => openDiff([file])}
+								className="flex w-full min-w-0 items-center gap-3 px-3 py-2 text-left text-vscode-foreground hover:bg-vscode-list-hoverBackground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-vscode-focusBorder">
+								<span className="min-w-0 flex-1 truncate" title={file.path}>
+									{file.path}
+								</span>
+								{(stats.added > 0 || stats.removed > 0) && (
+									<span className="flex shrink-0 gap-1 text-xs tabular-nums">
+										<span className="text-vscode-charts-green">+{stats.added}</span>
+										<span className="text-vscode-charts-red">-{stats.removed}</span>
+									</span>
+								)}
+							</button>
+						)
+					})}
 				</div>
 				{fileCount > 3 && (
 					<button

@@ -81,9 +81,9 @@ const providerResponse = { id: "response-ordered", status: "completed", output, 
 const variants = [
 	"nonstreaming",
 	"streamed receipts",
-	"final-only reasoning",
-	"late opaque metadata",
-	"updated summary",
+	"late reasoning receipts",
+	"terminal-only",
+	"summary before receipt",
 ]
 
 function mockProviderResponse(variant: string) {
@@ -91,8 +91,11 @@ function mockProviderResponse(variant: string) {
 		variant === "nonstreaming"
 			? providerResponse
 			: (async function* () {
-					for (const [output_index, item] of output.entries()) {
-						if (item.type === "reasoning" && variant === "final-only reasoning") continue
+					// Codex a0981298 sse/responses.rs (2026-11-02): sealed reasoning belongs
+					// to item-done receipts. Keep Alpha's terminal-only compatibility path separate.
+					const streamedOutput = variant === "terminal-only" ? [] : output
+					for (const [output_index, item] of streamedOutput.entries()) {
+						if (item.type === "reasoning" && variant === "late reasoning receipts") continue
 						if (item.type === "message") {
 							for (const delta of [item.content[0]!.text.slice(0, 5), item.content[0]!.text.slice(5)]) {
 								yield { type: "response.output_text.delta", output_index, content_index: 0, delta }
@@ -103,15 +106,23 @@ function mockProviderResponse(variant: string) {
 								yield { type: "response.function_call_arguments.delta", output_index, delta }
 							}
 						}
-						const streamedItem =
-							item.type === "reasoning" && variant === "late opaque metadata"
-								? { ...item, encrypted_content: undefined }
-								: item.type === "reasoning" && variant === "updated summary"
-									? { ...item, summary: [] }
-									: item
+						if (item.type === "reasoning" && variant === "summary before receipt") {
+							yield {
+								type: "response.reasoning_summary_text.done",
+								output_index,
+								summary_index: 0,
+								text: item.summary[0]!.text,
+							}
+						}
 						// Duplicate receipts and the completed response are the same item.
-						yield { type: "response.output_item.done", output_index, item: streamedItem }
-						yield { type: "response.output_item.done", output_index, item: streamedItem }
+						yield { type: "response.output_item.done", output_index, item }
+						yield { type: "response.output_item.done", output_index, item }
+					}
+					if (variant === "late reasoning receipts") {
+						for (const [output_index, item] of output.entries()) {
+							if (item.type === "reasoning")
+								yield { type: "response.output_item.done", output_index, item }
+						}
 					}
 					yield { type: "response.completed", response: providerResponse }
 				})(),
@@ -191,7 +202,20 @@ describe("OpenAI reasoning persistence and replay", () => {
 		const handler = new OpenAiHandler({ ...options, openAiStreamingEnabled: variant !== "nonstreaming" })
 		const response = await collectResponse(handler)
 		expect(response.toolCalls).toEqual([
-			{ type: "tool_call", id: "read-call", name: "read_file", arguments: { path: "a.ts" } },
+			{
+				type: "tool_call",
+				id: "read-call",
+				name: "read_file",
+				arguments: { path: "a.ts" },
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: "function-item",
+					status: "completed",
+				},
+			},
 		])
 		const expectedOpaqueReasoning = [
 			{
@@ -213,14 +237,8 @@ describe("OpenAI reasoning persistence and replay", () => {
 			{ type: "reasoning", text: "First summary.", outputIndex: 1 },
 			{ type: "reasoning", text: "Second summary.", outputIndex: 3 },
 		]
-		// A late summary follows its already-received opaque item at the same source position.
-		// Both remain canonical evidence; provider-history projection below must replay only the sealed item.
 		expect(response.items.filter((item) => item.type === "reasoning")).toEqual(
-			expectedOpaqueReasoning.flatMap((opaque, index) =>
-				variant === "updated summary"
-					? [opaque, expectedVisibleReasoning[index]]
-					: [expectedVisibleReasoning[index], opaque],
-			),
+			expectedOpaqueReasoning.flatMap((opaque, index) => [expectedVisibleReasoning[index], opaque]),
 		)
 		expect(response.reasoning).toBe("First summary.Second summary.")
 		expect(handler.getReasoningItems()).toHaveLength(2)
@@ -237,11 +255,52 @@ describe("OpenAI reasoning persistence and replay", () => {
 		const reloaded: ApiMessage[] = JSON.parse(JSON.stringify(task.apiConversationHistory))
 		expect(invalidPersistedApiMessages(reloaded)).toBeUndefined()
 		expect(reloaded[0]!.content).toEqual([
-			{ type: "text", text: "Before the read.", id: "message-before", outputIndex: 0 },
+			{
+				type: "text",
+				text: "Before the read.",
+				id: "message-before",
+				outputIndex: 0,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "message",
+					id: "message-before",
+					status: "completed",
+					content: [{ type: "output_text", length: 16, annotations: [] }],
+				},
+			},
 			firstReasoning,
-			{ type: "tool_use", id: "read-call", name: "read_file", input: { path: "a.ts" } },
+			{
+				type: "tool_use",
+				id: "read-call",
+				name: "read_file",
+				input: { path: "a.ts" },
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "function_call",
+					id: "function-item",
+					status: "completed",
+				},
+			},
 			secondReasoning,
-			{ type: "text", text: "After the read.", id: "message-after", outputIndex: 4 },
+			{
+				type: "text",
+				text: "After the read.",
+				id: "message-after",
+				outputIndex: 4,
+				providerItem: {
+					protocol: "openai-responses",
+					providerId: "openai",
+					modelId: "gpt-6.1-sol",
+					itemType: "message",
+					id: "message-after",
+					status: "completed",
+					content: [{ type: "output_text", length: 15, annotations: [] }],
+				},
+			},
 		])
 		for (const store of [false, true]) {
 			expect(buildOpenAiResponsesInput("", [], task.buildCleanConversationHistory(reloaded), store)).toEqual(

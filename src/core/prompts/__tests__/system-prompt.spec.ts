@@ -887,7 +887,8 @@ describe("SYSTEM_PROMPT", () => {
 		// Previous Alpha-only base prompt: 2,158 o200k tokens. Blindly appending the 3,552-token GPT-5.6 base costs 5,710.
 		// Codex-compatible patch routing guidance adds 48 local tokens to the captured Code prompt.
 		// Direct native batching guidance adds 67 tokens; no wrapper tool or duplicate model prompt is needed.
-		expect(newTokenCount).toBe(4294)
+		// Ticket filtering/deletion guidance adds 97 tokens in this same fixture.
+		expect(newTokenCount).toBe(4391)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 
@@ -1085,7 +1086,7 @@ describe("SYSTEM_PROMPT", () => {
 		expect(prompt).toContain("Your own judgment that delegation would be useful is not authorization")
 	})
 
-	it("should include vscode language in custom instructions", async () => {
+	it("should use English custom instructions for a retired VS Code language", async () => {
 		// Mock vscode.env.language
 		const vscode = vi.mocked(await import("vscode")) as any
 		vscode.env = { language: "es" }
@@ -1129,7 +1130,7 @@ describe("SYSTEM_PROMPT", () => {
 		)
 
 		expect(prompt).toContain("Language Preference:")
-		expect(prompt).toContain('You should always speak and think in the "es" language')
+		expect(prompt).toContain('You should always speak and think in the "en" language')
 
 		// Reset mock
 		vscode.env = { language: "en" }

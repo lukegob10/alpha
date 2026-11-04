@@ -44,7 +44,7 @@ const attemptSchema = z.object({
 	request: z.object({
 		campaignId: improvementIdSchema,
 		attemptId: improvementIdSchema,
-		host: z.object({ version: z.literal("1.138.0") }),
+		host: z.object({ version: z.literal("1.141.0") }),
 		scenarioId: improvementIdSchema,
 		sample: z.number().int().nonnegative(),
 		phase: z.enum(["sample", "reproduce", "regression-before", "verify-fix", "neighbor"]),
@@ -85,7 +85,7 @@ const phaseSchema = z
 	.object({
 		phase: z.enum(["run", "prepare", "continue"]),
 		runId: improvementIdSchema,
-		actualHostVersion: z.literal("1.138.0"),
+		actualHostVersion: z.enum(["1.138.0", "1.141.0"]),
 		modelId: text,
 		reasoningEffort: text.optional(),
 		providerIdentityDigest: improvementDigestSchema,
@@ -249,7 +249,7 @@ export async function importHostEvidence(
 					throw new Error("Host runner identity mismatch")
 				const started = await read(`${directory}/live-host-started.json`)
 				const nonce = z.object({ nonce: z.string() }).parse(started.value).nonce
-				const expectedHost = { runId, nonce, actualVSCodeVersion: "1.138.0" }
+				const expectedHost = { runId, nonce, actualVSCodeVersion: "1.141.0" }
 				const start = validateLiveHostReceipt(started.value, expectedHost, "started")
 				const completionFile = await read(`${directory}/host-completion.json`)
 				const completion = validateLiveHostReceipt(completionFile.value, expectedHost, "terminal", start)
@@ -278,7 +278,7 @@ export async function importHostEvidence(
 					runId,
 				)
 				if (
-					workflow.result.actualHostVersion !== "1.138.0" ||
+					workflow.result.actualHostVersion !== "1.141.0" ||
 					workflow.result.model?.id !== runner.actualModelId ||
 					canonicalJson(workflow.result.taskIds) !== canonicalJson(manifest.metadata.taskIds) ||
 					(attempt.result.status === "passed" && workflow.result.status !== "passed")
@@ -313,7 +313,7 @@ export async function importHostEvidence(
 				phases.push({
 					phase,
 					runId,
-					actualHostVersion: "1.138.0",
+					actualHostVersion: "1.141.0",
 					modelId: runner.actualModelId,
 					...(runner.actualReasoningEffort ? { reasoningEffort: runner.actualReasoningEffort } : {}),
 					providerIdentityDigest: sha256(canonicalJson(runner.providerIdentity)),
@@ -383,8 +383,8 @@ const manifestSchema = z.object({
 	captureComplete: z.boolean(),
 	metadata: z.object({
 		scenarioId: improvementIdSchema,
-		hostVersion: z.literal("1.138.0"),
-		requestedHostVersion: z.literal("1.138.0"),
+		hostVersion: z.literal("1.141.0"),
+		requestedHostVersion: z.literal("1.141.0"),
 		provider: z.literal("live-copilot"),
 		modelId: text,
 		reasoningEffort: text.optional(),
@@ -406,7 +406,7 @@ const runnerSchema = z.object({
 	runId: improvementIdSchema,
 	status: z.enum(["passed", "failed", "blocked"]),
 	providerMode: z.literal("live-copilot"),
-	actualVSCodeVersion: z.literal("1.138.0"),
+	actualVSCodeVersion: z.literal("1.141.0"),
 	actualModelId: text,
 	actualReasoningEffort: text.optional(),
 	execution: z.literal("extension-host"),

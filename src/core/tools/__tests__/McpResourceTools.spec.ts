@@ -69,6 +69,10 @@ describe("MCP resource tools", () => {
 		expect(callbacks.askApproval).toHaveBeenCalledWith(
 			"use_mcp_server",
 			expect.stringContaining('"uri":"resources/list"'),
+			undefined,
+			undefined,
+			undefined,
+			expect.stringMatching(/^[a-f0-9]{64}$/),
 		)
 		expect(callbacks.askApproval.mock.invocationCallOrder[0]).toBeLessThan(
 			listResources.mock.invocationCallOrder[0],

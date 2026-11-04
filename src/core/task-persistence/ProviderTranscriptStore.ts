@@ -4,7 +4,7 @@ import * as fs from "fs/promises"
 import * as path from "path"
 import { z } from "zod"
 
-import type { ApiMessage, ApiMessagesCommitReceipt } from "./apiMessages"
+import type { ApiMessage, ApiMessagesCommitReceipt, ApiMessagesWritePrecondition } from "./apiMessages"
 import { atomicWriteJson, withFileLock } from "./atomicWrite"
 import { invalidPersistedApiMessages } from "./validatePersistedApiMessages"
 import { GlobalFileNames } from "../../shared/globalFileNames"
@@ -157,6 +157,12 @@ export class ProviderTranscriptStore {
 	private readonly now: () => number
 	private readonly fileName: string
 	private cachedReceipt: ProviderTranscriptCommitReceipt | undefined
+	private preservedConflictDrain?: {
+		priorFingerprint: string
+		precondition: { digest: string; byteLength: number }
+		evidencePath: string
+		consumed: boolean
+	}
 
 	constructor(
 		private readonly taskId: string,
@@ -286,6 +292,8 @@ export class ProviderTranscriptStore {
 						)
 					}
 					this.cachedReceipt = current
+					if (this.preservedConflictDrain?.priorFingerprint !== fingerprintCommitReceipt(current))
+						this.preservedConflictDrain = undefined
 					return Object.freeze({ ...current })
 				}
 				if (expectedRevision !== undefined && expectedRevision !== (current?.revision ?? 0)) {
@@ -311,6 +319,7 @@ export class ProviderTranscriptStore {
 				}
 				await atomicWriteJson(filePath, receipt, { requireAtomicReplace: true })
 				this.cachedReceipt = receipt
+				this.preservedConflictDrain = undefined
 				return Object.freeze({ ...receipt })
 			})
 		} catch (error) {
@@ -396,9 +405,67 @@ export class ProviderTranscriptStore {
 				await verifyAuthoritativeBytes(
 					path.join(path.dirname(filePath), GlobalFileNames.apiConversationHistory),
 					record,
+					(preserved) => {
+						const priorFingerprint = fingerprintCommitReceipt(receipt)
+						// A second verification cannot renew or replace the one drain for
+						// this logical owner receipt, even after another external edit.
+						if (this.preservedConflictDrain?.priorFingerprint === priorFingerprint) return
+						this.preservedConflictDrain = { ...preserved, priorFingerprint, consumed: false }
+					},
 				)
 			}
 		})
+	}
+
+	/** One failed scheduler may close accepted calls after their exact conflict bytes were preserved. */
+	async takePreservedConflictForTerminalDrain(
+		receipt: ProviderTranscriptCommitReceipt,
+		retryClaimed = false,
+	): Promise<ApiMessagesWritePrecondition | undefined> {
+		const preserved = this.preservedConflictDrain
+		if (!preserved || (preserved.consumed && !retryClaimed) || (!preserved.consumed && retryClaimed))
+			return undefined
+		if (preserved.priorFingerprint !== fingerprintCommitReceipt(receipt)) {
+			throw new ProviderTranscriptStoreError(
+				"receipt_mismatch",
+				"Conflict drain belongs to another transcript receipt",
+				this.taskId,
+			)
+		}
+		// An explicit retry revalidates the same claim and archive. It never
+		// acquires a newer external preimage or renews a consumed logical receipt.
+		preserved.consumed = true
+		const filePath = await this.getFilePath()
+		await withFileLock(filePath, async () => {
+			const current = (await readRawRecord(filePath, this.taskId)) ?? emptyEnvelope(this.taskId)
+			assertCommitReceipt(receipt, current)
+			try {
+				const evidence = await fs.open(preserved.evidencePath, "r")
+				try {
+					const before = await evidence.stat({ bigint: true })
+					const named = await fs.lstat(preserved.evidencePath, { bigint: true })
+					if (
+						!named.isFile() ||
+						!sameFileSnapshot(named, before) ||
+						before.size !== BigInt(preserved.precondition.byteLength) ||
+						(await hashTranscriptExtent(evidence, preserved.precondition.byteLength)) !==
+							preserved.precondition.digest
+					)
+						throw new Error("Preserved conflict evidence changed")
+					await assertUnchangedAuthoritativeSource(preserved.evidencePath, evidence, before, this.taskId)
+				} finally {
+					await evidence.close()
+				}
+			} catch (cause) {
+				throw new ProviderTranscriptStoreError(
+					"repair_failed",
+					"Preserved transcript conflict evidence is unavailable; terminal receipts remain pending",
+					this.taskId,
+					{ cause },
+				)
+			}
+		})
+		return { ...preserved.precondition }
 	}
 
 	/**
@@ -705,60 +772,99 @@ async function readRawEnvelope(filePath: string, taskId: string): Promise<Provid
 	})
 }
 
-function assertAuthoritativeDigest(receipt: AuthoritativeReceipt, digest: string, byteLength: number): void {
+type AuthoritativeByteIdentity = Pick<AuthoritativeReceipt, "taskId" | "digest" | "byteLength">
+
+function assertAuthoritativeDigest(receipt: AuthoritativeByteIdentity, digest: string, byteLength: number): void {
 	if (receipt.digest !== digest || receipt.byteLength !== byteLength) {
 		throw new ProviderTranscriptDigestMismatchError(receipt.taskId, receipt.digest, digest)
 	}
 }
 
+function fingerprintCommitReceipt(receipt: ProviderTranscriptCommitReceipt): string {
+	return JSON.stringify([
+		receipt.taskId,
+		receipt.version,
+		receipt.revision,
+		receipt.digest,
+		receipt.writtenAt,
+		...(receipt.version === 2 ? [receipt.commitId, receipt.byteLength] : []),
+	])
+}
+
+interface PreservedTranscriptConflict {
+	precondition: { digest: string; byteLength: number }
+	evidencePath: string
+}
+
 /** Always read the bytes: timestamps, inode identity and cached receipts are not integrity evidence. */
-async function verifyAuthoritativeBytes(filePath: string, receipt: AuthoritativeReceipt): Promise<void> {
+async function verifyAuthoritativeBytes(
+	filePath: string,
+	receipt: AuthoritativeReceipt,
+	onPreservedConflict?: (preserved: PreservedTranscriptConflict) => void,
+): Promise<void> {
+	await withFileLock(filePath, () => verifyAuthoritativeBytesWhileLocked(filePath, receipt, onPreservedConflict))
+}
+
+/** The caller owns the legacy lock across preimage verification and replacement. */
+export async function assertAuthoritativeTranscriptPreimage(
+	filePath: string,
+	taskId: string,
+	precondition: ApiMessagesWritePrecondition,
+): Promise<void> {
+	if ("missing" in precondition) return assertAuthoritativeTranscriptMissing(filePath, taskId)
+	await verifyAuthoritativeBytesWhileLocked(filePath, { ...precondition, taskId })
+}
+
+async function verifyAuthoritativeBytesWhileLocked(
+	filePath: string,
+	receipt: AuthoritativeByteIdentity,
+	onPreservedConflict?: (preserved: PreservedTranscriptConflict) => void,
+): Promise<void> {
 	try {
-		await withFileLock(filePath, async () => {
-			const handle = await fs.open(filePath, "r")
+		const handle = await fs.open(filePath, "r")
+		try {
+			const before = await handle.stat({ bigint: true })
+			let observedDigest: string | undefined
 			try {
-				const before = await handle.stat({ bigint: true })
-				let observedDigest: string | undefined
-				try {
-					if (before.size !== BigInt(receipt.byteLength)) {
+				if (before.size !== BigInt(receipt.byteLength)) {
+					throw new ProviderTranscriptStoreError(
+						"digest_mismatch",
+						"Authoritative transcript length changed",
+						receipt.taskId,
+					)
+				}
+				const hash = crypto.createHash("sha256")
+				const buffer = Buffer.allocUnsafe(64 * 1024)
+				let byteLength = 0
+				for (;;) {
+					const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
+					if (bytesRead === 0) break
+					byteLength += bytesRead
+					if (byteLength > receipt.byteLength) {
 						throw new ProviderTranscriptStoreError(
 							"digest_mismatch",
-							"Authoritative transcript length changed",
+							"Authoritative transcript grew during verification",
 							receipt.taskId,
 						)
 					}
-					const hash = crypto.createHash("sha256")
-					const buffer = Buffer.allocUnsafe(64 * 1024)
-					let byteLength = 0
-					for (;;) {
-						const { bytesRead } = await handle.read(buffer, 0, buffer.length, null)
-						if (bytesRead === 0) break
-						byteLength += bytesRead
-						if (byteLength > receipt.byteLength) {
-							throw new ProviderTranscriptStoreError(
-								"digest_mismatch",
-								"Authoritative transcript grew during verification",
-								receipt.taskId,
-							)
-						}
-						hash.update(buffer.subarray(0, bytesRead))
-					}
-					observedDigest = hash.digest("hex")
-					assertAuthoritativeDigest(receipt, observedDigest, byteLength)
-					await assertUnchangedAuthoritativeSource(filePath, handle, before, receipt.taskId)
-				} catch (error) {
-					if (
-						error instanceof ProviderTranscriptStoreError &&
-						(error.code === "digest_mismatch" || error.code === "receipt_mismatch")
-					) {
-						await preserveTranscriptConflict(filePath, handle, before, observedDigest, error)
-					}
-					throw error
+					hash.update(buffer.subarray(0, bytesRead))
 				}
-			} finally {
-				await handle.close()
+				observedDigest = hash.digest("hex")
+				assertAuthoritativeDigest(receipt, observedDigest, byteLength)
+				await assertUnchangedAuthoritativeSource(filePath, handle, before, receipt.taskId)
+			} catch (error) {
+				if (
+					error instanceof ProviderTranscriptStoreError &&
+					(error.code === "digest_mismatch" || error.code === "receipt_mismatch")
+				) {
+					const preserved = await preserveTranscriptConflict(filePath, handle, before, observedDigest, error)
+					onPreservedConflict?.(preserved)
+				}
+				throw error
 			}
-		})
+		} finally {
+			await handle.close()
+		}
 	} catch (error) {
 		if (error instanceof ProviderTranscriptStoreError) throw error
 		throw new ProviderTranscriptStoreError(
@@ -792,7 +898,7 @@ export async function assertAuthoritativeTranscriptMissing(filePath: string, tas
 	}
 	throw new ProviderTranscriptStoreError(
 		"read_failed",
-		"Authoritative transcript appeared during fallback migration; reload required",
+		"Authoritative transcript appeared before its initial save; reload required",
 		taskId,
 	)
 }
@@ -801,7 +907,10 @@ export async function assertAuthoritativeTranscriptMissing(filePath: string, tas
 export async function withLegacyTranscriptMigration<T>(
 	legacyPath: string,
 	taskId: string,
-	operation: (existingAuthority?: ApiMessage[]) => Promise<T>,
+	operation: (existingAuthority?: {
+		messages: ApiMessage[]
+		precondition: ApiMessagesWritePrecondition
+	}) => Promise<T>,
 ): Promise<T> {
 	const sidecarPath = path.join(path.dirname(legacyPath), GlobalFileNames.providerTranscript)
 	return withFileLock(sidecarPath, async () => {
@@ -813,16 +922,19 @@ export async function withLegacyTranscriptMigration<T>(
 			const verified = await readRawEnvelope(sidecarPath, taskId)
 			if (!verified)
 				throw new ProviderTranscriptStoreError("read_failed", "Transcript receipt disappeared", taskId)
-			return operation(verified.messages)
+			return operation({
+				messages: verified.messages,
+				precondition: { digest: verified.digest, byteLength: record.byteLength },
+			})
 		}
 		// The migration's legacy lock nests inside this sidecar lock, matching all
 		// v2 readers. Another reader may have completed migration while this one
 		// waited. Read that canonical history instead of serving a stale fallback
 		// or requiring the user to reopen a successfully migrated chat.
 		const existingAuthority = await withFileLock(legacyPath, async () => {
-			let contents: string
+			let contents: Buffer
 			try {
-				contents = await fs.readFile(legacyPath, "utf8")
+				contents = await fs.readFile(legacyPath)
 			} catch (cause) {
 				if ((cause as NodeJS.ErrnoException).code === "ENOENT") return undefined
 				throw new ProviderTranscriptStoreError(
@@ -834,7 +946,7 @@ export async function withLegacyTranscriptMigration<T>(
 			}
 			let messages: unknown
 			try {
-				messages = JSON.parse(contents)
+				messages = JSON.parse(contents.toString("utf8"))
 			} catch (cause) {
 				throw new ProviderTranscriptStoreError(
 					"invalid_messages",
@@ -844,7 +956,13 @@ export async function withLegacyTranscriptMigration<T>(
 				)
 			}
 			validateMessages(messages, taskId)
-			return messages
+			return {
+				messages,
+				precondition: {
+					digest: crypto.createHash("sha256").update(contents).digest("hex"),
+					byteLength: contents.byteLength,
+				},
+			}
 		})
 		// The fallback writer still rechecks absence before replacing anything.
 		return operation(existingAuthority)
@@ -908,7 +1026,7 @@ async function preserveTranscriptConflict(
 	before: BigIntStats,
 	observedDigest: string | undefined,
 	conflict: ProviderTranscriptStoreError,
-): Promise<void> {
+): Promise<PreservedTranscriptConflict> {
 	const key = transcriptConflictKey(filePath)
 	const failure = new ProviderTranscriptStoreError(
 		"repair_failed",
@@ -962,6 +1080,7 @@ async function preserveTranscriptConflict(
 		}
 		await assertUnchangedAuthoritativeSource(filePath, source, before, conflict.taskId)
 		unpreservedTranscriptConflicts.delete(key)
+		return { precondition: { digest, byteLength }, evidencePath }
 	} catch (cause) {
 		// Keep even partial copies: they consume capacity and cannot authorize a
 		// replacement unless a later full verification succeeds. Never rotate or

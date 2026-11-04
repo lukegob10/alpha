@@ -84,6 +84,7 @@ function ManagedAgentOverflowRows({
 			<SubagentTaskLink
 				name={node.nickname}
 				status={node.status}
+				modelRoute={node.modelRoute}
 				attention={attentionForNode(node)}
 				detail={`${node.role} · ${node.path}`}
 				disabled={!onShowTask || node.stopReason === "never_launched"}
@@ -257,6 +258,7 @@ export function ManagedAgentTree({
 							<SubagentTaskLink
 								name={node.nickname}
 								status={node.status}
+								modelRoute={node.modelRoute}
 								attention={attentionForNode(node)}
 								detail={`${node.role} · ${node.path}${node.depth > 1 ? ` · nested level ${node.depth}` : ""}`}
 								variant={presentation === "dock" ? "dock" : "chip"}

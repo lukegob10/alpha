@@ -95,7 +95,7 @@ export interface ToolSchedulerOptions {
 		call: Readonly<AgentToolCall>,
 		signal: AbortSignal,
 	) => Promise<{ denied?: string; updatedInput?: Record<string, unknown> }>
-	/** Runs after successful terminal output; it cannot change the completed execution outcome. */
+	/** Runs after completed tool output, including nonzero command exits; execution outcomes stay intact. */
 	postToolUse?: (
 		call: Readonly<AgentToolCall>,
 		result: Readonly<ToolSchedulerResult>,
@@ -235,6 +235,7 @@ export interface ToolSchedulerResult {
 	executionStatus?: ToolResultMetadata["executionStatus"]
 	exitCode?: number
 	commandResult?: ToolResultMetadata["commandResult"]
+	postToolUse?: ToolResultMetadata["postToolUse"]
 	truncated?: boolean
 	timedOut?: boolean
 	/** Trusted progress-only observation; never verification evidence. */
@@ -302,14 +303,34 @@ function getStructuredToolResultStatus(content: ToolResponse): ToolResultStatus 
 class AsyncMutex {
 	private tail: Promise<void> = Promise.resolve()
 
-	async run<T>(operation: () => Promise<T>): Promise<T> {
+	async run<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
+		if (signal?.aborted) return undefined
 		let release!: () => void
 		const previous = this.tail
 		this.tail = new Promise<void>((resolve) => {
 			release = resolve
 		})
 
-		await previous
+		if (signal) {
+			let onAbort: (() => void) | undefined
+			try {
+				await Promise.race([
+					previous,
+					new Promise<void>((resolve) => {
+						onAbort = resolve
+						signal.addEventListener("abort", onAbort, { once: true })
+						if (signal.aborted) onAbort()
+					}),
+				])
+			} finally {
+				if (onAbort) signal.removeEventListener("abort", onAbort)
+			}
+			if (signal.aborted) {
+				// A cancelled waiter must not open the lane ahead of its predecessor.
+				void previous.then(release)
+				return undefined
+			}
+		} else await previous
 		try {
 			return await operation()
 		} finally {
@@ -317,6 +338,10 @@ class AsyncMutex {
 		}
 	}
 }
+
+// Streamed reads use separate schedulers/adapters for one task. Codex 71a4c070
+// correlates each approval with its call; Alpha serializes its single task prompt.
+const taskApprovalMutexes = new WeakMap<object, AsyncMutex>()
 
 class ToolResultCollector {
 	private result: ToolResponse | undefined
@@ -687,6 +712,8 @@ function normalizeAgentToolCall(value: unknown): AgentToolCall {
 		id: typeof record?.id === "string" ? record.id : "",
 		name: typeof record?.name === "string" ? record.name : "",
 		arguments: record?.arguments,
+		...(typeof record?.rawArguments === "string" ? { rawArguments: record.rawArguments } : {}),
+		...(typeof record?.argumentParseError === "string" ? { argumentParseError: record.argumentParseError } : {}),
 	}
 }
 
@@ -772,7 +799,7 @@ function getVerificationOutput(content: ToolResponse): string {
 }
 
 export class ToolScheduler {
-	private readonly approvalMutex = new AsyncMutex()
+	private readonly approvalMutex: AsyncMutex
 	private readonly admissionMutex = new AsyncMutex()
 	private readonly capturedCustomToolNames: ReadonlySet<string>
 	private effectFenceFailure?: ToolEffectFenceError
@@ -809,7 +836,14 @@ export class ToolScheduler {
 	private deferredBatchFinishedEvent?: Extract<AgentTurnEvent, { type: "tool_batch_finished" }>
 
 	constructor(private readonly options: ToolSchedulerOptions) {
+		const approvalOwner = options.executionHost?.taskFacade ?? options.task ?? options.executionHost
+		this.approvalMutex = (approvalOwner && taskApprovalMutexes.get(approvalOwner)) || new AsyncMutex()
+		if (approvalOwner) taskApprovalMutexes.set(approvalOwner, this.approvalMutex)
 		this.capturedCustomToolNames = captureCustomToolNames(options.registry)
+	}
+
+	private runApproval<T>(operation: () => Promise<T>): Promise<T | undefined> {
+		return this.approvalMutex.run(operation, this.executionSignal)
 	}
 
 	private get executionHost(): ToolExecutionHost {
@@ -845,6 +879,7 @@ export class ToolScheduler {
 	private async applyPreToolHook(item: PreparedCall): Promise<PreparedCall> {
 		if (
 			!this.options.preToolUse ||
+			(item.toolCall?.name === "write_stdin" && typeof item.toolCall.nativeArgs?.session_id === "number") ||
 			this.preHookCompleted.has(item.call.id) ||
 			item.validationError ||
 			!item.descriptor ||
@@ -904,9 +939,11 @@ export class ToolScheduler {
 			!this.options.postToolUse ||
 			this.postHookCompleted.has(item.call.id) ||
 			this.isCancelled() ||
+			result.postToolUse === null ||
 			result.status !== "success" ||
-			(result.executionStatus !== undefined && result.executionStatus !== "success") ||
-			(result.exitCode !== undefined && result.exitCode !== 0)
+			(result.executionStatus !== undefined &&
+				result.executionStatus !== "success" &&
+				!(result.executionStatus === "error" && typeof result.exitCode === "number"))
 		)
 			return result
 		this.postHookCompleted.add(item.call.id)
@@ -914,11 +951,18 @@ export class ToolScheduler {
 		let adapterFailed = false
 		try {
 			outcome = await this.options.postToolUse(
-				{
-					...item.call,
-					name: item.toolCall?.name ?? item.call.name,
-					arguments: structuredClone(item.toolCall?.nativeArgs ?? {}),
-				},
+				result.postToolUse
+					? {
+							type: "tool_call",
+							id: result.postToolUse.callId,
+							name: result.postToolUse.name,
+							arguments: structuredClone(result.postToolUse.arguments),
+						}
+					: {
+							...item.call,
+							name: item.toolCall?.name ?? item.call.name,
+							arguments: structuredClone(item.toolCall?.nativeArgs ?? {}),
+						},
 				{ ...result, content: structuredClone(result.content) },
 				this.executionSignal,
 			)
@@ -1553,7 +1597,10 @@ export class ToolScheduler {
 				}
 				if (this.isSelectableParallel(item)) {
 					const parallelItems: PreparedCall[] = []
-					while (cursor < prepared.length && parallelItems.length < this.maxConcurrency) {
+					// Settle approvals before starting reads, with a bounded queue that can
+					// replenish free workers while an earlier independent read is still live.
+					const maxQueuedReads = this.maxConcurrency * 4
+					while (cursor < prepared.length && parallelItems.length < maxQueuedReads) {
 						const candidate = prepared[cursor]
 						try {
 							await this.prepareRead(candidate)
@@ -1594,19 +1641,18 @@ export class ToolScheduler {
 					parallelBatchCount += 1
 					this.parallelToolCount += parallelItems.length
 
-					const settled = await this.executeParallelBatch(parallelItems)
-					settled.results.forEach((result, offset) => {
-						if (result) results[parallelItems[offset].index] = result
-					})
-					// No worker is live here, including workers that ignored cancellation.
-					// Join presentation in model-call order; deferred lanes hold
-					// these finalizers until the durable assistant boundary commits.
 					let cleanupFailure: CommandReadCleanupError | undefined
-					for (const readItem of parallelItems) {
-						const result = results[readItem.index]
-						if (!result) continue
+					const finalizeParallelRead = async (
+						readItem: PreparedCall,
+						result: ToolSchedulerResult,
+					): Promise<ToolSchedulerResult> => {
 						try {
-							results[readItem.index] = await this.finalizeRead(readItem, result)
+							const finalized = await this.finalizeRead(readItem, result)
+							results[readItem.index] = finalized
+							if (!this.options.deferResultCommit && !this.isCancelled()) {
+								await this.observeToolResult(finalized, readItem.call)
+							}
+							return finalized
 						} catch (error) {
 							if (!(error instanceof CommandReadCleanupError)) throw error
 							failedCommandCleanups.add(readItem)
@@ -1620,8 +1666,19 @@ export class ToolScheduler {
 									cleanupFailure: error,
 								})
 							}
+							return failedResult
 						}
 					}
+					const settled = await this.executeParallelBatch(
+						parallelItems,
+						finalizeParallelRead,
+						() => cleanupFailure !== undefined,
+					)
+					settled.results.forEach((result, offset) => {
+						if (result && !results[parallelItems[offset].index]) {
+							results[parallelItems[offset].index] = result
+						}
+					})
 					if (cleanupFailure) {
 						runFailed = true
 						return await this.failedOutcome(
@@ -1646,18 +1703,6 @@ export class ToolScheduler {
 					if (this.isCancelled()) {
 						this.fillCancelledResults(results, calls, cursor)
 						return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
-					}
-					try {
-						// All workers and finalizers are settled. Only this bounded read
-						// window can overshoot a stop; later windows have not been admitted.
-						for (const readItem of parallelItems) {
-							if (!this.options.deferResultCommit) {
-								await this.observeToolResult(results[readItem.index]!, readItem.call)
-							}
-						}
-					} catch (error) {
-						if (!(error instanceof ToolEffectFenceError)) throw error
-						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 					}
 					continue
 				}
@@ -1723,43 +1768,67 @@ export class ToolScheduler {
 		}
 	}
 
-	private async executeParallelBatch(items: PreparedCall[]): Promise<{
+	private async executeParallelBatch(
+		items: PreparedCall[],
+		finalize: (item: PreparedCall, result: ToolSchedulerResult) => Promise<ToolSchedulerResult>,
+		shouldStopAdmission: () => boolean,
+	): Promise<{
 		results: Array<ToolSchedulerResult | undefined>
 		failure?: ToolEffectFenceError
 	}> {
 		const results = new Array<ToolSchedulerResult | undefined>(items.length)
 		let nextIndex = 0
+		let nextFinalizedIndex = 0
 		let failure: ToolEffectFenceError | undefined
-		const workerCount = Math.min(this.maxConcurrency, items.length)
-
-		const worker = async (): Promise<void> => {
-			while (nextIndex < items.length) {
-				if (failure) return
-				const index = nextIndex
-				nextIndex += 1
+		let unexpectedFailure: { reason: unknown } | undefined
+		const active = new Map<number, Promise<void>>()
+		const start = (index: number): void => {
+			const execution = (async () => {
 				const item = items[index]
-				if (this.isCancelled()) {
-					results[index] = this.cancelledResultFor(item.call)
-					continue
-				}
-
-				// executeCall converts ordinary tool failures into deterministic results.
-				// The only error it intentionally lets escape is the host's beforeEffect
-				// fence, which must fail the scheduler rather than become a tool result.
 				try {
 					const result = await this.executeCall(item)
 					item.terminalResultReady = !item.finalizeRead && result.status !== "cancelled"
 					results[index] = result
 				} catch (error) {
-					if (!(error instanceof ToolEffectFenceError)) throw error
-					failure ??= error
+					if (error instanceof ToolEffectFenceError) failure ??= error
+					else unexpectedFailure ??= { reason: error }
+				}
+			})().finally(() => active.delete(index))
+			active.set(index, execution)
+		}
+
+		// Codex admits parallel calls independently (upstream b75d1e8, tools/parallel.rs).
+		// Keep Alpha's bounded workers, preapproved queue, and ordered effect evidence.
+		while (nextIndex < items.length || active.size > 0) {
+			while (
+				nextIndex < items.length &&
+				active.size < this.maxConcurrency &&
+				!failure &&
+				!unexpectedFailure &&
+				!shouldStopAdmission() &&
+				!this.isCancelled()
+			) {
+				start(nextIndex++)
+			}
+			if (active.size === 0) break
+			await Promise.race(active.values())
+			// Observe every ready ordered result before admitting replacement work.
+			// Siblings may finish out of order; finalization and evidence cannot.
+			while (nextFinalizedIndex < nextIndex) {
+				const index = nextFinalizedIndex
+				const result = results[index]
+				if (!result && active.has(index)) break
+				nextFinalizedIndex++
+				if (!result) continue
+				try {
+					results[index] = await finalize(items[index], result)
+				} catch (error) {
+					if (error instanceof ToolEffectFenceError) failure ??= error
+					else unexpectedFailure ??= { reason: error }
 				}
 			}
 		}
-
-		const workers = await Promise.allSettled(Array.from({ length: workerCount }, () => worker()))
-		const rejected = workers.find((result) => result.status === "rejected")
-		if (rejected?.status === "rejected") throw rejected.reason
+		if (unexpectedFailure) throw unexpectedFailure.reason
 		return { results, ...(failure ? { failure } : {}) }
 	}
 
@@ -2022,6 +2091,16 @@ export class ToolScheduler {
 			return prepared
 		}
 
+		if (call.argumentParseError !== undefined) {
+			prepared.validationError =
+				call.argumentParseError +
+				(typeof call.rawArguments === "string"
+					? `\nOriginal arguments (untrusted, at most 8192 characters):\n${call.rawArguments.slice(0, 8192)}`
+					: "")
+			reject("invalid_arguments")
+			prepared.descriptor = descriptor
+			return prepared
+		}
 		const rawArgumentsValue = call.arguments === undefined ? {} : call.arguments
 		if (rawArgumentsValue === null || typeof rawArgumentsValue !== "object" || Array.isArray(rawArgumentsValue)) {
 			prepared.validationError = `Invalid arguments for tool "${call.name}".`
@@ -2409,7 +2488,7 @@ export class ToolScheduler {
 			responseMode: "boolean" | "structured",
 			captureCommandPresentation = false,
 		): Promise<ToolApprovalResponse | undefined> =>
-			this.approvalMutex.run(async () => {
+			this.runApproval(async () => {
 				try {
 					// A call stopped before this serialized lane opens has no approval
 					// request to resolve. Its cancelled tool receipt closes the call.
@@ -2431,8 +2510,14 @@ export class ToolScheduler {
 							"An approval request cannot run in an approval-free parallel lane.",
 						)
 					}
-					const [, partialMessage, originalProgressStatus, requestedForceApproval, callRequiresExplicit] =
-						args
+					const [
+						,
+						partialMessage,
+						originalProgressStatus,
+						requestedForceApproval,
+						callRequiresExplicit,
+						callApprovalAuthority,
+					] = args
 					const forceApproval =
 						requestedForceApproval === true ||
 						(type === "command" && prepared.protectedCommandWrite === true)
@@ -2471,6 +2556,10 @@ export class ToolScheduler {
 									argumentsValue: approvalArguments,
 									cwd: this.executionHost.cwd,
 									policyDigest: this.options.policy?.digest,
+									authorityValue:
+										type === "command"
+											? prepared.commandPathApproval
+											: (callApprovalAuthority ?? prepared.descriptor?.sessionApprovalAuthority),
 								})
 							: undefined
 					const proposedAmendment: ToolApprovalRequest["proposedAmendment"] =
@@ -2994,6 +3083,7 @@ export class ToolScheduler {
 				return startEffect()
 			},
 			toolCallId: prepared.call.id,
+			capturePostToolUse: this.options.postToolUse !== undefined,
 			signal: this.executionSignal,
 			resolveCommandTimeoutMs: (requestedTimeoutMs, command) =>
 				resolveCommandTimeoutMs(this.options.policy, requestedTimeoutMs ?? 0, command),
@@ -3188,6 +3278,7 @@ export class ToolScheduler {
 			executionStatus,
 			exitCode: metadata.exitCode,
 			...(metadata.commandResult ? { commandResult: metadata.commandResult } : {}),
+			...(metadata.postToolUse !== undefined ? { postToolUse: structuredClone(metadata.postToolUse) } : {}),
 			truncated: collector.isTruncated(),
 			timedOut: metadata.timedOut,
 			...(trustedExploration ? { trustedExploration } : {}),

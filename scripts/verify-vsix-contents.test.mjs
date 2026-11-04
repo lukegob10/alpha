@@ -1,15 +1,23 @@
 import assert from "node:assert/strict"
-import { spawnSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { cp, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
-import { fileURLToPath } from "node:url"
+import { fileURLToPath, URL } from "node:url"
+import { Buffer } from "node:buffer"
+import process from "node:process"
 import vm from "node:vm"
 import { zipSync } from "fflate"
 
 import { hostVsixTarget, lanceDbBindingForTarget } from "../src/lancedb-native.mjs"
+import {
+	captureExtensionBuildSource,
+	completeExtensionBuildProvenance,
+	createExtensionBuildInputCapture,
+	extensionBuildProvenancePath,
+} from "./extension-build-provenance.mjs"
 
 const repository = fileURLToPath(new URL("../", import.meta.url))
 const verifier = path.join(repository, "scripts/verify-vsix-contents.mjs")
@@ -128,6 +136,144 @@ function updateZipEntry(archive, name, update) {
 	}
 	assert.fail(`Missing ZIP fixture entry: ${name}`)
 }
+
+async function prepareCleanBuild(content) {
+	const root = path.join(path.dirname(content), "repository")
+	const extensionPath = path.join(root, "src")
+	await cp(path.join(content, "extension"), extensionPath, { recursive: true })
+	const write = async (file, value = "fixture") => {
+		await mkdir(path.dirname(path.join(root, file)), { recursive: true })
+		await writeFile(path.join(root, file), value)
+	}
+	for (const file of [
+		"src/extension.ts",
+		"src/workers/worker.ts",
+		"src/README.md",
+		"src/CHANGELOG.md",
+		"src/LICENSE",
+		"packages/core/src/index.ts",
+		"packages/core/package.json",
+		"packages/ipc/src/index.ts",
+		"packages/ipc/package.json",
+		"packages/types/src/index.ts",
+		"packages/types/package.json",
+		"packages/types/dist/index.js",
+		"packages/build/src/index.ts",
+		"packages/build/dist/index.js",
+		"packages/build/package.json",
+		"webview-ui/src/index.tsx",
+		"webview-ui/public/viewer.js",
+		"webview-ui/audio/done.wav",
+		"webview-ui/package.json",
+		"package.json",
+		"pnpm-lock.yaml",
+		"pnpm-workspace.yaml",
+		"turbo.json",
+		"README.md",
+		"CHANGELOG.md",
+		"LICENSE",
+		"scripts/extension-build-provenance.mjs",
+	])
+		await write(file, file.endsWith(".json") ? "{}" : "fixture")
+	await write("src/package.json", JSON.stringify({ name: "alpha", version: "1.0.0", main: "dist/extension.js" }))
+	await write("src/webview-ui/build/index.html", "build-only entry")
+	await write("src/webview-ui/build/sourcemap-manifest.json", "{}")
+	await mkdir(path.join(extensionPath, "integrations/theme/default-themes"), { recursive: true })
+	for (const name of ["esbuild", "global-agent"]) {
+		await write(
+			`src/node_modules/${name}/package.json`,
+			JSON.stringify({ name, version: "1.0.0", main: "index.js" }),
+		)
+		await write(`src/node_modules/${name}/index.js`, "module.exports = {}")
+	}
+	execFileSync("git", ["init", "--quiet"], { cwd: root, windowsHide: true })
+	execFileSync("git", ["config", "core.autocrlf", "false"], { cwd: root, windowsHide: true })
+	execFileSync("git", ["add", "--all"], { cwd: root, windowsHide: true })
+	execFileSync(
+		"git",
+		[
+			"-c",
+			"core.hooksPath=empty-hooks",
+			"-c",
+			"user.name=Build Fixture",
+			"-c",
+			"user.email=build-fixture@example.invalid",
+			"-c",
+			"commit.gpgsign=false",
+			"commit",
+			"--quiet",
+			"-m",
+			"source fixture",
+		],
+		{ cwd: root, windowsHide: true },
+	)
+	const before = await captureExtensionBuildSource(root)
+	const observer = createExtensionBuildInputCapture(root)
+	for (const file of ["extension.ts", "workers/worker.ts"])
+		await observer.captureInput(path.join(extensionPath, file))
+	const inputs = await observer.finish([
+		{ metafile: { inputs: { "extension.ts": {} }, outputs: { "dist/extension.js": {} } } },
+		{ metafile: { inputs: { "workers/worker.ts": {} }, outputs: { "dist/workers/worker.js": {} } } },
+	])
+	const manifest = await completeExtensionBuildProvenance({
+		repositoryRoot: root,
+		before,
+		compilerInputs: inputs,
+		build: { production: true, vsixTarget: hostTarget },
+	})
+	for (const file of [...manifest.artifacts.files.map((row) => row.path), extensionBuildProvenancePath]) {
+		if (["webview-ui/build/index.html", "webview-ui/build/sourcemap-manifest.json"].includes(file)) continue
+		const renamed = { "README.md": "readme.md", "CHANGELOG.md": "changelog.md", LICENSE: "LICENSE.txt" }
+		const target = path.join(content, "extension", renamed[file] ?? file)
+		await mkdir(path.dirname(target), { recursive: true })
+		await cp(path.join(extensionPath, file), target)
+	}
+	await writeFile(path.join(content, "extension/readme.md"), "VSCE rewrites README links during packaging")
+	return { root, extensionPath, manifest }
+}
+
+test("strict release verification requires clean provenance while ordinary fixture inventories remain usable", async () => {
+	await withArchive(required, ({ archive }) => {
+		assert.equal(runVerifier([archive]).status, 0)
+		const result = runVerifier([archive, "--require-clean-build"])
+		assert.equal(result.status, 1)
+		assert.match(result.stderr, /missing clean build provenance/u)
+	})
+})
+
+test("strict release verification binds clean source and refuses stale archive bytes and current source drift", async () => {
+	await withArchive(required, async ({ archive, content, pack }) => {
+		const f = await prepareCleanBuild(content)
+		pack()
+		const args = [archive, "--require-clean-build", "--repository-root", f.root]
+		const clean = runVerifier(args)
+		assert.equal(clean.status, 0, clean.stderr)
+		assert.match(clean.stdout, /Verified clean source/u)
+		const entrypoint = path.join(content, "extension/dist/extension.js")
+		const original = readFileSync(entrypoint)
+		const changed = Buffer.from(original)
+		changed[0] ^= 1
+		await writeFile(entrypoint, changed)
+		pack()
+		const stale = runVerifier(args)
+		assert.equal(stale.status, 1)
+		assert.match(stale.stderr, /VSIX payload differs from its clean build/u)
+		await writeFile(entrypoint, original)
+		pack()
+		const extra = path.join(content, "extension/dist/unrecorded.js")
+		await writeFile(extra, "unrecorded code")
+		pack()
+		const extraPayload = runVerifier(args)
+		assert.equal(extraPayload.status, 1)
+		assert.match(extraPayload.stderr, /VSIX payload has no build identity/u)
+		await rm(extra)
+		pack()
+		await writeFile(path.join(f.extensionPath, "extension.ts"), "changed source at the same HEAD")
+		const dirty = runVerifier(args)
+		assert.equal(dirty.status, 1)
+		assert.match(dirty.stderr, /release source differs from the clean build source/u)
+	})
+})
 
 test("VSIX content verification fails without an archive, for a missing file, and for unreadable archive bytes", async () => {
 	const absent = runVerifier([])

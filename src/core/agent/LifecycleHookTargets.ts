@@ -7,6 +7,8 @@ export const LIFECYCLE_HOOK_TARGETS = [
 	"PreToolUse",
 	"PostToolUse",
 	"PermissionRequest",
+	"PreModelRequest",
+	"PostModelRequest",
 	"PreCompact",
 	"PostCompact",
 	"Interrupt",

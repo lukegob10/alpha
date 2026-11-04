@@ -16,6 +16,22 @@ const LIMIT_PARAMETER_DESCRIPTION = `Maximum number of tool definitions to retur
 const TOOL_SEARCH_LIMIT_PARAMETER_DESCRIPTION = `Maximum number of tools to return. Defaults to 8.`
 const TOOL_SEARCH_QUERY_PARAMETER_DESCRIPTION = `Search query for deferred tools.`
 
+export const TOOL_SEARCH_SOURCE_INVENTORY_MAX_BYTES = 8_192
+
+function sourceInventory(sources: readonly string[]): string {
+	if (sources.length === 0) return ""
+	const lines: string[] = []
+	let bytes = 0
+	for (const source of [...new Set(sources)].sort()) {
+		const line = `- ${source.replace(/[\r\n]/g, " ").slice(0, 256)}\n`
+		const lineBytes = Buffer.byteLength(line, "utf8")
+		if (bytes + lineBytes > TOOL_SEARCH_SOURCE_INVENTORY_MAX_BYTES) break
+		lines.push(line)
+		bytes += lineBytes
+	}
+	return `\n\nYou have access to tools from these sources:\n${lines.join("")}`
+}
+
 function createDiscoverySchema(
 	name: string,
 	description: string,
@@ -51,13 +67,17 @@ function createDiscoverySchema(
 	} satisfies OpenAI.Chat.ChatCompletionTool
 }
 
-export const toolSearch = createDiscoverySchema(
-	"tool_search",
-	TOOL_SEARCH_DESCRIPTION,
-	TOOL_SEARCH_MAX_LIMIT,
-	TOOL_SEARCH_LIMIT_PARAMETER_DESCRIPTION,
-	TOOL_SEARCH_QUERY_PARAMETER_DESCRIPTION,
-)
+export function createToolSearchTool(sources: readonly string[] = []) {
+	return createDiscoverySchema(
+		"tool_search",
+		TOOL_SEARCH_DESCRIPTION + sourceInventory(sources),
+		TOOL_SEARCH_MAX_LIMIT,
+		TOOL_SEARCH_LIMIT_PARAMETER_DESCRIPTION,
+		TOOL_SEARCH_QUERY_PARAMETER_DESCRIPTION,
+	)
+}
+
+export const toolSearch = createToolSearchTool()
 
 /** Retained for persisted provider histories written before the Codex tool name. */
 export const discoverTools = createDiscoverySchema(

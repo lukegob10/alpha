@@ -13,8 +13,10 @@ pnpm --filter @alpha-code/evals benchmark:problem-solving-live
 pnpm --filter @alpha-code/evals benchmark:problem-solving-diagnose --report <run-root>/report.json --output <new-path>/diagnosis.json
 ```
 
-The active selection is problem-solving-v1@3, bound to frontier-v1@6. The six revised bank tasks have explicit v2
-identities; the new outbox fixture requires changes in both source modules. The active T1 default is
-`evals/subsets/frontier-t1-v6.yaml`. The original T1 file and prior task reports retain their historical identities.
+The active selection is problem-solving-v1@4, bound to frontier-v1@7. Revised bank tasks have explicit v2
+identities; the plugin verifier wraps unexpected solution exceptions in an owned assertion, while its initial source
+remains broken. The plugin v2 identity requires fresh calibration; its v1 report remains historical evidence.
+The outbox fixture requires changes in both source modules. The active T1 default is
+`evals/subsets/frontier-t1-v7.yaml`. Prior selections, fixtures, manifests, and task reports retain their historical identities.
 Calibration readers prefer `<task-id>@<version>.keyless.json` and accept matching legacy reports; a revised task never
 reuses another version's report or model admission. Keyless calibration does not establish model quality.

@@ -18,7 +18,7 @@ type InputOrigin = "human" | "agent"
 
 export interface ProcessUserContentMentionsResult {
 	content: Anthropic.Messages.ContentBlockParam[]
-	mode?: string // Mode from the first slash command that has one
+	mode?: string // Host-owned /plan admission
 	loadedSkills?: readonly LoadedMentionSkill[]
 	blockOrigins?: ReadonlyMap<Anthropic.Messages.ContentBlockParam, InputOrigin>
 	/** Host-owned identities for one deferred batch admission; never persist these handles. */

@@ -21,6 +21,7 @@ const editTools = new Set([
 	"create_ticket",
 	"update_ticket",
 	"delete_ticket",
+	"delete_tickets",
 ])
 
 /** Roles describe work. The captured parent catalog and policy determine authority. */

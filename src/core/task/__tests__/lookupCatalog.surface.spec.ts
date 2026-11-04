@@ -188,7 +188,14 @@ describe("request-independent tool authority", () => {
 		)
 		const names = namesOf(result.tools)
 
-		const ticketTools = ["list_tickets", "read_ticket", "create_ticket", "update_ticket", "delete_ticket"]
+		const ticketTools = [
+			"list_tickets",
+			"read_ticket",
+			"create_ticket",
+			"update_ticket",
+			"delete_ticket",
+			"delete_tickets",
+		]
 		expect(names).toEqual(expect.arrayContaining(ticketTools))
 		for (const name of ticketTools) expect(result.surface?.isCallable(name)).toBe(true)
 		expect(names).toContain("spawn_agent")
@@ -208,7 +215,7 @@ describe("request-independent tool authority", () => {
 		expect(names).not.toContain("ask_followup_question")
 		expect(names).not.toContain("update_plan")
 		expect(names).not.toContain("update_todo_list")
-		for (const name of ["create_ticket", "update_ticket", "delete_ticket"]) {
+		for (const name of ["create_ticket", "update_ticket", "delete_ticket", "delete_tickets"]) {
 			expect(names).not.toContain(name)
 			expect(result.surface?.isCallable(name)).toBe(false)
 		}

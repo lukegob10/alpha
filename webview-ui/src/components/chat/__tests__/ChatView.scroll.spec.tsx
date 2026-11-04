@@ -465,6 +465,35 @@ describe("ChatView native scroll behavior", () => {
 		expect(scrollIntoView).toHaveBeenCalledWith({ block: "center", behavior: "smooth" })
 	})
 
+	it("keeps previous-checkpoint navigation through unrelated stream updates", async () => {
+		const messages: AlphaMessage[] = [
+			...buildMessagesWithCheckpoint(1000),
+			{ type: "say", say: "checkpoint_saved", ts: 1004, text: "checkpoint-2" },
+			{ type: "say", say: "text", ts: 1005, text: "Streaming", partial: true },
+		]
+		await hydrate(messages)
+		const olderScroll = vi.fn()
+		const latestScroll = vi.fn()
+		Object.defineProperty(document.querySelector("[data-chat-message-index='1']"), "scrollIntoView", {
+			configurable: true,
+			value: olderScroll,
+		})
+		Object.defineProperty(document.querySelector("[data-chat-message-index='3']"), "scrollIntoView", {
+			configurable: true,
+			value: latestScroll,
+		})
+		fireEvent.click(document.querySelector("[data-testid='task-header']") as HTMLElement)
+		const checkpointButton = document.querySelector("button[aria-label='chat:scrollToLatestCheckpoint']")!
+		fireEvent.click(checkpointButton)
+		await waitFor(() => expect(latestScroll).toHaveBeenCalledTimes(1))
+
+		await act(async () => postState([...messages.slice(0, -1), { ...messages.at(-1)!, text: "Streaming more" }]))
+		fireEvent.click(checkpointButton)
+
+		await waitFor(() => expect(olderScroll).toHaveBeenCalledTimes(1))
+		expect(latestScroll).toHaveBeenCalledTimes(1)
+	})
+
 	it("keeps wheel scrolling active over the floating controls", async () => {
 		await hydrate()
 		const scrollable = getScrollable()

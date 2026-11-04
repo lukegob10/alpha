@@ -24,8 +24,8 @@ export function createSpawnAgentTool(
 		function: {
 			name: "spawn_agent",
 			description: readOnlyOnly
-				? "Start one bounded managed Explore or Review sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type to let the host resolve the narrowest role. Omitted fork_turns defaults to all available turns. The requested role never grants authority. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing."
-				: "Start one bounded managed Alpha sub-agent asynchronously and return its handle immediately. Set a self-contained message; omit agent_type so the host selects a role within parent authority. Omitted fork_turns defaults to all available turns. The host derives or rejects Worker scope from trusted parent authority. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Collect the terminal result through wait_agent before completing.",
+				? "Start one bounded managed Explore or Review sub-agent asynchronously in the parent's workspace and return its handle immediately. Set a self-contained message; omit agent_type to use the default agent. Omitted fork_turns defaults to all available turns. The requested role never grants authority. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Use wait_agent to receive agent messages and completion notifications."
+				: "Start one bounded managed Alpha sub-agent asynchronously in the parent's workspace and return its handle immediately. Set a self-contained message; omit agent_type to use the default agent within parent authority. Omitted fork_turns defaults to all available turns. Agents share files, so coordinate concurrent edits. Set provider, profile, model, or reasoning_effort only when explicitly requested by the user. Use wait_agent to receive agent messages and completion notifications.",
 			strict: false,
 			parameters: {
 				type: "object",

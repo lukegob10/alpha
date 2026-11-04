@@ -156,6 +156,6 @@ describe("local renderer diagnostic admission", () => {
 		expect(() => receive(diagnostic)).not.toThrow()
 		const action: WebviewMessage = { type: "playSound", text: "notification" }
 		await receive(action)
-		expect(webviewMessageHandler).toHaveBeenCalledWith(expect.anything(), action, undefined)
+		expect(webviewMessageHandler).toHaveBeenCalledWith(expect.anything(), action)
 	})
 })

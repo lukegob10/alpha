@@ -4,7 +4,7 @@ import { finishCampaignEvaluationIdentity } from "./evaluationIdentity"
 import { assertLiveGateConfig, evaluateLiveGate } from "./liveGate"
 import type { CampaignConfig, CampaignEvaluationIdentity, CampaignReport } from "./types"
 
-export const LIVE_MODEL_MATRIX_HOST = "1.138.0" as const
+export const LIVE_MODEL_MATRIX_HOST = "1.141.0" as const
 export const LIVE_MODEL_MATRIX_MODELS = Object.freeze([
 	Object.freeze({ key: "luna", modelId: "gpt-6-luna", effort: "max" }),
 	Object.freeze({ key: "haiku", modelId: "claude-haiku-5.5", effort: "high" }),
@@ -52,7 +52,7 @@ export interface LiveModelMatrixReport {
 export function createLiveModelMatrix(options: LiveModelMatrixOptions): LiveModelMatrixPlan {
 	if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,121}$/.test(options.id)) throw new Error("Invalid live matrix identifier")
 	if (options.host && options.host.version !== LIVE_MODEL_MATRIX_HOST)
-		throw new Error("Live model matrices require exact VS Code 1.138.0")
+		throw new Error("Live model matrices require exact VS Code 1.141.0")
 	const plan: LiveModelMatrixPlan = {
 		id: options.id,
 		hostVersion: LIVE_MODEL_MATRIX_HOST,

@@ -112,7 +112,6 @@ describe("native xAI Responses provider", () => {
 			openAiHeaders: { Authorization: "unrelated-token" },
 			openAiUseAzure: true,
 			openAiR1FormatEnabled: true,
-			taskReasoningCustomEffort: "unrelated-effort",
 			verbosity: "high",
 		})
 		const chunks = await consume(handler)
@@ -245,7 +244,14 @@ describe("native xAI Responses provider", () => {
 			expect(responsesCreate.mock.calls[1]![0].input).toEqual([
 				{ role: "system", content: "System instructions." },
 				reasoning,
-				{ type: "function_call", call_id: "read_xai", name: "read_file", arguments: '{"path":"a.ts"}' },
+				{
+					type: "function_call",
+					id: "function_xai",
+					call_id: "read_xai",
+					name: "read_file",
+					arguments: '{"path":"a.ts"}',
+					status: "completed",
+				},
 				{ type: "function_call_output", call_id: "read_xai", output: "File contents." },
 			])
 		},
@@ -255,6 +261,7 @@ describe("native xAI Responses provider", () => {
 		mockResponse()
 		expect(await consume(createHandler())).toContainEqual({
 			type: "usage",
+			usageSource: "provider",
 			inputTokens: 80,
 			outputTokens: 25,
 			cacheReadTokens: 10,
@@ -271,6 +278,7 @@ describe("native xAI Responses provider", () => {
 			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
 				{
 					type: "usage",
+					usageSource: "provider",
 					inputTokens: 80,
 					outputTokens: 25,
 					cacheReadTokens: 10,
@@ -280,6 +288,26 @@ describe("native xAI Responses provider", () => {
 				},
 			])
 			expect(responsesCreate.mock.calls[0]![0]).toMatchObject({ model: modelId, stream: streaming })
+		},
+	)
+
+	it.each(usageRoutes)(
+		"keeps missing token counts unknown despite billed cost (streaming=$streaming)",
+		async (route) => {
+			mockResponse([textItem()], { cost_in_usd_ticks: 37_756_000 }, route.streaming)
+			const chunks = await consume(createUsageHandler(route))
+			expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+				{
+					type: "usage",
+					usageSource: "unknown",
+					inputTokens: 0,
+					outputTokens: 0,
+					cacheReadTokens: undefined,
+					cacheWriteTokens: undefined,
+					reasoningTokens: undefined,
+					totalCost: 0.0037756,
+				},
+			])
 		},
 	)
 

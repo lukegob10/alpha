@@ -15,6 +15,7 @@ import { comparableSource } from "./source.mjs"
 import { hostSuiteVerdict, outcomeCampaignVerdict } from "./host-evidence.mjs"
 import { laneExpectedInventories } from "./lane-evidence.mjs"
 import { collectOutcomeBuild, outcomeProofVerdict } from "./outcome-proof.mjs"
+import { benchmarkVerdict } from "./audit-benchmarks.mjs"
 import { require as tsRequire } from "tsx/cjs/api"
 
 const { rejectSymlinkComponents } = tsRequire("../../apps/vscode-e2e/src/evidence/paths.ts", import.meta.url)
@@ -94,6 +95,12 @@ export function admitHarnessReport(
 				if (!expected?.length || JSON.stringify(expected) !== JSON.stringify(observed))
 					return invalid("incomplete_test_inventory")
 			}
+		} else if (descriptor?.runner === "benchmark") {
+			if (
+				benchmarkVerdict(step.evidence.receipt).status !== "passed" ||
+				step.evidence.kind !== "offline-benchmark"
+			)
+				return invalid("invalid_benchmark_receipt")
 		} else if (descriptor) {
 			if (!Array.isArray(step.evidence.receipts)) return invalid("missing_host_receipts")
 			const verdict =
@@ -141,7 +148,9 @@ export function admitHarnessReport(
 		}
 	}
 	const skipped = report.steps.some(
-		(step) => step.evidence.receipt && executionState(step.evidence.receipt.counts) === "skipped",
+		(step) =>
+			step.evidence.receipt?.kind === "alpha-test-execution" &&
+			executionState(step.evidence.receipt.counts) === "skipped",
 	)
 	return {
 		state: skipped ? "skipped" : "executed-pass",
@@ -393,7 +402,7 @@ export async function buildEvidenceMatrix({
 		kind: "alpha-harness-evidence-matrix",
 		generatedAt: new Date(now).toISOString(),
 		source,
-		toolchain: { node, pnpm, referenceHost: "1.138.0" },
+		toolchain: { node, pnpm, referenceHost: "1.141.0" },
 		interpretation:
 			"Inventory is distinct from execution. Cells retain missing, skipped and unavailable scope; machinery tests do not establish live quality or production evidence.",
 		hostCoverage: {

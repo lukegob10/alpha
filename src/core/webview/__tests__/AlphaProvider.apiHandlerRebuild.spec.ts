@@ -601,7 +601,7 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 				"claude-3-5-sonnet-20241022",
 			)
 			expect(getModelId({ apiProvider: "openai", openAiModelId: "gpt-4-turbo" })).toBe("gpt-4-turbo")
-			expect(getModelId({ apiProvider: "stellar", apiModelId: "vertex.claude-v2" })).toBe("vertex.claude-v2")
+			expect(getModelId({ apiProvider: "vertex", apiModelId: "vertex.claude-v2" })).toBe("vertex.claude-v2")
 		})
 
 		test("returns undefined when no model ID is present", () => {

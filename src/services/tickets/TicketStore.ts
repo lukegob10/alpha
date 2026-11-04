@@ -8,8 +8,10 @@ import { z } from "zod"
 import {
 	createTicketSchema,
 	deleteTicketSchema,
+	deleteTicketsSchema,
 	updateTicketSchema,
 	listTicketsSchema,
+	ticketExportInputSchema,
 	ticketSchema,
 	ticketStatusSchema,
 	ticketStatusOrder,
@@ -19,6 +21,7 @@ import {
 	normalizeTicketNumberQuery,
 	type CreateTicket,
 	type DeleteTicket,
+	type DeleteTickets,
 	type UpdateTicket,
 	type Ticket,
 	type TicketList,
@@ -26,8 +29,13 @@ import {
 	type TicketSummary,
 	type TicketStatus,
 	type TicketSearchResponse,
+	type TicketOverview,
+	type TicketExportInput,
+	type TicketTransferEntry,
+	type TicketImportPreviewItem,
 } from "@alpha-code/types"
 import { atomicWriteText, withFileLock } from "../../core/task-persistence/atomicWrite"
+import { observeTicketProgress, ticketProgressHistorySchema, type TicketProgressHistory } from "./TicketProgress"
 
 const headings = {
 	description: "Description",
@@ -40,6 +48,59 @@ const revisionOf = (status: TicketStatus, text: string) => digest(`${status}\0${
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
 const checkCancelled = (signal?: AbortSignal) => signal?.throwIfAborted()
 export type TicketReadResult = { ticket: Ticket } | { error: unknown }
+export type TicketImportPlan = {
+	projectId: string
+	entries: TicketTransferEntry[]
+	expectedRevisions: Record<string, string | undefined>
+	preview: { tickets: TicketImportPreviewItem[]; warnings: string[] }
+}
+const maxTransferTickets = 1000
+const maxTransferBytes = 16 * 1024 * 1024
+const transferEntrySchema = z
+	.object({ path: z.string().min(1).max(300), markdown: z.string().max(100000), status: ticketStatusSchema })
+	.strict()
+const importJournalSchema = z
+	.object({
+		version: z.literal(1),
+		operations: z
+			.array(
+				z
+					.object({
+						id: ticketIdSchema,
+						status: ticketStatusSchema,
+						fromStatus: ticketStatusSchema.optional(),
+						expectedRevision: z
+							.string()
+							.regex(/^[a-f0-9]{64}$/)
+							.optional(),
+						text: z.string().max(100000),
+					})
+					.strict()
+					.refine((operation) => !!operation.fromStatus === !!operation.expectedRevision),
+			)
+			.min(1)
+			.max(maxTransferTickets),
+	})
+	.strict()
+type ImportOperation = z.infer<typeof importJournalSchema>["operations"][number]
+const deleteJournalSchema = z
+	.object({
+		version: z.literal(1),
+		tickets: z
+			.array(
+				z
+					.object({
+						id: ticketIdSchema,
+						status: ticketStatusSchema,
+						revision: z.string().regex(/^[a-f0-9]{64}$/),
+					})
+					.strict(),
+			)
+			.min(1)
+			.max(1000)
+			.refine((tickets) => new Set(tickets.map((ticket) => ticket.id.toLowerCase())).size === tickets.length),
+	})
+	.strict()
 type TicketChildCounts = { childCount: number; completedChildCount: number }
 function countChildren(tickets: Ticket[]): Map<string, TicketChildCounts> {
 	const counts = new Map<string, TicketChildCounts>()
@@ -265,13 +326,19 @@ export class TicketStore {
 		await this.safe(this.directory)
 		checkCancelled(signal)
 		const checkPending = async () => {
-			try {
-				await fs.lstat(path.join(this.directory, ".move.json"))
-			} catch (error) {
-				if (missing(error)) return
-				throw error
+			for (const [journal, operation] of [
+				[".move.json", "move"],
+				[".import.json", "import"],
+				[".delete.json", "delete"],
+			] as const) {
+				try {
+					await fs.lstat(path.join(this.directory, journal))
+				} catch (error) {
+					if (missing(error)) continue
+					throw error
+				}
+				throw new Error(`Ticket ${operation} pending; open the ticket editor to recover it before reading`)
 			}
-			throw new Error("Ticket move pending; open the ticket editor to recover it before reading")
 		}
 		await checkPending()
 		const result = await run()
@@ -447,7 +514,9 @@ export class TicketStore {
 	}
 
 	async read(id: string, signal?: AbortSignal): Promise<Ticket> {
-		return this.inspect(async () => (await this.locate(await this.resolveId(id, signal))).ticket, signal)
+		const [result] = await this.readMany([id], signal)
+		if ("error" in result) throw result.error
+		return result.ticket
 	}
 	/** Resolve one attachment batch without rescanning the project for every reference. */
 	async readMany(locators: readonly string[], signal?: AbortSignal): Promise<TicketReadResult[]> {
@@ -499,9 +568,14 @@ export class TicketStore {
 		return this.inspect(async () => (await this.locate(id)).file)
 	}
 
-	private async scan(signal?: AbortSignal): Promise<{ tickets: Ticket[]; invalidFiles: string[] }> {
+	private async scan(signal?: AbortSignal): Promise<{
+		tickets: Ticket[]
+		invalidFiles: string[]
+		importedFrom: Map<string, string[]>
+	}> {
 		const tickets: Ticket[] = [],
 			invalidFiles: string[] = []
+		const importedFrom = new Map<string, string[]>()
 		for (const status of ticketStatusSchema.options) {
 			const directory = path.join(this.directory, status)
 			await this.safe(directory)
@@ -515,15 +589,21 @@ export class TicketStore {
 			for (const name of names.filter((name) => name.endsWith(".md"))) {
 				checkCancelled(signal)
 				try {
-					const ticket = this.parse(await this.raw(path.join(directory, name)), status).ticket
+					const { ticket, metadata } = this.parse(await this.raw(path.join(directory, name)), status)
 					if (`${ticket.id}.md` !== name) throw new Error("Invalid filename")
 					tickets.push(ticket)
+					const origin = ticketIdSchema.safeParse(metadata.importedFrom)
+					if (origin.success) {
+						const copies = importedFrom.get(origin.data) ?? []
+						copies.push(ticket.id)
+						importedFrom.set(origin.data, copies)
+					}
 				} catch {
 					invalidFiles.push(`${status}/${name}`)
 				}
 			}
 		}
-		return { tickets, invalidFiles }
+		return { tickets, invalidFiles, importedFrom }
 	}
 
 	private async resolveId(
@@ -586,6 +666,360 @@ export class TicketStore {
 				total: matches.length,
 				invalidFiles: invalidFiles.slice(0, 100),
 			}
+		}, signal)
+	}
+
+	/** The editor explicitly records observations; ordinary reads remain side-effect free. */
+	async overview(signal?: AbortSignal): Promise<TicketOverview> {
+		return this.transaction(async () => {
+			const file = path.join(this.directory, ".progress.json")
+			await this.safe(file)
+			let previous: string | undefined
+			let history: TicketProgressHistory | undefined
+			try {
+				if ((await fs.stat(file)).size > 512000)
+					throw new Error("Ticket progress history exceeds its size limit")
+				previous = await fs.readFile(file, "utf8")
+				history = ticketProgressHistorySchema.parse(JSON.parse(previous))
+			} catch (error) {
+				if (!missing(error)) throw new Error("Ticket progress history needs repair", { cause: error })
+			}
+			const { tickets, invalidFiles } = await this.scan(signal)
+			this.uniqueTickets(tickets)
+			const observation = observeTicketProgress(
+				tickets,
+				invalidFiles,
+				history,
+				new Date().toISOString().slice(0, 10),
+			)
+			const next = JSON.stringify(observation.history)
+			checkCancelled(signal)
+			if (next !== previous) await atomicWriteText(file, next, { requireAtomicReplace: true })
+			return observation.overview
+		}, signal)
+	}
+
+	async exportTickets(input: TicketExportInput, signal?: AbortSignal): Promise<TicketTransferEntry[]> {
+		const options = ticketExportInputSchema.parse(input)
+		return this.inspect(async () => {
+			const { tickets, invalidFiles } = await this.scan(signal)
+			if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before exporting")
+			const byId = this.uniqueTickets(tickets)
+			let selected: Set<string>
+			if (options.ids) {
+				selected = new Set(options.ids)
+				if ([...selected].some((id) => !byId.has(id)))
+					throw new Error("An export ticket no longer exists; reload")
+			} else if (options.filter) {
+				const filter = options.filter
+				const reference = filter.query && normalizeTicketReference(filter.query)
+				const terms = filter.query?.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+				selected = new Set(
+					tickets
+						.filter(
+							(ticket) =>
+								(!filter.status || ticket.status === filter.status) &&
+								(filter.type === undefined || (ticket.type ?? null) === filter.type) &&
+								(reference
+									? ticket.reference === reference
+									: terms.every((term) =>
+											`${ticket.reference ?? ""}\n${ticket.name}\n${ticket.description}\n${ticket.context}`
+												.toLowerCase()
+												.replace(/[^\p{L}\p{N}]/gu, "")
+												.includes(term),
+										)),
+						)
+						.map((ticket) => ticket.id),
+				)
+			} else selected = new Set(byId.keys())
+			if (options.includeDescendants) {
+				const children = new Map<string, string[]>()
+				for (const ticket of tickets) {
+					if (!ticket.parentId) continue
+					const list = children.get(ticket.parentId) ?? []
+					list.push(ticket.id)
+					children.set(ticket.parentId, list)
+				}
+				for (const id of selected) for (const child of children.get(id) ?? []) selected.add(child)
+			}
+			if (!selected.size) throw new Error("No tickets selected for export")
+			if (selected.size > maxTransferTickets) throw new Error("Export at most 1000 tickets at a time")
+			const entries: TicketTransferEntry[] = []
+			for (const ticket of tickets.filter((ticket) => selected.has(ticket.id)).sort(compareTickets)) {
+				checkCancelled(signal)
+				const current = await this.locate(ticket.id)
+				if (current.ticket.revision !== ticket.revision)
+					throw new Error("Ticket changed during export; try again")
+				const markdown = this.serialize(
+					{ ...current.ticket, linkedTaskIds: [] },
+					current.metadata,
+					current.body,
+				)
+				// Status ordinarily lives in the containing folder. Also carry it in standalone exported Markdown.
+				entries.push({
+					path: `${ticket.status}/${ticket.id}.md`,
+					status: ticket.status,
+					markdown: markdown.replace(/^(---\r?\n)/, `$1status: ${ticket.status}\n`),
+				})
+			}
+			this.validateTransferEntries(entries)
+			return entries
+		}, signal)
+	}
+
+	private uniqueTickets(tickets: Ticket[]): Map<string, Ticket> {
+		const result = new Map<string, Ticket>()
+		for (const ticket of tickets) {
+			if (result.has(ticket.id)) throw new Error("Duplicate ticket ID; repair Markdown files")
+			result.set(ticket.id, ticket)
+		}
+		return result
+	}
+
+	private validateTransferEntries(input: TicketTransferEntry[]): TicketTransferEntry[] {
+		const entries = z.array(transferEntrySchema).min(1).max(maxTransferTickets).parse(input)
+		let bytes = 0
+		for (const entry of entries) {
+			if (
+				entry.path.includes("\\") ||
+				entry.path.split("/").some((part) => !part || part === "." || part === "..") ||
+				path.isAbsolute(entry.path) ||
+				/^[a-z]:/i.test(entry.path) ||
+				!entry.path.endsWith(".md")
+			)
+				throw new Error("Invalid imported Markdown path")
+			const size = Buffer.byteLength(entry.markdown, "utf8")
+			if (size > 100000) throw new Error("Ticket exceeds 100 KB")
+			bytes += size
+		}
+		if (bytes > maxTransferBytes) throw new Error("Ticket transfer exceeds 16 MiB")
+		return entries
+	}
+
+	private async parseTransferEntries(entries: TicketTransferEntry[], signal?: AbortSignal) {
+		const parsed: (TicketTransferEntry & ReturnType<TicketStore["parse"]>)[] = []
+		for (const entry of this.validateTransferEntries(entries)) {
+			checkCancelled(signal)
+			const source = this.parse(entry.markdown, entry.status)
+			if (entry.path !== `${entry.status}/${source.ticket.id}.md`)
+				throw new Error("Imported ticket identity does not match its path")
+			parsed.push({ ...entry, ...source })
+			// Large batches must give cancellation and extension-host events a chance between YAML parses.
+			if (parsed.length % 32 === 0) await new Promise<void>((resolve) => setImmediate(resolve))
+		}
+		checkCancelled(signal)
+		return parsed
+	}
+
+	private comparableTicket(ticket: Ticket, metadata: Record<string, unknown>, body: string): string {
+		return (
+			this.serialize(
+				{
+					...ticket,
+					reference: undefined,
+					createdAt: "2000-01-01T00:00:00.000Z",
+					updatedAt: "2000-01-01T00:00:00.000Z",
+					completedAt: undefined,
+					linkedTaskIds: [],
+				},
+				metadata,
+				body,
+			).replace(/\r\n/g, "\n") + `\0${ticket.status}`
+		)
+	}
+
+	async previewImport(entries: TicketTransferEntry[], signal?: AbortSignal): Promise<TicketImportPlan> {
+		const incoming = await this.parseTransferEntries(entries, signal)
+		const sources = incoming.map(({ path, markdown, status }) => ({ path, markdown, status }))
+		return this.inspect(async () => {
+			const { tickets, invalidFiles, importedFrom } = await this.scan(signal)
+			if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before importing")
+			const local = this.uniqueTickets(tickets)
+			const byId = this.uniqueTickets(incoming.map((source) => source.ticket))
+			const candidateParents = incoming.map(({ ticket }) => ({
+				...ticket,
+				parentId: ticket.parentId && byId.has(ticket.parentId) ? ticket.parentId : undefined,
+			}))
+			for (const ticket of candidateParents) this.validateParent(candidateParents, ticket.id, ticket.parentId)
+			const preview: TicketImportPlan["preview"] = { tickets: [], warnings: [] }
+			const expectedRevisions: TicketImportPlan["expectedRevisions"] = {}
+			for (const source of incoming) {
+				checkCancelled(signal)
+				const ticket = source.ticket
+				const existing = local.get(ticket.id)
+				expectedRevisions[ticket.id] = existing?.revision
+				let disposition: TicketImportPreviewItem["disposition"] = "new"
+				let changes: TicketImportPreviewItem["changes"]
+				if (existing) {
+					const current = await this.locate(existing.id)
+					if (current.ticket.revision !== existing.revision)
+						throw new Error("Ticket changed during preview; reload")
+					disposition =
+						this.comparableTicket(current.ticket, current.metadata, current.body) ===
+						this.comparableTicket(ticket, source.metadata, source.body)
+							? "duplicate"
+							: "conflict"
+					if (disposition === "conflict") {
+						const excerpt = (value: unknown) => {
+							const text = value === undefined || value === null ? "" : String(value)
+							return text.length > 2000 ? `${text.slice(0, 1999)}…` : text
+						}
+						changes = (
+							[
+								"name",
+								"type",
+								"priority",
+								"description",
+								"context",
+								"successCriteria",
+								"implementationSummary",
+								"status",
+								"parentId",
+							] as const
+						)
+							.filter((field) => (current.ticket[field] ?? "") !== (ticket[field] ?? ""))
+							.map((field) => ({
+								field,
+								before: excerpt(current.ticket[field]),
+								after: excerpt(ticket[field]),
+							}))
+						if (!changes.length)
+							preview.warnings.push(
+								`${ticket.reference ?? ticket.name}: additional Markdown metadata or notes differ from the local ticket.`,
+							)
+					}
+				}
+				if (!existing && importedFrom.has(ticket.id)) {
+					preview.warnings.push(
+						`${ticket.reference ?? ticket.name}: imported copies of this ticket already exist. Importing copies again creates additional tickets.`,
+					)
+				}
+				preview.tickets.push({
+					id: ticket.id,
+					reference: ticket.reference,
+					name: ticket.name,
+					status: ticket.status,
+					disposition,
+					...(changes ? { changes } : {}),
+				})
+				if (ticket.parentId && !byId.has(ticket.parentId))
+					preview.warnings.push(
+						`${ticket.reference ?? ticket.name}: its parent is outside this import. Copies will be detached; updates keep the link only if the parent exists locally.`,
+					)
+			}
+			if (preview.warnings.length > 1000)
+				preview.warnings = [...preview.warnings.slice(0, 999), "Additional import warnings were omitted."]
+			return { projectId: this.projectId, entries: sources, expectedRevisions, preview }
+		}, signal)
+	}
+
+	async importTickets(
+		plan: TicketImportPlan,
+		options: { mode: "copy" | "update"; resetStatus: boolean },
+		signal?: AbortSignal,
+	): Promise<{ imported: number; skipped: number }> {
+		if (plan.projectId !== this.projectId) throw new Error("Import preview belongs to another project")
+		z.object({ mode: z.enum(["copy", "update"]), resetStatus: z.boolean() })
+			.strict()
+			.parse(options)
+		const sources = await this.parseTransferEntries(plan.entries, signal)
+		this.uniqueTickets(sources.map((source) => source.ticket))
+		return this.transaction(async () => {
+			const { tickets, invalidFiles } = await this.scan(signal)
+			if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before importing")
+			const local = this.uniqueTickets(tickets)
+			for (const source of sources) {
+				if (local.get(source.ticket.id)?.revision !== plan.expectedRevisions[source.ticket.id])
+					throw new Error("Tickets changed since the import preview; preview again before importing")
+			}
+			const sequence = await this.sequence(tickets)
+			const mappedIds = new Map(
+				sources.map(({ ticket }) => [ticket.id, options.mode === "copy" ? randomUUID() : ticket.id]),
+			)
+			const now = new Date().toISOString()
+			const operations: ImportOperation[] = []
+			const changed: Ticket[] = []
+			let skipped = 0
+			for (const source of sources) {
+				checkCancelled(signal)
+				const existing = options.mode === "update" ? local.get(source.ticket.id) : undefined
+				const old = existing && (await this.locate(existing.id))
+				if (old && old.ticket.revision !== existing.revision)
+					throw new Error("Ticket changed during import; preview again")
+				const status = options.resetStatus ? "backlog" : source.ticket.status
+				if (
+					old &&
+					status === old.ticket.status &&
+					this.comparableTicket(old.ticket, old.metadata, old.body) ===
+						this.comparableTicket(source.ticket, source.metadata, source.body)
+				) {
+					skipped++
+					continue
+				}
+				const reference =
+					existing?.reference ?? `${sequence.prefix}-${String(sequence.nextNumber++).padStart(2, "0")}`
+				const parentId = source.ticket.parentId
+					? (mappedIds.get(source.ticket.parentId) ??
+						(options.mode === "update" && local.has(source.ticket.parentId)
+							? source.ticket.parentId
+							: undefined))
+					: undefined
+				const ticket: Ticket = {
+					...source.ticket,
+					id: mappedIds.get(source.ticket.id)!,
+					reference,
+					parentId,
+					status,
+					createdAt: existing?.createdAt ?? (options.mode === "copy" ? now : source.ticket.createdAt),
+					updatedAt: now,
+					completedAt:
+						status === "complete"
+							? (existing?.completedAt ??
+								(options.mode === "copy" ? now : source.ticket.completedAt) ??
+								now)
+							: undefined,
+					linkedTaskIds: existing?.linkedTaskIds ?? [],
+					revision: "",
+				}
+				const metadata = { ...old?.metadata, ...source.metadata }
+				if (options.mode === "copy") metadata.importedFrom = source.ticket.id
+				else if (!ticketIdSchema.safeParse(metadata.importedFrom).success) delete metadata.importedFrom
+				const text = this.serialize(ticket, metadata, source.body)
+				operations.push({
+					id: ticket.id,
+					status: ticket.status,
+					fromStatus: existing?.status,
+					expectedRevision: existing?.revision,
+					text,
+				})
+				changed.push(ticket)
+			}
+			if (!operations.length) return { imported: 0, skipped }
+			const changedIds = new Set(changed.map((ticket) => ticket.id))
+			const candidates = [...tickets.filter((ticket) => !changedIds.has(ticket.id)), ...changed]
+			for (const ticket of changed) this.validateParent(candidates, ticket.id, ticket.parentId)
+			const journal = path.join(this.directory, ".import.json")
+			const sequenceFile = path.join(this.directory, ".sequence.json")
+			await this.safe(journal)
+			await this.safe(sequenceFile)
+			const journalText = JSON.stringify(importJournalSchema.parse({ version: 1, operations }))
+			if (
+				operations.reduce((size, operation) => size + Buffer.byteLength(operation.text, "utf8"), 0) >
+				maxTransferBytes
+			)
+				throw new Error("Ticket import exceeds 16 MiB")
+			if (Buffer.byteLength(journalText, "utf8") > maxTransferBytes * 2)
+				throw new Error("Serialized ticket import exceeds its size limit")
+			checkCancelled(signal)
+			// Reserve the complete batch before its durable intent. Failed commits leave gaps, never reused references.
+			await atomicWriteText(sequenceFile, JSON.stringify(sequenceSchema.parse(sequence)), {
+				requireAtomicReplace: true,
+			})
+			checkCancelled(signal)
+			await atomicWriteText(journal, journalText, { requireAtomicReplace: true })
+			// A durable batch is a commit barrier: finish or leave its recoverable intent, rather than cancelling half way.
+			await this.recoverImport()
+			return { imported: operations.length, skipped }
 		}, signal)
 	}
 
@@ -989,7 +1423,266 @@ export class TicketStore {
 		}, signal)
 	}
 
+	/** Explicit UUID/revision selection keeps a bulk request bounded to its reviewed snapshot. */
+	async deleteMany(input: DeleteTickets, signal?: AbortSignal): Promise<Ticket[]> {
+		const request = deleteTicketsSchema.parse(input)
+		return this.transaction(async () => {
+			const { tickets, invalidFiles } = await this.scan(signal)
+			if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before deleting tickets")
+			const byId = this.uniqueTickets(tickets)
+			const selected = new Set(request.tickets.map((ticket) => ticket.id))
+			const originals = request.tickets.map(({ id, expectedRevision }) => {
+				const ticket = byId.get(id)
+				if (!ticket || ticket.revision !== expectedRevision)
+					throw new Error("Tickets changed; list them again before deleting. No tickets have been deleted.")
+				return ticket
+			})
+			this.assertDeleteClosure(tickets, selected)
+			const ordered = this.orderDeletionTargets(originals)
+			const sequence = await this.sequence(tickets)
+			const journal = path.join(this.directory, ".delete.json")
+			const sequenceFile = path.join(this.directory, ".sequence.json")
+			await this.safe(journal)
+			await this.safe(sequenceFile)
+			const intent = deleteJournalSchema.parse({
+				version: 1,
+				tickets: ordered.map(({ id, status, revision }) => ({ id, status, revision })),
+			})
+			checkCancelled(signal)
+			// Reserve the high-water mark once; cancellation can leave gaps but never reuse references.
+			await atomicWriteText(sequenceFile, JSON.stringify(sequence), { requireAtomicReplace: true })
+			checkCancelled(signal)
+			await atomicWriteText(journal, JSON.stringify(intent), { requireAtomicReplace: true })
+			// Once durable, finish the batch or retain a replayable intent; never report a partial success.
+			await this.recoverDelete()
+			return originals
+		}, signal)
+	}
+
+	private assertDeleteClosure(tickets: Ticket[], selected: Set<string>): void {
+		if (tickets.some((ticket) => ticket.parentId && selected.has(ticket.parentId) && !selected.has(ticket.id)))
+			throw new Error("Detach or delete child tickets before deleting their parent")
+	}
+
+	private orderDeletionTargets(tickets: Ticket[]): Ticket[] {
+		const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]))
+		const depths = new Map<string, number>()
+		for (const ticket of tickets) {
+			const chain: string[] = []
+			const visited = new Set<string>()
+			let current: string | undefined = ticket.id
+			while (current && byId.has(current) && !depths.has(current)) {
+				if (visited.has(current)) throw new Error("Repair cyclic ticket parent links before deleting tickets")
+				visited.add(current)
+				chain.push(current)
+				current = byId.get(current)?.parentId
+			}
+			let depth = current ? (depths.get(current) ?? -1) : -1
+			for (let index = chain.length - 1; index >= 0; index--) depths.set(chain[index], ++depth)
+		}
+		return [...tickets].sort(
+			(left, right) => depths.get(right.id)! - depths.get(left.id)! || left.id.localeCompare(right.id),
+		)
+	}
+
 	private async recover(): Promise<void> {
+		await this.recoverMove()
+		await this.recoverImport()
+		await this.recoverDelete()
+	}
+
+	private async recoverDelete(): Promise<void> {
+		const journal = path.join(this.directory, ".delete.json")
+		let raw: string
+		try {
+			await this.safe(journal)
+			if ((await fs.stat(journal)).size > 256 * 1024)
+				throw new Error("Ticket deletion journal exceeds its size limit")
+			raw = await fs.readFile(journal, "utf8")
+		} catch (error) {
+			if (missing(error)) return
+			throw error
+		}
+		const intent = deleteJournalSchema.parse(JSON.parse(raw))
+		const selected = new Set(intent.tickets.map((ticket) => ticket.id))
+		const expected = new Map(intent.tickets.map((ticket) => [ticket.id, ticket]))
+		const { tickets, invalidFiles } = await this.scan()
+		if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before recovering a deletion")
+		const byId = this.uniqueTickets(tickets)
+		const remaining: Ticket[] = []
+		for (const ticket of intent.tickets) {
+			const current = byId.get(ticket.id)
+			if (!current) continue // An earlier attempt may already have unlinked this exact record.
+			if (current.status !== ticket.status || current.revision !== ticket.revision)
+				throw new Error("Ticket deletion conflicts with an external edit; repair the deletion journal")
+			remaining.push(current)
+		}
+		this.assertDeleteClosure(tickets, selected)
+		// Preflight every target again before any unlink. One stale member must preserve the entire remaining batch.
+		for (const ticket of remaining) {
+			const current = (await this.locate(ticket.id)).ticket
+			if (current.status !== ticket.status || current.revision !== ticket.revision)
+				throw new Error("Ticket deletion conflicts with an external edit; repair the deletion journal")
+		}
+		let expectedFiles = new Set<string>()
+		let unselectedVersions = new Map<string, string>()
+		const removed = new Set<string>()
+		const rememberContext = async (currentTickets: Ticket[]) => {
+			expectedFiles = new Set(currentTickets.map((ticket) => path.join(ticket.status, `${ticket.id}.md`)))
+			unselectedVersions = new Map()
+			for (const ticket of currentTickets) {
+				if (selected.has(ticket.id)) continue
+				const file = this.file(ticket.id, ticket.status)
+				await this.safe(file)
+				unselectedVersions.set(file, this.searchSignature(await fs.lstat(file, { bigint: true })))
+			}
+		}
+		await rememberContext(tickets)
+		const checkContext = async () => {
+			const currentFiles = new Set<string>()
+			for (const status of ticketStatusSchema.options) {
+				const directory = path.join(this.directory, status)
+				await this.safe(directory)
+				try {
+					for (const name of await fs.readdir(directory))
+						if (name.endsWith(".md")) currentFiles.add(path.join(status, name))
+				} catch (error) {
+					if (!missing(error)) throw error
+				}
+			}
+			let changed =
+				currentFiles.size !== expectedFiles.size || [...currentFiles].some((file) => !expectedFiles.has(file))
+			if (!changed) {
+				for (const [file, version] of unselectedVersions) {
+					await this.safe(file)
+					try {
+						if (this.searchSignature(await fs.lstat(file, { bigint: true })) !== version) changed = true
+					} catch (error) {
+						if (!missing(error)) throw error
+						changed = true
+					}
+					if (changed) break
+				}
+			}
+			if (!changed) return
+			const snapshot = await this.scan()
+			if (snapshot.invalidFiles.length)
+				throw new Error("Repair invalid ticket Markdown files before recovering a deletion")
+			this.uniqueTickets(snapshot.tickets)
+			for (const ticket of snapshot.tickets) {
+				const original = expected.get(ticket.id)
+				if (
+					original &&
+					(removed.has(ticket.id) ||
+						ticket.status !== original.status ||
+						ticket.revision !== original.revision)
+				)
+					throw new Error("Ticket deletion conflicts with an external edit; repair the deletion journal")
+			}
+			this.assertDeleteClosure(snapshot.tickets, selected)
+			await rememberContext(snapshot.tickets)
+		}
+		for (const ticket of this.orderDeletionTargets(remaining)) {
+			const current = await this.locate(ticket.id)
+			const original = expected.get(ticket.id)!
+			// Detect new children and reparented outside records without reparsing an unchanged project per ticket.
+			await checkContext()
+			if (
+				current.ticket.status !== original.status ||
+				revisionOf(original.status, await this.raw(current.file)) !== original.revision
+			)
+				throw new Error("Ticket deletion conflicts with an external edit; repair the deletion journal")
+			await fs.unlink(current.file)
+			removed.add(ticket.id)
+			expectedFiles.delete(path.join(ticket.status, `${ticket.id}.md`))
+		}
+		const final = await this.scan()
+		if (final.invalidFiles.length || final.tickets.some((ticket) => selected.has(ticket.id)))
+			throw new Error("Ticket deletion conflicts with an external replacement; repair the deletion journal")
+		this.assertDeleteClosure(final.tickets, selected)
+		await fs.unlink(journal)
+	}
+
+	private async recoverImport(): Promise<void> {
+		const journal = path.join(this.directory, ".import.json")
+		let text: string
+		try {
+			await this.safe(journal)
+			if ((await fs.stat(journal)).size > maxTransferBytes * 2)
+				throw new Error("Ticket import journal exceeds its size limit")
+			text = await fs.readFile(journal, "utf8")
+		} catch (error) {
+			if (missing(error)) return
+			throw error
+		}
+		const intent = importJournalSchema.parse(JSON.parse(text))
+		const ids = new Set<string>()
+		let totalBytes = 0
+		const incoming = intent.operations.map((operation) => {
+			if (ids.has(operation.id)) throw new Error("Duplicate ticket ID in import journal")
+			ids.add(operation.id)
+			const bytes = Buffer.byteLength(operation.text, "utf8")
+			if (bytes > 100000) throw new Error("Ticket exceeds 100 KB")
+			totalBytes += bytes
+			const ticket = this.parse(operation.text, operation.status).ticket
+			if (ticket.id !== operation.id) throw new Error("Invalid ticket import ID")
+			return ticket
+		})
+		if (totalBytes > maxTransferBytes) throw new Error("Ticket import exceeds 16 MiB")
+		const readOptional = async (file: string): Promise<string | undefined> => {
+			try {
+				return await this.raw(file)
+			} catch (error) {
+				if (missing(error)) return undefined
+				throw error
+			}
+		}
+		const inspectOperation = async (operation: ImportOperation) => {
+			const target = this.file(operation.id, operation.status)
+			const source = operation.fromStatus ? this.file(operation.id, operation.fromStatus) : undefined
+			await this.safe(target)
+			const targetText = await readOptional(target)
+			const sourceText = source === target ? targetText : source ? await readOptional(source) : undefined
+			const targetMatches = targetText === operation.text
+			const sourceMatches =
+				sourceText !== undefined &&
+				operation.fromStatus &&
+				revisionOf(operation.fromStatus, sourceText) === operation.expectedRevision
+			if (
+				(targetText !== undefined && !targetMatches && !(source === target && sourceMatches)) ||
+				(sourceText !== undefined && !sourceMatches && !(source === target && targetMatches)) ||
+				(source && sourceText === undefined && !targetMatches)
+			)
+				throw new Error("Ticket import conflicts with an external edit; repair the import journal")
+			for (const status of ticketStatusSchema.options) {
+				const file = this.file(operation.id, status)
+				if (file !== source && file !== target && (await readOptional(file)) !== undefined)
+					throw new Error("Duplicate ticket ID conflicts with the import journal")
+			}
+			return { source, sourceText, target, targetMatches }
+		}
+		// Validate the complete durable intent and all stale-context guards before the first write.
+		const { tickets, invalidFiles } = await this.scan()
+		if (invalidFiles.length) throw new Error("Repair invalid ticket Markdown files before recovering an import")
+		const candidates = [...tickets.filter((ticket) => !ids.has(ticket.id)), ...incoming]
+		this.uniqueTickets(candidates)
+		await this.sequence(candidates)
+		for (const ticket of incoming) this.validateParent(candidates, ticket.id, ticket.parentId)
+		for (const operation of intent.operations) await inspectOperation(operation)
+		for (const operation of intent.operations) {
+			const current = await inspectOperation(operation)
+			if (!current.targetMatches)
+				await atomicWriteText(current.target, operation.text, { requireAtomicReplace: true })
+			if (current.source && current.source !== current.target && current.sourceText !== undefined) {
+				if ((await this.raw(current.source)) !== current.sourceText)
+					throw new Error("Ticket import source changed; repair the import journal")
+				await fs.unlink(current.source)
+			}
+		}
+		await fs.unlink(journal)
+	}
+
+	private async recoverMove(): Promise<void> {
 		const journal = path.join(this.directory, ".move.json")
 		let raw: string
 		try {

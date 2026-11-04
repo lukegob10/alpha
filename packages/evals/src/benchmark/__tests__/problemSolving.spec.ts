@@ -157,10 +157,10 @@ async function runVisible(id: string, testFile: string, workspaceRoot: string) {
 describe("problem-solving task set", () => {
 	it("pins the bank, Terminal-Bench v4.0.0, and native tasks into core, development, and holdout", async () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
-		expect(manifest.version).toBe(3)
+		expect(manifest.version).toBe(4)
 		const lanes = new Set(manifest.tasks.map(({ lane }) => lane))
 		expect(manifest.sources.map(({ id, release }) => [id, release])).toEqual([
-			["alpha-task-bank", "frontier-v1@6"],
+			["alpha-task-bank", "frontier-v1@7"],
 			["terminal-bench", "v4.0.0"],
 			["alpha-native", "problem-solving-v1@1"],
 		])
@@ -203,9 +203,17 @@ describe("problem-solving task set", () => {
 		await expect(validateProblemSolvingSet(stale, evalRoot)).rejects.toThrow(/Alpha task bank source release/)
 	})
 
-	it("accepts current evidence and rejects legacy calibration for every revised visible identity", async () => {
+	it("accepts unchanged calibration and requires fresh evidence for revised visible identities", async () => {
 		const manifest = await loadProblemSolvingSet(evalRoot)
-		await assertVisibleBankCalibration(evalRoot, manifest)
+		const awaitingCalibration = manifest.tasks.filter(({ id }) => id === "repo-plugin-dependency-cycle")
+		expect(awaitingCalibration).toMatchObject([{ version: 2 }])
+		await expect(
+			assertVisibleBankCalibration(evalRoot, { ...manifest, tasks: awaitingCalibration }),
+		).rejects.toThrow("Keyless calibration identity mismatch for repo-plugin-dependency-cycle")
+		await assertVisibleBankCalibration(evalRoot, {
+			...manifest,
+			tasks: manifest.tasks.filter(({ id }) => id !== "repo-plugin-dependency-cycle"),
+		})
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-stale-bank-calibration-"))
 		try {
 			await fs.mkdir(path.join(root, "calibration"))
@@ -215,6 +223,7 @@ describe("problem-solving task set", () => {
 				"alpha-repository-rules",
 				"alpha-scheduler-ordering",
 				"repo-transaction-outbox",
+				"repo-plugin-dependency-cycle",
 			]) {
 				const task = manifest.tasks.find((task) => task.id === id)!
 				expect(task.version).toBe(2)

@@ -1,8 +1,13 @@
-import { beforeEach, afterEach, describe, expect, it } from "vitest"
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
 import * as fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { TicketStore } from "../TicketStore"
+
+vi.mock("fs/promises", async (importOriginal) => {
+	const original = await importOriginal<typeof import("fs/promises")>()
+	return { ...original, readFile: vi.fn(original.readFile) }
+})
 
 describe("TicketStore", () => {
 	let home: string, workspace: string, store: TicketStore
@@ -13,6 +18,7 @@ describe("TicketStore", () => {
 		store = await TicketStore.forWorkspace(workspace, home)
 	})
 	afterEach(async () => {
+		vi.restoreAllMocks()
 		await fs.rm(home, { recursive: true, force: true })
 	})
 
@@ -23,6 +29,57 @@ describe("TicketStore", () => {
 			{ error: expect.any(Error) },
 		])
 		await expect(fs.stat(path.join(home, ".alpha"))).rejects.toMatchObject({ code: "ENOENT" })
+	})
+	it.each(["PRO-01", "pro1", "PRO number 1"])(
+		"rejects a changed %s reference between resolution and the authoritative read",
+		async (locator) => {
+			const ticket = await store.create({ name: "Selected ticket" })
+			const file = await store.markdownPath(ticket.id)
+			const original = await fs.readFile(file, "utf8")
+			const external = original.replace("reference: PRO-01", "reference: PRO-99")
+			let indexed!: () => void
+			let release!: () => void
+			const captured = new Promise<void>((resolve) => (indexed = resolve))
+			const barrier = new Promise<void>((resolve) => (release = resolve))
+			const readFile = (await vi.importActual<typeof import("fs/promises")>("fs/promises")).readFile
+			const reads = vi.mocked(fs.readFile)
+			let held = false
+			reads.mockImplementation(async (...args) => {
+				const content = await readFile(...args)
+				if (args[0] === file && !held) {
+					held = true
+					indexed()
+					await barrier
+				}
+				return content
+			})
+			const reading = store.read(locator).then(
+				(ticket) => ({ ticket }),
+				(error: unknown) => ({ error }),
+			)
+			try {
+				await captured
+				await fs.writeFile(file, external)
+				release()
+				expect(await reading).toEqual({
+					error: expect.objectContaining({
+						message: "Ticket reference changed during attachment loading; reload",
+					}),
+				})
+				expect(await store.read(ticket.id)).toMatchObject({ reference: "PRO-99" })
+				expect(await fs.readFile(file, "utf8")).toBe(external)
+			} finally {
+				release()
+				await reading
+				reads.mockImplementation(readFile)
+			}
+		},
+	)
+	it("reads a UUID without scanning other project tickets", async () => {
+		const ticket = await store.create({ name: "Direct identity" })
+		const directories = vi.spyOn(fs, "readdir")
+		expect(await store.read(ticket.id)).toEqual(ticket)
+		expect(directories).not.toHaveBeenCalled()
 	})
 	it("reads mixed locator batches in order with independent errors and no cache across edits", async () => {
 		const first = await store.create({ name: "First" })

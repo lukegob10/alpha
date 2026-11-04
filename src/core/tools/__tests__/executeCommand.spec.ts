@@ -492,7 +492,7 @@ describe("executeCommand", () => {
 					pushToolResult: vitest.fn(),
 					setResultMetadata: vitest.fn(),
 				}
-				await writeStdin.execute({
+				const poll = writeStdin.execute({
 					task: mockTask,
 					call: {
 						type: "tool_use",
@@ -504,10 +504,12 @@ describe("executeCommand", () => {
 					},
 					callbacks: toolCallbacks,
 				})
+				await vitest.advanceTimersByTimeAsync(5_000)
+				await poll
 				expect(toolCallbacks.pushToolResult).toHaveBeenCalledWith(
 					expect.stringContaining(`Process running with session ID ${sessionId}`),
 				)
-				await writeStdin.execute({
+				const input = writeStdin.execute({
 					task: mockTask,
 					call: {
 						type: "tool_use",
@@ -519,6 +521,8 @@ describe("executeCommand", () => {
 					},
 					callbacks: toolCallbacks,
 				})
+				await vitest.advanceTimersByTimeAsync(250)
+				await input
 				expect(backgroundProcess.writeInput).toHaveBeenCalledExactlyOnceWith("yes\n")
 				expect(toolCallbacks.handleError).not.toHaveBeenCalled()
 				expect(mockTask.markCommandExecutionBackgrounded).toHaveBeenCalledWith(

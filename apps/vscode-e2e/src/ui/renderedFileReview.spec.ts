@@ -19,6 +19,8 @@ interface ReviewButton {
 	disabled: boolean
 	focus(): void
 	activate(): void
+	hasAttribute(name: string): boolean
+	querySelector(selector: string): null
 	getAttribute(name: string): string | null
 	getBoundingClientRect(): { width: number }
 }
@@ -26,6 +28,13 @@ interface ReviewButton {
 /** Runs the actual probe expressions and trusted keyboard events against controlled accordion state. */
 class ControlledFileReview implements Pick<CdpConnection, "request"> {
 	readonly nativeActions: string[] = []
+	readonly reviewActions: string[] = []
+	private nativeCollapsed = false
+	private nativeSideBySide = false
+	private quickPickOpen = false
+	private quickPickText = ""
+	private nativeFocused: string | undefined
+	private readonly nativeContext
 	readonly focusedFiles: string[] = []
 	readonly dynamicExpressions: string[] = []
 	readonly expandedFiles = new Set<string>()
@@ -52,6 +61,8 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 					if (names.includes(textContent)) this.focusedFiles.push(textContent)
 				},
 				activate,
+				hasAttribute: (name) => name === "aria-expanded" && !!expanded,
+				querySelector: () => null,
 				getAttribute: (name) =>
 					name === "aria-label"
 						? (label ?? null)
@@ -63,7 +74,6 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 			return element
 		}
 		let traceExpanded = false
-		const expandedFiles = this.expandedFiles
 		const trace = button(
 			"Worked for 2s",
 			undefined,
@@ -74,25 +84,23 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 		)
 		const review = button("Review", "Review", () => {
 			this.nativeActions.push("review")
-			expandedFiles.add(names[2]!)
 			reviewed()
 		})
-		const toggles = names.map((fileName) =>
-			button(
-				fileName,
-				undefined,
-				() => {
-					if (expandedFiles.has(fileName)) expandedFiles.delete(fileName)
-					else expandedFiles.add(fileName)
-				},
-				() => expandedFiles.has(fileName),
-			),
+		let panelExpanded = false
+		const panel = button(
+			"Files edited: 3",
+			undefined,
+			() => {
+				panelExpanded = !panelExpanded
+			},
+			() => panelExpanded,
 		)
 		const diffs = names.map((fileName) =>
-			button("+1 -1", `Show diff: ${fileName}`, () => {
+			button(fileName, `Show diff: ${fileName}`, () => {
 				this.nativeActions.push(`diff:${fileName}`)
 			}),
 		)
+
 		const activeElement = () => this.activeButton
 		const document = {
 			body: { innerText: `Files edited: 3\n${names.join("\n")}` },
@@ -117,12 +125,40 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 				}
 			},
 			querySelectorAll: (selector: string): unknown[] => {
-				if (selector === "button[aria-expanded]") return toggles
-				if (selector === "button") return [trace, review, ...toggles, ...diffs]
+				if (selector === "button[aria-expanded]") return [panel]
+				if (selector === "button") return [trace, review, panel, ...diffs]
 				assert.equal(selector, "[data-chat-message-index]")
 				return [{ hidden: !traceExpanded, textContent: `alpha-file-review-fixture\n${names.join("\n")}` }]
 			},
 		}
+		const actions = ["Review Actions…", "Collapse All Diffs", "Expand All Diffs"].map((label) => ({
+			getAttribute: () => label,
+			getBoundingClientRect: () => ({
+				width: label === "Review Actions…" || (label === "Expand All Diffs") === this.nativeCollapsed ? 100 : 0,
+			}),
+			focus: () => {
+				this.nativeFocused = label
+			},
+		}))
+		const nativeDocument = {
+			get activeElement() {
+				return actions.find((action) => action.getAttribute() === nativeFocused())
+			},
+			querySelectorAll: (selector: string) =>
+				selector === ".multiDiffEntry .status.renamed"
+					? []
+					: selector === ".multiDiffEntry .monaco-diff-editor"
+						? fileNames.map(() => ({ classList: { contains: () => this.nativeSideBySide } }))
+						: selector === ".multiDiffEntry .editorContainer"
+							? fileNames.map(() => ({ style: { display: this.nativeCollapsed ? "none" : "block" } }))
+							: actions,
+			querySelector: () => ({
+				getBoundingClientRect: () => ({ width: this.quickPickOpen ? 100 : 0 }),
+				textContent: this.quickPickText,
+			}),
+		}
+		const nativeFocused = () => this.nativeFocused
+		this.nativeContext = createContext({ document: nativeDocument })
 		this.context = createContext({ document, injected: false })
 	}
 
@@ -134,6 +170,39 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 		if (method === "Page.bringToFront" || method === "Page.captureScreenshot") {
 			assert.equal(session, workbenchSession)
 			return (method === "Page.captureScreenshot" ? { data: "" } : {}) as T
+		}
+		if (session === workbenchSession) {
+			if (method === "Runtime.evaluate") {
+				return {
+					result: { value: runInContext(String(params.expression), this.nativeContext, { timeout: 100 }) },
+				} as T
+			}
+			if (method === "Input.insertText") {
+				this.quickPickText = String(params.text)
+				return {} as T
+			}
+			assert.equal(method, "Input.dispatchKeyEvent")
+			if (params.type === "keyUp") {
+				if (params.key === "Enter") {
+					if (!this.quickPickOpen) {
+						this.quickPickOpen = true
+						this.quickPickText = ""
+					} else {
+						this.reviewActions.push(this.quickPickText)
+						if (this.quickPickText === "Side-by-side view") this.nativeSideBySide = true
+						if (this.quickPickText === "Inline view") this.nativeSideBySide = false
+						if (this.quickPickText === "Collapse all files") this.nativeCollapsed = true
+						if (this.quickPickText === "Expand all files") this.nativeCollapsed = false
+						this.quickPickOpen = false
+					}
+				} else {
+					assert.equal(params.modifiers, 3)
+					assert.ok(params.key === "0" || params.key === "9")
+					this.nativeCollapsed = params.key === "0"
+					this.reviewActions.push(`key:${params.key}`)
+				}
+			}
+			return {} as T
 		}
 		assert.equal(session, rendererSession)
 		if (method === "Runtime.evaluate") {
@@ -171,18 +240,34 @@ test("file-review checks and focus keep adversarial fixture filenames as script-
 		path.join(directory, "ui-stage-file-review-file.json"),
 		JSON.stringify({ nonce, stage: "file-review-file", fileName: names[1] }),
 	)
+	await fs.writeFile(
+		path.join(directory, "ui-stage-file-review-controls.json"),
+		JSON.stringify({ nonce, stage: "file-review-controls" }),
+	)
 	const renderer = new ControlledFileReview(names)
 	assert.deepEqual(await exerciseRenderedFileReview(renderer, rendererSession, workbenchSession, directory, nonce), [
 		"file-review",
 		"review-native-multi-diff",
-		"review-bottom-file-open",
-		"review-all-files-closed",
+		"review-collapse-expand-navigation",
+		"review-side-by-side-layout",
+		"review-chat-stays-collapsed",
+		"review-full-row-actions",
 		"review-native-file-diff",
 	])
+	assert.deepEqual(renderer.reviewActions, [
+		"Collapse all files",
+		"Expand all files",
+		"Inline view",
+		"Side-by-side view",
+		"Next change",
+		"Previous change",
+		"key:0",
+		"key:9",
+	])
 	assert.equal(renderer.injected, false)
-	assert.deepEqual(renderer.focusedFiles, [names[2], names[0], names[0], names[2]])
+	assert.deepEqual(renderer.focusedFiles, [names[1]])
 	assert.ok(renderer.dynamicExpressions.length > names.length)
-	assert.deepEqual([...renderer.expandedFiles], [names[2]])
+	assert.deepEqual([...renderer.expandedFiles], [])
 	assert.deepEqual(renderer.nativeActions, ["review", `diff:${names[1]}`])
 })
 
@@ -210,6 +295,10 @@ for (const response of ["verified", "stale", "cancelled"] as const) {
 		await fs.writeFile(
 			path.join(directory, "ui-stage-file-review.json"),
 			JSON.stringify({ nonce, stage: "file-review", fileNames }),
+		)
+		await fs.writeFile(
+			path.join(directory, "ui-stage-file-review-controls.json"),
+			JSON.stringify({ nonce, stage: "file-review-controls" }),
 		)
 		const renderer = new ControlledFileReview()
 		const controller = new AbortController()

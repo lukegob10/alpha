@@ -7,7 +7,6 @@ describe("organizationFilters", () => {
 		{ value: "openai", label: "OpenAI Compatible" },
 		{ value: "vertex", label: "GCP Vertex AI" },
 		{ value: "vscode-lm", label: "VS Code LM API" },
-		{ value: "stellar", label: "Stellar" },
 	]
 	const models: Record<string, ModelInfo> = {
 		model1: { maxTokens: 8000 } as ModelInfo,
@@ -20,6 +19,6 @@ describe("organizationFilters", () => {
 
 	it("keeps the supplied model catalog intact", () => {
 		expect(filterModels(models, "vertex")).toEqual(models)
-		expect(filterModels(null, "stellar")).toBeNull()
+		expect(filterModels(null, "vertex")).toBeNull()
 	})
 })

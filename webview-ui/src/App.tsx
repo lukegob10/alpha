@@ -1,11 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState, useMemo } from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import { useEvent } from "react-use"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
-import { type ExtensionMessage, TelemetryEventName } from "@alpha-code/types"
+import type { ExtensionMessage } from "@alpha-code/types"
 
 import TranslationProvider from "./i18n/TranslationContext"
-import { MarketplaceViewStateManager } from "./components/marketplace/MarketplaceViewStateManager"
 
 import { vscode } from "./utils/vscode"
 import { telemetryClient } from "./utils/TelemetryClient"
@@ -28,12 +27,9 @@ import { useAppTranslation } from "./i18n/TranslationContext"
 const webviewAppStartedAt = performance.now()
 
 const SettingsView = React.lazy(() => import("./components/settings/SettingsView"))
-const MarketplaceView = React.lazy(() =>
-	import("./components/marketplace/MarketplaceView").then(({ MarketplaceView }) => ({ default: MarketplaceView })),
-)
 const ScheduledTasksView = React.lazy(() => import("./components/scheduled-tasks/ScheduledTasksView"))
 
-const supportedTabs = ["settings", "history", "chat", "marketplace", "scheduledTasks"] as const
+const supportedTabs = ["settings", "history", "chat", "scheduledTasks"] as const
 type Tab = (typeof supportedTabs)[number]
 
 interface DeleteMessageDialogState {
@@ -61,7 +57,6 @@ const tabsByMessageAction: Partial<Record<NonNullable<ExtensionMessage["action"]
 	chatButtonClicked: "chat",
 	settingsButtonClicked: "settings",
 	historyButtonClicked: "history",
-	marketplaceButtonClicked: "marketplace",
 }
 
 const App = () => {
@@ -96,9 +91,6 @@ const App = () => {
 			if (secondFrame) cancelAnimationFrame(secondFrame)
 		}
 	}, [didHydrateState])
-
-	// Create a persistent state manager
-	const marketplaceStateManager = useMemo(() => new MarketplaceViewStateManager(), [])
 
 	const [showAnnouncement, setShowAnnouncement] = useState(false)
 	const [tab, setTab] = useState<Exclude<Tab, "history">>("chat")
@@ -167,7 +159,6 @@ const App = () => {
 	const switchTab = useCallback(
 		(newTab: Tab) => {
 			setCurrentSection(undefined)
-			setCurrentMarketplaceTab(undefined)
 
 			if (settingsRef.current?.checkUnsaveChanges) {
 				settingsRef.current.checkUnsaveChanges(() => navigateToTab(newTab))
@@ -179,11 +170,9 @@ const App = () => {
 	)
 
 	const [currentSection, setCurrentSection] = useState<string | undefined>(undefined)
-	const [currentMarketplaceTab, setCurrentMarketplaceTab] = useState<string | undefined>(undefined)
 	const startNewChat = useCallback(() => {
 		const start = () => {
 			setCurrentSection(undefined)
-			setCurrentMarketplaceTab(undefined)
 			navigateToTab("chat")
 			chatViewRef.current?.startNewChat()
 		}
@@ -208,23 +197,19 @@ const App = () => {
 					// Extract targetSection from values if provided
 					const targetSection = message.values?.section as string | undefined
 					setCurrentSection(targetSection)
-					setCurrentMarketplaceTab(undefined)
 				} else {
 					// Handle other actions using the mapping
 					const newTab = tabsByMessageAction[message.action]
 					const section = message.values?.section as string | undefined
-					const marketplaceTab = message.values?.marketplaceTab as string | undefined
 
 					if (newTab) {
 						if (message.values?.force === true) {
 							setCurrentSection(undefined)
-							setCurrentMarketplaceTab(undefined)
 							navigateToTab(newTab)
 						} else {
 							switchTab(newTab)
 						}
 						setCurrentSection(section)
-						setCurrentMarketplaceTab(marketplaceTab)
 					}
 				}
 			}
@@ -322,13 +307,6 @@ const App = () => {
 			}
 		}, [renderContext]),
 	)
-	// Track marketplace tab views
-	useEffect(() => {
-		if (tab === "marketplace") {
-			telemetryClient.capture(TelemetryEventName.MARKETPLACE_TAB_VIEWED)
-		}
-	}, [tab])
-
 	if (!didHydrateState) {
 		return null
 	}
@@ -364,13 +342,6 @@ const App = () => {
 									ref={settingsRef}
 									onDone={() => setTab("chat")}
 									targetSection={currentSection}
-								/>
-							)}
-							{tab === "marketplace" && (
-								<MarketplaceView
-									stateManager={marketplaceStateManager}
-									onDone={() => switchTab("chat")}
-									targetTab={currentMarketplaceTab as "mcp" | "mode" | undefined}
 								/>
 							)}
 							{tab === "scheduledTasks" && (

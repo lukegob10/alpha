@@ -39,6 +39,20 @@ export function createExecCommandTool(planMode = false): OpenAI.Chat.ChatComplet
 						type: "string",
 						description: CMD_DESCRIPTION,
 					},
+					...(!planMode
+						? {
+								shell: {
+									type: "string",
+									description:
+										"Select an installed approved sh, bash, zsh, PowerShell, or cmd executable. Omit to retain the configured shell.",
+								},
+								login: {
+									type: "boolean",
+									description:
+										"Select login/profile startup for an explicit shell invocation. False disables it. Omit both shell and login to retain configured startup behavior.",
+								},
+							}
+						: {}),
 					workdir: {
 						type: "string",
 						description: planMode ? PLAN_WORKDIR_DESCRIPTION : WORKDIR_DESCRIPTION,

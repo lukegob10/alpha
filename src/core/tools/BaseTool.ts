@@ -63,12 +63,21 @@ export const MAX_TOOL_PROGRESS_OBSERVATIONS = 128
 /** Shared framing reserve for tools whose control metadata must survive harness truncation. */
 export const TOOL_OUTPUT_TRUNCATION_SUFFIX = "\n[Tool output truncated by harness]"
 
+/** Runtime-only origin of a command whose final output can arrive through a later poll. */
+export interface PostToolUseInvocation {
+	callId: string
+	name: string
+	arguments: Record<string, unknown>
+}
+
 export interface ToolResultMetadata {
 	status?: "success" | "error" | "denied" | "cancelled"
 	executionStatus?: "running" | "success" | "error" | "denied" | "cancelled"
 	exitCode?: number
 	/** Structured command outcome retained alongside the legacy user-facing content string. */
 	commandResult?: CommandToolResult
+	/** null defers or suppresses a post hook; a captured origin attributes deferred command completion. */
+	postToolUse?: PostToolUseInvocation | null
 	/** The producer returned a partial view while retaining additional output for retrieval. */
 	truncated?: boolean
 	timedOut?: boolean
@@ -102,6 +111,8 @@ export interface ToolCallbacks {
 	/** Remaining text allowance after scheduler-owned approval feedback; read tools reserve their own framing. */
 	getRemainingOutputChars?: () => number
 	setResultMetadata?: (metadata: ToolResultMetadata) => void
+	/** Capture command origins only when this step has a post-tool observer. */
+	capturePostToolUse?: boolean
 	/** Record a conditional effect after its approval settles; this never grants approval. */
 	startEffect?: () => Promise<boolean>
 	toolCallId?: string

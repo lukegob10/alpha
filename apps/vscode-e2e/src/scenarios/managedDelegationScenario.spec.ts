@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { createHash } from "node:crypto"
 import { test } from "node:test"
 
 import {
@@ -101,6 +102,236 @@ function validEvidence(): ManagedDelegationEvidence {
 		capacity: { active: 0, queued: 0 },
 	}
 }
+
+function lifecycleEvents(taskId: string, history: unknown[]): unknown[] {
+	let sequence = 0
+	const events: unknown[] = []
+	const append = (type: string, payload: object) => {
+		events.push({
+			version: 1,
+			taskId,
+			runId: "run",
+			turnId: "turn",
+			eventId: `${taskId}-${++sequence}`,
+			sequence,
+			type,
+			payload,
+		})
+	}
+	append("turn_started", {})
+	for (const entry of history) {
+		const message = entry as { role: string; content: Array<Record<string, unknown>> }
+		for (const block of message.content) {
+			if (block.type === "tool_use") {
+				append("tool_call_accepted", {
+					item: {
+						itemId: `call-${block.id}`,
+						type: "tool_call",
+						toolCallId: block.id,
+						name: block.name,
+						arguments: block.input,
+					},
+				})
+				append("tool_effect_started", { toolCallId: block.id })
+			} else if (block.type === "tool_result") {
+				append("tool_result_recorded", {
+					item: {
+						itemId: `result-${block.tool_use_id}`,
+						type: "tool_result",
+						toolCallId: block.tool_use_id,
+						status: block.is_error ? "error" : "success",
+						output: block.content,
+					},
+				})
+			}
+		}
+	}
+	append("turn_terminal", { status: "completed" })
+	return events
+}
+
+function nativeEvidence(): ManagedDelegationEvidence {
+	const evidence = validEvidence()
+	const worker = evidence.children[2]!
+	evidence.workspacePath = "/workspace"
+	delete worker.changeSetStatus
+	worker.runtimePolicy = { authorityModel: "parent", sharedWorkspace: true }
+	worker.changedFiles = [scenario.resultPath]
+	worker.lifecycleEvents = lifecycleEvents(worker.taskId, worker.history)
+	evidence.rootHistory.splice(
+		-1,
+		0,
+		...call(
+			"verify-result",
+			"exec_command",
+			{ cmd: scenario.verificationCommand },
+			`Chunk ID: verify-result\nWall time: 0.01 seconds\nProcess exited with code 0\nOutput:\n${scenario.expectedResult}`,
+		),
+	)
+	evidence.rootLifecycleEvents = lifecycleEvents(evidence.rootTaskId, evidence.rootHistory)
+	const fileVersions = { [scenario.resultPath]: createHash("sha256").update(scenario.expectedResult).digest("hex") }
+	evidence.parentVerificationObligations = [
+		{
+			id: "primary-change:root",
+			changeSetId: "primary-change:root",
+			origin: "primary",
+			rootTaskId: "root",
+			parentTaskId: "root",
+			workerTaskId: "root",
+			workerNickname: "Primary agent",
+			groupId: "primary-change:root",
+			workspacePath: "/workspace",
+			changedFiles: [scenario.resultPath],
+			status: "pending",
+			contentVersion: 1,
+			contentFingerprint: createHash("sha256")
+				.update(JSON.stringify(Object.entries(fileVersions)))
+				.digest("hex"),
+			fileVersions,
+			mutationReservations: [],
+			appliedAt: 1,
+			createdAt: 1,
+			updatedAt: 2,
+		},
+	]
+	return evidence
+}
+
+test("the live assignment provides the worker's known preimage and bounded parent verification", () => {
+	assert.ok(scenario.prompt.includes("{}"))
+	assert.ok(scenario.prompt.includes(scenario.verificationCommand))
+	assert.ok(scenario.children[2]!.message.includes("replace {}"))
+})
+
+test("native shared-workspace integration uses settled mutation receipts and a receipted parent read", () => {
+	assert.deepEqual(inspectManagedDelegationOutcome(scenario, nativeEvidence()), [])
+})
+
+test("native integration rejects missing, foreign, stale, or unsettled durable evidence", () => {
+	for (const fault of [
+		"files",
+		"effects",
+		"foreign-effect",
+		"parent-effect",
+		"receipt",
+		"owner",
+		"workspace",
+		"reservation",
+		"scope",
+		"version",
+		"fingerprint",
+		"policy",
+		"read-output",
+		"read-exit",
+	] as const) {
+		const evidence = nativeEvidence()
+		const worker = evidence.children[2]!
+		const obligation = evidence.parentVerificationObligations![0]!
+		if (fault === "files") worker.changedFiles = []
+		else if (fault === "effects") worker.lifecycleEvents = []
+		else if (fault === "foreign-effect") worker.lifecycleEvents = lifecycleEvents("foreign", worker.history)
+		else if (fault === "parent-effect") evidence.rootLifecycleEvents = []
+		else if (fault === "receipt") evidence.parentVerificationObligations = []
+		else if (fault === "owner") obligation.parentTaskId = "foreign"
+		else if (fault === "workspace") obligation.workspacePath = "/another-workspace"
+		else if (fault === "reservation") obligation.mutationReservations = ["unfinished"]
+		else if (fault === "scope") obligation.scopeUnresolved = true
+		else if (fault === "version") obligation.fileVersions![scenario.resultPath] = "stale"
+		else if (fault === "fingerprint") obligation.contentFingerprint = "stale"
+		else if (fault === "policy") worker.runtimePolicy!.sharedWorkspace = false
+		else {
+			const result = evidence.rootHistory.at(-2) as { content: Array<{ content: string }> }
+			result.content[0]!.content = result.content[0]!.content.replace(
+				fault === "read-output" ? scenario.expectedResult : "code 0",
+				fault === "read-output" ? "{}\n" : "code 1",
+			)
+			evidence.rootLifecycleEvents = lifecycleEvents(evidence.rootTaskId, evidence.rootHistory)
+		}
+		assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("worker_integrated"), fault)
+	}
+})
+
+test("only the exact bounded parent read is permitted alongside orchestration", () => {
+	for (const command of [
+		"node -e \"require('node:fs').writeFileSync('escape','changed')\"",
+		`${scenario.verificationCommand} && echo extra`,
+		scenario.readCommands[0]!,
+	]) {
+		const evidence = nativeEvidence()
+		evidence.rootHistory.splice(-1, 0, ...call("extra-command", "exec_command", { cmd: command }))
+		assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("parent_did_not_edit"), command)
+	}
+	const evidence = nativeEvidence()
+	const read = evidence.rootHistory.at(-3) as { content: Array<{ input: { workdir?: string } }> }
+	read.content[0]!.input.workdir = "/outside-workspace"
+	evidence.rootLifecycleEvents = lifecycleEvents(evidence.rootTaskId, evidence.rootHistory)
+	assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("parent_did_not_edit"))
+})
+
+test("a valid parent verification read cannot hide an arbitrary command in the same tool batch", () => {
+	const evidence = nativeEvidence()
+	const extra = call("extra-command", "exec_command", { cmd: "node arbitrary.cjs" })
+	for (const index of [0, 1]) {
+		const message = evidence.rootHistory.at(index - 3) as { content: unknown[] }
+		message.content.push(...extra[index]!.content)
+	}
+	evidence.rootLifecycleEvents = lifecycleEvents(evidence.rootTaskId, evidence.rootHistory)
+	assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("parent_did_not_edit"))
+})
+
+test("failed in-scope patch attempts do not become successful work when final bytes are supplied externally", () => {
+	const evidence = nativeEvidence()
+	const worker = evidence.children[2]!
+	worker.history = call(
+		"rejected",
+		"apply_patch",
+		{ patch: `*** Begin Patch\n*** Add File: ${scenario.resultPath}\n+{}\n*** End Patch` },
+		"File already exists",
+		true,
+	)
+	worker.lifecycleEvents = lifecycleEvents(worker.taskId, worker.history)
+	const failures = inspectManagedDelegationOutcome(scenario, evidence)
+	assert.ok(failures.includes("worker_patch_applied"))
+	assert.ok(failures.includes("worker_integrated"))
+	assert.equal(failures.includes("worker_patch_scope"), false)
+})
+
+test("parent verification must follow the actual worker result", () => {
+	const evidence = nativeEvidence()
+	const read = evidence.rootHistory.splice(-3, 2)
+	evidence.rootHistory.unshift(...read)
+	evidence.rootLifecycleEvents = lifecycleEvents(evidence.rootTaskId, evidence.rootHistory)
+	assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("worker_integrated"))
+})
+
+test("a safely rejected in-scope patch can recover without hiding scope escapes or unsuccessful work", () => {
+	const evidence = nativeEvidence()
+	const worker = evidence.children[2]!
+	worker.history.unshift(
+		...call(
+			"rejected-patch",
+			"apply_patch",
+			{ patch: `*** Begin Patch\n*** Add File: ${scenario.resultPath}\n+replacement\n*** End Patch` },
+			"File already exists",
+			true,
+		),
+	)
+	worker.lifecycleEvents = lifecycleEvents(worker.taskId, worker.history)
+	assert.deepEqual(inspectManagedDelegationOutcome(scenario, evidence), [])
+	worker.history.splice(
+		0,
+		2,
+		...call(
+			"outside-patch",
+			"apply_patch",
+			{ patch: "*** Begin Patch\n*** Add File: ../outside.json\n+{}\n*** End Patch" },
+			"Outside scope",
+			true,
+		),
+	)
+	worker.lifecycleEvents = lifecycleEvents(worker.taskId, worker.history)
+	assert.ok(inspectManagedDelegationOutcome(scenario, evidence).includes("worker_patch_scope"))
+})
 
 test("managed delegation opt-in is isolated from the general workflow surface", () => {
 	assert.ok(WORKFLOW_DISABLED_TOOLS.includes("spawn_agent"))

@@ -37,7 +37,7 @@ const CONFIGURATION_GUIDANCE = {
 	"profile-initialization-needs-profile":
 		"--init-profile requires --profile-dir, --workspace, and --artifacts-dir. Omit --init-profile for the default disposable test profile.",
 	"exact-profile-host-required":
-		"Persistent test profiles require an exact --vscode-version such as 1.138.0, not stable or insiders.",
+		"Persistent test profiles require an exact --vscode-version such as 1.141.0, not stable or insiders.",
 	"unfiltered-suite-required":
 		"Full host gates require an unfiltered suite. Remove --grep and TEST_GREP when using --require-all-tests; omit --require-all-tests for a focused diagnostic run.",
 } as const

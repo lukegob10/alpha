@@ -9,7 +9,7 @@ function report(): CampaignReport {
 		request: {
 			campaignId: "accounting",
 			attemptId: `sample-${sample}`,
-			host: { version: "1.138.0" },
+			host: { version: "1.141.0" },
 			scenarioId: "case",
 			sample,
 			phase: "sample",
@@ -19,7 +19,7 @@ function report(): CampaignReport {
 		result: { status: "passed", usage: { requests: 1, inputTokens: null, outputTokens: null, cost: null } },
 		elapsedMs: 1,
 	}))
-	const evaluationPlan = { scenarioIds: ["case"], hostVersions: ["1.138.0" as const], samples: 2 }
+	const evaluationPlan = { scenarioIds: ["case"], hostVersions: ["1.141.0" as const], samples: 2 }
 	return {
 		version: 1,
 		id: "accounting",

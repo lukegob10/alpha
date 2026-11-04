@@ -205,7 +205,9 @@ function getRipgrepSearchOptions(): string[] {
 export async function executeRipgrepForFiles(
 	workspacePath: string,
 	limit?: number,
+	signal?: AbortSignal,
 ): Promise<{ path: string; type: "file" | "folder"; label?: string }[]> {
+	signal?.throwIfAborted()
 	// Get limit from configuration if not provided
 	const effectiveLimit =
 		limit ?? vscode.workspace.getConfiguration(Package.name).get<number>("maximumIndexedFilesForFileSearch", 10000)
@@ -226,17 +228,20 @@ export async function executeRipgrepForFiles(
 		workspacePath,
 	]
 
-	return executeRipgrep({ args, workspacePath, limit: effectiveLimit })
+	return executeRipgrep({ args, workspacePath, limit: effectiveLimit, signal })
 }
 
 export async function searchWorkspaceFiles(
 	query: string,
 	workspacePath: string,
 	limit: number = 20,
+	signal?: AbortSignal,
 ): Promise<{ path: string; type: "file" | "folder"; label?: string }[]> {
+	signal?.throwIfAborted()
 	try {
 		// Get all files and directories (uses configured limit)
-		const allItems = (await executeRipgrepForFiles(workspacePath)).map(normalizeResultPath)
+		const allItems = (await executeRipgrepForFiles(workspacePath, undefined, signal)).map(normalizeResultPath)
+		signal?.throwIfAborted()
 
 		// If no query, just return the top items
 		if (!query.trim()) {
@@ -262,6 +267,7 @@ export async function searchWorkspaceFiles(
 		// Verify types of the shortest results
 		const verifiedResults = await Promise.all(
 			fzfResults.map(async (result) => {
+				signal?.throwIfAborted()
 				const fullPath = path.join(workspacePath, result.path)
 				// Verify if the path exists and is actually a directory
 				if (fs.existsSync(fullPath)) {
@@ -277,8 +283,10 @@ export async function searchWorkspaceFiles(
 			}),
 		)
 
+		signal?.throwIfAborted()
 		return verifiedResults
 	} catch (error) {
+		signal?.throwIfAborted()
 		console.error("Error in searchWorkspaceFiles:", error)
 		return []
 	}

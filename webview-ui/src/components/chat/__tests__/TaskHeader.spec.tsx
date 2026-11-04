@@ -317,8 +317,10 @@ describe("TaskHeader", () => {
 
 			expect(screen.getByText("Maple · Explorer")).toBeInTheDocument()
 			expect(screen.getByRole("button", { name: "Return to parent" })).toBeInTheDocument()
-			expect(screen.getByText("Parent-managed read-only sub-agent")).toBeInTheDocument()
-			expect(screen.getByText("Parent · anthropic · parent-model")).toBeInTheDocument()
+			expect(screen.getByText("chat:subagentRow.inheritedPermissions")).toBeInTheDocument()
+			expect(
+				screen.getByText("Parent · anthropic · parent-model · subagentRow.reasoning.unknown"),
+			).toBeInTheDocument()
 			expect(screen.getByRole("status")).toHaveTextContent("Using parent profile because")
 			mockExtensionState.currentTaskItem = { id: "test-task-id" }
 		})
@@ -344,6 +346,25 @@ describe("TaskHeader", () => {
 			expect(screen.getByText("Parent-managed editing worker · quarantined change set")).toBeInTheDocument()
 			expect(screen.getByText("Write scope: docs/guide.md")).toBeInTheDocument()
 			expect(screen.queryByText(/editing worker · isolated worktree/)).not.toBeInTheDocument()
+			mockExtensionState.currentTaskItem = { id: "test-task-id" }
+		})
+
+		it("shows a restored shared worker's captured reasoning without claiming isolation", () => {
+			mockExtensionState.currentTaskItem = {
+				id: "restored-child",
+				subagentRole: "worker",
+				subagentModelRoute: {
+					source: "spawn",
+					resolution: "selected",
+					profileName: "Captured",
+					modelId: "child-model",
+					effectiveReasoning: { kind: "effort", effort: "high" },
+				},
+			}
+			renderTaskHeader({ parentTaskId: "parent-task-123", isManagedSubagent: true })
+			expect(screen.getByText("Captured · child-model · subagentRow.reasoning.effort")).toBeVisible()
+			expect(screen.getByText("chat:subagentRow.inheritedPermissions")).toBeVisible()
+			expect(screen.queryByText(/isolated worktree/)).not.toBeInTheDocument()
 			mockExtensionState.currentTaskItem = { id: "test-task-id" }
 		})
 	})
@@ -406,7 +427,7 @@ describe("TaskHeader", () => {
 		it("retains managed child identity and return navigation without a duplicate context card", () => {
 			renderTaskHeader({ presentation: "identity", isManagedSubagent: true, parentTaskId: "parent-1" })
 			expect(screen.getByRole("button", { name: "Return to parent" })).toBeVisible()
-			expect(screen.getByText("Parent-managed read-only sub-agent")).toBeVisible()
+			expect(screen.getByText("chat:subagentRow.inheritedPermissions")).toBeVisible()
 			expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
 		})
 

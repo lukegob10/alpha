@@ -239,4 +239,49 @@ describe("TerminalRegistry", () => {
 		expect(terminal.taskId).toBeUndefined()
 		expect(terminal.busy).toBe(false)
 	})
+	describe("captured interpreter terminal reuse", () => {
+		it.each(["execa", "vscode"] as const)(
+			"reuses only matching shell/startup identities for %s",
+			async (provider) => {
+				const shell = {
+					shellPath: "/bin/bash",
+					family: "bash" as const,
+					login: false,
+					binaryIdentity: "binary",
+					identity: "bash-nonlogin",
+				}
+				const cwd = `/test/shell-identity-${provider}`
+				const first = await TerminalRegistry.getOrCreateTerminal(cwd, "shell-owner", provider, shell)
+				TerminalRegistry.releaseTerminalReservation(first, "shell-owner")
+				const same = await TerminalRegistry.getOrCreateTerminal(cwd, "shell-owner", provider, shell)
+				expect(same).toBe(first)
+				TerminalRegistry.releaseTerminalReservation(same, "shell-owner")
+				const changed = await TerminalRegistry.getOrCreateTerminal(cwd, "shell-owner", provider, {
+					...shell,
+					login: true,
+					identity: "bash-login",
+				})
+				expect(changed).not.toBe(first)
+				TerminalRegistry.releaseTerminalReservation(changed, "shell-owner")
+				const omitted = await TerminalRegistry.getOrCreateTerminal(cwd, "shell-owner", provider)
+				expect(omitted).not.toBe(first)
+				expect(omitted).not.toBe(changed)
+			},
+		)
+
+		it("passes explicit executable and startup flags into the stable VS Code adapter", () => {
+			const shell = {
+				shellPath: "/bin/bash",
+				family: "bash" as const,
+				login: true,
+				binaryIdentity: "binary",
+				identity: "bash-login",
+			}
+			const created = TerminalRegistry.createTerminal("/test/shell-options", "vscode", {}, shell)
+			expect(created).toBeInstanceOf(Terminal)
+			expect(vscode.window.createTerminal).toHaveBeenLastCalledWith(
+				expect.objectContaining({ shellPath: "/bin/bash", shellArgs: ["-l"] }),
+			)
+		})
+	})
 })

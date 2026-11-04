@@ -7,6 +7,10 @@ import {
 	ticketStatusOrder,
 	ticketTypeSchema,
 	ticketPrioritySchema,
+	ticketOverviewSchema,
+	ticketTransferResultSchema,
+	type TicketOverview as TicketOverviewData,
+	type TicketImportPreview,
 	type TicketRelations,
 	type TicketType,
 	type TicketTarget,
@@ -22,6 +26,8 @@ import { vscode } from "../../utils/vscode"
 import i18n from "../../i18n/setup"
 import { TicketReader } from "./TicketReader"
 import { TicketListView } from "./TicketListView"
+import { TicketOverview } from "./TicketOverview"
+import { TicketExportDialog, TicketImportDialog, type TicketExportScope } from "./TicketTransfer"
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -48,8 +54,9 @@ type StoredState = {
 	query?: string
 	typeFilter?: TicketType | "untagged"
 	offset?: number
+	view?: "overview" | "tickets"
 }
-type Result = Ticket | TicketList | TicketRelations | undefined
+type Result = Extract<TicketResponse, { type: "ticketResponse" }>["result"]
 
 const ticketDraft = (ticket: Ticket): Draft => ({
 	name: ticket.name,
@@ -69,6 +76,19 @@ export default function TicketsView() {
 	const [projects, setProjects] = useState<{ id: string; name: string }[]>([])
 	const [projectsLoaded, setProjectsLoaded] = useState(false)
 	const [project, setProject] = useState(initial?.project ?? "")
+	// Existing saved views keep their list-first navigation until explicitly changed.
+	const [view, setView] = useState<"overview" | "tickets">(initial?.view ?? (initial ? "tickets" : "overview"))
+	const [overview, setOverview] = useState<TicketOverviewData>()
+	const [overviewLoading, setOverviewLoading] = useState(false)
+	const [overviewError, setOverviewError] = useState("")
+	const [selectedIds, setSelectedIds] = useState<string[]>([])
+	const [exportOpen, setExportOpen] = useState(false)
+	const [importPreview, setImportPreview] = useState<TicketImportPreview>()
+	const importProject = useRef("")
+	// Renew the timer even when consecutive transfers produce identical notice text.
+	const [transferMessage, setTransferMessage] = useState<{ text: string }>()
+	const [importRecovery, setImportRecovery] = useState(false)
+	const importNeedsReload = useRef(false)
 	const [ticket, setTicket] = useState<Ticket | undefined>(initial?.ticket)
 	const [draft, setDraft] = useState<Draft | undefined>(
 		initial?.draft ?? (initial?.ticket && ticketDraft(initial.ticket)),
@@ -131,10 +151,13 @@ export default function TicketsView() {
 		(operation: TicketRequest["operation"], targetProject = latest.current.project) =>
 			new Promise<Result>((resolve, reject) => {
 				const requestId = String(++sequence.current)
-				const timer = setTimeout(() => {
-					pending.current.delete(requestId)
-					reject(new Error(i18n.t("tickets:timeout")))
-				}, 60000)
+				const timer = setTimeout(
+					() => {
+						pending.current.delete(requestId)
+						reject(new Error(i18n.t("tickets:timeout")))
+					},
+					operation.action === "previewImport" || operation.action === "export" ? 600000 : 60000,
+				)
 				pending.current.set(requestId, { resolve, reject, timer })
 				vscode.postTicketMessage({ type: "ticketRequest", requestId, project: targetProject, operation })
 			}),
@@ -180,7 +203,14 @@ export default function TicketsView() {
 				if (message.error) {
 					setListError(message.error)
 					setListLoading(false)
-				} else setRefresh((value) => value + 1)
+				} else {
+					setRefresh((value) => value + 1)
+					if (importNeedsReload.current) {
+						importNeedsReload.current = false
+						setImportRecovery(false)
+						setError("")
+					}
+				}
 				void i18n.changeLanguage(message.language)
 				// Preserve a detached draft's identity until the user explicitly switches projects.
 				setProject((current) => current || message.projects[0]?.id || "")
@@ -211,8 +241,63 @@ export default function TicketsView() {
 	}, [reconcileTicketChange])
 
 	useEffect(() => {
-		vscode.setState({ project, ticket, draft, editing, query, typeFilter, offset })
-	}, [project, ticket, draft, editing, query, typeFilter, offset])
+		vscode.setState({ project, ticket, draft, editing, query, typeFilter, offset, view })
+	}, [project, ticket, draft, editing, query, typeFilter, offset, view])
+	useEffect(() => {
+		if (!transferMessage) return
+		const timer = setTimeout(
+			() => setTransferMessage((current) => (current === transferMessage ? undefined : current)),
+			5_000,
+		)
+		return () => clearTimeout(timer)
+	}, [transferMessage])
+	useEffect(() => {
+		setSelectedIds([])
+		setTransferMessage(undefined)
+		setOverview(undefined)
+		setOverviewError("")
+		setImportPreview(undefined)
+		setExportOpen(false)
+		importNeedsReload.current = false
+		setImportRecovery(false)
+	}, [project])
+	useEffect(() => {
+		if (!importPreview) return
+		const token = importPreview.token
+		const targetProject = importProject.current
+		const discardRequestId = String(++sequence.current)
+		return () => {
+			// The host owns preview files; release them even when this view unmounts.
+			vscode.postTicketMessage({
+				type: "ticketRequest",
+				requestId: discardRequestId,
+				project: targetProject,
+				operation: { action: "discardImport", token },
+			})
+		}
+	}, [importPreview])
+	useEffect(() => {
+		if (!projectAvailable || view !== "overview" || showingDetail) return
+		let active = true
+		setOverviewLoading(true)
+		void request({ action: "overview" }, project)
+			.then((result) => {
+				if (!active) return
+				const parsed = ticketOverviewSchema.safeParse(result)
+				if (!parsed.success) throw new Error(i18n.t("tickets:transfer.invalidResponse"))
+				setOverview(parsed.data)
+				setOverviewError("")
+			})
+			.catch((cause: Error) => {
+				if (active) setOverviewError(cause.message)
+			})
+			.finally(() => {
+				if (active) setOverviewLoading(false)
+			})
+		return () => {
+			active = false
+		}
+	}, [projectAvailable, project, view, showingDetail, refresh, request])
 	useLayoutEffect(() => {
 		if (page.current) page.current.scrollTop = showingDetail ? 0 : listScroll.current
 	}, [showingDetail])
@@ -230,7 +315,13 @@ export default function TicketsView() {
 				project,
 			)
 				.then((result) => {
-					if (active && currentSequence === listSequence.current && result && "tickets" in result) {
+					if (
+						active &&
+						currentSequence === listSequence.current &&
+						result &&
+						"tickets" in result &&
+						"total" in result
+					) {
 						setList(result)
 						setListError("")
 						if (offset > 0 && offset >= result.total) {
@@ -281,7 +372,7 @@ export default function TicketsView() {
 		const timer = setTimeout(() => {
 			void request({ action: "list", input: { query: parentQuery, offset: 0, limit: 100 } }, project)
 				.then((result) => {
-					if (active && result && "tickets" in result) {
+					if (active && result && "tickets" in result && "total" in result) {
 						setParentCandidates(result.tickets)
 						setParentSearchError("")
 					}
@@ -326,6 +417,92 @@ export default function TicketsView() {
 	const guard = (action: () => void) => {
 		if (dirty) setDiscard(() => action)
 		else action()
+	}
+	const transferResult = (result: Result) => {
+		const parsed = ticketTransferResultSchema.safeParse(result)
+		if (!parsed.success) throw new Error(t("transfer.invalidResponse"))
+		return parsed.data
+	}
+	const exportTickets = (scope: TicketExportScope, includeDescendants: boolean) => {
+		const targetProject = project
+		void run(async () => {
+			const result = transferResult(
+				await request(
+					{
+						action: "export",
+						input: {
+							includeDescendants,
+							...(scope === "selected"
+								? { ids: selectedIds }
+								: scope === "filtered"
+									? {
+											filter: {
+												query,
+												type: typeFilter === "untagged" ? null : typeFilter,
+												offset: 0,
+												limit: 100,
+											},
+										}
+									: {}),
+						},
+					},
+					targetProject,
+				),
+			)
+			if (!mounted.current || latest.current.project !== targetProject) return
+			if (result.kind === "exported") {
+				setTransferMessage({ text: t("transfer.exported", { count: result.count, file: result.fileName }) })
+				setExportOpen(false)
+			}
+		})
+	}
+	const previewImport = () => {
+		const targetProject = project
+		void run(async () => {
+			const result = transferResult(await request({ action: "previewImport" }, targetProject))
+			if (!mounted.current || latest.current.project !== targetProject) {
+				if (result.kind === "importPreview")
+					vscode.postTicketMessage({
+						type: "ticketRequest",
+						requestId: String(++sequence.current),
+						project: targetProject,
+						operation: { action: "discardImport", token: result.token },
+					})
+				return
+			}
+			if (result.kind === "importPreview") {
+				importProject.current = targetProject
+				setImportPreview(result)
+			}
+		})
+	}
+	const importTickets = (mode: "copy" | "update", resetStatus: boolean) => {
+		if (!importPreview) return
+		const targetProject = importProject.current
+		const token = importPreview.token
+		void run(async () => {
+			try {
+				const result = transferResult(
+					await request({ action: "import", token, mode, resetStatus }, targetProject),
+				)
+				if (!mounted.current || latest.current.project !== targetProject) return
+				if (result.kind !== "imported") throw new Error(t("transfer.invalidResponse"))
+				setTransferMessage({
+					text: t("transfer.imported", { count: result.imported, skipped: result.skipped }),
+				})
+				setImportPreview(undefined)
+				setSelectedIds([])
+				setRefresh((value) => value + 1)
+			} catch (cause) {
+				if (!mounted.current || latest.current.project !== targetProject) return
+				// Commit consumes the preview even on failure. Recover durable work before selecting files again.
+				setImportPreview(undefined)
+				setTransferMessage(undefined)
+				importNeedsReload.current = true
+				setImportRecovery(true)
+				setError(cause instanceof Error ? cause.message : String(cause))
+			}
+		})
 	}
 	const backToList = () =>
 		guard(() => {
@@ -487,6 +664,32 @@ export default function TicketsView() {
 
 	return (
 		<main className="tickets-app">
+			{exportOpen && (
+				<TicketExportDialog
+					selectedCount={selectedIds.length}
+					filteredCount={list.total}
+					busy={busy}
+					error={error || undefined}
+					onCancel={() => {
+						setExportOpen(false)
+						setError("")
+					}}
+					onExport={exportTickets}
+				/>
+			)}
+			{importPreview && (
+				<TicketImportDialog
+					key={importPreview.token}
+					preview={importPreview}
+					busy={busy}
+					error={error || undefined}
+					onCancel={() => {
+						setImportPreview(undefined)
+						setError("")
+					}}
+					onImport={importTickets}
+				/>
+			)}
 			<AlertDialog
 				open={!!deleteTarget}
 				onOpenChange={(open) => {
@@ -602,6 +805,25 @@ export default function TicketsView() {
 						)}
 					</ol>
 				</nav>
+				{!showingDetail && (
+					<div className="tickets-toolbar">
+						<button
+							type="button"
+							disabled={!projectAvailable || busy || importRecovery}
+							onClick={previewImport}>
+							{t("transfer.import")}
+						</button>
+						<button
+							type="button"
+							disabled={!projectAvailable || busy}
+							onClick={() => {
+								setError("")
+								setExportOpen(true)
+							}}>
+							{t("transfer.export")}
+						</button>
+					</div>
+				)}
 				<button
 					className={showingDetail ? "tickets-header-new" : "tickets-new-button"}
 					disabled={!project || busy}
@@ -619,6 +841,35 @@ export default function TicketsView() {
 					{t("new")}
 				</button>
 			</header>
+			{!showingDetail && (
+				<nav className="tickets-view-tabs" aria-label={t("overview.navigation")}>
+					{(["overview", "tickets"] as const).map((nextView) => (
+						<button
+							key={nextView}
+							type="button"
+							aria-pressed={view === nextView && !showingDetail}
+							disabled={busy}
+							onClick={() =>
+								guard(() => {
+									ticketChangeSequence.current++
+									latest.current = {
+										...latest.current,
+										id: undefined,
+										revision: undefined,
+										dirty: false,
+									}
+									setTicket(undefined)
+									setDraft(undefined)
+									setEditing(false)
+									setChanged(false)
+									setView(nextView)
+								})
+							}>
+							{t(nextView === "overview" ? "overview.tab" : "title")}
+						</button>
+					))}
+				</nav>
+			)}
 			{projectsLoaded && !projectAvailable && !listError && <p>{t("noProject")}</p>}
 			{listError && (
 				<p role="alert" className="tickets-notice">
@@ -630,9 +881,29 @@ export default function TicketsView() {
 					</button>
 				</p>
 			)}
-			{error && (
+			{transferMessage && (
+				<p className="tickets-notice" role="status">
+					{transferMessage.text}
+				</p>
+			)}
+			{(error || importRecovery) && !exportOpen && !importPreview && (
 				<p role="alert" className="tickets-notice">
 					{error}
+					{importRecovery && (
+						<>
+							{" "}
+							{t("transfer.importRecovery")}{" "}
+							<button
+								type="button"
+								disabled={busy || !projectsLoaded}
+								onClick={() => {
+									setProjectsLoaded(false)
+									vscode.postTicketMessage({ type: "ticketsReady" })
+								}}>
+								{t("reload")}
+							</button>
+						</>
+					)}
 				</p>
 			)}
 			{discard && (
@@ -649,8 +920,18 @@ export default function TicketsView() {
 				</div>
 			)}
 			<div className="tickets-page" ref={page}>
-				{!showingDetail && (
+				{!showingDetail && view === "overview" && projectAvailable && (
+					<TicketOverview
+						overview={overview}
+						loading={overviewLoading}
+						error={overviewError || undefined}
+						onRetry={() => setRefresh((value) => value + 1)}
+					/>
+				)}
+				{!showingDetail && view === "tickets" && (
 					<TicketListView
+						selectedIds={selectedIds}
+						onSelectionChange={setSelectedIds}
 						collapsedStatuses={collapsedStatuses}
 						onToggleStatus={(status) =>
 							setCollapsedStatuses((current) =>

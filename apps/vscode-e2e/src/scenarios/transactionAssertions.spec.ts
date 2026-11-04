@@ -400,6 +400,45 @@ test("a legacy result ID alias and text-block projections remain valid receipts"
 	assert.ok(inspectToolTransactions(history).errors.includes("tool_result_id_invalid"))
 })
 
+test("a marked lifecycle preview correlates with the retained provider output", () => {
+	for (const legacy of [false, true]) {
+		const { taskId, events, history, result } = toolLifecycle()
+		const output = "retained output " + "x".repeat(12_000)
+		const suffix = "\n[truncated]"
+		Object.assign(result, { output: output.slice(0, 8_000 - suffix.length) + suffix })
+		if (!legacy) Object.assign(result, { outputTruncated: true })
+		Object.assign(history[1]!.content[0]!, { content: output })
+		assert.deepEqual(inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors, [])
+	}
+})
+
+test("truncation metadata cannot hide a changed prefix, missing marker or inconsistent receipt", () => {
+	for (const fault of ["wrong-prefix", "missing-marker", "explicit-false", "short-receipt", "invalid-flag"]) {
+		const { taskId, events, history, result } = toolLifecycle()
+		Object.assign(result, { output: "retained\n[truncated]", outputTruncated: true })
+		Object.assign(history[1]!.content[0]!, { content: "retained full output" })
+		if (fault === "wrong-prefix") result.output = "different\n[truncated]"
+		if (fault === "missing-marker") result.output = "retained"
+		if (fault === "explicit-false") Object.assign(result, { outputTruncated: false })
+		if (fault === "short-receipt") Object.assign(history[1]!.content[0]!, { content: "retained" })
+		if (fault === "invalid-flag") Object.assign(result, { outputTruncated: "true" })
+		assert.ok(inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors.length > 0, fault)
+	}
+})
+
+test("an explicitly untruncated literal marker requires an exact output match", () => {
+	const { taskId, events, history, result } = toolLifecycle()
+	Object.assign(result, { output: "read\n[truncated]", outputTruncated: false })
+	Object.assign(history[1]!.content[0]!, { content: result.output })
+	assert.deepEqual(inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors, [])
+	Object.assign(history[1]!.content[0]!, { content: "read different output" })
+	assert.ok(
+		inspectTaskLifecycle(events, taskId, { apiHistory: history }).errors.includes(
+			"lifecycle_transcript_result_mismatch",
+		),
+	)
+})
+
 test("tool payloads, approval decisions, and terminal tool state cannot change after closure", () => {
 	for (const fault of [
 		"missing-acceptance",

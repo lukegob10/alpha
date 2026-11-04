@@ -6,9 +6,11 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { createMcpOAuthFetch } from "./McpOAuth"
 import ReconnectingEventSource from "reconnecting-eventsource"
 import {
 	CallToolResultSchema,
+	ElicitRequestSchema,
 	ListResourcesResultSchema,
 	ListResourceTemplatesResultSchema,
 	ListToolsResultSchema,
@@ -44,6 +46,7 @@ import { safeWriteJson } from "../../utils/safeWriteJson"
 import { sanitizeMcpName, toolNamesMatch } from "../../utils/mcp-name"
 import { getProjectMcpConfigPath } from "../config-paths"
 import { collectPaginatedCatalog, MAX_MCP_CATALOG_ITEMS, validateMcpPaginationCursor } from "./pagination"
+import { McpElicitationRouter, type McpElicitationOwner } from "./elicitation"
 
 // Discriminated union for connection states
 export type ConnectedMcpConnection = {
@@ -213,6 +216,7 @@ export class McpHub {
 	isConnecting: boolean = false
 	private refCount: number = 0 // Reference counter for active clients
 	private configChangeDebounceTimers: Map<string, NodeJS.Timeout> = new Map()
+	private pendingConfigChanges = new Map<string, { filePath: string; source: "global" | "project" }>()
 	private isProgrammaticUpdate: boolean = false
 	private flagResetTimer?: NodeJS.Timeout
 	private pendingConfigUpdates = 0
@@ -224,10 +228,12 @@ export class McpHub {
 		{ controller: AbortController; full: boolean }
 	>()
 	private connectionAttempts = new Map<string, AbortController>()
+	private readonly elicitationRouters = new WeakMap<Client, McpElicitationRouter>()
 	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
 	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
 	private catalogRevisions = new WeakMap<ConnectedMcpConnection, number>()
+	private declaredServerConfigs = new WeakMap<McpConnection, z.infer<typeof ServerConfigSchema>>()
 
 	constructor(
 		provider: AlphaProvider,
@@ -445,22 +451,28 @@ export class McpHub {
 	 * Debounced wrapper for handling config file changes
 	 */
 	private debounceConfigChange(filePath: string, source: "global" | "project"): void {
-		// Skip processing if this is a programmatic update to prevent unnecessary server restarts
-		if (this.isDisposed || this.isProgrammaticUpdate) {
+		if (this.isDisposed) {
 			return
 		}
 
 		const key = `${source}-${filePath}`
+		this.pendingConfigChanges.set(key, { filePath, source })
 
 		// Clear existing timer if any
 		const existingTimer = this.configChangeDebounceTimers.get(key)
 		if (existingTimer) {
 			clearTimeout(existingTimer)
+			this.configChangeDebounceTimers.delete(key)
 		}
+		// A watcher cannot distinguish our write from an external edit or a different
+		// source's revocation. Retain its latest event until the write window closes.
+		if (this.isProgrammaticUpdate) return
 
 		// Set new timer
 		const timer = setTimeout(async () => {
 			this.configChangeDebounceTimers.delete(key)
+			if (this.isDisposed || this.isProgrammaticUpdate) return
+			this.pendingConfigChanges.delete(key)
 			await this.handleConfigFileChange(filePath, source)
 		}, 500) // 500ms debounce
 
@@ -769,7 +781,7 @@ export class McpHub {
 		source: "global" | "project",
 		reason: DisableReason,
 	): DisconnectedMcpConnection {
-		return {
+		const connection: DisconnectedMcpConnection = {
 			type: "disconnected",
 			server: {
 				name,
@@ -783,6 +795,8 @@ export class McpHub {
 			client: null,
 			transport: null,
 		}
+		this.declaredServerConfigs.set(connection, config)
+		return connection
 	}
 
 	/**
@@ -863,6 +877,8 @@ export class McpHub {
 		let connectingConnection: ConnectedMcpConnection | undefined
 		let provisionalClient: Client | undefined
 		let provisionalTransport: ConnectedMcpConnection["transport"] | undefined
+		const lifecycleController = new AbortController()
+		const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
 		try {
 			const client = new Client(
 				{
@@ -870,10 +886,15 @@ export class McpHub {
 					version: this.getProvider()?.context.extension?.packageJSON?.version ?? "1.0.0",
 				},
 				{
-					capabilities: {},
+					capabilities: { elicitation: { form: {} } },
 				},
 			)
 			provisionalClient = client
+			const elicitationRouter = new McpElicitationRouter()
+			this.elicitationRouters.set(client, elicitationRouter)
+			client.setRequestHandler?.(ElicitRequestSchema, (request, extra) =>
+				elicitationRouter.handle(request, extra.signal),
+			)
 
 			let transport: StdioClientTransport | SSEClientTransport | StreamableHTTPClientTransport
 
@@ -977,7 +998,23 @@ export class McpHub {
 				}
 			} else if (configInjected.type === "streamable-http") {
 				// Streamable HTTP connection
+				const serverUrl = new URL(configInjected.url)
+				const secrets = this.getProvider()?.context.secrets
+				const configuredAuthorization = new Headers(configInjected.headers).has("authorization")
+				const oauthEligible =
+					serverUrl.protocol === "https:" ||
+					(serverUrl.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(serverUrl.hostname))
 				transport = new StreamableHTTPClientTransport(new URL(configInjected.url), {
+					...(secrets && !configuredAuthorization && oauthEligible
+						? {
+								fetch: createMcpOAuthFetch(
+									serverUrl,
+									`${source}:${source === "project" ? (vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "") : ""}:${name}`,
+									secrets,
+									connectionSignal,
+								),
+							}
+						: {}),
 					requestInit: {
 						headers: configInjected.headers,
 					},
@@ -1078,10 +1115,9 @@ export class McpHub {
 				transport,
 			}
 			this.connections.push(connection)
+			this.declaredServerConfigs.set(connection, config)
 			connectingConnection = connection
-			const lifecycleController = new AbortController()
 			this.connectionControllers.set(connection, lifecycleController)
-			const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
 			// The SDK owns transport callbacks after connect; forward lifecycle events through the client.
 			client.onclose = transport.onclose
 			client.onerror = (error) => {
@@ -1558,7 +1594,12 @@ export class McpHub {
 				} catch (error) {
 					this.showErrorMessage(`Failed to connect to new MCP server ${name}`, error)
 				}
-			} else if (!deepEqual(JSON.parse(currentConnection.server.config), config)) {
+			} else if (
+				!deepEqual(
+					this.declaredServerConfigs.get(currentConnection) ?? JSON.parse(currentConnection.server.config),
+					validatedConfig,
+				)
+			) {
 				// Existing server with changed config
 				try {
 					await this.deleteConnection(name, source)
@@ -1975,6 +2016,15 @@ export class McpHub {
 			committedConfig = updated
 		})
 		if (!committedConfig) throw new Error(`Server ${serverName} configuration was not updated`)
+		const currentConnection = this.findConnection(serverName, source)
+		const declared = currentConnection && this.declaredServerConfigs.get(currentConnection)
+		if (currentConnection && declared) {
+			// Project only our intentional change. An external edit merged by the write
+			// lease must still differ during watcher reconciliation, even if it is in our saved bytes.
+			const projected =
+				typeof configUpdate === "function" ? configUpdate(declared) : { ...declared, ...configUpdate }
+			this.declaredServerConfigs.set(currentConnection, ServerConfigSchema.parse(projected))
+		}
 		return committedConfig
 	}
 
@@ -2007,6 +2057,9 @@ export class McpHub {
 				this.flagResetTimer = setTimeout(() => {
 					this.isProgrammaticUpdate = false
 					this.flagResetTimer = undefined
+					for (const { filePath, source } of this.pendingConfigChanges.values()) {
+						this.debounceConfigChange(filePath, source)
+					}
 				}, 600)
 			}
 		}
@@ -2166,12 +2219,27 @@ export class McpHub {
 		return response
 	}
 
+	async withElicitation<T>(
+		serverName: string,
+		source: "global" | "project" | undefined,
+		owner: McpElicitationOwner,
+		dispatch: () => Promise<T>,
+	): Promise<T> {
+		const connection = this.findConnection(serverName, source)
+		if (!connection || connection.type !== "connected") throw new Error("MCP connection unavailable")
+		const signal = this.getConnectionSignal(connection, owner.signal)
+		const router = this.elicitationRouters.get(connection.client)
+		if (!router) return dispatch()
+		return router.run({ ...owner, signal }, dispatch)
+	}
+
 	async callTool(
 		serverName: string,
 		toolName: string,
 		toolArguments?: Record<string, unknown>,
 		source?: "global" | "project",
 		signal?: AbortSignal,
+		options?: { transportTimeoutMs?: number },
 	): Promise<McpToolCallResponse> {
 		const connection = this.findConnection(serverName, source)
 		if (!connection || connection.type !== "connected") {
@@ -2191,6 +2259,15 @@ export class McpHub {
 			console.error("Failed to parse server config for timeout:", error)
 			// Default to 60 seconds if parsing fails
 			timeout = 60 * 1000
+		}
+		if (options?.transportTimeoutMs !== undefined) {
+			// Lifecycle hooks own a bounded active-time deadline which pauses for
+			// elicitation. Their SDK watchdog must not charge human response time.
+			const override = options.transportTimeoutMs
+			if (!signal || !Number.isInteger(override) || override < 1 || override > 2_147_483_647) {
+				throw new Error("An MCP transport timeout override requires a cancellation signal and a valid interval")
+			}
+			timeout = override
 		}
 		const requestSignal = this.getConnectionSignal(connection, signal)
 
@@ -2372,6 +2449,7 @@ export class McpHub {
 		}
 
 		this.configChangeDebounceTimers.clear()
+		this.pendingConfigChanges.clear()
 
 		// Clear flag reset timer and reset programmatic update flag
 		if (this.flagResetTimer) {

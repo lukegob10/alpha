@@ -14,6 +14,7 @@ import {
 
 import {
 	MAX_TASK_GOAL_USAGE_RECEIPTS,
+	taskGoalTurnProgressSchema,
 	type GoalStateStore,
 	type TaskGoalEnvelope,
 } from "../../task-persistence/TaskGoalStore"
@@ -47,6 +48,12 @@ const usageSchema = z.object({
 	tokens: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 	timeMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 	goalId: z.string().min(1).max(256),
+})
+
+const turnProgressInputSchema = taskGoalTurnProgressSchema.omit({ consecutiveEmptyTurns: true }).extend({
+	automatic: z.boolean(),
+	hasActivity: z.boolean(),
+	emptyFinal: z.boolean(),
 })
 
 /**
@@ -239,6 +246,7 @@ export class GoalController {
 				}
 				state.goal = created
 				state.usageReceipts = []
+				delete state.turnProgress
 				return created
 			})
 			this.observeGoal(goal, true)
@@ -311,6 +319,7 @@ export class GoalController {
 						? "budget_limited"
 						: "active"
 				current.continuationCount = 0
+				delete state.turnProgress
 				current.recoveryDeferred = false
 				this.touchControl(current)
 				return current
@@ -327,10 +336,64 @@ export class GoalController {
 				if (isStillAuthorized && !isStillAuthorized()) throw new Error("Goal clear authorization changed")
 				if (expected) this.requireGoal(state, expected)
 				delete state.goal
+				delete state.turnProgress
 				state.usageReceipts = []
 			})
 			this.authorizedGoalId = undefined
 			this.observeGoal(undefined)
+		})
+	}
+
+	/** Codex ac558e2a, ext/goal/accounting.rs:229 stops three empty automatic final turns. */
+	recordTurnProgress(
+		input: z.infer<typeof turnProgressInputSchema>,
+		isStillAuthorized?: () => boolean,
+	): Promise<TaskGoal | undefined> {
+		const receipt = turnProgressInputSchema.parse(input)
+		return this.serialize(async () => {
+			const goal = await this.options.store.transact((state) => {
+				const current = state.goal
+				if (
+					!current ||
+					current.status !== "active" ||
+					current.goalId !== receipt.goalId ||
+					current.controlVersion !== receipt.controlVersion ||
+					current.continuationCount !== receipt.continuationCount ||
+					this.pendingControlMutations > 0 ||
+					(isStillAuthorized && !isStillAuthorized())
+				)
+					return current
+				const prior =
+					state.turnProgress?.goalId === current.goalId &&
+					state.turnProgress.controlVersion === current.controlVersion
+						? state.turnProgress
+						: undefined
+				// Automatic indices are consumed durably before sampling. Replaying an
+				// older/duplicate turn cannot increment or reset a newer progress streak.
+				if (
+					prior &&
+					(receipt.continuationCount < prior.continuationCount ||
+						(receipt.automatic && receipt.continuationCount === prior.continuationCount))
+				)
+					return current
+				const empty = receipt.automatic && !receipt.hasActivity && receipt.emptyFinal
+				const consecutiveEmptyTurns = empty ? (prior?.consecutiveEmptyTurns ?? 0) + 1 : 0
+				state.turnProgress = {
+					goalId: current.goalId,
+					controlVersion: current.controlVersion,
+					continuationCount: receipt.continuationCount,
+					consecutiveEmptyTurns,
+				}
+				if (consecutiveEmptyTurns >= 3) {
+					current.status = "blocked"
+					current.recoveryDeferred = false
+					this.stopRequestAdmission(current)
+					this.touchControl(current)
+				}
+				return current
+			})
+			if (!goal || goal.status !== "active") this.authorizedGoalId = undefined
+			return this.project(goal)
 		})
 	}
 

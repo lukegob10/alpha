@@ -75,6 +75,7 @@ describe("attemptCompletionTool", () => {
 		mockTask = {
 			retainQueuedMessageToolReply: vi.fn(),
 			hasPendingAgentMessages: vi.fn(() => false),
+			hasPendingAsyncLifecycleHookContext: vi.fn(() => false),
 			recordCompletionCandidate: vi.fn(),
 			evaluateCompletionHooks: vi.fn(async () => ({})),
 			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
@@ -190,6 +191,57 @@ describe("attemptCompletionTool", () => {
 		expect(mockHandleError).not.toHaveBeenCalled()
 	})
 
+	it.each(["primary", "subagent"] as const)(
+		"defers %s completion until ready async hook context is consumed",
+		async (kind) => {
+			mockTask = { ...mockTask, taskKind: kind }
+			vi.mocked(mockTask.hasPendingAsyncLifecycleHookContext!).mockReturnValue(true)
+
+			await attemptCompletionTool.execute({ result: "Unchecked answer." }, mockTask as Task, {
+				askApproval: mockAskApproval,
+				handleError: mockHandleError,
+				pushToolResult: mockPushToolResult,
+				askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+				toolDescription: mockToolDescription,
+				toolCallId: "completion-before-background-review",
+			})
+
+			expect(mockTask.evaluateCompletionHooks).not.toHaveBeenCalled()
+			expect(mockTask.completeGoalTurn).not.toHaveBeenCalled()
+			expect(mockTask.presentCompletionResult).not.toHaveBeenCalled()
+			expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
+			expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith(
+				JSON.stringify({ status: "success", requiresContinuation: true }),
+			)
+			expect(mockTask.recordToolError).not.toHaveBeenCalled()
+			expect(mockTask.suspendAfterCurrentTurn).not.toHaveBeenCalled()
+			expect(mockHandleError).not.toHaveBeenCalled()
+		},
+	)
+
+	it("returns a continuation receipt when async context arrives during completion persistence", async () => {
+		vi.mocked(mockTask.finalizeTaskCompletion!).mockImplementationOnce(async () => {
+			vi.mocked(mockTask.hasPendingAsyncLifecycleHookContext!).mockReturnValue(true)
+			return false
+		})
+
+		await attemptCompletionTool.execute({ result: "Unchecked answer." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "completion-during-background-review",
+		})
+
+		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ status: "success", requiresContinuation: true }),
+		)
+		expect(mockTask.markCompleted).not.toHaveBeenCalled()
+		expect(mockTask.recordToolError).not.toHaveBeenCalled()
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
 	it("reports completion failures with the task completion context", async () => {
 		const error = new Error("Completion hooks failed")
 		vi.mocked(mockTask.evaluateCompletionHooks!).mockRejectedValueOnce(error)
@@ -208,7 +260,7 @@ describe("attemptCompletionTool", () => {
 		expect(mockPushToolResult).not.toHaveBeenCalled()
 	})
 
-	it("keeps completion hooks authoritative before finishing a goal turn", async () => {
+	it("defers goal progress hooks to the canonical turn admission boundary", async () => {
 		vi.mocked(mockTask.completeGoalTurn!).mockResolvedValue(true)
 		vi.mocked(mockTask.evaluateCompletionHooks!).mockResolvedValue({ prompt: "Run the required validation." })
 		await attemptCompletionTool.execute({ result: "First requirement verified." }, mockTask as Task, {
@@ -219,9 +271,12 @@ describe("attemptCompletionTool", () => {
 			toolDescription: mockToolDescription,
 			toolCallId: "hook-rejected-goal-progress",
 		})
-		expect(mockTask.completeGoalTurn).not.toHaveBeenCalled()
+		expect(mockTask.completeGoalTurn).toHaveBeenCalledExactlyOnceWith("First requirement verified.")
+		expect(mockTask.evaluateCompletionHooks).not.toHaveBeenCalled()
 		expect(mockTask.finalizeTaskCompletion).not.toHaveBeenCalled()
-		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith("Error: Run the required validation.")
+		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith(
+			JSON.stringify({ status: "success", goalContinues: true }),
+		)
 	})
 
 	it.each(["hooks", "presentation"] as const)("does not finalize when cancelled during %s", async (stage) => {
@@ -716,7 +771,7 @@ describe("attemptCompletionTool", () => {
 		})
 
 		describe("tool failure guardrail", () => {
-			it("should prevent completion when a previous tool failed in the current turn", async () => {
+			it("allows an explicit completion after a settled tool failure when hooks and integrity gates accept it", async () => {
 				const block: AttemptCompletionToolUse = {
 					type: "tool_use",
 					id: "managed-completion",
@@ -742,13 +797,9 @@ describe("attemptCompletionTool", () => {
 
 				await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-				expect(mockSay).toHaveBeenCalledWith(
-					"error",
-					expect.stringContaining("errors.attempt_completion_tool_failed"),
-				)
-				expect(mockPushToolResult).toHaveBeenCalledWith(
-					expect.stringContaining("errors.attempt_completion_tool_failed"),
-				)
+				expect(mockSay).not.toHaveBeenCalledWith("error", expect.anything())
+				expect(mockTask.evaluateCompletionHooks).toHaveBeenCalledExactlyOnceWith("Task completed successfully")
+				expect(mockTask.finalizeTaskCompletion).toHaveBeenCalledOnce()
 			})
 
 			it("should allow completion when no tools failed", async () => {

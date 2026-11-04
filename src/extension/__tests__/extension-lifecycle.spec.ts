@@ -120,14 +120,9 @@ vi.mock("../api", () => ({
 	}),
 }))
 vi.mock("../../activate", () => {
-	const CodeActionProvider = vi.fn()
-	Object.assign(CodeActionProvider, { providedCodeActionKinds: [] })
 	return {
 		registerCommands: mocks.registerCommands,
 		registerEditorChatSerializer: vi.fn(),
-		registerCodeActions: vi.fn(),
-		registerTerminalActions: vi.fn(),
-		CodeActionProvider,
 	}
 })
 vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))

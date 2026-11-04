@@ -2,7 +2,9 @@ import * as vscode from "vscode"
 import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
-import { describe, expect, it, vi } from "vitest"
+import i18next from "i18next"
+import { beforeAll, describe, expect, it, vi } from "vitest"
+import common from "../../../i18n/locales/en/common.json"
 import {
 	readCompletionHookConfig,
 	runCompletionHooks,
@@ -25,6 +27,10 @@ const request: CompletionHookRequest = {
 function command(source: string, timeoutMs?: number) {
 	return { command: process.execPath, args: ["-e", source], timeoutMs }
 }
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "common", common, true, true)
+})
 
 describe("completion hooks", () => {
 	it("loads only valid commands from the Alpha setting", () => {
@@ -103,6 +109,73 @@ describe("completion hooks", () => {
 				"Completion hook returned invalid JSON output.",
 			],
 		})
+	})
+
+	it("preserves a large blocking reason without dropping feedback from a later hook", async () => {
+		const reason = `First ${"details ".repeat(3_000)} last`
+		const config: CompletionHookConfig = {
+			stop: [
+				command(
+					"process.stdout.write(JSON.stringify({decision:'block',reason:'First '+ 'details '.repeat(3000)+' last'}))",
+				),
+				command(
+					"process.stdout.write(JSON.stringify({decision:'block',reason:'Check the second invariant.'}))",
+				),
+			],
+			subagentStop: [],
+		}
+		const outcome = await runCompletionHooks(config, request, new AbortController().signal)
+		expect(outcome.warnings).toEqual([])
+		expect(outcome.fragments).toHaveLength(2)
+		expect(outcome.fragments?.[1].text).toBe("Check the second invariant.")
+		expect(outcome.prompt).toContain("Check the second invariant.")
+		const artifact = outcome.fragments?.[0].text.match(/Full hook output saved to: (.+)$/)?.[1]
+		expect(artifact).toBeDefined()
+		try {
+			expect(await fs.readFile(artifact!, "utf8")).toBe(reason)
+		} finally {
+			await fs.unlink(artifact!)
+			await fs.rmdir(path.dirname(artifact!))
+		}
+	})
+
+	it("ignores Stop control effects from advisory background hooks", async () => {
+		const config: CompletionHookConfig = {
+			stop: [
+				command(
+					"process.stdout.write(JSON.stringify({continue:false,decision:'block',reason:'Continue',systemMessage:'Saved audit'}))",
+				),
+			],
+			subagentStop: [],
+		}
+		expect(await runCompletionHooks(config, request, new AbortController().signal, { advisory: true })).toEqual({
+			warnings: ["Saved audit"],
+		})
+	})
+
+	it.each([{ decision: "allow" }, { unexpected: true }, { continue: false, decision: "allow" }])(
+		"does not let malformed Stop output override another hook's blocking feedback: %j",
+		async (output) => {
+			const config: CompletionHookConfig = {
+				stop: [
+					command(`process.stdout.write(${JSON.stringify(JSON.stringify(output))})`),
+					command("process.stdout.write(JSON.stringify({decision:'block',reason:'Keep checking.'}))"),
+				],
+				subagentStop: [],
+			}
+			expect(await runCompletionHooks(config, request, new AbortController().signal)).toMatchObject({
+				prompt: "Keep checking.",
+				warnings: ["Completion hook returned invalid JSON output."],
+			})
+		},
+	)
+
+	it("ignores a reason without a Stop decision", async () => {
+		const config: CompletionHookConfig = {
+			stop: [command("process.stdout.write(JSON.stringify({reason:'This alone does not continue a turn.'}))")],
+			subagentStop: [],
+		}
+		expect(await runCompletionHooks(config, request, new AbortController().signal)).toEqual({ warnings: [] })
 	})
 
 	it("bounds a hung process and honors preexisting cancellation", async () => {

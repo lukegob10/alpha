@@ -1,3 +1,4 @@
+import { HttpEmbedder } from "./embedders/http"
 import { getIndexIdentity } from "./shared/embedding-input"
 import * as vscode from "vscode"
 import { Ignore } from "ignore"
@@ -44,6 +45,14 @@ export class CodeIndexServiceFactory {
 		if (config.embedderProvider === "gemini") {
 			return new GeminiEmbedder(config.geminiApiKey ?? "", config.modelId, config.embeddingRateLimitSeconds)
 		}
+		if (config.embedderProvider !== "vertex")
+			return new HttpEmbedder(
+				config.embedderProvider,
+				config.modelId ?? getDefaultModelId(config.embedderProvider),
+				config.embeddingOptions ?? {},
+				config.embeddingRateLimitSeconds,
+				config.modelDimension,
+			)
 		if (!config.vertexOptions) throw new Error(t("embeddings:serviceFactory.vertexConfigMissing"))
 
 		return new VertexGeminiEmbedder(config.vertexOptions, config.modelId, config.embeddingRateLimitSeconds)
@@ -85,8 +94,9 @@ export class CodeIndexServiceFactory {
 
 		let vectorSize: number | undefined
 
-		// First try to get the model-specific dimension from profiles
-		vectorSize = getModelDimension(config.embedderProvider, modelId)
+		// Explicit compatible dimensions preserve existing custom deployments when presets are added.
+		vectorSize = config.embedderProvider === "openai" ? config.modelDimension : undefined
+		vectorSize ??= getModelDimension(config.embedderProvider, modelId)
 
 		// Only use manual dimension if model doesn't have a built-in dimension
 		if (!vectorSize && config.modelDimension && config.modelDimension > 0) {

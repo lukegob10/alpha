@@ -66,7 +66,7 @@ describe("AgentRetryPolicy", () => {
 		})
 	})
 
-	it("caps local exponential delay while preserving the provider retry-after minimum", () => {
+	it("caps local exponential delay while preferring valid provider retry advice", () => {
 		const policy = new AgentRetryPolicy({
 			maxAttempts: 5,
 			baseDelayMs: 100,
@@ -78,7 +78,11 @@ describe("AgentRetryPolicy", () => {
 		expect(policy.getDelayMs(2)).toBe(200)
 		expect(policy.getDelayMs(3)).toBe(250)
 		expect(policy.getDelayMs(1, 500)).toBe(500)
+		expect(policy.getDelayMs(3, 50)).toBe(50)
+		expect(policy.getDelayMs(3, 0)).toBe(0)
 		expect(policy.getDelayMs(1, -10)).toBe(100)
+		expect(policy.getDelayMs(1, NaN)).toBe(100)
+		expect(policy.getDelayMs(1, Infinity)).toBe(100)
 	})
 
 	it("honors a sixty-second provider deadline instead of the local thirty-second cap", () => {
@@ -100,13 +104,18 @@ describe("AgentRetryPolicy", () => {
 		expect(decision).not.toHaveProperty("retryAt")
 	})
 
-	it("captures one absolute retry deadline before notification time passes", () => {
+	it.each([
+		{ advice: 100, notification: 80, remaining: 20 },
+		{ advice: 100, notification: 200, remaining: 0 },
+		{ advice: 60_000, notification: 8_000, remaining: 52_000 },
+	])("retains the server deadline through notification overhead: %j", ({ advice, notification, remaining }) => {
 		let now = 10_000
 		const policy = new AgentRetryPolicy({ jitter: "none", now: () => now })
-		const decision = policy.decide({ category: "transport", attempt: 1, retryAfterMs: 10_000 })
-		now += 8_000
-		expect(decision.retryAt).toBe(20_000)
-		expect(decision.retryAt! - now).toBe(2_000)
+		const decision = policy.decide({ category: "transport", attempt: 1, retryAfterMs: advice })
+		now += notification
+		expect(decision.delayMs).toBe(advice)
+		expect(decision.retryAt).toBe(10_000 + advice)
+		expect(Math.max(0, decision.retryAt! - now)).toBe(remaining)
 		expect(Object.isFrozen(decision)).toBe(true)
 	})
 

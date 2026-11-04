@@ -1,10 +1,236 @@
 // pnpm exec vitest run packages/core/src/message-utils/__tests__/consolidateTokenUsage.spec.ts
 
-import type { AlphaMessage } from "@alpha-code/types"
+import type { AlphaMessage, CompactionUsageReceipt } from "@alpha-code/types"
 
 import { consolidateTokenUsage, hasTokenUsageChanged, hasToolUsageChanged } from "../consolidateTokenUsage.js"
+import { consolidateApiRequests } from "../consolidateApiRequests.js"
+import { consolidateCommands } from "../consolidateCommands.js"
 
 describe("consolidateTokenUsage", () => {
+	describe("durable compaction usage receipts", () => {
+		const native: CompactionUsageReceipt = {
+			attemptId: "native-attempt",
+			inputIncludesCache: true,
+			inputTokens: 80,
+			outputTokens: 12,
+			cacheReadTokens: 30,
+			cacheWriteTokens: 0,
+			reasoningTokens: 8,
+			usageSource: "provider",
+			totalCost: 0.03,
+		}
+		const local: CompactionUsageReceipt = {
+			attemptId: "local-attempt",
+			inputIncludesCache: false,
+			inputTokens: 20,
+			outputTokens: 6,
+			cacheReadTokens: 5,
+			cacheWriteTokens: 3,
+			reasoningTokens: 4,
+			usageSource: "provider",
+			totalCost: 0.01,
+		}
+		const anchor = (receipts: CompactionUsageReceipt[]): AlphaMessage => ({
+			ts: 2,
+			type: "say",
+			say: "condense_context",
+			contextCondense: { cost: 0.04, prevContextTokens: 100, newContextTokens: 50, summary: "Reduced." },
+			compactionUsageReceipts: receipts,
+		})
+
+		it("includes native and local tokens once without adding cache or reasoning subsets twice", () => {
+			const result = consolidateTokenUsage([
+				{ ts: 1, type: "say", say: "api_req_started", text: '{"tokensIn":100,"tokensOut":10,"cost":0.1}' },
+				anchor([native, local]),
+			])
+			expect(result).toEqual({
+				totalTokensIn: 208,
+				totalTokensOut: 28,
+				totalCacheReads: 35,
+				totalCacheWrites: 3,
+				totalCost: 0.14,
+				contextTokens: 50,
+			})
+		})
+
+		it("deduplicates attempts across anchors, repeated entries and JSON reload", () => {
+			const messages = [
+				anchor([native, native, local]),
+				anchor([structuredClone(local), structuredClone(native)]),
+			]
+			const reloaded = JSON.parse(JSON.stringify(messages)) as AlphaMessage[]
+			for (const history of [messages, reloaded, reloaded]) {
+				expect(consolidateTokenUsage(history)).toEqual({
+					totalTokensIn: 108,
+					totalTokensOut: 18,
+					totalCacheReads: 35,
+					totalCacheWrites: 3,
+					totalCost: 0.08,
+					contextTokens: 50,
+				})
+			}
+		})
+
+		it("keeps paid usage from partial and failed anchors without adding receipt monetary evidence", () => {
+			const messages: AlphaMessage[] = [
+				{ ts: 1, type: "say", say: "condense_context", partial: true, compactionUsageReceipts: [native] },
+				{
+					ts: 2,
+					type: "say",
+					say: "condense_context_error",
+					contextCondenseErrorCost: 0.04,
+					compactionUsageReceipts: [structuredClone(native), local],
+				},
+			]
+			expect(consolidateTokenUsage(messages)).toEqual({
+				totalTokensIn: 108,
+				totalTokensOut: 18,
+				totalCacheReads: 35,
+				totalCacheWrites: 3,
+				totalCost: 0.04,
+				contextTokens: 0,
+			})
+		})
+
+		it.each([
+			{ inputTokens: -1 },
+			{ inputTokens: NaN },
+			{ outputTokens: Infinity },
+			{ cacheReadTokens: 0.5 },
+			{ reasoningTokens: -1 },
+			{ inputIncludesCache: "true" },
+			{ attemptId: "" },
+			{ attemptId: "x".repeat(257) },
+			{ totalCost: -1 },
+			{ inputTokens: Number.MAX_SAFE_INTEGER + 1 },
+			{ inputTokens: Number.MAX_SAFE_INTEGER, inputIncludesCache: false, cacheReadTokens: 1 },
+		])("ignores malformed receipt %j without suppressing a later valid attempt", (invalid) => {
+			const malformed = { ...native, ...invalid }
+			const message = anchor([malformed as CompactionUsageReceipt, native])
+			expect(consolidateTokenUsage([message])).toMatchObject({
+				totalTokensIn: 80,
+				totalTokensOut: 12,
+				totalCacheReads: 30,
+				totalCost: 0.04,
+			})
+		})
+
+		it("retains the first valid finalized attempt rather than amplifying conflicting replay", () => {
+			expect(consolidateTokenUsage([anchor([native, { ...native, inputTokens: 800 }])])).toMatchObject({
+				totalTokensIn: 80,
+				totalTokensOut: 12,
+			})
+		})
+
+		it("does not corrupt accumulated counters when valid individual receipts exceed the total range", () => {
+			const first = { ...native, inputTokens: Number.MAX_SAFE_INTEGER }
+			expect(consolidateTokenUsage([anchor([first, local])])).toMatchObject({
+				totalTokensIn: Number.MAX_SAFE_INTEGER,
+				totalTokensOut: 12,
+				totalCacheReads: 30,
+				totalCacheWrites: 0,
+			})
+		})
+
+		it("ignores an invalid over-limit receipt array without changing legacy cost or context", () => {
+			const message = anchor(
+				Array.from({ length: 65 }, (_, index) => ({ ...native, attemptId: `attempt-${index}` })),
+			)
+			expect(consolidateTokenUsage([message])).toEqual({
+				totalTokensIn: 0,
+				totalTokensOut: 0,
+				totalCacheReads: undefined,
+				totalCacheWrites: undefined,
+				totalCost: 0.04,
+				contextTokens: 50,
+			})
+		})
+	})
+
+	it("reuses completed payload parsing through tail updates without changing totals or context ordering", () => {
+		const first: AlphaMessage = {
+			ts: 1,
+			type: "say",
+			say: "api_req_started",
+			text: '{\r\n"tokensIn":10,"tokensOut":2,"cost":1\r\n}',
+		}
+		const second: AlphaMessage = { ...first, ts: 2, text: JSON.stringify({ tokensIn: 20, tokensOut: 3, cost: 2 }) }
+		const parse = vi.spyOn(JSON, "parse")
+		try {
+			const expected = consolidateTokenUsage([first, second])
+			parse.mockClear()
+			for (let frame = 0; frame < 20; frame++) {
+				expect(
+					consolidateTokenUsage([
+						first,
+						second,
+						{ ts: 3, type: "say", say: "text", text: `tail ${frame}`, partial: true },
+					]),
+				).toEqual(expected)
+			}
+			expect(parse.mock.calls).toHaveLength(0)
+			expect(consolidateTokenUsage([second, first])).toMatchObject({ totalTokensIn: 30, contextTokens: 12 })
+			first.text = JSON.stringify({ tokensIn: 30, tokensOut: 4, cost: 3 })
+			expect(consolidateTokenUsage([first, second])).toMatchObject({ totalTokensIn: 50, totalCost: 5 })
+			expect(parse).toHaveBeenCalledWith(first.text)
+			const reloaded = JSON.parse(JSON.stringify([first, second])) as AlphaMessage[]
+			parse.mockClear()
+			expect(consolidateTokenUsage(reloaded)).toEqual(consolidateTokenUsage([first, second]))
+			expect(parse.mock.calls).toHaveLength(2)
+			parse.mockClear()
+			second.partial = true
+			consolidateTokenUsage([first, second])
+			consolidateTokenUsage([first, second])
+			expect(parse.mock.calls.filter(([text]) => text === second.text)).toHaveLength(4)
+		} finally {
+			parse.mockRestore()
+		}
+	})
+
+	it.each([false, true])(
+		"keeps completed consolidation payload work bounded while the tail streams (legacy=%s)",
+		(legacy) => {
+			const messages: AlphaMessage[] = []
+			for (let index = 0; index < 100; index++) {
+				const ts = index * 10
+				messages.push(
+					{
+						ts,
+						type: "say",
+						say: "api_req_started",
+						text: JSON.stringify({ tokensIn: 10, tokensOut: 2, cost: 1 }),
+					},
+					{ ts: ts + 1, type: "ask", ask: "use_mcp_server", text: '{"server":"fixture"}', isAnswered: true },
+					{ ts: ts + 2, type: "say", say: "mcp_server_response", text: "result\r\ncontent" },
+				)
+				if (legacy) messages.push({ ts: ts + 3, type: "say", say: "api_req_finished", text: '{"cost":2}' })
+			}
+			const project = (history: AlphaMessage[]) =>
+				consolidateTokenUsage(consolidateApiRequests(consolidateCommands(history)))
+			const expected = project(messages)
+			expect(expected).toMatchObject({
+				totalTokensIn: 1_000,
+				totalTokensOut: 200,
+				totalCost: legacy ? 200 : 100,
+				contextTokens: 12,
+			})
+			const parse = vi.spyOn(JSON, "parse")
+			try {
+				for (let frame = 0; frame < 60; frame++) {
+					expect(
+						project([
+							...messages,
+							{ ts: 2000, type: "say", say: "text", text: `tail ${frame}`, partial: true },
+						]),
+					).toEqual(expected)
+				}
+				expect(parse.mock.calls).toHaveLength(0)
+			} finally {
+				parse.mockRestore()
+			}
+		},
+	)
+
 	it("counts synopsis usage without changing the agent context window size", () => {
 		const result = consolidateTokenUsage([
 			{ ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 1000, tokensOut: 100 }) },

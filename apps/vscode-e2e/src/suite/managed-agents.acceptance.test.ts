@@ -55,7 +55,8 @@ const NESTED_OBJECTIVE = "Produce the nested Worker change for immediate-parent 
 const DISCARD_OBJECTIVE = "Produce a throwaway Worker proposal that the root will discard."
 const INTERRUPT_OBJECTIVE = "Hold one wait_agent call so the root can interrupt this Worker."
 const STEERING_MESSAGE = "Before applying your proposal, include the exact owner name outer_worker."
-const INTERRUPT_PATH = "/root/interrupt-worker"
+const INTERRUPT_TASK_NAME = "interrupt_worker"
+const INTERRUPT_PATH = `/root/${INTERRUPT_TASK_NAME}`
 const REVIEW_BOUNDARY_QUESTION =
 	"MANAGED_AGENT_FIXTURE_REVIEW: Finish the explicit proposal actions before verification."
 
@@ -193,6 +194,10 @@ class ManagedAgentScriptedAI {
 		let turn = this.turnsByTask.get(taskId) ?? 0
 		const priorResult = this.assertPriorToolSucceeded(role, turn, messages)
 		const previousCall = this.previousCallsByTask.get(taskId)
+		if (previousCall?.name === "spawn_agent" && previousCall.arguments.task_name === INTERRUPT_TASK_NAME) {
+			const handle = JSON.parse(priorResult ?? "null") as { path?: string }
+			assert.equal(handle?.path, INTERRUPT_PATH, "The native spawn receipt must preserve the supplied task_name")
+		}
 		const completionBlocked =
 			role === "outer" &&
 			previousCall?.name === "assistant_text" &&
@@ -452,9 +457,10 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "outer_worker",
-						message: OUTER_OBJECTIVE,
+						objective: OUTER_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [WORKER_DIR],
 					},
 				},
 				{
@@ -468,18 +474,20 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "discard_worker",
-						message: DISCARD_OBJECTIVE,
+						objective: DISCARD_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [DISCARD_PATH],
 					},
 				},
 				{
 					name: "spawn_agent",
 					arguments: {
-						task_name: "interrupt_worker",
-						message: INTERRUPT_OBJECTIVE,
+						task_name: INTERRUPT_TASK_NAME,
+						objective: INTERRUPT_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [WORKER_DIR],
 					},
 				},
 				{
@@ -498,9 +506,10 @@ class ManagedAgentScriptedAI {
 					name: "spawn_agent",
 					arguments: {
 						task_name: "nested_writer",
-						message: NESTED_OBJECTIVE,
+						objective: NESTED_OBJECTIVE,
 						fork_turns: "none",
-						agent_type: "worker",
+						agent_kind: "worker",
+						write_scope: [`${WORKER_DIR}/nested`],
 					},
 				},
 				{

@@ -606,6 +606,80 @@ describe("ExtensionStateContext", () => {
 		expect(screen.getByTestId("latest-message")).toHaveTextContent("complete")
 	})
 
+	it("cancels a disposed view's pending frame without publishing into its replacement provider", () => {
+		let frameCallback: FrameRequestCallback | undefined
+		vi.stubGlobal(
+			"requestAnimationFrame",
+			vi.fn((callback: FrameRequestCallback) => {
+				frameCallback = callback
+				return 7
+			}),
+		)
+		vi.stubGlobal("cancelAnimationFrame", vi.fn())
+		const removeListener = vi.spyOn(window, "removeEventListener")
+		const oldMessage: AlphaMessage = { ts: 1, type: "say", say: "text", text: "Old view", partial: true }
+		const oldView = render(
+			<ExtensionStateContextProvider>
+				<MessagesTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+		try {
+			act(() => {
+				dispatchExtensionState({ currentTaskId: "old-task", alphaMessages: [oldMessage], alphaMessagesSeq: 1 })
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "old-task",
+							alphaMessagesSeq: 2,
+							alphaMessage: { ...oldMessage, text: "Queued old view" },
+						},
+					}),
+				)
+			})
+			expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+			expect(screen.getByTestId("latest-message")).toHaveTextContent("Old view")
+			const lateFrame = frameCallback
+			oldView.unmount()
+			expect(cancelAnimationFrame).toHaveBeenCalledWith(7)
+			expect(removeListener).toHaveBeenCalledWith("message", expect.any(Function))
+
+			render(
+				<ExtensionStateContextProvider>
+					<MessagesTestComponent />
+				</ExtensionStateContextProvider>,
+			)
+			const freshMessage: AlphaMessage = { ts: 2, type: "say", say: "text", text: "Fresh view" }
+			act(() => {
+				dispatchExtensionState({
+					currentTaskId: "fresh-task",
+					alphaMessages: [freshMessage],
+					alphaMessagesSeq: 10,
+				})
+				// An already-captured callback can still be dispatched after cancellation.
+				lateFrame?.(0)
+			})
+			expect(screen.getByTestId("all-messages")).toHaveTextContent("Fresh view")
+			expect(screen.getByTestId("all-messages")).not.toHaveTextContent("Old view")
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "messageUpdated",
+							taskId: "fresh-task",
+							alphaMessagesSeq: 11,
+							alphaMessage: { ...freshMessage, text: "Fresh completion", partial: false },
+						},
+					}),
+				)
+			})
+			expect(screen.getByTestId("latest-message")).toHaveTextContent("Fresh completion")
+			expect(requestAnimationFrame).toHaveBeenCalledTimes(1)
+		} finally {
+			removeListener.mockRestore()
+		}
+	})
+
 	it("preserves legacy transcript wire creation, streaming, completion, and sequence ordering", () => {
 		let frameCallback: FrameRequestCallback | undefined
 		vi.stubGlobal(
@@ -1263,7 +1337,6 @@ describe("mergeExtensionState", () => {
 			experiments: {
 				preventFocusDisruption: false,
 				imageGeneration: false,
-				runSlashCommand: false,
 				customTools: false,
 			} as Record<ExperimentId, boolean>,
 			checkpointTimeout: DEFAULT_CHECKPOINT_TIMEOUT_SECONDS + 5,
@@ -1279,7 +1352,6 @@ describe("mergeExtensionState", () => {
 		expect(result.experiments).toEqual({
 			preventFocusDisruption: false,
 			imageGeneration: false,
-			runSlashCommand: false,
 			customTools: false,
 		})
 	})
@@ -1483,6 +1555,68 @@ describe("mergeExtensionState", () => {
 			},
 		)
 
+		it.each([{ taskStateSeq: 4 }, { taskStateSeq: 5 }, { messageQueueSeq: 6 }])(
+			"keeps selected task controls when a snapshot loses task ownership (%j)",
+			(sequence) => {
+				const previous: ExtensionState = {
+					...baseState,
+					taskStateSeq: 5,
+					currentTaskId: "selected-task",
+					currentView: { type: "task", taskId: "selected-task" },
+					mode: "architect",
+					currentApiConfigName: "selected-profile",
+					apiConfiguration: { apiProvider: "openai", apiModelId: "selected-model" },
+					currentTaskApprovalMode: "ask",
+				}
+				const result = mergeExtensionState(previous, {
+					...sequence,
+					currentTaskId: "old-task",
+					currentView: { type: "task", taskId: "old-task" },
+					mode: "code",
+					currentApiConfigName: "old-profile",
+					apiConfiguration: { apiProvider: "anthropic", apiModelId: "old-model" },
+					currentTaskApprovalMode: "auto",
+				})
+
+				expect(result.currentTaskId).toBe(previous.currentTaskId)
+				expect(result.mode).toBe(previous.mode)
+				expect(result.currentApiConfigName).toBe(previous.currentApiConfigName)
+				expect(result.apiConfiguration).toBe(previous.apiConfiguration)
+				expect(result.currentTaskApprovalMode).toBe(previous.currentTaskApprovalMode)
+			},
+		)
+
+		it("keeps a newer mode/profile on the same task while accepting unsequenced global configuration", () => {
+			const previous: ExtensionState = {
+				...baseState,
+				taskStateSeq: 5,
+				currentTaskId: "selected-task",
+				mode: "architect",
+				currentApiConfigName: "selected-profile",
+				apiConfiguration: { apiProvider: "openai", apiModelId: "selected-model" },
+			}
+			const stale = mergeExtensionState(previous, {
+				taskStateSeq: 4,
+				currentTaskId: "selected-task",
+				mode: "code",
+				currentApiConfigName: "old-profile",
+				apiConfiguration: { apiProvider: "anthropic", apiModelId: "old-model" },
+			})
+			expect(stale.mode).toBe(previous.mode)
+			expect(stale.currentApiConfigName).toBe(previous.currentApiConfigName)
+			expect(stale.apiConfiguration).toBe(previous.apiConfiguration)
+
+			const updated = mergeExtensionState(stale, {
+				mode: "code",
+				currentApiConfigName: "global-profile",
+				apiConfiguration: { apiProvider: "vertex", apiModelId: "global-model" },
+			})
+			expect(updated.currentTaskId).toBe(previous.currentTaskId)
+			expect(updated.mode).toBe("code")
+			expect(updated.currentApiConfigName).toBe("global-profile")
+			expect(updated.apiConfiguration).toEqual({ apiProvider: "vertex", apiModelId: "global-model" })
+		})
+
 		it("keeps reasoning scoped to the accepted task sequence and clears it when an older host switches tasks", () => {
 			const previous: ExtensionState = {
 				...baseState,
@@ -1578,6 +1712,102 @@ describe("mergeExtensionState", () => {
 			const result = mergeExtensionState(previous, delivered)
 			expect(result.currentTaskId).toBeUndefined()
 			expect(result.taskReasoning).toBeUndefined()
+		})
+
+		it.each([undefined, null])(
+			"retains verified draft reasoning through a compact background lifecycle update (task id: %j)",
+			(taskId) => {
+				const previous: ExtensionState = {
+					...baseState,
+					currentTaskId: undefined,
+					currentView: { type: "newTaskDraft" },
+					currentApiConfigName: "copilot-profile",
+					apiConfiguration: {
+						apiProvider: "vscode-lm",
+						vsCodeLmModelSelector: { vendor: "copilot", id: "gpt-5.6-sol" },
+					},
+					taskStateSeq: 5,
+					taskReasoning: {
+						requested: { kind: "effort", effort: "high" },
+						effective: { kind: "effort", effort: "high" },
+						capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+					},
+				}
+				// postLocalTaskSessionStateToWebview publishes task membership without a reasoning or config refresh.
+				const delivered = JSON.parse(
+					JSON.stringify({
+						currentView: { type: "newTaskDraft" },
+						currentTaskId: taskId,
+						activeTaskId: "background-task",
+						liveTaskIds: ["background-task"],
+						taskStateSeq: 6,
+					}),
+				) as Partial<ExtensionState>
+
+				const result = mergeExtensionState(previous, delivered)
+
+				expect(result.taskReasoning).toBe(previous.taskReasoning)
+				expect(result.currentTaskId).toBeUndefined()
+				expect(result.activeTaskId).toBe("background-task")
+				expect(result.taskStateSeq).toBe(6)
+			},
+		)
+
+		it.each([
+			{ currentTaskId: "another-task" },
+			{ currentApiConfigName: "new-profile" },
+			{ apiConfiguration: { apiProvider: "openai" as const, openAiModelId: "gpt-5.6-sol" } },
+			{
+				apiConfiguration: {
+					apiProvider: "vscode-lm" as const,
+					vsCodeLmModelSelector: { vendor: "copilot", id: "new-model" },
+				},
+			},
+		])("clears draft reasoning when its task, profile, or provider/model scope changes: %j", (scopeChange) => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: undefined,
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 5,
+				taskReasoning: {
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+					capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+				},
+			}
+			const result = mergeExtensionState(previous, {
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 6,
+				...scopeChange,
+			})
+			expect(result.taskReasoning).toBeUndefined()
+		})
+
+		it.each([
+			undefined,
+			{
+				requested: { kind: "default" as const },
+				effective: { kind: "off" as const },
+				capabilities: { kind: "unavailable" as const, canDisable: false },
+			},
+		])("honors an explicit replacement for draft reasoning: %j", (replacement) => {
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: undefined,
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 5,
+				taskReasoning: {
+					requested: { kind: "effort", effort: "high" },
+					effective: { kind: "effort", effort: "high" },
+					capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: true },
+				},
+			}
+			const result = mergeExtensionState(previous, {
+				currentView: { type: "newTaskDraft" },
+				taskStateSeq: 6,
+				taskReasoning: replacement,
+			})
+			expect(result.taskReasoning).toBe(replacement)
 		})
 
 		it("rejects alphaMessages when seq equals current (not strictly greater)", () => {

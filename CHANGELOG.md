@@ -1,5 +1,82 @@
 # Changelog
 
+## 3.2.22
+
+### Patch Changes
+
+- Simplify settings around skills, Code and Plan, and English. Keep `/skill-name` available while removing the separate custom-command setup, marketplace, and prompt-enhancement controls.
+- Use native VS Code file review and expand embedding-model configuration for code search.
+- Accept ordinary final responses without synthetic continuation while preserving explicitly pending work, cancellation, and structured tool results.
+- Serialize approval prompts across concurrent reads in the same task, allow approved reads to run together, and cancel queued approvals promptly.
+- Apply task approval-mode changes during a turn, including the pending permission prompt, while preserving deny rules, protected files, and inherited child limits.
+- Accept one reviewed real extension live smoke for release, including an explicitly reused Luna pass with its original execution identity; keep broader live comparisons optional.
+- Run independent release gates and six native package builds in parallel, then require complete source-bound evidence and matching package bytes before publication.
+- Verify complete tool receipts against bounded lifecycle previews and align live patch tests with whole-patch preflight validation.
+- Update the extension and in-app release announcement together for Alpha 3.2.22. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
+
+## 3.2.21
+
+### Patch Changes
+
+- Refine model-request lifecycle hooks and provider recovery while preserving structured tool results and reasoning continuity.
+- Return the recorded result when a command finishes before a later control request, avoiding spurious command-is-no-longer-running errors.
+- Fold completed-turn activity consistently, including file-change groups, and improve task-history loading and navigation.
+- Dismiss ticket import and export notices automatically after a short delay.
+- Move automated extension-host and live Copilot testing to exact VS Code 1.141.0 while preserving the VS Code 1.125.0 installation minimum and existing older-host capabilities.
+- Update the extension and in-app release announcement together for Alpha 3.2.21.
+
+## 3.2.20
+
+### Patch Changes
+
+- Align task completion with provider turn signals, bound reasoning-only compatibility continuations, and recover transient streaming interruptions without replaying accepted mutations.
+- Preserve conversation history when required compaction fails, and mark incomplete tool output explicitly during interrupted-task recovery.
+- Expand command, MCP, and asynchronous lifecycle hooks with Codex-compatible event names, matcher groups, retained output, and same-turn Stop feedback. Keep rewritten command aliases consistent while preserving Alpha's native approvals and workspace protections.
+- Consume ready asynchronous hook feedback before completion; honor Stop decisions before optional compaction or automatic continuation.
+- Let healthy verification commands follow their execution budget while keeping lost-process and stalled-receipt recovery bounded. Refresh advisory verification evidence before presenting it to the model.
+- Select the matching retained instructions and collaboration guidance for GPT-6.1 Terra.
+- Add the Alpha Tickets overview and observed progress chart, previewed ZIP/Markdown import and export, and revision-checked batch deletion with one approval.
+- Update the extension, VSIX, and in-app release announcement together for Alpha 3.2.20. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
+### Validation Notes
+
+- Harness changes have deterministic regression, shared-type, managed-agent certification, and exact VS Code 1.138.0 coverage. Local minimum-host startup remains blocked by a Windows editor-update mutex.
+- GitHub publication requires the release workflow's clean-runner validation, including exact VS Code 1.125.0 compatibility and verified packages for all six supported platform targets.
+
+## 3.2.19
+
+### Patch Changes
+
+- Keep reasoning controls available in blank chats when background lifecycle updates omit reasoning metadata. Preserve explicit unavailable results and reset the projection when the model, provider, or profile changes.
+- Give independent chats host-attributed task-assignment context while preserving agent-message provenance, approval requirements, and workspace limits. Restore the same context after reload.
+- Strengthen managed-agent close, cancellation, follow-up, and queued-steering ownership while retaining Codex-aligned turn completion.
+- Protect transcript persistence and interrupted-history repair against concurrent edits and stale runtime owners.
+- Improve MCP pagination and approval isolation, custom-tool validation, patch boundaries, and subprocess cleanup.
+- Reduce repeated prompt/catalog and token-counting work, bound retained terminal resources, and improve streaming transcript, composer, and agent-navigation updates.
+- Harden Ticket and scheduled-task storage against malformed saved data and concurrent updates; extend deterministic lifecycle, stress, and performance-audit coverage.
+- Update the extension and in-app announcement together for Alpha 3.2.19. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
+### Validation Notes
+
+- Local exact VS Code 1.138.0 smoke tests and focused reasoning/handoff regressions pass. Local minimum-host startup is blocked by a Windows editor-update mutex; the release workflow verifies VS Code 1.125.0 on a clean runner before publication.
+- The supplemental rendered reasoning fixture passes its reasoning scenarios, then stops at a Windows send-and-steer shortcut assertion. This full fixture remains unverified; the required rendered release gate covers composer, transcript, input, and managed-agent interactions separately.
+
+## 3.2.18
+
+### Patch Changes
+
+- Complete stopped sub-agent runs even when their terminal event is missing, release execution capacity, and prevent duplicate result publication. Add regression coverage for twelve children across repeated waves.
+- Align sub-agent context inheritance, named-agent defaults, follow-up identity, and fork selection more closely with Codex CLI while preserving Alpha's approval and workspace protections.
+- Apply one shared 32 KiB budget to discovered AGENTS instruction files, including personal and descendant files, while preserving source order and UTF-8 boundaries. Global custom instructions remain separate.
+- Run new sub-agents in the parent's shared workspace with inherited permissions; preserve review and recovery for saved isolated Worker changes.
+- Show each sub-agent's captured model and effective reasoning level in task rows, links, and headers without borrowing current parent settings.
+- Strengthen interrupted transcript recovery, provider reasoning continuity, tool-result persistence, command cleanup, and completion checks.
+- Preserve malformed completed tool calls as correlated error results so the model can correct its response without executing the rejected tool.
+- Improve native tool parsing, managed-agent addressing, skill discovery, and OAuth authorization for supported MCP servers.
+- Refresh Alpha's wolf icons and welcome artwork, clarify agent navigation, and improve Markdown table readability, keyboard scrolling, and theme support.
+- Build macOS ARM64 releases on GitHub's supported macOS 15 runner as the macOS 14 image retires.
+- Update the extension version and in-app announcement together for Alpha 3.2.18. VS Code 1.125.0 remains the minimum; exact 1.138.0 remains the reference host.
+
 ## 3.2.17
 
 ### Patch Changes
@@ -795,7 +872,6 @@
 
 ### Patch Changes
 
-- Add the internal Stellar provider with OpenAI-compatible chat completions, Helix token refresh, PEM CA trust, streaming controls, and custom model IDs.
 - Refresh the built-in Anthropic, Gemini, OpenAI, Vertex AI, and VS Code language-model catalogs and capability metadata.
 - Harden OpenAI-compatible and Vertex AI native tool-call handling across streaming and non-streaming responses.
 - Keep queued steering messages scoped to the active task and preserve drafts when the task is not ready to accept them.

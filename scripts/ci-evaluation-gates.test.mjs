@@ -28,7 +28,7 @@ test("Windows acceptance jobs configure runner-owned temporary directories befor
 	try {
 		const jobs = [
 			...Object.values(workflow("code-qa.yml").jobs).filter((job) => job["runs-on"] === "windows-latest"),
-			workflow("release-vsix.yml").jobs["release-vsix"],
+			workflow("release-vsix.yml").jobs.validation,
 		]
 		const runnerTemp = path.join(root, "runner temp with spaces")
 		for (const [index, job] of jobs.entries()) {
@@ -81,7 +81,7 @@ test("workflow job dependencies and local reusable workflows resolve", () => {
 test("QA and releases require offline evaluator checks and bounded rendered acceptance", () => {
 	const qa = workflow("code-qa.yml")
 	const release = workflow("release-vsix.yml")
-	for (const config of [qa, release]) {
+	for (const config of [qa]) {
 		assert.equal(config.permissions.contents, "read")
 		assert.ok(Object.values(config.jobs).some((job) => job.steps && command(job, "pnpm harness run offline")))
 		assert.ok(Object.values(config.jobs).some((job) => job.steps && command(job, "pnpm harness run rendered")))
@@ -91,15 +91,25 @@ test("QA and releases require offline evaluator checks and bounded rendered acce
 			),
 		)
 	}
-	assert.equal(release.jobs["package-vsix"].needs, "release-vsix")
-	assert.equal(release.jobs["publish-release"].needs, "package-vsix")
-	const acceptance = release.jobs["release-vsix"]
-	assert.ok(command(acceptance, "pnpm harness run stress"))
-	assert.ok(acceptance.steps.some((step) => step.if === "always()" && step.run?.includes("--require stress")))
-	assert.ok(
-		acceptance.steps.indexOf(command(acceptance, "pnpm harness run stress")) <
-			acceptance.steps.indexOf(command(acceptance, "pnpm harness run outcomes")),
-	)
+	assert.equal(release.permissions.contents, "read")
+	assert.equal(release.jobs["package-vsix"].needs, "live-quality")
+	assert.deepEqual(release.jobs["publish-release"].needs, [
+		"live-quality",
+		"validation",
+		"package-vsix",
+		"release-gate",
+	])
+	const acceptance = release.jobs.validation
+	for (const lane of ["offline", "rendered", "stress", "outcomes"])
+		assert.ok(
+			acceptance.strategy.matrix.include.some((entry) => entry.lane === lane),
+			lane,
+		)
+	assert.ok(command(acceptance, 'pnpm harness run "${{ matrix.lane }}"'))
+	assert.ok(acceptance.steps.some((step) => step.uses?.startsWith("actions/checkout@")))
+	const gate = release.jobs["release-gate"]
+	assert.equal(gate.if, "${{ always() }}")
+	assert.ok(gate.steps.some((step) => step.run?.includes("pnpm release:evidence aggregate")))
 })
 
 test("release publishing rejects existing remote tags that identify another source commit", async (t) => {

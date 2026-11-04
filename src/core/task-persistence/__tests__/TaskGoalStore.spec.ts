@@ -52,6 +52,27 @@ describe("durable goal state", () => {
 		expect((await goalController().get())?.status).toBe("paused")
 	})
 
+	it("reloads bounded automatic-turn progress without counting an admitted turn twice", async () => {
+		const first = goalController()
+		await first.create({ objective: "Ship" }, "user")
+		const reservation = (await first.reserveContinuation(idle))!
+		const admitted = (await first.consumeContinuation(reservation, idle))!
+		const receipt = {
+			goalId: admitted.goalId,
+			controlVersion: admitted.controlVersion,
+			continuationCount: admitted.continuationCount,
+			automatic: true,
+			hasActivity: false,
+			emptyFinal: true,
+		}
+		await first.recordTurnProgress(receipt)
+		const store = new TaskGoalStore(directory, "task-1")
+		const before = await store.read()
+		expect(before.turnProgress).toMatchObject({ continuationCount: 1, consecutiveEmptyTurns: 1 })
+		await goalController().recordTurnProgress(receipt)
+		expect(await store.read()).toEqual(before)
+	})
+
 	it("serializes distinct instances so duplicate and concurrent descendant receipts are not lost", async () => {
 		const first = goalController()
 		const created = await first.create({ objective: "Ship" }, "user")

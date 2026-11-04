@@ -9,7 +9,6 @@ const { thinkingBudgetProps } = vi.hoisted(() => ({
 
 vi.mock("@src/components/settings/providers", () => ({
 	OpenAICompatible: () => null,
-	Stellar: () => null,
 	Vertex: () => null,
 	VSCodeLM: () => null,
 }))

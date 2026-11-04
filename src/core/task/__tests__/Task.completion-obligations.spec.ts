@@ -38,15 +38,36 @@ function fixture(request: string) {
 
 afterEach(() => vi.restoreAllMocks())
 
+it.each(["failed", "stale", "unavailable", "running"] as const)(
+	"retains %s acceptance evidence without making it a completion requirement",
+	async (status) => {
+		vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+			get: (_key: string, fallback: unknown) => fallback,
+		} as unknown as vscode.WorkspaceConfiguration)
+		const task = fixture("Implement all product sections")
+		task.workContext!.receipts.push({
+			checkId: "all-sections",
+			definitionDigest: "declared-check",
+			executionId: "check-process",
+			status,
+			observedAt: 1,
+		})
+		const before = structuredClone(task.workContext)
+
+		expect(await task.getCompletionGateDecision()).toMatchObject({ allowed: true, classification: "ready" })
+		expect(task.workContext).toEqual(before)
+	},
+)
+
 it.each(["Implement all product sections", "Can you add all product sections described in SPEC.md?"])(
-	"keeps registered acceptance checks authoritative for an implementation request: %s",
+	"keeps registered acceptance evidence advisory for an implementation request: %s",
 	async (request) => {
 		vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
 			get: (_key: string, fallback: unknown) => fallback,
 		} as unknown as vscode.WorkspaceConfiguration)
 		expect(await fixture(request).getCompletionGateDecision()).toMatchObject({
-			allowed: false,
-			reasonCode: "verification_missing",
+			allowed: true,
+			reasonCode: "ready",
 		})
 	},
 )

@@ -21,13 +21,9 @@ describe("providerModelConfig", () => {
 	})
 
 	it("provides defaults and static catalogs for every curated provider", () => {
-		expect(Object.keys(PROVIDER_DEFAULT_MODEL_IDS).sort()).toEqual(
-			[...curatedProviders, "stellar", "vertex"].sort(),
-		)
+		expect(Object.keys(PROVIDER_DEFAULT_MODEL_IDS).sort()).toEqual([...curatedProviders, "vertex"].sort())
 		expect(getDefaultModelIdForProvider("vertex")).toBe(PROVIDER_DEFAULT_MODEL_IDS.vertex)
-		expect(getDefaultModelIdForProvider("stellar")).toBe(PROVIDER_DEFAULT_MODEL_IDS.stellar)
 		expect(getStaticModelsForProvider("vertex")).not.toEqual({})
-		expect(getStaticModelsForProvider("stellar")).not.toEqual({})
 		expect(getStaticModelsForProvider("openai")).toEqual({})
 		for (const provider of curatedProviders) {
 			expect(getDefaultModelIdForProvider(provider)).toBe(getProviderDefaultModelId(provider))
@@ -39,7 +35,6 @@ describe("providerModelConfig", () => {
 	it("uses custom model controls only for OpenAI Compatible and VS Code LM", () => {
 		expect(PROVIDERS_WITH_CUSTOM_MODEL_UI).toEqual(["openai", "vscode-lm"])
 		expect(shouldUseGenericModelPicker("vertex")).toBe(true)
-		expect(shouldUseGenericModelPicker("stellar")).toBe(true)
 		expect(shouldUseGenericModelPicker("openai")).toBe(false)
 		expect(shouldUseGenericModelPicker("vscode-lm")).toBe(false)
 	})

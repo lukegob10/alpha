@@ -696,9 +696,18 @@ export class CustomToolRegistry {
 		if (obj.parameters !== undefined && !this.isParametersSchema(obj.parameters)) {
 			errors.push("parameters: parameters must be a Zod schema")
 		}
+		if (errors.length === 0 && obj.parameters !== undefined) {
+			try {
+				serializeCustomTool(value as CustomToolDefinition)
+			} catch {
+				// Reject at the owned source boundary so one bad schema cannot poison every task catalog.
+				errors.push("parameters: input must be representable as JSON Schema")
+			}
+		}
 
 		if (errors.length > 0) {
-			throw new Error(`Invalid tool definition for '${exportName}': ${errors.join(", ")}`)
+			const label = typeof exportName === "string" ? exportName.slice(0, 120) : "unnamed"
+			throw new Error(`Invalid tool definition for '${label}': ${errors.join(", ")}`)
 		}
 
 		return value as CustomToolDefinition

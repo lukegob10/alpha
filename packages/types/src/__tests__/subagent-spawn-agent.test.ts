@@ -8,6 +8,24 @@ import {
 } from "../subagent.js"
 
 describe("spawn_agent request contracts", () => {
+	it.each([
+		[" NONE ", "none"],
+		[" All ", "all"],
+		["\t", "all"],
+		[" 3 ", "all"],
+		["01", "all"],
+		["+2", "all"],
+		["18446744073709551615", "all"],
+	])("normalizes V2 fork selection %j to %j", (fork_turns, expected) => {
+		expect(
+			subagentSpawnAgentV2ArgsSchema.parse({
+				task_name: "review",
+				message: "Review the parser.",
+				fork_turns,
+			}).fork_turns,
+		).toBe(expected)
+	})
+
 	it("validates bounded named-agent definitions without embedding provider credentials", () => {
 		expect(
 			subagentAgentTypesSchema.parse({
@@ -51,7 +69,7 @@ describe("spawn_agent request contracts", () => {
 			}),
 		).toMatchObject({
 			agent_type: "explorer",
-			fork_turns: "3",
+			fork_turns: "all",
 			provider: "openai-native",
 			profile: "Saved OpenAI",
 			model: "gpt-6-sol",
@@ -78,7 +96,11 @@ describe("spawn_agent request contracts", () => {
 		{ reasoning_effort: "disable" },
 		{ reasoning_effort: "unsupported" },
 		{ fork_turns: "0" },
-		{ fork_turns: "01" },
+		{ fork_turns: "+0" },
+		{ fork_turns: "-1" },
+		{ fork_turns: "18446744073709551616" },
+		{ fork_turns: "1".repeat(100) },
+		{ fork_turns: "0".repeat(128) + "1" },
 		{ agent_type: "Invalid Name" },
 		{ write_scope: ["src"] },
 		{ fork_context: true },
@@ -176,6 +198,30 @@ describe("spawn_agent request contracts", () => {
 				requestedReasoningEffort: "unsupported",
 			}).success,
 		).toBe(false)
+	})
+
+	it("retains frozen effective reasoning independently from the requested effort", () => {
+		const legacyRoute = { source: "parent", resolution: "selected", profileName: "Parent" }
+		for (const schema of [subagentModelRouteStateSchema, strictSubagentModelRouteStateSchema]) {
+			expect(schema.parse(legacyRoute)).not.toHaveProperty("effectiveReasoning")
+			for (const effectiveReasoning of [
+				{ kind: "effort", effort: "high" },
+				{ kind: "off" },
+				{ kind: "on" },
+				{ kind: "default" },
+				{ kind: "custom", value: "adaptive" },
+			]) {
+				const route = { ...legacyRoute, requestedReasoningEffort: "medium", effectiveReasoning }
+				expect(schema.parse(JSON.parse(JSON.stringify(route)))).toEqual(route)
+			}
+			for (const effectiveReasoning of [
+				{ kind: "effort", effort: "disable" },
+				{ kind: "custom", value: "unsafe value" },
+				{ kind: "unknown" },
+			]) {
+				expect(schema.safeParse({ ...legacyRoute, effectiveReasoning }).success).toBe(false)
+			}
+		}
 	})
 
 	it.each([

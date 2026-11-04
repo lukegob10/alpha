@@ -21,6 +21,19 @@ export class TaskMessagesReadError extends Error {
 	}
 }
 
+function hasTaskMessageEnvelope(value: unknown): boolean {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false
+	const message = value as Record<string, unknown>
+	// Check stable fields without stripping unknown metadata or rejecting legacy ask/say variants.
+	return (
+		typeof message.ts === "number" &&
+		Number.isFinite(message.ts) &&
+		(message.type === "ask" || message.type === "say") &&
+		(message.text === undefined || typeof message.text === "string") &&
+		(message.partial === undefined || typeof message.partial === "boolean")
+	)
+}
+
 export async function readTaskMessages({
 	taskId,
 	globalStoragePath,
@@ -38,7 +51,8 @@ export async function readTaskMessages({
 	}
 	try {
 		const parsedData: unknown = JSON.parse(contents)
-		if (Array.isArray(parsedData)) return parsedData
+		if (Array.isArray(parsedData) && (!requireExisting || parsedData.every(hasTaskMessageEnvelope)))
+			return parsedData
 	} catch {
 		// Preserve the historical tolerant reader for non-resume consumers. The
 		// strict reopen path reports failure without exposing or replacing bytes.

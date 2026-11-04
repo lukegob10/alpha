@@ -44,11 +44,14 @@ const GPT61_SOL_INSTRUCTIONS =
 export const CODEX_MODEL_INSTRUCTIONS = {
 	...PINNED_CODEX_MODEL_INSTRUCTIONS,
 	"gpt-6.1-sol": GPT61_SOL_INSTRUCTIONS,
+	// Codex a09812981de703f18f38015cd5d500ab373f616c (2026-11-01) uses the retained Astra template for Terra.
+	"gpt-6.1-terra": PINNED_CODEX_MODEL_INSTRUCTIONS["gpt-6-astra"],
 } as const
 
 /** Digests for the retained templates and byte-identical GPT-6.1 catalog derivation. */
 export const CODEX_MODEL_INSTRUCTIONS_SHA256 = {
 	"gpt-6.1-sol": "e1bdd4f8f0df4b20f4a0ffc8a861ce819df45325d8cecdfb92e80379cf8d142e",
+	"gpt-6.1-terra": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a",
 	"gpt-6-astra": "35bd51b5f577cb7b24cd5f4629e49e37cb724ab57754ce6f8f202001635bab8a",
 	"gpt-6-sol": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d",
 	"gpt-6-luna": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12",
@@ -63,6 +66,7 @@ export type CodexModelPromptSlug = keyof typeof CODEX_MODEL_INSTRUCTIONS
 
 const MODEL_ID_TO_PROMPT: Readonly<Record<string, CodexModelPromptSlug>> = {
 	"gpt-6.1-sol": "gpt-6.1-sol",
+	"gpt-6.1-terra": "gpt-6.1-terra",
 	"gpt-6-astra": "gpt-6-astra",
 	"gpt-6-sol": "gpt-6-sol",
 	"gpt-6-luna": "gpt-6-luna",

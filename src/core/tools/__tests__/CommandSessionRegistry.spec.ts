@@ -11,6 +11,31 @@ function fixtureProcess(values: Partial<AlphaTerminalProcess>): AlphaTerminalPro
 	return Object.assign(new EventEmitter(), values) as AlphaTerminalProcess
 }
 
+it("keeps the original command hook with its physical owner and claims it once on completion", () => {
+	const registry = new CommandSessionRegistry()
+	const owner = { taskId: "owner" } as Task
+	const other = { taskId: "owner" } as Task
+	const process = fixtureProcess({ executionId: "original", isSettled: false })
+	const terminal = { taskId: "owner", process, running: true }
+	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
+	const id = registry.register(owner, process)
+	const origin = { callId: "launch", name: "exec_command", arguments: { cmd: "pnpm test" } }
+	registry.bindPostToolUse(owner, id, origin)
+	origin.arguments.cmd = "changed externally"
+	registry.bindPostToolUse(owner, id, { ...origin, callId: "replacement" })
+	expect(registry.takePostToolUse(owner, id)).toBeUndefined()
+	expect(registry.takePostToolUse(other, id)).toBeUndefined()
+	Object.assign(process, { isSettled: true })
+	terminal.running = false
+	expect(registry.takePostToolUse(owner, id)).toEqual({
+		callId: "launch",
+		name: "exec_command",
+		arguments: { cmd: "pnpm test" },
+	})
+	registry.bindPostToolUse(owner, id, origin)
+	expect(registry.takePostToolUse(owner, id)).toBeUndefined()
+})
+
 it("binds a session to the task and physical process despite terminal reuse", () => {
 	const registry = new CommandSessionRegistry()
 	const owner = { taskId: "owner" } as Task

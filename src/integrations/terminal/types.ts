@@ -23,7 +23,17 @@ export interface DirectTerminalCommand {
 	readonly env: Readonly<Record<string, string>>
 }
 
+/** Immutable, validated interpreter identity captured before command approval. */
+export interface CommandShellLaunch {
+	readonly shellPath: string
+	readonly family: "sh" | "bash" | "zsh" | "powershell" | "cmd"
+	readonly login: boolean
+	readonly binaryIdentity: string
+	readonly identity: string
+}
+
 export interface AlphaTerminal {
+	readonly shellLaunch?: CommandShellLaunch
 	provider: AlphaTerminalProvider
 	id: number
 	busy: boolean
@@ -78,7 +88,11 @@ export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessE
 	cancelPendingOutputWrite?: () => void
 	readonly outputCancellationSignal?: AbortSignal
 	hasActiveOutputReceipt?: () => boolean
+	/** Non-consuming, provider-sanitized bounded transcript for command progress. */
+	getOutputPreview?: () => string
 	command: string
+	/** Host proof used to reject automatic replay after a terminal observation failure. */
+	readonly hasSubmittedCommand?: boolean
 	isHot: boolean
 	/** True only after the process emitted its terminal completed/error event. */
 	isSettled?: boolean

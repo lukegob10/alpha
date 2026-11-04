@@ -449,7 +449,7 @@ describe("Task goal integration through the shared turn engine", () => {
 	it("persists disjoint elapsed receipts when response billing fails before replay", async () => {
 		const { task, controller } = fixture()
 		await controller.create({ objective: "Finish the objective." }, "user")
-		const clock = vi.spyOn(Date, "now").mockReturnValue(900)
+		const clock = vi.spyOn(performance, "now").mockReturnValue(900)
 		const step = (await task["beginGoalStep"]())!
 		vi.spyOn(controller, "recordUsage").mockRejectedValueOnce(new Error("usage write failed"))
 		clock.mockReturnValue(1_000)
@@ -482,6 +482,65 @@ describe("Task goal integration through the shared turn engine", () => {
 		expect(task.finalizeTaskCompletion).toHaveBeenCalledOnce()
 		expect(task.ask).not.toHaveBeenCalled()
 		expect(await task.getGoal()).toMatchObject({ status: "complete", continuationCount: 1 })
+	})
+
+	it("blocks after three automatic empty final turns without a fourth automatic request", async () => {
+		const { task, controller } = fixture()
+		await controller.create({ objective: "Finish the objective." }, "user")
+		vi.mocked(task.runAgentRequests).mockImplementation(async () => {
+			if (vi.mocked(task.runAgentRequests).mock.calls.length > 4) {
+				return { status: "failed", reason: "Unexpected fifth sample.", response: createAgentResponse([]) }
+			}
+			return {
+				status: "completed",
+				response: createAgentResponse(
+					[
+						{
+							type: "text",
+							text: vi.mocked(task.runAgentRequests).mock.calls.length === 1 ? "Starting." : "",
+							phase: "final_answer",
+						},
+					],
+					{ status: "completed", requiresContinuation: false },
+				),
+			}
+		})
+
+		await task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+
+		expect(task.runAgentRequests).toHaveBeenCalledTimes(4)
+		expect(await controller.get()).toMatchObject({ status: "blocked", continuationCount: 3 })
+		expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
+		expect(task.ask).toHaveBeenCalledOnce()
+	})
+
+	it.each(["commentary", "reasoning"] as const)("resets automatic empty turns after useful %s", async (kind) => {
+		const { task, controller } = fixture()
+		await controller.create({ objective: "Finish the objective." }, "user")
+		vi.mocked(task.runAgentRequests).mockImplementation(async () => {
+			const attempt = vi.mocked(task.runAgentRequests).mock.calls.length
+			if (attempt > 7)
+				return { status: "failed", reason: "Unexpected eighth sample.", response: createAgentResponse([]) }
+			const activity =
+				kind === "reasoning"
+					? { type: "reasoning" as const, text: "Useful progress." }
+					: { type: "text" as const, text: "Useful progress.", phase: "commentary" as const }
+			return {
+				status: "completed",
+				response: createAgentResponse(
+					attempt === 4
+						? [activity]
+						: [{ type: "text", text: attempt === 1 ? "Starting." : "", phase: "final_answer" }],
+					{ status: "completed", requiresContinuation: false },
+				),
+			}
+		})
+
+		await task["initiateTaskLoop"]([{ type: "text", text: "Start." }])
+
+		expect(task.runAgentRequests).toHaveBeenCalledTimes(7)
+		expect(await controller.get()).toMatchObject({ status: "blocked", continuationCount: 6 })
+		expect(task.finalizeTaskCompletion).not.toHaveBeenCalled()
 	})
 
 	it("bounds unbudgeted automatic continuations and leaves the task open for human recovery", async () => {
@@ -982,7 +1041,7 @@ describe("Task goal integration through the shared turn engine", () => {
 		"accounts early failed %s sampling using its admitted mode",
 		async (mode) => {
 			let now = 100
-			vi.spyOn(Date, "now").mockImplementation(() => now)
+			vi.spyOn(performance, "now").mockImplementation(() => now)
 			const { task, controller } = fixture()
 			await controller.create({ objective: "Finish." }, "user")
 			Object.assign(task, { _taskMode: mode })

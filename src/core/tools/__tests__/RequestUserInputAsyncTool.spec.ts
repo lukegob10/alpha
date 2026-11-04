@@ -96,6 +96,33 @@ describe("RequestUserInputAsyncTool", () => {
 		expect(callbacks.handleError).not.toHaveBeenCalled()
 	})
 
+	it("leaves published async questions unanswered as time passes", async () => {
+		vi.useFakeTimers()
+		try {
+			const task = { taskKind: "primary", abort: false, say: vi.fn(async () => {}), ask: vi.fn() }
+			const { callbacks, results } = createCallbacks()
+			await new RequestUserInputAsyncTool().execute({ questions }, task as never, callbacks)
+			await vi.advanceTimersByTimeAsync(300_000)
+
+			expect(task.ask).not.toHaveBeenCalled()
+			expect(task.say).toHaveBeenCalledOnce()
+			expect(task.say).toHaveBeenCalledWith(
+				"async_user_input",
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{ isNonInteractive: true, asyncUserInput: { questions } },
+			)
+			expect(results).toEqual(['{"accepted":true}'])
+			expect(callbacks.handleError).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it.each(["Staging", " Staging "])(
 		"rejects duplicate option %s before publishing the question",
 		async (duplicate) => {

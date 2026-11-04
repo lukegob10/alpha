@@ -4,6 +4,7 @@ import { captureRejectionSymbol } from "node:events"
 
 import type { AlphaTerminal, DirectTerminalCommand, ExitCodeDetails } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
+import { assertCommandShellLaunchUnchanged, commandShellArgs } from "../../utils/shell"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { getDescendantPids, terminateProcessTree } from "../../utils/processTree"
 
@@ -82,8 +83,11 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			} else {
 				this.isHot = true
 
+				const shellLaunch = this.terminal.shellLaunch
+				if (shellLaunch) await assertCommandShellLaunchUnchanged(shellLaunch)
+				if (this.aborted) throw new Error("Command was cancelled before shell launch")
 				const spawn = execa({
-					shell: directCommand ? false : BaseTerminal.getExecaShellPath() || true,
+					shell: directCommand || shellLaunch ? false : BaseTerminal.getExecaShellPath() || true,
 					extendEnv: !directCommand,
 					windowsHide: true,
 					cwd: this.terminal.getCurrentWorkingDirectory(),
@@ -103,7 +107,9 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				})
 				this.subprocess = directCommand
 					? spawn(directCommand.executable, [...directCommand.args])
-					: spawn`${command}`
+					: shellLaunch
+						? spawn(shellLaunch.shellPath, commandShellArgs(shellLaunch, command))
+						: spawn`${command}`
 				// Observe rejection immediately, and retain physical process ownership
 				// independently of the output iterator or its presentation callbacks.
 				processSettlement = Promise.allSettled([this.subprocess]).then(([outcome]) => outcome)

@@ -1,4 +1,22 @@
 {
+	"diffReview": {
+		"title": "Diff review actions",
+		"sideBySide": "Side-by-side view",
+		"inline": "Inline view",
+		"toggleLayout": "Toggle inline / side-by-side view",
+		"collapseAll": "Collapse all files",
+		"expandAll": "Expand all files",
+		"nextChange": "Next change",
+		"previousChange": "Previous change"
+	},
+	"compaction": {
+		"native_summary": "Conversation context was compacted by the provider."
+	},
+	"mcpOAuth": {
+		"authorize": "Authorize MCP server {{server}} using {{issuer}}?",
+		"openBrowser": "Open authorization browser",
+		"browserComplete": "Return to Alpha Code to finish authorization."
+	},
 	"chatGptAuth": {
 		"invalidAction": "The ChatGPT account action is invalid. Reopen settings and try again.",
 		"unavailable": "ChatGPT sign-in is unavailable. Reload the extension and try again.",
@@ -8,15 +26,46 @@
 	"diagnostics": {
 		"noTask": "Open an Alpha chat before exporting its diagnostics."
 	},
+	"ticketTools": {
+		"deleteBatchSummary": "{{count}} tickets ({{references}})"
+	},
+	"ticketTransfer": {
+		"busy": "Another ticket transfer is in progress.",
+		"projectChanged": "The ticket project changed. Start the transfer again.",
+		"files": "Alpha ticket ZIP or Markdown files",
+		"archive": "Alpha ticket bundle",
+		"importTitle": "Import Alpha Tickets",
+		"exportTitle": "Export Alpha Tickets",
+		"tooManyFiles": "Import at most 1,000 tickets at a time.",
+		"tooLarge": "The import exceeds 1,000 tickets, 16 MiB of ticket content, or 20 MiB of input files.",
+		"localFiles": "Select a file on this extension host's filesystem.",
+		"expired": "The import preview expired or was already used. Select the files again.",
+		"emptyExport": "There are no tickets to export."
+	},
 	"editorChatRestore": {
 		"missing": "This editor chat was saved before tab identity was supported. Open Alpha task history to select the chat; its saved data has been retained.",
 		"invalid": "This editor chat has an unsupported saved tab identity. Open Alpha task history to select the chat; its saved data has been retained.",
 		"unavailable": "Alpha could not reopen this editor chat. It may have been deleted or its storage or saved provider configuration may be unavailable. Check the Alpha output and open task history; no saved task data was reset."
 	},
+	"commandShell": {
+		"approvalDetail": "Shell: {{shell}} (login: {{login}})",
+		"codeOnly": "Explicit shell selection requires an approved serial Code command."
+	},
 	"subagentContext": {
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
 	},
 	"lifecycleHooks": {
+		"contextCapacity": "Lifecycle hook context exceeded its pending delivery capacity. Resume after the current results are saved.",
+		"asyncUnavailable": "asynchronous hook capacity is unavailable",
+		"mcpUnavailable": "MCP execution is unavailable",
+		"mcpSessionEnd": "does not support MCP tools for SessionEnd",
+		"mcpToolUnavailable": "MCP server or tool is unavailable",
+		"mcpInputInvalid": "received an invalid MCP input template",
+		"mcpToolError": "MCP tool returned an error",
+		"mcpCallFailed": "MCP call failed",
+		"outputSavedTo": "Full hook output saved to: {{path}}",
+		"outputUnavailable": "Full hook output could not be saved.",
+		"outputTruncated": "...{{tokens}} tokens truncated...",
 		"issue": "{{event}} hook {{failure}}.",
 		"failed": "{{event}} hook failed.",
 		"invalidOutput": "{{event}} hook returned invalid or unsupported JSON output.",
@@ -30,6 +79,17 @@
 		"postToolBlocked": "PostToolUse hook blocked the tool result.",
 		"postToolStopped": "PostToolUse hook stopped execution",
 		"completedBeforeBlock": "The tool completed before this result was blocked. Inspect the existing state before repeating it."
+	},
+	"historyRecovery": {
+		"title": "Recover inactive task history",
+		"record": "Record {{number}}",
+		"chooseRecords": "Select malformed records to remove after reviewing the original history",
+		"noInvalidRecords": "This history has no malformed records to recover.",
+		"confirm": "Recover selected records",
+		"warning": "Remove the selected malformed records from this task history?",
+		"details": "Task: {{taskId}}\nRecords: {{records}}\nOriginal SHA-256: {{digest}}\n\nReview the original history in the editor before continuing. Alpha preserves its exact original bytes in the task folder. Valid records, structured content, provider continuity, and tool transactions cannot be discarded. The task stays stopped.",
+		"complete": "Task history recovered. The original bytes are preserved in its task folder. Resume the task when ready.",
+		"failed": "Task history could not be recovered safely. The task remains stopped. Truncated JSON, structured records, incomplete tool transactions, changed history, and active tasks cannot be recovered by this command."
 	},
 	"goals": {
 		"title": "Task Goal",
@@ -89,7 +149,6 @@
 		"task_recovery_storage_busy": "The task paused while waiting for Alpha's task storage. Another operation or VS Code window is still using it. Let it finish or stop Alpha in that window, then resume. This is a task-storage issue.",
 		"task_recovery_failed": "The turn stopped because an operation failed. You can resume the task or send new guidance.",
 		"task_recovery_incomplete": "The turn ended before the task was complete. You can resume the task or send new guidance.",
-		"search_loop_recovery_paused": "The agent continued with search-only model steps after two recovery checkpoints. The task was paused without being failed. Resume with guidance, or ask the agent to use the best existing evidence and take a concrete next action.",
 		"task_recovery_exhausted": "The turn stopped after reaching its automatic retry limit. You can resume the task or send new guidance.",
 		"task_recovery_persistence": "The task paused because required task data could not be saved. Check free disk space and access to the task storage folder, then resume or send new guidance.",
 		"invalid_data_uri": "Invalid data URI format",
@@ -113,7 +172,6 @@
 		"no_workspace": "Please open a project folder first",
 		"update_support_prompt": "Failed to update support prompt",
 		"reset_support_prompt": "Failed to reset support prompt",
-		"enhance_prompt": "Failed to enhance prompt",
 		"get_system_prompt": "Failed to get system prompt",
 		"search_commits": "Failed to search commits",
 		"save_api_config": "Failed to save api configuration",
@@ -155,6 +213,7 @@
 		"command_output_archive_interrupted": "Output artifact was interrupted and is incomplete.",
 		"command_terminal_closed": "The command terminal closed before the command exit was reported. Its outcome is unknown.",
 		"command_terminal_closed_output": "The command terminal closed before its output could be finalized.",
+		"command_capacity_exceeded": "The active command limit ({{limit}}) has been reached. Wait for a running command to finish or stop an existing command before starting another. Existing commands remain running.",
 		"share_task_failed": "Failed to share task. Please try again.",
 		"share_no_active_task": "No active task to share",
 		"share_auth_required": "Authentication required. Please sign in to share tasks.",
@@ -162,13 +221,6 @@
 		"share_task_not_found": "Task not found or access denied.",
 		"mode_import_failed": "Failed to import mode: {{error}}",
 		"delete_rules_folder_failed": "Failed to delete rules folder: {{rulesFolderPath}}. Error: {{error}}",
-		"command_not_found": "Command '{{name}}' not found",
-		"open_command_file": "Failed to open command file",
-		"delete_command": "Failed to delete command",
-		"no_workspace_for_project_command": "No workspace folder found for project command",
-		"command_already_exists": "Command \"{{commandName}}\" already exists",
-		"create_command_failed": "Failed to create command",
-		"command_template_content": "---\ndescription: \"Brief description of what this command does\"\n---\n\nThis is a new slash command. Edit this file to customize the command behavior.",
 		"claudeCode": {
 			"processExited": "Claude Code process exited with code {{exitCode}}.",
 			"errorOutput": "Error output: {{output}}",
@@ -223,7 +275,6 @@
 		"manual_url_auth_error": "Authentication failed"
 	},
 	"warnings": {
-		"no_terminal_content": "No terminal content selected",
 		"missing_task_files": "This task's files are missing. Would you like to remove it from the task list?",
 		"auto_import_failed": "Failed to auto-import Alpha settings: {{error}}",
 		"auto_import_requires_attention": "Alpha imported {{filename}} with profile warnings ({{count}}). Repair the configured auto-import file before the next launch. Alpha imports this file each time it starts."
@@ -304,11 +355,6 @@
 		"scope": {
 			"project": "project",
 			"global": "global"
-		}
-	},
-	"marketplace": {
-		"mode": {
-			"rulesCleanupFailed": "Mode removed successfully, but failed to delete rules folder at {{rulesFolderPath}}. You may need to delete it manually."
 		}
 	},
 	"mdm": {

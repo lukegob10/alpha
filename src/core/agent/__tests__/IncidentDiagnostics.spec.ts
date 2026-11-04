@@ -1,6 +1,7 @@
 import { vscodeLlmModels } from "@alpha-code/types"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../AgentControlStore"
 import { hashAgentTurnEvidenceId } from "../AgentTurnEventLog"
+import { agentTurnContinuationReasons } from "../AgentTurnEvents"
 import {
 	incidentDiagnosticsSchema,
 	MAX_INCIDENT_RECEIPTS,
@@ -10,6 +11,67 @@ import {
 import { projectRuntimeDiagnostics } from "../../webview/diagnosticsEvidence"
 
 describe("bounded incident diagnostic projection", () => {
+	it("exports only bounded model-continuation provenance without request or result contents", () => {
+		const secret = "private-prompt-command-or-provider-output"
+		const receipts = Array.from({ length: 40 }, (_, index) => ({
+			step: index + 2,
+			reason: agentTurnContinuationReasons[index % agentTurnContinuationReasons.length],
+			turnId: secret,
+			prompt: secret,
+			command: secret,
+			output: secret,
+		}))
+		const result = projectIncidentDiagnostics({ modelContinuations: { receipts } })
+
+		expect(result.modelContinuations).toEqual({
+			coverage: "since-task-load",
+			receipts: receipts.slice(-MAX_INCIDENT_RECEIPTS).map(({ step, reason, turnId }) => ({
+				step,
+				reason,
+				turnIdSha256: hashAgentTurnEvidenceId(turnId),
+			})),
+			truncated: true,
+		})
+		expect(JSON.stringify(result)).not.toContain(secret)
+		expect(projectRuntimeDiagnostics({ incident: result })).toMatchObject({ incident: result })
+		expect(projectIncidentDiagnostics({}).modelContinuations).toBeUndefined()
+	})
+
+	it("drops malformed continuation reasons and steps while retaining the host's truncation receipt", () => {
+		const secret = "private-invalid-reason"
+		const result = projectIncidentDiagnostics({
+			modelContinuations: {
+				truncated: true,
+				receipts: [
+					{ step: 2, reason: "completion-repair" },
+					{ step: 3, reason: secret },
+					{ step: 0, reason: "model-tool-call" },
+					{ step: -1, reason: "model-tool-call" },
+					{ step: 1.5, reason: "model-tool-call" },
+					{ step: Infinity, reason: "model-tool-call" },
+					null,
+				],
+			},
+		})
+
+		expect(result.modelContinuations).toEqual({
+			coverage: "since-task-load",
+			receipts: [{ step: 2, reason: "completion-repair" }],
+			truncated: true,
+		})
+		expect(JSON.stringify(result)).not.toContain(secret)
+		const invalid = {
+			...result,
+			modelContinuations: {
+				coverage: "since-task-load",
+				receipts: [{ step: 2, reason: secret }],
+				truncated: false,
+			},
+		}
+		expect(projectRuntimeDiagnostics({ incident: invalid })).toMatchObject({ incident: { unavailable: true } })
+		expect(JSON.stringify(projectRuntimeDiagnostics({ incident: invalid }))).not.toContain(secret)
+	})
+
 	it("joins pending input, approval and mailbox receipts without exporting their bodies or opaque identifiers", () => {
 		const secret = "private-canary-credential-or-prompt"
 		const result = projectIncidentDiagnostics({

@@ -3,6 +3,7 @@ import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
 import type { TerminalOutputPreviewSize } from "@alpha-code/types"
+import { TelemetryService } from "@alpha-code/telemetry"
 
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { Task } from "../../task/Task"
@@ -140,6 +141,8 @@ async function createFixture(
 		reportArchiveOutput: (chunk: string) =>
 			callbacks.onOutput?.(chunk, process as unknown as AlphaTerminalProcess, lifetime.signal),
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
+		reportShellIntegrationFailure: () =>
+			callbacks.onNoShellIntegration?.("command output unavailable", process as unknown as AlphaTerminalProcess),
 		finishProcess: async (joinObservers = false) => {
 			terminal.running = false
 			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
@@ -165,6 +168,121 @@ async function createFixture(
 }
 
 describe("primary command timeout mutation receipts", () => {
+	it.each([false, true, undefined])(
+		"preserves shell observation failure ownership (submitted: %s)",
+		async (submitted) => {
+			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
+			const fixture = await createFixture()
+			Object.assign(fixture.process, { hasSubmittedCommand: submitted })
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "shell-observation-failure",
+				toolCallId: "shell-observation-failure-call",
+				command: "command with an effect",
+				terminalShellIntegrationDisabled: false,
+			}).catch((error: unknown) => error)
+			await fixture.launch
+			fixture.reportShellIntegrationFailure()
+			fixture.releaseProcess()
+			await vi.advanceTimersByTimeAsync(100)
+			expect(await execution).toMatchObject({
+				commandNotSubmitted: submitted === false,
+				outcomeKnown: submitted === false,
+			})
+			if (submitted === false) {
+				expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce()
+				expect(fixture.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.task.suspendAfterCurrentTurn).not.toHaveBeenCalled()
+			} else {
+				expect(fixture.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+				expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledExactlyOnceWith(
+					fixture.task,
+					expect.objectContaining({ __unobserved_command_scope__: expect.any(String) }),
+					true,
+					expect.any(String),
+				)
+				expect(fixture.task.suspendAfterCurrentTurn).toHaveBeenCalledOnce()
+			}
+		},
+	)
+
+	it("publishes bounded background progress without consuming session output or reopening a user ask", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers()
+		let preview = ""
+		const getOutputPreview = vi.fn(() => preview)
+		const captureUnretrievedOutput = vi.fn()
+		Object.assign(fixture.process, { getOutputPreview, captureUnretrievedOutput })
+		fixture.task.ask = vi.fn()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "background-progress",
+			command: "command",
+			agentTimeout: 1_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		fixture.provider.postMessageToWebview.mockClear()
+		for (let index = 0; index < 100; index++) {
+			preview = `progress ${index}`
+			fixture.process.emit("output_available")
+		}
+		await vi.advanceTimersByTimeAsync(150)
+		const progress = fixture.provider.postMessageToWebview.mock.calls
+			.map(([message]) => message)
+			.filter((message) => message.type === "commandExecutionStatus")
+		expect(progress).toHaveLength(1)
+		expect(JSON.parse(progress[0].text)).toMatchObject({ status: "output", output: "progress 99" })
+		expect(getOutputPreview).toHaveBeenCalledOnce()
+		expect(captureUnretrievedOutput).not.toHaveBeenCalled()
+		expect(fixture.task.ask).not.toHaveBeenCalled()
+		await fixture.finishProcess()
+		expect(fixture.process.listenerCount("output_available")).toBe(0)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("finishes archival and terminal evidence while background UI publication is blocked", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers()
+		const getOutputPreview = vi.fn(() => "background progress")
+		Object.assign(fixture.process, { getOutputPreview })
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "blocked-background-progress",
+			toolCallId: "blocked-progress-call",
+			command: "command",
+			agentTimeout: 1_000,
+		})
+		await fixture.launch
+		await vi.advanceTimersByTimeAsync(1_100)
+		await execution
+		let releaseUi!: () => void
+		const blockedUi = new Promise<void>((resolve) => (releaseUi = resolve))
+		fixture.provider.postMessageToWebview.mockImplementation((message: { text?: string }) =>
+			message.text?.includes("background progress") ? blockedUi : undefined,
+		)
+		const evidencePublished = new Promise<void>((resolve) => {
+			vi.mocked(fixture.task.completeCommandExecution).mockImplementation(() => resolve())
+		})
+		try {
+			fixture.process.emit("output_available")
+			await vi.advanceTimersByTimeAsync(150)
+			for (let index = 0; index < 1_000; index++) fixture.process.emit("output_available")
+			await vi.advanceTimersByTimeAsync(1_500)
+			expect(getOutputPreview).toHaveBeenCalledOnce()
+			await fixture.finishProcess()
+			await evidencePublished
+			expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+			expect(fixture.process.listenerCount("output_available")).toBe(0)
+			const messageCount = vi.mocked(fixture.task.say).mock.calls.length
+			releaseUi()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(vi.mocked(fixture.task.say).mock.calls).toHaveLength(messageCount)
+		} finally {
+			releaseUi()
+			fixture.releaseProcess()
+		}
+	})
+
 	it.each(["explore", "review"] as const)(
 		"records an inherited-permission %s's shared-workspace command changes",
 		async (role) => {

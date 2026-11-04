@@ -251,7 +251,7 @@ describe("permission, compact, and cleanup hook contracts", () => {
 			{ ...base, hook_event_name: "Interrupt" },
 			new AbortController().signal,
 		)
-		finish(children[0], { continue: false, stopReason: "Ignore", decision: "block", systemMessage: "Cleanup note" })
+		finish(children[0], { systemMessage: "Cleanup note" })
 		expect(await pending).toEqual({ warnings: ["Cleanup note"] })
 	})
 

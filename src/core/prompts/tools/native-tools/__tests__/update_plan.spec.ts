@@ -11,7 +11,9 @@ describe("update_plan native tool", () => {
 
 		expect(updatePlan.function.name).toBe("update_plan")
 		expect(updatePlan.function.strict).toBe(false)
-		expect(updatePlan.function.description).toContain("At most one step may be in_progress")
+		expect(updatePlan.function.description).toBe(
+			"Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
+		)
 		expect(parameters.required).toEqual(["plan"])
 		expect(properties.explanation.type).toBe("string")
 		expect(properties.plan.items.required).toEqual(["step", "status"])

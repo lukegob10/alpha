@@ -38,7 +38,7 @@ async function fixture(t: TestContext) {
 		...profile,
 		artifactsDir: profile.artifactsDir,
 		providerMode: "scripted",
-		vscodeVersion: "1.138.0",
+		vscodeVersion: "1.141.0",
 		scenarioId: "problem-solving-attempt",
 		improvementEvidence: true,
 		improvementTaskId: "repo-cache-invalidation@1",
@@ -74,7 +74,7 @@ function outcome(state: ImprovementCaptureState): ExtensionTestRunResult {
 		extensionsDir: path.join(state.userDataDir, "extensions"),
 		exitCode: 1,
 		providerMode: "scripted",
-		vscodeVersion: "1.138.0",
+		vscodeVersion: "1.141.0",
 		status: "blocked",
 		failure: "host-cancelled",
 		execution: "test-seam",
@@ -272,7 +272,7 @@ test("the terminal receipt must retain the exact pre-agent context digest", asyn
 test("the actual default collector prepares a public fixture through the canonical persistent profile", async (t) => {
 	const f = await fixture(t)
 	const profile = await prepareTestProfile({ ...f.options, initializeProfile: true })
-	assert.equal(profile.userDataDir, path.join(profile.profileDir!, "1.138.0", "user-data"))
+	assert.equal(profile.userDataDir, path.join(profile.profileDir!, "1.141.0", "user-data"))
 	await fs.cp(path.resolve(__dirname, "../../../../evals/javascript/repo-cache-invalidation"), profile.workspace, {
 		recursive: true,
 	})

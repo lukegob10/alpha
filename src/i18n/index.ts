@@ -1,4 +1,5 @@
 import i18next from "./setup"
+import { formatLanguage } from "../shared/language"
 
 /**
  * Initialize i18next with the specified language
@@ -6,7 +7,7 @@ import i18next from "./setup"
  * @param language The language code to use
  */
 export function initializeI18n(language: string): void {
-	i18next.changeLanguage(language)
+	i18next.changeLanguage(formatLanguage(language))
 }
 
 /**
@@ -24,7 +25,7 @@ export function getCurrentLanguage(): string {
  * @param language The language code to change to
  */
 export function changeLanguage(language: string): void {
-	i18next.changeLanguage(language)
+	i18next.changeLanguage(formatLanguage(language))
 }
 
 /**

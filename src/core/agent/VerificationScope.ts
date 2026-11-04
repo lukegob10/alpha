@@ -35,8 +35,7 @@ export function requiresWorkspaceMutationReceipt(
 	const policy = task.subagentContextManifest?.runtimePolicy
 	return (
 		task.taskKind === "subagent" &&
-		task.subagentRole !== "worker" &&
-		policy?.role !== "worker" &&
+		(policy?.sharedWorkspace === true || (task.subagentRole !== "worker" && policy?.role !== "worker")) &&
 		policy?.authorityModel === "parent" &&
 		policy.mutate
 	)

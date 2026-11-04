@@ -6,7 +6,7 @@ import type { ModelInfo, ProviderSettings, SubagentModelRouteState, TaskReasonin
 import type { ApiHandler, ApiHandlerCreateMessageMetadata, ApiInstructionFragment } from "../../../api"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
 import { digestValue } from "../../agent/StepContext"
-import type { SubagentHistoryFork } from "../../agent/SubagentContextCapture"
+import { captureSubagentContext, type SubagentHistoryFork } from "../../agent/SubagentContextCapture"
 import type { SubagentInvocationContext } from "../../agent/SubagentInvocationContext"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { saveSubagentInstructionSnapshot } from "../../task-persistence/subagentInstructionSnapshot"
@@ -316,6 +316,105 @@ describe("Task managed-child native history startup", () => {
 })
 
 describe("Task invoking-step subagent snapshot", () => {
+	it.each([
+		{ boundary: "initial", recover: false, changeRoute: false },
+		{ boundary: "initial with another profile", recover: false, changeRoute: true },
+		{ boundary: "committed-history recovery", recover: true, changeRoute: false },
+		{ boundary: "committed-history recovery with another profile", recover: true, changeRoute: true },
+	])("keeps the native archive available for a child at $boundary", ({ recover, changeRoute }) => {
+		const { task, capture, history, apiConfiguration, effectiveApiConfiguration, modelRoute } = invocationHarness()
+		apiConfiguration.apiProvider = "openai-native"
+		effectiveApiConfiguration.apiProvider = "openai-native"
+		modelRoute.provider = "openai-native"
+		const retainedStep = recover ? capture() : undefined
+		const finalAnswer: ApiMessage = {
+			role: "assistant",
+			content: "The archived requirement still applies after compaction.",
+			agentResponseItems: [{ type: "text", text: "The archived requirement still applies after compaction." }],
+			agentResponseOutcome: { status: "completed" },
+		}
+		const original = [...structuredClone(history), finalAnswer]
+		const stored: ApiMessage[] = [
+			...original.slice(0, 2).map((message) => ({ ...message, condenseParent: "native-parent-summary" })),
+			{
+				role: "assistant",
+				content: [],
+				isSummary: true,
+				condenseId: "native-parent-summary",
+				provider_state_scope: { provider: "openai-native", modelId: "parent-model" },
+				native_compaction: {
+					protocol: "openai-responses",
+					provider: "openai-native",
+					modelId: "parent-model",
+					responseId: "parent-checkpoint",
+					output: [{ type: "compaction", encrypted_content: "parent-only-opaque-checkpoint" }],
+				},
+			},
+			...original.slice(2),
+		]
+		task.apiConversationHistory = stored
+		const step = retainedStep ? capture(1, retainedStep, true) : capture()
+		const invocation = step.getSubagentInvocationContext()
+		expect(invocation.history).toEqual(stored)
+		expect(invocation.finalAssistantMessageIndexes).toEqual([1, 4])
+
+		const childRoute: SubagentModelRouteState = changeRoute
+			? {
+					...invocation.modelRoute,
+					profileId: "child-profile",
+					profileName: "Child profile",
+					provider: "vscode-lm",
+					modelId: "child-model",
+				}
+			: invocation.modelRoute
+		const input = {
+			parentTaskId: task.taskId,
+			capturedAt: 1,
+			forkTurns: "all" as const,
+			history: invocation.history,
+			instructions: invocation.instructions,
+			skills: [],
+			cwd: process.cwd(),
+			workspaceRoots: [process.cwd()],
+			modelRoute: childRoute,
+			runtimePolicy: {
+				authorityModel: "parent" as const,
+				role: "explore" as const,
+				read: true,
+				execute: false,
+				mutate: false,
+				delegate: false,
+				network: false,
+				externalSideEffects: false,
+				requireApproval: true,
+				allowedTools: ["read_file"],
+				workspaceRoots: [process.cwd()],
+			},
+			historyInheritance: {
+				parentModelRoute: invocation.modelRoute,
+				finalAssistantMessageIndexes: invocation.finalAssistantMessageIndexes,
+			},
+		}
+		const control = captureSubagentContext({
+			...input,
+			history: original,
+			historyInheritance: { ...input.historyInheritance, finalAssistantMessageIndexes: [1, 3] },
+		})
+		const child = captureSubagentContext(input)
+
+		expect(child.historyFork).toEqual(control.historyFork)
+		expect(child.historyFork.kind).toBe("native")
+		const serialized = JSON.stringify(child.historyFork)
+		expect(serialized).toContain("Original human request")
+		expect(serialized).toContain("Canonical final answer")
+		expect(serialized).toContain("The archived requirement still applies")
+		expect(serialized).not.toContain("parent-only-opaque-checkpoint")
+		expect(child.manifest.runtimePolicy).toEqual(control.manifest.runtimePolicy)
+		expect(child.manifest.runtimePolicy).toMatchObject(input.runtimePolicy)
+		expect(task.apiConversationHistory).toEqual(stored)
+		expect(step.getSubagentInvocationContext()).toEqual(invocation)
+	})
+
 	it("keeps model, profile, instructions and effective history at the invoking boundary despite live changes", () => {
 		const {
 			task,

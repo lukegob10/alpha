@@ -1,10 +1,14 @@
 // npx vitest run src/shared/__tests__/experiments.spec.ts
 
-import type { ExperimentId } from "@alpha-code/types"
+import { experimentsSchema, type ExperimentId } from "@alpha-code/types"
 
 import { EXPERIMENT_IDS, experimentConfigsMap, experiments as Experiments } from "../experiments"
 
 describe("experiments", () => {
+	it("accepts saved custom-command flags while discarding their retired authority", () => {
+		expect(experimentsSchema.parse({ runSlashCommand: true, customTools: true })).toEqual({ customTools: true })
+	})
+
 	describe("PREVENT_FOCUS_DISRUPTION", () => {
 		it("is configured correctly", () => {
 			expect(EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION).toBe("preventFocusDisruption")
@@ -18,7 +22,6 @@ describe("experiments", () => {
 		it("returns false when experiment is not enabled", () => {
 			const experiments: Record<ExperimentId, boolean> = {
 				preventFocusDisruption: false,
-				runSlashCommand: false,
 				customTools: false,
 			}
 			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(false)
@@ -27,7 +30,6 @@ describe("experiments", () => {
 		it("returns true when experiment is enabled", () => {
 			const experiments: Record<ExperimentId, boolean> = {
 				preventFocusDisruption: true,
-				runSlashCommand: false,
 				customTools: false,
 			}
 			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(true)
@@ -36,7 +38,6 @@ describe("experiments", () => {
 		it("returns false when experiment is not present", () => {
 			const experiments: Record<ExperimentId, boolean> = {
 				preventFocusDisruption: false,
-				runSlashCommand: false,
 				customTools: false,
 			}
 			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(false)

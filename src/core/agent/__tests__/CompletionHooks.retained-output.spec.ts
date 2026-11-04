@@ -1,4 +1,6 @@
 import { EventEmitter } from "node:events"
+import fs from "node:fs/promises"
+import path from "node:path"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import i18next from "i18next"
 import common from "../../../i18n/locales/en/common.json"
@@ -23,7 +25,7 @@ beforeAll(() => {
 	i18next.addResourceBundle("en", "common", common, true, true)
 })
 
-const OUTPUT_LIMIT_BYTES = 16_384
+const OUTPUT_LIMIT_BYTES = 1_048_576
 const command: CompletionHookCommand = { command: process.execPath, args: ["fixture-hook.js"], timeoutMs: 5_000 }
 const base = {
 	session_id: "retained-output-task",
@@ -195,10 +197,10 @@ describe("bounded retained hook output through the public runners", () => {
 	it.each(events)("rejects combined raw stdout/stderr above the inclusive budget at $event", async (event) => {
 		const pending = run(event)
 		const child = hooks[0]
-		child.stdout.emit("data", Buffer.from("{}".padEnd(4_096, " ")))
-		child.stderr.emit("data", Buffer.alloc(4_096, " "))
-		child.stdout.emit("data", Buffer.alloc(4_096, " "))
-		child.stderr.emit("data", Buffer.alloc(4_096, " "))
+		child.stdout.emit("data", Buffer.from("{}".padEnd(OUTPUT_LIMIT_BYTES / 4, " ")))
+		child.stderr.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES / 4, " "))
+		child.stdout.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES / 4, " "))
+		child.stderr.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES / 4, " "))
 		expect(cleanupRequests).toHaveLength(0)
 		child.stderr.emit("data", Buffer.from(" "))
 		expect(cleanupRequests).toHaveLength(1)
@@ -210,8 +212,11 @@ describe("bounded retained hook output through the public runners", () => {
 
 	it.each(events)("accepts exactly the combined raw byte budget at $event", async (event) => {
 		const pending = run(event)
-		hooks[0].stdout.emit("data", Buffer.from(JSON.stringify({ systemMessage: "Boundary note" }).padEnd(8_192, " ")))
-		hooks[0].stderr.emit("data", Buffer.alloc(8_192, " "))
+		hooks[0].stdout.emit(
+			"data",
+			Buffer.from(JSON.stringify({ systemMessage: "Boundary note" }).padEnd(OUTPUT_LIMIT_BYTES / 2, " ")),
+		)
+		hooks[0].stderr.emit("data", Buffer.alloc(OUTPUT_LIMIT_BYTES / 2, " "))
 		hooks[0].emit("close", 0)
 
 		expect(await pending).toEqual({ warnings: event.event === "SessionEnd" ? [] : ["Boundary note"] })
@@ -223,7 +228,7 @@ describe("bounded retained hook output through the public runners", () => {
 		const pending = run(event)
 		const settled = vi.fn()
 		void pending.then(settled)
-		const oversized = watchedChunk(Buffer.alloc(1_048_576, "x"))
+		const oversized = watchedChunk(Buffer.alloc(OUTPUT_LIMIT_BYTES + 1, "x"))
 		hooks[0].stdout.emit("data", oversized.buffer)
 		expect(cleanupRequests).toHaveLength(1)
 		expect(oversized.copy).not.toHaveBeenCalled()
@@ -378,10 +383,18 @@ describe("bounded retained hook output through the public runners", () => {
 		expect(cleanupRequests).toHaveLength(0)
 		hooks[0].emit("close", 0)
 
-		expect(await pending).toEqual({
-			additionalContext: [{ hook_run_id: expect.any(String), text: "\uFFFD".repeat(4_000) }],
-			warnings: [],
-		})
+		const outcome = await pending
+		expect(outcome.warnings).toEqual([])
+		const context = "additionalContext" in outcome ? outcome.additionalContext?.[0].text : undefined
+		const artifact = context?.match(/Full hook output saved to: (.+)$/)?.[1]
+		expect(artifact).toBeDefined()
+		try {
+			expect(await fs.readFile(artifact!, "utf8")).toBe("\uFFFD".repeat(OUTPUT_LIMIT_BYTES))
+			expect(Buffer.byteLength(context!)).toBeLessThanOrEqual(10_000)
+		} finally {
+			await fs.unlink(artifact!)
+			await fs.rmdir(path.dirname(artifact!))
+		}
 	})
 
 	it("ignores empty stdout and stderr chunks without copying or decoding", async () => {
@@ -470,6 +483,20 @@ describe("bounded retained hook output through the public runners", () => {
 			expect(await pending).toEqual({ warnings: [failure(event, "timed out")] })
 		},
 	)
+
+	it("allows normal verification hooks the upstream ten-minute default execution window", async () => {
+		const event = eventCase("Stop")
+		const pending = run(event, new AbortController().signal, [
+			{ command: process.execPath, args: ["validator.js"] },
+		])
+		await vi.advanceTimersByTimeAsync(599_999)
+		expect(cleanupRequests).toHaveLength(0)
+		await vi.advanceTimersByTimeAsync(1)
+		expect(cleanupRequests).toHaveLength(1)
+		hooks[0].emit("close", 0)
+		cleanupRequests[0].emit("close", 0)
+		expect(await pending).toEqual({ warnings: [failure(event, "timed out")] })
+	})
 
 	it("retains the first failure after cancellation and releases its timer and abort listener once", async () => {
 		const event = eventCase("Stop")

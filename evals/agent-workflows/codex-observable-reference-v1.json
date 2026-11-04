@@ -21,11 +21,11 @@
 			"alphaTests": [
 				{
 					"path": "src/core/agent/__tests__/AgentTurnEngine.spec.ts",
-					"test": "treats a visible assistant response without tool calls as a completed turn"
+					"test": "ends $label without synthetic recovery, idle work, or a completion tool"
 				},
 				{
 					"path": "src/core/agent/__tests__/AgentTurnEngine.spec.ts",
-					"test": "continues after a normally completed response requires another step despite final-answer text"
+					"test": "runs only the %s requested follow-up before accepting the final answer"
 				}
 			],
 			"normalization": [

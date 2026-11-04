@@ -138,6 +138,32 @@ describe("bounded nested portable skill discovery", () => {
 		})
 	})
 
+	it("imports Codex-compatible portable metadata while keeping exact discovered locations", async () => {
+		const root = path.join(cwd, ".agents", "skills")
+		const fallback = await writeSkill(root, "fallback")
+		await fs.writeFile(fallback, "---\ndescription: Build for AWS: ECS\n---\nComplete fallback instructions")
+		const named = await writeSkill(root, "renamed-package")
+		await fs.writeFile(
+			named,
+			`---\nname: Deploy  Service\ndescription: ${"d".repeat(1_200)}\n---\nComplete named instructions`,
+		)
+		await manager.discoverSkills()
+		expect(manager.getSkillsForMode("code")).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "fallback", description: "Build for AWS: ECS", path: fallback }),
+				expect.objectContaining({ name: "Deploy Service", description: "d".repeat(1_200), path: named }),
+			]),
+		)
+		expect(await manager.getExplicitSkillContent(fallback, "code")).toMatchObject({
+			instructions: "Complete fallback instructions",
+		})
+		expect(await manager.getExplicitSkillContent(named, "code")).toMatchObject({
+			name: "Deploy Service",
+			instructions: "Complete named instructions",
+		})
+		await expect(manager.createSkill("Deploy Service", "project", "Description")).rejects.toThrow()
+	})
+
 	it("skips hidden directories and limits recursion to six levels including SKILL.md", async () => {
 		const root = path.join(cwd, ".agents", "skills")
 		const visible = await writeSkill(root, "one/two/three/four/visible-review")

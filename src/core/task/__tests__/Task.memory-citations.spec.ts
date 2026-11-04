@@ -50,6 +50,33 @@ function fixture(options: { taskKind?: "primary" | "subagent"; diagnosticSession
 }
 
 describe("finalized assistant memory citation usage", () => {
+	it("persists structured line provenance while preserving raw text and legacy source usage", async () => {
+		const { commit, save, recordMemoryUsage } = fixture()
+		const block =
+			"<alpha-mem-citation>\n<citation_entries>\nrollout_summaries/source-1.md:2-8|note=[evidence]\n</citation_entries>\n<rollout_ids>\nsource-1\n</rollout_ids>\n</alpha-mem-citation>"
+		const output = createAgentResponse([{ type: "text", id: "answer", text: `Answer.\n${block}` }])
+		expect(await commit(output)).toBe(true)
+		expect(save.mock.calls[0][0]).toMatchObject({
+			content: output.text,
+			agentResponseItems: [
+				{
+					type: "text",
+					text: output.text,
+					memoryCitation: {
+						entries: [
+							{ path: "rollout_summaries/source-1.md", lineStart: 2, lineEnd: 8, note: "evidence" },
+						],
+						rolloutIds: ["source-1"],
+					},
+				},
+			],
+		})
+		expect(recordMemoryUsage).toHaveBeenCalledWith(
+			["rollout_summaries/source-1.md", "source-1"],
+			expect.any(String),
+		)
+	})
+
 	it("records only after durable response persistence and preserves the raw canonical output", async () => {
 		const { commit, save, recordMemoryUsage } = fixture()
 		let finishSave!: (saved: boolean) => void
@@ -62,6 +89,23 @@ describe("finalized assistant memory citation usage", () => {
 		expect(recordMemoryUsage).toHaveBeenCalledExactlyOnceWith(["source-1"], expect.stringMatching(/^[a-f0-9]{64}$/))
 		expect(save.mock.calls[0][0].content).toContain(citation)
 		expect(output.text).toContain(citation)
+	})
+
+	it("records completed commentary usage after durable persistence without changing final display", async () => {
+		const { commit, save, recordMemoryUsage } = fixture()
+		let finishSave!: (saved: boolean) => void
+		save.mockImplementationOnce(() => new Promise<boolean>((resolve) => (finishSave = resolve)))
+		const output = createAgentResponse(
+			[{ type: "text", id: "progress", phase: "commentary", text: `Relevant prior context.\n${citation}` }],
+			{ status: "completed" },
+		)
+		const committing = commit(output)
+		expect(recordMemoryUsage).not.toHaveBeenCalled()
+		finishSave(true)
+		expect(await committing).toBe(true)
+		expect(recordMemoryUsage).toHaveBeenCalledExactlyOnceWith(["source-1"], expect.stringMatching(/^[a-f0-9]{64}$/))
+		expect(output.items[0]).not.toHaveProperty("memoryCitation")
+		expect(save.mock.calls[0][0].content).toContain(citation)
 	})
 
 	it("uses stable host-derived receipt keys for replay and distinct keys for later attempts", async () => {

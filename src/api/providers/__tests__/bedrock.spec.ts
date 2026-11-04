@@ -488,12 +488,20 @@ describe("curated Amazon Bedrock adapter", () => {
 		await collect(buildBedrockHandler({ apiModelId: gpt }).createMessage("", reloaded))
 		expect((requests[0].body.input as unknown[]).slice(1)).toEqual([
 			before,
-			{ type: "function_call", call_id: "call", name: "read_file", arguments: call.arguments },
+			{
+				type: "function_call",
+				id: "fc_bedrock",
+				call_id: "call",
+				name: "read_file",
+				arguments: call.arguments,
+				status: "completed",
+			},
 			after,
 			{
 				type: "message",
 				role: "assistant",
 				id: "msg_bedrock",
+				status: "completed",
 				content: [{ type: "output_text", text: "Done", annotations: [] }],
 			},
 			{ type: "function_call_output", call_id: "call", output: "File contents" },

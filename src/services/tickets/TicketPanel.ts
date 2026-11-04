@@ -1,11 +1,25 @@
 import * as vscode from "vscode"
 import path from "path"
+import os from "os"
+import * as fs from "fs/promises"
+import { randomUUID } from "crypto"
 import { z } from "zod"
-import { ticketRequestSchema, ticketTargetSchema, type TicketResponse, type TicketTarget } from "@alpha-code/types"
+import {
+	ticketRequestSchema,
+	ticketTargetSchema,
+	type TicketExportInput,
+	type TicketResponse,
+	type TicketTarget,
+	type TicketTransferEntry,
+	type TicketTransferResult,
+} from "@alpha-code/types"
 import type { AlphaProvider } from "../../core/webview/AlphaProvider"
 import { resolveWebviewHtml } from "../../core/webview/webviewHtml"
+import { t } from "../../i18n"
 import { workOnTicket } from "./TicketTaskLink"
-import { TicketStore } from "./TicketStore"
+import { TicketStore, type TicketImportPlan } from "./TicketStore"
+import { decodeTicketArchive, decodeTicketMarkdown, encodeTicketArchive } from "./TicketArchive"
+import { readTicketTransferFile, writeTicketExport } from "./TicketTransferFiles"
 
 const menuContextSchema = z.object({ preserveFocus: z.boolean() }).strict()
 
@@ -18,6 +32,9 @@ export class TicketPanel implements vscode.Disposable {
 	private ready = false
 	private pendingTarget?: TicketTarget
 	private readonly maintenance = new AbortController()
+	private transfers = new AbortController()
+	private transferBusy = false
+	private pendingImport?: { token: string; project: string; plan: TicketImportPlan; createdAt: number }
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -73,6 +90,7 @@ export class TicketPanel implements vscode.Disposable {
 
 	private async attach(panel: vscode.WebviewPanel) {
 		if (this.panel && this.panel !== panel) this.panel.dispose()
+		this.transfers = new AbortController()
 		panel.webview.options = { enableScripts: true, localResourceRoots: [this.context.extensionUri] }
 		this.panel = panel
 		this.ready = false
@@ -154,8 +172,16 @@ export class TicketPanel implements vscode.Disposable {
 				const watcher = vscode.workspace.createFileSystemWatcher(
 					new vscode.RelativePattern(vscode.Uri.file(store.directory), "**/*.md"),
 				)
-				const changed = () => this.post({ type: "ticketChanged", project: store.projectId })
-				watchers.push(watcher)
+				let refreshTimer: ReturnType<typeof setTimeout> | undefined
+				// One imported hierarchy can change hundreds of files; refresh the projection as a batch.
+				const changed = () => {
+					if (refreshTimer) clearTimeout(refreshTimer)
+					refreshTimer = setTimeout(() => {
+						refreshTimer = undefined
+						this.post({ type: "ticketChanged", project: store.projectId })
+					}, 150)
+				}
+				watchers.push(watcher, { dispose: () => clearTimeout(refreshTimer) })
 				watchers.push(watcher.onDidCreate(changed), watcher.onDidChange(changed), watcher.onDidDelete(changed))
 			}
 		} catch (error) {
@@ -166,11 +192,140 @@ export class TicketPanel implements vscode.Disposable {
 		for (const watcher of this.watchers) watcher.dispose()
 		this.watchers = watchers
 		this.projects = projects
+		if (this.pendingImport && !projects.has(this.pendingImport.project)) this.pendingImport = undefined
 		this.post({
 			type: "ticketProjects",
 			language: vscode.env.language,
 			projects: [...this.projects].map(([id, store]) => ({ id, name: path.basename(store.workspace) })),
 		})
+	}
+
+	/** Native dialogs own file selection; no webview-supplied path is ever opened. */
+	private async transfer(
+		operation: Extract<
+			z.infer<typeof ticketRequestSchema>["operation"],
+			{ action: "export" | "previewImport" | "import" | "discardImport" }
+		>,
+		project: string,
+		store: TicketStore,
+		panel: vscode.WebviewPanel,
+	): Promise<TicketTransferResult | undefined> {
+		if (operation.action === "discardImport") {
+			if (this.pendingImport?.token === operation.token && this.pendingImport.project === project)
+				this.pendingImport = undefined
+			return
+		}
+		if (this.transferBusy) throw new Error(t("common:ticketTransfer.busy"))
+		this.transferBusy = true
+		const controller = this.transfers
+		const current = () => {
+			controller.signal.throwIfAborted()
+			if (this.panel !== panel || this.disposed || this.projects.get(project) !== store)
+				throw new Error(t("common:ticketTransfer.projectChanged"))
+		}
+		try {
+			current()
+			if (operation.action === "export")
+				return await this.exportTickets(store, operation.input, current, controller.signal)
+			if (operation.action === "previewImport") {
+				// Keep at most one bounded preview in memory and release it on replacement or close.
+				this.pendingImport = undefined
+				const files = await vscode.window.showOpenDialog({
+					canSelectFiles: true,
+					canSelectFolders: false,
+					canSelectMany: true,
+					filters: { [t("common:ticketTransfer.files")]: ["zip", "md"] },
+					title: t("common:ticketTransfer.importTitle"),
+				})
+				current()
+				if (!files?.length) return { kind: "cancelled" }
+				if (files.length > 1000) throw new Error(t("common:ticketTransfer.tooManyFiles"))
+				const entries: TicketTransferEntry[] = []
+				let inputBytes = 0
+				let expandedBytes = 0
+				for (const file of files) {
+					current()
+					if (file.scheme !== "file") throw new Error(t("common:ticketTransfer.localFiles"))
+					const extension = path.extname(file.fsPath).toLowerCase()
+					if (extension !== ".zip" && extension !== ".md") throw new Error(t("common:ticketTransfer.files"))
+					const bytes = await readTicketTransferFile(
+						file.fsPath,
+						extension === ".md" ? 100000 : 20 * 1024 * 1024,
+						controller.signal,
+					)
+					inputBytes += bytes.byteLength
+					if (inputBytes > 20 * 1024 * 1024) throw new Error(t("common:ticketTransfer.tooLarge"))
+					const decoded =
+						extension === ".zip"
+							? await decodeTicketArchive(bytes, controller.signal)
+							: [
+									decodeTicketMarkdown(
+										path.basename(file.fsPath),
+										new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+									),
+								]
+					for (const entry of decoded) {
+						expandedBytes += Buffer.byteLength(entry.markdown, "utf8")
+						if (expandedBytes > 16 * 1024 * 1024 || entries.length >= 1000)
+							throw new Error(t("common:ticketTransfer.tooLarge"))
+						entries.push(entry)
+					}
+				}
+				current()
+				const plan = await store.previewImport(entries, controller.signal)
+				current()
+				const token = randomUUID()
+				this.pendingImport = { token, project, plan, createdAt: Date.now() }
+				return { kind: "importPreview", token, ...plan.preview }
+			}
+			const pending = this.pendingImport
+			if (
+				!pending ||
+				pending.project !== project ||
+				pending.token !== operation.token ||
+				Date.now() - pending.createdAt > 30 * 60 * 1000
+			)
+				throw new Error(t("common:ticketTransfer.expired"))
+			// A token is consumed before starting the commit so duplicate messages cannot import twice.
+			this.pendingImport = undefined
+			const imported = await store.importTickets(
+				pending.plan,
+				{ mode: operation.mode, resetStatus: operation.resetStatus },
+				controller.signal,
+			)
+			return { kind: "imported", ...imported }
+		} finally {
+			if (controller === this.transfers) this.transferBusy = false
+		}
+	}
+
+	private async exportTickets(
+		store: TicketStore,
+		input: TicketExportInput,
+		current: () => void,
+		signal: AbortSignal,
+	): Promise<TicketTransferResult> {
+		const entries = await store.exportTickets(input, signal)
+		if (!entries.length) throw new Error(t("common:ticketTransfer.emptyExport"))
+		const filename = `${path.basename(store.workspace).replace(/[^a-zA-Z0-9_-]/g, "-") || "alpha"}-tickets.zip`
+		const downloads = path.join(os.homedir(), "Downloads")
+		const defaultDirectory = await fs.stat(downloads).then(
+			(stat) => (stat.isDirectory() ? downloads : os.homedir()),
+			() => os.homedir(),
+		)
+		current()
+		const destination = await vscode.window.showSaveDialog({
+			defaultUri: vscode.Uri.file(path.join(defaultDirectory, filename)),
+			filters: { [t("common:ticketTransfer.archive")]: ["zip"] },
+			title: t("common:ticketTransfer.exportTitle"),
+		})
+		current()
+		if (!destination) return { kind: "cancelled" }
+		if (destination.scheme !== "file") throw new Error(t("common:ticketTransfer.localFiles"))
+		const bytes = await encodeTicketArchive(entries, signal)
+		current()
+		await writeTicketExport(destination.fsPath, bytes, signal)
+		return { kind: "exported", count: entries.length, fileName: path.basename(destination.fsPath) }
 	}
 
 	private async receive(message: unknown) {
@@ -207,6 +362,15 @@ export class TicketPanel implements vscode.Disposable {
 				case "list":
 					result.result = await store.list(operation.input)
 					break
+				case "overview":
+					result.result = await store.overview(this.transfers.signal)
+					break
+				case "export":
+				case "previewImport":
+				case "import":
+				case "discardImport":
+					result.result = await this.transfer(operation, project, store, panel)
+					break
 				case "read":
 					result.result = await store.read(operation.id)
 					break
@@ -240,7 +404,7 @@ export class TicketPanel implements vscode.Disposable {
 					break
 			}
 			this.post(result, panel)
-			if (["create", "update", "delete", "work"].includes(operation.action))
+			if (["create", "update", "delete", "work", "import"].includes(operation.action))
 				this.post({ type: "ticketChanged", project }, panel)
 		} catch (error) {
 			this.post(
@@ -255,6 +419,9 @@ export class TicketPanel implements vscode.Disposable {
 	}
 
 	private close() {
+		this.transfers.abort()
+		this.transferBusy = false
+		this.pendingImport = undefined
 		this.ready = false
 		this.pendingTarget = undefined
 		this.loadGeneration++

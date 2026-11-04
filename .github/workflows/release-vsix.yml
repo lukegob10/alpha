@@ -6,6 +6,11 @@ on:
         paths:
             - src/package.json
     workflow_dispatch:
+        inputs:
+            quality_evidence_run_id:
+                description: "Successful one-provider live smoke evidence review for this commit (required for agent changes)"
+                type: string
+                required: false
 
 permissions:
     contents: read
@@ -15,112 +20,112 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
-    release-vsix:
-        runs-on: windows-latest
-        timeout-minutes: 120
-
+    validation:
+        name: Release validation (${{ matrix.lane }})
+        needs: live-quality
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - { lane: static, os: windows-latest }
+                    - { lane: turns, os: windows-latest }
+                    - { lane: unit, os: windows-latest }
+                    - { lane: tooling, os: windows-latest }
+                    - { lane: offline, os: windows-latest }
+                    - { lane: host, os: windows-latest }
+                    - { lane: minimum, os: windows-latest }
+                    - { lane: extended, os: windows-latest }
+                    - { lane: confidence, os: windows-latest }
+                    - { lane: rendered, os: windows-latest }
+                    - { lane: stress, os: windows-latest }
+                    - { lane: outcomes, os: windows-latest }
+                    - { lane: command-approval, os: windows-latest }
         steps:
-            # Runner state is unavailable in job-level environment expressions.
             - name: Configure runner temporary directories
               shell: pwsh
               run: |
                   "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
                   "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
-
             - name: Checkout code
               uses: actions/checkout@v5
-              with:
-                  fetch-depth: 0
-
             - name: Setup Node.js and pnpm
               uses: ./.github/actions/setup-node-pnpm
-
             - name: Build workspace types
               run: pnpm --filter @alpha-code/types build
-
             - name: Add bundled ripgrep to PATH
               shell: pwsh
               working-directory: src
               run: node -e "console.log(require('node:path').dirname(require('@vscode/ripgrep').rgPath))" >> $env:GITHUB_PATH
-
-            - name: Run mechanical checks
-              run: pnpm harness run static
-
-            - name: Run extension and UI unit checks
-              run: pnpm harness run unit
-
-            - name: Run runner tooling checks
-              run: pnpm harness run tooling
-
-            - name: Run offline evaluator checks
-              run: pnpm harness run offline
-
+            - name: Run the complete existing validation lane
+              run: pnpm harness run "${{ matrix.lane }}"
             - name: Lint evaluator code
+              if: matrix.lane == 'offline'
               run: pnpm --filter @alpha-code/evals lint
-
             - name: Check evaluator types
+              if: matrix.lane == 'offline'
               run: pnpm --filter @alpha-code/evals check-types
-
-            - name: Run exact VS Code 1.138.0 release gate
-              run: pnpm harness run host
-
-            - name: Verify VS Code 1.125.0 minimum-host compatibility
-              run: pnpm --filter @alpha-code/vscode-e2e test:compatibility:1250:run
-
-            - name: Verify extended exact-host feature coverage
-              run: pnpm harness run extended
-
-            - name: Verify managed-agent contracts and certification
-              run: pnpm harness run confidence
-
-            - name: Verify rendered composer, transcript and input UI contracts
-              run: pnpm harness run rendered
-
-            - name: Verify bounded lifecycle cancellation and managed budgets
-              run: pnpm harness run stress
-
-            - name: Verify independent scripted task outcomes
-              run: pnpm harness run outcomes
-
-            - name: Require current release evidence
-              if: always()
-              run: pnpm harness matrix --output artifacts/harness/matrix-release.json --require static --require offline --require host --require extended --require confidence --require outcomes --require rendered --require stress
-
-            - name: Verify command auto-approval and outside-path review
-              run: pnpm --filter @alpha-code/vscode-e2e test:command-paths:1380:run
-
-            - name: Retain release validation evidence
-              if: always()
+            - name: Bind the job to its source and harness evidence
+              if: ${{ always() }}
+              run: pnpm release:evidence record-validation --lane "${{ matrix.lane }}" --output "artifacts/harness/release-validation-${{ matrix.lane }}.json"
+            - name: Retain validation evidence and failure diagnostics
+              if: ${{ always() }}
               uses: actions/upload-artifact@v6
               with:
-                  name: release-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-                  path: |
-                      artifacts/harness/
-                      artifacts/composer-ui/
-                      artifacts/transcript-lifecycle-ui/
-                      artifacts/request-user-input-ui/
-                      ${{ runner.temp }}/alpha-rendered-probe-*/evidence/**
-                      ${{ runner.temp }}/alpha-harness-host-probes-*/evidence-*/**
-                      ${{ runner.temp }}/alpha-harness-host-probes-*/ui-probe-*.json
-                      artifacts/core-confidence/*/gate-result.json
-                      artifacts/core-confidence/*/prepare-*.json
-                      artifacts/core-confidence/*/certification-*.json
-                      artifacts/core-confidence/*/*-result.json
-                      ${{ runner.temp }}/alpha-core-confidence/*/runs/**
-                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/report-*.json
-                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/attempt-*/evidence-index.json
-                      ${{ runner.temp }}/alpha-harness-outcomes/*/*/host-evidence/**
-                      ${{ runner.temp }}/alpha-vscode-e2e-*/artifacts/**
-                  retention-days: 14
+                  name: release-validation-${{ matrix.lane }}-${{ github.run_attempt }}
+                  path: artifacts/harness/
                   if-no-files-found: error
+                  retention-days: 14
+
+    live-quality:
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
+        permissions:
+            contents: read
+            actions: read
+        env:
+            QUALITY_EVIDENCE_RUN_ID: ${{ inputs.quality_evidence_run_id }}
+        steps:
+            - uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+            - uses: ./.github/actions/setup-node-pnpm
+            - name: Determine whether agent behavior changed since the last release
+              id: policy
+              run: node scripts/harness/release-quality.mjs policy --candidate "$GITHUB_SHA"
+            - name: Require a successful live smoke review for the candidate commit
+              if: steps.policy.outputs.required != 'false'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: node scripts/harness/release-quality.mjs verify-run --run-id "$QUALITY_EVIDENCE_RUN_ID" --candidate "$GITHUB_SHA"
+            - name: Download the reviewed live smoke evidence
+              if: steps.policy.outputs.required != 'false'
+              uses: actions/download-artifact@v7
+              with:
+                  name: live-quality-evidence-${{ github.sha }}
+                  path: ${{ runner.temp }}/live-quality-evidence
+                  run-id: ${{ inputs.quality_evidence_run_id }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+            - name: Recheck the reviewed real extension live task
+              if: steps.policy.outputs.required != 'false'
+              run: node scripts/harness/release-quality.mjs verify-smoke --input "$RUNNER_TEMP/live-quality-evidence/bundle.json" --candidate "$GITHUB_SHA" --output "$RUNNER_TEMP/live-quality-evidence/release-smoke.json"
+            - name: Retain the live smoke review
+              if: steps.policy.outputs.required != 'false'
+              uses: actions/upload-artifact@v6
+              with:
+                  name: live-quality-release-${{ github.sha }}
+                  path: ${{ runner.temp }}/live-quality-evidence/release-smoke.json
+                  if-no-files-found: error
+                  retention-days: 14
 
     package-vsix:
-        needs: release-vsix
+        needs: live-quality
         runs-on: ${{ matrix.os }}
         timeout-minutes: 45
         strategy:
             fail-fast: false
-            max-parallel: 3
+            max-parallel: 6
             matrix:
                 # Runner architectures verified on 2026-10-27:
                 # https://docs.github.com/en/actions/reference/runners/github-hosted-runners
@@ -131,7 +136,9 @@ jobs:
                     - os: windows-11-arm
                       target: win32-arm64
                       native_index: true
-                    - os: macos-14
+                    # macos-14 retires November 2; use GitHub's supported arm64 replacement.
+                    # https://github.blog/changelog/2026-10-01-github-actions-macos-14-runner-image-retirement/
+                    - os: macos-15
                       target: darwin-arm64
                       native_index: true
                     # LanceDB 0.27.2 has no Intel macOS native package; core features remain supported.
@@ -167,19 +174,65 @@ jobs:
               run: |
                   $version = node -p "require('./src/package.json').version"
                   $vsix = Get-Item -LiteralPath "bin/alpha-$version-${{ matrix.target }}.vsix" -ErrorAction Stop
-                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --target "${{ matrix.target }}"
+                  node scripts/verify-vsix-contents.mjs "$($vsix.FullName)" --check-source --require-clean-build --target "${{ matrix.target }}"
                   if ($LASTEXITCODE -ne 0) { throw "VSIX target verification failed." }
                   "path=$($vsix.FullName)" >> $env:GITHUB_OUTPUT
+
+            - name: Bind native package bytes and clean build provenance
+              run: pnpm release:evidence record-package --target "${{ matrix.target }}" --vsix "${{ steps.artifact.outputs.path }}" --output "${{ steps.artifact.outputs.path }}.evidence.json"
 
             - name: Retain verified target artifact
               uses: actions/upload-artifact@v6
               with:
-                  name: alpha-vsix-${{ matrix.target }}
-                  path: ${{ steps.artifact.outputs.path }}
+                  name: alpha-vsix-${{ matrix.target }}-${{ github.run_attempt }}
+                  path: |
+                      ${{ steps.artifact.outputs.path }}
+                      ${{ steps.artifact.outputs.path }}.evidence.json
                   if-no-files-found: error
 
+    # Always evaluate failures/skips; only a passing barrier can enable publication.
+    release-gate:
+        if: ${{ always() }}
+        needs: [live-quality, validation, package-vsix]
+        runs-on: ubuntu-latest
+        timeout-minutes: 15
+        steps:
+            - name: Checkout evidence contracts
+              uses: actions/checkout@v5
+            - name: Setup Node.js and pnpm
+              uses: ./.github/actions/setup-node-pnpm
+            - name: Build workspace types
+              run: pnpm --filter @alpha-code/types build
+            - name: Download this attempt's validation evidence
+              if: needs.validation.result == 'success'
+              uses: actions/download-artifact@v7
+              with:
+                  pattern: release-validation-*-${{ github.run_attempt }}
+                  path: artifacts/release-input/validation
+            - name: Download this attempt's native packages and receipts
+              if: needs.package-vsix.result == 'success'
+              uses: actions/download-artifact@v7
+              with:
+                  pattern: alpha-vsix-*-${{ github.run_attempt }}
+                  path: bin
+                  merge-multiple: true
+            - name: Require every job, harness contract and package identity
+              if: ${{ always() }}
+              env:
+                  RELEASE_NEEDS: ${{ toJSON(needs) }}
+              run: pnpm release:evidence aggregate --validation-root artifacts/release-input/validation --packages bin --output artifacts/harness/release-gate.json
+            - name: Retain the complete publication barrier
+              if: ${{ always() }}
+              uses: actions/upload-artifact@v6
+              with:
+                  name: release-barrier-${{ github.sha }}-${{ github.run_attempt }}
+                  path: artifacts/harness/release-gate.json
+                  if-no-files-found: error
+                  retention-days: 14
+
     publish-release:
-        needs: package-vsix
+        needs: [live-quality, validation, package-vsix, release-gate]
+        if: ${{ needs.live-quality.result == 'success' && needs.validation.result == 'success' && needs.package-vsix.result == 'success' && needs.release-gate.result == 'success' }}
         runs-on: windows-latest
         timeout-minutes: 15
         permissions:
@@ -210,9 +263,20 @@ jobs:
             - name: Download verified target artifacts
               uses: actions/download-artifact@v7
               with:
-                  pattern: alpha-vsix-*
+                  pattern: alpha-vsix-*-${{ github.run_attempt }}
                   path: bin
                   merge-multiple: true
+
+            - name: Download the passing publication barrier
+              uses: actions/download-artifact@v7
+              with:
+                  name: release-barrier-${{ github.sha }}-${{ github.run_attempt }}
+                  path: artifacts/harness
+
+            - name: Recheck publication source, attempt and package bytes
+              env:
+                  RELEASE_NEEDS: ${{ toJSON(needs) }}
+              run: node scripts/harness/release-evidence.mjs verify-publication --input artifacts/harness/release-gate.json --packages bin
 
             - name: Create GitHub release
               env:
