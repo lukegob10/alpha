@@ -702,14 +702,14 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation", async () => {
-		const announcementId = "november-2026-v3.2.22-simpler-settings-and-reliable-tools"
+		const announcementId = "november-2026-v3.2.23-profile-menu"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
 		await provider.contextProxy.setValue("telemetrySetting", "enabled")
 		await provider.contextProxy.setValue(
 			"lastShownAnnouncementId",
-			"november-2026-v3.2.21-command-and-history-reliability",
+			"november-2026-v3.2.22-simpler-settings-and-reliable-tools",
 		)
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
 

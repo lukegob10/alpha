@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.22",
+		version: "3.2.23",
 	},
 }))
 
@@ -37,37 +37,32 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.22" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.23" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.22")).toBeInTheDocument()
-		expect(
-			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
-		).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.23")).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.23 tidies the profile menu.")).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
 		renderAnnouncement()
 
-		expect(screen.getAllByRole("listitem")).toHaveLength(4)
+		expect(screen.getAllByRole("listitem")).toHaveLength(1)
 		expect(
-			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
-		).toBeInTheDocument()
-		expect(screen.getByText("Call skills with /skill-name without a separate command setup.")).toBeInTheDocument()
-		expect(screen.getByText("Work in Code or Plan with a focused English interface.")).toBeInTheDocument()
-		expect(
-			screen.getByText("Review changes in VS Code and configure more embedding models for code search."),
+			screen.getByText(
+				"Choose, search, pin, and edit saved profiles from a simpler menu with accessible labels.",
+			),
 		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
+		expect(screen.getByText("Alpha v3.2.23 tidies the profile menu.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.22 simplifies settings, skill access, and file review."),
-		).toBeInTheDocument()
-		expect(
-			screen.getByText("Keep parallel reads moving with ordered approvals and reliable task recovery."),
+			screen.getByText(
+				"Choose, search, pin, and edit saved profiles from a simpler menu with accessible labels.",
+			),
 		).toBeInTheDocument()
 	})
 })
