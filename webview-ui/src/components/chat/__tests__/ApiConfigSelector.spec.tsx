@@ -177,7 +177,7 @@ describe("ApiConfigSelector", () => {
 		expect(searchInput).toBeInTheDocument()
 	})
 
-	test("renders info blurb instead of search when 6 or fewer configs", () => {
+	test("renders profiles without an instruction header when 6 or fewer configs", () => {
 		render(<ApiConfigSelector {...defaultProps} />)
 
 		const trigger = screen.getByTestId("dropdown-trigger")
@@ -185,8 +185,8 @@ describe("ApiConfigSelector", () => {
 
 		// Should not have search input
 		expect(screen.queryByPlaceholderText("common:ui.search_placeholder")).not.toBeInTheDocument()
-		// Should have info blurb
-		expect(screen.getByText("prompts:apiConfiguration.select")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: /Config 2/ })).toBeInTheDocument()
+		expect(screen.queryByText("prompts:apiConfiguration.select")).not.toBeInTheDocument()
 	})
 
 	test("filters configs based on search input", async () => {
@@ -393,7 +393,7 @@ describe("ApiConfigSelector", () => {
 		})
 	})
 
-	test("renders bottom bar with title and info icon when more than 6 configs", () => {
+	test("keeps search and settings without a footer title or info icon when more than 6 configs", () => {
 		const props = {
 			...defaultProps,
 			listApiConfigMeta: [
@@ -411,22 +411,22 @@ describe("ApiConfigSelector", () => {
 		const trigger = screen.getByTestId("dropdown-trigger")
 		fireEvent.click(trigger)
 
-		// Check for the title
-		expect(screen.getByText("prompts:apiConfiguration.title")).toBeInTheDocument()
+		expect(screen.getByPlaceholderText("common:ui.search_placeholder")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "chat:edit" })).toBeInTheDocument()
+		expect(screen.queryByRole("heading")).not.toBeInTheDocument()
 
-		// Check for the info icon
 		const infoIcon = screen.getByTestId("popover-content").querySelector(".codicon-info")
-		expect(infoIcon).toBeInTheDocument()
+		expect(infoIcon).not.toBeInTheDocument()
 	})
 
-	test("renders bottom bar with title but no info icon when 6 or fewer configs", () => {
+	test("renders settings without a footer title or info icon when 6 or fewer configs", () => {
 		render(<ApiConfigSelector {...defaultProps} />)
 
 		const trigger = screen.getByTestId("dropdown-trigger")
 		fireEvent.click(trigger)
 
-		// Check for the title
-		expect(screen.getByText("prompts:apiConfiguration.title")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "chat:edit" })).toBeInTheDocument()
+		expect(screen.queryByRole("heading")).not.toBeInTheDocument()
 
 		// Check that info icon is not present
 		const infoIcon = screen.getByTestId("popover-content").querySelector(".codicon-info")
@@ -444,10 +444,10 @@ describe("ApiConfigSelector", () => {
 		const trigger = screen.getByTestId("dropdown-trigger")
 		fireEvent.click(trigger)
 
-		// Should render info blurb instead of search for empty list
 		expect(screen.queryByPlaceholderText("common:ui.search_placeholder")).not.toBeInTheDocument()
-		expect(screen.getByText("prompts:apiConfiguration.select")).toBeInTheDocument()
-		expect(screen.getByText("prompts:apiConfiguration.title")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "chat:edit" })).toBeInTheDocument()
+		expect(screen.queryByRole("heading")).not.toBeInTheDocument()
+		expect(screen.queryByText("prompts:apiConfiguration.select")).not.toBeInTheDocument()
 	})
 
 	test("maintains search value when pinning/unpinning", async () => {

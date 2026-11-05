@@ -1155,7 +1155,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.22-simpler-settings-and-reliable-tools"
+	public readonly latestAnnouncementId = "november-2026-v3.2.23-profile-menu"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

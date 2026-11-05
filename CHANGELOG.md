@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.23
+
+### Patch Changes
+
+- Simplify the profile selector by removing internal instruction labels and redundant footer text, while preserving search, pinning, settings access, and an accessible dropdown name.
+- Update the in-app release announcement for Alpha 3.2.23.
+
 ## 3.2.22
 
 ### Patch Changes

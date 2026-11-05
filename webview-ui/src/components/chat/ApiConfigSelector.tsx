@@ -172,6 +172,7 @@ export const ApiConfigSelector = ({
 				</PopoverTrigger>
 			</StandardTooltip>
 			<PopoverContent
+				aria-label={title}
 				align="start"
 				sideOffset={4}
 				container={portalContainer}
@@ -180,8 +181,7 @@ export const ApiConfigSelector = ({
 				}}
 				className="p-0 overflow-hidden w-[300px]">
 				<div className="flex flex-col w-full">
-					{/* Search input or info blurb */}
-					{listApiConfigMeta.length > 6 ? (
+					{listApiConfigMeta.length > 6 && (
 						<div className="relative p-2 border-b border-vscode-dropdown-border">
 							<input
 								aria-label={t("common:ui.search_placeholder")}
@@ -201,12 +201,6 @@ export const ApiConfigSelector = ({
 									/>
 								</div>
 							)}
-						</div>
-					) : (
-						<div className="p-3 border-b border-vscode-dropdown-border">
-							<p className="text-xs text-vscode-descriptionForeground m-0">
-								{t("prompts:apiConfiguration.select")}
-							</p>
 						</div>
 					)}
 
@@ -236,28 +230,13 @@ export const ApiConfigSelector = ({
 						</div>
 					)}
 
-					{/* Bottom bar with buttons on left and title on right */}
-					<div className="flex flex-row items-center justify-between px-2 py-2 border-t border-vscode-dropdown-border">
-						<div>
-							<IconButton
-								iconClass="codicon-settings-gear"
-								title={t("chat:edit")}
-								onClick={handleEditClick}
-								tooltip={false}
-							/>
-						</div>
-
-						{/* Info icon and title on the right with matching spacing */}
-						<div className="flex items-center gap-1 pr-1">
-							{listApiConfigMeta.length > 6 && (
-								<StandardTooltip content={t("prompts:apiConfiguration.select")}>
-									<span className="codicon codicon-info text-xs text-vscode-descriptionForeground opacity-70 hover:opacity-100 cursor-help" />
-								</StandardTooltip>
-							)}
-							<h4 className="m-0 font-medium text-sm text-vscode-descriptionForeground">
-								{t("prompts:apiConfiguration.title")}
-							</h4>
-						</div>
+					<div className="flex items-center px-2 py-2 border-t border-vscode-dropdown-border">
+						<IconButton
+							iconClass="codicon-settings-gear"
+							title={t("chat:edit")}
+							onClick={handleEditClick}
+							tooltip={false}
+						/>
 					</div>
 				</div>
 			</PopoverContent>
