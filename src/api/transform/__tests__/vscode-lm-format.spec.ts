@@ -134,7 +134,11 @@ describe("convertToVsCodeLmMessages", () => {
 
 		const result = convertToVsCodeLmMessages(messages)
 		expect(result.map(({ role }) => role)).toEqual(["user", "assistant", "user"])
-		expect(result[2].content).toEqual([new vscode.LanguageModelTextPart("Hook context")])
+		expect(result[2].content).toEqual([
+			new vscode.LanguageModelTextPart(
+				'<developer_context source="lifecycle_hook" event="PostToolUse">\nHook context\n</developer_context>',
+			),
+		])
 	})
 
 	afterEach(() => {

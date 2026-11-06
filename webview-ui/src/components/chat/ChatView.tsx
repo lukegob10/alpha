@@ -398,6 +398,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const conversationPromptMessages = useStableConversationPromptMessages(activeMessages)
 	const projectedMessageQueue = useMemo(() => (isDraftView ? [] : messageQueue), [isDraftView, messageQueue])
 	const visibleCurrentTaskId = isDraftView ? undefined : currentTaskId
+	const isTaskTranscriptPending = Boolean(visibleCurrentTaskId) && activeMessages.length === 0
 	const visibleLiveTask = visibleCurrentTaskId ? liveTasksById?.[visibleCurrentTaskId] : undefined
 	const hasHostLifecycleMetadata = visibleLiveTask?.hasPendingToolCalls !== undefined
 	const visibleTurnId = hasHostLifecycleMetadata
@@ -1520,6 +1521,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			const planCommand = parsePlanModeCommand(text)
 
 			if (!text && images.length === 0) {
+				return false
+			}
+			// Restoration publishes task identity before its transcript. Preserve the
+			// draft until that chat's input boundary is available for routing.
+			if (visibleCurrentTaskId && messagesRef.current.length === 0) {
 				return false
 			}
 			if (pendingResumeRequestRef.current || pendingEditRequestRef.current) {
@@ -3904,6 +3910,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						setInputValue={setInputValue}
 						sendingDisabled={
 							isProfileDisabled ||
+							isTaskTranscriptPending ||
 							Boolean(visibleNewTaskSubmission) ||
 							isCompletedTaskResumePending ||
 							isCondensing ||

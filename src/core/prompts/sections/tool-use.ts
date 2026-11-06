@@ -57,11 +57,11 @@ Batch independent reads and searches when their results do not affect one anothe
 
 TOOL USE
 
-Use the provider-native tool-calling mechanism for non-mutating repository inspection only. The Plan tool surface is limited to reads, listing, search, host-classified inspection or verification commands, questions, and managed read-only agent coordination when its tools are supplied for this turn.
+Use the provider-native tool-calling mechanism for non-mutating repository inspection only. The Plan tool surface is limited to reads, listing, search, skill discovery and instruction loading, host-classified inspection or verification commands, questions, and managed read-only agent coordination when its tools are supplied for this turn.
 
 ${progressGuidance}
 
-exec_command accepts only host-classified inspection or source-non-mutating verification commands in a workspace-confined working directory; never use command composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, todo, or skill tool from Plan mode.`
+exec_command accepts only host-classified inspection or source-non-mutating verification commands in a workspace-confined working directory; never use command composition, expansion, redirection, mutation/fix/update flags, watchers, arbitrary scripts, package installation, or output/temp/cache/config/plugin overrides. Permitted verification may execute trusted repository test/config code and create ordinary tool caches. Loading a skill never grants write authority; follow only its non-mutating instructions. Managed agents must be Explore or Review children with read-only objectives. Never steer, relaunch, or otherwise advance a retained Worker. Never call a mutation, MCP, browser, legacy task, mode-switch, or todo tool from Plan mode.`
 	}
 
 	const rootDelegationGuidance =

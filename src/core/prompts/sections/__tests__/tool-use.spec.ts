@@ -41,6 +41,13 @@ describe("getSharedToolUseSection", () => {
 		expect(capabilities).toContain("only when agent lifecycle controls are supplied for this turn")
 	})
 
+	it("describes Plan skill loading without granting skill-directed mutations", () => {
+		const section = getSharedToolUseSection(undefined, false, false, undefined, true)
+		expect(section).toContain("skill discovery and instruction loading")
+		expect(section).toContain("Loading a skill never grants write authority")
+		expect(section).not.toContain("todo, or skill tool")
+	})
+
 	it("keeps primary delegation guidance bounded to entry points", () => {
 		const section = getSharedToolUseSection()
 

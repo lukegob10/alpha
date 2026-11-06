@@ -151,6 +151,17 @@ describe("SkillsManager", () => {
 	let skillsManager: SkillsManager
 	let mockProvider: Partial<AlphaProvider>
 
+	it("retains the captured instruction byte budget for child instruction snapshots", async () => {
+		const discovery = { projectRootMarkers: [".git"], projectDocMaxBytes: 64_000 }
+		const manager = new SkillsManager(mockProvider as AlphaProvider, PROJECT_DIR, {
+			projectInstructionDiscovery: discovery,
+		})
+		discovery.projectDocMaxBytes = 1
+		expect(manager.getProjectInstructionDiscoveryOptions().projectDocMaxBytes).toBe(64_000)
+		expect(Object.isFrozen(manager.getProjectInstructionDiscoveryOptions())).toBe(true)
+		await manager.dispose()
+	})
+
 	// Pre-computed paths for tests
 	const globalSkillsDir = p(GLOBAL_ALPHA_DIR, "skills")
 	const globalSkillsCodeDir = p(GLOBAL_ALPHA_DIR, "skills-code")

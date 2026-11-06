@@ -1,10 +1,18 @@
 import * as path from "node:path"
 import * as vscode from "vscode"
+import { t } from "../../i18n"
 import type { LifecycleHookTarget } from "./LifecycleHookTargets"
 
 export const DEFAULT_HOOK_TIMEOUT_MS = 600_000
 export const MAX_HOOK_TIMEOUT_MS = 2_147_483_647
-const MAX_HOOKS = 8
+// Four supported configuration spellings can each contain eight groups of eight handlers.
+export const MAX_LIFECYCLE_HOOK_HANDLERS = 256
+
+export function assertLifecycleHookHandlerLimit(event: LifecycleHookTarget, count: number): void {
+	if (count > MAX_LIFECYCLE_HOOK_HANDLERS) {
+		throw new RangeError(t("common:lifecycleHooks.handlerLimit", { event, limit: MAX_LIFECYCLE_HOOK_HANDLERS }))
+	}
+}
 
 export interface CompletionHookCommand {
 	command: string
@@ -154,12 +162,12 @@ export function parseLifecycleHookConfig(raw: unknown): CompletionHookConfig {
 				if (group && !validMatcher(group.matcher)) continue
 				for (const candidate of group ? (group.hooks as unknown[]) : [item]) {
 					const handler = parseHandler(candidate, event, group?.matcher as string | undefined)
-					if (handler) handlers.push(handler)
-					if (handlers.length === MAX_HOOKS) break
+					if (handler) {
+						assertLifecycleHookHandlerLimit(event, handlers.length + 1)
+						handlers.push(handler)
+					}
 				}
-				if (handlers.length === MAX_HOOKS) break
 			}
-			if (handlers.length === MAX_HOOKS) break
 		}
 		config[key] = handlers
 	}

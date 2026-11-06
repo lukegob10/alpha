@@ -70,6 +70,18 @@ bounded execution and native approval protections; workspace configuration canno
 checks record advisory evidence rather than requiring an exact passing command before completion.
 To accept completion, exit successfully with no output or `{}`; `decision: "allow"` is not a supported Stop output.
 
+All matching handlers run in configuration order through a four-worker queue, with at most 256 configured handlers per
+event; larger configurations fail visibly. Cleanup timeouts apply to each handler independently. `Interrupt` precedes
+the canonical interrupted-turn record, and `SessionEnd` receives a separate allowance. A new fork's first activation
+reports `SessionStart` source `fork`; later cold restores report `resume`. These contracts were checked against Codex CLI
+[`be765f1`](https://github.com/openai/codex/tree/be765f1adeecace0a2aef0700b1d13b0a2043a9f). Alpha retains its bounded
+queue and short `Interrupt` timeout. Providers without a developer role receive hook context in its original position
+with an explicit origin label.
+
+Project instructions share a 32 KiB UTF-8 budget. Set `alpha.projectDocMaxBytes` in user settings to change it, up to
+1 MiB; `0` disables project instruction files. Alpha warns when it truncates a file or skips deeper guidance. Workspace
+settings cannot widen this budget. Plan can discover and load skills while its tools continue to enforce read-only work.
+
 Default Windows keyboard shortcuts:
 
 | Shortcut                                | Action                               | Scope                                                |

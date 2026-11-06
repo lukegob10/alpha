@@ -70,6 +70,8 @@ export const historyItemSchema = z.object({
 	archived: z.boolean().optional(),
 	/** Source conversation identity; a fork has its own lifecycle, mailbox, and accounting. */
 	forkedFromId: z.string().min(1).max(64).optional(),
+	/** False only for a newly created fork awaiting its first activation; absent legacy records resume normally. */
+	forkSessionStarted: z.boolean().optional(),
 	/** A fork may share the source's managed worktree without claiming ownership of that directory. */
 	orchestrationWorkspaceTaskId: z
 		.string()

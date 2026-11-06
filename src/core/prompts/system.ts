@@ -101,6 +101,8 @@ export interface SystemPromptFragments {
 	systemSuffix: string
 	/** Ordered request messages; concatenating content gives the legacy prompt exactly. */
 	instructionParts: readonly SystemPromptInstructionPart[]
+	/** Host diagnostics; never promoted into model instructions. */
+	warnings?: readonly string[]
 }
 
 export function renderSystemPromptFragments(fragments: SystemPromptFragments): string {
@@ -253,15 +255,14 @@ async function generatePrompt(
 	const hasMcpServers = mcpHub && mcpHub.getServers().length > 0
 	const shouldIncludeMcp = hasMcpGroup && hasMcpServers
 
+	// Codex be765f1 Plan permits non-mutating skill discovery; Alpha's tool policy retains write restrictions.
 	const [modesSection, skillsSection] = subagentRole
 		? ["", { catalog: "", guidance: settings?.subagentHasInheritedSkills ? getSkillUsageGuidance() : "" }]
 		: await Promise.all([
 				getModesSection(context, capturedModePrompts),
-				isPlanMode
-					? Promise.resolve({ catalog: "", guidance: "" })
-					: getSkillsSectionParts(skillsManager, mode, {
-							contextWindow: settings?.skillCatalogContextWindow,
-						}),
+				getSkillsSectionParts(skillsManager, mode, {
+					contextWindow: settings?.skillCatalogContextWindow,
+				}),
 			])
 
 	const resolvedCodexPrompt = resolveCodexModelPrompt(modelId)
@@ -300,6 +301,7 @@ async function generatePrompt(
 	const hasUserDefinedRole = isCustomMode(mode, customModeConfigs) || Boolean(promptComponent?.roleDefinition)
 	const effectiveBaseInstructions = isPlanMode && baseInstructions === PLAN_MODE_INSTRUCTIONS ? "" : baseInstructions
 	const systemEnvironmentSection = getAlphaEnvironmentFactsSection(cwd, settings?.commandShell)
+	const warnings: string[] = []
 	const customInstructionParts =
 		subagentRole && settings?.subagentUsesFrozenContext
 			? []
@@ -312,6 +314,7 @@ async function generatePrompt(
 						language: language ?? formatLanguage(vscode.env.language),
 						alphaIgnoreInstructions,
 						settings,
+						onWarning: (warning) => warnings.push(warning),
 						modeInstructionAuthority:
 							isCustomMode(mode, customModeConfigs) || promptComponent?.customInstructions
 								? "user"
@@ -417,6 +420,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 		systemPrefix,
 		userContext,
 		systemSuffix,
+		...(warnings.length ? { warnings } : {}),
 		instructionParts: [
 			codexModelInstructionPart,
 			...codexRuntimeInstructionParts,

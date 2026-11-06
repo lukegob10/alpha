@@ -37,6 +37,50 @@ const routes: Array<{ name: string; create(): ApiHandler }> = [
 ]
 
 describe("Gemini stream fidelity", () => {
+	it.each(routes)("retains $name startup hook provenance alongside project instructions", async ({ create }) => {
+		generateContentStream.mockResolvedValue({
+			async *[Symbol.asyncIterator]() {
+				yield { candidates: [{ content: { parts: [{ text: "Done" }] }, finishReason: "STOP" }] }
+			},
+		})
+		const history = [
+			{
+				role: "user" as const,
+				input_origin: "agent",
+				content: "Startup hook guidance",
+				hook_prompt: {
+					event: "SessionStart",
+					fragments: [{ hook_run_id: "startup", text: "Startup hook guidance" }],
+				},
+			},
+			{ role: "user" as const, content: "Human request" },
+		]
+		const before = structuredClone(history)
+		for await (const _chunk of create().createMessage("System", history, {
+			taskId: "startup-hook-wire-fixture",
+			instructionFragments: [
+				{ role: "developer", origin: "system", content: "System" },
+				{ role: "user", origin: "agent-rules", content: "Project instructions" },
+			],
+		})) {
+			/* Drain the captured wire request. */
+		}
+		const request = generateContentStream.mock.calls[0]![0]
+		expect(request.contents).toEqual([
+			{ role: "user", parts: [{ text: "Project instructions" }] },
+			{
+				role: "user",
+				parts: [
+					{
+						text: '<developer_context source="lifecycle_hook" event="SessionStart">\nStartup hook guidance\n</developer_context>',
+					},
+				],
+			},
+			{ role: "user", parts: [{ text: "Human request" }] },
+		])
+		expect(history).toEqual(before)
+	})
+
 	it.each(routes)(
 		"keeps $name SDK total timeouts out of a progressing inactivity-controlled stream",
 		async ({ create }) => {

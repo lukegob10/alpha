@@ -827,6 +827,8 @@ export class TaskHistoryStore {
 						...(options.preserveMode && current.item.mode !== undefined ? { mode: current.item.mode } : {}),
 						displayName: current.item.displayName,
 						generatedTitle: current.item.generatedTitle,
+						// A stale metadata projection cannot make a consumed fork start pending again.
+						...(current.item.forkSessionStarted === true ? { forkSessionStarted: true } : {}),
 					}
 				}
 				return merged

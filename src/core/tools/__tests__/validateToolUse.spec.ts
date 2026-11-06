@@ -77,6 +77,8 @@ describe("mode-validator", () => {
 					expect(isToolAllowedForMode(tool, architectMode, [])).toBe(true)
 				})
 				expect(isToolAllowedForMode("request_user_input", architectMode, [])).toBe(true)
+				expect(isToolAllowedForMode("skill", architectMode, [], undefined, { action: "list" })).toBe(true)
+				expect(isToolAllowedForMode("skill", architectMode, [], undefined, { skill: "review" })).toBe(true)
 				expect(isToolAllowedForMode("ask_followup_question", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("attempt_completion", architectMode, [])).toBe(false)
 				expect(isToolAllowedForMode("apply_patch", architectMode, [])).toBe(false)

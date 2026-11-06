@@ -1,7 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import type { ResponseCreateParamsBase } from "openai/resources/responses/responses"
-import { getTokenProvider } from "@aws/bedrock-token-generator"
-import { fromIni, fromNodeProviderChain } from "@aws-sdk/credential-providers"
+import type { getTokenProvider } from "@aws/bedrock-token-generator"
 
 import {
 	bedrockDefaultModelId,
@@ -38,6 +37,11 @@ type BedrockConnection = {
 	requestModel: string
 	fetch: typeof fetch
 }
+
+type BedrockCredentialDependencies = [
+	typeof import("@aws/bedrock-token-generator"),
+	typeof import("@aws-sdk/credential-providers"),
+]
 
 function resolveInferenceProfile(
 	selectedModel: string,
@@ -105,6 +109,7 @@ export function createBedrockFetch(options: ApiHandlerOptions, region: string): 
 		}
 	}
 	let provideToken: ReturnType<typeof getTokenProvider> | undefined
+	let credentialDependencies: Promise<BedrockCredentialDependencies> | undefined
 	return async (input, init) => {
 		const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
 		const metadata = signal ? { signal } : undefined
@@ -112,21 +117,37 @@ export function createBedrockFetch(options: ApiHandlerOptions, region: string): 
 		let token = apiKey
 		if (!token) {
 			if (!provideToken) {
-				// Reuse official AWS credential providers and mint a fresh short-lived token.
-				// Construct credential providers only on invocation, never in settings.
-				// AWS credentials providers have no AbortSignal API; bound their network
-				// attempts and race the wait against the SDK's request signal below.
-				const clientConfig = {
-					region,
-					maxAttempts: 1,
-					requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 },
+				credentialDependencies ??= Promise.all([
+					import("@aws/bedrock-token-generator"),
+					import("@aws-sdk/credential-providers"),
+				]).catch((error: unknown) => {
+					credentialDependencies = undefined
+					throw error
+				})
+				const [{ getTokenProvider }, { fromIni, fromNodeProviderChain }] = await awaitSingleCompletion(
+					credentialDependencies,
+					metadata,
+				)
+				throwIfSingleCompletionAborted(metadata)
+				// Imports share module initialization. Recheck after waiting so concurrent
+				// first requests also share this connection's credential provider.
+				if (!provideToken) {
+					// Reuse official AWS credential providers and mint a fresh short-lived token.
+					// Construct credential providers only on invocation, never in settings.
+					// AWS credentials providers have no AbortSignal API; bound their network
+					// attempts and race the wait against the SDK's request signal below.
+					const clientConfig = {
+						region,
+						maxAttempts: 1,
+						requestHandler: { connectionTimeout: 5_000, requestTimeout: 10_000 },
+					}
+					const credentials = profile
+						? fromIni({ profile, clientConfig })
+						: accessKeyId && secretAccessKey
+							? { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) }
+							: fromNodeProviderChain({ clientConfig, timeout: 1_000, maxRetries: 0 })
+					provideToken = getTokenProvider({ region, credentials })
 				}
-				const credentials = profile
-					? fromIni({ profile, clientConfig })
-					: accessKeyId && secretAccessKey
-						? { accessKeyId, secretAccessKey, ...(sessionToken ? { sessionToken } : {}) }
-						: fromNodeProviderChain({ clientConfig, timeout: 1_000, maxRetries: 0 })
-				provideToken = getTokenProvider({ region, credentials })
 			}
 			token = await awaitSingleCompletion(provideToken(), metadata)
 		}

@@ -5,12 +5,14 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import {
+	AlphaCodeEventName,
 	agentLifecycleEventSchema,
 	type AgentLifecycleEvent,
 	type AgentLifecycleSnapshot,
 	type GlobalState,
 	type HistoryItem,
 	type ProviderSettings,
+	type SubagentGroupState,
 } from "@alpha-code/types"
 import { TelemetryService } from "@alpha-code/telemetry"
 
@@ -2573,6 +2575,145 @@ describe("Task persistence", () => {
 	// ── saveAlphaMessages ────────────────────────────────────────────────
 
 	describe("saveAlphaMessages", () => {
+		it("commits a later group durably while an earlier history publication remains pending", async () => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "settle subagent results",
+				startTask: false,
+			})
+			let publicationEntered!: () => void
+			const publicationStarted = new Promise<void>((resolve) => (publicationEntered = resolve))
+			let releasePublication!: () => void
+			const publicationPending = new Promise<void>((resolve) => (releasePublication = resolve))
+			const publishHistory = vi.fn(async () => {
+				publicationEntered()
+				await publicationPending
+			})
+			mockProvider.publishTaskHistoryUpdate = publishHistory
+			vi.mocked(mockProvider.updateTaskHistory).mockImplementation(async (_item, options = {}) => {
+				if (options.broadcast !== false) await publishHistory()
+				return []
+			})
+			let releaseGroupWrite!: () => void
+			const groupWritePending = new Promise<void>((resolve) => (releaseGroupWrite = resolve))
+			mockSaveTaskMessages.mockResolvedValueOnce(undefined).mockImplementationOnce(() => groupWritePending)
+			const group: SubagentGroupState = {
+				groupId: "settled-group",
+				parentTaskId: task.taskId,
+				createdAt: 1,
+				status: "completed",
+				agents: [],
+			}
+			const message = vi.fn()
+			task.on(AlphaCodeEventName.Message, message)
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+			let firstSettled = false
+			const first = task["saveAlphaMessages"]().then((saved) => {
+				firstSettled = true
+				return saved
+			})
+			let groupCommitted = false
+			let groupSave: Promise<void> | undefined
+			try {
+				await publicationStarted
+				groupSave = task.upsertSubagentGroup(group, undefined, { deferPublication: true }).then(() => {
+					groupCommitted = true
+				})
+				await vi.advanceTimersByTimeAsync(0)
+				expect(mockSaveTaskMessages).toHaveBeenCalledTimes(2)
+				expect(groupCommitted).toBe(false)
+				expect(task.alphaMessages.some((message) => message.subagentGroup?.groupId === group.groupId)).toBe(
+					false,
+				)
+				releaseGroupWrite()
+				await vi.advanceTimersByTimeAsync(0)
+				expect(groupCommitted).toBe(true)
+				expect(firstSettled).toBe(false)
+				expect(
+					task.alphaMessages.find((message) => message.subagentGroup?.groupId === group.groupId)
+						?.subagentGroup,
+				).toEqual(group)
+				expect(publishHistory).toHaveBeenCalledOnce()
+				expect(message).toHaveBeenCalledExactlyOnceWith({
+					action: "created",
+					message: expect.objectContaining({ subagentGroup: group }),
+				})
+			} finally {
+				releaseGroupWrite()
+				releasePublication()
+				await Promise.all([first, groupSave])
+				vi.useRealTimers()
+			}
+		})
+
+		it.each(["resolves", "rejects"] as const)(
+			"keeps the latest group when an earlier history publication %s after its durable save",
+			async (outcome) => {
+				const task = new Task({
+					provider: mockProvider,
+					apiConfiguration: mockApiConfig,
+					task: "preserve settled subagent state",
+					startTask: false,
+				})
+				const group: SubagentGroupState = {
+					groupId: "concurrent-group",
+					parentTaskId: task.taskId,
+					createdAt: 1,
+					status: "running",
+					agents: [],
+				}
+				let publicationEntered!: () => void
+				const publicationStarted = new Promise<void>((resolve) => (publicationEntered = resolve))
+				let releasePublication!: () => void
+				let rejectPublication!: (error: Error) => void
+				const publicationPending = new Promise<void>((resolve, reject) => {
+					releasePublication = resolve
+					rejectPublication = reject
+				})
+				mockProvider.publishTaskHistoryUpdate = vi.fn(async () => {
+					publicationEntered()
+					await publicationPending
+				})
+				mockProvider.postTaskMessageToWebview = vi.fn().mockResolvedValue(undefined)
+				const message = vi.fn()
+				task.on(AlphaCodeEventName.Message, message)
+				const first = task.upsertSubagentGroup(group)
+				const error = vi.spyOn(console, "error").mockImplementation(() => undefined)
+				try {
+					await publicationStarted
+					const completed = { ...group, status: "completed" as const }
+					await task.upsertSubagentGroup(completed, undefined, { deferPublication: true })
+					const otherGroup = { ...group, groupId: "another-group-at-the-same-timestamp" }
+					await task.upsertSubagentGroup(otherGroup, undefined, { deferPublication: true })
+					if (outcome === "rejects") rejectPublication(new Error("UI transport unavailable"))
+					else releasePublication()
+					await first
+					expect(mockSaveTaskMessages).toHaveBeenCalledTimes(3)
+					expect(task.alphaMessages[0]?.subagentGroup).toEqual(completed)
+					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledWith(
+						"messageCreated",
+						task.taskId,
+						expect.objectContaining({ subagentGroup: completed }),
+					)
+					expect(
+						message.mock.calls.map(([event]) => ({
+							groupId: event.message.subagentGroup.groupId,
+							status: event.message.subagentGroup.status,
+						})),
+					).toEqual([
+						{ groupId: group.groupId, status: "completed" },
+						{ groupId: otherGroup.groupId, status: "running" },
+						{ groupId: group.groupId, status: "completed" },
+					])
+				} finally {
+					releasePublication()
+					await first
+					error.mockRestore()
+				}
+			},
+		)
+
 		it("returns true on success", async () => {
 			mockSaveTaskMessages.mockResolvedValueOnce(undefined)
 

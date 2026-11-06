@@ -21,6 +21,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 
 import { defaultModeSlug } from "../../../shared/modes"
 import { experimentDefault } from "../../../shared/experiments"
+import type { SystemPromptFragments } from "../../prompts/system"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task, TaskOptions } from "../../task/Task"
 import type { McpHub } from "../../../services/mcp/McpHub"
@@ -33,6 +34,7 @@ import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
+import { Terminal } from "../../../integrations/terminal/Terminal"
 
 // These are individual provider unit cases. Host-wide sharing is exercised by
 // AlphaProvider.host-ownership.spec.ts with two simultaneously attached views.
@@ -245,11 +247,6 @@ vi.mock("../../../api", () => ({
 	buildApiHandler: vi.fn(),
 }))
 
-vi.mock("../../prompts/system", () => ({
-	SYSTEM_PROMPT: vi.fn().mockImplementation(async () => "mocked system prompt"),
-	codeMode: "code",
-}))
-
 vi.mock("../../../integrations/workspace/WorkspaceTracker", () => {
 	return {
 		default: vi.fn().mockImplementation(function () {
@@ -344,6 +341,14 @@ vi.mock("../../../shared/modes", () => ({
 
 vi.mock("../../prompts/system", () => ({
 	SYSTEM_PROMPT: vi.fn().mockResolvedValue("mocked system prompt"),
+	SYSTEM_PROMPT_FRAGMENTS: vi.fn().mockResolvedValue({
+		systemPrefix: "mocked system prompt",
+		userContext: "",
+		systemSuffix: "",
+		instructionParts: [],
+	}),
+	renderSystemPromptFragments: (fragments: SystemPromptFragments) =>
+		`${fragments.systemPrefix}${fragments.userContext}${fragments.systemSuffix}`,
 	codeMode: "code",
 }))
 
@@ -702,7 +707,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation", async () => {
-		const announcementId = "november-2026-v3.2.23-profile-menu"
+		const announcementId = "november-2026-v3.2.24-composer-recovery"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
@@ -726,6 +731,52 @@ describe("AlphaProvider", () => {
 		})
 
 		expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
+	})
+
+	test.each([
+		{
+			label: "persisted values",
+			settings: {
+				terminalShellIntegrationTimeout: 0,
+				terminalShellIntegrationDisabled: false,
+				terminalCommandDelay: 25,
+				terminalZshClearEolMark: false,
+				terminalZshOhMy: true,
+				terminalZshP10k: true,
+				terminalPowershellCounter: true,
+				terminalZdotdir: true,
+			},
+			expected: [0, false, 25, false, true, true, true, true],
+		},
+		{
+			label: "defaults",
+			settings: {},
+			expected: [Terminal.defaultShellIntegrationTimeout, true, 0, true, false, false, false, false],
+		},
+	])("hydrates terminal settings from $label without projecting extension state", async ({ settings, expected }) => {
+		await provider.contextProxy.setValues(settings)
+		const fullState = vi.spyOn(provider, "getState")
+		const terminalSetters = [
+			vi.spyOn(Terminal, "setShellIntegrationTimeout").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setShellIntegrationDisabled").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setCommandDelay").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setTerminalZshClearEolMark").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setTerminalZshOhMy").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setTerminalZshP10k").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setPowershellCounter").mockImplementation(() => undefined),
+			vi.spyOn(Terminal, "setTerminalZdotdir").mockImplementation(() => undefined),
+		]
+		try {
+			await provider.resolveWebviewView(mockWebviewView)
+			for (const [index, setter] of terminalSetters.entries()) {
+				expect(setter).toHaveBeenCalledExactlyOnceWith(expected[index])
+			}
+			expect(fullState).not.toHaveBeenCalled()
+			expect(provider.customModesManager.getCustomModes).not.toHaveBeenCalled()
+		} finally {
+			fullState.mockRestore()
+			for (const setter of terminalSetters) setter.mockRestore()
+		}
 	})
 
 	test("resolveWebviewView sets up webview correctly in development mode even if local server is not running", async () => {
@@ -1807,14 +1858,19 @@ describe("AlphaProvider", () => {
 	})
 
 	test("contains persisted terminal-setting hydration failures during view resolution", async () => {
-		vi.spyOn(provider, "getState").mockRejectedValueOnce(new Error("settings unavailable"))
+		const cachedSetting = vi.spyOn(provider.contextProxy, "getValue").mockImplementationOnce(() => {
+			throw new Error("settings unavailable")
+		})
 
-		await expect(provider.resolveWebviewView(mockWebviewView)).resolves.toBeUndefined()
-		await vi.waitFor(() =>
+		try {
+			await expect(provider.resolveWebviewView(mockWebviewView)).resolves.toBeUndefined()
 			expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
 				expect.stringContaining("Failed to apply persisted terminal settings: settings unavailable"),
-			),
-		)
+			)
+			expect(mockWebviewView.webview.html).toContain("<!DOCTYPE html>")
+		} finally {
+			cachedSetting.mockRestore()
+		}
 	})
 
 	test("clearTask aborts current task", async () => {
@@ -3002,13 +3058,13 @@ describe("AlphaProvider", () => {
 		})
 
 		test("handles errors gracefully", async () => {
-			// Mock SYSTEM_PROMPT to throw an error
-			const { SYSTEM_PROMPT } = await import("../../prompts/system")
-			vi.mocked(SYSTEM_PROMPT).mockRejectedValueOnce(new Error("Test error"))
+			const { SYSTEM_PROMPT_FRAGMENTS } = await import("../../prompts/system")
+			vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mockRejectedValueOnce(new Error("Test error"))
 
 			const messageHandler = (mockWebviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 			await messageHandler({ type: "getSystemPrompt", mode: "code" })
 
+			expect(SYSTEM_PROMPT_FRAGMENTS).toHaveBeenCalledOnce()
 			expect(vscode.window.showErrorMessage).toHaveBeenCalledWith("errors.get_system_prompt")
 		})
 

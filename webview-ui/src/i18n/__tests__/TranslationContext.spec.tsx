@@ -3,25 +3,23 @@ import { render } from "@/utils/test-utils"
 import TranslationProvider, { useAppTranslation } from "../TranslationContext"
 
 vi.mock("@/context/ExtensionStateContext", () => ({
-	useExtensionState: () => ({
+	useShellState: () => ({
 		language: "en",
 	}),
 }))
 
 vi.mock("react-i18next", () => ({
-	useTranslation: () => ({
-		i18n: {
-			t: (key: string, options?: Record<string, any>) => {
-				// Mock specific translations used in tests
-				if (key === "settings.autoApprove.title") return "Auto-Approve"
-				if (key === "notifications.error") {
-					return options?.message ? `Operation failed: ${options.message}` : "Operation failed"
-				}
-				return key
-			},
-			changeLanguage: vi.fn(),
-		},
-	}),
+	useTranslation: () => {
+		const t = (key: string, options?: Record<string, any>) => {
+			// Mock specific translations used in tests
+			if (key === "settings.autoApprove.title") return "Auto-Approve"
+			if (key === "notifications.error") {
+				return options?.message ? `Operation failed: ${options.message}` : "Operation failed"
+			}
+			return key
+		}
+		return { t, i18n: { t, changeLanguage: vi.fn() } }
+	},
 }))
 
 vi.mock("../setup", () => ({

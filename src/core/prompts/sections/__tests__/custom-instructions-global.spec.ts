@@ -47,7 +47,8 @@ vi.mock("fs/promises", () => ({
 }))
 
 // Mock the alpha-config service
-vi.mock("../../../../services/config-paths", () => ({
+vi.mock("../../../../services/config-paths", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../../services/config-paths")>()),
 	getConfigDirectoriesForCwd: mockGetConfigDirectoriesForCwd,
 	getAllConfigDirectoriesForCwd: mockGetAllConfigDirectoriesForCwd,
 	getAgentsDirectoriesForCwd: mockGetAgentsDirectoriesForCwd,

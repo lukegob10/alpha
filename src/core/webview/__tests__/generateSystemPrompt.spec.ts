@@ -1,11 +1,12 @@
 import * as vscode from "vscode"
 import { buildApiHandler } from "../../../api"
 import { resolveCodexModelPrompt } from "../../prompts/codex-model-instructions"
-import { SYSTEM_PROMPT } from "../../prompts/system"
+import { SYSTEM_PROMPT_FRAGMENTS } from "../../prompts/system"
 import { generateSystemPrompt } from "../generateSystemPrompt"
 import { DEFAULT_MEMORY_SETTINGS } from "@alpha-code/types"
 
 vi.mock("vscode", () => ({
+	window: { showWarningMessage: vi.fn() },
 	workspace: {
 		getConfiguration: vi.fn(() => ({
 			get: vi.fn((_key: string, defaultValue?: unknown) => defaultValue),
@@ -15,7 +16,10 @@ vi.mock("vscode", () => ({
 
 vi.mock("../../../api", () => ({ buildApiHandler: vi.fn() }))
 
-vi.mock("../../prompts/system", () => ({ SYSTEM_PROMPT: vi.fn() }))
+vi.mock("../../prompts/system", () => ({
+	SYSTEM_PROMPT_FRAGMENTS: vi.fn(),
+	renderSystemPromptFragments: (fragments: { systemPrefix: string }) => fragments.systemPrefix,
+}))
 
 vi.mock("../../diff/strategies/multi-search-replace", () => ({
 	MultiSearchReplaceDiffStrategy: vi.fn(),
@@ -27,7 +31,12 @@ describe("generateSystemPrompt", () => {
 		vi.mocked(buildApiHandler).mockReturnValue({
 			getModel: () => ({ id: "gpt-6-luna", info: {} }),
 		} as any)
-		vi.mocked(SYSTEM_PROMPT).mockImplementation(async (...args) => resolveCodexModelPrompt(args[14]).instructions)
+		vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mockImplementation(async (...args) => ({
+			systemPrefix: resolveCodexModelPrompt(args[14]).instructions,
+			userContext: "",
+			systemSuffix: "",
+			instructionParts: [],
+		}))
 	})
 
 	it("previews the selected recognized GPT model's prompt", async () => {
@@ -43,8 +52,39 @@ describe("generateSystemPrompt", () => {
 		const preview = await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
 		expect(preview).toBe(resolveCodexModelPrompt("gpt-6-luna").instructions)
-		expect(SYSTEM_PROMPT).toHaveBeenCalledOnce()
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6-luna")
+		expect(SYSTEM_PROMPT_FRAGMENTS).toHaveBeenCalledOnce()
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[14]).toBe("gpt-6-luna")
+	})
+
+	it("surfaces instruction-budget diagnostics and captures the same user setting as execution", async () => {
+		vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+			get: () => undefined,
+			inspect: (key: string) => (key === "projectDocMaxBytes" ? { globalValue: 64_000 } : undefined),
+		} as unknown as vscode.WorkspaceConfiguration)
+		vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mockResolvedValueOnce({
+			systemPrefix: "Prompt",
+			userContext: "",
+			systemSuffix: "",
+			instructionParts: [],
+			warnings: ["Project instructions were truncated"],
+		})
+		const provider = {
+			context: {} as vscode.ExtensionContext,
+			cwd: "F:/workspace",
+			getState: vi.fn().mockResolvedValue({ apiConfiguration: { apiProvider: "openai" } }),
+			customModesManager: { getCustomModes: vi.fn().mockResolvedValue([]) },
+			getCurrentTask: vi.fn(),
+			getSkillsManager: vi.fn(),
+		}
+		try {
+			expect(await generateSystemPrompt(provider as any, { mode: "code" } as any)).toBe("Prompt")
+			expect(
+				vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[12]?.projectInstructionDiscovery?.projectDocMaxBytes,
+			).toBe(64_000)
+			expect(vscode.window.showWarningMessage).toHaveBeenCalledWith("Project instructions were truncated")
+		} finally {
+			vi.restoreAllMocks()
+		}
 	})
 
 	it("uses the resolved instruction model identity for a host model alias", async () => {
@@ -62,7 +102,7 @@ describe("generateSystemPrompt", () => {
 
 		await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
 	})
 
 	it("previews the current task's captured memory instead of the latest host summary", async () => {
@@ -78,7 +118,7 @@ describe("generateSystemPrompt", () => {
 			getSkillsManager: vi.fn().mockReturnValue(undefined),
 		}
 		await generateSystemPrompt(provider as any, { mode: "code" } as any)
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.memoryContext).toBe("Frozen task memory")
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[12]?.memoryContext).toBe("Frozen task memory")
 		expect(readSummary).not.toHaveBeenCalled()
 	})
 
@@ -95,7 +135,7 @@ describe("generateSystemPrompt", () => {
 			getSkillsManager: vi.fn().mockReturnValue(undefined),
 		}
 		await generateSystemPrompt(provider as any, { mode: "code" } as any)
-		expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]?.memoryContext).toContain("A learned preference")
+		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[12]?.memoryContext).toContain("A learned preference")
 		expect(readSummary).toHaveBeenCalledOnce()
 	})
 
@@ -119,8 +159,8 @@ describe("generateSystemPrompt", () => {
 			const preview = await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
 			expect(preview).toBe(resolveCodexModelPrompt("gpt-6-luna").instructions)
-			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[12]).not.toHaveProperty("personality")
-			expect(vi.mocked(SYSTEM_PROMPT).mock.calls[0]?.[8]).toBe(customInstructions)
+			expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[12]).not.toHaveProperty("personality")
+			expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[8]).toBe(customInstructions)
 			expect(preview).toContain("# Personality\n")
 		},
 	)

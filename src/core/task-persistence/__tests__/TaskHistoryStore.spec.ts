@@ -535,6 +535,22 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("upsert()", () => {
+		it("does not revive a consumed fork start through a stale full-record save", async () => {
+			await store.initialize()
+			const pending = makeHistoryItem({ forkedFromId: "source-task", forkSessionStarted: false })
+			await store.upsert(pending)
+			await store.upsert({ ...pending, forkSessionStarted: true })
+			await store.upsert(pending)
+			expect(store.get(pending.id)?.forkSessionStarted).toBe(true)
+			const restored = new TaskHistoryStore(tmpDir)
+			try {
+				await restored.initialize()
+				expect(restored.get(pending.id)?.forkSessionStarted).toBe(true)
+			} finally {
+				restored.dispose()
+			}
+		})
+
 		it("writes per-task file and updates cache", async () => {
 			await store.initialize()
 

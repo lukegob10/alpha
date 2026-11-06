@@ -15,7 +15,6 @@ vi.mock("@src/context/ExtensionStateContext", () => ({
 	useExtensionState: mockUseShellState,
 }))
 vi.mock("../ChatView", () => ({ MAX_IMAGES_PER_MESSAGE: 20 }))
-vi.mock("../ModeSelector", () => ({ ModeSelector: () => null }))
 vi.mock("../ApiConfigSelector", () => ({ ApiConfigSelector: () => null }))
 vi.mock("../AutoApproveDropdown", () => ({ AutoApproveDropdown: () => null }))
 vi.mock("../../reasoning/ChatReasoningControl", () => ({ ChatReasoningControl: () => null }))

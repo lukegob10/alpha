@@ -624,6 +624,7 @@ export class AlphaProvider
 	private readonly agentControlStoreReady: Promise<void>
 	private agentControlStoreLoadedAt?: number
 	private readonly agentControlRootStatusWrites = new Map<string, Promise<void>>()
+	private parentVerificationProjectionRuns?: WeakMap<Task, { dirty: boolean; historyIds: Set<string> }>
 	private readonly pendingManagedTaskCompletions = new Map<string, { tokenUsage: TokenUsage; toolUsage: ToolUsage }>()
 	private readonly legacyHandoffInputBuffers = new Map<string, LegacyHandoffInputBuffer>()
 	private codeIndexStatusSubscription?: vscode.Disposable
@@ -1155,7 +1156,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.23-profile-menu"
+	public readonly latestAnnouncementId = "november-2026-v3.2.24-composer-recovery"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1909,34 +1910,33 @@ export class AlphaProvider
 			setPanel(webviewView, "sidebar")
 		}
 
-		// Initialize out-of-scope variables that need to receive persistent
-		// global state values.
-		void this.getState().then(
-			({
-				terminalShellIntegrationTimeout = Terminal.defaultShellIntegrationTimeout,
-				terminalShellIntegrationDisabled = false,
-				terminalCommandDelay = 0,
-				terminalZshClearEolMark = true,
-				terminalZshOhMy = false,
-				terminalZshP10k = false,
-				terminalPowershellCounter = false,
-				terminalZdotdir = false,
-			}) => {
-				Terminal.setShellIntegrationTimeout(terminalShellIntegrationTimeout)
-				Terminal.setShellIntegrationDisabled(terminalShellIntegrationDisabled)
-				Terminal.setCommandDelay(terminalCommandDelay)
-				Terminal.setTerminalZshClearEolMark(terminalZshClearEolMark)
-				Terminal.setTerminalZshOhMy(terminalZshOhMy)
-				Terminal.setTerminalZshP10k(terminalZshP10k)
-				Terminal.setPowershellCounter(terminalPowershellCounter)
-				Terminal.setTerminalZdotdir(terminalZdotdir)
-			},
-			(error) => {
-				this.log(
-					`[resolveWebviewView] Failed to apply persisted terminal settings: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			},
-		)
+		// Terminal hydration needs only cached settings, not custom-mode discovery or history projections.
+		try {
+			const terminalSettings = {
+				timeout:
+					this.contextProxy.getValue("terminalShellIntegrationTimeout") ??
+					Terminal.defaultShellIntegrationTimeout,
+				disabled: this.contextProxy.getValue("terminalShellIntegrationDisabled") ?? true,
+				commandDelay: this.contextProxy.getValue("terminalCommandDelay") ?? 0,
+				zshClearEolMark: this.contextProxy.getValue("terminalZshClearEolMark") ?? true,
+				zshOhMy: this.contextProxy.getValue("terminalZshOhMy") ?? false,
+				zshP10k: this.contextProxy.getValue("terminalZshP10k") ?? false,
+				powershellCounter: this.contextProxy.getValue("terminalPowershellCounter") ?? false,
+				zdotdir: this.contextProxy.getValue("terminalZdotdir") ?? false,
+			}
+			Terminal.setShellIntegrationTimeout(terminalSettings.timeout)
+			Terminal.setShellIntegrationDisabled(terminalSettings.disabled)
+			Terminal.setCommandDelay(terminalSettings.commandDelay)
+			Terminal.setTerminalZshClearEolMark(terminalSettings.zshClearEolMark)
+			Terminal.setTerminalZshOhMy(terminalSettings.zshOhMy)
+			Terminal.setTerminalZshP10k(terminalSettings.zshP10k)
+			Terminal.setPowershellCounter(terminalSettings.powershellCounter)
+			Terminal.setTerminalZdotdir(terminalSettings.zdotdir)
+		} catch (error) {
+			this.log(
+				`[resolveWebviewView] Failed to apply persisted terminal settings: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		}
 
 		// Set up webview options with proper resource roots
 		const resourceRoots = [this.contextProxy.extensionUri]
@@ -5790,21 +5790,23 @@ export class AlphaProvider
 			: await this.taskHistoryStore.upsert(item)
 		this.recentTasksCache = undefined
 
-		// Broadcast the updated history to the webview if requested.
-		// Prefer per-item updates to avoid repeatedly cloning/sending the full history.
-		if (broadcast && this.isViewLaunched) {
-			const updatedItem = this.taskHistoryStore.get(item.id) ?? item
-			if (updatedItem.archived) {
-				await this.broadcastTaskHistoryUpdate()
-			} else if (this.taskHistoryStore.isForWorkspace(updatedItem, this.cwd)) {
-				await this.postMessageToWebview({ type: "taskHistoryItemUpdated", taskHistoryItem: updatedItem })
-			} else if (this.taskHistoryStore.isForWorkspace(previousItem, this.cwd)) {
-				// A task moved away from this project; remove its previously projected row.
-				await this.broadcastTaskHistoryUpdate()
-			}
-		}
+		if (broadcast) await this.publishTaskHistoryUpdate(item.id, previousItem)
 
 		return history
+	}
+
+	/** Publish the current durable row without keeping a persistence queue joined to UI transport. */
+	public async publishTaskHistoryUpdate(taskId: string, previousItem?: HistoryItem): Promise<void> {
+		if (!this.isViewLaunched) return
+		const updatedItem = this.taskHistoryStore.get(taskId)
+		if (updatedItem?.archived) {
+			await this.broadcastTaskHistoryUpdate()
+		} else if (updatedItem && this.taskHistoryStore.isForWorkspace(updatedItem, this.cwd)) {
+			await this.postMessageToWebview({ type: "taskHistoryItemUpdated", taskHistoryItem: updatedItem })
+		} else if (this.taskHistoryStore.isForWorkspace(previousItem, this.cwd)) {
+			// A task moved away from this project; remove its previously projected row.
+			await this.broadcastTaskHistoryUpdate()
+		}
 	}
 
 	/**
@@ -6795,6 +6797,7 @@ export class AlphaProvider
 				taskKind: "primary",
 				status: "interrupted",
 				forkedFromId: sourceTaskId,
+				forkSessionStarted: false,
 				threadModelOverride: modelRoute ? modelRoute.route.modelId : history.threadModelOverride,
 				threadModelRoute: modelRoute
 					? modelRoute.route.profileId || modelRoute.route.unboundProfile
@@ -10597,7 +10600,58 @@ export class AlphaProvider
 		return result.changed || projectionChanged
 	}
 
-	private async refreshParentVerificationProjections(parent: Task): Promise<void> {
+	/** Durable completion readiness cannot depend on optional UI delivery (Codex 7b54fd245de6). */
+	private scheduleParentVerificationProjection(parent: Task, historyTaskId = parent.taskId): void {
+		const signal = parent.getTaskLifetimeCancellationSignal()
+		const isCurrent = () =>
+			!this._disposed &&
+			!parent.abort &&
+			!parent.abandoned &&
+			!signal.aborted &&
+			this.getLiveTask(parent.taskId) === parent
+		if (!isCurrent()) return
+		const runs = (this.parentVerificationProjectionRuns ??= new WeakMap())
+		const pending = runs.get(parent)
+		if (pending) {
+			pending.dirty = true
+			pending.historyIds.add(historyTaskId)
+			return
+		}
+		const run = { dirty: true, historyIds: new Set([historyTaskId]) }
+		runs.set(parent, run)
+		void Promise.resolve()
+			.then(async () => {
+				try {
+					while (run.dirty && isCurrent()) {
+						run.dirty = false
+						const historyIds = [...run.historyIds]
+						run.historyIds.clear()
+						for (const taskId of historyIds) {
+							if (!isCurrent()) return
+							try {
+								await this.publishTaskHistoryUpdate(taskId)
+							} catch (error) {
+								console.error("[AlphaProvider] Failed to publish parent verification history", error)
+							}
+						}
+						if (!isCurrent()) return
+						try {
+							await this.postStateToWebviewWithoutTaskHistory()
+						} catch (error) {
+							console.error("[AlphaProvider] Failed to project parent command evidence", error)
+						}
+					}
+				} finally {
+					runs.delete(parent)
+				}
+			})
+			.catch((error) => console.error("[AlphaProvider] Failed to project parent command evidence", error))
+	}
+
+	private async refreshParentVerificationProjections(
+		parent: Task,
+		options: { deferPublication?: boolean } = {},
+	): Promise<void> {
 		const rootTaskId = this.getAgentControlRootTaskId(parent)
 		for (const message of parent.alphaMessages) {
 			const group = message.subagentGroup
@@ -10618,12 +10672,18 @@ export class AlphaProvider
 					changed = true
 				}
 			}
-			if (changed) await parent.upsertSubagentGroup(group)
+			if (changed) {
+				if (options.deferPublication) await parent.upsertSubagentGroup(group, undefined, options)
+				else await parent.upsertSubagentGroup(group)
+			}
 		}
 	}
 
 	/** Reconcile persisted transcript state with the artifact and obligation ledgers. */
-	private async synchronizeParentVerificationObligations(parent: Task): Promise<void> {
+	private async synchronizeParentVerificationObligations(
+		parent: Task,
+		options: { deferPublication?: boolean } = {},
+	): Promise<void> {
 		if (
 			parent.taskKind === "subagent" &&
 			(parent.subagentRole !== "worker" || parent.subagentContextManifest?.runtimePolicy.role !== "worker")
@@ -10659,7 +10719,12 @@ export class AlphaProvider
 					const recoveredChangeSet = this.toSubagentChangeSetState(artifact)
 					if (!isDeepStrictEqual(agent.changeSet, recoveredChangeSet)) {
 						agent.changeSet = recoveredChangeSet
-						await this.updateWorkerChangeSetHistory(agent.taskId, recoveredChangeSet)
+						await this.updateWorkerChangeSetHistory(
+							agent.taskId,
+							recoveredChangeSet,
+							options.deferPublication ? { broadcast: false } : undefined,
+						)
+						if (options.deferPublication) this.scheduleParentVerificationProjection(parent, agent.taskId)
 						changed = true
 					}
 				} catch {
@@ -10667,7 +10732,12 @@ export class AlphaProvider
 				}
 				changed = (await this.recordWorkerVerificationObligation(parent, group, agent)) || changed
 			}
-			if (changed) await parent.upsertSubagentGroup(group)
+			if (changed) {
+				if (options.deferPublication) {
+					await parent.upsertSubagentGroup(group, undefined, options)
+					this.scheduleParentVerificationProjection(parent)
+				} else await parent.upsertSubagentGroup(group)
+			}
 		}
 	}
 
@@ -10994,7 +11064,7 @@ export class AlphaProvider
 		// child. Materialize its own control root before writing evidence so both
 		// ordinary roots and legacy blocking-handoff children have a valid owner.
 		const root = await this.ensureAgentControlRoot(parent)
-		await this.synchronizeParentVerificationObligations(parent)
+		await this.synchronizeParentVerificationObligations(parent, { deferPublication: true })
 		const invalidated = await this.reconcilePrimaryVerification(parent)
 		const changed = await this.agentControlStore.recordParentVerificationEvidence(
 			parent.taskId,
@@ -11006,10 +11076,9 @@ export class AlphaProvider
 		}
 		if (changed.length > 0 || invalidated.size > 0) {
 			try {
-				await this.refreshParentVerificationProjections(parent)
-				await this.postStateToWebviewWithoutTaskHistory()
+				await this.refreshParentVerificationProjections(parent, { deferPublication: true })
+				this.scheduleParentVerificationProjection(parent)
 			} catch (error) {
-				// Optional evidence is already durable; a failed UI projection is not unsettled work.
 				console.error("[AlphaProvider] Failed to project parent command evidence", error)
 			}
 		}
@@ -14678,12 +14747,18 @@ export class AlphaProvider
 		)
 	}
 
-	private async updateWorkerChangeSetHistory(taskId: string, changeSet: SubagentChangeSetState): Promise<void> {
+	private async updateWorkerChangeSetHistory(
+		taskId: string,
+		changeSet: SubagentChangeSetState,
+		options?: { broadcast?: boolean },
+	): Promise<void> {
 		const child = this.getLiveTask(taskId)
 		child?.setSubagentChangeSet(changeSet)
 		try {
 			const { historyItem } = await this.getTaskWithId(taskId, { includeApiConversationHistory: false })
-			await this.updateTaskHistory({ ...historyItem, subagentChangeSet: structuredClone(changeSet) })
+			const updated = { ...historyItem, subagentChangeSet: structuredClone(changeSet) }
+			if (options?.broadcast === false) await this.updateTaskHistory(updated, { broadcast: false })
+			else await this.updateTaskHistory(updated)
 		} catch (error) {
 			this.log(`Failed to update worker change-set history for ${taskId}: ${String(error)}`)
 		}

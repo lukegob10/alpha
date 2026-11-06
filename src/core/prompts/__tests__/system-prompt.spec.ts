@@ -730,6 +730,50 @@ describe("SYSTEM_PROMPT", () => {
 		expect(renderSystemPromptFragments(plan).trimEnd().endsWith("</collaboration_mode>")).toBe(true)
 	})
 
+	it("includes mode-filtered skills and their invocation guidance in Plan", async () => {
+		const getSkillsForMode = vi.fn(() => [
+			{ name: "inspect-design", description: "Inspect the existing design", path: "/skills/inspect/SKILL.md" },
+		])
+		const manager = { getSkillsForMode } as unknown as SkillsManager
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
+			mockContext,
+			"/test/path",
+			false,
+			undefined,
+			undefined,
+			planModeSlug,
+			undefined,
+			undefined,
+			undefined,
+			experiments,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			manager,
+		)
+		const prompt = renderSystemPromptFragments(fragments)
+		expect(getSkillsForMode).toHaveBeenCalledWith(planModeSlug)
+		expect(prompt).toContain("inspect-design")
+		expect(prompt).toContain("/skills/inspect/SKILL.md")
+		expect(prompt).toContain("applying only their non-mutating instructions within Plan's tool permissions")
+		expect(prompt).toContain("<skill_guidance>")
+	})
+
+	it("returns instruction-load warnings as host diagnostics outside model instructions", async () => {
+		vi.mocked(addCustomInstructionParts).mockImplementationOnce(async (_mode, _global, _cwd, _slug, options) => {
+			options?.onWarning?.("Instruction budget diagnostic")
+			return []
+		})
+		const fragments = await SYSTEM_PROMPT_FRAGMENTS(mockContext, "/test/path", false)
+		expect(fragments.warnings).toEqual(["Instruction budget diagnostic"])
+		expect(renderSystemPromptFragments(fragments)).not.toContain("Instruction budget diagnostic")
+		expect(
+			fragments.instructionParts.some(({ content }) => content.includes("Instruction budget diagnostic")),
+		).toBe(false)
+	})
+
 	it("marks Default mode even when a selected model has no catalog collaboration text", async () => {
 		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
 			mockContext,

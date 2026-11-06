@@ -120,6 +120,32 @@ describe("native lifecycle hook contracts", () => {
 		expect(await pending).toEqual({ warnings: [] })
 	})
 
+	it("executes every matching handler through the bounded worker queue", async () => {
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => (release = resolve))
+		let active = 0
+		let peak = 0
+		const executeMcp = vi.fn(async () => {
+			peak = Math.max(peak, ++active)
+			await gate
+			active--
+			return { exitCode: 0, stdout: "", stderr: "" }
+		})
+		const pending = runLifecycleHooks(
+			config({
+				sessionStart: Array.from({ length: 9 }, () => ({ type: "mcp_tool", server: "checks", tool: "start" })),
+			}),
+			{ ...baseRequest, hook_event_name: "SessionStart", source: "startup" },
+			new AbortController().signal,
+			{ executeMcp },
+		)
+		expect(executeMcp).toHaveBeenCalledTimes(4)
+		release()
+		expect(await pending).toEqual({ warnings: [] })
+		expect(executeMcp).toHaveBeenCalledTimes(9)
+		expect(peak).toBe(4)
+	})
+
 	it.each(["SessionStart", "SubagentStart"] as const)("accepts plain stdout context from %s", async (event) => {
 		const request =
 			event === "SessionStart"

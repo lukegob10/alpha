@@ -108,7 +108,7 @@ export const ApiConfigSelector = ({
 				<div
 					key={config.id}
 					className={cn(
-						"px-1.5 py-0.5 text-sm flex items-center group",
+						"composer-menu-profile-row group",
 						"hover:bg-[var(--alpha-accent-soft)]",
 						isCurrentConfig && "bg-[var(--alpha-accent-soft)] text-vscode-foreground",
 					)}>
@@ -118,7 +118,7 @@ export const ApiConfigSelector = ({
 						title={unavailableLabel}
 						onClick={() => handleSelect(config.id)}
 						aria-current={isCurrentConfig ? "true" : undefined}
-						className="flex flex-1 min-w-0 items-center gap-1 overflow-hidden border-0 bg-transparent px-1.5 py-1 text-left text-vscode-foreground cursor-pointer disabled:cursor-default disabled:text-vscode-descriptionForeground focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+						className="composer-menu-item composer-menu-profile-item">
 						<span className="flex-1 min-w-0 flex items-center gap-1 overflow-hidden">
 							<span className="flex-shrink-0">{config.name}</span>
 							{unavailableLabel && <span className="text-xs">{unavailableLabel}</span>}
@@ -131,13 +131,11 @@ export const ApiConfigSelector = ({
 							)}
 						</span>
 						{isCurrentConfig && (
-							<span className="size-5 p-1 flex items-center justify-center">
-								<span className="codicon codicon-check text-xs" />
-							</span>
+							<span className="composer-menu-check codicon codicon-check" aria-hidden="true" />
 						)}
 					</button>
 					<div className="flex items-center gap-1">
-						<StandardTooltip content={isPinned ? t("chat:unpin") : t("chat:pin")}>
+						<StandardTooltip className="lowercase" content={isPinned ? t("chat:unpin") : t("chat:pin")}>
 							<Button
 								variant="ghost"
 								size="icon"
@@ -163,11 +161,11 @@ export const ApiConfigSelector = ({
 
 	return (
 		<Popover open={open && isVisible} onOpenChange={onOpenChange} data-testid="api-config-selector-root">
-			<StandardTooltip content={title}>
+			<StandardTooltip className="lowercase" content={displayName ? `${title}: ${displayName}` : title}>
 				<PopoverTrigger
 					disabled={disabled}
 					data-testid="dropdown-trigger"
-					className={cn("composer-control composer-selector", triggerClassName)}>
+					className={cn("composer-control composer-selector composer-menu-trigger", triggerClassName)}>
 					<span className="truncate">{displayName}</span>
 				</PopoverTrigger>
 			</StandardTooltip>
@@ -179,7 +177,7 @@ export const ApiConfigSelector = ({
 				onCloseAutoFocus={(event) => {
 					if (!isVisible) event.preventDefault()
 				}}
-				className="p-0 overflow-hidden w-[300px]">
+				className="composer-menu p-0 overflow-hidden w-[min(180px,calc(100vw-24px))]">
 				<div className="flex flex-col w-full">
 					{listApiConfigMeta.length > 6 && (
 						<div className="relative p-2 border-b border-vscode-dropdown-border">
@@ -230,7 +228,7 @@ export const ApiConfigSelector = ({
 						</div>
 					)}
 
-					<div className="flex items-center px-2 py-2 border-t border-vscode-dropdown-border">
+					<div className="composer-menu-footer">
 						<IconButton
 							iconClass="codicon-settings-gear"
 							title={t("chat:edit")}

@@ -260,17 +260,38 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("new task appearance", () => {
+		it.each(["default", "newTask"] as const)(
+			"shows Plan after approvals only when the %s composer is in Plan mode",
+			(appearance) => {
+				const { rerender } = render(<ChatTextArea {...defaultProps} appearance={appearance} mode="code" />)
+				expect(screen.queryByTestId("mode-selector-trigger")).not.toBeInTheDocument()
+				expect(screen.queryByTestId("plan-mode-badge")).not.toBeInTheDocument()
+				rerender(<ChatTextArea {...defaultProps} appearance={appearance} mode="architect" />)
+				const badge = screen.getByRole("status")
+				expect(badge).toHaveTextContent("Plan")
+				expect(
+					screen.getByTestId("auto-approve-dropdown-trigger").compareDocumentPosition(badge) &
+						Node.DOCUMENT_POSITION_FOLLOWING,
+				).toBeTruthy()
+				expect(screen.queryByTestId("mode-selector-trigger")).not.toBeInTheDocument()
+				rerender(<ChatTextArea {...defaultProps} appearance={appearance} mode="code" />)
+				expect(screen.queryByTestId("plan-mode-badge")).not.toBeInTheDocument()
+			},
+		)
+
+		it("displays a safe Plan badge for a retired saved mode without changing it", () => {
+			render(<ChatTextArea {...defaultProps} mode="debug" />)
+			expect(screen.getByTestId("plan-mode-badge")).toHaveTextContent("Plan")
+			expect(defaultProps.setMode).not.toHaveBeenCalled()
+			expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "mode" }))
+		})
+
 		it("uses the same compact settings as active chats without changing Enter submission", () => {
 			const { rerender } = render(<ChatTextArea {...defaultProps} appearance="newTask" />)
 			for (const label of ["Mode", "Model", "Effort", "Approvals"]) {
 				expect(screen.queryByText(label)).not.toBeInTheDocument()
 			}
-			for (const testId of [
-				"mode-selector-trigger",
-				"dropdown-trigger",
-				"reasoning-trigger",
-				"auto-approve-dropdown-trigger",
-			]) {
+			for (const testId of ["dropdown-trigger", "reasoning-trigger", "auto-approve-dropdown-trigger"]) {
 				expect(screen.getByTestId(testId)).toBeInTheDocument()
 			}
 			expect(screen.queryByText(/hold shift to drag in files/)).not.toBeInTheDocument()
@@ -554,7 +575,7 @@ describe("ChatTextArea", () => {
 			const setMode = vi.fn()
 			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} isStreaming={true} />)
 			const textarea = container.querySelector("textarea")!
-			expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled()
+			expect(screen.queryByTestId("mode-selector-trigger")).not.toBeInTheDocument()
 			expect(textarea).not.toHaveAttribute("aria-keyshortcuts")
 
 			fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true })
@@ -570,7 +591,7 @@ describe("ChatTextArea", () => {
 			const { container } = render(<ChatTextArea {...defaultProps} setMode={setMode} isEditMode={true} />)
 			const textarea = container.querySelector("textarea")!
 
-			expect(screen.getByTestId("mode-selector-trigger")).toBeDisabled()
+			expect(screen.queryByTestId("mode-selector-trigger")).not.toBeInTheDocument()
 			expect(textarea).not.toHaveAttribute("aria-keyshortcuts")
 			fireEvent.keyDown(textarea, { key: "Tab", shiftKey: true })
 

@@ -2,6 +2,20 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 
 import { buildOpenAiResponsesInput } from "../../providers/openai-responses"
 import { convertToOpenAiMessages } from "../openai-format"
+import { filterNonAnthropicBlocks } from "../anthropic-filter"
+import { convertAnthropicMessagesToGemini } from "../gemini-format"
+import { convertToVsCodeLmMessages } from "../vscode-lm-format"
+
+vi.mock("vscode", async (importOriginal) => ({
+	...(await importOriginal<typeof import("vscode")>()),
+	LanguageModelTextPart: class {
+		constructor(readonly value: string) {}
+	},
+	LanguageModelChatMessage: {
+		User: (content: unknown) => ({ role: "user", content }),
+		Assistant: (content: unknown) => ({ role: "assistant", content }),
+	},
+}))
 
 const hookMessage = (event = "PostToolUse") => ({
 	role: "user",
@@ -20,6 +34,42 @@ const converters = {
 	Chat: (history: unknown[]) => convertToOpenAiMessages(history as Anthropic.Messages.MessageParam[]),
 	Responses: (history: unknown[]) => buildOpenAiResponsesInput("", [], history, false),
 }
+
+const fallbackConverters = {
+	Anthropic: (history: Anthropic.Messages.MessageParam[]) => filterNonAnthropicBlocks(history),
+	Gemini: (history: Anthropic.Messages.MessageParam[]) => convertAnthropicMessagesToGemini(history),
+	"VS Code LM": (history: Anthropic.Messages.MessageParam[]) => convertToVsCodeLmMessages(history),
+}
+
+describe.each(Object.entries(fallbackConverters))("%s lifecycle context fallback", (_name, convert) => {
+	it("retains the developer origin at its original position without changing saved history", () => {
+		const history = [
+			{ role: "user", content: "Original input" },
+			{ role: "assistant", content: "Before hook" },
+			hookMessage(),
+			{ role: "assistant", content: "After hook" },
+		]
+		const original = structuredClone(history)
+		const result = convert(history as Anthropic.Messages.MessageParam[])
+		expect(result).toHaveLength(4)
+		expect(JSON.stringify(result[2])).toContain(
+			'<developer_context source=\\"lifecycle_hook\\" event=\\"PostToolUse\\">',
+		)
+		expect(JSON.stringify(result[2])).toContain("First hook\\n\\nSecond hook")
+		expect(JSON.stringify(result[3])).toContain("After hook")
+		expect(history).toEqual(original)
+	})
+
+	it.each([
+		["human input", { input_origin: "human" }],
+		["unrecorded output", { content: "Different contents" }],
+		["Stop continuation", { hook_prompt: { ...hookMessage().hook_prompt, event: "Stop" } }],
+		["SubagentStop continuation", { hook_prompt: { ...hookMessage().hook_prompt, event: "SubagentStop" } }],
+	])("does not label %s as developer context", (_case, fields) => {
+		const result = convert([{ ...hookMessage(), ...fields }] as Anthropic.Messages.MessageParam[])
+		expect(JSON.stringify(result)).not.toContain("<developer_context")
+	})
+})
 
 describe.each(Object.entries(converters))("%s lifecycle hook context", (_name, convert) => {
 	it.each(["SessionStart", "SubagentStart", "UserPromptSubmit", "PreToolUse", "PostToolUse"])(

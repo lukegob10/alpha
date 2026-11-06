@@ -7,6 +7,7 @@ import type { ModelRequestHookEvent } from "./ModelRequestHooks"
 import { MAX_HOOK_OUTPUT_BYTES, preserveHookOutput } from "./HookOutput"
 import {
 	DEFAULT_HOOK_TIMEOUT_MS,
+	assertLifecycleHookHandlerLimit,
 	selectLifecycleHookCommands,
 	type CompletionHookCommand,
 	type CompletionHookConfig,
@@ -18,7 +19,6 @@ export type { LifecycleHookTarget } from "./LifecycleHookTargets"
 export { readCompletionHookConfig } from "./LifecycleHookConfig"
 export type { CompletionHookCommand, CompletionHookConfig } from "./LifecycleHookConfig"
 
-const MAX_HOOKS = 8
 const MAX_CONCURRENT_HOOKS = 4
 // Join the shared helper's bounded discovery/termination and the owned pipe close.
 const PROCESS_CLOSE_TIMEOUT_MS = 11_000
@@ -326,8 +326,9 @@ async function runHookCommands(
 		| undefined
 	>
 > {
-	// Configuration and direct callers share the same hard process limit.
-	commands = commands.slice(0, MAX_HOOKS)
+	// Codex be765f1 dispatches every admitted handler. Alpha bounds the queue and
+	// active processes independently, without silently discarding later matchers.
+	assertLifecycleHookHandlerLimit(request.hook_event_name, commands.length)
 	const results: Array<
 		| (Awaited<ReturnType<typeof runCommand>> & {
 				runId: string
@@ -495,7 +496,8 @@ export async function runLifecycleHooks(
 ): Promise<LifecycleHookOutcome> {
 	const event = request.hook_event_name
 	const cleanupEvent = event === "SessionEnd" || event === "Interrupt"
-	if (cleanupEvent) signal = AbortSignal.any([signal, AbortSignal.timeout(3_000)])
+	// Codex be765f1 budgets cleanup commands individually. A shared event deadline
+	// would discard later handlers waiting in Alpha's bounded worker queue.
 	const commands = selectLifecycleHookCommands(config, request).map((command) =>
 		cleanupEvent ? { ...command, timeoutMs: Math.min(command.timeoutMs ?? 1_000, 3_000) } : command,
 	)

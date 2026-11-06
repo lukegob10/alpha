@@ -3,13 +3,13 @@ import type { IndexingStatus } from "@alpha-code/types"
 
 import { act, cleanup, fireEvent, render, screen, within } from "@src/utils/test-utils"
 import { PopoverTrigger } from "@src/components/ui"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
 import { CodeIndexPopover } from "../CodeIndexPopover"
 
 vi.mock("@src/context/ExtensionStateContext", () => ({
-	useExtensionState: vi.fn(),
+	useShellState: vi.fn(),
 }))
 
 vi.mock("@src/i18n/TranslationContext", () => ({
@@ -58,7 +58,7 @@ const setTextFieldValue = (placeholder: string, value: string) => {
 describe("CodeIndexPopover", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
-		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+		vi.mocked(useShellState, { partial: true }).mockReturnValue({
 			codebaseIndexConfig: undefined,
 			codebaseIndexModels: undefined,
 			cwd: "/workspace",
@@ -74,8 +74,8 @@ describe("CodeIndexPopover", () => {
 		["openrouter", "mongodb/voyage-code-4"],
 		["bedrock", "amazon.titan-embed-text-v2:0"],
 	] as const)("offers standard %s models even when the saved host catalog is older", async (provider, modelId) => {
-		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
-			...useExtensionState(),
+		vi.mocked(useShellState, { partial: true }).mockReturnValue({
+			...useShellState(),
 			codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: provider },
 			codebaseIndexModels: { [provider]: {} },
 		})
@@ -97,7 +97,7 @@ describe("CodeIndexPopover", () => {
 
 	it("saves a compatible preset with its built-in dimensions and preserves the draft across refreshes", async () => {
 		const state = {
-			...useExtensionState(),
+			...useShellState(),
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: true,
 				codebaseIndexEmbedderProvider: "openai",
@@ -106,7 +106,7 @@ describe("CodeIndexPopover", () => {
 				codebaseIndexEmbedderModelDimension: 384,
 			},
 		}
-		vi.mocked(useExtensionState).mockReturnValue(state)
+		vi.mocked(useShellState).mockReturnValue(state)
 		const view = (
 			<CodeIndexPopover indexingStatus={indexingStatus}>
 				<PopoverTrigger asChild>
@@ -128,7 +128,7 @@ describe("CodeIndexPopover", () => {
 		)
 		expect(screen.queryByPlaceholderText("settings:codeIndex.embeddingDimensionLabel")).not.toBeInTheDocument()
 
-		vi.mocked(useExtensionState).mockReturnValue({
+		vi.mocked(useShellState).mockReturnValue({
 			...state,
 			codebaseIndexConfig: { ...state.codebaseIndexConfig },
 		})
@@ -145,8 +145,8 @@ describe("CodeIndexPopover", () => {
 	})
 
 	it("allows a custom compatible model and requires its output dimensions", async () => {
-		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
-			...useExtensionState(),
+		vi.mocked(useShellState, { partial: true }).mockReturnValue({
+			...useShellState(),
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: true,
 				codebaseIndexEmbedderProvider: "openai",
@@ -198,7 +198,7 @@ describe("CodeIndexPopover", () => {
 
 	it("normalizes a legacy result limit and preserves slider edits across state refreshes until saving", async () => {
 		const state = {
-			...useExtensionState(),
+			...useShellState(),
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: true,
 				codebaseIndexEmbedderProvider: "vertex" as const,
@@ -207,7 +207,7 @@ describe("CodeIndexPopover", () => {
 				codebaseIndexSearchMaxResults: 150,
 			},
 		}
-		vi.mocked(useExtensionState).mockReturnValue(state)
+		vi.mocked(useShellState).mockReturnValue(state)
 		const view = (
 			<CodeIndexPopover indexingStatus={indexingStatus}>
 				<PopoverTrigger asChild>
@@ -226,7 +226,7 @@ describe("CodeIndexPopover", () => {
 		expect(slider).toHaveAttribute("aria-valuenow", "100")
 		fireEvent.keyDown(slider, { key: "ArrowLeft" })
 		expect(slider).toHaveAttribute("aria-valuenow", "90")
-		vi.mocked(useExtensionState).mockReturnValue({
+		vi.mocked(useShellState).mockReturnValue({
 			...state,
 			codebaseIndexConfig: { ...state.codebaseIndexConfig },
 		})
@@ -241,7 +241,7 @@ describe("CodeIndexPopover", () => {
 
 	it("preserves a Vertex selection and project edits across extension state refreshes", async () => {
 		const state = {
-			...useExtensionState(),
+			...useShellState(),
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: true,
 				codebaseIndexEmbedderProvider: "openai" as const,
@@ -255,7 +255,7 @@ describe("CodeIndexPopover", () => {
 				vertexGatewayHelixCommand: "test-token-command",
 			},
 		}
-		vi.mocked(useExtensionState).mockReturnValue(state)
+		vi.mocked(useShellState).mockReturnValue(state)
 		const view = (
 			<CodeIndexPopover indexingStatus={indexingStatus}>
 				<PopoverTrigger asChild>
@@ -275,7 +275,7 @@ describe("CodeIndexPopover", () => {
 		})
 
 		// State broadcasts deserialize new objects even when the persisted settings have not changed.
-		vi.mocked(useExtensionState).mockReturnValue({
+		vi.mocked(useShellState).mockReturnValue({
 			...state,
 			codebaseIndexConfig: { ...state.codebaseIndexConfig },
 			apiConfiguration: { ...state.apiConfiguration },
@@ -312,7 +312,7 @@ describe("CodeIndexPopover", () => {
 
 	it("reloads the latest persisted settings after discarding edits and reopening setup", async () => {
 		const state = {
-			...useExtensionState(),
+			...useShellState(),
 			codebaseIndexConfig: {
 				codebaseIndexEnabled: true,
 				codebaseIndexEmbedderProvider: "vertex" as const,
@@ -320,7 +320,7 @@ describe("CodeIndexPopover", () => {
 				codebaseIndexVertexRegion: "us-central1",
 			},
 		}
-		vi.mocked(useExtensionState).mockReturnValue(state)
+		vi.mocked(useShellState).mockReturnValue(state)
 		const view = (
 			<CodeIndexPopover indexingStatus={indexingStatus}>
 				<PopoverTrigger asChild>
@@ -334,7 +334,7 @@ describe("CodeIndexPopover", () => {
 		fireEvent.input(screen.getByPlaceholderText("settings:placeholders.projectId"), {
 			target: { value: "draft-project" },
 		})
-		vi.mocked(useExtensionState).mockReturnValue({
+		vi.mocked(useShellState).mockReturnValue({
 			...state,
 			codebaseIndexConfig: {
 				...state.codebaseIndexConfig,
@@ -390,8 +390,8 @@ describe("CodeIndexPopover", () => {
 	it.each([false, true])(
 		"acknowledges the saved Gemini key while preserving later edits (%s)",
 		async (editDuringSave) => {
-			vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
-				...useExtensionState(),
+			vi.mocked(useShellState, { partial: true }).mockReturnValue({
+				...useShellState(),
 				codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: "gemini" },
 			})
 			render(
@@ -432,8 +432,8 @@ describe("CodeIndexPopover", () => {
 	)
 
 	it("requires a dedicated Gemini key before saving a new configuration", async () => {
-		vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
-			...useExtensionState(),
+		vi.mocked(useShellState, { partial: true }).mockReturnValue({
+			...useShellState(),
 			codebaseIndexConfig: { codebaseIndexEnabled: true, codebaseIndexEmbedderProvider: "gemini" },
 		})
 		render(

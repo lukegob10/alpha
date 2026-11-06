@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.24
+
+### Patch Changes
+
+- Refresh the composer with compact profile, approval, and reasoning menus, a reasoning slider, and a Plan badge while preserving keyboard mode switching.
+- Preserve current task messages and durable verification evidence when concurrent updates refresh the UI.
+- Run all admitted lifecycle handlers through a bounded queue, order interruption cleanup before the terminal record, and distinguish a fork's first activation from a resumed session.
+- Make the project-instruction byte budget configurable in user settings, warn about truncated or skipped guidance, and allow skill discovery in Plan while retaining read-only execution policy.
+- Preserve lifecycle-hook context across provider formats and defer tokenizer and AWS credential loading until first use.
+- Update the extension, VSIX, and in-app release announcement together for Alpha 3.2.24. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
+
 ## 3.2.23
 
 ### Patch Changes

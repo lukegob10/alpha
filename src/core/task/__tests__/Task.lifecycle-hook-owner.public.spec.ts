@@ -901,6 +901,41 @@ function terminate(fixture: Fixture) {
 }
 
 describe("public Task termination hook identity and independent deadline", () => {
+	it("joins Interrupt before the public interrupted-turn record, then runs SessionEnd", async () => {
+		installCleanupHooks()
+		const fixture = await harness({ cleanup: true })
+		const entered = barrier()
+		const release = barrier()
+		const order: string[] = []
+		const append = fixture.journal.append.bind(fixture.journal)
+		vi.spyOn(fixture.journal, "append").mockImplementation(async (event, options) => {
+			if (event.type === "turn_terminal") order.push("turn_terminal")
+			return append(event, options)
+		})
+		vi.mocked(runLifecycleHooks).mockImplementation(async (_config, request) => {
+			order.push(request.hook_event_name)
+			if (request.hook_event_name === "Interrupt") {
+				entered.resolve()
+				await release.promise
+			}
+			return { warnings: [] }
+		})
+		const operation = terminate(fixture)
+		try {
+			await entered.promise
+			expect(fixture.journal.getSnapshot()?.status).toBe("in_progress")
+			expect(order).toEqual(["Interrupt"])
+			release.resolve()
+			const result = await operation.settled
+			if (result.kind === "threw") throw result.error
+			expect(order).toEqual(["Interrupt", "turn_terminal", "SessionEnd"])
+			expect(fixture.journal.getSnapshot()?.status).toBe("interrupted")
+		} finally {
+			release.resolve()
+			await operation.settled
+		}
+	})
+
 	it.each(cleanupCases)("fences cleanup at $boundary for $identity (replacement=$replaced)", async (testCase) => {
 		const { boundary, identity, replaced } = testCase
 		const deadlines = installCleanupHooks()
@@ -930,7 +965,7 @@ describe("public Task termination hook identity and independent deadline", () =>
 			)
 			for (const [, payload, cleanupSignal, runtime] of calls) {
 				expect(cleanupSignal).not.toBe(fixture.task["getTaskLifetimeCancellationSignal"]())
-				expect(cleanupSignal).toBe(cleanupDeadline!.controller.signal)
+				expect(cleanupSignal).not.toBe(cleanupDeadline!.controller.signal)
 				expect(cleanupSignal.aborted).toBe(false)
 				if (payload.hook_event_name === "Interrupt") {
 					expect(runtime).toMatchObject({
@@ -948,7 +983,7 @@ describe("public Task termination hook identity and independent deadline", () =>
 			expect(warningMessages(fixture.task.alphaMessages)).toEqual([])
 			if (replaced) expect(fixture.owns()).toBe(false)
 			// This mock replaces the executor that owns each handler's default one-second timeout.
-			// Task owns only the shared cleanup deadline so configured three-second hooks can finish.
+			// Task owns only the transcript-lookup deadline; it cannot consume a handler's allowance.
 			else expect(deadlines.some(({ milliseconds }) => milliseconds === 1_000)).toBe(false)
 		} finally {
 			fixture.release()
@@ -975,10 +1010,17 @@ describe("public Task termination hook identity and independent deadline", () =>
 			deadline!.controller.abort(new Error("Controlled cleanup deadline"))
 			const result = await operation.settled
 			if (result.kind === "threw") throw result.error
-			expect(runLifecycleHooks).not.toHaveBeenCalled()
+			expect(vi.mocked(runLifecycleHooks).mock.calls.map(([, payload]) => payload.hook_event_name)).toEqual([
+				"Interrupt",
+				"SessionEnd",
+			])
+			for (const [, payload, signal] of vi.mocked(runLifecycleHooks).mock.calls) {
+				expect(payload.transcript_path).toBeNull()
+				expect(signal.aborted).toBe(false)
+			}
 			fixture.release()
 			await fixture.transcript.mock.results[0].value
-			expect(runLifecycleHooks).not.toHaveBeenCalled()
+			expect(runLifecycleHooks).toHaveBeenCalledTimes(2)
 		} finally {
 			fixture.release()
 			await operation.settled

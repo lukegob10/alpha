@@ -85,6 +85,7 @@ export function ChatReasoningControl({
 		acknowledged?.scope === scope && acknowledged.source === taskReasoning ? acknowledged.state : taskReasoning
 	return (
 		<ReasoningSelector
+			appearance="menu"
 			state={state?.taskId === taskId ? state : undefined}
 			scopeKey={scope}
 			loading={profileLoading}

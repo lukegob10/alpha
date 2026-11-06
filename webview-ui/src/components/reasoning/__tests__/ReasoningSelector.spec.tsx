@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@/utils/test-utils"
 import userEvent from "@testing-library/user-event"
+import { installNativeTestFocus } from "@/utils/test-native-focus"
 
 import type { ComponentProps } from "react"
 import { useState } from "react"
@@ -65,6 +66,7 @@ const renderSelector = (
 ) =>
 	render(
 		<ReasoningSelector
+			appearance={props.appearance}
 			state={state}
 			scopeKey={props.scopeKey ?? "task-1/profile-a"}
 			onChange={props.onChange ?? vi.fn()}
@@ -77,6 +79,100 @@ const renderSelector = (
 	)
 
 describe("ReasoningSelector", () => {
+	it("keeps chat effort menus focused on the slider until more options are opened", () => {
+		const onChange = vi.fn()
+		renderSelector(effortState(), { appearance: "menu", onChange })
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "Medium")
+		expect(screen.getByTestId("reasoning-effort-value")).toHaveTextContent("Medium")
+		expect(screen.queryByRole("button", { name: "Default" })).not.toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+		expect(screen.queryByText("Low")).not.toBeInTheDocument()
+		expect(screen.queryByText("High")).not.toBeInTheDocument()
+		const more = screen.getByRole("button", { name: "chat:reasoning.moreOptions" })
+		expect(more).toHaveAttribute("aria-expanded", "false")
+		fireEvent.click(more)
+		expect(more).toHaveAttribute("aria-expanded", "true")
+		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Off" }))
+		expect(onChange).toHaveBeenCalledTimes(1)
+		expect(onChange).toHaveBeenCalledWith({ kind: "off" })
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByRole("button", { name: "chat:reasoning.moreOptions" })).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		)
+		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+	})
+
+	it("keeps the model default available through keyboard-accessible chat options", async () => {
+		const restoreFocus = installNativeTestFocus()
+		try {
+			const user = userEvent.setup()
+			const onChange = vi.fn()
+			renderSelector(effortState({ requested: { kind: "default" } }), { appearance: "menu", onChange })
+			await user.click(screen.getByTestId("reasoning-trigger"))
+			screen.getByRole("button", { name: "chat:reasoning.moreOptions" }).focus()
+			await user.keyboard("{Enter}")
+			expect(screen.getByRole("button", { name: "Default" })).toHaveAttribute("aria-pressed", "true")
+			await user.click(screen.getByRole("button", { name: "Default" }))
+			expect(onChange).toHaveBeenCalledTimes(1)
+			expect(onChange).toHaveBeenCalledWith({ kind: "default" })
+		} finally {
+			restoreFocus()
+		}
+	})
+
+	it("never exposes Off for a required-reasoning model when chat options are expanded", () => {
+		renderSelector(effortState({ capabilities: { kind: "effort", efforts: ["low", "high"], canDisable: false } }), {
+			appearance: "menu",
+		})
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "chat:reasoning.moreOptions" }))
+		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: "Off" })).not.toBeInTheDocument()
+	})
+
+	it("resets expanded chat options when the profile changes", () => {
+		const onChange = vi.fn()
+		const { rerender } = renderSelector(effortState(), { appearance: "menu", onChange })
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "chat:reasoning.moreOptions" }))
+		rerender(
+			<ReasoningSelector
+				appearance="menu"
+				scopeKey="task-1/profile-b"
+				state={effortState()}
+				onChange={onChange}
+			/>,
+		)
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.queryByRole("button", { name: "Default" })).not.toBeInTheDocument()
+		expect(onChange).not.toHaveBeenCalled()
+	})
+
+	it("keeps budget settings accessible behind the chat menu gear", () => {
+		const onOpenAdvanced = vi.fn()
+		renderSelector(
+			effortState({
+				capabilities: { kind: "budget", canDisable: true, budgetTokens: 4096 },
+				requested: { kind: "on" },
+				effective: { kind: "on" },
+			}),
+			{ appearance: "menu", onOpenAdvanced },
+		)
+		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+		expect(screen.getByRole("button", { name: "On" })).toHaveAttribute("aria-pressed", "true")
+		expect(screen.queryByRole("button", { name: "Advanced" })).not.toBeInTheDocument()
+		expect(screen.queryByText("Budget: 4,096 tokens")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "chat:reasoning.moreOptions" }))
+		expect(screen.getByText("Budget: 4,096 tokens")).toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Advanced" }))
+		expect(onOpenAdvanced).toHaveBeenCalledTimes(1)
+		expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+	})
+
 	it("shows only the level while retaining a descriptive accessible name", () => {
 		renderSelector(effortState())
 
@@ -93,7 +189,10 @@ describe("ReasoningSelector", () => {
 
 		expect(screen.queryAllByRole("radio")).toHaveLength(0)
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuenow", "1")
-		expect(screen.getByTestId("reasoning-effort-slider-panel").textContent).toBe("Medium")
+		expect(screen.getByRole("heading", { name: "Reasoning" })).toBeInTheDocument()
+		expect(screen.getByTestId("reasoning-effort-value")).toHaveTextContent(/^Medium$/)
+		expect(screen.getByText("Low")).toBeInTheDocument()
+		expect(screen.getByText("High")).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument()
 
@@ -141,7 +240,7 @@ describe("ReasoningSelector", () => {
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuetext", "High")
 	})
 
-	it("keeps long provider effort lists on the slider without listing every level", () => {
+	it("labels the endpoints of long provider effort lists without listing every level", () => {
 		renderSelector(
 			effortState({
 				effective: { kind: "effort", effort: "high" },
@@ -157,9 +256,9 @@ describe("ReasoningSelector", () => {
 		fireEvent.click(screen.getByTestId("reasoning-trigger"))
 
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuemax", "6")
-		expect(screen.getByTestId("reasoning-effort-slider-panel").textContent).toBe("High")
-		expect(screen.queryByText("None")).not.toBeInTheDocument()
-		expect(screen.queryByText("Max")).not.toBeInTheDocument()
+		expect(screen.getByTestId("reasoning-effort-value")).toHaveTextContent(/^High$/)
+		expect(screen.getByText("None")).toBeInTheDocument()
+		expect(screen.getByText("Max")).toBeInTheDocument()
 		expect(screen.queryByText("Minimal")).not.toBeInTheDocument()
 		expect(screen.queryByText("Xhigh")).not.toBeInTheDocument()
 	})
@@ -230,7 +329,7 @@ describe("ReasoningSelector", () => {
 
 		fireEvent.click(screen.getByTestId("reasoning-trigger"))
 		expect(screen.getByRole("slider", { name: "Reasoning" })).toHaveAttribute("aria-valuenow", "0")
-		expect(screen.getByTestId("reasoning-effort-slider-panel").textContent).toBe("None")
+		expect(screen.getByTestId("reasoning-effort-value")).toHaveTextContent(/^None$/)
 		expect(screen.getByRole("button", { name: "Default" })).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "Off" })).toBeInTheDocument()
 
@@ -286,28 +385,34 @@ describe("ReasoningSelector", () => {
 		expect(screen.getByText(/Requested Default but using Default/)).toBeInTheDocument()
 	})
 
-	it("shows pending current state and fallback details", () => {
-		renderSelector({
-			...effortState({
-				requested: { kind: "effort", effort: "high" },
-				effective: { kind: "effort", effort: "low" },
-				fallbackReason: "unsupported",
-			}),
-			pending: true,
-			current: {
-				requested: { kind: "effort", effort: "medium" },
-				effective: { kind: "effort", effort: "medium" },
-				capabilities: { kind: "effort", efforts: ["low", "medium"], canDisable: true },
-			},
-		})
+	it.each(["default", "menu"] as const)(
+		"shows pending current state and fallback details in %s appearance",
+		(appearance) => {
+			renderSelector(
+				{
+					...effortState({
+						requested: { kind: "effort", effort: "high" },
+						effective: { kind: "effort", effort: "low" },
+						fallbackReason: "unsupported",
+					}),
+					pending: true,
+					current: {
+						requested: { kind: "effort", effort: "medium" },
+						effective: { kind: "effort", effort: "medium" },
+						capabilities: { kind: "effort", efforts: ["low", "medium"], canDisable: true },
+					},
+				},
+				{ appearance },
+			)
 
-		expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("next step")
-		fireEvent.click(screen.getByTestId("reasoning-trigger"))
+			expect(screen.getByTestId("reasoning-trigger")).toHaveTextContent("next step")
+			fireEvent.click(screen.getByTestId("reasoning-trigger"))
 
-		const fallback = screen.getByText(/Requested High but using Low/)
-		expect(fallback).toHaveTextContent("Unsupported")
-		expect(screen.getByText("Current: Medium")).toBeInTheDocument()
-	})
+			const fallback = screen.getByText(/Requested High but using Low/)
+			expect(fallback).toHaveTextContent("Unsupported")
+			expect(screen.getByText("Current: Medium")).toBeInTheDocument()
+		},
+	)
 
 	it("applies valid custom tokens and rejects invalid ones", () => {
 		const onChange = vi.fn()

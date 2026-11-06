@@ -1,10 +1,21 @@
-import { Anthropic } from "@anthropic-ai/sdk"
-import { Tiktoken } from "tiktoken/lite"
-import o200kBase from "tiktoken/encoders/o200k_base"
+import type { Anthropic } from "@anthropic-ai/sdk"
+import type { Tiktoken } from "tiktoken/lite"
 
 const TOKEN_FUDGE_FACTOR = 1.5
 
-let encoder: Tiktoken | null = null
+let encoderPromise: Promise<Tiktoken> | undefined
+
+function getEncoder(): Promise<Tiktoken> {
+	// Loading the WASM binding and vocabulary is expensive; share the first actual count's initialization.
+	return (encoderPromise ??= Promise.all([import("tiktoken/lite"), import("tiktoken/encoders/o200k_base")])
+		.then(([{ Tiktoken }, { default: o200kBase }]) => {
+			return new Tiktoken(o200kBase.bpe_ranks, o200kBase.special_tokens, o200kBase.pat_str)
+		})
+		.catch((error: unknown) => {
+			encoderPromise = undefined
+			throw error
+		}))
+}
 
 /**
  * Serializes a tool_use block to text for token counting.
@@ -59,10 +70,7 @@ export async function tiktoken(content: Anthropic.Messages.ContentBlockParam[]):
 
 	let totalTokens = 0
 
-	// Lazily create and cache the encoder if it doesn't exist.
-	if (!encoder) {
-		encoder = new Tiktoken(o200kBase.bpe_ranks, o200kBase.special_tokens, o200kBase.pat_str)
-	}
+	const encoder = await getEncoder()
 
 	// Process each content block using the cached encoder.
 	for (const block of content) {

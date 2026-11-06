@@ -13,6 +13,14 @@ const history = {
 }
 
 describe("saved thread model routes", () => {
+	it("round-trips fork activation while keeping older forks readable", () => {
+		const fork = { ...history, forkedFromId: "source-thread" }
+		expect(historyItemSchema.parse(fork)).not.toHaveProperty("forkSessionStarted")
+		for (const forkSessionStarted of [false, true]) {
+			expect(historyItemSchema.parse({ ...fork, forkSessionStarted }).forkSessionStarted).toBe(forkSessionStarted)
+		}
+	})
+
 	it("keeps legacy histories readable without a route capture", () => {
 		expect(historyItemSchema.parse(history)).not.toHaveProperty("threadModelRoute")
 	})

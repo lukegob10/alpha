@@ -1,8 +1,12 @@
 import * as vscode from "vscode"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest"
+import i18next from "i18next"
+import common from "../../../i18n/locales/en/common.json"
 import { parseLifecycleHookConfig, readCompletionHookConfig, selectLifecycleHookCommands } from "../LifecycleHookConfig"
 
 const command = { command: process.execPath, args: ["hook.js"] }
+
+beforeAll(() => i18next.addResourceBundle("en", "common", common, true, true))
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -108,9 +112,24 @@ describe("lifecycle hook configuration", () => {
 		])
 	})
 
-	it("bounds event handlers after merging groups", () => {
-		const config = parseLifecycleHookConfig({ Stop: [{ hooks: Array.from({ length: 9 }, () => command) }] })
-		expect(config.stop).toHaveLength(8)
+	it("retains later matcher groups after the first eight handlers", () => {
+		const validator = { ...command, args: ["patch-validator.js"] }
+		const config = parseLifecycleHookConfig({
+			PreToolUse: [
+				{ matcher: "read_file", hooks: Array.from({ length: 8 }, () => command) },
+				{ matcher: "apply_patch", hooks: [validator] },
+			],
+		})
+		expect(config.preToolUse).toHaveLength(9)
+		expect(
+			selectLifecycleHookCommands(config, { hook_event_name: "PreToolUse", tool_name: "apply_patch" }),
+		).toEqual([{ ...validator, matcher: "apply_patch" }])
+	})
+
+	it("rejects event overflow explicitly instead of retaining a partial hook configuration", () => {
+		expect(() =>
+			parseLifecycleHookConfig({ Stop: [{ hooks: Array.from({ length: 257 }, () => command) }] }),
+		).toThrow(/Stop.*256/)
 	})
 })
 
