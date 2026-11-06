@@ -73,11 +73,14 @@ describe("hybrid code search", () => {
 					void search.then(() => {
 						returnedAt = Date.now()
 					})
-					await vi.runAllTimersAsync()
+					const expectedReturnedMs = strategy === "previous-allSettled" ? 30_000 : 1500
+					// Let lazy tokenizer imports settle at the response boundary before draining the provider's later timer.
+					await vi.advanceTimersByTimeAsync(expectedReturnedMs)
 					const response = await search
 					samples.push({ strategy, returnedMs: returnedAt })
 					expect(response.results[0].id).toBe("local")
-					expect(returnedAt).toBe(strategy === "previous-allSettled" ? 30_000 : 1500)
+					expect(returnedAt).toBe(expectedReturnedMs)
+					await vi.runAllTimersAsync()
 				}
 			}
 			console.info("RETRIEVAL_WAIT_BENCHMARK", JSON.stringify({ providerMs: 30_000, samples }))
