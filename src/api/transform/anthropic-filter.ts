@@ -1,6 +1,7 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { getLifecycleHookContextFallback } from "./lifecycle-hook-context"
 
 /**
  * Set of content block types that are valid for Anthropic API.
@@ -30,6 +31,10 @@ export function filterNonAnthropicBlocks(
 ): Anthropic.Messages.MessageParam[] {
 	return normalizeToolHistory(messages)
 		.map((message) => {
+			const hookContext = getLifecycleHookContextFallback(message)
+			if (hookContext !== undefined) {
+				return { role: "user" as const, content: [{ type: "text" as const, text: hookContext }] }
+			}
 			// Source message metadata stays in Alpha's transcript. Anthropic does
 			// not accept Responses phases, message IDs, or canonical evidence.
 			const {

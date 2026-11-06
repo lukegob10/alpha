@@ -36,6 +36,15 @@ export function getLifecycleHookDeveloperContext(message: unknown): string | und
 	return content === provenance.fragments.map(({ text }) => text).join("\n\n") ? content : undefined
 }
 
+/** Native Messages, Gemini and VS Code LM have no chronological developer role. */
+export function getLifecycleHookContextFallback(message: unknown): string | undefined {
+	const context = getLifecycleHookDeveloperContext(message)
+	if (context === undefined || !isRecord(message) || !isRecord(message.hook_prompt)) return undefined
+	// Codex be765f1 preserves lifecycle output as developer context. Retain its
+	// position and validated origin on hosts that only expose user/model messages.
+	return `<developer_context source="lifecycle_hook" event="${message.hook_prompt.event}">\n${context}\n</developer_context>`
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
 }

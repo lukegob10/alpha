@@ -3,6 +3,7 @@ import * as vscode from "vscode"
 import { snapshotVscodeLmThinking, type VscodeLmThinking } from "@alpha-code/types"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { getLifecycleHookContextFallback } from "./lifecycle-hook-context"
 
 /**
  * Safely converts a value into a plain object.
@@ -129,6 +130,11 @@ export function convertToVsCodeLmMessages(
 	const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = []
 
 	for (const anthropicMessage of normalizeToolHistory(anthropicMessages)) {
+		const hookContext = getLifecycleHookContextFallback(anthropicMessage)
+		if (hookContext !== undefined) {
+			vsCodeLmMessages.push(vscode.LanguageModelChatMessage.User(hookContext))
+			continue
+		}
 		// Handle simple string messages
 		if (typeof anthropicMessage.content === "string") {
 			vsCodeLmMessages.push(

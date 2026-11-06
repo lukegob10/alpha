@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util"
 import { snapshotGeminiResponse, type GeminiResponseHistoryBlock } from "@alpha-code/types"
 
 import { normalizeToolHistory, toFunctionToolInput } from "./tool-history"
+import { getLifecycleHookContextFallback } from "./lifecycle-hook-context"
 import { t } from "../../i18n"
 import { sanitizeToolUseId } from "../../utils/tool-id"
 
@@ -253,6 +254,8 @@ export function convertAnthropicMessageToGemini(
 	message: Anthropic.Messages.MessageParam,
 	options?: GeminiConversionOptions,
 ): Content[] {
+	const hookContext = getLifecycleHookContextFallback(message)
+	if (hookContext !== undefined) return [{ role: "user", parts: [{ text: hookContext }] }]
 	const originalParts = getOriginalGeminiParts(message, options)
 	if (originalParts) return [{ role: "model", parts: originalParts }]
 	const parts = convertAnthropicContentToGemini(message.content, options)

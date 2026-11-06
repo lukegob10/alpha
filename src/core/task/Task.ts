@@ -351,7 +351,7 @@ import {
 import type { TaskToolSurface } from "../tools/TaskToolSurface"
 import type { ToolPolicyInput } from "../agent/ToolPolicy"
 import type { AgentTurnEvent, AgentTurnEventIdentity } from "../agent/AgentTurnEvents"
-import type { StepContext } from "../agent/StepContext"
+import { digestValue, type StepContext } from "../agent/StepContext"
 import {
 	getCompactionTargetTokens,
 	getContextLimits,
@@ -1260,11 +1260,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private pendingHookCleanupFailures?: Set<HookCommandCleanupError>
 	private asyncLifecycleHooks?: AsyncLifecycleHooks
 	private pendingModelRequestObservers?: Set<Promise<void>>
-	private lifecycleHookStartSource: "startup" | "resume" = "startup"
+	private lifecycleHookStartSource: "startup" | "resume" | "fork" = "startup"
 	private lifecycleHookStartConsumed = false
 	private interruptHookPending = false
 	private lifecycleHookStoppedThisTurn = false
 	private sessionEndHookConsumed = false
+	private terminationLifecycleHookRun?: Promise<void>
+	private projectInstructionWarningDigest?: string
 	private submittedLifecycleHookBlocks = new WeakSet<object>()
 	private pendingLifecycleHookContexts: Array<{
 		provenance: CompletionHookPromptProvenance
@@ -1980,7 +1982,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			parentTask?.presentationModelCalls === false
 				? false
 				: undefined
-		this.lifecycleHookStartSource = historyItem ? "resume" : "startup"
+		this.lifecycleHookStartSource = historyItem
+			? historyItem.forkedFromId && historyItem.forkSessionStarted === false
+				? "fork"
+				: "resume"
+			: "startup"
 		if (historyItem) this.apiConversationHistoryWritePrecondition = "unobserved"
 		this.diagnosticSession = (historyItem?.diagnosticSession ?? diagnosticSession) === true
 		const incidentId = historyItem?.diagnosticIncidentId ?? diagnosticIncidentId
@@ -6184,6 +6190,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async finishCanonicalLifecycleCancellation(
 		reason: string,
 		cancellation: TaskCancellationBoundary,
+		beforeTerminal?: () => Promise<void>,
 	): Promise<void> {
 		const ownsCancellation = cancellation.guard
 		const runId = cancellation.runId
@@ -6270,6 +6277,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw new Error("Recovery tool-result receipts could not be durably saved during task termination.")
 			}
 		}
+		// Codex be765f1 interrupt_hooks.rs requires cleanup after receipts settle
+		// and before the interrupted turn's terminal notification.
+		await beforeTerminal?.()
+		if (!ownsCancellation()) return
 		await this.enqueueCanonicalLifecycleEvent(
 			"turn_terminal",
 			{ status: "interrupted", reason },
@@ -6370,6 +6381,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					: "interrupted"
 		try {
 			if (guard && !guard()) return
+			// Explicit Stop's finalizer joins original producers and repairs their
+			// receipts before running Interrupt and publishing the terminal record.
+			// A retryable abort failure can clear the abort promise while its finalizer still owns the turn.
+			if (outcome.status === "aborted" && (this.abortTaskPromise || this.taskTerminationPromise)) return
+			if (outcome.status === "aborted") {
+				await this.runTerminationLifecycleHooks("Interrupt")
+				if (guard && !guard()) return
+			}
 			await this.enqueueCanonicalLifecycleEvent("phase_changed", { phase: "finalizing" }, undefined, guard)
 			if (guard && !guard()) return
 			await this.enqueueCanonicalLifecycleEvent(
@@ -6899,6 +6918,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
 	) {
 		if (ownership && !ownership.guard()) return
+		const currentMessage = this.findCurrentAlphaMessage(message)
+		if (!currentMessage) return
 		const provider = ownership ? ownership.provider : this.providerRef.deref()
 		if (stateUpdate === "task") {
 			await provider?.postTaskStateToWebview()
@@ -6908,20 +6929,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await provider?.postStateToWebviewWithoutTaskHistory()
 		} else {
 			if (typeof provider?.postTaskMessageToWebview === "function") {
-				await provider.postTaskMessageToWebview("messageCreated", this.taskId, message)
+				await provider.postTaskMessageToWebview("messageCreated", this.taskId, currentMessage)
 			} else if (typeof provider?.postMessageToWebview === "function") {
 				// Compatibility for narrow provider doubles and alternate hosts.
 				await provider.postMessageToWebview({
 					type: "messageCreated",
 					taskId: this.taskId,
-					alphaMessage: message,
+					alphaMessage: currentMessage,
 				})
 			} else {
 				await provider?.postStateToWebviewWithoutTaskHistory()
 			}
 		}
 		if (ownership && !ownership.guard()) return
-		this.emit(AlphaCodeEventName.Message, { action: "created", message })
+		const publishedMessage = this.findCurrentAlphaMessage(message)
+		if (publishedMessage) this.emit(AlphaCodeEventName.Message, { action: "created", message: publishedMessage })
 	}
 
 	/**
@@ -6955,14 +6977,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
 	) {
 		if (ownership && !ownership.guard()) return
+		const currentMessage = this.findCurrentAlphaMessage(message)
+		if (!currentMessage) return
 		const provider = ownership ? ownership.provider : this.providerRef.deref()
 		if (typeof provider?.postTaskMessageToWebview === "function") {
-			await provider.postTaskMessageToWebview("messageUpdated", this.taskId, message)
+			await provider.postTaskMessageToWebview("messageUpdated", this.taskId, currentMessage)
 		} else {
-			await provider?.postMessageToWebview({ type: "messageUpdated", taskId: this.taskId, alphaMessage: message })
+			await provider?.postMessageToWebview({
+				type: "messageUpdated",
+				taskId: this.taskId,
+				alphaMessage: currentMessage,
+			})
 		}
 		if (ownership && !ownership.guard()) return
-		this.emit(AlphaCodeEventName.Message, { action: "updated", message })
+		const publishedMessage = this.findCurrentAlphaMessage(message)
+		if (publishedMessage) this.emit(AlphaCodeEventName.Message, { action: "updated", message: publishedMessage })
 	}
 
 	/** Separate presentation transport, with the same observable provider creation boundary as task work. */
@@ -7094,9 +7123,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			route?: Pick<HistoryItem, "apiConfigName" | "threadModelOverride" | "threadModelRoute">
 		},
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
+		deferPublication = false,
 	): Promise<boolean> {
 		if (ownership && !ownership.guard()) return false
 		const capturedProvider = ownership?.provider
+		let publishHistory: (() => Promise<void>) | undefined
 		const save = this.alphaMessagesSaveQueue.then(async () => {
 			let routeProvider: AlphaProvider | undefined
 			let previousRouteHistory: HistoryItem | undefined
@@ -7174,6 +7205,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				if (ownership && !ownership.guard()) return false
 				const provider = ownership ? capturedProvider : this.providerRef.deref()
+				const previousHistory = provider?.taskHistoryStore?.get(this.taskId)
 				if (reasoning?.route) {
 					routeProvider = provider
 					previousRouteHistory = provider?.taskHistoryStore.get(this.taskId)
@@ -7184,12 +7216,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				await provider?.updateTaskHistory(
 					reasoning?.route ? { ...historyItem, ...reasoning.route } : historyItem,
-					reasoning ? { broadcast: false } : undefined,
+					{ broadcast: false },
 				)
 				if (ownership && !ownership.guard()) return false
 				onPersisted?.()
 				routeCommitted = true
 				if (ownership && !ownership.guard()) return false
+				if (!reasoning && !deferPublication && typeof provider?.publishTaskHistoryUpdate === "function") {
+					publishHistory = () => provider.publishTaskHistoryUpdate(this.taskId, previousHistory)
+				}
 				return true
 			} catch (error) {
 				if (ownership && !ownership.guard()) return false
@@ -7215,13 +7250,26 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		})
 
-		// Keep the queue usable after a failed write. The caller still receives the
-		// boolean result for this specific operation.
+		// This fence owns durable transcript/history writes only. A delayed webview
+		// must not prevent a later completion-evidence save from reaching persistence.
 		this.alphaMessagesSaveQueue = save.then(
 			() => undefined,
 			() => undefined,
 		)
-		return save
+		const saved = await save
+		if (!saved || !publishHistory) return saved
+		try {
+			if (ownership && !ownership.guard()) return false
+			await publishHistory()
+			if (ownership && !ownership.guard()) return false
+			return true
+		} catch (error) {
+			if (ownership && !ownership.guard()) return false
+			console.error("Failed to publish Alpha task history:", error)
+			// A presentation failure cannot retry an already-committed mutation over
+			// a newer save admitted through the released durability fence.
+			return true
+		}
 	}
 
 	private async saveAlphaMessages(ownership?: {
@@ -7246,6 +7294,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		matchesMessage: (message: AlphaMessage) => boolean = (message) => message.ts === timestamp,
 		ownership?: { guard: CanonicalLifecycleEventGuard; provider: AlphaProvider | undefined },
 		messageTurn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn(),
+		deferPublication = false,
 	): Promise<{ message: AlphaMessage; created: boolean } | undefined> {
 		for (const retryDelayMs of [0, 50, 200]) {
 			if (ownership && !ownership.guard()) return
@@ -7279,6 +7328,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				designHandoff,
 				undefined,
 				ownership,
+				deferPublication,
 			)
 
 			if (ownership && !ownership.guard()) return
@@ -7307,6 +7357,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		return undefined
+	}
+
+	private findCurrentAlphaMessage(message: AlphaMessage): AlphaMessage | undefined {
+		if (message.type === "say" && message.say === "subagent_group") {
+			// Group creation timestamps can collide; the durable group ID owns this row.
+			const groupId = message.subagentGroup?.groupId
+			if (!groupId) return undefined
+			return this.alphaMessages.find(
+				(candidate) =>
+					candidate.type === "say" &&
+					candidate.say === "subagent_group" &&
+					candidate.subagentGroup?.groupId === groupId,
+			)
+		}
+		return this.findMessageByTimestamp(message.ts)
 	}
 
 	private getOffscreenAutoAskResponse(
@@ -9460,7 +9525,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			deliveredContext = (await this.persistLifecycleHookContexts(invocation.guard, signal)) || deliveredContext
 			for (const { outcome } of completed) {
 				for (const warning of outcome.warnings) {
-					await this.publishLifecycleHookMessage(`Warning: ${warning}`, invocation, signal)
+					await this.publishAgentFeedbackMessage(`Warning: ${warning}`, invocation, signal)
 					this.assertLifecycleHookOwnership(invocation.guard)
 					if (signal.aborted) return false
 				}
@@ -9482,10 +9547,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return this.asyncLifecycleHooks?.hasPendingContext?.() === true
 	}
 
-	/** Lifecycle feedback commits through the existing UI queue before it becomes visible. */
-	private async publishLifecycleHookMessage(
+	/** Host feedback commits through the existing UI queue before it becomes visible. */
+	private async publishAgentFeedbackMessage(
 		text: string,
-		invocation: TaskLifecycleHookInvocation,
+		invocation: Pick<TaskLifecycleHookInvocation, "guard" | "provider" | "turn">,
 		signal: AbortSignal,
 	): Promise<void> {
 		this.assertLifecycleHookOwnership(invocation.guard)
@@ -9516,7 +9581,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		this.assertLifecycleHookOwnership(invocation.guard)
 		if (!isActive()) return
-		if (!saved || !message) throw new TaskPersistenceError("Unable to persist lifecycle hook feedback.")
+		if (!saved || !message) throw new TaskPersistenceError(t("common:agentFeedback.persistenceFailed"))
 		await this.publishAlphaMessageCreated(message, undefined, ownership)
 		this.assertLifecycleHookOwnership(invocation.guard)
 	}
@@ -9564,7 +9629,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.assertLifecycleHookOwnership(invocation.guard)
 			this.throwIfStepInterrupted(signal)
 			if (outcome.shouldStop) {
-				if (outcome.stopReason) await this.publishLifecycleHookMessage(outcome.stopReason, invocation, signal)
+				if (outcome.stopReason) await this.publishAgentFeedbackMessage(outcome.stopReason, invocation, signal)
 				this.assertLifecycleHookOwnership(invocation.guard)
 				throw new LifecycleHookStoppedError(
 					event,
@@ -9590,14 +9655,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	/** Root cleanup keeps its independent deadline and the original native identity after request cancellation. */
-	private async runTerminationLifecycleHooks(): Promise<void> {
+	/** Root cleanup keeps the original owner after cancellation; each command owns its timeout. */
+	private runTerminationLifecycleHooks(event?: "Interrupt"): Promise<void> {
+		// Engine cancellation and explicit Stop may join at this boundary. Serialize
+		// both stages so SessionEnd cannot overtake an already running Interrupt.
+		const run = (this.terminationLifecycleHookRun ?? Promise.resolve()).then(() =>
+			this.dispatchTerminationLifecycleHooks(event),
+		)
+		this.terminationLifecycleHookRun = run
+		void run
+			.finally(() => {
+				if (this.terminationLifecycleHookRun === run) this.terminationLifecycleHookRun = undefined
+			})
+			.catch(() => undefined)
+		return run
+	}
+
+	private async dispatchTerminationLifecycleHooks(event?: "Interrupt"): Promise<void> {
 		if (this.taskKind !== "primary" || this.sessionEndHookConsumed || !this.isCurrentApiConversationHistoryOwner())
 			return
 		const invocation = this.captureLifecycleHookInvocation()
 		const { config, guard } = invocation
-		if (!config.sessionEnd?.length && !(this.interruptHookPending && config.interrupt?.length)) return
-		this.sessionEndHookConsumed = true
+		const hasInterrupt = this.interruptHookPending && config.interrupt?.length
+		if (event === "Interrupt" ? !hasInterrupt : !config.sessionEnd?.length && !hasInterrupt) return
 		const signal = AbortSignal.timeout(3_000)
 		let cancelTranscriptLookup!: () => void
 		const cancelledTranscript = new Promise<null>((resolve) => {
@@ -9610,18 +9690,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} finally {
 			signal.removeEventListener("abort", cancelTranscriptLookup)
 		}
-		if (signal.aborted || !guard()) return
+		if (!guard()) return
 		const context = { ...invocation.context, session_id: this.taskId, transcript_path: transcriptPath }
+		// Transcript lookup cannot consume a cleanup command's one-to-three-second
+		// allowance. The executor bounds every handler, including queued handlers.
+		const cleanupSignal = new AbortController().signal
 		if (this.interruptHookPending && config.interrupt?.length) {
 			this.interruptHookPending = false
-			await runLifecycleHooks(config, { ...context, hook_event_name: "Interrupt" }, signal, {
+			await runLifecycleHooks(config, { ...context, hook_event_name: "Interrupt" }, cleanupSignal, {
 				...this.lifecycleHookRuntime(invocation),
 				advisory: true,
 			})
 			if (!guard()) return
 		}
-		if (config.sessionEnd?.length && !signal.aborted && guard())
-			await runLifecycleHooks(config, { ...context, hook_event_name: "SessionEnd", reason: "other" }, signal)
+		if (event === "Interrupt") return
+		if (config.sessionEnd?.length && !this.sessionEndHookConsumed && guard()) {
+			this.sessionEndHookConsumed = true
+			await runLifecycleHooks(
+				config,
+				{ ...context, hook_event_name: "SessionEnd", reason: "other" },
+				cleanupSignal,
+			)
+		}
 	}
 
 	private async persistLifecycleHookContexts(
@@ -9688,7 +9778,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.assertLifecycleHookOwnership(guard)
 			if (isCancelled()) return { warnings: [] }
 			for (const warning of outcome.warnings) {
-				await this.publishLifecycleHookMessage(`Warning: ${warning}`, invocation, signal)
+				await this.publishAgentFeedbackMessage(`Warning: ${warning}`, invocation, signal)
 				this.assertLifecycleHookOwnership(guard)
 				if (isCancelled()) return { warnings: [] }
 			}
@@ -9736,6 +9826,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		await this.drainAsyncLifecycleHooks(signal, invocation)
 		this.assertLifecycleHookOwnership(guard)
 		if (!this.lifecycleHookStartConsumed) {
+			if (this.lifecycleHookStartSource === "fork") {
+				// Codex be765f1 sends source=fork at first activation. Consume the host marker
+				// durably before dispatch, including when no SessionStart handler is configured.
+				const provider = invocation.provider
+				const history = provider?.taskHistoryStore.get(this.taskId)
+				if (!provider || !history)
+					throw new TaskPersistenceError(t("common:lifecycleHooks.forkStartPersistenceFailed"))
+				this.throwIfStepInterrupted(signal)
+				await provider.updateTaskHistory({ ...history, forkSessionStarted: true }, { broadcast: false })
+				this.assertLifecycleHookOwnership(guard)
+				this.throwIfStepInterrupted(signal)
+			}
 			this.lifecycleHookStartConsumed = true
 			const child = this.taskKind === "subagent" && this.parentTaskId && this.subagentGroupId
 			const startHooks = child ? config.subagentStart : config.sessionStart
@@ -9877,13 +9979,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			if (!isCurrent()) return {}
 			for (const warning of outcome.warnings) {
-				await this.publishLifecycleHookMessage(`Warning: ${warning}`, invocation, signal)
+				await this.publishAgentFeedbackMessage(`Warning: ${warning}`, invocation, signal)
 				if (!isCurrent()) return {}
 			}
 			// Codex a0981298 ends a stopped turn before optional compaction or idle work.
 			if (outcome.shouldStop) this.lifecycleHookStoppedThisTurn = true
 			if (outcome.shouldStop && outcome.stopReason) {
-				await this.publishLifecycleHookMessage(outcome.stopReason, invocation, signal)
+				await this.publishAgentFeedbackMessage(outcome.stopReason, invocation, signal)
 				if (!isCurrent()) return {}
 			}
 			if (!outcome.prompt || !isCurrent()) return {}
@@ -10858,7 +10960,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (failureObserved) throw firstFailure
 	}
 
-	public async upsertSubagentGroup(group: SubagentGroupState, guard?: CanonicalLifecycleEventGuard): Promise<void> {
+	public async upsertSubagentGroup(
+		group: SubagentGroupState,
+		guard?: CanonicalLifecycleEventGuard,
+		options: { deferPublication?: boolean } = {},
+	): Promise<void> {
 		if (guard && !guard()) return
 		// Cancellation may still publish for its original owner; capture even an absent provider before waiting.
 		const ownership = guard ? { guard, provider: this.providerRef.deref() } : undefined
@@ -10876,11 +10982,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				message.say === "subagent_group" &&
 				message.subagentGroup?.groupId === snapshot.groupId,
 			ownership,
+			undefined,
+			options.deferPublication,
 		)
 		if (guard && !guard()) return
 		if (!committed) throw new Error("Unable to stage the sub-agent group.")
 		this.releaseSubagentReviewBarrierIfSettled()
 		if (guard && !guard()) return
+		// Evidence reconciliation publishes the current state through the provider
+		// after these required saves; it must not join optional presentation here.
+		if (options.deferPublication) {
+			const message = this.findCurrentAlphaMessage(committed.message)
+			if (message) {
+				this.emit(AlphaCodeEventName.Message, { action: committed.created ? "created" : "updated", message })
+			}
+			return
+		}
 		if (committed.created) await this.publishAlphaMessageCreated(committed.message, undefined, ownership)
 		else await this.updateAlphaMessage(committed.message, ownership)
 	}
@@ -14878,7 +14995,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		if (ownsCancellation()) {
 			try {
-				await this.finishCanonicalLifecycleCancellation(this.abortReason ?? "user_cancelled", cancellation)
+				await this.finishCanonicalLifecycleCancellation(
+					this.abortReason ?? "user_cancelled",
+					cancellation,
+					!failureObserved ? () => this.runTerminationLifecycleHooks("Interrupt") : undefined,
+				)
 				if (ownsCancellation()) await this.canonicalLifecycleQueue
 			} catch (error) {
 				captureFailure(error)
@@ -17162,7 +17283,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
 					}
 					if (inputHookOutcome.stopReason)
-						await this.publishLifecycleHookMessage(
+						await this.publishAgentFeedbackMessage(
 							inputHookOutcome.stopReason,
 							lifecycleInputInvocation,
 							stepInterruptionSignal,
@@ -19989,6 +20110,27 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.subagentInstructionSnapshotPersisted = true
 	}
 
+	private async publishProjectInstructionWarnings(
+		warnings: readonly string[],
+		guard: CanonicalLifecycleEventGuard,
+	): Promise<void> {
+		if (!warnings.length) {
+			if (guard()) this.projectInstructionWarningDigest = undefined
+			return
+		}
+		this.assertLifecycleHookOwnership(guard)
+		const digest = digestValue(warnings)
+		if (this.projectInstructionWarningDigest === digest) return
+		const invocation = { guard, provider: this.providerRef.deref(), turn: this.captureMessageTurn() }
+		const signal = this.getTaskLifetimeCancellationSignal()
+		for (const warning of warnings) {
+			this.throwIfStepInterrupted(signal)
+			await this.publishAgentFeedbackMessage(warning, invocation, signal)
+			this.assertLifecycleHookOwnership(guard)
+		}
+		this.projectInstructionWarningDigest = digest
+	}
+
 	/** Capture the exact mutable instruction layer once before a managed child launches. */
 	public async captureEffectiveInheritedInstructions(): Promise<{
 		effectiveText: string
@@ -20014,6 +20156,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
+		const instructionOwner = this.captureAgentStepOwnership()
+		const warnings: string[] = []
 		const provider = this.providerRef.deref()
 		if (!provider) throw new Error("Provider not available")
 		const state = await provider.getState()
@@ -20039,6 +20183,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.cwd,
 					settings.enableSubfolderRules,
 					settings.projectInstructionDiscovery,
+					(warning) => warnings.push(warning),
 				)
 			: []
 		const customInstructionText = await addCustomInstructions(
@@ -20051,8 +20196,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				alphaIgnoreInstructions: this.alphaIgnoreController?.getInstructions(),
 				settings,
 				agentInstructionSources,
+				onWarning: (warning) => warnings.push(warning),
 			},
 		)
+		await this.publishProjectInstructionWarnings(warnings, instructionOwner)
 		// Include learned context in the frozen aggregate so children do not reread it.
 		const memoryContext = await this.getMemoryContext()
 		const effectiveText = [customInstructionText, memoryContext].filter(Boolean).join("\n\n")
@@ -20075,6 +20222,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		onInstructionFragments?: (fragments: readonly ApiInstructionFragment[]) => void,
 		approvalModeOverride?: ApprovalMode,
 	): Promise<string> {
+		const instructionOwner = this.captureAgentStepOwnership()
 		const apiHandler = capturedProvider?.apiHandler ?? this.api
 		const instructionModel = apiHandler.getModel()
 		const apiConfiguration = capturedProvider?.apiConfiguration ?? this.effectiveApiConfiguration
@@ -20190,6 +20338,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				isSubagent ? undefined : await provider.getSkillsManager(this, projectInstructionDiscovery),
 			)
 		})()
+		await this.publishProjectInstructionWarnings(promptFragments.warnings ?? [], instructionOwner)
 
 		const designHandoff = designHandoffOverride === null ? undefined : (designHandoffOverride ?? this.designHandoff)
 		const handoffPrompt =

@@ -530,11 +530,28 @@
 
 	.chat-composer-settings .chat-composer-profile {
 		flex: 0 1 auto;
-		max-width: 160px;
+		max-width: 96px;
 	}
 
 	.chat-composer-settings .chat-composer-approval {
+		flex: 0 1 auto;
+		max-width: 96px;
+	}
+
+	.chat-composer-plan {
+		display: inline-flex;
 		flex: 0 0 auto;
+		align-items: center;
+		height: 20px;
+		margin-left: 3px;
+		padding: 0 6px;
+		border: 1px solid var(--vscode-contrastBorder, var(--border-subtle));
+		border-radius: 5px;
+		background: var(--alpha-accent-soft);
+		color: var(--vscode-textLink-foreground);
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 1;
 	}
 
 	.chat-composer-actions {
@@ -652,7 +669,7 @@
 		}
 
 		.chat-composer-settings .chat-composer-profile {
-			max-width: 100px;
+			max-width: 60px;
 		}
 	}
 
@@ -704,6 +721,230 @@
 }
 
 @layer utilities {
+	.composer-menu,
+	.composer-menu-trigger,
+	.composer-menu-lowercase,
+	.chat-composer-plan {
+		text-transform: lowercase;
+	}
+
+	.composer-menu {
+		font-family: var(--chat-ui-font-family);
+		font-size: 12px;
+		line-height: 18px;
+	}
+
+	.composer-menu input {
+		text-transform: none;
+	}
+
+	.composer-menu button,
+	.composer-menu-lowercase button {
+		text-transform: inherit;
+	}
+
+	.composer-menu input::placeholder {
+		text-transform: lowercase;
+	}
+
+	.composer-menu-list {
+		padding-block: 4px;
+	}
+
+	.composer-menu .composer-menu-item {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		width: 100%;
+		min-width: 0;
+		min-height: 28px;
+		padding: 5px 12px;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		color: var(--vscode-foreground);
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.composer-menu .composer-menu-item:hover,
+	.composer-menu .composer-menu-item[aria-pressed="true"] {
+		background: var(--alpha-accent-soft);
+	}
+
+	.composer-menu .composer-menu-item:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: -1px;
+	}
+
+	.composer-menu .composer-menu-item:disabled {
+		color: var(--vscode-descriptionForeground);
+		cursor: default;
+	}
+
+	.composer-menu-profile-row {
+		display: flex;
+		align-items: center;
+		padding: 2px 6px;
+	}
+
+	.composer-menu .composer-menu-profile-item {
+		flex: 1 1 auto;
+		gap: 4px;
+		width: auto;
+		min-height: 24px;
+		padding: 4px 6px;
+		overflow: hidden;
+	}
+
+	.composer-menu-check {
+		flex: 0 0 auto;
+		width: 14px;
+		height: 14px;
+		font-size: 14px;
+	}
+
+	.composer-menu-footer {
+		display: flex;
+		align-items: center;
+		padding: 6px 8px;
+		border-top: 1px solid var(--vscode-dropdown-border);
+	}
+
+	.composer-menu-slider {
+		padding: 8px 12px 12px;
+	}
+
+	.composer-menu .reasoning-effort-value {
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--vscode-foreground);
+		font: inherit;
+	}
+
+	.composer-menu-body > p,
+	.composer-menu-body > .text-xs,
+	.composer-menu-body > .space-y-1,
+	.composer-menu-body > .space-y-2 {
+		padding: 8px 12px;
+	}
+
+	.reasoning-effort-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.reasoning-effort-title {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		margin: 0;
+		color: var(--vscode-foreground);
+		font-size: 12px;
+		font-weight: 500;
+	}
+
+	.reasoning-effort-value {
+		padding: 3px 7px;
+		border: 1px solid var(--vscode-contrastBorder, var(--border-subtle));
+		border-radius: 6px;
+		background: var(--alpha-accent-soft);
+		color: var(--vscode-textLink-foreground);
+		font-size: 11px;
+		font-weight: 500;
+		line-height: 16px;
+	}
+
+	.reasoning-effort-rail {
+		position: relative;
+		padding-inline: 7px;
+	}
+
+	.reasoning-effort-stops {
+		position: absolute;
+		inset: auto 14px 0;
+		display: flex;
+		justify-content: space-between;
+		pointer-events: none;
+	}
+
+	.reasoning-effort-stops > span {
+		width: 3px;
+		height: 3px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--vscode-descriptionForeground) 40%, transparent);
+	}
+
+	.reasoning-effort-stops > span[data-active="true"] {
+		background: var(--vscode-textLink-foreground);
+	}
+
+	.reasoning-effort-slider {
+		height: 24px;
+	}
+
+	.reasoning-effort-slider [data-slot="slider-track"] {
+		height: 4px;
+		border: 0;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--vscode-descriptionForeground) 20%, transparent);
+	}
+
+	.reasoning-effort-slider [data-slot="slider-range"] {
+		background: var(--vscode-textLink-foreground);
+	}
+
+	.reasoning-effort-slider [data-slot="slider-thumb"] {
+		width: 14px;
+		height: 14px;
+		border: 2px solid var(--vscode-textLink-foreground);
+		background: var(--vscode-editor-background);
+		box-shadow: 0 1px 3px var(--vscode-widget-shadow);
+		transition: box-shadow 120ms ease;
+	}
+
+	.reasoning-effort-slider [data-slot="slider-thumb"]:hover,
+	.reasoning-effort-slider [data-slot="slider-thumb"]:focus-visible {
+		outline: 2px solid var(--vscode-focusBorder);
+		outline-offset: 2px;
+	}
+
+	.reasoning-effort-endpoints {
+		display: flex;
+		justify-content: space-between;
+		padding-inline: 7px;
+		color: var(--vscode-descriptionForeground);
+		font-size: 11px;
+		line-height: 16px;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.reasoning-effort-slider [data-slot="slider-thumb"] {
+			transition: none;
+		}
+	}
+
+	@media (forced-colors: active) {
+		.reasoning-effort-slider [data-slot="slider-track"] {
+			border: 1px solid CanvasText;
+			background: Canvas;
+		}
+
+		.reasoning-effort-slider [data-slot="slider-range"],
+		.reasoning-effort-stops > span[data-active="true"] {
+			background: Highlight;
+		}
+
+		.reasoning-effort-slider [data-slot="slider-thumb"] {
+			border-color: Highlight;
+			background: Canvas;
+		}
+	}
+
 	.chat-composer textarea {
 		caret-color: var(--chat-foreground);
 	}

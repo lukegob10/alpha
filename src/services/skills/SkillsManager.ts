@@ -77,6 +77,7 @@ export class SkillsManager {
 			options.projectInstructionDiscovery ??
 			(typeof vscode.workspace.getConfiguration === "function" ? captureProjectInstructionDiscoveryOptions() : {})
 		this.projectInstructionDiscovery = Object.freeze({
+			...(discovery.projectDocMaxBytes === undefined ? {} : { projectDocMaxBytes: discovery.projectDocMaxBytes }),
 			...(discovery.projectRootMarkers === undefined
 				? {}
 				: { projectRootMarkers: Object.freeze([...discovery.projectRootMarkers]) }),

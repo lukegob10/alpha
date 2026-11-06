@@ -2,13 +2,13 @@ import type { IndexingStatus } from "@alpha-code/types"
 
 import { act, cleanup, fireEvent, render, screen } from "@src/utils/test-utils"
 import { PopoverTrigger } from "@src/components/ui"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 import { vscode } from "@src/utils/vscode"
 
 import { CodeIndexPopover } from "../CodeIndexPopover"
 
 vi.mock("@src/context/ExtensionStateContext", () => ({
-	useExtensionState: vi.fn(),
+	useShellState: vi.fn(),
 }))
 
 vi.mock("@src/i18n/TranslationContext", () => ({
@@ -42,7 +42,7 @@ function renderPopover(
 		codebaseIndexEmbedderProvider: "legacy-embedding-provider",
 	},
 ) {
-	vi.mocked(useExtensionState, { partial: true }).mockReturnValue({
+	vi.mocked(useShellState, { partial: true }).mockReturnValue({
 		codebaseIndexConfig,
 		codebaseIndexModels: { vertex: vertexModels },
 		cwd: "/workspace",

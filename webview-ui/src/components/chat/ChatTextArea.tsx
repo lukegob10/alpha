@@ -12,7 +12,7 @@ import React, {
 import DynamicTextArea from "react-textarea-autosize"
 import { SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
-import type { AlphaMessage, ApprovalMode } from "@alpha-code/types"
+import { restoreTaskMode, type AlphaMessage, type ApprovalMode } from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
 import { WebviewMessage } from "@alpha/WebviewMessage"
@@ -36,7 +36,6 @@ import { StandardTooltip } from "@src/components/ui"
 import {} from "@src/components/ui/dropdown-menu"
 
 import Thumbnails from "../common/Thumbnails"
-import { ModeSelector } from "./ModeSelector"
 import { ApiConfigSelector } from "./ApiConfigSelector"
 import { AutoApproveDropdown } from "./AutoApproveDropdown"
 import { ChatReasoningControl } from "../reasoning/ChatReasoningControl"
@@ -125,7 +124,6 @@ export const ChatTextArea = memo(
 				currentApiConfigName,
 				listApiConfigMeta,
 				customModes,
-				customModePrompts,
 				cwd,
 				pinnedApiConfigs,
 				togglePinnedApiConfig,
@@ -1112,15 +1110,6 @@ export const ChatTextArea = memo(
 				],
 			)
 
-			// Common mode selector handler
-			const handleModeChange = useCallback(
-				(value: Mode) => {
-					setMode(value)
-					vscode.postMessage({ type: "mode", text: value })
-				},
-				[setMode],
-			)
-
 			// Helper function to handle API config change
 			const handleApiConfigChange = useCallback((value: string) => {
 				setReasoningProfileLoading(true)
@@ -1329,17 +1318,6 @@ export const ChatTextArea = memo(
 
 						<div className="chat-composer-footer">
 							<div className="chat-composer-settings" aria-label={t("chat:composer.settings")}>
-								<ModeSelector
-									isVisible={isVisible}
-									value={mode}
-									title={t("chat:selectMode")}
-									onChange={handleModeChange}
-									disabled={modeSwitchDisabled}
-									triggerClassName="shrink-0"
-									modeShortcutText={modeShortcutText}
-									customModes={customModes}
-									customModePrompts={customModePrompts}
-								/>
 								<ApiConfigSelector
 									isVisible={isVisible}
 									value={currentConfigId}
@@ -1364,6 +1342,18 @@ export const ChatTextArea = memo(
 									onDraftApprovalModeChange={onDraftApprovalModeChange}
 									triggerClassName="chat-composer-approval"
 								/>
+								{restoreTaskMode(mode) === planModeSlug && (
+									<StandardTooltip
+										className="lowercase"
+										content={t("chat:composer.planModeTooltip", { shortcut: modeShortcutText })}>
+										<span
+											className="chat-composer-plan"
+											data-testid="plan-mode-badge"
+											role="status">
+											{t("chat:composer.planMode")}
+										</span>
+									</StandardTooltip>
+								)}
 							</div>
 							<div className="chat-composer-actions">
 								{isEditMode && (

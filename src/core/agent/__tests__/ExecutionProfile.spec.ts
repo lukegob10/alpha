@@ -49,6 +49,7 @@ describe("execution profiles", () => {
 			"exec_command",
 			"write_stdin",
 			"request_user_input",
+			"skill",
 			"update_plan",
 			"spawn_agent",
 			"list_agents",

@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.23",
+		version: "3.2.24",
 	},
 }))
 
@@ -37,20 +37,22 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.23" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.24" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.23")).toBeInTheDocument()
-		expect(screen.getByText("Alpha v3.2.23 tidies the profile menu.")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.24")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.24 refreshes the composer and strengthens task recovery."),
+		).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
 		renderAnnouncement()
 
-		expect(screen.getAllByRole("listitem")).toHaveLength(1)
+		expect(screen.getAllByRole("listitem")).toHaveLength(3)
 		expect(
 			screen.getByText(
-				"Choose, search, pin, and edit saved profiles from a simpler menu with accessible labels.",
+				"Use compact profile, approval, and reasoning menus, with a Plan badge and keyboard mode switching.",
 			),
 		).toBeInTheDocument()
 	})
@@ -58,10 +60,12 @@ describe("Announcement", () => {
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
-		expect(screen.getByText("Alpha v3.2.23 tidies the profile menu.")).toBeInTheDocument()
+		expect(
+			screen.getByText("Alpha v3.2.24 refreshes the composer and strengthens task recovery."),
+		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Choose, search, pin, and edit saved profiles from a simpler menu with accessible labels.",
+				"Use compact profile, approval, and reasoning menus, with a Plan badge and keyboard mode switching.",
 			),
 		).toBeInTheDocument()
 	})

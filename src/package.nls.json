@@ -43,6 +43,7 @@
 	"settings.useAgentRules.description": "Enable loading of AGENTS.md files for agent-specific rules (see https://agent-rules.org/)",
 	"settings.projectRootMarkers.description": "User-owned filenames or directories that mark the nearest project instruction and portable skill boundary. Defaults to .git. An empty list restricts discovery to the task folder; workspace settings cannot override it.",
 	"settings.projectDocFallbackFilenames.description": "User-owned instruction filenames to try after AGENTS.override.md and AGENTS.md, before the legacy AGENT.md fallback. Entries must be basenames; workspace settings cannot override this list.",
+	"settings.projectDocMaxBytes.description": "Maximum UTF-8 bytes shared by discovered project instructions, including AGENTS.local.md and optional descendants. Defaults to 32 KiB; 0 disables project instruction files. Alpha warns when files are truncated or skipped. Workspace settings cannot override this limit.",
 	"settings.apiRequestTimeout.description": "Maximum seconds without provider response activity (0 disables this inactivity timeout, default: 600s). Progressing responses can continue beyond this window. Explicit caller and context deadlines still apply.",
 	"settings.newTaskRequireTodos.description": "Require todos parameter when creating new tasks with the new_task tool",
 	"settings.codeIndex.embeddingBatchSize.description": "The batch size for embedding operations during code indexing. Adjust this based on your API provider's limits. Default is 60.",

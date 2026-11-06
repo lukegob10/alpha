@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.23",
+	"version": "3.2.24",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -761,6 +761,14 @@
 					},
 					"default": [],
 					"description": "%settings.projectDocFallbackFilenames.description%"
+				},
+				"alpha.projectDocMaxBytes": {
+					"type": "integer",
+					"scope": "application",
+					"default": 32768,
+					"minimum": 0,
+					"maximum": 1048576,
+					"description": "%settings.projectDocMaxBytes.description%"
 				},
 				"alpha.apiRequestTimeout": {
 					"type": "number",

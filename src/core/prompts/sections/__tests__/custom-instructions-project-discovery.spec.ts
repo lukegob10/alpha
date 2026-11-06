@@ -1,6 +1,8 @@
 import fs from "fs/promises"
 import * as os from "os"
 import path from "path"
+import i18next from "i18next"
+import common from "../../../../i18n/locales/en/common.json"
 
 const { homeDirectoryState } = vi.hoisted(() => ({ homeDirectoryState: { value: "" } }))
 
@@ -16,6 +18,7 @@ import {
 } from "../custom-instructions"
 
 describe("project instruction discovery", () => {
+	beforeAll(() => i18next.addResourceBundle("en", "common", common, true, true))
 	let fixtureRoot: string
 	let projectCwd: string
 	let homeDirectory: string
@@ -94,7 +97,15 @@ describe("project instruction discovery", () => {
 		await fs.writeFile(alphaSubfolderRules, alphaSubfolderText)
 
 		const readFileSpy = vi.spyOn(fs, "readFile")
-		const sources = await loadApplicableAgentInstructionSources(nestedDirectory, true)
+		const warnings: string[] = []
+		const sources = await loadApplicableAgentInstructionSources(nestedDirectory, true, undefined, (warning) =>
+			warnings.push(warning),
+		)
+		expect(warnings).toHaveLength(2)
+		expect(warnings[0]).toContain("AGENTS.local.md")
+		expect(warnings[0]).toContain("truncated to 3 of")
+		expect(warnings[1]).toContain("skipped")
+		expect(warnings.join(" ")).toContain("alpha.projectDocMaxBytes")
 
 		expect(sources).toEqual([
 			{ kind: "agents", ref: path.join(fixtureRoot, "AGENTS.override.md"), text: rootText },
@@ -128,6 +139,68 @@ describe("project instruction discovery", () => {
 		expect(prompt).toContain("Alpha global guidance")
 		expect(prompt).toContain("Mode guidance")
 		expect(prompt).not.toContain("This file is beyond the project instruction budget")
+	})
+
+	it("uses a larger captured budget in both prompt assembly and inherited source discovery", async () => {
+		const rootText = "R".repeat(32 * 1024)
+		await fs.writeFile(path.join(fixtureRoot, "AGENTS.override.md"), rootText)
+		const discovery = { projectDocMaxBytes: 64 * 1024 }
+		const onWarning = vi.fn()
+		const sources = await loadApplicableAgentInstructionSources(projectCwd, false, discovery, onWarning)
+		const parts = await addCustomInstructionParts("", "", projectCwd, "code", {
+			settings: {
+				projectInstructionDiscovery: discovery,
+				useAgentRules: true,
+				todoListEnabled: true,
+				newTaskRequireTodos: false,
+			},
+			onWarning,
+		})
+		expect(sources.map(({ text }) => text)).toEqual([rootText, "Workspace guidance"])
+		expect(renderCustomInstructionParts(parts)).toContain("Workspace guidance")
+		expect(onWarning).not.toHaveBeenCalled()
+	})
+
+	it("surfaces the same UTF-8 truncation warning from rendered and frozen instruction paths", async () => {
+		await fs.writeFile(path.join(fixtureRoot, "AGENTS.override.md"), "a😀b")
+		const discovery = { projectDocMaxBytes: 3 }
+		const sourceWarnings: string[] = []
+		const promptWarnings: string[] = []
+		const sources = await loadApplicableAgentInstructionSources(projectCwd, false, discovery, (warning) =>
+			sourceWarnings.push(warning),
+		)
+		const parts = await addCustomInstructionParts("", "", projectCwd, "code", {
+			settings: {
+				projectInstructionDiscovery: discovery,
+				useAgentRules: true,
+				todoListEnabled: true,
+				newTaskRequireTodos: false,
+			},
+			onWarning: (warning) => promptWarnings.push(warning),
+		})
+		expect(sources.map(({ text }) => text)).toEqual(["a"])
+		expect(renderCustomInstructionParts(parts)).not.toContain("�")
+		expect(sourceWarnings).toEqual(promptWarnings)
+		expect(sourceWarnings[0]).toContain("truncated to 1 of 6 UTF-8 bytes")
+	})
+
+	it("honors a zero budget as explicit instruction-file opt-out without warnings or body reads", async () => {
+		const onWarning = vi.fn()
+		const read = vi.spyOn(fs, "readFile")
+		const discovery = { projectDocMaxBytes: 0 }
+		expect(await loadApplicableAgentInstructionSources(projectCwd, false, discovery, onWarning)).toEqual([])
+		const parts = await addCustomInstructionParts("", "", projectCwd, "code", {
+			settings: {
+				projectInstructionDiscovery: discovery,
+				useAgentRules: true,
+				todoListEnabled: true,
+				newTaskRequireTodos: false,
+			},
+			onWarning,
+		})
+		expect(parts.some(({ origin }) => origin === "agent-rules")).toBe(false)
+		expect(read.mock.calls.some(([file]) => path.basename(file.toString()).startsWith("AGENT"))).toBe(false)
+		expect(onWarning).not.toHaveBeenCalled()
 	})
 
 	it("keeps an empty override authoritative without spending the deeper instruction budget", async () => {

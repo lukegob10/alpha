@@ -1,5 +1,5 @@
 import React from "react"
-import { Settings } from "lucide-react"
+import { Check } from "lucide-react"
 import { type ApprovalMode, migrateApprovalMode, taskApprovalModeUpdateResultSchema } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
@@ -17,7 +17,8 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
-import { Popover, PopoverContent, PopoverTrigger, StandardTooltip, Button } from "@/components/ui"
+import { Popover, PopoverContent, PopoverTrigger, StandardTooltip } from "@/components/ui"
+import { IconButton } from "./IconButton"
 
 interface AutoApproveDropdownProps {
 	disabled?: boolean
@@ -245,6 +246,7 @@ export const AutoApproveDropdown = ({
 		<>
 			<Popover open={open} onOpenChange={setOpen} data-testid="auto-approve-dropdown-root">
 				<StandardTooltip
+					className="lowercase"
 					content={
 						targetTaskId
 							? t("chat:autoApprove.tooltipMode", { mode: t(`chat:autoApprove.modes.${mode}`) })
@@ -255,7 +257,11 @@ export const AutoApproveDropdown = ({
 					<PopoverTrigger
 						disabled={disabled || !canChangeMode}
 						data-testid="auto-approve-dropdown-trigger"
-						className={cn("composer-control composer-selector", "max-[300px]:shrink-0", triggerClassName)}>
+						className={cn(
+							"composer-control composer-selector composer-menu-trigger",
+							"max-[300px]:shrink-0",
+							triggerClassName,
+						)}>
 						<span className="truncate min-w-0">{t(`chat:autoApprove.modes.${mode}`)}</span>
 					</PopoverTrigger>
 				</StandardTooltip>
@@ -263,24 +269,11 @@ export const AutoApproveDropdown = ({
 					align="start"
 					sideOffset={4}
 					container={portalContainer}
-					className="p-0 overflow-hidden w-[min(320px,calc(100vw-2rem))]"
+					aria-label={t("chat:autoApprove.title")}
+					className="composer-menu p-0 overflow-hidden w-[min(180px,calc(100vw-24px))]"
 					onOpenAutoFocus={(e) => e.preventDefault()}>
 					<div className="flex flex-col w-full">
-						<div className="p-3 border-b border-vscode-dropdown-border">
-							<div className="flex items-center justify-between gap-1 pr-1 pb-2">
-								<h4 className="m-0 font-bold text-base text-vscode-foreground">
-									{t("chat:autoApprove.title")}
-								</h4>
-								<Settings
-									className="inline mb-0.5 mr-1 size-4 cursor-pointer"
-									onClick={handleOpenSettings}
-								/>
-							</div>
-							<p className="m-0 text-xs text-vscode-descriptionForeground">
-								{t(isDraft ? "chat:autoApprove.descriptionDraft" : "chat:autoApprove.description")}
-							</p>
-						</div>
-						<div className="flex flex-col gap-1 p-3">
+						<div className="composer-menu-list">
 							{isUpdatingCurrentTask && (
 								<p className="m-0 text-xs text-vscode-descriptionForeground" role="status">
 									{t("chat:autoApprove.updatingTask")}
@@ -300,18 +293,30 @@ export const AutoApproveDropdown = ({
 							{MODES.map((candidate) => (
 								<StandardTooltip
 									key={candidate}
+									className="lowercase"
 									content={t(`chat:autoApprove.modeDescription.${candidate}`)}>
-									<Button
-										variant={mode === candidate ? "primary" : "secondary"}
+									<button
+										type="button"
 										onClick={() => selectMode(candidate)}
 										disabled={disabled || !canChangeMode || isUpdatingCurrentTask}
 										aria-pressed={mode === candidate}
 										data-testid={`approval-mode-${candidate}`}
-										className="justify-start h-auto px-2 py-2 text-sm">
-										<span className="font-bold">{t(`chat:autoApprove.modes.${candidate}`)}</span>
-									</Button>
+										className="composer-menu-item">
+										<span className="flex-1">{t(`chat:autoApprove.modes.${candidate}`)}</span>
+										{mode === candidate && (
+											<Check aria-hidden="true" className="composer-menu-check" />
+										)}
+									</button>
 								</StandardTooltip>
 							))}
+						</div>
+						<div className="composer-menu-footer">
+							<IconButton
+								iconClass="codicon-settings-gear"
+								title={t("chat:autoApprove.settings")}
+								onClick={handleOpenSettings}
+								tooltip={false}
+							/>
 						</div>
 					</div>
 				</PopoverContent>
@@ -326,7 +331,7 @@ export const AutoApproveDropdown = ({
 				onOpenChange={(open) => {
 					if (!open) setBypassWarningTarget(undefined)
 				}}>
-				<AlertDialogContent>
+				<AlertDialogContent className="composer-menu-lowercase">
 					<AlertDialogHeader>
 						<AlertDialogTitle>{t("chat:autoApprove.bypassWarning.title")}</AlertDialogTitle>
 						<AlertDialogDescription>{t("chat:autoApprove.bypassWarning.body")}</AlertDialogDescription>

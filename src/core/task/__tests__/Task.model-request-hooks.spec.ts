@@ -121,7 +121,7 @@ function fixture() {
 		appendAgentTurnEvent: vi.fn(async () => undefined),
 		backoffAndAnnounce: vi.fn(async () => undefined),
 		agentRetryPolicy: new AgentRetryPolicy({ baseDelayMs: 0, jitter: "none" }),
-		publishLifecycleHookMessage: vi.fn(),
+		publishAgentFeedbackMessage: vi.fn(),
 		queueLifecycleHookContext: vi.fn(),
 		say: vi.fn(),
 	}) as Task
@@ -178,7 +178,7 @@ describe("Task model request observations", () => {
 		expect(vi.mocked(runLifecycleHooks).mock.calls[1][0].postModelRequest![0]).not.toHaveProperty("timeoutMs")
 		expect(task.apiConversationHistory).toEqual(before)
 		expect(task.userMessageContent).toEqual([])
-		expect(task["publishLifecycleHookMessage"]).not.toHaveBeenCalled()
+		expect(task["publishAgentFeedbackMessage"]).not.toHaveBeenCalled()
 		expect(task["queueLifecycleHookContext"]).not.toHaveBeenCalled()
 		expect(task["lifecycleHookStoppedThisTurn"]).not.toBe(true)
 	})

@@ -79,6 +79,148 @@ export async function exerciseRenderedComposer(
 		workbenchSession,
 	)
 	await fs.writeFile(path.join(directory, "ui-composer-empty-send.png"), Buffer.from(emptyScreenshot.data, "base64"))
+	const keyboard = async (key: string, code: string, keyCode: number, modifiers = 0) => {
+		for (const type of ["keyDown", "keyUp"]) {
+			await cdp.request(
+				"Input.dispatchKeyEvent",
+				{
+					type,
+					key,
+					code,
+					windowsVirtualKeyCode: keyCode,
+					modifiers,
+					...(type === "keyDown" && key === "Enter" ? { text: "\r" } : {}),
+				},
+				sessionId,
+			)
+		}
+	}
+	const captureControls = async (name: string) => {
+		await waitUntil(
+			() =>
+				evaluate<boolean>(
+					"!d.getAnimations().some(a=>a.playState==='running'&&a.effect?.getTiming().iterations!==Infinity)",
+				),
+			Date.now() + 5000,
+			`composer_${name}_animation_timeout`,
+		)
+		const screenshot = await cdp.request<{ data: string }>(
+			"Page.captureScreenshot",
+			{ format: "png" },
+			workbenchSession,
+		)
+		await fs.writeFile(path.join(directory, `ui-composer-${name}.png`), Buffer.from(screenshot.data, "base64"))
+	}
+	assert.equal(await evaluate("!!d.querySelector('[data-testid=mode-selector-trigger]')"), false)
+	assert.equal(await evaluate("!!d.querySelector('[data-testid=plan-mode-badge]')"), false)
+	await evaluate("d.querySelector('.new-task-composer textarea').focus()")
+	await keyboard("Tab", "Tab", 9, 8)
+	await waitUntil(
+		() => evaluate<boolean>("!!d.querySelector('[data-testid=plan-mode-badge]')"),
+		Date.now() + 5000,
+		"composer_plan_badge_timeout",
+	)
+	const planLayout = await evaluate<{ approvalRight: number; planLeft: number; text: string; transform: string }>(
+		"(()=>{const a=d.querySelector('[data-testid=auto-approve-dropdown-trigger]').getBoundingClientRect();const p=d.querySelector('[data-testid=plan-mode-badge]');return {approvalRight:a.right,planLeft:p.getBoundingClientRect().left,text:p.textContent,transform:d.defaultView.getComputedStyle(p).textTransform}})()",
+	)
+	assert.equal(planLayout.text, "Plan")
+	assert.equal(planLayout.transform, "lowercase")
+	assert.ok(planLayout.planLeft >= planLayout.approvalRight, "Plan must sit immediately after approvals")
+	await captureControls("plan-badge")
+	await keyboard("Tab", "Tab", 9, 8)
+	await waitUntil(
+		() => evaluate<boolean>("!d.querySelector('[data-testid=plan-mode-badge]')"),
+		Date.now() + 5000,
+		"composer_code_mode_timeout",
+	)
+	const popupWidths: Record<string, number> = {}
+	const menuStyles: Record<string, { font: string; radius: string; background: string }> = {}
+	for (const [name, selector, maximum] of [
+		["profile-menu", "[data-testid=dropdown-trigger]", 180],
+		["approval-menu", "[data-testid=auto-approve-dropdown-trigger]", 180],
+		["reasoning-menu", "[data-testid=reasoning-trigger]", 220],
+	] as const) {
+		await waitUntil(
+			() => evaluate<boolean>(`!!d.querySelector('${selector}:not(:disabled)')`),
+			Date.now() + 5000,
+			`composer_${name}_ready_timeout`,
+		)
+		await evaluate(`d.querySelector('${selector}').focus()`)
+		await keyboard("Enter", "Enter", 13)
+		await waitUntil(
+			() => evaluate<boolean>("!!d.querySelector('[role=dialog]')"),
+			Date.now() + 5000,
+			`composer_${name}_open_timeout`,
+		)
+		await captureControls(name)
+		popupWidths[name] = await evaluate<number>("d.querySelector('[role=dialog]').getBoundingClientRect().width")
+		const viewportWidth = await evaluate<number>("d.documentElement.clientWidth")
+		assert.ok(
+			Math.abs(popupWidths[name]! - Math.min(maximum, viewportWidth - 24)) <= 1,
+			`${name} must retain its compact width`,
+		)
+		const appearance = await evaluate<{
+			transform: string
+			triggerTransform: string
+			buttonTransforms: string[]
+			font: string
+			radius: string
+			background: string
+		}>(
+			`(()=>{const p=d.querySelector('[role=dialog]');const s=e=>d.defaultView.getComputedStyle(e);return {transform:s(p).textTransform,triggerTransform:s(d.querySelector('${selector}')).textTransform,buttonTransforms:[...p.querySelectorAll('button')].map(e=>s(e).textTransform),font:s(p).fontSize,radius:s(p).borderRadius,background:s(p).backgroundColor}})()`,
+		)
+		assert.equal(appearance.transform, "lowercase", `${name} must display lowercase labels`)
+		assert.equal(appearance.triggerTransform, "lowercase", `${name} trigger must display lowercase labels`)
+		assert.ok(appearance.buttonTransforms.every((value) => value === "lowercase"))
+		menuStyles[name] = { font: appearance.font, radius: appearance.radius, background: appearance.background }
+		if (name === "profile-menu") {
+			assert.ok(
+				await evaluate<boolean>(
+					"d.querySelector('[role=dialog] button[aria-current=true]').textContent.includes('Composer fixture')",
+				),
+				"lowercase presentation must preserve the original provider name",
+			)
+		}
+		if (name === "approval-menu") {
+			const approvals = await evaluate<{ rows: number; selected: number; extraText: number; settings: boolean }>(
+				"(()=>{const p=d.querySelector('[role=dialog]');return {rows:p.querySelectorAll('[data-testid^=approval-mode-]').length,selected:p.querySelectorAll('[aria-pressed=true]').length,extraText:p.querySelectorAll('h1,h2,h3,p').length,settings:!!p.querySelector('.composer-menu-footer button[aria-label]')}})()",
+			)
+			assert.deepEqual(approvals, { rows: 3, selected: 1, extraText: 0, settings: true })
+		}
+		if (name === "reasoning-menu") {
+			const slider = await evaluate<{ track: number; thumb: number; value: string }>(
+				"(()=>{const r=d.querySelector('[data-testid=reasoning-slider]');const s=e=>d.defaultView.getComputedStyle(e);return {track:parseFloat(s(r.querySelector('[data-slot=slider-track]')).height),thumb:parseFloat(s(r.querySelector('[data-slot=slider-thumb]')).width),value:d.querySelector('[data-testid=reasoning-effort-value]').textContent}})()",
+			)
+			assert.deepEqual(slider, { track: 4, thumb: 14, value: "Medium" })
+			const visibleChoices = () =>
+				evaluate<number>(
+					"[...d.querySelectorAll('[data-testid^=reasoning-choice-]')].filter(e=>e.getClientRects().length>0).length",
+				)
+			assert.equal(await visibleChoices(), 0, "default/off must stay out of the primary slider view")
+			await evaluate("d.querySelector('.composer-menu-footer button[aria-expanded]').focus()")
+			await keyboard("Enter", "Enter", 13)
+			await waitUntil(async () => (await visibleChoices()) === 2, Date.now() + 5000, "reasoning_options_timeout")
+			await captureControls("reasoning-options")
+			await keyboard("Enter", "Enter", 13)
+			await waitUntil(
+				async () => (await visibleChoices()) === 0,
+				Date.now() + 5000,
+				"reasoning_options_hide_timeout",
+			)
+		}
+		await keyboard("Escape", "Escape", 27)
+		await waitUntil(
+			() => evaluate<boolean>("!d.querySelector('[role=dialog]')"),
+			Date.now() + 5000,
+			`composer_${name}_close_timeout`,
+		)
+	}
+	assert.deepEqual(menuStyles["approval-menu"], menuStyles["profile-menu"])
+	assert.deepEqual(menuStyles["reasoning-menu"], menuStyles["profile-menu"])
+	await fs.writeFile(
+		path.join(directory, "ui-composer-controls.json"),
+		JSON.stringify({ planLayout, popupWidths, menuStyles }, null, 2),
+	)
 	assert.equal(
 		await evaluate<boolean>(
 			"(()=>{const e=d.querySelector('.new-task-composer textarea');e.focus();return d.activeElement===e})()",
@@ -286,6 +428,11 @@ export async function exerciseRenderedComposer(
 	)
 	await exerciseRenderedFirstPrompt(cdp, editorSession, workbenchSession, directory, nonce, signal)
 	return [
+		"composer-keyboard-plan-badge",
+		"composer-compact-selectors",
+		"composer-reasoning-slider",
+		"composer-unified-lowercase-menus",
+		"composer-keyboard-reasoning-options",
 		"composer-first-prompt-admission",
 		"composer-persistent-send",
 		"composer-native-sidebar-header",

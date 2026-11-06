@@ -30,6 +30,7 @@ import { TelemetryService } from "@alpha-code/telemetry"
 import { DEFAULT_HYBRID_REASONING_MODEL_MAX_TOKENS, type ApiHandlerOptions } from "../../shared/api"
 
 import { convertAnthropicMessagesToGemini } from "../transform/gemini-format"
+import { getLifecycleHookDeveloperContext } from "../transform/lifecycle-hook-context"
 import { t } from "i18next"
 import {
 	ApiStreamDeadlineError,
@@ -91,7 +92,9 @@ function prependUserInstructionContext(
 	if (!userContext) return messages
 
 	const firstMessage = messages[0]
-	if (firstMessage?.role !== "user") {
+	// Validate hook provenance before prefixing any project text; changing its
+	// recorded body would erase the origin used by the provider-role fallback.
+	if (firstMessage?.role !== "user" || getLifecycleHookDeveloperContext(firstMessage) !== undefined) {
 		return [{ role: "user", content: userContext }, ...messages]
 	}
 

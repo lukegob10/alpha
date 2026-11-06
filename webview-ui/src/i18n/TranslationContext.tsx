@@ -1,7 +1,7 @@
-import React, { createContext, useContext, ReactNode, useEffect, useCallback } from "react"
+import React, { createContext, useContext, ReactNode, useEffect, useCallback, useMemo } from "react"
 import { useTranslation } from "react-i18next"
 import i18next from "./setup"
-import { useExtensionState } from "@/context/ExtensionStateContext"
+import { useShellState } from "@/context/ExtensionStateContext"
 import { formatLanguage } from "@alpha/language"
 
 // Create context for translations
@@ -17,31 +17,24 @@ export const TranslationContext = createContext<{
 // Translation provider component
 export const TranslationProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
 	// Initialize with default configuration
-	const { i18n } = useTranslation()
-	// Get the extension state directly - it already contains all state properties
-	const extensionState = useExtensionState()
+	const { t, i18n } = useTranslation()
+	const { language } = useShellState()
 
 	useEffect(() => {
-		i18n.changeLanguage(formatLanguage(extensionState.language))
-	}, [i18n, extensionState.language])
+		i18n.changeLanguage(formatLanguage(language))
+	}, [i18n, language])
 
 	// Memoize the translation function to prevent unnecessary re-renders
 	const translate = useCallback(
 		(key: string, options?: Record<string, any>) => {
-			return i18n.t(key, options)
+			return t(key, options)
 		},
-		[i18n],
+		[t],
 	)
+	// The hook replaces t on languageChanged even when the i18n instance stays the same.
+	const contextValue = useMemo(() => ({ t: translate, i18n }), [translate, i18n])
 
-	return (
-		<TranslationContext.Provider
-			value={{
-				t: translate,
-				i18n,
-			}}>
-			{children}
-		</TranslationContext.Provider>
-	)
+	return <TranslationContext.Provider value={contextValue}>{children}</TranslationContext.Provider>
 }
 
 // Custom hook for easy translations

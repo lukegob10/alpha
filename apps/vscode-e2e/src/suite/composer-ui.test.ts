@@ -28,7 +28,11 @@ suite("Rendered composer", function () {
 				contextWindow: 128_000,
 				maxTokens: 4096,
 				supportsPromptCache: false,
+				supportsReasoningEffort: ["low", "medium", "high"],
+				reasoningEffort: "medium",
 			},
+			enableReasoningEffort: true,
+			reasoningEffort: "medium",
 		})
 		await provider.activateProviderProfile({ name: "Composer fixture" })
 		await vscode.commands.executeCommand("alpha.SidebarProvider.focus")

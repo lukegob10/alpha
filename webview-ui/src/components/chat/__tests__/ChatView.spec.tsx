@@ -2331,6 +2331,78 @@ describe("ChatView file-change summaries", () => {
 	})
 })
 
+describe("ChatView restored-chat composer routing", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each(["initializing", "waiting", "completed"] as const)(
+		"preserves the draft while a restored %s chat awaits its transcript",
+		async (lifecycle) => {
+			const view = renderChatView()
+			const taskId = "restored-chat"
+			const state: Partial<ExtensionState> = {
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				currentTaskItem: { id: taskId, task: "Saved chat", ts: 1 },
+				taskStateSeq: 1,
+				alphaMessagesSeq: 1,
+				alphaMessages: [],
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						status: "idle",
+						lifecycle,
+						isActive: true,
+						isStreaming: false,
+						isTurnActive: false,
+						isWaitingForInput: false,
+					},
+				},
+			}
+			mockPostMessage(state)
+			await waitFor(() =>
+				expect(view.getByTestId("chat-textarea")).toHaveAttribute("data-is-task-draft", "false"),
+			)
+			const input = view.getByTestId("chat-textarea").querySelector("input")!
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.change(input, { target: { value: "Continue this saved chat" } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			fireEvent.click(view.getByTestId("mock-send"))
+
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+			expect(input).toHaveValue("Continue this saved chat")
+			expect(view.getByTestId("mock-send")).toBeDisabled()
+
+			mockPostMessage({
+				...state,
+				alphaMessagesSeq: 2,
+				alphaMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Saved chat" },
+					{
+						type: "ask",
+						ask: lifecycle === "completed" ? "resume_completed_task" : "resume_task",
+						ts: 2,
+						text: "Resume this chat?",
+						partial: false,
+					},
+				],
+			})
+			await waitFor(() => expect(view.getByTestId("mock-send")).toBeEnabled())
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+
+			expect(vscode.postMessage).toHaveBeenCalledWith(
+				expect.objectContaining({
+					type: "askResponse",
+					askResponse: "messageResponse",
+					askMessageTs: 2,
+					taskId,
+					text: "Continue this saved chat",
+				}),
+			)
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "newTask" }))
+		},
+	)
+})
+
 describe("ChatView - Plan command", () => {
 	beforeEach(() => vi.clearAllMocks())
 

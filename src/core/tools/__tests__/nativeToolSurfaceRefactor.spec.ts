@@ -214,6 +214,7 @@ describe("native tool-surface refactor contract", () => {
 					"get_goal",
 					"list_tickets",
 					"read_ticket",
+					"skill",
 					"request_user_input",
 					"exec_command",
 					"write_stdin",
@@ -231,7 +232,17 @@ describe("native tool-surface refactor contract", () => {
 				name: "get_goal",
 				capabilities: { sideEffects: "none", requiresApproval: false },
 			})
-			for (const name of ["create_goal", "update_goal"]) {
+			// Loading skill instructions cannot widen Plan's execution policy.
+			expect(result.surface?.isCallable("skill")).toBe(true)
+			for (const name of [
+				"create_goal",
+				"update_goal",
+				"apply_patch",
+				"create_ticket",
+				"update_ticket",
+				"delete_ticket",
+				"delete_tickets",
+			]) {
 				expect(result.allowedFunctionNames, name).not.toContain(name)
 				expect(result.surface?.isCallable(name), name).toBe(false)
 				expect(result.surface?.resolve(name), name).toBeUndefined()

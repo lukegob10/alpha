@@ -110,6 +110,17 @@ describe("AutoApproveDropdown", () => {
 		vi.useRealTimers()
 	})
 
+	it("shows a compact permission list without a visible heading or explanatory paragraph", () => {
+		mockState.currentTaskApprovalMode = "auto"
+		fireEvent.click(render(<AutoApproveDropdown />).getByTestId("auto-approve-dropdown-trigger"))
+		expect(screen.getByRole("dialog", { name: "chat:autoApprove.title" })).toBeInTheDocument()
+		expect(screen.queryByRole("heading")).not.toBeInTheDocument()
+		expect(screen.queryByText("chat:autoApprove.description")).not.toBeInTheDocument()
+		expect(screen.queryByText("chat:autoApprove.descriptionDraft")).not.toBeInTheDocument()
+		expect(screen.getByTestId("approval-mode-auto")).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByRole("button", { name: "chat:autoApprove.settings" })).toBeInTheDocument()
+	})
+
 	it("cycles the current task Ask, Auto, Full Access, Ask through acknowledged host updates", () => {
 		mockState.currentTaskApprovalMode = "ask"
 		mockState.approvalModeBypassAcknowledged = true

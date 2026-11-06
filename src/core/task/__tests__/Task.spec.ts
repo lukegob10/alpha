@@ -516,6 +516,31 @@ describe("Alpha", () => {
 	})
 
 	describe("constructor", () => {
+		it.each([
+			[undefined, "resume"],
+			[false, "fork"],
+			[true, "resume"],
+		] as const)("restores a fork with start marker %s as %s", (forkSessionStarted, source) => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				historyItem: {
+					id: "fork-task",
+					forkedFromId: "source-task",
+					forkSessionStarted,
+					number: 1,
+					ts: 1,
+					task: "Continue the fork",
+					tokensIn: 0,
+					tokensOut: 0,
+					totalCost: 0,
+				},
+				startTask: false,
+				enableCheckpoints: false,
+			})
+			expect(task["lifecycleHookStartSource"]).toBe(source)
+		})
+
 		it.each([false, true])(
 			"retains host-owned assignment context after construction (cold reload=%s)",
 			async (reload) => {

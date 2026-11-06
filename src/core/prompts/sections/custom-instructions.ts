@@ -12,8 +12,10 @@ import {
 	getProjectInstructionDirectoriesForCwd,
 	getSafeProjectInstructionFilenames,
 	getConfigDirectoriesForCwd,
+	resolveProjectDocMaxBytes,
 	type ProjectInstructionDiscoveryOptions,
 } from "../../../services/config-paths"
+import { t } from "../../../i18n"
 
 /**
  * Safely read a file and return its trimmed content
@@ -89,14 +91,21 @@ async function directoryExists(dirPath: string): Promise<boolean> {
 }
 
 const MAX_DEPTH = 5
-const MAX_PROJECT_INSTRUCTION_BYTES = 32 * 1024
 
 interface ProjectInstructionBudget {
 	remainingBytes: number
+	limitBytes: number
+	warnedTruncation?: boolean
+	warnedExhaustion?: boolean
+	onWarning?: (warning: string) => void
 }
 
-function createProjectInstructionBudget(): ProjectInstructionBudget {
-	return { remainingBytes: MAX_PROJECT_INSTRUCTION_BYTES }
+function createProjectInstructionBudget(
+	options?: ProjectInstructionDiscoveryOptions,
+	onWarning?: (warning: string) => void,
+): ProjectInstructionBudget {
+	const limitBytes = resolveProjectDocMaxBytes(options?.projectDocMaxBytes)
+	return { remainingBytes: limitBytes, limitBytes, onWarning }
 }
 
 function takeUtf8Prefix(text: string, maxBytes: number): { text: string; bytesUsed: number } {
@@ -420,7 +429,6 @@ async function readAgentInstructionFile(
 	trustedRoot: string,
 	budget?: ProjectInstructionBudget,
 ): Promise<{ ref: string; text: string } | undefined> {
-	if (budget && budget.remainingBytes <= 0) return undefined
 	try {
 		const metadata = await fs.lstat(filePath)
 		const isSymbolicLink = metadata.isSymbolicLink()
@@ -432,10 +440,30 @@ async function readAgentInstructionFile(
 		// Resolving a link establishes its path scope; its target must also be a
 		// regular file so optional instruction discovery cannot block on a FIFO.
 		if (isSymbolicLink && !(await fs.stat(resolvedPath)).isFile()) return undefined
+		if (budget && budget.remainingBytes <= 0) {
+			if (!budget.warnedExhaustion) {
+				budget.warnedExhaustion = true
+				budget.onWarning?.(
+					t("common:projectInstructions.skipped", { path: filePath, limitBytes: budget.limitBytes }),
+				)
+			}
+			return { ref: filePath, text: "" }
+		}
 		const fileContents = await fs.readFile(resolvedPath, "utf-8")
 		if (!budget) return { ref: filePath, text: fileContents.trim() }
 		const bounded = takeUtf8Prefix(fileContents, budget.remainingBytes)
 		const text = bounded.text.trim()
+		if (Buffer.byteLength(fileContents, "utf8") > budget.remainingBytes && !budget.warnedTruncation) {
+			budget.warnedTruncation = true
+			budget.onWarning?.(
+				t("common:projectInstructions.truncated", {
+					path: filePath,
+					loadedBytes: Buffer.byteLength(bounded.text, "utf8"),
+					totalBytes: Buffer.byteLength(fileContents, "utf8"),
+					limitBytes: budget.limitBytes,
+				}),
+			)
+		}
 		if (text) budget.remainingBytes -= bounded.bytesUsed
 		return { ref: filePath, text }
 	} catch (error) {
@@ -452,8 +480,6 @@ async function readPreferredAgentRulesFile(
 	budget?: ProjectInstructionBudget,
 	discoveryOptions?: ProjectInstructionDiscoveryOptions,
 ): Promise<{ ref: string; text: string } | undefined> {
-	if (budget && budget.remainingBytes <= 0) return undefined
-
 	const fallbacks = discoveryOptions?.projectDocFallbackFilenames
 	const filenames = [
 		"AGENTS.override.md",
@@ -536,11 +562,13 @@ async function loadAllAgentRulesFiles(
 	directories: readonly string[],
 	trustedRoot: string,
 	discoveryOptions?: ProjectInstructionDiscoveryOptions,
+	onWarning?: (warning: string) => void,
 ): Promise<string> {
 	const agentRules: string[] = []
-	// Codex agents_md.rs (b75d1e8) shares one budget across discovered project instructions;
+	// Codex agents_md.rs (be765f1) shares a configurable budget and warns about lost instructions;
 	// Alpha's personal and optional descendant files retain their existing order.
-	const budget = createProjectInstructionBudget()
+	const budget = createProjectInstructionBudget(discoveryOptions, onWarning)
+	if (budget.limitBytes === 0) return ""
 
 	for (const directory of directories) {
 		// Show path for all directories except the root
@@ -571,10 +599,12 @@ export async function loadApplicableAgentInstructionSources(
 	cwd: string,
 	enableSubfolderRules: boolean = false,
 	discoveryOptions?: ProjectInstructionDiscoveryOptions,
+	onWarning?: (warning: string) => void,
 ): Promise<Array<{ kind: "agents"; ref: string; text: string }>> {
 	const instructionDirectories = await captureInstructionDirectories(cwd, enableSubfolderRules, discoveryOptions)
 	const sources: Array<{ kind: "agents"; ref: string; text: string }> = []
-	const budget = createProjectInstructionBudget()
+	const budget = createProjectInstructionBudget(discoveryOptions, onWarning)
+	if (budget.limitBytes === 0) return sources
 
 	for (const directory of instructionDirectories.agents) {
 		const standard = await readPreferredAgentRulesFile(
@@ -659,6 +689,7 @@ export async function addCustomInstructionParts(
 		modeInstructionAuthority?: "builtin" | "user"
 		/** Already captured sources avoid rereading mutable AGENTS files at a child-launch boundary. */
 		agentInstructionSources?: readonly { kind: "agents"; ref: string; text: string }[]
+		onWarning?: (warning: string) => void
 	} = {},
 ): Promise<CustomInstructionPart[]> {
 	const sections: CustomInstructionPart[][] = []
@@ -686,6 +717,7 @@ export async function addCustomInstructionParts(
 						directories.agents,
 						directories.agentTrustRoot,
 						options.settings?.projectInstructionDiscovery,
+						options.onWarning,
 					),
 		loadRuleFilesFromDirectories(cwd, directories),
 	])

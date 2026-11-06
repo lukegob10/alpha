@@ -60,7 +60,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
 		}),
 		getStepApprovalMode: vi.fn(() => "ask"),
 		say: vi.fn(async () => undefined),
-		publishLifecycleHookMessage: vi.fn(async () => undefined),
+		publishAgentFeedbackMessage: vi.fn(async () => undefined),
 		flushPendingToolResultsToHistory: vi.fn(async () => {
 			order.push("tool-receipts")
 			return true
@@ -99,6 +99,25 @@ afterEach(() => {
 })
 
 describe("task lifecycle hook admission and provenance", () => {
+	it("publishes instruction warnings once per changed diagnostic and resets after recovery", async () => {
+		const { task } = fixture()
+		const warnings = ["AGENTS.md was truncated", "Nested AGENTS.md was skipped"]
+		await task["publishProjectInstructionWarnings"](warnings, () => true)
+		await task["publishProjectInstructionWarnings"](warnings, () => true)
+		expect(task["publishAgentFeedbackMessage"]).toHaveBeenCalledTimes(2)
+		await task["publishProjectInstructionWarnings"]([], () => true)
+		await task["publishProjectInstructionWarnings"](warnings, () => true)
+		expect(task["publishAgentFeedbackMessage"]).toHaveBeenCalledTimes(4)
+	})
+
+	it("does not publish instruction diagnostics for a replaced request owner", async () => {
+		const { task } = fixture()
+		await expect(task["publishProjectInstructionWarnings"](["Truncated"], () => false)).rejects.toMatchObject({
+			name: "AbortError",
+		})
+		expect(task["publishAgentFeedbackMessage"]).not.toHaveBeenCalled()
+	})
+
 	it("retains each hook preview and output artifact reference beyond the former shared text cap", async () => {
 		const { task, history } = fixture()
 		const first = { hook_run_id: "large-first", text: "x".repeat(16_000) }
@@ -129,7 +148,7 @@ describe("task lifecycle hook admission and provenance", () => {
 				fragments: [{ hook_run_id: "earlier-step-run", text: "Background evidence" }],
 			},
 		})
-		expect(task["publishLifecycleHookMessage"]).toHaveBeenCalledWith(
+		expect(task["publishAgentFeedbackMessage"]).toHaveBeenCalledWith(
 			"Warning: Background warning",
 			expect.anything(),
 			expect.anything(),
@@ -185,7 +204,7 @@ describe("task lifecycle hook admission and provenance", () => {
 					},
 				],
 			},
-			publishLifecycleHookMessage: vi.fn(async () => {
+			publishAgentFeedbackMessage: vi.fn(async () => {
 				entered()
 				await warningReleased
 			}),
@@ -250,6 +269,42 @@ describe("task lifecycle hook admission and provenance", () => {
 		expect(vi.mocked(runLifecycleHooks).mock.calls[1][1]).toMatchObject({ prompt: "Original human request" })
 		expect(vi.mocked(runLifecycleHooks).mock.calls[2][1]).toMatchObject({ prompt: "New human steering" })
 		expect(readCompletionHookConfig).toHaveBeenCalledOnce()
+	})
+
+	it("persists first fork activation before dispatch and consumes it once even across repeated input", async () => {
+		const history = { id: "lifecycle-task", forkedFromId: "source", forkSessionStarted: false }
+		const updateTaskHistory = vi.fn(async () => {
+			expect(runLifecycleHooks).not.toHaveBeenCalled()
+		})
+		const { task } = fixture({
+			lifecycleHookStartSource: "fork",
+			providerRef: { deref: () => ({ taskHistoryStore: { get: () => history }, updateTaskHistory }) },
+		})
+		const signal = new AbortController().signal
+		await task["inspectLifecycleHookInput"]([], signal)
+		await task["inspectLifecycleHookInput"]([], signal)
+		expect(updateTaskHistory).toHaveBeenCalledExactlyOnceWith(
+			{ ...history, forkSessionStarted: true },
+			{ broadcast: false },
+		)
+		expect(runLifecycleHooks).toHaveBeenCalledOnce()
+		expect(vi.mocked(runLifecycleHooks).mock.calls[0][1]).toMatchObject({
+			hook_event_name: "SessionStart",
+			source: "fork",
+		})
+	})
+
+	it("keeps fork startup pending when its durable activation receipt fails", async () => {
+		const updateTaskHistory = vi.fn().mockRejectedValue(new Error("Save failed"))
+		const { task } = fixture({
+			lifecycleHookStartSource: "fork",
+			providerRef: {
+				deref: () => ({ taskHistoryStore: { get: () => ({ id: "lifecycle-task" }) }, updateTaskHistory }),
+			},
+		})
+		await expect(task["inspectLifecycleHookInput"]([], new AbortController().signal)).rejects.toThrow("Save failed")
+		expect(task["lifecycleHookStartConsumed"]).toBe(false)
+		expect(runLifecycleHooks).not.toHaveBeenCalled()
 	})
 
 	it("resubmits the same raw human block after cancelled hook admission, then deduplicates success", async () => {
@@ -366,7 +421,7 @@ describe("task lifecycle hook admission and provenance", () => {
 		await task["persistLifecycleHookContexts"]()
 		expect(history).toEqual([])
 		expect(task.say).not.toHaveBeenCalled()
-		expect(task["publishLifecycleHookMessage"]).not.toHaveBeenCalled()
+		expect(task["publishAgentFeedbackMessage"]).not.toHaveBeenCalled()
 	})
 
 	it("cancels transcript lookup before dispatching a lifecycle command", async () => {
@@ -397,7 +452,7 @@ describe("task lifecycle hook admission and provenance", () => {
 			finishWarning = resolve
 		})
 		const { task, history } = fixture({
-			publishLifecycleHookMessage: vi.fn(async () => {
+			publishAgentFeedbackMessage: vi.fn(async () => {
 				warningEntered()
 				await warningBarrier
 			}),
@@ -830,6 +885,39 @@ describe("task lifecycle hook admission and provenance", () => {
 		])
 	})
 
+	it("joins concurrent cleanup stages without letting SessionEnd overtake Interrupt", async () => {
+		let enter!: () => void
+		let release!: () => void
+		const started = new Promise<void>((resolve) => {
+			enter = resolve
+		})
+		const barrier = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const { task } = fixture({
+			interruptHookPending: true,
+			completionHookConfig: { stop: [], subagentStop: [], interrupt: [command], sessionEnd: [command] },
+		})
+		vi.mocked(runLifecycleHooks).mockImplementation(async (_config, request) => {
+			if (request.hook_event_name === "Interrupt") {
+				enter()
+				await barrier
+			}
+			return { warnings: [] }
+		})
+		const first = task["runTerminationLifecycleHooks"]("Interrupt")
+		await started
+		const second = task["runTerminationLifecycleHooks"]()
+		await Promise.resolve()
+		expect(runLifecycleHooks).toHaveBeenCalledOnce()
+		release()
+		await Promise.all([first, second])
+		expect(vi.mocked(runLifecycleHooks).mock.calls.map(([, request]) => request.hook_event_name)).toEqual([
+			"Interrupt",
+			"SessionEnd",
+		])
+	})
+
 	it("keeps managed children out of root SessionEnd cleanup", async () => {
 		const { task } = fixture({
 			taskKind: "subagent",
@@ -857,7 +945,7 @@ describe("task lifecycle hook admission and provenance", () => {
 		expect(runLifecycleHooks).not.toHaveBeenCalled()
 	})
 
-	it("shares one three-second execution deadline across interrupt and session-end cleanup", async () => {
+	it("gives SessionEnd a fresh deadline after Interrupt exhausts its allowance", async () => {
 		vi.useFakeTimers()
 		vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
 			const controller = new AbortController()
@@ -874,8 +962,9 @@ describe("task lifecycle hook admission and provenance", () => {
 			},
 		})
 		vi.mocked(runLifecycleHooks).mockImplementation(async (_config, _request, signal) => {
-			if (!signal.aborted)
-				await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))
+			if (_request.hook_event_name === "Interrupt" && !signal.aborted)
+				await new Promise<void>((resolve) => setTimeout(resolve, 3_000))
+			if (_request.hook_event_name === "SessionEnd") expect(signal.aborted).toBe(false)
 			return { warnings: [] }
 		})
 		let settled = false
@@ -887,9 +976,106 @@ describe("task lifecycle hook admission and provenance", () => {
 			expect(vi.mocked(runLifecycleHooks).mock.calls[0][2].aborted).toBe(false)
 			await vi.advanceTimersByTimeAsync(1_500)
 			expect(settled).toBe(true)
+			expect(vi.mocked(runLifecycleHooks).mock.calls.map(([, request]) => request.hook_event_name)).toEqual([
+				"Interrupt",
+				"SessionEnd",
+			])
 		} finally {
 			await vi.advanceTimersByTimeAsync(3_000)
 			await pending
 		}
+	})
+
+	it("runs SessionEnd with a null transcript when transcript lookup exhausts its own deadline", async () => {
+		vi.useFakeTimers()
+		vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
+			const controller = new AbortController()
+			setTimeout(() => controller.abort(), milliseconds)
+			return controller.signal
+		})
+		const { task } = fixture({
+			completionHookConfig: { stop: [], subagentStop: [], sessionEnd: [command] },
+			completionHookTranscriptPath: vi.fn(() => new Promise<null>(() => {})),
+		})
+		const pending = task["runTerminationLifecycleHooks"]()
+		await vi.advanceTimersByTimeAsync(3_000)
+		await pending
+		expect(runLifecycleHooks).toHaveBeenCalledOnce()
+		expect(vi.mocked(runLifecycleHooks).mock.calls[0][1]).toMatchObject({
+			hook_event_name: "SessionEnd",
+			transcript_path: null,
+		})
+		expect(vi.mocked(runLifecycleHooks).mock.calls[0][2].aborted).toBe(false)
+	})
+
+	it("settles cancelled tool receipts and Interrupt before publishing the terminal lifecycle record", async () => {
+		const order: string[] = []
+		const { task } = fixture({
+			providerRef: { deref: () => ({}) },
+			canonicalLifecycleQueue: Promise.resolve(),
+			replayCanonicalLifecycle: vi.fn(async () => undefined),
+			getCanonicalLifecycleSnapshot: () => ({
+				status: "in_progress",
+				runId: "run",
+				turnId: "turn",
+				items: [{ type: "tool_call", toolCallId: "call", stepId: "step" }],
+				acceptedToolCallIds: ["call"],
+				terminalToolCallIds: [],
+				effectStartedToolCallIds: [],
+				effectTrackingVersion: 1,
+			}),
+			enqueueCanonicalLifecycleEvent: vi.fn(async (event: string) => {
+				order.push(event)
+			}),
+			pushToolResultToUserContent: vi.fn(() => true),
+			flushPendingToolResultsToHistory: vi.fn(async () => {
+				order.push("persist-receipt")
+				return true
+			}),
+		})
+		await task["finishCanonicalLifecycleCancellation"](
+			"user_cancelled",
+			{ guard: () => true, runId: "run", turnId: "turn" } as Parameters<
+				Task["finishCanonicalLifecycleCancellation"]
+			>[1],
+			async () => {
+				order.push("Interrupt")
+			},
+		)
+		expect(order).toEqual(["tool_result_recorded", "persist-receipt", "Interrupt", "turn_terminal"])
+	})
+
+	it.each(["abortTaskPromise", "taskTerminationPromise"] as const)(
+		"defers an aborted engine terminal while %s owns cancellation, including retryable abort failure",
+		async (owner) => {
+			const releaseRequest = vi.fn()
+			const { task } = fixture({
+				[owner]: Promise.resolve(),
+				enqueueCanonicalLifecycleEvent: vi.fn(),
+			})
+			await task["finishCanonicalLifecycleTurn"]({ status: "aborted", steps: 1 }, () => true, {
+				releaseRequest,
+			} as unknown as NonNullable<Parameters<Task["finishCanonicalLifecycleTurn"]>[2]>)
+			expect(task["enqueueCanonicalLifecycleEvent"]).not.toHaveBeenCalled()
+			expect(runLifecycleHooks).not.toHaveBeenCalled()
+			expect(releaseRequest).toHaveBeenCalledOnce()
+		},
+	)
+
+	it("runs Interrupt before an aborted engine terminal when no explicit Stop owns finalization", async () => {
+		const order: string[] = []
+		const { task } = fixture({
+			interruptHookPending: true,
+			completionHookConfig: { stop: [], subagentStop: [], interrupt: [command], sessionEnd: [command] },
+			enqueueCanonicalLifecycleEvent: vi.fn(async (event: string) => {
+				order.push(event)
+			}),
+		})
+		vi.mocked(runLifecycleHooks).mockImplementation(async (_config, request) => {
+			order.push(request.hook_event_name)
+			return { warnings: [] }
+		})
+		await task["finishCanonicalLifecycleTurn"]({ status: "aborted", steps: 1 })
+		expect(order).toEqual(["Interrupt", "phase_changed", "turn_terminal"])
 	})
 })

@@ -38,6 +38,7 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"search_files",
 	"list_files",
 	"codebase_search",
+	"skill",
 	"request_user_input",
 	"request_user_input_async",
 	"exec_command",

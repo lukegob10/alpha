@@ -6,6 +6,17 @@ import * as fs from "fs/promises"
 export interface ProjectInstructionDiscoveryOptions {
 	projectRootMarkers?: readonly string[]
 	projectDocFallbackFilenames?: readonly string[]
+	projectDocMaxBytes?: number
+}
+
+export const DEFAULT_PROJECT_DOC_MAX_BYTES = 32 * 1024
+export const MAX_PROJECT_DOC_MAX_BYTES = 1024 * 1024
+
+/** Keep the captured host budget finite, including for lightweight adapters without schema validation. */
+export function resolveProjectDocMaxBytes(value: unknown): number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_PROJECT_DOC_MAX_BYTES
+		? value
+		: DEFAULT_PROJECT_DOC_MAX_BYTES
 }
 
 /** Keep discovery probes to basenames, including on Windows where ':' selects a stream. */

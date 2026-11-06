@@ -294,7 +294,7 @@ describe("permission, compact, and cleanup hook contracts", () => {
 		expect((await pending).warnings.join(" ")).toContain("timed out")
 	})
 
-	it("bounds the complete cleanup queue at three seconds instead of starting another batch", async () => {
+	it("applies the three-second cap to every queued cleanup handler without discarding the second batch", async () => {
 		vi.useFakeTimers()
 		vi.spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) => {
 			const controller = new AbortController()
@@ -308,7 +308,8 @@ describe("permission, compact, and cleanup hook contracts", () => {
 		)
 		expect(spawnMock).toHaveBeenCalledTimes(4)
 		await vi.advanceTimersByTimeAsync(3_000)
-		await pending
-		expect(spawnMock).toHaveBeenCalledTimes(4)
+		expect(spawnMock).toHaveBeenCalledTimes(8)
+		await vi.advanceTimersByTimeAsync(3_000)
+		expect((await pending).warnings).toHaveLength(8)
 	})
 })

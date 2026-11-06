@@ -2,6 +2,8 @@ import fs from "fs/promises"
 import os from "os"
 import * as path from "path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { SubagentGroupState } from "@alpha-code/types"
+import { managedSubagentWorktreeService, type ManagedWorkerArtifact } from "@alpha-code/core"
 
 import {
 	AgentControlStore,
@@ -14,6 +16,14 @@ import { AlphaProvider } from "../AlphaProvider"
 
 const VALID_COMMAND = "pnpm --dir src exec tsc --noEmit"
 
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((complete) => {
+		resolve = complete
+	})
+	return { promise, resolve }
+}
+
 describe("AlphaProvider primary verification", () => {
 	let workspace: string
 	let outside: string
@@ -22,6 +32,7 @@ describe("AlphaProvider primary verification", () => {
 	let parent: any
 	let commandEvidence: ParentCommandVerificationEvidence[]
 	let executionNumber: number
+	let cancellation: AbortController
 
 	beforeEach(async () => {
 		workspace = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "alpha-primary-verification-")))
@@ -48,25 +59,31 @@ describe("AlphaProvider primary verification", () => {
 		const root = await store.ensureRoot({ taskId: "parent-1", objective: "Coordinate work", status: "running" })
 		commandEvidence = []
 		executionNumber = 0
+		cancellation = new AbortController()
 		parent = {
 			taskId: "parent-1",
 			taskKind: "primary",
 			cwd: workspace,
 			metadata: { task: "Coordinate work" },
 			alphaMessages: [],
+			abort: false,
+			abandoned: false,
 			getCommandExecutionEvidence: vi.fn(() => commandEvidence),
-			getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
+			getTaskLifetimeCancellationSignal: vi.fn(() => cancellation.signal),
 		}
 		provider = Object.assign(Object.create(AlphaProvider.prototype), {
 			agentControlStore: store,
 			agentControlStoreReady: Promise.resolve(),
 			getAgentControlRootTaskId: vi.fn(() => parent.taskId),
+			getLiveTask: vi.fn(() => parent),
 			ensureAgentControlRoot: vi.fn(async () => root),
 			synchronizeParentVerificationObligations: vi.fn(async () => undefined),
 			publishParentVerificationTransition: vi.fn(async () => undefined),
 			refreshParentVerificationProjections: vi.fn(async () => undefined),
 			postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
+			publishTaskHistoryUpdate: vi.fn(async () => undefined),
 		}) as AlphaProvider
+		parent.providerRef = new WeakRef(provider)
 	})
 
 	afterEach(async () => {
@@ -276,13 +293,331 @@ describe("AlphaProvider primary verification", () => {
 		await recordPrimaryMutation()
 		const versions = await captureCurrentVerification()
 		vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockRejectedValueOnce(new Error("UI unavailable"))
-		const error = vi.spyOn(console, "error").mockImplementation(() => undefined)
+		const logged = deferred()
+		const error = vi.spyOn(console, "error").mockImplementation(() => logged.resolve())
 		try {
 			const outcome = await recordCurrentEvidence(versions)
 			expect(outcome.verification).toMatchObject({ status: "passed", assurance: "process" })
+			await logged.promise
 			expect(error).toHaveBeenCalled()
 		} finally {
 			error.mockRestore()
+		}
+	})
+
+	it("reads completion after durable evidence without waiting for its UI publication", async () => {
+		await recordPrimaryMutation()
+		const versions = await captureCurrentVerification()
+		setCommandEvidence(versions)
+		for (const [index, status] of (
+			["completed", "completed", "completed", "interrupted", "interrupted"] as const
+		).entries()) {
+			const taskId = `settled-child-${index}`
+			const summary = index === 0 ? "Reviewed the implementation and its remaining risks. ".repeat(500) : status
+			await store.createAgent({
+				taskId,
+				parentTaskId: parent.taskId,
+				nickname: `Child ${index}`,
+				role: "review",
+				objective: "Inspect the implementation",
+				status,
+				snapshot: { summary },
+			})
+			await store.appendEvent({
+				sender: taskId,
+				recipient: parent.taskId,
+				kind: "result",
+				name: `agent_${status}`,
+				payload: { taskId, status, summary },
+			})
+		}
+		const claim = await store.claimMailbox(parent.taskId, { channel: "automatic", kinds: ["result"] })
+		await store.settleMailboxClaim(parent.taskId, claim.claimId, "acknowledge")
+		const children = store.listDescendants(parent.taskId)
+		const mailbox = store.getSnapshot().mailbox
+		const publicationEntered = deferred()
+		const publicationPending = deferred()
+		vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementationOnce(async () => {
+			publicationEntered.resolve()
+			await publicationPending.promise
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		let settled = false
+		const decision = provider.getParentCompletionDecision(parent).then((result) => {
+			settled = true
+			return result
+		})
+		try {
+			await publicationEntered.promise
+			expect(primaryObligation().verification).toMatchObject({ status: "passed", assurance: "process" })
+			// Drain the in-memory completion read while the controlled UI promise remains held.
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled, "Optional UI publication must not hold the durable completion decision").toBe(true)
+			await expect(decision).resolves.toMatchObject({ allowed: true })
+			expect(store.listDescendants(parent.taskId)).toEqual(children)
+			expect(store.getSnapshot().mailbox).toEqual(mailbox)
+		} finally {
+			publicationPending.resolve()
+			await decision
+			await vi.advanceTimersByTimeAsync(0)
+			vi.useRealTimers()
+		}
+	})
+
+	it("coalesces held evidence publications and projects the latest durable receipt", async () => {
+		await recordPrimaryMutation()
+		const versions = await captureCurrentVerification()
+		setCommandEvidence(versions)
+		const firstExecution = commandEvidence[0]!.executionId
+		const publicationEntered = deferred()
+		const publicationPending = deferred()
+		const latestPublished = deferred()
+		const projectedExecutions: Array<string | undefined> = []
+		let activePublications = 0
+		let maximumPublications = 0
+		vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementation(async () => {
+			projectedExecutions.push(primaryObligation().verification?.executionId)
+			activePublications++
+			maximumPublications = Math.max(maximumPublications, activePublications)
+			if (projectedExecutions.length === 1) {
+				publicationEntered.resolve()
+				await publicationPending.promise
+			} else latestPublished.resolve()
+			activePublications--
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		const first = provider.recordParentVerificationEvidence(parent)
+		try {
+			await publicationEntered.promise
+			await recordCurrentEvidence(versions, { status: "failed", exitCode: 1 })
+			await recordCurrentEvidence(versions)
+			const latestExecution = commandEvidence[0]!.executionId
+			expect(primaryObligation().verification?.executionId).toBe(latestExecution)
+			expect(projectedExecutions).toEqual([firstExecution])
+			expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+			publicationPending.resolve()
+			await latestPublished.promise
+			await vi.advanceTimersByTimeAsync(0)
+			expect(projectedExecutions).toEqual([firstExecution, latestExecution])
+			expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledTimes(2)
+			expect(maximumPublications).toBe(1)
+		} finally {
+			publicationPending.resolve()
+			await first
+			await vi.advanceTimersByTimeAsync(0)
+			vi.useRealTimers()
+		}
+	})
+
+	it.each(["task cancellation", "provider disposal"] as const)(
+		"drops a queued evidence projection after %s without changing durable evidence",
+		async (ending) => {
+			await recordPrimaryMutation()
+			const versions = await captureCurrentVerification()
+			setCommandEvidence(versions)
+			const publicationEntered = deferred()
+			const publicationPending = deferred()
+			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementationOnce(async () => {
+				publicationEntered.resolve()
+				await publicationPending.promise
+			})
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+			const first = provider.recordParentVerificationEvidence(parent)
+			try {
+				await publicationEntered.promise
+				await recordCurrentEvidence(versions)
+				const committed = primaryObligation()
+				if (ending === "task cancellation") cancellation.abort()
+				else Reflect.set(provider, "_disposed", true)
+				publicationPending.resolve()
+				await first
+				await vi.advanceTimersByTimeAsync(0)
+				expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
+				expect(primaryObligation()).toEqual(committed)
+			} finally {
+				publicationPending.resolve()
+				await first
+				await vi.advanceTimersByTimeAsync(0)
+				vi.useRealTimers()
+			}
+		},
+	)
+
+	it.each(["review", "worker"] as const)(
+		"reads completion after saving a recovered %s group while UI publication remains pending",
+		async (role) => {
+			const projected: SubagentGroupState = {
+				groupId: "recovered-group",
+				parentTaskId: parent.taskId,
+				createdAt: 1,
+				status: "completed",
+				agents: [
+					{
+						taskId: "recovered-review",
+						nickname: "Reviewer",
+						role,
+						objective: "Review the implementation",
+						status: "completed",
+						summary: "Older summary",
+						usage: { inputTokens: 0, outputTokens: 0, cost: 0, durationMs: 0 },
+					},
+				],
+			}
+			const retained = structuredClone(projected)
+			retained.agents[0]!.summary = "Current retained summary"
+			const updateHistory = vi.fn(async () => [])
+			const artifact: ManagedWorkerArtifact = {
+				id: "recovered-change",
+				taskId: "recovered-review",
+				status: "discarded",
+				createdAt: 1,
+				updatedAt: 2,
+				gitRoot: workspace,
+				logicalWorkspace: workspace,
+				logicalWorkspaceFromRoot: "",
+				baselineCommit: "a".repeat(40),
+				writeScope: ["src"],
+				gitRelativeScope: ["src"],
+				fileWriteScope: [],
+				gitRelativeFileScope: [],
+				changes: [{ status: "M", path: "src/a.ts", binary: false }],
+			}
+			const load =
+				role === "worker"
+					? vi.spyOn(managedSubagentWorktreeService, "load").mockResolvedValue(artifact)
+					: undefined
+			if (role === "worker") {
+				projected.agents[0]!.changeSet = {
+					id: artifact.id,
+					status: "pending_review",
+					createdAt: 1,
+					updatedAt: 1,
+					changedFiles: ["src/a.ts"],
+				}
+				retained.agents[0]!.changeSet = structuredClone(projected.agents[0]!.changeSet)
+				Object.assign(provider, {
+					context: { globalStorageUri: { fsPath: workspace } },
+					getLiveTask: vi.fn((taskId: string) => (taskId === parent.taskId ? parent : undefined)),
+					getTaskWithId: vi.fn(async () => ({
+						historyItem: {
+							id: artifact.taskId,
+							number: 1,
+							ts: 1,
+							task: "Review",
+							tokensIn: 0,
+							tokensOut: 0,
+							totalCost: 0,
+						},
+					})),
+					updateTaskHistory: updateHistory,
+					log: vi.fn(),
+				})
+			}
+			await store.createAgent({
+				taskId: "recovered-review",
+				parentTaskId: parent.taskId,
+				nickname: "Reviewer",
+				role,
+				objective: "Review the implementation",
+				status: "completed",
+			})
+			parent.alphaMessages = [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: projected }]
+			Reflect.set(provider, "preparedSubagentGroups", new Map([[projected.groupId, { group: retained }]]))
+			for (const method of ["synchronizeParentVerificationObligations", "refreshParentVerificationProjections"]) {
+				Reflect.set(provider, method, Reflect.get(AlphaProvider.prototype, method))
+			}
+			const publicationEntered = deferred()
+			const publicationPending = deferred()
+			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementationOnce(async () => {
+				publicationEntered.resolve()
+				await publicationPending.promise
+			})
+			const upsert = vi.fn(
+				async (
+					group: SubagentGroupState,
+					guard?: () => boolean,
+					options: { deferPublication?: boolean } = {},
+				) => {
+					if (guard && !guard()) return
+					parent.alphaMessages[0].subagentGroup = structuredClone(group)
+					if (!options.deferPublication) await provider.postStateToWebviewWithoutTaskHistory()
+				},
+			)
+			parent.upsertSubagentGroup = upsert
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+			let settled = false
+			const decision = provider.getParentCompletionDecision(parent).then((result) => {
+				settled = true
+				return result
+			})
+			try {
+				await publicationEntered.promise
+				await vi.advanceTimersByTimeAsync(0)
+				expect(settled, "Recovered group publication must not hold the durable completion decision").toBe(true)
+				await expect(decision).resolves.toMatchObject({ allowed: true })
+				expect(parent.alphaMessages[0].subagentGroup.agents[0].summary).toBe("Current retained summary")
+				expect(upsert.mock.calls[0]?.[2]).toEqual({ deferPublication: true })
+				if (role === "worker") {
+					expect(updateHistory).toHaveBeenCalledWith(
+						expect.objectContaining({
+							subagentChangeSet: expect.objectContaining({ status: "discarded" }),
+						}),
+						{ broadcast: false },
+					)
+				}
+			} finally {
+				publicationPending.resolve()
+				await decision
+				await vi.advanceTimersByTimeAsync(0)
+				vi.useRealTimers()
+				load?.mockRestore()
+			}
+			expect(parent.alphaMessages[0].subagentGroup.agents[0].summary).toBe("Current retained summary")
+		},
+	)
+
+	it("keeps completion pending until a recovered group is saved durably", async () => {
+		const projected: SubagentGroupState = {
+			groupId: "durable-group",
+			parentTaskId: parent.taskId,
+			createdAt: 1,
+			status: "completed",
+			agents: [],
+		}
+		const retained = { ...structuredClone(projected), completedAt: 2 }
+		parent.alphaMessages = [{ ts: 1, type: "say", say: "subagent_group", subagentGroup: projected }]
+		Reflect.set(provider, "preparedSubagentGroups", new Map([[projected.groupId, { group: retained }]]))
+		Reflect.set(
+			provider,
+			"synchronizeParentVerificationObligations",
+			Reflect.get(AlphaProvider.prototype, "synchronizeParentVerificationObligations"),
+		)
+		const saveEntered = deferred()
+		const savePending = deferred()
+		parent.upsertSubagentGroup = vi.fn(async (group: SubagentGroupState) => {
+			saveEntered.resolve()
+			await savePending.promise
+			parent.alphaMessages[0].subagentGroup = structuredClone(group)
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		let settled = false
+		const decision = provider.getParentCompletionDecision(parent).then((result) => {
+			settled = true
+			return result
+		})
+		try {
+			await saveEntered.promise
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled, "The durable group save must remain a completion barrier").toBe(false)
+			expect(parent.alphaMessages[0].subagentGroup).toEqual(projected)
+			savePending.resolve()
+			await expect(decision).resolves.toMatchObject({ allowed: true })
+			expect(parent.alphaMessages[0].subagentGroup).toEqual(retained)
+		} finally {
+			savePending.resolve()
+			await decision
+			await vi.advanceTimersByTimeAsync(0)
+			vi.useRealTimers()
 		}
 	})
 
@@ -297,7 +632,12 @@ describe("AlphaProvider primary verification", () => {
 			if (origin === "worker") await recordAppliedWorker()
 			else await recordPrimaryMutation()
 			const versions = await captureCurrentVerification()
+			const priorPublished = deferred()
+			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementationOnce(async () => {
+				priorPublished.resolve()
+			})
 			const passed = await recordCurrentEvidence(versions)
+			await priorPublished.promise
 			const changeContent = () => fs.writeFile(path.join(workspace, "src/a.ts"), "export const value = 2\n")
 			if (observation === "first") await changeContent()
 			else {
@@ -309,7 +649,12 @@ describe("AlphaProvider primary verification", () => {
 				})
 			}
 			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockClear()
+			const published = deferred()
+			vi.mocked(provider.postStateToWebviewWithoutTaskHistory).mockImplementationOnce(async () => {
+				published.resolve()
+			})
 			await provider.recordParentVerificationEvidence(parent)
+			await published.promise
 			expect(primaryObligation().verification).toBeUndefined()
 			expect(primaryObligation().contentVersion).toBeGreaterThan(passed.contentVersion!)
 			expect(provider.postStateToWebviewWithoutTaskHistory).toHaveBeenCalledOnce()
@@ -380,7 +725,10 @@ describe("AlphaProvider primary verification", () => {
 				failObservation(new Error("Content observation failed"))
 				await reading
 				expect(primaryObligation()).toEqual(committed)
-				expect(primaryObligation().verification).toMatchObject({ executionId: "newer-execution", status: "passed" })
+				expect(primaryObligation().verification).toMatchObject({
+					executionId: "newer-execution",
+					status: "passed",
+				})
 			} finally {
 				realpath.mockRestore()
 			}

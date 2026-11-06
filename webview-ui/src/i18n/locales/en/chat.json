@@ -284,7 +284,9 @@
 		"mode": "Mode",
 		"model": "Model",
 		"effort": "Effort",
-		"approvals": "Approvals"
+		"approvals": "Approvals",
+		"planMode": "Plan",
+		"planModeTooltip": "Plan mode. Use {{shortcut}} to switch to Code."
 	},
 	"addContext": "@ to add context, / for commands",
 	"dragFiles": "hold shift to drag in files",
@@ -512,6 +514,7 @@
 		"tooltipDraftMode": "New task approval mode: {{mode}}",
 		"tooltipNoCurrentTask": "Open a task to change its approval mode. Change the default in Settings.",
 		"title": "Auto-approve",
+		"settings": "approval settings",
 		"all": "All",
 		"none": "None",
 		"description": "Choose Ask, Auto, or Full Access for this task. Change the default for new tasks in Settings.",
@@ -554,8 +557,10 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"welcome": "Alpha v{{version}} tidies the profile menu.",
-			"profileMenu": "Choose, search, pin, and edit saved profiles from a simpler menu with accessible labels."
+			"welcome": "Alpha v{{version}} refreshes the composer and strengthens task recovery.",
+			"composer": "Use compact profile, approval, and reasoning menus, with a Plan badge and keyboard mode switching.",
+			"taskReliability": "Keep task messages and verification evidence consistent while lifecycle hooks handle interruption and recovery.",
+			"projectInstructions": "Set a project-instruction budget in user settings, see warnings for skipped guidance, and discover skills in Plan."
 		}
 	},
 	"crossTasks": {
@@ -597,6 +602,7 @@
 		"custom": "Custom reasoning token",
 		"customHelp": "Only use a token accepted by this hosted model: 1–32 lowercase letters, digits, underscores or hyphens. No model-family support is assumed.",
 		"apply": "Apply",
+		"moreOptions": "more reasoning options",
 		"invalidCustom": "Invalid token. Reasoning will be omitted.",
 		"saving": "Saving…",
 		"nextStep": "Next step",

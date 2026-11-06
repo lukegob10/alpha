@@ -115,6 +115,14 @@ describe("filterNativeToolsForMode - disabledTools", () => {
 })
 
 describe("mode-specific user input tool", () => {
+	it("exposes read-only skill discovery in Plan while respecting disabled tools", () => {
+		const tools = [makeTool("skill"), makeTool("apply_patch")]
+		expect(filterNativeToolsForMode(tools, "architect", undefined, undefined, undefined, {})).toEqual([tools[0]])
+		expect(
+			filterNativeToolsForMode(tools, "architect", undefined, undefined, undefined, { disabledTools: ["skill"] }),
+		).toEqual([])
+	})
+
 	it("advertises request_user_input in Code and Plan while retaining legacy Code questions", () => {
 		const tools = [makeTool("ask_followup_question"), makeTool("request_user_input")]
 		const codeNames = filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, {}).map(

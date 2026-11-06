@@ -41,7 +41,7 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		getStepApprovalMode: vi.fn(() => "ask"),
 		getTaskLifetimeCancellationSignal: () => controller.signal,
 		say: vi.fn(async () => undefined),
-		publishLifecycleHookMessage: vi.fn(async (text: string) => task.say("text", text)),
+		publishAgentFeedbackMessage: vi.fn(async (text: string) => task.say("text", text)),
 	}) as Task
 	vi.mocked(readCompletionHookConfig).mockReturnValue({
 		stop: [{ command: process.execPath }],

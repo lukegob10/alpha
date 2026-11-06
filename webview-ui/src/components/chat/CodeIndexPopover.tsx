@@ -21,7 +21,7 @@ import {
 } from "@alpha-code/types"
 
 import { vscode } from "@src/utils/vscode"
-import { useExtensionState } from "@src/context/ExtensionStateContext"
+import { useShellState } from "@src/context/ExtensionStateContext"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { buildDocLink } from "@src/utils/docLinks"
 import { cn } from "@src/lib/utils"
@@ -219,7 +219,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 }) => {
 	const SECRET_PLACEHOLDER = "••••••••••••••••"
 	const { t } = useAppTranslation()
-	const { codebaseIndexConfig, codebaseIndexModels, cwd, apiConfiguration } = useExtensionState()
+	const { codebaseIndexConfig, codebaseIndexModels, cwd, apiConfiguration } = useShellState()
 	const [open, setOpen] = useState(false)
 	const [isAdvancedSettingsOpen, setIsAdvancedSettingsOpen] = useState(false)
 	const [isSetupSettingsOpen, setIsSetupSettingsOpen] = useState(false)
@@ -229,7 +229,7 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 
 	const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle")
 	const [saveError, setSaveError] = useState<string | null>(null)
-	const [savedSecretStatus, setSavedSecretStatus] = useState<SavedSecretStatus>(emptySavedSecretStatus())
+	const [savedSecretStatus, setSavedSecretStatus] = useState<SavedSecretStatus>(emptySavedSecretStatus)
 
 	useEffect(() => {
 		if (saveStatus !== "error") return
@@ -278,10 +278,10 @@ export const CodeIndexPopover: React.FC<CodeIndexPopoverProps> = ({
 	})
 
 	// Initial settings state - stores the settings when popover opens
-	const [initialSettings, setInitialSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
+	const [initialSettings, setInitialSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings)
 
 	// Current settings state - tracks user changes
-	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings())
+	const [currentSettings, setCurrentSettings] = useState<LocalCodeIndexSettings>(getDefaultSettings)
 	const embedderProvider = currentSettings.codebaseIndexEmbedderProvider
 	// Saved host catalogs may predate newly shipped presets. Current profiles own their dimensions.
 	const availableModels = isSupportedCodebaseIndexEmbedderProvider(embedderProvider)

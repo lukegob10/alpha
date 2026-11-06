@@ -3,10 +3,11 @@ import { WebviewMessage } from "../../shared/WebviewMessage"
 import { defaultModeSlug } from "../../shared/modes"
 import { buildApiHandler } from "../../api"
 
-import { SYSTEM_PROMPT } from "../prompts/system"
+import { SYSTEM_PROMPT_FRAGMENTS, renderSystemPromptFragments } from "../prompts/system"
 import { MultiSearchReplaceDiffStrategy } from "../diff/strategies/multi-search-replace"
 import { Package } from "../../shared/package"
 import { TaskMemoryContext } from "../../services/memory/TaskMemoryContext"
+import { captureProjectInstructionDiscoveryOptions } from "../../services/config-paths/project-instruction-settings"
 
 import { AlphaProvider } from "./AlphaProvider"
 
@@ -50,7 +51,8 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 		console.error("Error fetching model info for system prompt preview:", error)
 	}
 
-	const systemPrompt = await SYSTEM_PROMPT(
+	const projectInstructionDiscovery = captureProjectInstructionDiscoveryOptions()
+	const fragments = await SYSTEM_PROMPT_FRAGMENTS(
 		provider.context,
 		cwd,
 		false, // supportsComputerUse — browser removed
@@ -67,6 +69,7 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 			todoListEnabled: apiConfiguration?.todoListEnabled ?? true,
 			useAgentRules: vscode.workspace.getConfiguration(Package.name).get<boolean>("useAgentRules") ?? true,
 			enableSubfolderRules: enableSubfolderRules ?? false,
+			projectInstructionDiscovery,
 			memoryContext,
 			newTaskRequireTodos: vscode.workspace
 				.getConfiguration(Package.name)
@@ -78,5 +81,6 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 		provider.getSkillsManager(),
 	)
 
-	return systemPrompt
+	for (const warning of fragments.warnings ?? []) void vscode.window.showWarningMessage(warning)
+	return renderSystemPromptFragments(fragments)
 }

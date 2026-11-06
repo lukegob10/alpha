@@ -91,7 +91,7 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		resetMistakeRecoveryState: vi.fn(),
 		cancelAutoApprovalTimeout: vi.fn(),
 		say: vi.fn(async () => undefined),
-		publishLifecycleHookMessage: vi.fn(async () => undefined),
+		publishAgentFeedbackMessage: vi.fn(async () => undefined),
 		ask: vi.fn(async () => {
 			task.abort = true
 			return { response: "noButtonClicked" }
@@ -352,7 +352,7 @@ describe("completion hooks inside the canonical turn", () => {
 
 			expect(task.isCompleted()).toBe(true)
 			expect(task["runAgentRequests"]).toHaveBeenCalledOnce()
-			expect(task["publishLifecycleHookMessage"]).toHaveBeenCalledWith(
+			expect(task["publishAgentFeedbackMessage"]).toHaveBeenCalledWith(
 				"Warning: Advisory warning",
 				expect.anything(),
 				expect.anything(),

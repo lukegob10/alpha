@@ -12,6 +12,13 @@
 	"compaction": {
 		"native_summary": "Conversation context was compacted by the provider."
 	},
+	"agentFeedback": {
+		"persistenceFailed": "Unable to save agent feedback. Check task storage and try again."
+	},
+	"projectInstructions": {
+		"truncated": "Project instructions from {{path}} were truncated to {{loadedBytes}} of {{totalBytes}} UTF-8 bytes by alpha.projectDocMaxBytes ({{limitBytes}}). Increase the user setting to include more guidance.",
+		"skipped": "Project instructions from {{path}} were skipped because the shared alpha.projectDocMaxBytes budget ({{limitBytes}} UTF-8 bytes) was exhausted. Increase the user setting to include more guidance."
+	},
 	"mcpOAuth": {
 		"authorize": "Authorize MCP server {{server}} using {{issuer}}?",
 		"openBrowser": "Open authorization browser",
@@ -55,6 +62,8 @@
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
 	},
 	"lifecycleHooks": {
+		"handlerLimit": "{{event}} hook configuration exceeds the limit of {{limit}} handlers. Reduce the configuration before continuing; no partial event configuration was installed.",
+		"forkStartPersistenceFailed": "Unable to save the fork's first session start. Check task storage and reopen the task.",
 		"contextCapacity": "Lifecycle hook context exceeded its pending delivery capacity. Resume after the current results are saved.",
 		"asyncUnavailable": "asynchronous hook capacity is unavailable",
 		"mcpUnavailable": "MCP execution is unavailable",

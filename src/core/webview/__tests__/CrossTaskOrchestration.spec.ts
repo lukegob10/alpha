@@ -1898,6 +1898,7 @@ describe("Cross-task orchestration host", () => {
 		const saved = history.get(result.task_id)
 		expect(saved).toMatchObject({
 			mode: "architect",
+			forkSessionStarted: false,
 			apiConfigName: "peer-profile",
 			approvalMode: "ask",
 			tokensIn: 0,
