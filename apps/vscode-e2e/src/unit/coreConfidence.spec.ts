@@ -120,7 +120,8 @@ test("core confidence composes offline owners and replays this run's completion 
 	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.workspace!)))
 	assert.ok(run.hosts.every((host) => !isWithin(run.root, host.artifactsDir!)))
 	assert.ok(run.hosts.every((host) => /^[a-f0-9]{8}$/.test(path.basename(path.dirname(host.profileDir!)))))
-	assert.ok(run.hosts.every((host) => path.basename(host.profileDir!) === "p"))
+	assert.equal(new Set(run.hosts.map((host) => host.profileDir)).size, run.hosts.length)
+	assert.ok(run.hosts.every((host) => /^p[0-9]+$/.test(path.basename(host.profileDir!))))
 })
 
 test("failed preparation stops before host tests and preserves a failed verdict", async (context) => {
