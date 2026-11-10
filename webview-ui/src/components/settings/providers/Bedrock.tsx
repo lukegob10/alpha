@@ -5,6 +5,8 @@ import { bedrockDefaultRegion, type ProviderSettings } from "@alpha-code/types"
 import { SearchableSelect } from "@src/components/ui"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 
+import { SettingsHelp } from "../SettingsHelp"
+
 type BedrockProps = {
 	apiConfiguration: ProviderSettings
 	setApiConfigurationField: <K extends keyof ProviderSettings>(field: K, value: ProviderSettings[K]) => void
@@ -27,7 +29,12 @@ export const Bedrock = ({ apiConfiguration, setApiConfigurationField }: BedrockP
 	return (
 		<div className="flex flex-col gap-3" data-testid="bedrock-settings">
 			<div className="flex flex-col gap-1">
-				<label className="block font-medium">{t("settings:providers.bedrock.authMethod")}</label>
+				<div className="flex items-center gap-1">
+					<label className="block font-medium">{t("settings:providers.bedrock.authMethod")}</label>
+					<SettingsHelp label={t("settings:providers.bedrock.authMethod")}>
+						{t("settings:providers.bedrock.credentialsDescription")}
+					</SettingsHelp>
+				</div>
 				<SearchableSelect
 					value={authMethod}
 					onValueChange={(value) => {
@@ -66,9 +73,6 @@ export const Bedrock = ({ apiConfiguration, setApiConfigurationField }: BedrockP
 				</VSCodeTextField>
 			) : (
 				<>
-					<div className="text-sm text-vscode-descriptionForeground">
-						{t("settings:providers.bedrock.credentialsDescription")}
-					</div>
 					{(
 						[
 							["awsAccessKey", "accessKey"],
@@ -97,17 +101,22 @@ export const Bedrock = ({ apiConfiguration, setApiConfigurationField }: BedrockP
 				className="w-full">
 				<label htmlFor={`${id}-region`}>{t("settings:providers.bedrock.region")}</label>
 			</VSCodeTextField>
-			<VSCodeTextField
-				id={`${id}-inference-profile`}
-				value={apiConfiguration.awsCustomArn ?? ""}
-				onInput={update("awsCustomArn")}
-				aria-label={t("settings:providers.bedrock.inferenceProfile")}
-				aria-describedby={`${id}-inference-profile-description`}
-				className="w-full">
-				<label htmlFor={`${id}-inference-profile`}>{t("settings:providers.bedrock.inferenceProfile")}</label>
-			</VSCodeTextField>
-			<div id={`${id}-inference-profile-description`} className="text-sm text-vscode-descriptionForeground">
-				{t("settings:providers.bedrock.inferenceProfileDescription")}
+			<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-1">
+					<label htmlFor={`${id}-inference-profile`} className="font-medium">
+						{t("settings:providers.bedrock.inferenceProfile")}
+					</label>
+					<SettingsHelp label={t("settings:providers.bedrock.inferenceProfile")}>
+						{t("settings:providers.bedrock.inferenceProfileDescription")}
+					</SettingsHelp>
+				</div>
+				<VSCodeTextField
+					id={`${id}-inference-profile`}
+					value={apiConfiguration.awsCustomArn ?? ""}
+					onInput={update("awsCustomArn")}
+					aria-label={t("settings:providers.bedrock.inferenceProfile")}
+					className="w-full"
+				/>
 			</div>
 		</div>
 	)

@@ -1,4 +1,4 @@
-import { useCallback } from "react"
+import { useCallback, useId } from "react"
 import { Checkbox } from "vscrui"
 import { VSCodeButton, VSCodeLink, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -12,6 +12,8 @@ import {
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { SearchableSelect } from "@src/components/ui"
 
+import { SettingsHelp } from "../SettingsHelp"
+
 type VertexProps = {
 	apiConfiguration: ProviderSettings
 	setApiConfigurationField: (field: keyof ProviderSettings, value: ProviderSettings[keyof ProviderSettings]) => void
@@ -19,6 +21,7 @@ type VertexProps = {
 
 export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexProps) => {
 	const { t } = useAppTranslation()
+	const id = useId()
 	const location = apiConfiguration?.location || apiConfiguration?.vertexRegion || ""
 	const projectId = apiConfiguration?.projectId || apiConfiguration?.vertexProjectId || ""
 
@@ -68,37 +71,26 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 					</VSCodeButton>
 				</div>
 			)}
-			<div className="text-sm text-vscode-descriptionForeground">
-				<div>{t("settings:providers.googleCloudSetup.title")}</div>
-				<div>
-					<VSCodeLink
-						href="https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude#before_you_begin"
-						className="text-sm">
-						{t("settings:providers.googleCloudSetup.step1")}
-					</VSCodeLink>
+			<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-1">
+					<label htmlFor={`${id}-project`} className="font-medium">
+						{t("settings:providers.googleCloudProjectId")}
+					</label>
+					<SettingsHelp label={t("settings:providers.googleCloudProjectId")}>
+						<VSCodeLink href="https://cloud.google.com/vertex-ai/generative-ai/docs/partner-models/use-claude#before_you_begin">
+							{t("settings:providers.googleCloudSetup.step1")}
+						</VSCodeLink>
+					</SettingsHelp>
 				</div>
-				<div>
-					<VSCodeLink
-						href="https://cloud.google.com/docs/authentication/provide-credentials-adc#google-idp"
-						className="text-sm">
-						{t("settings:providers.googleCloudSetup.step2")}
-					</VSCodeLink>
-				</div>
-				<div>
-					<VSCodeLink
-						href="https://developers.google.com/workspace/guides/create-credentials?hl=en#service-account"
-						className="text-sm">
-						{t("settings:providers.googleCloudSetup.step3")}
-					</VSCodeLink>
-				</div>
+				<VSCodeTextField
+					id={`${id}-project`}
+					value={projectId}
+					onInput={handleInputChange("projectId")}
+					placeholder={t("settings:placeholders.projectId")}
+					aria-label={t("settings:providers.googleCloudProjectId")}
+					className="w-full"
+				/>
 			</div>
-			<VSCodeTextField
-				value={projectId}
-				onInput={handleInputChange("projectId")}
-				placeholder={t("settings:placeholders.projectId")}
-				className="w-full">
-				<label className="block font-medium mb-1">{t("settings:providers.googleCloudProjectId")}</label>
-			</VSCodeTextField>
 			<div>
 				<label className="block font-medium mb-1">{t("settings:providers.googleCloudRegion")}</label>
 				<SearchableSelect
@@ -116,22 +108,49 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 					data-testid="vertex-region-picker"
 				/>
 			</div>
-			<VSCodeTextField
-				value={apiConfiguration?.vertexJsonCredentials || ""}
-				onInput={handleInputChange("vertexJsonCredentials")}
-				placeholder={t("settings:placeholders.credentialsJson")}
-				className="w-full">
-				<label className="block font-medium mb-1">{t("settings:providers.googleCloudCredentials")}</label>
-			</VSCodeTextField>
-			<VSCodeTextField
-				value={apiConfiguration?.vertexKeyFile || ""}
-				onInput={handleInputChange("vertexKeyFile")}
-				placeholder={t("settings:placeholders.keyFilePath")}
-				className="w-full">
-				<label className="block font-medium mb-1">{t("settings:providers.googleCloudKeyFile")}</label>
-			</VSCodeTextField>
+			<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-1">
+					<label htmlFor={`${id}-credentials`} className="font-medium">
+						{t("settings:providers.googleCloudCredentials")}
+					</label>
+					<SettingsHelp label={t("settings:providers.googleCloudCredentials")}>
+						<p>{t("settings:providers.vertexCredentialsHelp")}</p>
+						<VSCodeLink href="https://cloud.google.com/docs/authentication/provide-credentials-adc#google-idp">
+							{t("settings:providers.googleCloudSetup.step2")}
+						</VSCodeLink>
+					</SettingsHelp>
+				</div>
+				<VSCodeTextField
+					id={`${id}-credentials`}
+					value={apiConfiguration?.vertexJsonCredentials || ""}
+					onInput={handleInputChange("vertexJsonCredentials")}
+					placeholder={t("settings:placeholders.credentialsJson")}
+					aria-label={t("settings:providers.googleCloudCredentials")}
+					className="w-full"
+				/>
+			</div>
+			<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-1">
+					<label htmlFor={`${id}-key-file`} className="font-medium">
+						{t("settings:providers.googleCloudKeyFile")}
+					</label>
+					<SettingsHelp label={t("settings:providers.googleCloudKeyFile")}>
+						<VSCodeLink href="https://developers.google.com/workspace/guides/create-credentials?hl=en#service-account">
+							{t("settings:providers.googleCloudSetup.step3")}
+						</VSCodeLink>
+					</SettingsHelp>
+				</div>
+				<VSCodeTextField
+					id={`${id}-key-file`}
+					value={apiConfiguration?.vertexKeyFile || ""}
+					onInput={handleInputChange("vertexKeyFile")}
+					placeholder={t("settings:placeholders.keyFilePath")}
+					aria-label={t("settings:providers.googleCloudKeyFile")}
+					className="w-full"
+				/>
+			</div>
 
-			<div>
+			<div className="flex items-center gap-1">
 				<Checkbox
 					data-testid="checkbox-vertex-streaming-enabled"
 					checked={apiConfiguration?.vertexStreamingEnabled ?? true}
@@ -140,13 +159,13 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 					}}>
 					{t("settings:providers.vertexStreamingEnabledLabel")}
 				</Checkbox>
-				<div className="text-sm text-vscode-descriptionForeground mt-1 ml-6">
+				<SettingsHelp label={t("settings:providers.vertexStreamingEnabledLabel")}>
 					{t("settings:providers.vertexStreamingEnabledDescription")}
-				</div>
+				</SettingsHelp>
 			</div>
 
 			{supports1MContextBeta && (
-				<div>
+				<div className="flex items-center gap-1">
 					<Checkbox
 						data-testid="checkbox-vertex-1m-context"
 						checked={apiConfiguration?.vertex1MContext ?? false}
@@ -155,9 +174,9 @@ export const Vertex = ({ apiConfiguration, setApiConfigurationField }: VertexPro
 						}}>
 						{t("settings:providers.vertex1MContextBetaLabel")}
 					</Checkbox>
-					<div className="text-sm text-vscode-descriptionForeground mt-1 ml-6">
+					<SettingsHelp label={t("settings:providers.vertex1MContextBetaLabel")}>
 						{t("settings:providers.vertex1MContextBetaDescription")}
-					</div>
+					</SettingsHelp>
 				</div>
 			)}
 		</>

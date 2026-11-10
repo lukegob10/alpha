@@ -3,10 +3,10 @@
 // Capture onOpenChange from Popover to control open/close in tests
 let lastOnOpenChange: ((open: boolean) => void) | undefined
 
-vi.mock("@/components/ui", () => {
+vi.mock("@/components/ui", async () => {
 	// Minimal UI primitives to ensure deterministic behavior in tests
 	return {
-		Button: ({ children, ...rest }: any) => <button {...rest}>{children}</button>,
+		Button: (await vi.importActual<typeof import("@/components/ui/button")>("@/components/ui/button")).Button,
 		StandardTooltip: ({ children }: any) => <>{children}</>,
 		Popover: (props: any) => {
 			const { children, onOpenChange, open, ...rest } = props
@@ -119,7 +119,7 @@ describe("CheckpointSaved popover visibility", () => {
 		})
 	})
 
-	it("closes popover after preview and after confirm restore", async () => {
+	it("closes popover after confirmed file restoration and after confirmed task restoration", async () => {
 		const { getByTestId, container } = render(<CheckpointSaved {...baseProps} />)
 
 		const popoverRoot = () => getByTestId("restore-popover")
@@ -135,8 +135,9 @@ describe("CheckpointSaved popover visibility", () => {
 			expect(menuContainer().className).toContain("block")
 		})
 
-		// Click preview -> popover closes; menu remains briefly visible, then hides
+		// Both restoration paths require confirmation before closing the popover.
 		await userEvent.click(getByTestId("restore-files-btn"))
+		await userEvent.click(getByTestId("confirm-restore-btn"))
 		await waitFor(() => {
 			expect(popoverRoot().getAttribute("data-open")).toBe("false")
 			expect(menuContainer().className).toContain("block")

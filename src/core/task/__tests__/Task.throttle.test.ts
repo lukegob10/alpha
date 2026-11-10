@@ -33,16 +33,6 @@ vi.mock("../../../api", () => ({
 	})),
 }))
 
-// Mock TelemetryService
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureTaskCreated: vi.fn(),
-			captureTaskRestarted: vi.fn(),
-		},
-	},
-}))
-
 // Mock task persistence to avoid disk writes
 vi.mock("../../task-persistence", () => ({
 	readApiMessages: vi.fn().mockResolvedValue([]),

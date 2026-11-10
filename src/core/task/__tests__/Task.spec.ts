@@ -22,7 +22,6 @@ import {
 	type ToolApprovalRequest,
 	type SubagentGroupState,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task, type ToolApprovalReviewer } from "../Task"
 import type { ApiInstructionFragment } from "../../../api"
@@ -174,6 +173,25 @@ vi.mock("../../../utils/safeWriteJson", async (importOriginal) => {
 		safeWriteJson: vi.fn(async (...args: Parameters<typeof actual.safeWriteJson>) => {
 			if (path.basename(args[0]) === "_index.json" && isVirtualTaskStoragePath(args[0])) return
 			await actual.safeWriteJson(...args)
+		}),
+	}
+})
+
+// Provider bootstrap uses the same virtual storage as goal/history fixtures. Keep its lease and hash
+// receipt at that boundary; manager conflict tests exercise real leases and physical paths stay durable.
+vi.mock("../../task-persistence/atomicWrite", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../task-persistence/atomicWrite")>()
+	const isVirtualProviderReceipt = (filePath: string) =>
+		path.basename(filePath) === "provider-profiles" && isVirtualTaskStoragePath(filePath)
+	return {
+		...actual,
+		withFileLock: vi.fn(async <T>(filePath: string, operation: () => Promise<T>): Promise<T> => {
+			if (isVirtualProviderReceipt(filePath)) return operation()
+			return actual.withFileLock(filePath, operation)
+		}),
+		atomicWriteText: vi.fn(async (...args: Parameters<typeof actual.atomicWriteText>): Promise<void> => {
+			if (isVirtualProviderReceipt(args[0])) return
+			await actual.atomicWriteText(...args)
 		}),
 	}
 })
@@ -362,10 +380,6 @@ describe("Alpha", () => {
 	let mockExtensionContext: vscode.ExtensionContext
 
 	beforeEach(async () => {
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
 		// Setup mock extension context
 		const storageUri = {
 			fsPath: path.join(os.tmpdir(), "test-storage"),
@@ -12797,12 +12811,6 @@ describe("Queued message processing after condense", () => {
 })
 
 describe("Task typed tool approval bridge", () => {
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-	})
-
 	const request = (taskId: string, overrides: Partial<ToolApprovalRequest> = {}): ToolApprovalRequest => ({
 		requestId: `${taskId}:call-1`,
 		taskId,

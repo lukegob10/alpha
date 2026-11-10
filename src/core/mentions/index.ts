@@ -172,7 +172,8 @@ export async function parseMentions(
 	fileContextTracker?: FileContextTracker,
 	alphaIgnoreController?: AlphaIgnoreController,
 	showAlphaIgnoredFiles: boolean = false,
-	includeDiagnosticMessages: boolean = true,
+	// Preserve positional callers; automatic inclusion does not gate explicit mentions.
+	_includeDiagnosticMessages: boolean = true,
 	maxDiagnosticMessages: number = 50,
 	skillsManager?: SkillLookup,
 	currentMode: string = "code",
@@ -304,7 +305,8 @@ export async function parseMentions(
 			}
 		} else if (mention === "problems") {
 			try {
-				const problems = await getWorkspaceProblems(cwd, includeDiagnosticMessages, maxDiagnosticMessages)
+				// An explicit request is independent of automatic post-write diagnostic inclusion.
+				const problems = await getWorkspaceProblems(cwd, maxDiagnosticMessages)
 				parsedText += `\n\n<workspace_diagnostics>\n${problems}\n</workspace_diagnostics>`
 			} catch (error) {
 				parsedText += `\n\n<workspace_diagnostics>\nError fetching diagnostics: ${error.message}\n</workspace_diagnostics>`
@@ -508,17 +510,13 @@ async function getFileOrFolderContentWithMetadata(
 	}
 }
 
-async function getWorkspaceProblems(
-	cwd: string,
-	includeDiagnosticMessages: boolean = true,
-	maxDiagnosticMessages: number = 50,
-): Promise<string> {
+async function getWorkspaceProblems(cwd: string, maxDiagnosticMessages: number = 50): Promise<string> {
 	const diagnostics = vscode.languages.getDiagnostics()
 	const result = await diagnosticsToProblemsString(
 		diagnostics,
 		[vscode.DiagnosticSeverity.Error, vscode.DiagnosticSeverity.Warning],
 		cwd,
-		includeDiagnosticMessages,
+		true,
 		maxDiagnosticMessages,
 	)
 	if (!result) {

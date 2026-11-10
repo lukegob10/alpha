@@ -9,6 +9,7 @@ import {
 	isApprovalMode,
 	migrateApprovalMode,
 	type ApprovalMode,
+	scheduledTaskCreationRequestIdSchema,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
 	taskReasoningPreferenceSchema,
@@ -311,12 +312,14 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async createTask(payload: CreateScheduledTaskPayload): Promise<ScheduledTask> {
+		if (this.disposed) throw new Error("Scheduled task service is disposed")
 		this.validateSetup(payload)
 		const now = Date.now()
 		const execution = normalizeExecution(payload.execution)
 		const autoApproval = normalizeAutoApproval(payload.autoApproval, "auto")
 		const task: ScheduledTask = {
 			id: crypto.randomUUID(),
+			creationRequestId: scheduledTaskCreationRequestIdSchema.optional().parse(payload.creationRequestId),
 			name: payload.name.trim(),
 			prompt: payload.prompt.trim(),
 			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig),
@@ -334,10 +337,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 			nextRunAt: getNextRunAt(payload.schedule, now - 1),
 		}
 
-		await this.store.upsertTask(task)
+		const created = await this.store.createTask(task)
 		await this.broadcast()
 		this.scheduleTick()
-		return task
+		return created
 	}
 
 	async updateTask(taskId: string, payload: UpdateScheduledTaskPayload): Promise<void> {
@@ -351,6 +354,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				...existing,
 				...payload,
 				id: existing.id,
+				creationRequestId: existing.creationRequestId,
 				name: payload.name?.trim() ?? existing.name,
 				prompt: payload.prompt?.trim() ?? existing.prompt,
 				apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),

@@ -522,7 +522,6 @@ const qualityGlobalSettingsSchema = globalSettingsSchema.pick({
 	maxWorkspaceFiles: true,
 	maxImageFileSize: true,
 	maxTotalImageSize: true,
-	terminalOutputPreviewSize: true,
 	terminalShellIntegrationTimeout: true,
 	terminalShellIntegrationDisabled: true,
 	terminalCommandDelay: true,

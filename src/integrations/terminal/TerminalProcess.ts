@@ -53,6 +53,9 @@ export class TerminalProcess extends BaseTerminalProcess {
 		})
 
 		this.once("no_shell_integration", () => {
+			// Submitted command paths publish their own descriptive completion below.
+			// This fallback owns only initialization failures before run() starts.
+			if (this.commandSubmitted) return
 			this.emit("completed", "<no shell integration>")
 			if (!this.terminal.process || this.terminal.process === this) {
 				this.terminal.busy = false

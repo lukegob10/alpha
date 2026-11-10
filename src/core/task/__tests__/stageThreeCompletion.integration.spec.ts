@@ -5,7 +5,6 @@ import * as vscode from "vscode"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { AlphaCodeEventName, agentControlStateSchema, type TaskWorkPlan } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminal } from "../../../integrations/terminal/types"
 
@@ -423,10 +422,6 @@ async function createHarness() {
 
 describe("Stage Three durable completion integration", () => {
 	const harnesses: Awaited<ReturnType<typeof createHarness>>[] = []
-
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-	})
 
 	afterEach(async () => {
 		await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()))

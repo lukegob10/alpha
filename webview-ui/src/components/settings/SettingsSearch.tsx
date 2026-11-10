@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback, useId } from "react"
 import type { LucideIcon } from "lucide-react"
 
 import { useSettingsSearch, type SearchResult, type SearchableSettingData } from "./useSettingsSearch"
-import type { SectionName } from "./SettingsView"
+import type { SectionName } from "./settingsNavigation"
 import { SettingsSearchInput } from "./SettingsSearchInput"
 import { SettingsSearchResults } from "./SettingsSearchResults"
 
@@ -106,7 +106,7 @@ export function SettingsSearch({ index, onNavigate, sections }: SettingsSearchPr
 
 	return (
 		<div
-			className="relative justify-end"
+			className="relative min-w-0 max-w-full justify-end"
 			onBlur={(event) => {
 				if (!event.currentTarget.contains(event.relatedTarget)) {
 					setIsOpen(false)

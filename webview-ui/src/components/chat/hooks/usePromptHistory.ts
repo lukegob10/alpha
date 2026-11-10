@@ -106,6 +106,15 @@ export const usePromptHistory = ({
 			setTempInput("")
 		}
 	}, [historyIndex])
+	useEffect(() => {
+		// Paste, drop, and host insertions can edit a recall without a native change event.
+		// Once edited, that text belongs to the draft rather than history navigation.
+		if (recalledDraft.current && inputValue !== recalledDraft.current.recalledPrompt) {
+			recalledDraft.current = undefined
+			setHistoryIndex(-1)
+			setTempInput("")
+		}
+	}, [inputValue])
 
 	// Helper to set cursor position after React renders
 	const setCursorPosition = useCallback(
@@ -161,6 +170,8 @@ export const usePromptHistory = ({
 
 	const handleHistoryNavigation = useCallback(
 		(event: React.KeyboardEvent<HTMLTextAreaElement>, showContextMenu: boolean, isComposing: boolean): boolean => {
+			if (event.defaultPrevented || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false
+
 			// Handle prompt history navigation
 			if (!showContextMenu && promptHistory.length > 0 && !isComposing) {
 				const textarea = event.currentTarget

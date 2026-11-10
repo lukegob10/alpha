@@ -1,46 +1,25 @@
-// npx vitest run src/shared/__tests__/experiments.spec.ts
+import { experimentsSchema } from "@alpha-code/types"
 
-import { experimentsSchema, type ExperimentId } from "@alpha-code/types"
-
-import { EXPERIMENT_IDS, experimentConfigsMap, experiments as Experiments } from "../experiments"
+import { EXPERIMENT_IDS, experimentDefault, experiments } from "../experiments"
 
 describe("experiments", () => {
 	it("accepts saved custom-command flags while discarding their retired authority", () => {
 		expect(experimentsSchema.parse({ runSlashCommand: true, customTools: true })).toEqual({ customTools: true })
 	})
 
-	describe("PREVENT_FOCUS_DISRUPTION", () => {
-		it("is configured correctly", () => {
-			expect(EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION).toBe("preventFocusDisruption")
-			expect(experimentConfigsMap.PREVENT_FOCUS_DISRUPTION).toMatchObject({
-				enabled: false,
-			})
-		})
+	it("defaults to background editing while keeping executable custom tools opt-in", () => {
+		expect(experimentDefault).toEqual({ preventFocusDisruption: true, customTools: false })
+		expect(experiments.get("PREVENT_FOCUS_DISRUPTION")).toEqual({ enabled: true })
+		expect(experiments.get("CUSTOM_TOOLS")).toEqual({ enabled: false })
 	})
 
-	describe("isEnabled", () => {
-		it("returns false when experiment is not enabled", () => {
-			const experiments: Record<ExperimentId, boolean> = {
-				preventFocusDisruption: false,
-				customTools: false,
-			}
-			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(false)
-		})
-
-		it("returns true when experiment is enabled", () => {
-			const experiments: Record<ExperimentId, boolean> = {
-				preventFocusDisruption: true,
-				customTools: false,
-			}
-			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(true)
-		})
-
-		it("returns false when experiment is not present", () => {
-			const experiments: Record<ExperimentId, boolean> = {
-				preventFocusDisruption: false,
-				customTools: false,
-			}
-			expect(Experiments.isEnabled(experiments, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)).toBe(false)
-		})
+	it.each([
+		{ config: {}, expected: false },
+		{ config: { customTools: false }, expected: false },
+		{ config: { customTools: true }, expected: true },
+		{ config: { preventFocusDisruption: false, customTools: true }, expected: true },
+		{ config: { preventFocusDisruption: true, customTools: false }, expected: false },
+	])("preserves custom-tool enablement for $config", ({ config, expected }) => {
+		expect(experiments.isEnabled(experimentsSchema.parse(config), EXPERIMENT_IDS.CUSTOM_TOOLS)).toBe(expected)
 	})
 })

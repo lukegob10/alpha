@@ -1,4 +1,4 @@
-import { cleanup, render, screen, fireEvent, waitFor, act, within } from "@testing-library/react"
+import { cleanup, render, screen, fireEvent, waitFor, act, within } from "@/utils/test-utils"
 import userEvent from "@testing-library/user-event"
 import { installNativeTestFocus } from "@/utils/test-native-focus"
 import { vi, describe, it, expect, beforeEach } from "vitest"
@@ -8,12 +8,15 @@ import {
 	DEFAULT_MEMORY_SETTINGS,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
+	providerProfileSaveResultSchema,
 	type ProviderProfileRenameResult,
 	type ProviderProfileSaveResult,
 	curatedProviders,
 	curatedProviderApiKeyFields,
 	getProviderDefaultModelId,
 	type ProviderSettings,
+	type ProviderSettingsEntry,
+	type ProviderProfileSnapshot,
 } from "@alpha-code/types"
 
 import SettingsView from "../SettingsView"
@@ -208,16 +211,11 @@ vi.mock("@src/components/worktrees/WorktreesView", () => ({
 }))
 
 // Mock Tab components
-vi.mock("../common/Tab", () => ({
+vi.mock("../../common/Tab", async () => ({
+	...(await vi.importActual<typeof import("../../common/Tab")>("../../common/Tab")),
 	Tab: ({ children }: any) => <div>{children}</div>,
 	TabContent: React.forwardRef<HTMLDivElement, any>(({ children }, ref) => <div ref={ref}>{children}</div>),
 	TabHeader: ({ children }: any) => <div>{children}</div>,
-	TabList: ({ children }: any) => <div data-testid="settings-tab-list">{children}</div>,
-	TabTrigger: React.forwardRef<HTMLButtonElement, any>(({ children, onClick }, ref) => (
-		<button ref={ref} onClick={onClick}>
-			{children}
-		</button>
-	)),
 }))
 
 // Mock child components that are complex
@@ -284,27 +282,6 @@ vi.mock("../NotificationSettings", () => ({
 vi.mock("../ContextManagementSettings", () => ({
 	ContextManagementSettings: vi.fn(() => <div>ContextManagementSettings</div>),
 }))
-vi.mock("../TerminalSettings", () => ({
-	TerminalSettings: vi.fn(({ terminalInheritEnv, onTerminalInheritEnvLoaded, setCachedStateField }: any) => (
-		<div>
-			<button data-testid="load-inherit-env" onClick={() => onTerminalInheritEnvLoaded(true)}>
-				Load inherit environment
-			</button>
-			<button
-				data-testid="cached-inherit-env"
-				data-value={String(terminalInheritEnv)}
-				onClick={() => setCachedStateField("terminalInheritEnv", !terminalInheritEnv)}>
-				Toggle inherit environment
-			</button>
-		</div>
-	)),
-}))
-vi.mock("../ExperimentalSettings", () => ({
-	ExperimentalSettings: vi.fn(() => <div>ExperimentalSettings</div>),
-}))
-vi.mock("../LanguageSettings", () => ({
-	LanguageSettings: vi.fn(() => <div>LanguageSettings</div>),
-}))
 vi.mock("../About", () => ({
 	About: vi.fn(() => <div>About</div>),
 }))
@@ -314,17 +291,19 @@ vi.mock("../UISettings", () => ({
 vi.mock("../SectionHeader", () => ({
 	SectionHeader: ({ children }: any) => <div>{children}</div>,
 }))
-vi.mock("../Section", () => ({
-	Section: ({ children }: any) => <div>{children}</div>,
-}))
 vi.mock("../SettingsSearch", () => ({
 	SettingsSearch: () => null,
 }))
 
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 import ApiOptions from "../ApiOptions"
+import ApiConfigManager from "../ApiConfigManager"
 import { ContextManagementSettings } from "../ContextManagementSettings"
 import { NotificationSettings } from "../NotificationSettings"
+
+function revealSettingsSection(section: string) {
+	fireEvent.click(screen.getByTestId(`tab-${section}`))
+}
 
 describe("SettingsView - Unsaved Changes Detection", () => {
 	let queryClient: QueryClient
@@ -361,7 +340,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		mcpEnabled: false,
 		soundEnabled: false,
 		soundVolume: 0.5,
-		telemetrySetting: "unset",
 		terminalOutputLineLimit: 500,
 		terminalOutputCharacterLimit: 50000,
 		terminalShellIntegrationTimeout: 3000,
@@ -418,7 +396,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		try {
 			render(
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={onDone} />
+					<SettingsView onDone={onDone} targetSection="providers" />
 				</QueryClientProvider>,
 			)
 			await user.click(await screen.findByText("Edit model"))
@@ -448,7 +426,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -501,7 +479,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -551,7 +529,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -592,7 +570,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} />
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -638,7 +616,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			))
 			const view = () => (
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={vi.fn()} />
+					<SettingsView onDone={vi.fn()} targetSection="providers" />
 				</QueryClientProvider>
 			)
 			const result = render(view())
@@ -684,7 +662,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		const onDone = vi.fn()
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 		const input = await screen.findByLabelText("Provider key")
@@ -726,7 +704,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			))
 			const view = () => (
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={vi.fn()} />
+					<SettingsView onDone={vi.fn()} targetSection="providers" />
 				</QueryClientProvider>
 			)
 			const result = render(view())
@@ -780,7 +758,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		))
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} />
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 		await waitFor(() => expect(screen.getByText("Edit provider settings")).toBeInTheDocument())
@@ -808,7 +786,15 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 	})
 
 	describe("profile rename edit-buffer lifecycle", () => {
-		const setupDirtyProfile = (omitSavedSecret = false, onProviderLayout?: () => void, profileId = "profile-a") => {
+		const setupDirtyProfile = (
+			omitSavedSecret = false,
+			onProviderLayout?: () => void,
+			profileId: string | null = "profile-a",
+			version?: string,
+			snapshot?: ProviderProfileSnapshot | null,
+			editProvider = true,
+			editPreferences = true,
+		) => {
 			const savedProvider = {
 				apiProvider: "openai",
 				openAiBaseUrl: "https://saved.example/v1",
@@ -818,8 +804,11 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			let liveState = {
 				...defaultExtensionState,
 				settingsImportedAt: undefined as number | undefined,
-				listApiConfigMeta: [{ id: profileId, name: "default" }],
+				listApiConfigMeta: (profileId === null
+					? []
+					: [{ id: profileId, name: "default", version }]) as ProviderSettingsEntry[],
 				apiConfiguration: savedProvider,
+				settingsProviderProfile: snapshot,
 			}
 			;(useExtensionState as any).mockImplementation(() => liveState)
 			let editPendingModel: (model: string) => void = () => undefined
@@ -864,14 +853,18 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			const onDone = vi.fn()
 			const view = () => (
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={() => onDone()} />
+					<SettingsView onDone={() => onDone()} targetSection="providers" />
 				</QueryClientProvider>
 			)
 			const result = render(view())
-			fireEvent.click(screen.getByText("Edit provider settings"))
-			fireEvent.click(screen.getByTestId("tab-notifications"))
-			fireEvent.click(screen.getByText("Enable sound"))
-			fireEvent.click(screen.getByTestId("tab-providers"))
+			revealSettingsSection("providers")
+			if (editProvider) fireEvent.click(screen.getByText("Edit provider settings"))
+			revealSettingsSection("preferences")
+			if (editPreferences) fireEvent.click(screen.getByText("Enable sound"))
+			revealSettingsSection("providers")
+			const initialStateRequests = mockPostMessage.mock.calls.filter(
+				([message]) => message.type === "requestState",
+			).length
 			mockPostMessage.mockClear()
 			const rename = () => {
 				fireEvent.click(screen.getByTestId("rename-profile"))
@@ -899,7 +892,29 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 					id: message?.[0].apiConfigurationId,
 				})
 			}
-			const respondSave = async (response: unknown) => {
+			const respondSettingsSave = async (
+				result:
+					| { status: "success" }
+					| { status: "error"; error: "conflict" | "saveFailed"; conflictingKeys?: string[] } = {
+					status: "success",
+				},
+			) => {
+				const update = mockPostMessage.mock.calls.findLast(
+					([message]) => message.type === "updateSettings",
+				)?.[0]
+				expect(update?.settingsSave?.requestId).toEqual(expect.any(String))
+				await act(async () => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "settingsSaved",
+								settingsSaveResult: { requestId: update.settingsSave.requestId, ...result },
+							},
+						}),
+					)
+				})
+			}
+			const respondSave = async (response: unknown, acknowledgeSettings = true) => {
 				await act(async () => {
 					window.dispatchEvent(
 						new MessageEvent("message", {
@@ -907,6 +922,18 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 						}),
 					)
 				})
+				const parsed = providerProfileSaveResultSchema.safeParse(response)
+				const currentProfileRequest = mockPostMessage.mock.calls.findLast(
+					([message]) => message.type === "upsertApiConfiguration",
+				)?.[0]
+				if (
+					acknowledgeSettings &&
+					parsed.success &&
+					parsed.data.requestId === currentProfileRequest?.requestId &&
+					mockPostMessage.mock.calls.some(([message]) => message.type === "updateSettings")
+				) {
+					await respondSettingsSave()
+				}
 			}
 			const refresh = (updates: Partial<typeof liveState>) => {
 				liveState = { ...liveState, ...updates }
@@ -917,17 +944,19 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://buffered.example/v1")
 				expect(screen.getByTestId("cached-key")).toHaveTextContent("buffered-key")
 				expect(screen.getByTestId("cached-model")).toHaveTextContent("buffered-model")
-				fireEvent.click(screen.getByTestId("tab-notifications"))
+				revealSettingsSection("preferences")
 				expect(screen.getByTestId("cached-sound")).toHaveTextContent("true")
-				fireEvent.click(screen.getByTestId("tab-providers"))
+				revealSettingsSection("providers")
 			}
 			return {
 				...result,
+				initialStateRequests,
 				onDone,
 				rename,
 				respond,
 				save,
 				respondSave,
+				respondSettingsSave,
 				refresh,
 				expectDraft,
 				savedProvider,
@@ -967,6 +996,197 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			)
 		})
 
+		it("opens from the paired saved profile after an inactive save while task settings remain frozen", () => {
+			const version = `sha256:${"b".repeat(64)}`
+			const configuration = {
+				apiProvider: "openai" as const,
+				openAiBaseUrl: "https://inactive-save.example/v1",
+				openAiApiKey: "saved-key",
+				openAiModelId: "saved-model",
+			}
+			const test = setupDirtyProfile(
+				false,
+				undefined,
+				"profile-a",
+				`sha256:${"c".repeat(64)}`,
+				{ id: "profile-a", name: "default", version, configuration },
+				false,
+			)
+			expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://inactive-save.example/v1")
+			act(() => test.editModel("edited-model"))
+			test.save()
+			const preferences = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+			expect(preferences.updatedSettings).not.toHaveProperty("settingsProviderProfile")
+			expect(JSON.stringify(preferences)).not.toContain("saved-key")
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationExpectedVersion: version,
+					apiConfiguration: expect.objectContaining({
+						openAiBaseUrl: "https://inactive-save.example/v1",
+						openAiModelId: "edited-model",
+					}),
+				}),
+			)
+		})
+
+		it("blocks an existing profile Save when its modern saved snapshot is unreadable", () => {
+			setupDirtyProfile(false, undefined, "profile-a", `sha256:${"b".repeat(64)}`, null)
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			expect(screen.getByText("settings:providers.profileSnapshotUnavailable")).toBeInTheDocument()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).not.toHaveBeenCalled()
+		})
+
+		it("never uses another selected profile's retained snapshot as this buffer's save precondition", () => {
+			const test = setupDirtyProfile(false, undefined, "profile-b", `sha256:${"b".repeat(64)}`, {
+				id: "profile-a",
+				name: "other-profile",
+				version: `sha256:${"a".repeat(64)}`,
+				configuration: { apiProvider: "openai", openAiModelId: "other-model" },
+			})
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).not.toHaveBeenCalled()
+			fireEvent.click(screen.getByText("settings:common.done"))
+			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+			act(() => test.editModel("edited-model"))
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+		})
+
+		it("requests one fresh full state after a partial selection and makes the clean paired buffer usable", () => {
+			const version = `sha256:${"b".repeat(64)}`
+			const test = setupDirtyProfile(
+				false,
+				undefined,
+				"profile-b",
+				version,
+				{
+					id: "profile-a",
+					name: "other-profile",
+					version: `sha256:${"a".repeat(64)}`,
+					configuration: { apiProvider: "openai", openAiBaseUrl: "https://old.example/v1" },
+				},
+				false,
+				false,
+			)
+			expect(test.initialStateRequests).toBe(1)
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			test.refresh({
+				settingsProviderProfile: {
+					id: "profile-b",
+					name: "default",
+					version,
+					configuration: {
+						apiProvider: "openai",
+						openAiBaseUrl: "https://selected.example/v1",
+						openAiModelId: "selected-model",
+					},
+				},
+			})
+			expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://selected.example/v1")
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			act(() => test.editModel("edited-model"))
+			test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationId: "profile-b",
+					apiConfigurationExpectedVersion: version,
+					apiConfiguration: expect.objectContaining({
+						openAiBaseUrl: "https://selected.example/v1",
+						openAiModelId: "edited-model",
+					}),
+				}),
+			)
+			expect(mockPostMessage.mock.calls.some(([message]) => message.type === "requestState")).toBe(false)
+		})
+
+		it("still creates a genuinely unsaved profile when the modern snapshot has no saved identity", () => {
+			setupDirtyProfile(false, undefined, null, undefined, null)
+			fireEvent.click(screen.getByTestId("save-button"))
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({ apiConfigurationReturnVersion: true }),
+			)
+			expect(mockPostMessage.mock.calls.at(-1)?.[0]).not.toHaveProperty("apiConfigurationId")
+		})
+
+		it("does not replace a dirty snapshot buffer or its base when another saved snapshot arrives", () => {
+			const version = `sha256:${"a".repeat(64)}`
+			const configuration = {
+				apiProvider: "openai" as const,
+				openAiBaseUrl: "https://original.example/v1",
+				openAiModelId: "saved-model",
+			}
+			const test = setupDirtyProfile(
+				false,
+				undefined,
+				"profile-a",
+				version,
+				{ id: "profile-a", name: "default", version, configuration },
+				false,
+			)
+			act(() => test.editModel("draft-model"))
+			test.refresh({
+				settingsProviderProfile: {
+					id: "profile-a",
+					name: "default",
+					version: `sha256:${"b".repeat(64)}`,
+					configuration: { ...configuration, openAiBaseUrl: "https://external.example/v1" },
+				},
+			})
+			test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationExpectedVersion: version,
+					apiConfiguration: expect.objectContaining({
+						openAiBaseUrl: "https://original.example/v1",
+						openAiModelId: "draft-model",
+					}),
+				}),
+			)
+		})
+
+		it("keeps the draft through a conflict refresh and discards into the fresh paired saved snapshot", async () => {
+			const version = `sha256:${"a".repeat(64)}`
+			const nextVersion = `sha256:${"b".repeat(64)}`
+			const original = {
+				apiProvider: "openai" as const,
+				openAiBaseUrl: "https://original.example/v1",
+				openAiModelId: "saved-model",
+			}
+			const test = setupDirtyProfile(
+				false,
+				undefined,
+				"profile-a",
+				version,
+				{ id: "profile-a", name: "default", version, configuration: original },
+				false,
+			)
+			act(() => test.editModel("draft-model"))
+			const request = test.save()
+			test.refresh({
+				settingsProviderProfile: {
+					id: "profile-a",
+					name: "default",
+					version: nextVersion,
+					configuration: { ...original, openAiBaseUrl: "https://fresh.example/v1" },
+				},
+			})
+			await test.respondSave({ requestId: request.requestId, status: "error", error: "conflict" })
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("draft-model")
+			expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://original.example/v1")
+			fireEvent.click(screen.getByText("settings:common.done"))
+			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+			expect(screen.getByTestId("cached-endpoint")).toHaveTextContent("https://fresh.example/v1")
+			act(() => test.editModel("reapplied-model"))
+			test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationExpectedVersion: nextVersion,
+					apiConfiguration: expect.objectContaining({ openAiBaseUrl: "https://fresh.example/v1" }),
+				}),
+			)
+		})
+
 		it("keeps modern edits dirty until the extension acknowledges Save", () => {
 			const test = setupDirtyProfile()
 			fireEvent.click(screen.getByTestId("save-button"))
@@ -975,6 +1195,46 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(test.onDone).not.toHaveBeenCalled()
 			test.expectDraft()
 		})
+
+		it("waits for global preferences after a successful provider-profile save", async () => {
+			const test = setupDirtyProfile()
+			const request = test.save()
+			await test.respondSave(
+				{ requestId: request.requestId, status: "success", id: request.id, name: "default" },
+				false,
+			)
+			expect(screen.getByTestId("save-button")).toBeDisabled()
+			fireEvent.click(screen.getByText("settings:common.done"))
+			expect(test.onDone).not.toHaveBeenCalled()
+			expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+			await test.respondSettingsSave()
+			fireEvent.click(screen.getByText("settings:common.done"))
+			expect(test.onDone).toHaveBeenCalledOnce()
+		})
+
+		it.each(["conflict", "saveFailed"] as const)(
+			"keeps the draft dirty when global preferences report %s after the profile succeeds",
+			async (error) => {
+				const test = setupDirtyProfile()
+				const request = test.save()
+				await test.respondSave(
+					{ requestId: request.requestId, status: "success", id: request.id, name: "default" },
+					false,
+				)
+				await test.respondSettingsSave({
+					status: "error",
+					error,
+					...(error === "conflict" ? { conflictingKeys: ["soundEnabled"] } : {}),
+				})
+				expect(screen.getByRole("alert")).toHaveTextContent(`settings:common.saveErrors.${error}`)
+				expect(screen.getByTestId("save-button")).toBeEnabled()
+				test.expectDraft()
+				fireEvent.click(screen.getByText("settings:common.done"))
+				expect(test.onDone).not.toHaveBeenCalled()
+				expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+			},
+		)
 
 		it.each(["provider", "global"] as const)(
 			"keeps a %s edit dirty when Save succeeds in the same event batch",
@@ -998,10 +1258,18 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 							},
 						}),
 					)
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "settingsSaved",
+								settingsSaveResult: { requestId: request.requestId, status: "success" },
+							},
+						}),
+					)
 				})
 				if (field === "provider") expect(screen.getByTestId("cached-model")).toHaveTextContent("newer-model")
 				else {
-					fireEvent.click(screen.getByTestId("tab-notifications"))
+					revealSettingsSection("preferences")
 					expect(screen.getByTestId("cached-sound")).toHaveTextContent("false")
 				}
 				expect(screen.getByTestId("save-button")).toBeEnabled()
@@ -1033,7 +1301,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(test.onDone).toHaveBeenCalledTimes(1)
 		})
 
-		it.each(["invalid", "notFound", "saveFailed"] as const)(
+		it.each(["invalid", "notFound", "conflict", "saveFailed"] as const)(
 			"retains provider/global drafts and retries after Save reports %s",
 			async (error) => {
 				const test = setupDirtyProfile()
@@ -1071,9 +1339,9 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			const test = setupDirtyProfile()
 			const request = test.save()
 			fireEvent.click(screen.getByText("Change pending model"))
-			fireEvent.click(screen.getByTestId("tab-notifications"))
+			revealSettingsSection("preferences")
 			fireEvent.click(screen.getByText("Disable sound"))
-			fireEvent.click(screen.getByTestId("tab-providers"))
+			revealSettingsSection("providers")
 			await test.respondSave({
 				requestId: request.requestId,
 				status: "success",
@@ -1098,6 +1366,168 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 				}),
 			)
 		})
+
+		it("keeps the original content base through another view's save and rename, then reloads on discard", async () => {
+			const originalVersion = `sha256:${"a".repeat(64)}`
+			const externalVersion = `sha256:${"b".repeat(64)}`
+			const test = setupDirtyProfile(false, undefined, "profile-a", originalVersion)
+			test.refresh({
+				currentApiConfigName: "external-name",
+				listApiConfigMeta: [{ id: "profile-a", name: "external-name", version: externalVersion }],
+				apiConfiguration: {
+					...test.savedProvider,
+					openAiModelId: "external-model",
+					openAiApiKey: "external-key",
+				},
+			})
+			const request = test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					type: "upsertApiConfiguration",
+					apiConfigurationId: "profile-a",
+					apiConfigurationExpectedVersion: originalVersion,
+					text: "external-name",
+				}),
+			)
+			await test.respondSave({ requestId: request.requestId, status: "error", error: "conflict" })
+			expect(screen.getByRole("alert")).toHaveTextContent("settings:providers.saveErrors.conflict")
+			test.expectDraft()
+			fireEvent.click(screen.getByText("settings:common.done"))
+			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("external-model")
+			act(() => test.editModel("reapplied-model"))
+			test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationExpectedVersion: externalVersion,
+					apiConfiguration: expect.objectContaining({
+						openAiApiKey: "external-key",
+						openAiModelId: "reapplied-model",
+					}),
+				}),
+			)
+		})
+
+		it("advances the content base only from a matching Save receipt while preserving newer edits", async () => {
+			const originalVersion = `sha256:${"a".repeat(64)}`
+			const committedVersion = `sha256:${"b".repeat(64)}`
+			const test = setupDirtyProfile(false, undefined, "profile-a", originalVersion)
+			const request = test.save()
+			act(() => test.editModel("pending-newer-model"))
+			await test.respondSave({
+				requestId: "unrelated",
+				status: "success",
+				id: request.id,
+				name: "default",
+				version: committedVersion,
+			})
+			await test.respondSave({
+				requestId: request.requestId,
+				status: "success",
+				id: request.id,
+				name: "default",
+				version: committedVersion,
+			})
+			expect(screen.getByTestId("cached-model")).toHaveTextContent("pending-newer-model")
+			test.refresh({ listApiConfigMeta: [{ id: "profile-a", name: "default", version: originalVersion }] })
+			test.save()
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({ apiConfigurationExpectedVersion: committedVersion }),
+			)
+		})
+
+		it("does not adopt a late content version after the Save request timed out", async () => {
+			const originalVersion = `sha256:${"a".repeat(64)}`
+			const test = setupDirtyProfile(false, undefined, "profile-a", originalVersion)
+			vi.useFakeTimers()
+			try {
+				const request = test.save()
+				act(() => vi.advanceTimersByTime(30_000))
+				await test.respondSave({
+					requestId: request.requestId,
+					status: "success",
+					id: request.id,
+					name: "default",
+					version: `sha256:${"b".repeat(64)}`,
+				})
+				test.save()
+				expect(mockPostMessage).toHaveBeenLastCalledWith(
+					expect.objectContaining({ apiConfigurationExpectedVersion: originalVersion }),
+				)
+				test.expectDraft()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it("uses the creation receipt identity and content version before metadata refresh arrives", async () => {
+			const version = `sha256:${"c".repeat(64)}`
+			const test = setupDirtyProfile(false, undefined, null)
+			fireEvent.click(screen.getByTestId("save-button"))
+			const creation = mockPostMessage.mock.calls.findLast(
+				([message]) => message.type === "upsertApiConfiguration",
+			)?.[0]
+			expect(creation).toMatchObject({
+				text: "default",
+				requestId: expect.any(String),
+				apiConfigurationReturnVersion: true,
+			})
+			expect(creation).not.toHaveProperty("apiConfigurationId")
+			await test.respondSave({
+				requestId: creation.requestId,
+				status: "success",
+				id: "created-id",
+				name: "default",
+				version,
+			})
+			act(() => test.editModel("next-model"))
+			expect(test.save().id).toBe("created-id")
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					apiConfigurationId: "created-id",
+					apiConfigurationExpectedVersion: version,
+				}),
+			)
+		})
+
+		it.each(["create", "update"] as const)(
+			"retains %s drafts but retries from a correlated committed apply-failure receipt",
+			async (operation) => {
+				const originalVersion = `sha256:${"a".repeat(64)}`
+				const committedVersion = `sha256:${"b".repeat(64)}`
+				const test = setupDirtyProfile(
+					false,
+					undefined,
+					operation === "create" ? null : "profile-a",
+					originalVersion,
+				)
+				fireEvent.click(screen.getByTestId("save-button"))
+				const request = mockPostMessage.mock.calls.findLast(
+					([message]) => message.type === "upsertApiConfiguration",
+				)?.[0]
+				const id = operation === "create" ? "created-id" : "profile-a"
+				await test.respondSave({
+					requestId: "unrelated",
+					status: "error",
+					error: "applyFailed",
+					saved: { id, name: "default", version: committedVersion },
+				})
+				expect(screen.getByTestId("save-button")).toBeDisabled()
+				await test.respondSave({
+					requestId: request.requestId,
+					status: "error",
+					error: "applyFailed",
+					saved: { id, name: "default", version: committedVersion },
+				})
+				expect(screen.getByRole("alert")).toHaveTextContent("settings:providers.saveErrors.applyFailed")
+				test.expectDraft()
+				expect(screen.getByTestId("save-button")).toBeEnabled()
+				expect(test.save().id).toBe(id)
+				expect(mockPostMessage).toHaveBeenLastCalledWith(
+					expect.objectContaining({ apiConfigurationExpectedVersion: committedVersion }),
+				)
+			},
+		)
 
 		it("does not restore an older profile name from a delayed Save success", async () => {
 			const test = setupDirtyProfile()
@@ -1213,7 +1643,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 					throw new Error("test transport failure")
 				})
 			test.save()
-			expect(screen.getByRole("alert")).toHaveTextContent("settings:providers.saveErrors.saveFailed")
+			expect(screen.getByRole("alert")).toHaveTextContent("settings:common.saveErrors.saveFailed")
 			expect(screen.getByTestId("save-button")).toBeEnabled()
 			test.expectDraft()
 		})
@@ -1255,13 +1685,17 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		})
 
 		it("retains a known same-name target through Discard when metadata disappears", () => {
-			const test = setupDirtyProfile()
+			const version = `sha256:${"a".repeat(64)}`
+			const test = setupDirtyProfile(false, undefined, "profile-a", version)
 			test.refresh({ listApiConfigMeta: [] })
 			fireEvent.click(screen.getByText("settings:common.done"))
 			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
 			expect(screen.getByTestId("cached-model")).toHaveTextContent("saved-model")
 			fireEvent.click(screen.getByText("Edit provider settings"))
 			expect(test.save().id).toBe("profile-a")
+			expect(mockPostMessage).toHaveBeenLastCalledWith(
+				expect.objectContaining({ apiConfigurationExpectedVersion: version }),
+			)
 		})
 
 		it.each(["discard", "import"] as const)(
@@ -1387,6 +1821,82 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			},
 		)
 
+		it("releases a missing rename result for retry and ignores the timed-out acknowledgement", async () => {
+			const test = setupDirtyProfile()
+			vi.useFakeTimers()
+			try {
+				const completed = vi.fn()
+				act(() => {
+					const rename = vi.mocked(ApiConfigManager).mock.calls.at(-1)![0].onRenameConfig
+					const result = rename("default", "renamed")
+					if (result) void result.then(completed)
+				})
+				const request = providerProfileRenameRequestSchema.parse(
+					mockPostMessage.mock.calls.findLast(([message]) => message.type === "renameApiConfiguration")?.[0]
+						.apiConfigurationRename,
+				)
+				expect(screen.getByTestId("save-button")).toBeDisabled()
+				await act(async () => vi.advanceTimersByTime(30_000))
+				expect(completed).toHaveBeenCalledWith("settings:providers.renameErrors.timeout")
+				expect(screen.getByTestId("save-button")).toBeEnabled()
+				expect(screen.getByTestId("rename-profile")).toBeEnabled()
+				test.expectDraft()
+				const retry = test.rename()
+				expect(retry.requestId).not.toBe(request.requestId)
+				await test.respond({
+					requestId: request.requestId,
+					status: "success",
+					id: request.id,
+					oldName: "default",
+					newName: "stale-name",
+				})
+				expect(screen.getByTestId("current-profile-name")).toHaveTextContent("default")
+				expect(screen.getByTestId("save-button")).toBeDisabled()
+				await test.respond({ requestId: retry.requestId, status: "error", error: "saveFailed" })
+				expect(screen.getByTestId("save-button")).toBeEnabled()
+				test.expectDraft()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
+		it.each(["success", "failure", "selection", "import", "unmount"] as const)(
+			"clears the pending rename timer after %s",
+			async (reset) => {
+				const test = setupDirtyProfile()
+				vi.useFakeTimers()
+				const timeoutSpy = vi.spyOn(globalThis, "setTimeout")
+				const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout")
+				try {
+					const request = test.rename()
+					const timeout =
+						timeoutSpy.mock.results[timeoutSpy.mock.calls.findIndex(([, delay]) => delay === 30_000)]
+					if (reset === "success") {
+						await test.respond({
+							requestId: request.requestId,
+							status: "success",
+							id: request.id,
+							oldName: "default",
+							newName: "renamed",
+						})
+					} else if (reset === "failure") {
+						await test.respond({ requestId: request.requestId, status: "error", error: "saveFailed" })
+					} else if (reset === "selection") {
+						test.refresh({ listApiConfigMeta: [{ id: "profile-b", name: "default" }] })
+					} else if (reset === "import") {
+						test.refresh({ settingsImportedAt: 123 })
+					} else {
+						test.unmount()
+					}
+					expect(clearTimeoutSpy).toHaveBeenCalledWith(timeout.value)
+				} finally {
+					timeoutSpy.mockRestore()
+					clearTimeoutSpy.mockRestore()
+					vi.useRealTimers()
+				}
+			},
+		)
+
 		it("ignores unrelated acknowledgements and retries after a failed rename without losing drafts", async () => {
 			const test = setupDirtyProfile()
 			const request = test.rename()
@@ -1440,7 +1950,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			expect(test.onDone).toHaveBeenCalledOnce()
 			expect(screen.getByTestId("cached-model")).toHaveTextContent("latest-saved-model")
 			expect(screen.getByTestId("cached-key")).toHaveTextContent("latest-saved-key")
-			fireEvent.click(screen.getByTestId("tab-notifications"))
+			revealSettingsSection("preferences")
 			expect(screen.getByTestId("cached-sound")).toHaveTextContent("false")
 			expect(mockPostMessage).not.toHaveBeenCalledWith(
 				expect.objectContaining({ type: "upsertApiConfiguration" }),
@@ -1687,7 +2197,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		const { rerender } = render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -1701,7 +2211,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		}
 		rerender(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -1734,7 +2244,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		const { rerender } = render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} />
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -1746,7 +2256,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		}
 		rerender(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} />
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -1765,7 +2275,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			([message]) => message.type === "upsertApiConfiguration",
 		)?.[0]
 		expect(legacySave).not.toHaveProperty("apiConfigurationId")
-		expect(legacySave).not.toHaveProperty("requestId")
+		expect(legacySave?.requestId).toEqual(expect.any(String))
 	})
 
 	it.each(["save", "discard"] as const)(
@@ -1793,7 +2303,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			))
 			const view = () => (
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={onDone} />
+					<SettingsView onDone={onDone} targetSection="providers" />
 				</QueryClientProvider>
 			)
 			const { rerender } = render(view())
@@ -1895,11 +2405,15 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		)
 		const view = () => (
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} targetSection="contextManagement" />
+				<SettingsView onDone={vi.fn()} targetSection="preferences" />
 			</QueryClientProvider>
 		)
 		const result = render(view())
+		const memoriesHeading = screen.getByRole("heading", { name: "settings:preferences.memories" })
+		expect(memoriesHeading).toBeVisible()
+		expect(memoriesHeading.closest("details")).toBeNull()
 		const useMemories = await screen.findByLabelText("settings:memory.useMemories.label")
+		expect(useMemories).toBeVisible()
 		fireEvent.click(useMemories)
 		expect(useMemories).not.toBeChecked()
 		expect(liveState.memorySettings.useMemories).toBe(true)
@@ -1988,12 +2502,10 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		expect(mockPostMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
-				updatedSettings: expect.objectContaining({
-					soundEnabled: true,
-					subagentAgentTypes: definitions,
-				}),
+				updatedSettings: { soundEnabled: true },
 			}),
 		)
+		expect(liveState.subagentAgentTypes).toEqual(definitions)
 	})
 
 	it("saves post-turn and after-prefix controls from the local edit buffer", async () => {
@@ -2051,11 +2563,6 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			targetSection: "mcp",
 			testId: "cached-mcp-enabled",
 		},
-		{
-			field: "showWorktreesInHomeScreen",
-			targetSection: "worktrees",
-			testId: "cached-worktrees-home",
-		},
 	] as const)("buffers the embedded $field control until Save", async ({ field, targetSection, testId }) => {
 		const liveState = {
 			...defaultExtensionState,
@@ -2088,7 +2595,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 		)
 	})
 
-	it("buffers the VS Code inherit-environment setting and writes it only on Save", async () => {
+	it("keeps a legacy terminal link on Advanced without exposing host settings or dirtying the form", async () => {
 		const liveState = { ...defaultExtensionState }
 		;(useExtensionState as any).mockReturnValue(liveState)
 
@@ -2098,27 +2605,13 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			</QueryClientProvider>,
 		)
 
-		await waitFor(() => expect(screen.getByTestId("load-inherit-env")).toBeInTheDocument())
-		fireEvent.click(screen.getByTestId("load-inherit-env"))
-		await waitFor(() => expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "true"))
-		mockPostMessage.mockClear()
-
-		fireEvent.click(screen.getByTestId("cached-inherit-env"))
-
+		await waitFor(() => expect(screen.getByTestId("tab-advanced")).toHaveAttribute("aria-selected", "true"))
+		expect(screen.queryByTestId("open-terminal-settings")).not.toBeInTheDocument()
+		expect(screen.queryByText("settings:advanced.terminal")).not.toBeInTheDocument()
 		expect(liveState).not.toHaveProperty("terminalInheritEnv")
-		expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "false")
-		expect(mockPostMessage).not.toHaveBeenCalled()
-
-		fireEvent.click(screen.getByTestId("save-button"))
-
-		expect(mockPostMessage).toHaveBeenCalledWith({
-			type: "updateVSCodeSetting",
-			setting: "terminal.integrated.inheritEnv",
-			value: false,
-		})
-
-		fireEvent.click(screen.getByTestId("load-inherit-env"))
-		expect(screen.getByTestId("cached-inherit-env")).toHaveAttribute("data-value", "false")
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateVSCodeSetting" }))
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
 	it.each([
@@ -2137,7 +2630,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={vi.fn()} />
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -2164,7 +2657,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -2207,7 +2700,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 
@@ -2265,7 +2758,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		render(
 			<QueryClientProvider client={queryClient}>
-				<SettingsView onDone={onDone} />
+				<SettingsView onDone={onDone} targetSection="providers" />
 			</QueryClientProvider>,
 		)
 

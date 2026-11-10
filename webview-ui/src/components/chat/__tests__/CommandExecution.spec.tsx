@@ -7,11 +7,14 @@ import type { CommandExecutionStatus } from "@alpha-code/types"
 
 import { CommandExecution } from "../CommandExecution"
 import { ShellStateContext } from "../../../context/ExtensionStateContext"
+import { TooltipProvider } from "../../ui"
 
 // Mock dependencies
 vi.mock("react-use", () => ({
 	useEvent: vi.fn(),
 }))
+
+vi.mock("i18next", () => ({ t: (key: string) => key }))
 
 import { vscode } from "../../../utils/vscode"
 
@@ -52,7 +55,9 @@ const mockExtensionState = {
 }
 
 const ExtensionStateWrapper = ({ children }: { children: React.ReactNode }) => (
-	<ShellStateContext.Provider value={mockExtensionState as any}>{children}</ShellStateContext.Provider>
+	<ShellStateContext.Provider value={mockExtensionState as any}>
+		<TooltipProvider>{children}</TooltipProvider>
+	</ShellStateContext.Provider>
 )
 
 // Existing parsing and pattern-management cases exercise the opened terminal.
@@ -72,6 +77,40 @@ const publishStatus = (status: CommandExecutionStatus) => {
 }
 
 describe("CommandExecution", () => {
+	it("restores running status, abort and output from the transcript after remount", () => {
+		const card = (
+			<ExtensionStateWrapper>
+				<CommandExecution
+					executionId="retained-status"
+					text="pnpm test"
+					executionStatus={{
+						executionId: "retained-status",
+						status: "started",
+						command: "pnpm test",
+						pid: 42,
+					}}
+					executionOutput="Still running"
+					isExpanded
+				/>
+			</ExtensionStateWrapper>
+		)
+		const first = render(card)
+		first.unmount()
+		render(card)
+		expect(screen.getByRole("button", { name: "chat:commandExecution.abortCommand" })).toBeVisible()
+		expect(screen.getByTestId("terminal-output")).toHaveTextContent("Still running")
+	})
+
+	it("does not invent a successful exit for legacy command transcripts", () => {
+		render(
+			<ExtensionStateWrapper>
+				<CommandExecution executionId="legacy" text="pnpm test\nOutput:\nDone" />
+			</ExtensionStateWrapper>,
+		)
+		expect(screen.queryByRole("button", { name: "chat:commandExecution.abortCommand" })).not.toBeInTheDocument()
+		expect(screen.queryByText(/Exit status/)).not.toBeInTheDocument()
+	})
+
 	it("shows the requested working directory before expanding the command", () => {
 		render(
 			<ExtensionStateWrapper>

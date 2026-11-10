@@ -27,7 +27,6 @@ vi.mock("@src/hooks/useCloudUpsell", () => ({
 	useCloudUpsell: () => ({ isOpen: false, openUpsell: vi.fn(), closeUpsell: vi.fn(), handleConnect: vi.fn() }),
 }))
 vi.mock("@src/components/welcome/AlphaHero", () => ({ default: () => null }))
-vi.mock("../../common/TelemetryBanner", () => ({ default: () => null }))
 vi.mock("../Announcement", () => ({ default: () => null }))
 vi.mock("../TaskHeader", () => ({ default: () => null }))
 vi.mock("../CheckpointWarning", () => ({ CheckpointWarning: () => null }))
@@ -123,7 +122,6 @@ const postState = (alphaMessages: AlphaMessage[], taskId = "task-a") => {
 		shouldShowAnnouncement: false,
 		allowedCommands: [],
 		alwaysAllowExecute: false,
-		telemetrySetting: "enabled",
 	}
 	window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } }))
 }

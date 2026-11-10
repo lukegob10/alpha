@@ -441,6 +441,7 @@ export function forkTaskHistory(
 		delete message.goal_usage_receipts
 		delete message.queued_message_ids
 		delete message.agent_message_id
+		delete message.sampled_agent_message_ids
 	}
 	let visible = uiMessages.filter(
 		(message) => !message.partial && message.ask !== "resume_task" && message.ask !== "resume_completed_task",

@@ -77,8 +77,27 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 				arguments: params.arguments ? JSON.stringify(params.arguments) : undefined,
 			} satisfies AlphaAskUseMcpServer)
 
-			const executionId = task.lastMessageTs?.toString() ?? Date.now().toString()
 			const didApprove = await askApproval("use_mcp_server", completeMessage)
+			// Preflight may approve several identical calls before any dispatch. Resolve
+			// the original row by call identity rather than the task's latest message.
+			let approvalMessage: Task["alphaMessages"][number] | undefined
+			for (let index = (task.alphaMessages?.length ?? 0) - 1; index >= 0; index--) {
+				const message = task.alphaMessages[index]
+				if (
+					message.ask === "use_mcp_server" &&
+					(callbacks.toolCallId
+						? message.toolCallId === callbacks.toolCallId
+						: message.text === completeMessage)
+				) {
+					approvalMessage = message
+					break
+				}
+			}
+			const executionId =
+				approvalMessage?.ts.toString() ??
+				(callbacks.toolCallId
+					? `unattributed:${callbacks.toolCallId}`
+					: (task.lastMessageTs?.toString() ?? Date.now().toString()))
 
 			if (!didApprove) {
 				return
@@ -293,11 +312,13 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		callbacks.setResultMetadata?.({ status: "error" })
 	}
 
-	private async sendExecutionStatus(task: Task, status: McpExecutionStatus): Promise<void> {
+	private async sendExecutionStatus(task: Task, status: McpExecutionStatus, toolCallId?: string): Promise<void> {
 		try {
+			const scopedStatus = { ...status, taskId: task.taskId, toolCallId }
+			await task.recordMcpExecutionStatus?.(scopedStatus)
 			await task.providerRef.deref()?.postMessageToWebview({
 				type: "mcpExecutionStatus",
-				text: JSON.stringify(status),
+				text: JSON.stringify(scopedStatus),
 			})
 		} catch {
 			// Presentation delivery is best-effort and must not replace the canonical tool result.
@@ -404,7 +425,8 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		signal?.throwIfAborted()
 
 		// Send started status
-		await this.sendExecutionStatus(task, {
+		const sendStatus = (status: McpExecutionStatus) => this.sendExecutionStatus(task, status, callbacks.toolCallId)
+		await sendStatus({
 			executionId,
 			status: "started",
 			serverName,
@@ -414,10 +436,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 		const finishExecution = async (status: McpExecutionStatus) => {
 			if (terminalStatusSent) return
 			terminalStatusSent = true
-			await this.sendExecutionStatus(
-				task,
-				signal?.aborted ? { executionId, status: "error", error: "MCP tool execution was cancelled" } : status,
-			)
+			await sendStatus(signal?.aborted ? { executionId, status: "cancelled" } : status)
 		}
 
 		try {
@@ -495,7 +514,7 @@ export class UseMcpToolTool extends BaseTool<"use_mcp_tool"> {
 
 			if (outputText || images.length > 0) {
 				signal?.throwIfAborted()
-				await this.sendExecutionStatus(task, {
+				await sendStatus({
 					executionId,
 					status: "output",
 					response: outputText || (images.length > 0 ? `[${images.length} image(s)]` : ""),

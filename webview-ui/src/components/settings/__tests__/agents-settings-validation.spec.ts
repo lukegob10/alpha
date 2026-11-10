@@ -12,6 +12,11 @@ describe("Agents settings validation", () => {
 			expect(state.maxConcurrentSubagents).toBe(value)
 		},
 	)
+	it.each([0, 51, 1.5, Number.NaN, Infinity])("rejects invalid total task capacity %s", (value) => {
+		const state = { ...defaults(), maxConcurrentTasks: value }
+		expect(getManagedAgentSettingsError(state)).toBe("agents:validation.taskCapacity")
+		expect(state.maxConcurrentTasks).toBe(value)
+	})
 	it("validates model and effort settings", () => {
 		expect(getManagedAgentSettingsError({ ...defaults(), subagentDefaultModel: "x".repeat(257) })).toBe(
 			"agents:validation.model",

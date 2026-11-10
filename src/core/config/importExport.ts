@@ -15,7 +15,6 @@ import {
 	isRetiredProvider,
 	type ProviderSettingsWithId,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import {
 	ProviderSettingsManager,
@@ -213,7 +212,6 @@ export async function importSettingsFromPath(
 
 		if (e instanceof ZodError) {
 			error = e.issues.map((issue) => `[${issue.path.join(".")}]: ${issue.message}`).join("\n")
-			TelemetryService.instance.captureSchemaValidationError({ schemaName: "ImportExport", error: e })
 		} else if (e instanceof SyntaxError) {
 			error = "Settings file is not valid JSON. Existing settings were not changed."
 		} else if (e instanceof Error) {

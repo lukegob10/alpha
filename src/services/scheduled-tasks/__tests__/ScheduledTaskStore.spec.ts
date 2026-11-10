@@ -80,6 +80,30 @@ describe("ScheduledTaskStore", () => {
 		expect(store.getState()).toEqual({ tasks: [], runs: [] })
 	})
 
+	it("serializes creation intents across store instances and reload without changing the saved job", async () => {
+		const creationRequestId = "d5b82d17-3f59-4ba9-883c-b9a865cd1234"
+		const other = new ScheduledTaskStore(tmpDir)
+		await other.initialize()
+		const first = makeTask({ creationRequestId })
+		const duplicate = makeTask({ id: "duplicate", creationRequestId, name: "Duplicate", enabled: false })
+		const [created, replayed] = await Promise.all([store.createTask(first), other.createTask(duplicate)])
+		expect(replayed).toEqual(created)
+		const reloaded = new ScheduledTaskStore(tmpDir)
+		await reloaded.initialize()
+		expect(await reloaded.createTask(duplicate)).toEqual(created)
+		expect(reloaded.getState().tasks).toEqual([created])
+	})
+
+	it("allows the same creation intent to retry after a failed durable write", async () => {
+		const task = makeTask({ creationRequestId: "d5b82d17-3f59-4ba9-883c-b9a865cd1234" })
+		safeWriteJsonMock.mockRejectedValueOnce(new Error("Disk unavailable"))
+		await expect(store.createTask(task)).rejects.toThrow("Disk unavailable")
+		expect(store.getState().tasks).toEqual([])
+		const created = await store.createTask(task)
+		expect(await store.createTask({ ...task, id: "duplicate" })).toEqual(created)
+		expect(store.getState().tasks).toHaveLength(1)
+	})
+
 	it("rejects an untrusted owner ID before using it as a lease path", async () => {
 		await expect(store.isOwnerLive("../../outside-storage")).resolves.toBe(false)
 	})

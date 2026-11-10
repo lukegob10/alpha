@@ -1,6 +1,7 @@
-import { render, screen } from "@/utils/test-utils"
+import { expect } from "vitest"
+import { fireEvent, render, screen } from "@/utils/test-utils"
 
-import { TranslationProvider } from "@/i18n/__mocks__/TranslationContext"
+import { vscode } from "@/utils/vscode"
 
 import { About } from "../About"
 
@@ -9,11 +10,10 @@ vi.mock("@/utils/vscode", () => ({
 }))
 
 vi.mock("@/i18n/TranslationContext", () => {
-	const actual = vi.importActual("@/i18n/TranslationContext")
 	return {
-		...actual,
 		useAppTranslation: () => ({
-			t: (key: string) => key,
+			t: (key: string, options?: { version: string }) =>
+				key === "settings:about.version" ? `Version ${options?.version}` : key,
 		}),
 	}
 })
@@ -26,41 +26,51 @@ vi.mock("@alpha/package", () => ({
 }))
 
 describe("About", () => {
-	const defaultProps = {
-		telemetrySetting: "enabled" as const,
-		setTelemetrySetting: vi.fn(),
-	}
-
 	beforeEach(() => {
 		vi.clearAllMocks()
 	})
 
 	it("renders the About section header", () => {
-		render(
-			<TranslationProvider>
-				<About {...defaultProps} />
-			</TranslationProvider>,
-		)
+		render(<About />)
 		expect(screen.getByText("settings:sections.about")).toBeInTheDocument()
 	})
 
 	it("displays version information", () => {
-		render(
-			<TranslationProvider>
-				<About {...defaultProps} />
-			</TranslationProvider>,
-		)
-		expect(screen.getByText(/Version: 2\.0\.3/)).toBeInTheDocument()
+		render(<About />)
+		expect(screen.getByText("Version 2.0.3 (abc12345)")).toBeInTheDocument()
 	})
 
 	it("renders export, import, and reset buttons", () => {
-		render(
-			<TranslationProvider>
-				<About {...defaultProps} />
-			</TranslationProvider>,
-		)
+		render(<About />)
 		expect(screen.getByText("settings:footer.settings.export")).toBeInTheDocument()
 		expect(screen.getByText("settings:footer.settings.import")).toBeInTheDocument()
 		expect(screen.getByText("settings:footer.settings.reset")).toBeInTheDocument()
+	})
+
+	it("keeps buffered privacy and debug preferences out of data management", () => {
+		render(<About />)
+
+		expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
+		expect(screen.getByText("settings:about.manageSettingsDescription")).toBeInTheDocument()
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+	})
+
+	it.each([
+		["export", "exportSettings"],
+		["import", "importSettings"],
+		["reset", "resetState"],
+	])("runs the explicit %s action without a settings Save", (action, type) => {
+		render(<About />)
+
+		fireEvent.click(screen.getByRole("button", { name: `settings:footer.settings.${action}` }))
+
+		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type })
+	})
+
+	it("can embed below an application-owned page header", () => {
+		render(<About embedded />)
+
+		expect(screen.queryByText("settings:sections.about")).not.toBeInTheDocument()
+		expect(screen.getByText("Version 2.0.3 (abc12345)")).toBeInTheDocument()
 	})
 })

@@ -69,6 +69,67 @@ describe("TerminalProcess", () => {
 	})
 
 	describe("run", () => {
+		it.each([
+			{ failure: "unavailable", expectedOutput: "shell integration is not available" },
+			{ failure: "stream timeout", expectedOutput: "shell integration stream did not start" },
+			{ failure: "missing markers", expectedOutput: "shell integration markers not found" },
+		] as const)("settles a submitted command once after $failure", async ({ failure, expectedOutput }) => {
+			vi.useFakeTimers()
+			const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {})
+			const consoleError = vi.spyOn(console, "error").mockImplementation(() => {})
+			try {
+				// Retain the real constructor listeners: they share settlement ownership with run().
+				const process = new TerminalProcess(mockTerminalInfo)
+				const completed = vi.fn()
+				const continued = vi.fn()
+				const integrationFailure = vi.fn()
+				process.on("completed", completed)
+				process.on("continue", continued)
+				process.on("no_shell_integration", integrationFailure)
+				if (failure === "unavailable") mockTerminal.shellIntegration = undefined
+
+				const running = process.run("echo test")
+				if (failure === "stream timeout") {
+					await vi.advanceTimersByTimeAsync(Terminal.getShellIntegrationTimeout())
+				} else if (failure === "missing markers") {
+					process.emit(
+						"stream_available",
+						(async function* () {
+							yield "output without shell markers"
+							process.emit("shell_execution_complete", { exitCode: 0 })
+						})(),
+					)
+				}
+				await running
+
+				expect(integrationFailure).toHaveBeenCalledOnce()
+				expect(completed).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(expectedOutput))
+				expect(continued).toHaveBeenCalledOnce()
+				expect(process.isSettled).toBe(true)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				consoleWarn.mockRestore()
+				consoleError.mockRestore()
+				vi.useRealTimers()
+			}
+		})
+
+		it("settles initialization failure before run without submitting a command", () => {
+			const process = new TerminalProcess(mockTerminalInfo)
+			const completed = vi.fn()
+			const continued = vi.fn()
+			process.on("completed", completed)
+			process.on("continue", continued)
+
+			process.emit("no_shell_integration", "Shell initialization failed")
+
+			expect(completed).toHaveBeenCalledExactlyOnceWith("<no shell integration>")
+			expect(continued).toHaveBeenCalledOnce()
+			expect(process.hasSubmittedCommand).toBe(false)
+			expect(mockTerminal.shellIntegration.executeCommand).not.toHaveBeenCalled()
+			expect(mockTerminal.sendText).not.toHaveBeenCalled()
+		})
+
 		it.each(
 			["\x1b]633;C\x07", "\x1b]133;C\x07"].flatMap((marker) =>
 				Array.from({ length: marker.length - 1 }, (_, index) => ({ marker, split: index + 1 })),

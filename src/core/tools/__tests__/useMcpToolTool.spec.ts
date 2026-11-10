@@ -73,6 +73,8 @@ describe("useMcpToolTool", () => {
 		}
 
 		mockTask = {
+			taskId: "mcp-task",
+			recordMcpExecutionStatus: vi.fn(async () => undefined),
 			markMemoryExternalContext: vi.fn(async () => undefined),
 			consecutiveMistakeCount: 0,
 			didToolFailInCurrentTurn: false,
@@ -82,6 +84,39 @@ describe("useMcpToolTool", () => {
 			ask: vi.fn(),
 			lastMessageTs: 123456789,
 			providerRef: mockProviderRef,
+		}
+	})
+
+	it.each([
+		{ toolCallId: "first-call", executionId: "101" },
+		{ toolCallId: "missing-call", executionId: "unattributed:missing-call" },
+	])("correlates preflighted $toolCallId without borrowing a later approval", async ({ toolCallId, executionId }) => {
+		const text = JSON.stringify({ type: "use_mcp_tool", serverName: "server", toolName: "tool" })
+		mockTask.alphaMessages = [
+			{ ts: 101, type: "ask", ask: "use_mcp_server", text, toolCallId: "first-call" },
+			{ ts: 102, type: "ask", ask: "use_mcp_server", text, toolCallId: "second-call" },
+			{ ts: 103, type: "say", say: "user_feedback", text: "Proceed" },
+		]
+		mockTask.lastMessageTs = 103
+		const postMessageToWebview = vi.fn()
+		mockAskApproval.mockResolvedValue(true)
+		mockProviderRef.deref.mockReturnValue({
+			getMcpHub: () => ({
+				getAllServers: () => [{ name: "server", tools: [{ name: "tool" }] }],
+				callTool: vi.fn().mockResolvedValue({ content: [{ type: "text", text: "Done" }] }),
+			}),
+			postMessageToWebview,
+		})
+		await useMcpToolTool.execute({ server_name: "server", tool_name: "tool" }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			toolCallId,
+		})
+		const statuses = executionStatuses(postMessageToWebview)
+		expect(statuses.map(({ status }) => status)).toEqual(["started", "output", "completed"])
+		for (const status of statuses) {
+			expect(status).toMatchObject({ executionId, taskId: "mcp-task", toolCallId })
 		}
 	})
 
@@ -318,6 +353,13 @@ describe("useMcpToolTool", () => {
 			expect(mockPushToolResult).toHaveBeenCalledWith("Tool result: Tool executed successfully")
 			const statuses = executionStatuses(postMessageToWebview)
 			expect(statuses.map(({ status }) => status)).toEqual(["started", "output", "completed"])
+			expect(mockTask.recordMcpExecutionStatus).toHaveBeenCalledTimes(statuses.length)
+			for (const status of statuses) {
+				expect(mockTask.recordMcpExecutionStatus).toHaveBeenCalledWith(expect.objectContaining(status))
+			}
+			expect(vi.mocked(mockTask.recordMcpExecutionStatus!).mock.invocationCallOrder[0]).toBeLessThan(
+				postMessageToWebview.mock.invocationCallOrder[0],
+			)
 			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
 		})
 
@@ -983,8 +1025,8 @@ describe("useMcpToolTool", () => {
 			expect(mockPushToolResult).not.toHaveBeenCalled()
 			expect(mockTask.say).not.toHaveBeenCalledWith("mcp_server_response", expect.anything(), expect.anything())
 			const statuses = executionStatuses(postMessageToWebview)
-			expect(statuses.map(({ status }) => status)).toEqual(["started", "error"])
-			expect(statuses.filter(({ status }) => status === "completed" || status === "error")).toHaveLength(1)
+			expect(statuses.map(({ status }) => status)).toEqual(["started", "cancelled"])
+			expect(statuses.filter(({ status }) => status === "completed" || status === "cancelled")).toHaveLength(1)
 		})
 
 		it("settles when the forwarded MCP request observes cancellation", async () => {
@@ -1013,7 +1055,10 @@ describe("useMcpToolTool", () => {
 			controller.abort(new Error("request observed cancellation"))
 			await expect(running).rejects.toThrow("request observed cancellation")
 			expect(mockPushToolResult).not.toHaveBeenCalled()
-			expect(executionStatuses(postMessageToWebview).map(({ status }) => status)).toEqual(["started", "error"])
+			expect(executionStatuses(postMessageToWebview).map(({ status }) => status)).toEqual([
+				"started",
+				"cancelled",
+			])
 		})
 	})
 
@@ -1069,6 +1114,7 @@ describe("useMcpToolTool", () => {
 			expect(setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(executionStatuses(postMessageToWebview).at(-1)).toEqual({
 				executionId: "123456789",
+				taskId: "mcp-task",
 				status: "error",
 				error: "Error executing MCP tool",
 			})

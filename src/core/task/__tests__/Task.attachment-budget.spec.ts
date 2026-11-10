@@ -11,7 +11,6 @@ vi.mock("../../environment/getEnvironmentDetails", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../environment/getEnvironmentDetails")>()),
 	captureEnvironmentDetails: vi.fn(),
 }))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureConversationMessage: vi.fn() } } }))
 vi.mock("../../../services/code-index/manager", () => ({ CodeIndexManager: { getInstance: () => undefined } }))
 
 type Content = Anthropic.Messages.ContentBlockParam[]

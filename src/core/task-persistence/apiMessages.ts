@@ -43,6 +43,8 @@ export type ApiMessage = Anthropic.MessageParam & {
 	queued_message_ids?: string[]
 	/** Host receipt for agent inbox delivery; never human approval or a provider response ID. */
 	agent_message_id?: string
+	/** Host checkpoint: mail in a captured regular inference that produced this successful response. */
+	sampled_agent_message_ids?: string[]
 	/** Host-owned source of a hook continuation; retained in the canonical transcript across reload. */
 	hook_prompt?: CompletionHookPromptProvenance
 	/** Goal usage persisted before charging its owner; replay closes a crash between the two writes. */

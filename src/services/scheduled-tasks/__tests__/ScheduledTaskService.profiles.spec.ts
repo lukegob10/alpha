@@ -143,6 +143,46 @@ describe("scheduled profiles and skills", () => {
 		expect(service.getState().tasks).toEqual([])
 	})
 
+	it("creates only one durable job for concurrent and replayed requests", async () => {
+		const request = payload({ creationRequestId: "d5b82d17-3f59-4ba9-883c-b9a865cd1234" })
+		const [first, duplicate] = await Promise.all([service.createTask(request), service.createTask(request)])
+		expect(duplicate.id).toBe(first.id)
+		expect(service.getState().tasks).toHaveLength(1)
+		await service.pauseTask(first.id)
+		const replay = await service.createTask({
+			...request,
+			name: "A changed retry",
+			autoApproval: { approvalMode: "bypass" },
+		})
+		expect(replay).toMatchObject({
+			id: first.id,
+			name: first.name,
+			enabled: false,
+			autoApproval: first.autoApproval,
+		})
+		expect(service.getState().tasks).toHaveLength(1)
+	})
+
+	it("preserves the durable creation identity when an untrusted update includes another ID", async () => {
+		const creationRequestId = "d5b82d17-3f59-4ba9-883c-b9a865cd1234"
+		const first = await service.createTask(payload({ creationRequestId }))
+		await service.updateTask(first.id, {
+			name: "Renamed review",
+			...{ creationRequestId: "b5b82d17-3f59-4ba9-883c-b9a865cd1234" },
+		})
+		const replay = await service.createTask(payload({ creationRequestId }))
+		expect(replay).toMatchObject({ id: first.id, creationRequestId, name: "Renamed review" })
+		expect(service.getState().tasks).toHaveLength(1)
+	})
+
+	it("rejects explicit invalid creation identities and creation after disposal", async () => {
+		await expect(service.createTask(payload({ creationRequestId: "" }))).rejects.toThrow()
+		expect(service.getState().tasks).toEqual([])
+		await service.dispose()
+		await expect(service.createTask(payload())).rejects.toThrow("Scheduled task service is disposed")
+		expect(service.getState().tasks).toEqual([])
+	})
+
 	it("starts valid schedules after reloading an invalid due record and preserves that record", async () => {
 		const task = await service.createTask(payload())
 		await service.dispose()

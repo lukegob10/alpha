@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@/utils/test-utils"
 import { useState } from "react"
 import { Vertex } from "../Vertex"
 import type { ProviderSettings } from "@alpha-code/types"
@@ -29,7 +29,8 @@ vi.mock("vscrui", () => ({
 
 vi.mock("@src/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
-		t: (key: string) => {
+		t: (key: string, options?: { label?: string }) => {
+			if (key === "settings:helpFor") return `Help for ${options?.label}`
 			const translations: Record<string, string> = {
 				"settings:providers.googleCloudSetup.title": "Google Cloud setup",
 				"settings:providers.googleCloudSetup.step1": "Enable Vertex AI and model access",
@@ -214,7 +215,11 @@ describe("Vertex", () => {
 		expect(screen.queryByTestId("checkbox-grounding-search")).not.toBeInTheDocument()
 	})
 
-	it("should render readable Google Cloud setup text", () => {
+	it.each([
+		["googleCloudProjectId", "Enable Vertex AI and model access"],
+		["googleCloudCredentials", "Set up Application Default Credentials"],
+		["googleCloudKeyFile", "Create a service account key"],
+	])("keeps %s setup guidance beside its field and available on demand", async (field, linkName) => {
 		render(
 			<Vertex
 				apiConfiguration={defaultApiConfiguration}
@@ -222,11 +227,44 @@ describe("Vertex", () => {
 			/>,
 		)
 
-		expect(screen.getByText("Google Cloud setup")).toBeInTheDocument()
-		expect(screen.getByText("Enable Vertex AI and model access")).toBeInTheDocument()
-		expect(screen.getByText("Set up Application Default Credentials")).toBeInTheDocument()
-		expect(screen.getByText("Create a service account key")).toBeInTheDocument()
-		expect(screen.queryByText("settings:providers.googleCloudSetup.title")).not.toBeInTheDocument()
+		expect(screen.queryByText("Google Cloud setup")).not.toBeInTheDocument()
+		expect(screen.queryByRole("link", { name: linkName })).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: `Help for settings:providers.${field}` }))
+		expect(await screen.findByRole("link", { name: linkName })).toBeVisible()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it("retains credentials and default-auth guidance while opening help", async () => {
+		render(
+			<Vertex
+				apiConfiguration={{
+					...defaultApiConfiguration,
+					vertexJsonCredentials: "saved-json",
+					vertexKeyFile: "saved-key.json",
+				}}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+		expect(screen.queryByText("settings:providers.vertexCredentialsHelp")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:providers.googleCloudCredentials" }))
+		expect(await screen.findByText("settings:providers.vertexCredentialsHelp")).toBeVisible()
+		expect(screen.getByLabelText("settings:providers.googleCloudCredentials")).toHaveValue("saved-json")
+		expect(screen.getByLabelText("settings:providers.googleCloudKeyFile")).toHaveValue("saved-key.json")
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it("keeps streaming explanation in help without hiding the actual preference", async () => {
+		render(
+			<Vertex
+				apiConfiguration={defaultApiConfiguration}
+				setApiConfigurationField={mockSetApiConfigurationField}
+			/>,
+		)
+		expect(screen.queryByText("settings:providers.vertexStreamingEnabledDescription")).not.toBeInTheDocument()
+		expect(screen.getByTestId("checkbox-vertex-streaming-enabled").querySelector("input")).toBeChecked()
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:providers.vertexStreamingEnabledLabel" }))
+		expect(await screen.findByText("settings:providers.vertexStreamingEnabledDescription")).toBeVisible()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 	})
 
 	it("should render the streaming checkbox checked by default", () => {

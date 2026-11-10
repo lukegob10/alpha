@@ -13,7 +13,7 @@ describe("scheduled task approval grants", () => {
 		{ approvalMode: "auto" as const, canMutate: true },
 		{ approvalMode: "bypass" as const, canMutate: true },
 	])("stores $approvalMode for a direct command without forcing execute", async ({ approvalMode, canMutate }) => {
-		vi.spyOn(ScheduledTaskStore.prototype, "upsertTask").mockResolvedValue({ tasks: [], runs: [] })
+		vi.spyOn(ScheduledTaskStore.prototype, "createTask").mockImplementation(async (task) => task)
 		vi.spyOn(ScheduledTaskStore.prototype, "getState").mockReturnValue({ tasks: [], runs: [] })
 		const provider = {
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),

@@ -295,13 +295,6 @@ vi.mock("@src/components/welcome/AlphaHero", () => ({
 	},
 }))
 
-// Mock TelemetryBanner component
-vi.mock("../common/TelemetryBanner", () => ({
-	default: function MockTelemetryBanner() {
-		return null // Don't render anything to avoid interference
-	},
-}))
-
 // Mock i18n
 vi.mock("react-i18next", async () => {
 	const { createInstance } = await import("i18next")
@@ -367,7 +360,10 @@ vi.mock("../ChatTextArea", () => {
 		}))
 
 		return (
-			<div data-testid="chat-textarea" data-is-task-draft={props.isTaskDraft ? "true" : "false"}>
+			<div
+				data-testid="chat-textarea"
+				data-is-task-draft={props.isTaskDraft ? "true" : "false"}
+				data-selected-images={JSON.stringify(props.selectedImages ?? [])}>
 				{props.contextControl}
 				{props.isTaskDraft && (
 					<button
@@ -475,7 +471,6 @@ const mockPostMessage = (state: Partial<ExtensionState>) => {
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
 				alwaysAllowExecute: false,
-				telemetrySetting: "enabled",
 				...state,
 			},
 		},
@@ -564,6 +559,42 @@ describe("ChatView host message compatibility", () => {
 		})
 		expect(await view.findByText(/The workspace check is complete/)).toBeInTheDocument()
 		expect(view.getByText(promptText)).toBeInTheDocument()
+	})
+})
+
+describe("ChatView announcement visibility", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("keeps a queued announcement unmounted while chat is hidden and restores it without acknowledging navigation", () => {
+		const hideAnnouncement = vi.fn()
+		const chat = (isHidden: boolean) => (
+			<ExtensionStateContextProvider>
+				<QueryClientProvider client={queryClient}>
+					<ChatView
+						{...defaultProps}
+						isHidden={isHidden}
+						showAnnouncement
+						hideAnnouncement={hideAnnouncement}
+					/>
+				</QueryClientProvider>
+			</ExtensionStateContextProvider>
+		)
+		const { queryByTestId, getByTestId, rerender } = render(chat(true))
+		expect(queryByTestId("announcement-modal")).not.toBeInTheDocument()
+		expect(hideAnnouncement).not.toHaveBeenCalled()
+
+		rerender(chat(false))
+		expect(getByTestId("announcement-modal")).toBeInTheDocument()
+		rerender(chat(true))
+		expect(queryByTestId("announcement-modal")).not.toBeInTheDocument()
+		expect(hideAnnouncement).not.toHaveBeenCalled()
+		expect(vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message.type)).not.toContain(
+			"didShowAnnouncement",
+		)
+
+		rerender(chat(false))
+		fireEvent.click(within(getByTestId("announcement-modal")).getByRole("button", { name: "Close" }))
+		expect(hideAnnouncement).toHaveBeenCalledTimes(1)
 	})
 })
 
@@ -873,6 +904,130 @@ describe("ChatView toolbar navigation", () => {
 
 describe("ChatView async user input", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it.each([
+		...(["askResponse", "queueMessage", "resumeCompletedTask"] as const).flatMap((command) =>
+			(["accepted", "rejected"] as const).map((status) => ({ command, status, matchingDraft: false })),
+		),
+		{ command: "queueMessage" as const, status: "accepted" as const, matchingDraft: true },
+	])(
+		"preserves the main draft while an async answer receives a $status $command receipt (matching=$matchingDraft)",
+		async ({ command, status, matchingDraft }) => {
+			const taskId = `async-draft-${command}-${status}`
+			const view = renderChatView()
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				liveTasksById: {
+					[taskId]: {
+						id: taskId,
+						status: command === "queueMessage" ? "running" : "idle",
+						lifecycle: command === "resumeCompletedTask" ? "completed" : "running",
+						isActive: true,
+						isStreaming: command === "queueMessage",
+						isTurnActive: command === "queueMessage",
+						isWaitingForInput: false,
+						lastUpdatedAt: 3,
+						queueCount: 0,
+						tokensIn: 0,
+						tokensOut: 0,
+						totalCost: 0,
+					},
+				},
+				alphaMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Keep the async question" },
+					{
+						type: "say",
+						say: "async_user_input",
+						ts: 2,
+						asyncUserInput: { questions: [{ title: "Which color?" }] },
+					},
+				],
+			})
+			const submit = await waitFor(() => view.getByTestId("async-user-input-submit-2"))
+			const composer = view.getByTestId("chat-textarea")
+			const input = composer.querySelector("input")!
+			const draftText = matchingDraft ? "Use blue and label it Ready." : "Keep this separate draft"
+			const images = matchingDraft ? [] : ["data:image/png;base64,unrelated-draft"]
+			fireEvent.change(input, { target: { value: draftText } })
+			act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } })))
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(submit)
+
+			expect(input).toHaveValue(draftText)
+			expect(composer).toHaveAttribute("data-selected-images", JSON.stringify(images))
+			const request = vi.mocked(vscode.postMessage).mock.calls.find(([message]) => message.type === command)![0]
+			expect(request).toMatchObject({ taskId, asyncUserInputMessageTs: 2, images: [] })
+			await act(async () => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "chatCommandResult",
+							chatCommandResult: { requestId: request.requestId, taskId, command, status },
+						},
+					}),
+				)
+			})
+			expect(input).toHaveValue(draftText)
+			expect(composer).toHaveAttribute("data-selected-images", JSON.stringify(images))
+		},
+	)
+
+	it.each(["followup", "api_req_failed", "mistake_limit_reached"] as const)(
+		"queues an earlier async answer without resolving the current %s request",
+		async (ask) => {
+			const taskId = `async-pending-${ask}`
+			const view = renderChatView()
+			mockPostMessage({
+				currentTaskId: taskId,
+				currentView: { type: "task", taskId },
+				alphaMessages: [
+					{ type: "say", say: "task", ts: 1, text: "Keep both questions" },
+					{
+						type: "say",
+						say: "async_user_input",
+						ts: 2,
+						asyncUserInput: { questions: [{ title: "Which color?" }] },
+					},
+					{
+						type: "ask",
+						ask,
+						ts: 3,
+						text: JSON.stringify({
+							requestUserInput: {
+								questions: [
+									{
+										id: "environment",
+										header: "Environment",
+										question: "Where?",
+										options: [
+											{ label: "Staging", description: "Use the test environment." },
+											{ label: "Production", description: "Use the live environment." },
+										],
+									},
+								],
+							},
+						}),
+					},
+				],
+			})
+			const submit = await waitFor(() => view.getByTestId("async-user-input-submit-2"))
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(submit)
+
+			const requests = vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message)
+			expect(requests.filter((message) => message.type === "askResponse")).toEqual([])
+			expect(requests.filter((message) => message.type === "queueMessage")).toEqual([
+				expect.objectContaining({
+					taskId,
+					asyncUserInputMessageTs: 2,
+					text: "Use blue and label it Ready.",
+					images: [],
+				}),
+			])
+			if (ask === "followup") expect(view.getByTestId("native-user-input-submit-3")).toBeEnabled()
+		},
+	)
 
 	it.each(["askResponse", "queueMessage", "resumeCompletedTask"] as const)(
 		"allows a rejected async answer to retry through %s with a new receipt",
@@ -3129,6 +3284,15 @@ describe("ChatView - Inline Chats navigation", () => {
 
 describe("ChatView - Empty chat home", () => {
 	beforeEach(() => vi.clearAllMocks())
+
+	it("starts without anonymous-reporting consent controls or enablement messages", () => {
+		const { getByTestId, queryByText } = renderChatView()
+		expect(getByTestId("alpha-home-brand")).toBeInTheDocument()
+		expect(queryByText(/Help improve Alpha|welcome:telemetry.helpImprove/i)).not.toBeInTheDocument()
+		expect(vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message.type)).not.toContain(
+			"telemetrySetting",
+		)
+	})
 
 	it.each([0, 3, 7])("keeps the watermark below the native ribbon with %i chats", async (historyCount) => {
 		const { getByTestId, getByRole, queryByTestId, queryByRole } = renderChatView()

@@ -39,5 +39,11 @@
 		"cancel": "Cancel"
 	},
 	"emptyHelp": "Create a task to run a prompt, skill, or command on a schedule.",
-	"everyInterval": "Every {{interval}}"
+	"everyInterval": "Every {{interval}}",
+	"creationTimeout": "Creation has not been acknowledged. Retry to check the same request, or choose New to start another draft.",
+	"creationErrors": {
+		"invalid_request": "This creation request is invalid. Choose New to start another draft.",
+		"unavailable": "Scheduled tasks are unavailable. Your draft is retained; retry when the service is ready.",
+		"save_failed": "The schedule could not be saved. Your draft is retained; retry the same request."
+	}
 }

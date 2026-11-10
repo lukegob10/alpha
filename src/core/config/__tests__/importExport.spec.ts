@@ -6,7 +6,6 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import type { ProviderName } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import {
 	importSettings,
@@ -108,10 +107,6 @@ describe("importExport", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		mockProviderSettingsManager = {
 			export: vi.fn(),

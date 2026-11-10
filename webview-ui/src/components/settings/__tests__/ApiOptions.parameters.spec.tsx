@@ -24,9 +24,8 @@ vi.mock("vscrui", () => ({
 vi.mock("../ThinkingBudget", () => ({ ThinkingBudget: () => null }))
 vi.mock("../ModelPicker", () => ({ ModelPicker: () => null }))
 vi.mock("../ApiErrorMessage", () => ({ ApiErrorMessage: () => null }))
-vi.mock("../TodoListSettingsControl", () => ({ TodoListSettingsControl: () => null }))
+vi.mock("../SettingsHelp", () => ({ SettingsHelp: () => null }))
 vi.mock("../RateLimitSecondsControl", () => ({ RateLimitSecondsControl: () => null }))
-vi.mock("../ConsecutiveMistakeLimitControl", () => ({ ConsecutiveMistakeLimitControl: () => null }))
 
 vi.mock("@src/components/ui", () => ({
 	SearchableSelect: ({

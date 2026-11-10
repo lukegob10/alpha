@@ -17,19 +17,17 @@ vitest.mock("@google/genai", () => ({
 	GoogleGenAI: mockGoogleGenAI,
 }))
 
-vitest.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureEvent: vitest.fn(),
-		},
-	},
-}))
-
-import { describe, it, expect, beforeEach, afterEach, vitest } from "vitest"
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vitest } from "vitest"
 
 import { VertexGeminiEmbedder } from "../vertex"
+import i18next from "../../../../i18n"
+import embeddingTranslations from "../../../../i18n/locales/en/embeddings.json"
 
 describe("VertexGeminiEmbedder", () => {
+	beforeAll(() => {
+		i18next.addResourceBundle("en", "embeddings", embeddingTranslations, true, true)
+	})
+
 	beforeEach(() => {
 		vitest.resetAllMocks()
 	})
@@ -127,6 +125,23 @@ describe("VertexGeminiEmbedder", () => {
 			contents: ["test"],
 			config: { taskType: "RETRIEVAL_DOCUMENT", abortSignal: expect.any(AbortSignal) },
 		})
+	})
+
+	it("returns a failed validation with the provider's reason without retrying a nonretryable request", async () => {
+		const embedder = new VertexGeminiEmbedder({
+			apiProvider: "vertex",
+			vertexProjectId: "test-project",
+			vertexRegion: "us-central1",
+		})
+		mockEmbedContent.mockRejectedValueOnce(
+			Object.assign(new Error("Embedding model is not available"), { status: 400 }),
+		)
+
+		const result = await embedder.validateConfiguration()
+
+		expect(result.valid).toBe(false)
+		expect(result.error).toContain("Embedding model is not available")
+		expect(mockEmbedContent).toHaveBeenCalledTimes(1)
 	})
 
 	it("rejects a late SDK response after cancellation and forwards the abort signal", async () => {

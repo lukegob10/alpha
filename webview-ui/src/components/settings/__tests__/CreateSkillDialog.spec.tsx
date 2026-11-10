@@ -216,6 +216,29 @@ describe("CreateSkillDialog", () => {
 		expect(createButton).toBeDisabled()
 	})
 
+	it("keeps required description validation visible without closing the creation dialog", () => {
+		render(
+			<CreateSkillDialog
+				open={true}
+				onOpenChange={mockOnOpenChange}
+				onSkillCreated={mockOnSkillCreated}
+				hasWorkspace={true}
+			/>,
+		)
+		fireEvent.change(screen.getByLabelText("settings:skills.createDialog.nameLabel"), {
+			target: { value: "review-changes" },
+		})
+		const description = screen.getByLabelText("settings:skills.createDialog.descriptionLabel")
+		fireEvent.change(description, { target: { value: "   " } })
+
+		fireEvent.click(screen.getByRole("button", { name: "settings:skills.createDialog.create" }))
+
+		expect(screen.getByRole("alert")).toHaveTextContent("settings:skills.validation.descriptionRequired")
+		expect(description).toHaveAttribute("aria-invalid", "true")
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(mockOnOpenChange).not.toHaveBeenCalled()
+	})
+
 	it("enables create button when both name and description are provided", () => {
 		render(
 			<CreateSkillDialog
@@ -382,6 +405,25 @@ describe("CreateSkillDialog", () => {
 		expect(screen.getByTestId("select-item-project")).toBeInTheDocument()
 	})
 
+	it("keeps mode restrictions optional behind collapsed advanced options", () => {
+		render(
+			<CreateSkillDialog
+				open={true}
+				onOpenChange={mockOnOpenChange}
+				onSkillCreated={mockOnSkillCreated}
+				hasWorkspace={true}
+			/>,
+		)
+
+		expect(screen.getByLabelText("settings:skills.createDialog.descriptionLabel")).toBeVisible()
+		expect(screen.getByTestId("checkbox-create-mode-any")).not.toBeVisible()
+		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
+
+		fireEvent.click(screen.getByText("settings:skills.advanced"))
+
+		expect(screen.getByTestId("checkbox-create-mode-any")).toBeVisible()
+	})
+
 	it("unchecks 'Any mode' when a specific mode is selected", () => {
 		render(
 			<CreateSkillDialog
@@ -392,6 +434,7 @@ describe("CreateSkillDialog", () => {
 			/>,
 		)
 
+		fireEvent.click(screen.getByText("settings:skills.advanced"))
 		// Initially "Any mode" is checked
 		expect(screen.getByTestId("checkbox-create-mode-any")).toBeChecked()
 		expect(screen.getByTestId("checkbox-create-mode-code")).not.toBeChecked()
@@ -414,6 +457,7 @@ describe("CreateSkillDialog", () => {
 			/>,
 		)
 
+		fireEvent.click(screen.getByText("settings:skills.advanced"))
 		// Select a specific mode
 		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
 		expect(screen.getByTestId("checkbox-create-mode-any")).not.toBeChecked()
@@ -443,6 +487,7 @@ describe("CreateSkillDialog", () => {
 		fireEvent.change(nameInput, { target: { value: "my-skill" } })
 		fireEvent.change(descInput, { target: { value: "My skill description" } })
 
+		fireEvent.click(screen.getByText("settings:skills.advanced"))
 		// Select "Code" and "Architect" modes
 		fireEvent.click(screen.getByTestId("checkbox-create-mode-code"))
 		fireEvent.click(screen.getByTestId("checkbox-create-mode-architect"))

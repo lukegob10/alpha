@@ -1,43 +1,58 @@
-import { HTMLAttributes } from "react"
+import { HTMLAttributes, useRef } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
+import type { Checkbox } from "@vscode/webview-ui-toolkit"
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
+import { SettingsHelp } from "./SettingsHelp"
 import { Slider } from "../ui"
 
 type NotificationSettingsProps = HTMLAttributes<HTMLDivElement> & {
+	embedded?: boolean
+	unframed?: boolean
 	soundEnabled?: boolean
 	soundVolume?: number
 	setCachedStateField: SetCachedStateField<"soundEnabled" | "soundVolume">
 }
 
 export const NotificationSettings = ({
-	soundEnabled,
+	embedded = false,
+	unframed = false,
+	soundEnabled = false,
 	soundVolume,
 	setCachedStateField,
 	...props
 }: NotificationSettingsProps) => {
 	const { t } = useAppTranslation()
+	const latestSoundEnabled = useRef(soundEnabled)
+	// Toolkit checked updates can emit through the previous render's listener.
+	latestSoundEnabled.current = soundEnabled
+	const Frame = unframed ? "div" : Section
 	return (
 		<div {...props}>
-			<SectionHeader>{t("settings:sections.notifications")}</SectionHeader>
+			{!embedded && <SectionHeader>{t("settings:sections.notifications")}</SectionHeader>}
 
-			<Section>
+			<Frame>
 				<SearchableSetting
 					settingId="notifications-sound"
 					section="notifications"
 					label={t("settings:notifications.sound.label")}>
-					<VSCodeCheckbox
-						checked={soundEnabled}
-						onChange={(e: any) => setCachedStateField("soundEnabled", e.target.checked)}
-						data-testid="sound-enabled-checkbox">
-						<span className="font-medium">{t("settings:notifications.sound.label")}</span>
-					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:notifications.sound.description")}
+					<div className="flex min-h-11 items-center justify-between gap-2">
+						<VSCodeCheckbox
+							checked={soundEnabled}
+							onChange={(event) => {
+								const checked = (event.target as Checkbox).checked
+								if (checked !== latestSoundEnabled.current) setCachedStateField("soundEnabled", checked)
+							}}
+							data-testid="sound-enabled-checkbox">
+							<span className="font-medium">{t("settings:notifications.sound.label")}</span>
+						</VSCodeCheckbox>
+						<SettingsHelp label={t("settings:notifications.sound.label")}>
+							{t("settings:notifications.sound.description")}
+						</SettingsHelp>
 					</div>
 				</SearchableSetting>
 
@@ -65,7 +80,7 @@ export const NotificationSettings = ({
 						</SearchableSetting>
 					</div>
 				)}
-			</Section>
+			</Frame>
 		</div>
 	)
 }

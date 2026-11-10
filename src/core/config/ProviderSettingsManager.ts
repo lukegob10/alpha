@@ -1,4 +1,7 @@
 import { ExtensionContext } from "vscode"
+import { createHash } from "node:crypto"
+import * as path from "node:path"
+import * as fs from "fs/promises"
 import { z, ZodError } from "zod"
 
 import {
@@ -14,13 +17,16 @@ import {
 	isRetiredProvider,
 	type ProviderProfileRenameErrorCode,
 	type ProviderProfileSaveResult,
+	type ProviderProfileSavedReceipt,
+	type ProviderProfileSnapshot,
+	providerProfileVersionSchema,
 	PROVIDER_SETTINGS_KEYS,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Mode, modes } from "../../shared/modes"
 import { buildApiHandler } from "../../api"
 import { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
+import { atomicWriteText, withFileLock } from "../task-persistence/atomicWrite"
 export { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
 
 const retainedProviderConfigSchema = z.object({ id: z.string().min(1), value: z.unknown() })
@@ -28,6 +34,47 @@ export type RetainedProviderConfig = { id: string; value: unknown }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value)
+
+/**
+ * Codex d4a341bd (2026-11-06) rejects mismatched config content versions before applying edits.
+ * Alpha scopes that precondition to the saved profile, so renames and unrelated profiles do not conflict.
+ * JSON persistence ignores undefined values; sorted keys also make field insertion order irrelevant.
+ */
+function profileVersion(value: unknown): string {
+	const canonical = JSON.stringify(value, (_key, item: unknown) =>
+		isRecord(item)
+			? Object.fromEntries(
+					Object.keys(item)
+						.sort()
+						.map((key) => [key, item[key]]),
+				)
+			: item,
+	)
+	return `sha256:${createHash("sha256")
+		.update(canonical ?? "null")
+		.digest("hex")}`
+}
+
+const providerStorageFenceSchema = z.discriminatedUnion("state", [
+	z.object({ format: z.literal(1), state: z.literal("committed"), hash: providerProfileVersionSchema }).strict(),
+	z
+		.object({
+			format: z.literal(1),
+			state: z.literal("prepared"),
+			previousHash: providerProfileVersionSchema,
+			nextHash: providerProfileVersionSchema,
+		})
+		.strict(),
+])
+type ProviderStorageFence = z.infer<typeof providerStorageFenceSchema>
+
+class ProviderProfileCommitPendingError extends Error {
+	constructor() {
+		super(
+			"Provider profile write was accepted, but its synchronization receipt could not be committed. Retry to reconcile it.",
+		)
+	}
+}
 
 // Profile display names are data keys, including __proto__, which z.record omits.
 const retainedApiConfigsSchema = z.custom<Record<string, RetainedProviderConfig>>(
@@ -196,13 +243,18 @@ export class ProviderProfileRenameError extends Error {
 }
 
 export class ProviderProfileSaveError extends Error {
-	constructor(public readonly code: Extract<ProviderProfileSaveResult, { status: "error" }>["error"]) {
+	constructor(
+		public readonly code: Extract<ProviderProfileSaveResult, { status: "error" }>["error"],
+		public readonly saved?: ProviderProfileSavedReceipt,
+	) {
 		super("Failed to save provider profile")
 		this.name = "ProviderProfileSaveError"
 	}
 }
 
-export type ProviderProfileSaved = Pick<ProviderSettingsEntry, "id" | "name">
+export type ProviderProfileSaved = Pick<ProviderSettingsEntry, "id" | "name" | "version">
+export type ProviderProfileSaveTarget = { id: string; expectedVersion?: string }
+export type ProviderProfileCreateTarget = { name: string; createOnly: true }
 
 export interface ProviderProfileRename {
 	id: string
@@ -250,10 +302,13 @@ export class ProviderSettingsManager {
 		return Math.random().toString(36).substring(2, 15)
 	}
 
-	// Sidebar and editor views share SecretStorage; serialize their read-modify-write operations together.
+	// Views share a host queue; separate extension hosts share the same profile-storage lease.
 	private lock<T>(cb: () => Promise<T>) {
 		const previous = ProviderSettingsManager.storageLocks.get(this.context.secrets) ?? Promise.resolve()
-		const next = previous.then(cb)
+		const next = previous.then(() => {
+			// Older unit/public-API test doubles omit the URI; real hosts must never bypass a failed lease.
+			return this.fencePath ? withFileLock(this.fencePath, cb) : cb()
+		})
 		ProviderSettingsManager.storageLocks.set(
 			this.context.secrets,
 			next.then(
@@ -487,6 +542,7 @@ export class ProviderSettingsManager {
 			.map(([name, apiConfig]) => ({
 				name,
 				id: apiConfig.id || "",
+				version: profileVersion(apiConfig),
 				apiProvider: apiConfig.apiProvider,
 				modelId: this.cleanModelId(getModelId(apiConfig)),
 				...(this.isUnsupportedProvider(apiConfig.apiProvider) ? { availability: "unsupported" as const } : {}),
@@ -497,6 +553,7 @@ export class ProviderSettingsManager {
 				return {
 					name,
 					id,
+					version: profileVersion(value),
 					...(isRecord(value) && typeof value.apiProvider === "string" && value.apiProvider
 						? { apiProvider: value.apiProvider }
 						: {}),
@@ -621,10 +678,13 @@ export class ProviderSettingsManager {
 	 * Existing-profile saves resolve their current name and preserve their ID inside the write lock.
 	 * Name-based creation and legacy callers retain their existing ID-import semantics.
 	 */
-	public saveConfig(target: { id: string }, config: ProviderSettingsWithId): Promise<ProviderProfileSaved>
+	public saveConfig(
+		target: ProviderProfileSaveTarget | ProviderProfileCreateTarget,
+		config: ProviderSettingsWithId,
+	): Promise<ProviderProfileSaved>
 	public saveConfig(name: string, config: ProviderSettingsWithId): Promise<string>
 	public async saveConfig(
-		target: string | { id: string },
+		target: string | ProviderProfileSaveTarget | ProviderProfileCreateTarget,
 		config: ProviderSettingsWithId,
 	): Promise<string | ProviderProfileSaved> {
 		try {
@@ -632,14 +692,22 @@ export class ProviderSettingsManager {
 				const providerProfiles = await this.load()
 				let name: string
 				let id: string
-				if (typeof target === "string") {
-					name = target
+				if (typeof target !== "string") z.record(z.unknown()).parse(config)
+				if (typeof target === "string" || "createOnly" in target) {
+					name = typeof target === "string" ? target : target.name
 					const existingId = Object.hasOwn(providerProfiles.apiConfigs, name)
 						? providerProfiles.apiConfigs[name]?.id
 						: Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name)
 							? providerProfiles.retainedApiConfigs?.[name].id
 							: undefined
-					id = config.id || existingId || this.generateId()
+					if (
+						typeof target !== "string" &&
+						(Object.hasOwn(providerProfiles.apiConfigs, name) ||
+							Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name))
+					) {
+						throw new ProviderProfileSaveError("conflict")
+					}
+					id = typeof target === "string" ? config.id || existingId || this.generateId() : this.generateId()
 				} else {
 					const matches = this.profileEntries(providerProfiles).filter(({ id }) => id === target.id)
 					if (matches.length > 1) throw new ProviderProfileSaveError("invalid")
@@ -647,8 +715,10 @@ export class ProviderSettingsManager {
 					if (!entry) throw new ProviderProfileSaveError("notFound")
 					name = entry.name
 					id = target.id
-					// Validate the original container; object spread would turn malformed wire values into empty profiles.
-					z.record(z.unknown()).parse(config)
+					if (target.expectedVersion !== undefined) {
+						providerProfileVersionSchema.parse(target.expectedVersion)
+						if (target.expectedVersion !== entry.version) throw new ProviderProfileSaveError("conflict")
+					}
 				}
 				// A draft's embedded ID cannot change the authority of an explicit existing-profile target.
 				const configToSave = typeof target === "string" ? config : { ...config, id }
@@ -683,8 +753,25 @@ export class ProviderSettingsManager {
 					delete updated.retainedApiConfigs[name]
 					if (!Object.keys(updated.retainedApiConfigs).length) delete updated.retainedApiConfigs
 				}
-				await this.store(updated)
-				return typeof target === "string" ? id : { id, name }
+				try {
+					await this.store(updated)
+				} catch (error) {
+					if (typeof target !== "string" && error instanceof ProviderProfileCommitPendingError) {
+						throw new ProviderProfileSaveError("applyFailed", {
+							id,
+							name,
+							version: profileVersion(updated.apiConfigs[name]),
+						})
+					}
+					throw error
+				}
+				return typeof target === "string"
+					? id
+					: {
+							id,
+							name,
+							version: profileVersion(updated.apiConfigs[name]),
+						}
 			})
 		} catch (error) {
 			if (typeof target !== "string") {
@@ -698,12 +785,20 @@ export class ProviderSettingsManager {
 	public async getProfile(
 		params: { name: string } | { id: string },
 	): Promise<ProviderSettingsWithId & { name: string }> {
+		const snapshot = await this.getProfileSnapshot(params)
+		return { ...snapshot.configuration, id: snapshot.id, name: snapshot.name }
+	}
+
+	/** Capture editor contents and their precondition together; task settings can intentionally remain frozen. */
+	public async getProfileSnapshot(params: { name: string } | { id: string }): Promise<ProviderProfileSnapshot> {
 		try {
 			return await this.lock(async () => {
 				const providerProfiles = await this.load()
 				const entry = this.resolveProfile(providerProfiles, params)
 				if (entry.availability === "invalid") this.assertAvailable(entry)
-				return { ...providerProfiles.apiConfigs[entry.name], name: entry.name }
+				const profile = providerProfiles.apiConfigs[entry.name]
+				const { id: _id, ...configuration } = profile
+				return { id: entry.id, name: entry.name, version: profileVersion(profile), configuration }
 			})
 		} catch (error) {
 			if (error instanceof ProviderProfileUnavailableError) throw error
@@ -981,10 +1076,56 @@ export class ProviderSettingsManager {
 	 */
 	public async resetAllConfigs() {
 		return await this.lock(async () => {
+			const nextHash = profileVersion(null)
+			if (this.fencePath)
+				await this.writeFence({ format: 1, state: "prepared", previousHash: nextHash, nextHash })
 			// Delete the recovery source first so a successful reset cannot resurrect it.
 			await this.context.secrets.delete(ProviderSettingsManager.LEGACY_SECRETS_KEY)
 			await this.context.secrets.delete(this.secretsKey)
+			if (this.fencePath) await this.writeFence({ format: 1, state: "committed", hash: nextHash })
 		})
+	}
+
+	private get fencePath() {
+		const storagePath = this.context.globalStorageUri?.fsPath
+		return storagePath ? path.join(storagePath, "provider-profiles") : undefined
+	}
+
+	private async writeFence(fence: ProviderStorageFence) {
+		if (this.fencePath) await atomicWriteText(this.fencePath, JSON.stringify(fence), { requireAtomicReplace: true })
+	}
+
+	private async verifyFence(content: string | undefined): Promise<string> {
+		const hash = profileVersion(content ? JSON.parse(content) : null)
+		if (!this.fencePath) return hash
+		let fence: ProviderStorageFence
+		try {
+			const stat = await fs.stat(this.fencePath)
+			if (!stat.isFile() || stat.size > 1024) throw new Error("Invalid provider profile synchronization receipt")
+			fence = providerStorageFenceSchema.parse(JSON.parse(await fs.readFile(this.fencePath, "utf8")))
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+				throw new Error(
+					"Provider profile synchronization receipt is invalid or unreadable. Preserve the saved data and recover the receipt before saving.",
+				)
+			}
+			await this.writeFence({ format: 1, state: "committed", hash })
+			return hash
+		}
+		if (fence.state === "prepared") {
+			if (hash !== fence.nextHash) {
+				throw new Error(
+					"Provider profile save is pending synchronization. Retry from the writing window after its saved state is available; no data was overwritten.",
+				)
+			}
+			// Exact intended contents can finish their receipt without replaying a secret write.
+			await this.writeFence({ format: 1, state: "committed", hash })
+		} else if (fence.hash !== hash) {
+			throw new Error(
+				"Provider profile storage has not synchronized across windows. Retry after synchronization; no saved data was overwritten.",
+			)
+		}
+		return hash
 	}
 
 	private get secretsKey() {
@@ -998,6 +1139,7 @@ export class ProviderSettingsManager {
 	private async read(): Promise<{ profiles: ProviderProfiles; needsPersistence: boolean }> {
 		try {
 			const content = await this.context.secrets.get(this.secretsKey)
+			await this.verifyFence(content)
 			const raw: unknown = content ? JSON.parse(content) : undefined
 			const current = content
 				? readPersistedProviderProfiles(raw, () => this.generateId())
@@ -1018,10 +1160,6 @@ export class ProviderSettingsManager {
 			return current
 		} catch (error) {
 			if (error instanceof ZodError) {
-				TelemetryService.instance.captureSchemaValidationError({
-					schemaName: "ProviderProfiles",
-					error,
-				})
 				throw new Error("Saved provider profile metadata is invalid. Its stored data was not changed.")
 			}
 			if (error instanceof SyntaxError)
@@ -1034,18 +1172,44 @@ export class ProviderSettingsManager {
 	private async store(providerProfiles: ProviderProfiles) {
 		try {
 			// Any new canonical write is authoritative, even if a later edit leaves it empty.
-			await this.context.secrets.store(
-				this.secretsKey,
-				JSON.stringify(
-					{
-						...providerProfiles,
-						migrations: { ...providerProfiles.migrations, legacyStorageMigrated: true },
-					},
-					null,
-					2,
-				),
+			const content = JSON.stringify(
+				{
+					...providerProfiles,
+					migrations: { ...providerProfiles.migrations, legacyStorageMigrated: true },
+				},
+				null,
+				2,
 			)
+			if (!this.fencePath) {
+				await this.context.secrets.store(this.secretsKey, content)
+				return
+			}
+			const previousHash = await this.verifyFence(await this.context.secrets.get(this.secretsKey))
+			const nextHash = profileVersion(JSON.parse(content))
+			await this.writeFence({ format: 1, state: "prepared", previousHash, nextHash })
+			try {
+				await this.context.secrets.store(this.secretsKey, content)
+			} catch (error) {
+				let accepted = false
+				try {
+					const observed = await this.context.secrets.get(this.secretsKey)
+					const observedHash = profileVersion(observed ? JSON.parse(observed) : null)
+					if (observedHash === previousHash)
+						await this.writeFence({ format: 1, state: "committed", hash: previousHash })
+					else accepted = observedHash === nextHash
+				} catch {
+					// Keep the prepared fence when rejection/readback/rollback leaves acceptance uncertain.
+				}
+				if (accepted) throw new ProviderProfileCommitPendingError()
+				throw error
+			}
+			try {
+				await this.writeFence({ format: 1, state: "committed", hash: nextHash })
+			} catch {
+				throw new ProviderProfileCommitPendingError()
+			}
 		} catch (error) {
+			if (error instanceof ProviderProfileCommitPendingError) throw error
 			throw new Error(`Failed to write provider profiles to secrets: ${error}`)
 		}
 	}

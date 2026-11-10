@@ -1,6 +1,7 @@
 import { Checkbox } from "vscrui"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface R1FormatSettingProps {
 	onChange: (value: boolean) => void
@@ -11,15 +12,13 @@ export const R1FormatSetting = ({ onChange, openAiR1FormatEnabled }: R1FormatSet
 	const { t } = useAppTranslation()
 
 	return (
-		<div>
-			<div className="flex items-center gap-2">
-				<Checkbox checked={openAiR1FormatEnabled} onChange={onChange}>
-					<span className="font-medium">{t("settings:modelInfo.enableR1Format")}</span>
-				</Checkbox>
-			</div>
-			<p className="text-vscode-descriptionForeground text-sm mt-0">
+		<div className="flex items-center gap-1">
+			<Checkbox checked={openAiR1FormatEnabled} onChange={onChange}>
+				<span className="font-medium">{t("settings:modelInfo.enableR1Format")}</span>
+			</Checkbox>
+			<SettingsHelp label={t("settings:modelInfo.enableR1Format")}>
 				{t("settings:modelInfo.enableR1FormatTips")}
-			</p>
+			</SettingsHelp>
 		</div>
 	)
 }

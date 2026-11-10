@@ -3,6 +3,16 @@
 import { render, screen, fireEvent, within, act } from "@/utils/test-utils"
 
 import ApiConfigManager from "../ApiConfigManager"
+import type { PropsWithChildren } from "react"
+
+vi.mock("../SettingsHelp", () => ({
+	SettingsHelp: ({ label, children }: PropsWithChildren<{ label: string }>) => (
+		<details>
+			<summary aria-label={`Help: ${label}`} />
+			{children}
+		</details>
+	),
+}))
 
 vi.mock("@/i18n/TranslationContext", async () => {
 	const { default: i18n } = await import("@/i18n/setup")
@@ -99,8 +109,17 @@ vitest.mock("@/components/ui", () => ({
 			{children}
 		</option>
 	),
-	SearchableSelect: ({ value, onValueChange, options, placeholder, disabled, "data-testid": dataTestId }: any) => (
+	SearchableSelect: ({
+		value,
+		onValueChange,
+		options,
+		placeholder,
+		disabled,
+		"data-testid": dataTestId,
+		"aria-label": ariaLabel,
+	}: any) => (
 		<select
+			aria-label={ariaLabel}
 			value={value}
 			disabled={disabled}
 			onChange={(e) => {
@@ -141,6 +160,15 @@ describe("ApiConfigManager", () => {
 
 	const getRenameForm = () => screen.getByTestId("rename-form")
 	const getDialogContent = () => screen.getByTestId("dialog-content")
+
+	it("keeps profile selection named while its optional explanation is hidden", () => {
+		render(<ApiConfigManager {...defaultProps} />)
+		expect(screen.getByRole("combobox", { name: "settings:providers.configProfile" })).toHaveValue("Default Config")
+		expect(screen.getByText("settings:providers.description")).not.toBeVisible()
+		expect(screen.getByTestId("add-profile-button")).toBeEnabled()
+		expect(screen.getByTestId("rename-profile-button")).toBeEnabled()
+		expect(screen.getByTestId("delete-profile-button")).toBeEnabled()
+	})
 
 	it("explains retained unavailable profiles and prevents selection while preserving profile management", () => {
 		render(

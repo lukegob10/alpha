@@ -1211,7 +1211,7 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
 
 		await expect((provider as any).assertPlanModeEntryAllowed(parent, "code", "architect")).rejects.toThrow(
-			"Cannot enter Plan mode while 1 Worker descendant is active",
+			"Cannot enter Plan mode while agents with Code authority are active",
 		)
 	})
 
@@ -1240,14 +1240,164 @@ describe("AlphaProvider bounded sub-agent preparation", () => {
 		parent.getTaskMode.mockResolvedValue("architect")
 
 		await expect(provider.sendMessageToAgent(parent as any, record.path, "Keep editing")).rejects.toThrow(
-			"Plan mode cannot send a message to Worker",
+			"Plan mode cannot send a message to agent",
 		)
 
 		await (provider as any).agentControlStore.updateAgentStatus(record.taskId, "completed", {}, record.rootTaskId)
 		await expect(provider.followupAgentTask(parent as any, record.path, "Edit one more file")).rejects.toThrow(
-			"Plan mode cannot relaunch Worker",
+			"Plan mode cannot relaunch agent",
 		)
 	})
+
+	it.each(["explorer", "review"] as const)(
+		"rejects Code to Plan admission while an editing %s is prepared or registered",
+		async (agentType) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "editing_child",
+				agent_type: agentType,
+				message: "Implement the authorized correction",
+			})
+			expect(prepared.envelopes[0].policy.mutate).toBe(true)
+			await expect((provider as any).assertPlanModeEntryAllowed(parent, "code", "architect")).rejects.toThrow(
+				"Cannot enter Plan mode",
+			)
+			;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+			await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+			;(provider as any).preparedSubagentGroups.clear()
+			;(provider as any).subagentDescriptors.clear()
+			await expect((provider as any).assertPlanModeEntryAllowed(parent, "code", "architect")).rejects.toThrow(
+				"Cannot enter Plan mode",
+			)
+		},
+	)
+
+	it.each(["explorer", "review"] as const)(
+		"rejects prepared %s launch after its parent switches to Plan",
+		async (agentType) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "prepared_editor",
+				agent_type: agentType,
+				message: "Implement the authorized correction",
+			})
+			parent.getTaskMode.mockResolvedValue("architect")
+			await expect(
+				(provider as any).assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared),
+			).rejects.toThrow("Plan mode cannot launch")
+		},
+	)
+
+	it.each(["explorer", "review"] as const)(
+		"rejects steering and relaunching a retained editing %s from Plan",
+		async (agentType) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "retained_editor",
+				agent_type: agentType,
+				message: "Implement the authorized correction",
+			})
+			;(provider as any).finalizePreparedSubagentAuthorization(prepared)
+			const records = await (provider as any).ensurePreparedSubagentControlRecords(parent, prepared)
+			const record = records.get(prepared.envelopes[0].id)
+			parent.getTaskMode.mockResolvedValue("architect")
+			await expect(provider.sendMessageToAgent(parent as any, record.path, "Continue editing")).rejects.toThrow(
+				"Plan mode cannot send a message",
+			)
+			await (provider as any).agentControlStore.updateAgentStatus(
+				record.taskId,
+				"completed",
+				{},
+				record.rootTaskId,
+			)
+			await expect(provider.followupAgentTask(parent as any, record.path, "Edit another file")).rejects.toThrow(
+				"Plan mode cannot relaunch",
+			)
+		},
+	)
+
+	it.each(["explorer", "review"] as const)("retains prepared read-only %s admission in Plan", async (agentType) => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		parent.getTaskMode.mockResolvedValue("architect")
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "plan_reader",
+			agent_type: agentType,
+			message: "Inspect the implementation",
+		})
+		expect(prepared.envelopes[0].policy.mutate).toBe(false)
+		await expect((provider as any).assertPlanModeEntryAllowed(parent, "code", "architect")).resolves.toBeUndefined()
+		await expect(
+			(provider as any).assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared),
+		).resolves.toBeUndefined()
+	})
+
+	it.each(["explorer", "review"] as const)("rejects UI steering of an editing %s from Plan", async (agentType) => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const prepared = await provider.prepareSubagentGroup(parent as any, {
+			task_name: "steered_editor",
+			agent_type: agentType,
+			message: "Implement the authorized correction",
+		})
+		const agent = prepared.group.agents[0]
+		agent.status = "running"
+		const child = {
+			taskId: agent.taskId,
+			parentTaskId: parent.taskId,
+			subagentGroupId: prepared.group.groupId,
+			canAcceptSteerMessage: vi.fn(() => true),
+			steerUserMessageDurably: vi.fn(async () => undefined),
+		}
+		;(provider as any).getLiveTask = () => child
+		parent.getTaskMode.mockResolvedValue("architect")
+		await expect(
+			provider.steerSubagent(parent.taskId, prepared.group.groupId, agent.taskId, "Continue editing"),
+		).resolves.toBe(false)
+		expect(child.steerUserMessageDurably).not.toHaveBeenCalled()
+	})
+
+	it.each(["async", "blocking"] as const)(
+		"serializes inherited editing authority through %s launch admission",
+		async (execution) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const prepared = await provider.prepareSubagentGroup(parent as any, {
+				task_name: "queued_editor",
+				agent_type: "explorer",
+				message: "Implement the authorized correction",
+			})
+			const gate = Reflect.get(provider, "workspaceMutationGate") as WorkspaceMutationGate
+			let entered!: () => void
+			const gateEntered = new Promise<void>((resolve) => (entered = resolve))
+			let release!: () => void
+			const held = new Promise<void>((resolve) => (release = resolve))
+			const holder = gate.run("mode-transition", "Hold mode transition", async () => {
+				entered()
+				await held
+				parent.getTaskMode.mockResolvedValue("architect")
+			})
+			await gateEntered
+			const admission =
+				execution === "async"
+					? provider.launchPreparedSubagentGroup(parent as any, prepared, new AbortController().signal)
+					: provider.runSubagentGroup(parent as any, prepared, new AbortController().signal)
+			const settled = Promise.allSettled([admission])
+			try {
+				release()
+				await holder
+				await settled
+				await expect(admission).rejects.toThrow("Plan mode cannot launch")
+			} finally {
+				release()
+				await holder
+				await settled
+			}
+		},
+	)
 
 	it("gives a legacy primary handoff child its own managed-agent root", async () => {
 		const provider = makeProviderHarness()

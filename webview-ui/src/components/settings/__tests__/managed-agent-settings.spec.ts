@@ -34,4 +34,8 @@ describe("managed-agent settings adapter", () => {
 			subagentInterruptMessage: true,
 		})
 	})
+	it("retains a saved interruption preference when the control is hidden", () => {
+		const state = withManagedAgentSettingsDefaults({ ...initial, subagentInterruptMessage: false })
+		expect(toManagedAgentSettingsSavePayload(state).subagentInterruptMessage).toBe(false)
+	})
 })

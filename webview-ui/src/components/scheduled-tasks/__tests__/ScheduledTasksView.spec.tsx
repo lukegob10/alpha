@@ -194,6 +194,96 @@ describe("scheduled task setup", () => {
 		expect(messages().some((message) => message.type === "requestScheduledTaskSkills")).toBe(false)
 	})
 
+	it("submits one correlated creation while repeated click and Enter await acknowledgement", () => {
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", "One review")
+		input("Prompt", "Review the repository")
+		select("Profile", apiConfig.id)
+		const create = screen.getByRole("button", { name: "Create" })
+		act(() => {
+			fireEvent.click(create)
+			fireEvent.click(create)
+			fireEvent.submit(document.getElementById("scheduled-task-form")!)
+		})
+		const requests = messages().filter((message) => message.type === "createScheduledTask")
+		expect(requests).toHaveLength(1)
+		expect(requests[0].scheduledTask).toHaveProperty("creationRequestId", expect.any(String))
+		expect(create).toBeDisabled()
+	})
+
+	it("retains a failed creation draft, retries the same intent, and selects its acknowledged identity", () => {
+		render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", "One review")
+		input("Prompt", "Review the repository")
+		select("Profile", apiConfig.id)
+		fireEvent.click(screen.getByRole("button", { name: "Create" }))
+		const first = messages().find((message) => message.type === "createScheduledTask")!
+		const requestId = first.scheduledTask?.creationRequestId
+		const reply = (result: unknown) =>
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "scheduledTaskCreationResult", scheduledTaskCreationResult: result },
+					}),
+				),
+			)
+		reply({ requestId: "unrelated", status: "success", task: saved })
+		expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
+		reply({ requestId, status: "error", error: "save_failed" })
+		expect(screen.getByLabelText("Name")).toHaveValue("One review")
+		expect(screen.getByRole("alert")).toHaveTextContent(labels.creationErrors.save_failed)
+		fireEvent.click(screen.getByRole("button", { name: "Create" }))
+		const requests = messages().filter((message) => message.type === "createScheduledTask")
+		expect(requests).toHaveLength(2)
+		expect(requests[1].scheduledTask?.creationRequestId).toBe(requestId)
+		reply({ requestId, status: "success", task: { ...saved, name: "One review", apiConfig } })
+		fireEvent.click(screen.getByRole("button", { name: "Save" }))
+		expect(messages().at(-1)).toMatchObject({ type: "updateScheduledTask", scheduledTaskId: saved.id })
+		expect(messages().filter((message) => message.type === "createScheduledTask")).toHaveLength(2)
+	})
+
+	it("retries the immutable creation after timeout and ignores its late acknowledgement after New Task", () => {
+		vi.useFakeTimers()
+		try {
+			render(<ScheduledTasksView onDone={() => {}} />)
+			input("Name", "One review")
+			input("Prompt", "Review the repository")
+			select("Profile", apiConfig.id)
+			fireEvent.click(screen.getByRole("button", { name: "Create" }))
+			const first = messages().find((message) => message.type === "createScheduledTask")!
+			act(() => vi.advanceTimersByTime(30_000))
+			expect(screen.getByRole("alert")).toHaveTextContent(labels.creationTimeout)
+			expect(screen.getByLabelText("Name")).toBeDisabled()
+			fireEvent.click(screen.getByRole("button", { name: "Create" }))
+			expect(
+				messages()
+					.filter((message) => message.type === "createScheduledTask")
+					.at(-1),
+			).toEqual(first)
+			act(() => vi.advanceTimersByTime(30_000))
+			fireEvent.click(screen.getByRole("button", { name: "New" }))
+			input("Name", "Another draft")
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "scheduledTaskCreationResult",
+							scheduledTaskCreationResult: {
+								requestId: first.scheduledTask?.creationRequestId,
+								status: "success",
+								task: saved,
+							},
+						},
+					}),
+				),
+			)
+			expect(screen.getByLabelText("Name")).toHaveValue("Another draft")
+			expect(screen.getByRole("button", { name: "Create" })).toBeInTheDocument()
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("keeps an unassigned legacy schedule idle until it is saved in this workspace", () => {
 		state.scheduledTasks = [{ ...saved, apiConfig, workspace: undefined }]
 		render(<ScheduledTasksView onDone={() => {}} />)

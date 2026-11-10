@@ -330,7 +330,6 @@ suite("Native command artifact workflow", function () {
 							allowedCommands: mode === "code" ? ["node"] : [],
 							deniedCommands: [],
 							terminalShellIntegrationDisabled: true,
-							terminalOutputPreviewSize: "small",
 							enableCheckpoints: false,
 							requestDelaySeconds: 0,
 							writeDelayMs: 0,

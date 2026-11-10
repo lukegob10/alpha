@@ -16,7 +16,6 @@ import * as vscode from "vscode"
 import {
 	type GlobalState,
 	type AlphaMessage,
-	type TelemetrySetting,
 	type WebviewMessage,
 	type EditQueuedMessagePayload,
 	type ReorderQueuedMessagePayload,
@@ -24,25 +23,22 @@ import {
 	type ChatCommandErrorCode,
 	type ChatCommandResult,
 	TaskLifecycleState,
-	TelemetryEventName,
-	AlphaCodeSettings,
-	ExperimentId,
 	taskApprovalModeUpdateSchema,
 	approvalModeSchema,
 	checkoutDiffPayloadSchema,
 	checkoutRestorePayloadSchema,
 	openDiffPayloadSchema,
 	scheduledTaskSkillsRequestSchema,
+	scheduledTaskCreationRequestIdSchema,
+	type ScheduledTaskCreationResult,
+	type ScheduledTask,
 	taskReasoningUpdateSchema,
 	sendAndSteerMessageSchema,
 	steerNextQueuedMessageSchema,
 	webviewFocusChangedMessageSchema,
-	subagentAgentTypesSchema,
-	globalSettingsSchema,
-	languagesSchema,
-	RETIRED_SUBAGENT_SETTING_KEYS,
 	providerProfileRenameRequestSchema,
 	providerProfileSaveRequestSchema,
+	providerProfileCreateRequestSchema,
 	type ProviderProfileRenameResult,
 	type ProviderProfileSaveResult,
 	type ProviderSettingsEntry,
@@ -50,13 +46,13 @@ import {
 	type TaskRenameResult,
 } from "@alpha-code/types"
 import { customToolRegistry, serializeCustomTool } from "@alpha-code/core"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 import { TaskRenameError } from "../task-persistence/TaskHistoryStore"
 
 import { AlphaProvider } from "./AlphaProvider"
+import { handleSettingsUpdate } from "./settingsSaveHandler"
 import {
 	ProviderProfileRenameError,
 	ProviderProfileSaveError,
@@ -77,13 +73,11 @@ import {
 	handleOpenSkillFile,
 } from "./skillsMessageHandler"
 import { getSkillCommands } from "../../services/skills/skillInvocation"
-import { changeLanguage, t } from "../../i18n"
+import { t } from "../../i18n"
 import { Package } from "../../shared/package"
 
 import { CodeIndexManager } from "../../services/code-index/manager"
 import { checkExistKey } from "../../shared/checkExistApiConfig"
-import { experimentDefault } from "../../shared/experiments"
-import { Terminal } from "../../integrations/terminal/Terminal"
 import { openFile } from "../../integrations/misc/open-file"
 import { openDiff } from "../../integrations/editor/openDiff"
 import { openHtmlDocumentLink } from "./html-document"
@@ -605,6 +599,9 @@ export const webviewMessageHandler = async (
 			if (focus.success) await provider.setWebviewFocused(focus.data.focused)
 			break
 		}
+		case "requestState":
+			await provider.postStateToWebview()
+			break
 		case "webviewDidLaunch":
 			const webviewLaunchStartedAt = performance.now()
 			const isCurrentWebview = options?.isCurrentWebview ?? (() => true)
@@ -698,15 +695,6 @@ export const webviewMessageHandler = async (
 						`Error list api configuration: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
 					),
 				)
-
-			// Enable telemetry by default (when unset) or when explicitly enabled
-			try {
-				TelemetryService.instance.updateTelemetryState(getGlobalState("telemetrySetting") !== "disabled")
-			} catch (error) {
-				provider.log(
-					`[webviewDidLaunch] Failed to initialize telemetry state: ${error instanceof Error ? error.message : String(error)}`,
-				)
-			}
 
 			if (isCurrentWebview()) {
 				provider.isViewLaunched = true
@@ -904,6 +892,35 @@ export const webviewMessageHandler = async (
 					await postChatCommandResult("askResponse", "rejected", "image_resolution_failed")
 					break
 				}
+				if (message.askResponse === "messageResponse" && message.asyncUserInputMessageTs !== undefined) {
+					// Async cards are independent input. A newly published ask must never claim their reply.
+					let queued = false
+					try {
+						queued = await provider.queueMessageForTaskDurably(
+							message.taskId,
+							resolved.text ?? "",
+							resolved.images,
+							message.requestId,
+							{ source: "human" },
+						)
+					} catch {
+						await postChatCommandResult("askResponse", "rejected", "unknown")
+						break
+					}
+					if (!queued) {
+						await postChatCommandResult("askResponse", "rejected", "task_unavailable")
+						break
+					}
+					await acknowledgeAsyncUserInput(provider, task, message.asyncUserInputMessageTs)
+					if (task.messageQueueService) {
+						await provider.postTaskQueueToWebview(
+							task.taskId,
+							task.messageQueueService.visibleMessages ?? task.messageQueueService.messages,
+						)
+					}
+					await postChatCommandResult("askResponse", "accepted")
+					break
+				}
 				if (
 					expectedAskTs !== activeAskTs() ||
 					(expectedAskTs === undefined &&
@@ -999,119 +1016,7 @@ export const webviewMessageHandler = async (
 			break
 
 		case "updateSettings":
-			if (message.updatedSettings) {
-				const questionTimeoutChanged =
-					Object.hasOwn(message.updatedSettings, "followupAutoApproveTimeoutMs") &&
-					message.updatedSettings.followupAutoApproveTimeoutMs !==
-						getGlobalState("followupAutoApproveTimeoutMs")
-				if (questionTimeoutChanged) {
-					// Revoke timers and publish the new cache value before another setting can stall the save.
-					for (const taskId of provider.getLiveTaskIds()) {
-						provider.getLiveTask(taskId)?.cancelAutoApprovalTimeout(true)
-					}
-					await provider.contextProxy.setValue(
-						"followupAutoApproveTimeoutMs",
-						message.updatedSettings.followupAutoApproveTimeoutMs,
-					)
-				}
-
-				for (const [key, value] of Object.entries(message.updatedSettings)) {
-					if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) continue
-					if (questionTimeoutChanged && key === "followupAutoApproveTimeoutMs") continue
-					let newValue = value
-
-					if (key === "memorySettings") {
-						newValue = globalSettingsSchema.shape.memorySettings.parse(value)
-					} else if (key === "language") {
-						const language = languagesSchema.parse(value)
-						newValue = language
-						changeLanguage(language)
-					} else if (key === "allowedCommands") {
-						newValue = sanitizeCommandList(value)
-					} else if (key === "deniedCommands") {
-						newValue = sanitizeCommandList(value)
-					} else if (key === "terminalShellIntegrationTimeout") {
-						if (value !== undefined) {
-							Terminal.setShellIntegrationTimeout(value as number)
-						}
-					} else if (key === "terminalShellIntegrationDisabled") {
-						if (value !== undefined) {
-							Terminal.setShellIntegrationDisabled(value as boolean)
-						}
-					} else if (key === "terminalCommandDelay") {
-						if (value !== undefined) {
-							Terminal.setCommandDelay(value as number)
-						}
-					} else if (key === "terminalPowershellCounter") {
-						if (value !== undefined) {
-							Terminal.setPowershellCounter(value as boolean)
-						}
-					} else if (key === "terminalZshClearEolMark") {
-						if (value !== undefined) {
-							Terminal.setTerminalZshClearEolMark(value as boolean)
-						}
-					} else if (key === "terminalZshOhMy") {
-						if (value !== undefined) {
-							Terminal.setTerminalZshOhMy(value as boolean)
-						}
-					} else if (key === "terminalZshP10k") {
-						if (value !== undefined) {
-							Terminal.setTerminalZshP10k(value as boolean)
-						}
-					} else if (key === "terminalZdotdir") {
-						if (value !== undefined) {
-							Terminal.setTerminalZdotdir(value as boolean)
-						}
-					} else if (key === "execaShellPath") {
-						Terminal.setExecaShellPath(value as string | undefined)
-					} else if (key === "mcpEnabled") {
-						newValue = value ?? true
-						const mcpHub = provider.getMcpHub()
-
-						if (mcpHub) {
-							await mcpHub.handleMcpEnabledChange(newValue as boolean)
-						}
-					} else if (key === "maxConcurrentTasks") {
-						newValue = value ?? 3
-						provider.setMaxConcurrentTasks(newValue as number)
-					} else if (
-						key === "subagentsEnabled" ||
-						key === "subagentInterruptMessage" ||
-						key === "maxConcurrentSubagents"
-					) {
-						newValue = globalSettingsSchema.shape[key].parse(value)
-					} else if (key === "subagentDefaultReasoningEffort") {
-						newValue = globalSettingsSchema.shape.subagentDefaultReasoningEffort.parse(
-							value === "" || value === null ? undefined : value,
-						)
-					} else if (key === "subagentDefaultModel") {
-						newValue = globalSettingsSchema.shape.subagentDefaultModel.parse(value) || undefined
-					} else if (key === "subagentAgentTypes") {
-						newValue = value == null ? undefined : subagentAgentTypesSchema.parse(value)
-					} else if (key === "experiments") {
-						if (!value) {
-							continue
-						}
-
-						newValue = {
-							...(getGlobalState("experiments") ?? experimentDefault),
-							...(value as Record<ExperimentId, boolean>),
-						}
-					} else if (key === "customSupportPrompts") {
-						if (!value) {
-							continue
-						}
-					}
-
-					await provider.contextProxy.setValue(key as keyof AlphaCodeSettings, newValue)
-				}
-
-				if (Object.hasOwn(message.updatedSettings, "memorySettings")) {
-					await provider.refreshMemorySettings()
-				}
-				await provider.postStateToWebview()
-			}
-
+			await handleSettingsUpdate(provider, message)
 			break
 
 		case "terminalOperation":
@@ -1803,6 +1708,9 @@ export const webviewMessageHandler = async (
 
 			break
 		}
+		case "openTerminalSettings":
+			await vscode.commands.executeCommand("workbench.action.openSettings", "terminal.integrated.inheritEnv")
+			break
 		case "getVSCodeSetting":
 			const { setting } = message
 
@@ -1856,21 +1764,6 @@ export const webviewMessageHandler = async (
 				const updatedPrompts = { ...existingPrompts, [message.promptMode]: message.customPrompt }
 				await updateGlobalState("customModePrompts", updatedPrompts)
 				await provider.postStateToWebview()
-
-				if (TelemetryService.hasInstance()) {
-					// Determine which setting was changed by comparing objects
-					const oldPrompt = existingPrompts[message.promptMode] || {}
-					const newPrompt = message.customPrompt
-					const changedSettings = Object.keys(newPrompt).filter(
-						(key) =>
-							JSON.stringify((oldPrompt as Record<string, unknown>)[key]) !==
-							JSON.stringify((newPrompt as Record<string, unknown>)[key]),
-					)
-
-					if (changedSettings.length > 0) {
-						TelemetryService.instance.captureModeSettingChanged(changedSettings[0])
-					}
-				}
 			}
 			break
 		case "deleteMessage": {
@@ -2062,6 +1955,14 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "refreshCustomTools": {
+			if (getGlobalState("experiments")?.customTools !== true) {
+				await provider.postMessageToWebview({
+					type: "customToolsResult",
+					tools: [],
+					error: t("common:errors.custom_tools_disabled"),
+				})
+				break
+			}
 			try {
 				const toolDirs = getConfigDirectoriesForCwd(getCurrentCwd()).map((dir) => path.join(dir, "tools"))
 				const result = await customToolRegistry.loadFromDirectories(toolDirs)
@@ -2098,7 +1999,12 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "upsertApiConfiguration": {
-			if (!("apiConfigurationId" in message) && !("requestId" in message)) {
+			if (
+				!("apiConfigurationId" in message) &&
+				!("requestId" in message) &&
+				!("apiConfigurationExpectedVersion" in message) &&
+				!("apiConfigurationReturnVersion" in message)
+			) {
 				if (message.text && message.apiConfiguration) {
 					await provider.upsertProviderProfile(message.text, message.apiConfiguration)
 				}
@@ -2106,19 +2012,115 @@ export const webviewMessageHandler = async (
 			}
 			const requestId: unknown = message.requestId
 			const canAcknowledge = typeof requestId === "string" && requestId.length > 0 && requestId.length <= 128
-			const parsed = providerProfileSaveRequestSchema.safeParse({ requestId, id: message.apiConfigurationId })
+			const refreshAfterConflict = async (code: ProviderProfileSaveError["code"]) => {
+				if (code !== "conflict") return
+				try {
+					await provider.postStateToWebview()
+				} catch {
+					// Preserve the chosen conflict even if the latest profile cannot be delivered.
+					provider.log("[ProviderProfileSave] conflict_refresh_failed")
+				}
+			}
+			if (
+				!("apiConfigurationId" in message) &&
+				!("apiConfigurationExpectedVersion" in message) &&
+				canAcknowledge
+			) {
+				const returnVersion =
+					"apiConfigurationReturnVersion" in message ? message.apiConfigurationReturnVersion : undefined
+				const creation = providerProfileCreateRequestSchema.safeParse({
+					requestId,
+					name: message.text,
+					...(returnVersion === undefined ? {} : { returnVersion }),
+				})
+				let creationResult: ProviderProfileSaveResult
+				if (!creation.success || !message.apiConfiguration) {
+					creationResult = { requestId, status: "error", error: "invalid" }
+				} else {
+					try {
+						const saved = await provider.createProviderProfile(creation.data.name, message.apiConfiguration)
+						creationResult = {
+							requestId,
+							status: "success",
+							id: saved.id,
+							name: saved.name,
+							...(creation.data.returnVersion !== true || saved.version === undefined
+								? {}
+								: { version: saved.version }),
+						}
+					} catch (error) {
+						const code = error instanceof ProviderProfileSaveError ? error.code : "saveFailed"
+						await refreshAfterConflict(code)
+						const versionAware = creation.data.returnVersion === true
+						creationResult = {
+							requestId,
+							status: "error",
+							error:
+								!versionAware && (code === "applyFailed" || code === "conflict") ? "saveFailed" : code,
+							...(versionAware && error instanceof ProviderProfileSaveError && error.saved
+								? { saved: error.saved }
+								: {}),
+						}
+					}
+				}
+				try {
+					await provider.postMessageToWebview({
+						type: "apiConfigurationSaved",
+						apiConfigurationSaveResult: creationResult,
+					})
+				} catch {
+					provider.log("[ProviderProfileSave] acknowledgement_failed")
+				}
+				break
+			}
+			const expectedVersion =
+				"apiConfigurationExpectedVersion" in message ? message.apiConfigurationExpectedVersion : undefined
+			const parsed = providerProfileSaveRequestSchema.safeParse({
+				requestId,
+				id: message.apiConfigurationId,
+				...(expectedVersion === undefined ? {} : { expectedVersion }),
+			})
 			let result: ProviderProfileSaveResult
 			if (!parsed.success || !message.apiConfiguration) {
 				if (!canAcknowledge) break
 				result = { requestId, status: "error", error: "invalid" }
 			} else {
 				try {
-					const saved = await provider.upsertProviderProfile({ id: parsed.data.id }, message.apiConfiguration)
-					result = { requestId: parsed.data.requestId, status: "success", id: saved.id, name: saved.name }
+					const saved = await provider.upsertProviderProfile(
+						{
+							id: parsed.data.id,
+							...(parsed.data.expectedVersion === undefined
+								? {}
+								: { expectedVersion: parsed.data.expectedVersion }),
+						},
+						message.apiConfiguration,
+					)
+					result = {
+						requestId: parsed.data.requestId,
+						status: "success",
+						id: saved.id,
+						name: saved.name,
+						...(parsed.data.expectedVersion === undefined || saved.version === undefined
+							? {}
+							: { version: saved.version }),
+					}
 				} catch (error) {
 					const code = error instanceof ProviderProfileSaveError ? error.code : "saveFailed"
 					provider.log(`[ProviderProfileSave] ${code}`)
-					result = { requestId: parsed.data.requestId, status: "error", error: code }
+					await refreshAfterConflict(code)
+					result = {
+						requestId: parsed.data.requestId,
+						status: "error",
+						error:
+							parsed.data.expectedVersion === undefined && (code === "applyFailed" || code === "conflict")
+								? "saveFailed"
+								: code,
+						...(parsed.data.expectedVersion !== undefined &&
+						error instanceof ProviderProfileSaveError &&
+						error.saved
+							? { saved: error.saved }
+							: {}),
+					}
 				}
 			}
 			try {
@@ -2436,41 +2438,12 @@ export const webviewMessageHandler = async (
 		case "updateCustomMode":
 			if (message.modeConfig) {
 				try {
-					// Check if this is a new mode or an update to an existing mode
-					const existingModes = await provider.customModesManager.getCustomModes()
-					const isNewMode = !existingModes.some((mode) => mode.slug === message.modeConfig?.slug)
-
 					await provider.customModesManager.updateCustomMode(message.modeConfig.slug, message.modeConfig)
 					// Update state after saving the mode
 					const customModes = await provider.customModesManager.getCustomModes()
 					await updateGlobalState("customModes", customModes)
 					await updateGlobalState("mode", message.modeConfig.slug)
 					await provider.postStateToWebview()
-
-					// Track telemetry for custom mode creation or update
-					if (TelemetryService.hasInstance()) {
-						if (isNewMode) {
-							// This is a new custom mode
-							TelemetryService.instance.captureCustomModeCreated(
-								message.modeConfig.slug,
-								message.modeConfig.name,
-							)
-						} else {
-							// Determine which setting was changed by comparing objects
-							const existingMode = existingModes.find((mode) => mode.slug === message.modeConfig?.slug)
-							const changedSettings = existingMode
-								? Object.keys(message.modeConfig).filter(
-										(key) =>
-											JSON.stringify((existingMode as Record<string, unknown>)[key]) !==
-											JSON.stringify((message.modeConfig as Record<string, unknown>)[key]),
-									)
-								: []
-
-							if (changedSettings.length > 0) {
-								TelemetryService.instance.captureModeSettingChanged(changedSettings[0])
-							}
-						}
-					}
 				} catch (error) {
 					// Error already shown to user by updateCustomMode
 					// Just prevent unhandled rejection and skip state updates
@@ -2723,32 +2696,6 @@ export const webviewMessageHandler = async (
 				})
 			}
 			break
-		case "telemetrySetting": {
-			const telemetrySetting = message.text as TelemetrySetting
-			const previousSetting = getGlobalState("telemetrySetting") || "unset"
-			const isOptedIn = telemetrySetting !== "disabled"
-			const wasPreviouslyOptedIn = previousSetting !== "disabled"
-
-			// If turning telemetry OFF, fire event BEFORE disabling
-			if (wasPreviouslyOptedIn && !isOptedIn && TelemetryService.hasInstance()) {
-				TelemetryService.instance.captureTelemetrySettingsChanged(previousSetting, telemetrySetting)
-			}
-
-			// Update the telemetry state
-			await updateGlobalState("telemetrySetting", telemetrySetting)
-
-			if (TelemetryService.hasInstance()) {
-				TelemetryService.instance.updateTelemetryState(isOptedIn)
-			}
-
-			// If turning telemetry ON, fire event AFTER enabling
-			if (!wasPreviouslyOptedIn && isOptedIn && TelemetryService.hasInstance()) {
-				TelemetryService.instance.captureTelemetrySettingsChanged(previousSetting, telemetrySetting)
-			}
-
-			await provider.postStateToWebview()
-			break
-		}
 		case "debugSetting": {
 			await vscode.workspace
 				.getConfiguration(Package.name)
@@ -3134,11 +3081,6 @@ export const webviewMessageHandler = async (
 		}
 		case "switchTab": {
 			if (message.tab) {
-				// Capture tab shown event for all switchTab messages (which are user-initiated).
-				if (TelemetryService.hasInstance()) {
-					TelemetryService.instance.captureTabShown(message.tab)
-				}
-
 				await provider.postMessageToWebview({
 					type: "action",
 					action: "switchTab",
@@ -3163,17 +3105,47 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "createScheduledTask": {
-			const service = provider.getScheduledTaskService()
-			if (!service || !message.scheduledTask) {
-				vscode.window.showErrorMessage("Scheduled task service is not available.")
+			const creationRequestId = message.scheduledTask?.creationRequestId
+			const request = scheduledTaskCreationRequestIdSchema.safeParse(creationRequestId)
+			if (creationRequestId !== undefined && !request.success) {
+				provider.log("[ScheduledTaskCreate] invalid_request")
 				break
 			}
+			const acknowledge = async (result: ScheduledTaskCreationResult) => {
+				try {
+					await provider.postMessageToWebview({
+						type: "scheduledTaskCreationResult",
+						scheduledTaskCreationResult: result,
+					})
+				} catch {
+					// Delivery failure cannot change a committed creation or cause another mutation.
+					provider.log("[ScheduledTaskCreate] acknowledgement_failed")
+				}
+			}
+			const service = provider.getScheduledTaskService()
+			if (!service || !message.scheduledTask) {
+				if (request.success) {
+					await acknowledge({ requestId: request.data, status: "error", error: "unavailable" })
+				} else {
+					vscode.window.showErrorMessage("Scheduled task service is not available.")
+				}
+				break
+			}
+			let createdTask: ScheduledTask
 			try {
-				await service.createTask(message.scheduledTask)
+				createdTask = await service.createTask(message.scheduledTask)
 			} catch (error) {
-				vscode.window.showErrorMessage(
-					`Failed to create scheduled task: ${error instanceof Error ? error.message : String(error)}`,
-				)
+				if (request.success) {
+					await acknowledge({ requestId: request.data, status: "error", error: "save_failed" })
+				} else {
+					vscode.window.showErrorMessage(
+						`Failed to create scheduled task: ${error instanceof Error ? error.message : String(error)}`,
+					)
+				}
+				break
+			}
+			if (request.success) {
+				await acknowledge({ requestId: request.data, status: "success", task: createdTask })
 			}
 			break
 		}
@@ -3848,6 +3820,11 @@ export const webviewMessageHandler = async (
 		}
 
 		case "deleteWorktree": {
+			const requestId =
+				typeof message.requestId === "string" && message.requestId.length > 0 && message.requestId.length <= 128
+					? message.requestId
+					: undefined
+			const correlation = requestId ? { requestId } : {}
 			try {
 				const { success, message: text } = await handleDeleteWorktree(
 					provider,
@@ -3855,10 +3832,15 @@ export const webviewMessageHandler = async (
 					message.worktreeForce ?? false,
 				)
 
-				await provider.postMessageToWebview({ type: "worktreeResult", success, text })
+				await provider.postMessageToWebview({ type: "worktreeResult", ...correlation, success, text })
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error)
-				await provider.postMessageToWebview({ type: "worktreeResult", success: false, text: errorMessage })
+				await provider.postMessageToWebview({
+					type: "worktreeResult",
+					...correlation,
+					success: false,
+					text: errorMessage,
+				})
 			}
 
 			break

@@ -20,12 +20,14 @@ export async function handleRequestSkills(provider: AlphaProvider): Promise<Skil
 			await provider.postMessageToWebview({ type: "skills", skills })
 			return skills
 		} else {
-			await provider.postMessageToWebview({ type: "skills", skills: [] })
+			await provider.postMessageToWebview({ type: "skills", skillsError: "unavailable" })
 			return []
 		}
 	} catch (error) {
-		provider.log(`Error fetching skills: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`)
-		await provider.postMessageToWebview({ type: "skills", skills: [] })
+		const errorMessage = error instanceof Error ? error.message : String(error)
+		provider.log(`Error fetching skills: ${errorMessage}`)
+		// A failed refresh is not an empty catalog; keep the webview's last successful list available.
+		await provider.postMessageToWebview({ type: "skills", skillsError: "unavailable" })
 		return []
 	}
 }

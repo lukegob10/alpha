@@ -8,9 +8,9 @@ vi.mock("@/i18n/TranslationContext", () => ({
 }))
 
 const index: SearchableSettingData[] = [
-	{ settingId: "ui-first", section: "ui", label: "Search a", sectionLabel: "UI" },
-	{ settingId: "terminal", section: "terminal", label: "Search bc", sectionLabel: "Terminal" },
-	{ settingId: "ui-second", section: "ui", label: "Search def", sectionLabel: "UI" },
+	{ settingId: "ui-first", section: "preferences", label: "Search a", sectionLabel: "Preferences" },
+	{ settingId: "terminal", section: "advanced", label: "Search bc", sectionLabel: "Advanced" },
+	{ settingId: "ui-second", section: "preferences", label: "Search def", sectionLabel: "Preferences" },
 ]
 
 function renderSearch() {
@@ -51,7 +51,7 @@ describe("SettingsSearch", () => {
 		expect(options[1]).toHaveAttribute("aria-selected", "true")
 		expect(input).toHaveAttribute("aria-activedescendant", options[1].id)
 		fireEvent.keyDown(input, { key: "Enter" })
-		expect(onNavigate).toHaveBeenCalledWith("ui", "ui-second")
+		expect(onNavigate).toHaveBeenCalledWith("preferences", "ui-second")
 		expect(input).toHaveValue("")
 	})
 

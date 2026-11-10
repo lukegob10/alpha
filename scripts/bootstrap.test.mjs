@@ -47,7 +47,6 @@ test("local, extension, CI and evaluator toolchain pins agree", () => {
 		"packages/core",
 		"packages/evals",
 		"packages/ipc",
-		"packages/telemetry",
 		"packages/types",
 	]) {
 		assert.equal(

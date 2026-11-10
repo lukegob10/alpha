@@ -259,7 +259,6 @@ async function fixture(
 		allowedCommands: [],
 		deniedCommands: [],
 		terminalShellIntegrationDisabled: true,
-		terminalOutputPreviewSize: "small" as const,
 	}
 	const store = new AgentControlStore(new InMemoryAgentControlPersistence())
 	await store.initialize()

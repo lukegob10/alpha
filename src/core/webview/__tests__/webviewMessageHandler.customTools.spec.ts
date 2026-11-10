@@ -25,6 +25,7 @@ describe("custom tool refresh catalog", () => {
 		const postMessageToWebview = vi.fn()
 		const host = {
 			cwd: "/workspace",
+			contextProxy: { getValue: () => ({ customTools: true }) },
 			getCurrentTask: () => undefined,
 			postMessageToWebview,
 		} as unknown as AlphaProvider
@@ -43,6 +44,23 @@ describe("custom tool refresh catalog", () => {
 				},
 			],
 			error: "broken.js: reload failed",
+		})
+	})
+
+	it.each([undefined, false])("does not import workspace modules while saved enablement is %s", async (enabled) => {
+		const load = vi.spyOn(customToolRegistry, "loadFromDirectories")
+		const postMessageToWebview = vi.fn()
+		const host = {
+			cwd: "/workspace",
+			contextProxy: { getValue: () => (enabled === undefined ? undefined : { customTools: enabled }) },
+			postMessageToWebview,
+		} as unknown as AlphaProvider
+		await webviewMessageHandler(host, { type: "refreshCustomTools" })
+		expect(load).not.toHaveBeenCalled()
+		expect(postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "customToolsResult",
+			tools: [],
+			error: expect.any(String),
 		})
 	})
 })

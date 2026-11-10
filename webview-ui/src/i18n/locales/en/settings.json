@@ -1,19 +1,30 @@
 {
 	"back": "Back to tasks view",
+	"helpFor": "Help for {{label}}",
 	"common": {
 		"save": "Save",
+		"reloadSettings": "Reload saved settings",
+		"saving": "Saving settings…",
 		"done": "Done",
 		"cancel": "Cancel",
 		"reset": "Reset",
 		"select": "Select",
 		"add": "Add Header",
-		"remove": "Remove"
+		"remove": "Remove",
+		"saveErrors": {
+			"invalid": "Some settings are invalid. Review your changes and try again.",
+			"conflict": "Some settings changed elsewhere. Review the latest values before trying again.",
+			"saveFailed": "Some settings could not be saved. Your unsaved changes are still available."
+		}
 	},
 	"header": {
 		"title": "Settings",
 		"saveButtonTooltip": "Save changes",
 		"nothingChangedTooltip": "Nothing changed",
 		"doneButtonTooltip": "Discard unsaved changes and go back to tasks view"
+	},
+	"home": {
+		"chooseProvider": "Choose a provider"
 	},
 	"search": {
 		"placeholder": "Search settings...",
@@ -27,6 +38,10 @@
 	},
 	"sections": {
 		"providers": "Providers",
+		"permissions": "Permissions",
+		"tools": "Tools & agents",
+		"preferences": "Preferences",
+		"advanced": "Advanced",
 		"mcp": "MCP Servers",
 		"worktrees": "Worktrees",
 		"skills": "Skills",
@@ -35,21 +50,39 @@
 		"checkpoints": "Checkpoints",
 		"notifications": "Notifications",
 		"contextManagement": "Context",
-		"terminal": "Terminal",
 		"ui": "UI",
-		"experimental": "Experimental",
-		"language": "Language",
 		"about": "About Alpha"
 	},
 	"about": {
+		"version": "Version {{version}}",
+		"description": "Version information and settings data management.",
 		"manageSettings": "Manage Settings",
+		"manageSettingsDescription": "Import, export, and reset actions take effect immediately.",
 		"debugMode": {
 			"label": "Enable debug mode",
 			"description": "Enable debug mode to show additional buttons in the task header for viewing API conversation history and UI messages as prettified JSON in temporary files."
 		}
 	},
+	"preferences": {
+		"permissions": "Permissions",
+		"chatAndSound": "Chat & sound",
+		"memories": "Memories"
+	},
+	"tools": {
+		"description": "Manage reusable skills, agents, and MCP servers.",
+		"managementDescription": "Preferences apply when you save settings. Creating, editing, or deleting resources takes effect immediately.",
+		"advanced": "Advanced integrations",
+		"advancedDescription": "Enable executable custom tools only when you trust their source."
+	},
+	"debug": {
+		"title": "Diagnostics"
+	},
 	"skills": {
 		"description": "Skills encapsulate contextual instructions and workflows, which the agent can load on-demand. They can include general instructions, specific workflows and even scripts to be run as needed. <DocsLink>Learn more</DocsLink>",
+		"catalogError": "Skills could not be refreshed. Previously loaded skills are kept; retry to refresh the list.",
+		"retry": "Retry",
+		"appliesImmediately": "Creating, editing, deleting, and changing mode availability updates skill files immediately.",
+		"advanced": "Advanced options",
 		"workspaceSkills": "Workspace Skills",
 		"globalSkills": "Global Skills",
 		"noWorkspaceSkills": "No skills in this project yet.",
@@ -106,12 +139,12 @@
 	},
 	"ui": {
 		"collapseThinking": {
-			"label": "Collapse Thinking messages by default",
+			"label": "Collapse thinking",
 			"description": "When enabled, thinking blocks will be collapsed by default until you interact with them"
 		},
 		"requireCtrlEnterToSend": {
-			"label": "Require {{primaryMod}}+Enter to send messages",
-			"description": "When enabled, you must press {{primaryMod}}+Enter to send messages instead of just Enter"
+			"label": "Enter inserts a newline",
+			"description": "Use {{primaryMod}}+Enter or Shift+Enter to send new messages. Enter still saves an edited message."
 		},
 		"autoSteer": {
 			"label": "Auto-steer messages",
@@ -231,14 +264,16 @@
 		"savedSecretPlaceholder": "Saved value hidden"
 	},
 	"autoApprove": {
+		"advanced": "Advanced permissions",
+		"advancedDescription": "Manage command rules, protected files, MCP grants, and confirmation limits.",
 		"mode": {
-			"label": "Approval mode",
-			"description": "Ask, Auto, or Full Access. Auto is the default. The opened workspace is the trust boundary.",
+			"label": "Default permission mode",
+			"description": "Choose the default for new chats. Change permissions for an individual chat from its composer.",
 			"ask": "Ask",
 			"auto": "Auto",
 			"bypass": "Full Access",
 			"askDescription": "Auto-approve workspace reads. Ask before writes, commands, managed-agent launches, Alpha Tickets, and outside paths. Saved command prefixes can allow matching commands; MCP tools ask unless enabled below for an individually granted tool.",
-			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, Alpha Tickets for the current project, and eligible bounded managed-agent launches. Agents settings separately control explicit-only or proactive delegation; child authority stays within the parent's policy. Ask for outside changes, protected changes unless enabled below, and MCP without an enabled saved tool grant. Command deny rules still apply.",
+			"autoDescription": "Auto-approve workspace reads, in-workspace file changes and commands, Alpha Tickets for the current project, and eligible bounded managed-agent launches. Agent delegation follows your requests and applicable project or skill instructions. Approval settings do not enable delegation by themselves; child authority stays within the parent's policy. Ask for outside changes, protected changes unless enabled below, and MCP without an enabled saved tool grant. Command deny rules still apply.",
 			"bypassDescription": "Also auto-approve outside paths, protected files, and valid MCP tool calls. Follow-up questions use the answer setting below. Command deny rules still apply. Managed-agent delegation policy and inherited child authority still apply."
 		},
 		"bypassWarning": {
@@ -301,6 +336,13 @@
 			"waitDescription": "Require an answer before the agent continues, including in Full Access. Turn this off to allow Full Access to ask optional questions while continuing, or select suggested answers after the delay below. Ask and Auto always wait for your answers."
 		},
 		"execute": {
+			"inheritedRules": "Command rules from VS Code settings",
+			"inheritedRulesDescription": "These rules also apply to this workspace. Edit them in the VS Code settings where they were defined.",
+			"inheritedSourceUser": "User settings",
+			"inheritedSourceWorkspace": "Workspace settings",
+			"inheritedSourceWorkspaceFolder": "Workspace folder settings",
+			"inheritedAllowed": "Allowed command prefixes",
+			"inheritedDenied": "Denied command prefixes",
 			"label": "Command rules",
 			"description": "Auto approves commands run from the workspace. Detected outside or unresolved write paths ask for review; deny rules still block commands. Path checks are not an OS sandbox. Saved rules persist across projects.",
 			"allowedCommands": "Allowed command prefixes",
@@ -324,6 +366,7 @@
 			"unlimited": "Unlimited"
 		},
 		"maxLimits": {
+			"label": "Confirmation limits",
 			"description": "Each task uses these confirmation checkpoints. Blank values (or 0 cost) mean unlimited. Alpha asks before another model request after the request count or reported API cost exceeds its allowance; confirming resets both. Cost is checked after usage is reported and may exceed the amount before confirmation."
 		},
 		"toggleAriaLabel": "Toggle auto-approval",
@@ -331,6 +374,8 @@
 		"selectOptionsFirst": "Select at least one option below to enable auto-approval"
 	},
 	"providers": {
+		"advancedConnection": "Advanced connection options",
+		"advancedModel": "Advanced model options",
 		"names": {
 			"vertex": "GCP Vertex AI",
 			"openai": "OpenAI Compatible",
@@ -379,7 +424,7 @@
 		"useProviderDefaults": "Use provider defaults",
 		"outputTokenLimitDescription": "When included, leave blank for the model default or enter -1 for the provider default.",
 		"providerDocumentation": "{{provider}} documentation",
-		"configProfile": "Configuration Profile",
+		"configProfile": "Profile",
 		"description": "Save different API configurations to quickly switch between providers and settings.",
 		"apiProvider": "API Provider",
 		"apiProviderDocs": "Provider Docs",
@@ -392,6 +437,7 @@
 		"renameProfile": "Rename Profile",
 		"profileRefreshPending": "Waiting for updated profile names. You can save your settings edits while profiles refresh.",
 		"profileIdentityPending": "Waiting for the selected profile to load before saving.",
+		"profileSnapshotUnavailable": "The saved profile is unavailable or still synchronizing. Your edits are kept. Reload after other windows finish saving. If this continues, recover the saved provider profiles before saving.",
 		"profileUnavailableInvalid": "Invalid saved settings",
 		"profileUnavailableUnsupported": "Unsupported provider",
 		"profileUnavailableFields": "Fields to correct: {{fields}}",
@@ -399,6 +445,8 @@
 		"profileSavePending": "Saving profile…",
 		"saveErrors": {
 			"invalid": "Unable to save this profile. Your edits have been kept. Refresh the profiles and try again.",
+			"conflict": "This profile changed in another view. Your edits have been kept. Discard your changes to reload the latest profile, then reapply your edits.",
+			"applyFailed": "This profile was saved but could not be applied. Your edits have been kept. Retry saving to apply the profile.",
 			"notFound": "This saved profile no longer exists. Your edits have been kept. Select or create a profile before saving.",
 			"saveFailed": "Unable to complete saving this profile. Your edits have been kept. Please try again.",
 			"timeout": "Saving took longer than expected. Your edits have been kept. Please try again."
@@ -408,6 +456,7 @@
 			"notFound": "This saved profile could not be found. Refresh the profiles and try again.",
 			"nameInUse": "A profile with this name already exists.",
 			"saveFailed": "Could not save the profile name. Your settings edits are still unsaved. Please try again.",
+			"timeout": "No confirmation was received for the profile rename. Your settings edits are still unsaved. Please try again.",
 			"pending": "The profile name is being saved. Please wait for it to finish.",
 			"cancelled": "The selected profile changed while its name was being saved. Please try again."
 		},
@@ -462,6 +511,7 @@
 			"useCustomRegion": "Use custom: {{region}}"
 		},
 		"googleCloudCredentials": "Google Cloud Credentials JSON",
+		"vertexCredentialsHelp": "Leave credentials JSON and key file blank to use Application Default Credentials.",
 		"googleCloudKeyFile": "Google Cloud Key File",
 		"googleCloudSetup": {
 			"title": "Google Cloud setup",
@@ -548,13 +598,14 @@
 		"setReasoningLevel": "Enable Reasoning Effort"
 	},
 	"checkpoints": {
+		"recoveryTitle": "Recovery",
 		"timeout": {
 			"label": "Checkpoint timeout (seconds)",
-			"description": "Maximum time to wait for checkpoint service initialization or an automatic checkpoint save. Default is 15 seconds. Range: 10-60 seconds."
+			"description": "Maximum wait for checkpoint initialization or saving. A timeout disables checkpoints for that task. Default: 15 seconds (10–60). Changes apply to new or resumed tasks."
 		},
 		"enable": {
-			"label": "Enable automatic checkpoints",
-			"description": "When enabled, Alpha will automatically create checkpoints during task execution, making it easy to review changes or revert to earlier states. <0>Learn more</0>"
+			"label": "Automatic checkpoints",
+			"description": "Save recovery snapshots during tasks. Turn off to skip new checkpoints; existing snapshots remain saved. Changes apply to new or resumed tasks."
 		}
 	},
 	"notifications": {
@@ -565,9 +616,10 @@
 		}
 	},
 	"contextManagement": {
+		"customPromptNotice": "Text summaries use the Codex CLI default shown here. A saved nonempty custom prompt, even a copy of this default, selects text summarization. Clear or reset it to allow native compaction on supported OpenAI API-key models. Other providers use text summaries.",
 		"description": "Control what information is included in the AI's context window, affecting token usage and response quality",
 		"autoCondenseContextPercent": {
-			"label": "Automatic compaction trigger (% of the model context window)",
+			"label": "Compaction trigger",
 			"description": "Compaction starts when usage reaches this share of the model's full context window. The trigger is capped to leave room for the next response and a safety buffer."
 		},
 		"condensingScope": {
@@ -588,21 +640,21 @@
 		},
 		"customCondensingPrompt": {
 			"label": "Custom Context Condensing Prompt",
-			"description": "Customize the system prompt used for context condensing. Leave empty to use the default prompt.",
-			"placeholder": "Enter your custom condensing prompt here...\n\nYou can use the same structure as the default prompt:\n- Previous Conversation\n- Current Work\n- Key Technical Concepts\n- Relevant Files and Code\n- Problem Solving\n- Pending Tasks and Next Steps",
+			"description": "Customize the final user message sent for text compaction. Task instructions remain in effect. Leave empty to use the Codex CLI default and allow native compaction where supported.",
+			"placeholder": "Enter your custom compaction prompt here...\n\nInclude current progress, constraints, remaining work, and critical references.",
 			"reset": "Reset to Default",
 			"hint": "Empty = use default prompt"
 		},
 		"autoCondenseContext": {
-			"name": "Automatically trigger intelligent context condensing",
+			"name": "Automatic context compaction",
 			"description": "When enabled, Alpha will automatically condense the context when the threshold is reached. When disabled, you can still manually trigger context condensing."
 		},
 		"openTabs": {
-			"label": "Open tabs context limit",
+			"label": "Open tabs",
 			"description": "Maximum number of VSCode open tabs to include in context. Higher values provide more context but increase token usage."
 		},
 		"workspaceFiles": {
-			"label": "Workspace files context limit",
+			"label": "Workspace files",
 			"description": "Maximum number of files to include in current working directory details. Higher values provide more context but increase token usage."
 		},
 		"alphaignore": {
@@ -631,17 +683,17 @@
 		},
 		"diagnostics": {
 			"includeMessages": {
-				"label": "Automatically include diagnostics in context",
+				"label": "Include diagnostics automatically",
 				"description": "When enabled, diagnostic messages (errors) from edited files will be automatically included in the context. You can always manually include all workspace diagnostics using @problems."
 			},
 			"maxMessages": {
 				"label": "Maximum diagnostic messages",
-				"description": "Limits the number of diagnostic messages (errors, warnings) included in the context. When set, only this many diagnostics will be shown, prioritizing errors over warnings. Set to 0 for unlimited diagnostics.",
+				"description": "Limits the diagnostic messages included in context, prioritizing errors over warnings. Choose Unlimited to include all available messages.",
 				"resetTooltip": "Reset to default value (50)",
 				"unlimitedLabel": "Unlimited"
 			},
 			"delayAfterWrite": {
-				"label": "Delay after writes to allow diagnostics to detect potential problems",
+				"label": "Diagnostic wait after writes",
 				"description": "Time to wait after file writes before proceeding, allowing diagnostic tools to process changes and detect issues."
 			}
 		},
@@ -658,77 +710,18 @@
 			"description": "Maximum number of file entries to include in git status context. Set to 0 to disable. Branch info is always shown when > 0."
 		},
 		"enableSubfolderRules": {
-			"label": "Enable subfolder rules",
+			"label": "Discover subfolder rules",
 			"description": "Recursively discover and load .alpha/rules and AGENTS.md files from subdirectories. Useful for monorepos with per-package rules."
-		}
-	},
-	"terminal": {
-		"basic": {
-			"label": "Terminal Settings: Basic",
-			"description": "Basic terminal settings"
-		},
-		"advanced": {
-			"label": "Terminal Settings: Advanced",
-			"description": "These settings apply only when 'Use Inline Terminal' is disabled. They affect the VS Code terminal only and may require restarting the IDE."
-		},
-		"outputLineLimit": {
-			"label": "Terminal output limit",
-			"description": "Keeps the first and last lines and drops the middle to stay under the limit. Lower to save tokens; raise to give Alpha more middle detail. Alpha sees a placeholder where the content is skipped.<0>Learn more</0>"
-		},
-		"outputCharacterLimit": {
-			"label": "Terminal character limit",
-			"description": "Overrides the line limit to prevent memory issues by enforcing a hard cap on output size. If exceeded, keeps the beginning and end and shows a placeholder to Alpha where content is skipped. <0>Learn more</0>"
-		},
-		"outputPreviewSize": {
-			"label": "Command output preview size",
-			"description": "Controls how much command output Alpha sees directly. Full output is always saved and accessible when needed.",
-			"options": {
-				"small": "Small (5KB)",
-				"medium": "Medium (10KB)",
-				"large": "Large (20KB)"
-			}
-		},
-		"shellIntegrationTimeout": {
-			"label": "Terminal shell integration timeout",
-			"description": "How long to wait for VS Code shell integration before running commands. Raise if your shell starts slowly or you see 'Shell Integration Unavailable' errors. <0>Learn more</0>"
-		},
-		"shellIntegrationDisabled": {
-			"label": "Use Inline Terminal (recommended)",
-			"description": "Run commands in the Inline Terminal (chat) to bypass shell profiles/integration for faster, more reliable runs. When disabled Alpha uses the VS Code terminal with your shell profile, prompts, and plugins. <0>Learn more</0>"
-		},
-		"commandDelay": {
-			"label": "Terminal command delay",
-			"description": "Adds a short pause after each command so the VS Code terminal can flush all output (bash/zsh: PROMPT_COMMAND sleep; PowerShell: start-sleep). Use only if you see missing tail output; otherwise leave at 0. <0>Learn more</0>"
-		},
-		"powershellCounter": {
-			"label": "Enable PowerShell counter workaround",
-			"description": "Turn this on when PowerShell output is missing or duplicated; it appends a tiny counter to each command to stabilize output. Keep this off if output already looks correct. <0>Learn more</0>"
-		},
-		"zshClearEolMark": {
-			"label": "Clear ZSH EOL mark",
-			"description": "Turn this on when you see stray % at the end of lines or parsing looks wrong; it omits Zsh’s end‑of‑line mark (%). <0>Learn more</0>"
-		},
-		"zshOhMy": {
-			"label": "Enable Oh My Zsh integration",
-			"description": "Turn this on when your Oh My Zsh theme/plugins expect shell integration; it sets ITERM_SHELL_INTEGRATION_INSTALLED=Yes. Turn this off to avoid setting that variable. <0>Learn more</0>"
-		},
-		"zshP10k": {
-			"label": "Enable Powerlevel10k integration",
-			"description": "Turn this on when using Powerlevel10k shell integration. <0>Learn more</0>"
-		},
-		"zdotdir": {
-			"label": "Enable ZDOTDIR handling",
-			"description": "Turn this on when zsh shell integration fails or conflicts with your dotfiles. <0>Learn more</0>"
-		},
-		"inheritEnv": {
-			"label": "Inherit environment variables",
-			"description": "Turn this on to inherit environment variables from the parent VS Code process. <0>Learn more</0>"
 		}
 	},
 	"advancedSettings": {
 		"title": "Advanced settings"
 	},
 	"advanced": {
+		"description": "Fine-tune context and recovery. Changes apply when you save settings.",
+		"context": "Context & compaction",
+		"recovery": "Recovery",
+		"diagnostics": "Diagnostics",
 		"diff": {
 			"label": "Enable editing through diffs",
 			"description": "When enabled, Alpha will be able to edit files more quickly and will automatically reject truncated full-file writes",
@@ -751,46 +744,22 @@
 			"description": "When enabled, Alpha can create and manage todo lists to track task progress. This helps organize complex tasks into manageable steps."
 		}
 	},
-	"experimental": {
-		"DIFF_STRATEGY_UNIFIED": {
-			"name": "Use experimental unified diff strategy",
-			"description": "Enable the experimental unified diff strategy. This strategy might reduce the number of retries caused by model errors but may cause unexpected behavior or incorrect edits. Only enable if you understand the risks and are willing to carefully review all changes."
-		},
-		"INSERT_BLOCK": {
-			"name": "Use experimental insert content tool",
-			"description": "Enable the experimental insert content tool, allowing Alpha to insert content at specific line numbers without needing to create a diff."
-		},
-		"CONCURRENT_FILE_READS": {
-			"name": "Enable concurrent file reads",
-			"description": "When enabled, Alpha can read multiple files in a single request. When disabled, Alpha must read files one at a time. Disabling this can help when working with less capable models or when you want more control over file access."
-		},
-		"MULTI_SEARCH_AND_REPLACE": {
-			"name": "Use experimental multi block diff tool",
-			"description": "When enabled, Alpha will use multi block diff tool. This will try to update multiple code blocks in the file in one request."
-		},
-		"PREVENT_FOCUS_DISRUPTION": {
-			"name": "Background editing",
-			"description": "Prevent editor focus disruption when enabled. File edits happen in the background without opening diff views or stealing focus. You can continue working uninterrupted while Alpha makes changes. Files can be opened without focus to capture diagnostics or kept closed entirely."
-		},
-		"ASSISTANT_MESSAGE_PARSER": {
-			"name": "Use new message parser",
-			"description": "Enable the experimental streaming message parser that provides significant performance improvements for long assistant responses by processing messages more efficiently."
-		},
-		"NEW_TASK_REQUIRE_TODOS": {
-			"name": "Require 'todos' list for new tasks",
-			"description": "When enabled, the new_task tool will require a todos parameter to be provided. This ensures all new tasks start with a clear list of objectives. When disabled (default), the todos parameter remains optional for backward compatibility."
-		},
-		"CUSTOM_TOOLS": {
-			"name": "Enable custom tools",
-			"description": "When enabled, Alpha can load and use custom TypeScript/JavaScript tools from your project's .alpha/tools directory or ~/.alpha/tools for global tools. Note: these tools will automatically be auto-approved.",
-			"toolsHeader": "Available Custom Tools",
-			"noTools": "No custom tools loaded. Add .ts or .js files to your project's .alpha/tools directory or ~/.alpha/tools for global tools.",
-			"refreshButton": "Refresh",
-			"refreshing": "Refreshing...",
-			"refreshSuccess": "Tools refreshed successfully",
-			"refreshError": "Failed to refresh tools",
-			"toolParameters": "Parameters"
-		}
+	"backgroundEditing": {
+		"label": "Background editing",
+		"description": "Apply file edits in the background without opening diff views or moving editor focus. Files may still open without focus to collect diagnostics."
+	},
+	"customTools": {
+		"name": "Enable custom tools",
+		"executableWarning": "Loads executable code",
+		"description": "Load TypeScript or JavaScript tools from .alpha/tools in your project or ~/.alpha/tools. Tool modules can run code when loaded, so enable only tools you trust. Tool calls follow the current permissions.",
+		"saveToLoad": "Save settings to load custom tools. Tool modules can run code when loaded.",
+		"toolsHeader": "Available custom tools",
+		"noTools": "No custom tools loaded. Add .ts or .js files to your project's .alpha/tools directory or ~/.alpha/tools for global tools.",
+		"refreshButton": "Refresh",
+		"refreshing": "Refreshing...",
+		"refreshError": "Failed to refresh tools",
+		"toolParameters": "Parameters",
+		"required": "Required"
 	},
 	"promptCaching": {
 		"label": "Disable prompt caching",
@@ -827,10 +796,6 @@
 		"simplifiedExplanation": "You can adjust detailed model settings later."
 	},
 	"footer": {
-		"telemetry": {
-			"label": "Allow anonymous error and usage reporting",
-			"description": "Help improve Alpha by sending anonymous usage data and error reports. This telemetry does not collect code, prompts or personal information. See our <privacyLink>privacy policy</privacyLink> for more details."
-		},
 		"settings": {
 			"import": "Import",
 			"export": "Export",
@@ -901,6 +866,7 @@
 	},
 	"memory": {
 		"title": "Memories",
+		"costNotice": "Generating memories may incur provider charges. Saved memories are stored on the machine running Alpha.",
 		"description": "Alpha can learn preferences and useful context from eligible prior conversations on this extension host. Background updates use your selected provider and can incur model usage. Save changes to apply these settings.",
 		"enabled": {
 			"label": "Enable memories",

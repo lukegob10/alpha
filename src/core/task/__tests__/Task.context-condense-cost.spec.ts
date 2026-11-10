@@ -1,4 +1,3 @@
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
 
@@ -18,7 +17,6 @@ import { TaskToolCatalogCache } from "../TaskToolCatalogCache"
 // Module mocks retain their last implementation under Vitest 4 unless explicitly reset.
 beforeEach(() => {
 	vi.resetAllMocks()
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 })
 
 vi.mock("../build-tools", async (importOriginal) => ({
@@ -169,6 +167,44 @@ function runRecovery(task: Task, trigger: "manual" | "automatic" | "forced") {
 		return task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true }).next()
 	return Reflect.get(task, "handleContextWindowExceededError").call(task) as Promise<void>
 }
+
+describe("agent mail request sampling boundary", () => {
+	it("captures only submitted mail, preserves that capture on retry, and recaptures on recovery", async () => {
+		const { task, api, history } = harness()
+		vi.mocked(task.getTokenUsage).mockReturnValue({ ...task.getTokenUsage(), contextTokens: 0 })
+		api.createMessage.mockImplementation(async function* () {
+			yield { type: "text", text: "Regular output" }
+		})
+		history.push({ role: "user", input_origin: "agent", agent_message_id: "first", content: "First finding" })
+		const first = task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })
+		await first.next()
+		const capturedStep = Reflect.get(task, "currentAgentStep")
+		expect(capturedStep.sampledAgentMessageIds).toEqual(["first"])
+		expect(JSON.stringify(api.createMessage.mock.calls[0][1])).not.toContain("agent_message_id")
+		await first.return(undefined)
+
+		history.push({ role: "user", input_origin: "agent", agent_message_id: "later", content: "Later finding" })
+		const retry = task.attemptApiRequest(1, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			retryCategory: "transport",
+		})
+		await retry.next()
+		expect(Reflect.get(task, "currentAgentStep").sampledAgentMessageIds).toEqual(["first"])
+		expect(JSON.stringify(api.createMessage.mock.calls[1][1])).not.toContain("Later finding")
+		await retry.return(undefined)
+
+		const recovery = task.attemptApiRequest(0, {
+			skipProviderRateLimit: true,
+			ownerHandlesRetry: true,
+			recoveryStep: Reflect.get(task, "currentAgentStep"),
+		})
+		await recovery.next()
+		expect(Reflect.get(task, "currentAgentStep").sampledAgentMessageIds).toEqual(["first", "later"])
+		expect(JSON.stringify(api.createMessage.mock.calls[2][1])).toContain("Later finding")
+		await recovery.return(undefined)
+	})
+})
 
 describe("failed summary cost receipts", () => {
 	function captureRows(task: Task) {

@@ -1,15 +1,18 @@
-import { useState, useEffect, useCallback, useMemo } from "react"
+import { useState, useEffect, useCallback, useMemo, useRef, useId } from "react"
 import { useEvent } from "react-use"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
-import { RefreshCw, Loader2, FileCode } from "lucide-react"
+import type { Checkbox } from "@vscode/webview-ui-toolkit"
+import { RefreshCw, Loader2 } from "lucide-react"
 
-import type { SerializedCustomToolDefinition } from "@alpha-code/types"
+import type { ExtensionMessage, SerializedCustomToolDefinition } from "@alpha-code/types"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import { vscode } from "@/utils/vscode"
 
 import { Button } from "@/components/ui"
+
+import { SettingsHelp } from "./SettingsHelp"
 
 interface ToolParameter {
 	name: string
@@ -27,42 +30,50 @@ interface ProcessedTool {
 
 interface CustomToolsSettingsProps {
 	enabled: boolean
+	committedEnabled: boolean
 	isActive: boolean
 	onChange: (enabled: boolean) => void
 }
 
-export const CustomToolsSettings = ({ enabled, isActive, onChange }: CustomToolsSettingsProps) => {
+export const CustomToolsSettings = ({ enabled, committedEnabled, isActive, onChange }: CustomToolsSettingsProps) => {
 	const { t } = useAppTranslation()
+	const executableWarningId = useId()
 	const [tools, setTools] = useState<SerializedCustomToolDefinition[]>([])
 	const [isRefreshing, setIsRefreshing] = useState(false)
 	const [refreshError, setRefreshError] = useState<string | null>(null)
+	const canLoadTools = enabled && committedEnabled && isActive
+	const latestEnabled = useRef(enabled)
+	// The toolkit can emit change while React applies a new checked property.
+	latestEnabled.current = enabled
+
+	const onRefresh = useCallback(() => {
+		if (!canLoadTools) return
+		setIsRefreshing(true)
+		setRefreshError(null)
+		vscode.postMessage({ type: "refreshCustomTools" })
+	}, [canLoadTools])
 
 	useEffect(() => {
-		// Hidden search-index mounts must not reload the executable tool catalog.
-		if (!isActive) return
-
-		if (enabled) {
-			vscode.postMessage({ type: "refreshCustomTools" })
+		// Importing tool modules can execute code. Buffered edits and hidden search
+		// mounts must never load them before the host confirms the saved opt-in.
+		if (canLoadTools) {
+			onRefresh()
 		} else {
 			setTools([])
+			setIsRefreshing(false)
+			setRefreshError(null)
 		}
-	}, [enabled, isActive])
+	}, [canLoadTools, onRefresh])
 
-	useEvent("message", (event: MessageEvent) => {
+	useEvent("message", (event: MessageEvent<ExtensionMessage>) => {
 		const message = event.data
 
-		if (message.type === "customToolsResult") {
+		if (canLoadTools && message.type === "customToolsResult") {
 			setTools(message.tools || [])
 			setIsRefreshing(false)
 			setRefreshError(message.error ?? null)
 		}
 	})
-
-	const onRefresh = useCallback(() => {
-		setIsRefreshing(true)
-		setRefreshError(null)
-		vscode.postMessage({ type: "refreshCustomTools" })
-	}, [])
 
 	const processedTools = useMemo<ProcessedTool[]>(
 		() =>
@@ -87,25 +98,36 @@ export const CustomToolsSettings = ({ enabled, isActive, onChange }: CustomTools
 	)
 
 	return (
-		<div className="space-y-4">
-			<div>
-				<div className="flex items-center gap-2">
-					<VSCodeCheckbox checked={enabled} onChange={(e: any) => onChange(e.target.checked)}>
-						<span className="font-medium">{t("settings:experimental.CUSTOM_TOOLS.name")}</span>
-					</VSCodeCheckbox>
-				</div>
-				<p className="text-vscode-descriptionForeground text-sm mt-0">
-					{t("settings:experimental.CUSTOM_TOOLS.description")}
-				</p>
+		<div className="space-y-2">
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+				<VSCodeCheckbox
+					checked={enabled}
+					aria-describedby={executableWarningId}
+					onChange={(event) => {
+						const checked = (event.target as Checkbox).checked
+						if (checked !== latestEnabled.current) onChange(checked)
+					}}>
+					<span className="font-medium">{t("settings:customTools.name")}</span>
+				</VSCodeCheckbox>
+				<span id={executableWarningId} className="text-vscode-descriptionForeground text-xs">
+					{t("settings:customTools.executableWarning")}
+				</span>
+				<SettingsHelp label={t("settings:customTools.name")}>
+					{t("settings:customTools.description")}
+				</SettingsHelp>
 			</div>
 
-			{enabled && (
-				<div className="ml-2 space-y-3">
+			{enabled && !committedEnabled && (
+				<p className="text-vscode-descriptionForeground text-sm" role="status">
+					{t("settings:customTools.saveToLoad")}
+				</p>
+			)}
+
+			{enabled && committedEnabled && (
+				<div className="ml-2 space-y-2">
 					<div className="flex items-center justify-between gap-4">
-						<label className="block font-medium">
-							{t("settings:experimental.CUSTOM_TOOLS.toolsHeader")}
-						</label>
-						<Button variant="outline" onClick={onRefresh} disabled={isRefreshing}>
+						<h4 className="font-medium">{t("settings:customTools.toolsHeader")}</h4>
+						<Button variant="outline" onClick={onRefresh} disabled={isRefreshing || !canLoadTools}>
 							<div className="flex items-center gap-2">
 								{isRefreshing ? (
 									<Loader2 className="w-4 h-4 animate-spin" />
@@ -113,70 +135,59 @@ export const CustomToolsSettings = ({ enabled, isActive, onChange }: CustomTools
 									<RefreshCw className="w-4 h-4" />
 								)}
 								{isRefreshing
-									? t("settings:experimental.CUSTOM_TOOLS.refreshing")
-									: t("settings:experimental.CUSTOM_TOOLS.refreshButton")}
+									? t("settings:customTools.refreshing")
+									: t("settings:customTools.refreshButton")}
 							</div>
 						</Button>
 					</div>
 
 					{refreshError && (
-						<div className="p-2 bg-vscode-inputValidation-errorBackground text-vscode-errorForeground rounded text-sm border border-vscode-inputValidation-errorBorder">
-							{t("settings:experimental.CUSTOM_TOOLS.refreshError")}: {refreshError}
+						<div
+							role="alert"
+							className="p-2 bg-vscode-inputValidation-errorBackground text-vscode-errorForeground rounded text-sm border border-vscode-inputValidation-errorBorder">
+							{t("settings:customTools.refreshError")}: {refreshError}
 						</div>
 					)}
 
-					{processedTools.length === 0 ? (
+					{processedTools.length === 0 && !isRefreshing && !refreshError ? (
 						<p className="text-vscode-descriptionForeground text-sm italic">
-							{t("settings:experimental.CUSTOM_TOOLS.noTools")}
+							{t("settings:customTools.noTools")}
 						</p>
 					) : (
 						processedTools.map((tool) => (
-							<div
-								key={tool.name}
-								className="bg-vscode-editor-background border border-vscode-panel-border rounded space-y-3 p-3">
-								<div className="space-y-1">
-									<div className="font-medium text-vscode-foreground">{tool.name}</div>
-									{tool.source && (
-										<div className="flex items-center text-xs text-vscode-descriptionForeground">
-											<FileCode className="size-3 flex-shrink-0" />
-											<span className="font-mono truncate" title={tool.source}>
-												{tool.source}
-											</span>
+							<div key={tool.name} className="flex items-center justify-between gap-2 py-1">
+								<span className="min-w-0 truncate text-sm font-medium text-vscode-foreground">
+									{tool.name}
+								</span>
+								<SettingsHelp label={tool.name}>
+									<p className="m-0">{tool.description}</p>
+									{tool.source && <code className="block break-all text-xs">{tool.source}</code>}
+									{tool.parameters.length > 0 && (
+										<div className="space-y-1">
+											<p className="m-0 font-medium text-vscode-foreground">
+												{t("settings:customTools.toolParameters")}
+											</p>
+											<dl className="m-0 space-y-1">
+												{tool.parameters.map((param) => (
+													<div key={param.name}>
+														<dt className="flex flex-wrap items-center gap-x-2 text-xs">
+															<code className="text-vscode-textLink-foreground">
+																{param.name}
+															</code>
+															<span>({param.type})</span>
+															{param.required && (
+																<span>{t("settings:customTools.required")}</span>
+															)}
+														</dt>
+														{param.description && (
+															<dd className="m-0 text-xs">{param.description}</dd>
+														)}
+													</div>
+												))}
+											</dl>
 										</div>
 									)}
-								</div>
-								<div className="text-vscode-descriptionForeground text-sm">{tool.description}</div>
-								{tool.parameters.length > 0 && (
-									<div className="space-y-1">
-										<div className="text-xs font-medium text-vscode-foreground">
-											{t("settings:experimental.CUSTOM_TOOLS.toolParameters")}:
-										</div>
-										<div>
-											{tool.parameters.map((param) => (
-												<div
-													key={param.name}
-													className="flex items-start gap-2 text-xs pl-2 py-1 border-l-2 border-vscode-panel-border">
-													<code className="text-vscode-textLink-foreground font-mono">
-														{param.name}
-													</code>
-													<span className="text-vscode-descriptionForeground">
-														({param.type})
-													</span>
-													{param.required && (
-														<span className="text-vscode-errorForeground text-[10px] uppercase">
-															required
-														</span>
-													)}
-													{param.description && (
-														<span className="text-vscode-descriptionForeground">
-															— {param.description}
-														</span>
-													)}
-												</div>
-											))}
-										</div>
-									</div>
-								)}
+								</SettingsHelp>
 							</div>
 						))
 					)}

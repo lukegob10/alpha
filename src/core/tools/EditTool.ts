@@ -7,7 +7,6 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { fileExistsAtPath } from "../../utils/fs"
-import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import type { ToolUse } from "../../shared/tools"
 
@@ -155,15 +154,10 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			// Check if preventFocusDisruption experiment is enabled
 			const provider = task.providerRef.deref()
 			const state = await provider?.getState()
 			const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 			const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-			const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-				state?.experiments ?? {},
-				EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-			)
 
 			const sanitizedDiff = sanitizeUnifiedDiff(diff)
 			const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -185,37 +179,20 @@ export class EditTool extends BaseTool<"edit"> {
 				diffStats,
 			} satisfies AlphaSayTool)
 
-			// Show diff view if focus disruption prevention is disabled
-			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.open(relPath, { exists: true, content: originalFileContent })
-				await task.diffViewProvider.update(newContent, true)
-				task.diffViewProvider.scrollToFirstDiff()
-			}
-
 			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
 			if (!didApprove) {
-				// Revert changes if diff view was shown
-				if (!isPreventFocusDisruptionEnabled) {
-					await task.diffViewProvider.revertChanges()
-				}
 				pushToolResult("Changes were rejected by the user.")
 				await task.diffViewProvider.reset()
 				return
 			}
 
-			// Save the changes
-			if (isPreventFocusDisruptionEnabled) {
-				// Direct file write without diff view or opening the file. The raw
-				// content is the baseline; matching used a normalized projection.
-				await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
-					exists: true,
-					content: originalFileContent,
-				})
-			} else {
-				// Call saveChanges to update the DiffViewProvider properties
-				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
-			}
+			// Approval is shown inline. Preserve the raw baseline when committing
+			// without opening an editor; matching used a normalized projection.
+			await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+				exists: true,
+				content: originalFileContent,
+			})
 
 			// Track file edit operation
 			if (relPath) {

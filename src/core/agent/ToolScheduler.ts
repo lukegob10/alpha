@@ -42,6 +42,7 @@ import {
 	type TaskPathContext,
 } from "../tools/taskPathPresentation"
 import { extractMutationPaths } from "./VerificationScope"
+import { classifyVerificationCommand } from "./CommandVerification"
 import { formatResponse } from "../prompts/responses"
 import { getModeBySlug } from "../../shared/modes"
 import { sanitizeToolUseId } from "../../utils/tool-id"
@@ -412,10 +413,16 @@ class ToolResultCollector {
 		if (this.feedback) {
 			const feedbackText = formatResponse.toolApprovedWithFeedback(this.feedback.text)
 			const feedbackImages = this.feedback.images ? formatResponse.imageBlocks(this.feedback.images) : []
-			if (typeof content === "string") {
+			if (typeof content === "string" && feedbackImages.length === 0) {
 				content = `${feedbackText}\n\n${content || "(tool did not return anything)"}`
 			} else {
-				content = [{ type: "text", text: feedbackText }, ...feedbackImages, ...content]
+				content = [
+					{ type: "text", text: feedbackText },
+					...feedbackImages,
+					...(typeof content === "string"
+						? [{ type: "text" as const, text: content || "(tool did not return anything)" }]
+						: content),
+				]
 			}
 		}
 
@@ -459,7 +466,14 @@ function limitToolResponse(
 	content: ToolResponse,
 	maxOutputChars: number,
 ): { content: ToolResponse; truncated: boolean } {
-	const suffix = TOOL_OUTPUT_TRUNCATION_SUFFIX
+	maxOutputChars = Math.max(0, Math.floor(maxOutputChars))
+	const compactSuffix = "[truncated]"
+	const suffix =
+		maxOutputChars >= TOOL_OUTPUT_TRUNCATION_SUFFIX.length
+			? TOOL_OUTPUT_TRUNCATION_SUFFIX
+			: maxOutputChars >= compactSuffix.length
+				? compactSuffix
+				: truncateToolOutputText("…", maxOutputChars)
 	const available = Math.max(0, maxOutputChars - suffix.length)
 	if (typeof content === "string" || !content.some((item) => item.type === "image")) {
 		const parts = getToolResultParts(content)
@@ -515,11 +529,7 @@ function getVerificationCategory(call: AgentToolCall): "test" | "build" | "lint"
 	const args: Record<string, unknown> =
 		typeof call.arguments === "object" && call.arguments !== null ? (call.arguments as Record<string, unknown>) : {}
 	const command = typeof args.cmd === "string" ? args.cmd : typeof args.command === "string" ? args.command : ""
-	if (/(test|pytest|vitest|jest|mocha|ruff)/i.test(command)) return "test"
-	if (/(build|bundle|compile)/i.test(command)) return "build"
-	if (/(lint|eslint|prettier|format)/i.test(command)) return "lint"
-	if (/(typecheck|check-types|tsc)/i.test(command)) return "typecheck"
-	return undefined
+	return classifyVerificationCommand(command)
 }
 
 interface PreparedCall {
@@ -679,12 +689,15 @@ function getSchedulerToolIdentity(registry: ToolRegistry, name: string): string 
 	return canonicalName === "exec_command" ? canonicalName : name
 }
 
-function getToolResultParts(content: ToolResponse): {
+function getToolResultParts(
+	content: ToolResponse,
+	emptyFallback = "(tool did not return anything)",
+): {
 	text: string
 	images: Anthropic.ImageBlockParam[]
 } {
 	if (typeof content === "string") {
-		return { text: content || "(tool did not return anything)", images: [] }
+		return { text: content || emptyFallback, images: [] }
 	}
 
 	const text = content
@@ -694,14 +707,14 @@ function getToolResultParts(content: ToolResponse): {
 	const images = content.filter((item): item is Anthropic.ImageBlockParam => item.type === "image")
 
 	return {
-		text: text || "(tool did not return anything)",
+		text: text || emptyFallback,
 		images,
 	}
 }
 
-function getToolResultContent(content: ToolResponse): ToolResponse {
+function getToolResultContent(content: ToolResponse, truncated = false): ToolResponse {
 	return typeof content === "string" || !content.some((item) => item.type === "image")
-		? getToolResultParts(content).text
+		? getToolResultParts(content, truncated ? "" : undefined).text
 		: content
 }
 
@@ -1881,7 +1894,7 @@ export class ToolScheduler {
 				const added = this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content),
+					content: getToolResultContent(result.content, result.truncated),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
 				if (!added) continue
@@ -1952,7 +1965,7 @@ export class ToolScheduler {
 				const added = this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content),
+					content: getToolResultContent(result.content, result.truncated),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
 				if (added) {
@@ -2945,11 +2958,12 @@ export class ToolScheduler {
 					}
 
 					if (response !== "yesButtonClicked") {
-						const decision = response === "noButtonClicked" || text ? "denied" : "cancelled"
-						if (text) {
-							await this.executionHost.say("user_feedback", text, images)
+						const decision =
+							response === "noButtonClicked" || text || images?.length ? "denied" : "cancelled"
+						if (text || images?.length) {
+							await this.executionHost.say("user_feedback", text ?? "", images)
 							collector.pushApprovalResult(
-								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text), images),
+								formatResponse.toolResult(formatResponse.toolDeniedWithFeedback(text ?? ""), images),
 							)
 						} else if (decision === "denied") {
 							collector.pushApprovalResult(formatResponse.toolDenied())
@@ -2971,9 +2985,9 @@ export class ToolScheduler {
 						return undefined
 					}
 
-					if (text) {
-						await this.executionHost.say("user_feedback", text, images)
-						approvalFeedback(text, images)
+					if (text || images?.length) {
+						await this.executionHost.say("user_feedback", text ?? "", images)
+						approvalFeedback(text ?? "", images)
 					}
 					await publishApprovalResult({
 						type: "approval_result",
@@ -3207,6 +3221,15 @@ export class ToolScheduler {
 			}
 		}
 
+		if (
+			!prepareCommand &&
+			!prepareMcpRead &&
+			!prepared.finalizeCommand &&
+			!prepared.finalizeRead &&
+			!collector.hasResult()
+		) {
+			collector.push("(tool did not return anything)")
+		}
 		if (collector.isTruncated()) {
 			this.outputTruncatedCount += 1
 		}
@@ -3330,7 +3353,7 @@ export class ToolScheduler {
 			this.executionHost.pushToolResultToUserContent({
 				type: "tool_result",
 				tool_use_id: sanitizeToolUseId(result.callId),
-				content: getToolResultContent(result.content),
+				content: getToolResultContent(result.content, result.truncated),
 				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 			})
 			committed.push(result)
@@ -3431,7 +3454,7 @@ export class ToolScheduler {
 				this.executionHost.pushToolResultToUserContent({
 					type: "tool_result",
 					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content),
+					content: getToolResultContent(result.content, result.truncated),
 					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
 				})
 				if (!this.deferredResultEventIds.has(callId)) {

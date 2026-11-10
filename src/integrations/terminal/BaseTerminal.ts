@@ -280,7 +280,7 @@ export abstract class BaseTerminal implements AlphaTerminal {
 	/**
 	 * Compresses terminal output by applying run-length encoding and truncating to reasonable limits.
 	 * Uses hardcoded defaults: 500 lines, 50K characters - these are UI display limits to prevent
-	 * memory issues, not LLM context limits (which are controlled by terminalOutputPreviewSize).
+	 * memory issues, not the command output preview limit applied to model context.
 	 * @param input The terminal output to compress
 	 * @returns The compressed terminal output
 	 */

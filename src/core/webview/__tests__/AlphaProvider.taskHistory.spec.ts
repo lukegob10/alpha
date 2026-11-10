@@ -9,7 +9,6 @@ import {
 	type ExtensionMessage,
 	type TaskReasoningProjection,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ContextProxy } from "../../config/ContextProxy"
 import { AlphaProvider } from "../AlphaProvider"
@@ -311,10 +310,6 @@ describe("AlphaProvider Task History Synchronization", () => {
 			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
 		)
 
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
 		// Initialize task history state
 		taskHistoryState = []
 
@@ -421,12 +416,14 @@ describe("AlphaProvider Task History Synchronization", () => {
 	}
 
 	it.each([undefined, "small", "medium", "large"] as const)(
-		"projects the saved terminal output preview size %s into settings snapshots",
+		"omits the retired terminal preview preference %s from both settings snapshots",
 		async (previewSize) => {
-			await provider.contextProxy.setValue("terminalOutputPreviewSize", previewSize)
+			await mockContext.globalState.update("terminalOutputPreviewSize", previewSize)
+			await provider.contextProxy.initialize()
 
-			expect((await provider.getState()).terminalOutputPreviewSize).toBe(previewSize ?? "medium")
-			expect((await provider.getStateToPostToWebview()).terminalOutputPreviewSize).toBe(previewSize ?? "medium")
+			expect(await provider.getState()).not.toHaveProperty("terminalOutputPreviewSize")
+			expect(await provider.getStateToPostToWebview()).not.toHaveProperty("terminalOutputPreviewSize")
+			expect(mockContext.globalState.get("terminalOutputPreviewSize")).toBe(previewSize)
 		},
 	)
 

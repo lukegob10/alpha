@@ -5,7 +5,6 @@ import * as fsSync from "fs"
 import { EventEmitter } from "events"
 import * as vscode from "vscode"
 import type { GlobalState, ProviderSettings } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
@@ -345,10 +344,6 @@ describe("Alpha", () => {
 	let mockExtensionContext: vscode.ExtensionContext
 
 	beforeEach(async () => {
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
 		// Setup mock extension context
 		const storageUri = {
 			fsPath: path.join(os.tmpdir(), "test-storage"),

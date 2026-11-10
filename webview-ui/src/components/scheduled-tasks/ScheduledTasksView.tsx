@@ -4,6 +4,7 @@ import {
 	isApprovalMode,
 	migrateApprovalMode,
 	restoreTaskMode,
+	scheduledTaskCreationResultSchema,
 } from "@alpha-code/types"
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
@@ -25,6 +26,7 @@ import {
 
 import type {
 	ExtensionMessage,
+	CreateScheduledTaskPayload,
 	ApprovalMode,
 	SkillMetadata,
 	ScheduledTask,
@@ -174,7 +176,15 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	}
 	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
 	const [selectedId, setSelectedId] = useState<string | undefined>()
-	const selectedTask = scheduledTasks.find((task) => task.id === selectedId)
+	const [acknowledgedTask, setAcknowledgedTask] = useState<ScheduledTask>()
+	const selectedTask =
+		scheduledTasks.find((task) => task.id === selectedId) ??
+		(acknowledgedTask?.id === selectedId ? acknowledgedTask : undefined)
+	const creationIntent = useRef<CreateScheduledTaskPayload>()
+	const creationPending = useRef(false)
+	const creationTimeout = useRef<ReturnType<typeof setTimeout>>()
+	const [creating, setCreating] = useState(false)
+	const [creationError, setCreationError] = useState<string>()
 	const nowPlusHour = Date.now() + 60 * 60 * 1000
 
 	const [name, setName] = useState("")
@@ -285,6 +295,12 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	)
 
 	const resetForm = () => {
+		creationIntent.current = undefined
+		creationPending.current = false
+		clearTimeout(creationTimeout.current)
+		setCreating(false)
+		setCreationError(undefined)
+		setAcknowledgedTask(undefined)
 		handledTargetId.current = targetTaskId
 		hydratedDefaultTask.current = true
 		setName("")
@@ -314,6 +330,11 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 
 	const editTask = useCallback(
 		(task: ScheduledTask) => {
+			creationIntent.current = undefined
+			creationPending.current = false
+			clearTimeout(creationTimeout.current)
+			setCreating(false)
+			setCreationError(undefined)
 			setSelectedId(task.id)
 			setName(task.name)
 			setPrompt(task.prompt)
@@ -342,6 +363,29 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		},
 		[cwd],
 	)
+
+	useEffect(() => {
+		const handleMessage = (event: MessageEvent<ExtensionMessage>) => {
+			if (event.data.type !== "scheduledTaskCreationResult") return
+			const parsed = scheduledTaskCreationResultSchema.safeParse(event.data.scheduledTaskCreationResult)
+			if (!parsed.success || parsed.data.requestId !== creationIntent.current?.creationRequestId) return
+			clearTimeout(creationTimeout.current)
+			creationPending.current = false
+			setCreating(false)
+			if (parsed.data.status === "error") {
+				setCreationError(`scheduledTasks:creationErrors.${parsed.data.error}`)
+				return
+			}
+			setAcknowledgedTask(parsed.data.task)
+			editTask(parsed.data.task)
+		}
+		window.addEventListener("message", handleMessage)
+		return () => {
+			window.removeEventListener("message", handleMessage)
+		}
+	}, [editTask])
+
+	useEffect(() => () => clearTimeout(creationTimeout.current), [])
 
 	useEffect(() => {
 		if (targetTaskId) {
@@ -377,7 +421,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		(executionType !== "plugin" || Boolean(pluginName.trim()))
 
 	const save = () => {
-		if (!canSave) {
+		if (!canSave || creationPending.current) {
 			return
 		}
 
@@ -448,7 +492,18 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 				scheduledTaskUpdate: payload,
 			})
 		} else {
-			vscode.postMessage({ type: "createScheduledTask", scheduledTask: payload })
+			// Retries resend the exact intent; a lost acknowledgement cannot authorize another job.
+			creationIntent.current ??= { ...payload, creationRequestId: crypto.randomUUID() }
+			hydratedDefaultTask.current = true
+			creationPending.current = true
+			setCreating(true)
+			setCreationError(undefined)
+			creationTimeout.current = setTimeout(() => {
+				creationPending.current = false
+				setCreating(false)
+				setCreationError("scheduledTasks:creationTimeout")
+			}, 30_000)
+			vscode.postMessage({ type: "createScheduledTask", scheduledTask: creationIntent.current })
 		}
 	}
 
@@ -467,7 +522,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 					<CalendarClock className="size-4 shrink-0 text-vscode-descriptionForeground" aria-hidden="true" />
 					<h3 className="m-0 truncate text-sm font-semibold">Scheduled Tasks</h3>
 				</div>
-				<Button variant="secondary" size="sm" onClick={resetForm}>
+				<Button variant="secondary" size="sm" onClick={resetForm} disabled={creating}>
 					<Plus />
 					New
 				</Button>
@@ -498,7 +553,8 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 												? "border-[var(--border-accent)] bg-[var(--alpha-accent-soft)]"
 												: "border-transparent bg-transparent hover:bg-[var(--surface-raised)]",
 										)}
-										onClick={() => editTask(task)}>
+										onClick={() => editTask(task)}
+										disabled={creating}>
 										<div className="flex w-full items-start justify-between gap-2">
 											<span
 												className="line-clamp-2 break-words text-sm font-medium"
@@ -604,376 +660,393 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 									save()
 								}}
 								className="flex flex-col gap-6">
-								<section aria-labelledby="task-details-heading" className="flex flex-col gap-4">
-									<h3 id="task-details-heading" className="m-0 text-sm font-semibold">
-										{t("scheduledTasks:taskDetails")}
-									</h3>
-									<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Name
-											<Input value={name} onChange={(event) => setName(event.target.value)} />
-										</label>
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Execution
-											<Select
-												value={executionType}
-												onValueChange={(value) => {
-													const next = value as ExecutionKind
-													setExecutionType(next)
-													if (next !== "skill") {
-														setSkillName("")
-														setSkillPath(undefined)
-														setExecutionArguments("")
-													}
-												}}>
-												<SelectTrigger className="w-full min-w-0" aria-label="Execution">
-													<SelectValue />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="prompt">Prompt</SelectItem>
-													<SelectItem value="command">Command</SelectItem>
-													<SelectItem value="skill">Skill</SelectItem>
-													<SelectItem value="plugin">Plugin</SelectItem>
-												</SelectContent>
-											</Select>
-										</label>
-									</div>
-									<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
-										{executionType !== "command" && (
+								<fieldset disabled={Boolean(creationIntent.current)} className="contents">
+									<section aria-labelledby="task-details-heading" className="flex flex-col gap-4">
+										<h3 id="task-details-heading" className="m-0 text-sm font-semibold">
+											{t("scheduledTasks:taskDetails")}
+										</h3>
+										<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
 											<label className="flex min-w-0 flex-col gap-2 text-sm">
-												{t("scheduledTasks:profile")}
+												Name
+												<Input value={name} onChange={(event) => setName(event.target.value)} />
+											</label>
+											<label className="flex min-w-0 flex-col gap-2 text-sm">
+												Execution
 												<Select
-													value={availableProfile?.id ?? ""}
-													onValueChange={(id) => {
-														const profile = listApiConfigMeta.find(
-															(candidate) => candidate.id === id,
-														)
-														if (profile)
-															setApiConfig({ id: profile.id, name: profile.name })
+													value={executionType}
+													onValueChange={(value) => {
+														const next = value as ExecutionKind
+														setExecutionType(next)
+														if (next !== "skill") {
+															setSkillName("")
+															setSkillPath(undefined)
+															setExecutionArguments("")
+														}
 													}}>
-													<SelectTrigger
-														className="w-full min-w-0"
-														aria-label={t("scheduledTasks:profile")}>
-														<SelectValue placeholder={t("scheduledTasks:selectProfile")} />
+													<SelectTrigger className="w-full min-w-0" aria-label="Execution">
+														<SelectValue />
 													</SelectTrigger>
 													<SelectContent>
-														{listApiConfigMeta
-															.filter((profile) => profile.id)
-															.map((profile) => (
-																<SelectItem key={profile.id} value={profile.id}>
-																	{profile.name}
-																	{profile.modelId ? ` · ${profile.modelId}` : ""}
-																</SelectItem>
-															))}
+														<SelectItem value="prompt">Prompt</SelectItem>
+														<SelectItem value="command">Command</SelectItem>
+														<SelectItem value="skill">Skill</SelectItem>
+														<SelectItem value="plugin">Plugin</SelectItem>
 													</SelectContent>
 												</Select>
-												{apiConfig && !availableProfile && (
-													<span role="status">
-														{t("scheduledTasks:unavailableProfile", {
-															name: apiConfig.name,
-														})}
-													</span>
-												)}
-											</label>
-										)}
-
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Mode
-											<Select value={taskMode} onValueChange={setTaskMode}>
-												<SelectTrigger className="w-full min-w-0" aria-label="Mode">
-													<SelectValue />
-												</SelectTrigger>
-												<SelectContent>
-													{modes.map((modeOption) => (
-														<SelectItem key={modeOption.slug} value={modeOption.slug}>
-															{modeOption.name}
-														</SelectItem>
-													))}
-												</SelectContent>
-											</Select>
-										</label>
-									</div>
-									{executionType !== "command" && (
-										<div className="flex min-w-0 flex-col gap-2">
-											<ReasoningSelector
-												state={displayedReasoningState}
-												loading={displayedReasoningLoading}
-												error={reasoningError}
-												onChange={setReasoningPreference}
-												onOpenAdvanced={() =>
-													window.postMessage({
-														type: "action",
-														action: "settingsButtonClicked",
-														values: { section: "providers" },
-													})
-												}
-												scopeKey={reasoningScopeKey}
-											/>
-											<p className="m-0 text-xs text-vscode-descriptionForeground">
-												{t("chat:reasoning.scheduleHelp")}
-											</p>
-										</div>
-									)}
-									{executionType === "command" && (
-										<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-[minmax(0,1fr)_140px]">
-											<label className="flex min-w-0 flex-col gap-2 text-sm">
-												Command
-												<Input
-													value={command}
-													onChange={(event) => setCommand(event.target.value)}
-												/>
-											</label>
-											<label className="flex min-w-0 flex-col gap-2 text-sm">
-												Timeout minutes
-												<Input
-													type="number"
-													min={1}
-													value={timeoutMinutes}
-													onChange={(event) => setTimeoutMinutes(Number(event.target.value))}
-												/>
 											</label>
 										</div>
-									)}
-									{executionType === "skill" && (
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Skill
-											<Select
-												value={availableSkill?.name ?? ""}
-												onValueChange={(name) => {
-													setSkillName(name)
-													setSkillPath(skills.find((skill) => skill.name === name)?.path)
-												}}>
-												<SelectTrigger className="w-full min-w-0" aria-label="Skill">
-													<SelectValue placeholder={t("scheduledTasks:selectSkill")} />
-												</SelectTrigger>
-												<SelectContent>
-													{skills.map((skill) => (
-														<SelectItem key={skill.name} value={skill.name}>
-															{skill.name}
-														</SelectItem>
-													))}
-												</SelectContent>
-											</Select>
-											<span className="text-xs text-vscode-descriptionForeground" role="status">
-												{availableSkill?.description ?? t("scheduledTasks:skillUnavailable")}
-											</span>
-										</label>
-									)}
-									{executionType === "plugin" && (
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Plugin
-											<Input
-												value={pluginName}
-												onChange={(event) => setPluginName(event.target.value)}
-											/>
-										</label>
-									)}
-									{(executionType === "skill" || executionType === "plugin") && (
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Arguments
-											<Textarea
-												value={executionArguments}
-												onChange={(event) => setExecutionArguments(event.target.value)}
-												rows={3}
-											/>
-										</label>
-									)}
-
-									<label className="flex min-w-0 flex-col gap-2 text-sm">
-										{executionType === "skill" ? t("scheduledTasks:extraPrompt") : "Prompt"}
-										<Textarea
-											value={prompt}
-											onChange={(event) => setPrompt(event.target.value)}
-											rows={4}
-											className="min-h-24 resize-y leading-relaxed"
-											aria-describedby={
-												executionType === "prompt" || executionType === "skill"
-													? "scheduled-prompt-help"
-													: undefined
-											}
-										/>
-									</label>
-									{(executionType === "prompt" || executionType === "skill") && (
-										<p
-											id="scheduled-prompt-help"
-											className="-mt-2 mb-0 text-xs leading-relaxed text-vscode-descriptionForeground">
-											{t(
-												executionType === "skill"
-													? "scheduledTasks:skillHelp"
-													: "scheduledTasks:promptHelp",
+										<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
+											{executionType !== "command" && (
+												<label className="flex min-w-0 flex-col gap-2 text-sm">
+													{t("scheduledTasks:profile")}
+													<Select
+														value={availableProfile?.id ?? ""}
+														onValueChange={(id) => {
+															const profile = listApiConfigMeta.find(
+																(candidate) => candidate.id === id,
+															)
+															if (profile)
+																setApiConfig({ id: profile.id, name: profile.name })
+														}}>
+														<SelectTrigger
+															className="w-full min-w-0"
+															aria-label={t("scheduledTasks:profile")}>
+															<SelectValue
+																placeholder={t("scheduledTasks:selectProfile")}
+															/>
+														</SelectTrigger>
+														<SelectContent>
+															{listApiConfigMeta
+																.filter((profile) => profile.id)
+																.map((profile) => (
+																	<SelectItem key={profile.id} value={profile.id}>
+																		{profile.name}
+																		{profile.modelId ? ` · ${profile.modelId}` : ""}
+																	</SelectItem>
+																))}
+														</SelectContent>
+													</Select>
+													{apiConfig && !availableProfile && (
+														<span role="status">
+															{t("scheduledTasks:unavailableProfile", {
+																name: apiConfig.name,
+															})}
+														</span>
+													)}
+												</label>
 											)}
-										</p>
-									)}
-								</section>
-								<section
-									aria-labelledby="schedule-heading"
-									className="flex flex-col gap-4 border-t border-[var(--border-subtle)] pt-5">
-									<h3
-										id="schedule-heading"
-										className="m-0 flex items-center gap-2 text-sm font-semibold">
-										<CalendarClock
-											className="size-4 text-vscode-descriptionForeground"
-											aria-hidden="true"
-										/>
-										Schedule
-									</h3>
-									<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
-										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Schedule
-											<Select
-												value={scheduleType}
-												onValueChange={(value) => setScheduleType(value as ScheduleKind)}>
-												<SelectTrigger className="w-full min-w-0" aria-label="Schedule">
-													<SelectValue />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="once">Once</SelectItem>
-													<SelectItem value="hourly">Hourly</SelectItem>
-													<SelectItem value="daily">Daily</SelectItem>
-													<SelectItem value="weekly">Weekly</SelectItem>
-													<SelectItem value="monthly">Monthly</SelectItem>
-													<SelectItem value="customInterval">Custom minutes</SelectItem>
-												</SelectContent>
-											</Select>
-										</label>
 
-										{scheduleType !== "once" && (
 											<label className="flex min-w-0 flex-col gap-2 text-sm">
-												<span>{t("scheduledTasks:repeatEvery")}</span>
-												<div className="flex items-center gap-2">
+												Mode
+												<Select value={taskMode} onValueChange={setTaskMode}>
+													<SelectTrigger className="w-full min-w-0" aria-label="Mode">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														{modes.map((modeOption) => (
+															<SelectItem key={modeOption.slug} value={modeOption.slug}>
+																{modeOption.name}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+											</label>
+										</div>
+										{executionType !== "command" && (
+											<div className="flex min-w-0 flex-col gap-2">
+												<ReasoningSelector
+													state={displayedReasoningState}
+													loading={displayedReasoningLoading}
+													error={reasoningError}
+													onChange={setReasoningPreference}
+													onOpenAdvanced={() =>
+														window.postMessage({
+															type: "action",
+															action: "settingsButtonClicked",
+															values: { section: "providers" },
+														})
+													}
+													scopeKey={reasoningScopeKey}
+												/>
+												<p className="m-0 text-xs text-vscode-descriptionForeground">
+													{t("chat:reasoning.scheduleHelp")}
+												</p>
+											</div>
+										)}
+										{executionType === "command" && (
+											<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-[minmax(0,1fr)_140px]">
+												<label className="flex min-w-0 flex-col gap-2 text-sm">
+													Command
 													<Input
-														className="w-20"
-														aria-label={t("scheduledTasks:repeatEvery")}
+														value={command}
+														onChange={(event) => setCommand(event.target.value)}
+													/>
+												</label>
+												<label className="flex min-w-0 flex-col gap-2 text-sm">
+													Timeout minutes
+													<Input
 														type="number"
 														min={1}
-														value={interval}
+														value={timeoutMinutes}
 														onChange={(event) =>
-															setIntervalValue(Number(event.target.value))
+															setTimeoutMinutes(Number(event.target.value))
 														}
 													/>
-													<span className="text-vscode-descriptionForeground">
-														{t(intervalUnitKeys[scheduleType])}
-													</span>
-												</div>
+												</label>
+											</div>
+										)}
+										{executionType === "skill" && (
+											<label className="flex min-w-0 flex-col gap-2 text-sm">
+												Skill
+												<Select
+													value={availableSkill?.name ?? ""}
+													onValueChange={(name) => {
+														setSkillName(name)
+														setSkillPath(skills.find((skill) => skill.name === name)?.path)
+													}}>
+													<SelectTrigger className="w-full min-w-0" aria-label="Skill">
+														<SelectValue placeholder={t("scheduledTasks:selectSkill")} />
+													</SelectTrigger>
+													<SelectContent>
+														{skills.map((skill) => (
+															<SelectItem key={skill.name} value={skill.name}>
+																{skill.name}
+															</SelectItem>
+														))}
+													</SelectContent>
+												</Select>
+												<span
+													className="text-xs text-vscode-descriptionForeground"
+													role="status">
+													{availableSkill?.description ??
+														t("scheduledTasks:skillUnavailable")}
+												</span>
 											</label>
 										)}
-									</div>
-									<div className="grid grid-cols-1 gap-4 @min-[560px]:grid-cols-2">
-										<div className="flex min-w-0 flex-col gap-2">
+										{executionType === "plugin" && (
 											<label className="flex min-w-0 flex-col gap-2 text-sm">
-												Start
+												Plugin
 												<Input
-													type="datetime-local"
-													className="min-w-0 max-w-full [.vscode-dark_&]:[color-scheme:dark] [.vscode-high-contrast_&]:[color-scheme:dark]"
-													value={startAt}
-													onChange={(event) => setStartAt(event.target.value)}
-													aria-describedby="scheduled-timezone"
+													value={pluginName}
+													onChange={(event) => setPluginName(event.target.value)}
 												/>
 											</label>
-											<span
-												id="scheduled-timezone"
-												className="text-xs text-vscode-descriptionForeground">
-												{timezone}
-											</span>
-										</div>
+										)}
+										{(executionType === "skill" || executionType === "plugin") && (
+											<label className="flex min-w-0 flex-col gap-2 text-sm">
+												Arguments
+												<Textarea
+													value={executionArguments}
+													onChange={(event) => setExecutionArguments(event.target.value)}
+													rows={3}
+												/>
+											</label>
+										)}
+
 										<label className="flex min-w-0 flex-col gap-2 text-sm">
-											Notifications
-											<Select
-												value={notificationPreference}
-												onValueChange={(value) =>
-													setNotificationPreference(
-														value as ScheduledTaskNotificationPreference,
-													)
-												}>
-												<SelectTrigger className="w-full min-w-0" aria-label="Notifications">
-													<SelectValue />
-												</SelectTrigger>
-												<SelectContent>
-													<SelectItem value="on_failure">Failure only</SelectItem>
-													<SelectItem value="on_completion">Completion</SelectItem>
-													<SelectItem value="before_run">Before run</SelectItem>
-													<SelectItem value="approval_required">Approval required</SelectItem>
-													<SelectItem value="never">Never</SelectItem>
-												</SelectContent>
-											</Select>
+											{executionType === "skill" ? t("scheduledTasks:extraPrompt") : "Prompt"}
+											<Textarea
+												value={prompt}
+												onChange={(event) => setPrompt(event.target.value)}
+												rows={4}
+												className="min-h-24 resize-y leading-relaxed"
+												aria-describedby={
+													executionType === "prompt" || executionType === "skill"
+														? "scheduled-prompt-help"
+														: undefined
+												}
+											/>
 										</label>
-									</div>
-								</section>
-								<Collapsible className="border-t border-[var(--border-subtle)] pt-5">
-									<CollapsibleTrigger
-										type="button"
-										className="group flex w-full items-center gap-2 rounded bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
-										<Shield
-											className="size-4 shrink-0 text-vscode-descriptionForeground"
-											aria-hidden="true"
-										/>
-										<span className="text-sm font-semibold">{t("scheduledTasks:approvals")}</span>
-										<span className="ml-auto text-xs text-vscode-descriptionForeground">
-											{t(`scheduledTasks:approvalMode.${approvalMode}`)}
-										</span>
-										<ChevronDown
-											className="size-4 shrink-0 text-vscode-descriptionForeground group-data-[state=open]:rotate-180"
-											aria-hidden="true"
-										/>
-									</CollapsibleTrigger>
-									<CollapsibleContent className="pt-4">
-										{selectedTask?.autoApproval?.deniedCommands?.length &&
-											!isApprovalMode(selectedTask.autoApproval.approvalMode) && (
-												<p role="alert" className="mt-0 text-xs text-vscode-errorForeground">
-													{t("scheduledTasks:legacyCommandRules")}
-												</p>
-											)}
-										<div
-											className="flex flex-wrap gap-2"
-											role="group"
-											aria-label={t("scheduledTasks:approvals")}>
-											{APPROVAL_MODES.map((candidate) => (
-												<Button
-													key={candidate}
-													type="button"
-													variant={approvalMode === candidate ? "primary" : "secondary"}
-													aria-pressed={approvalMode === candidate}
-													onClick={() => {
-														if (candidate === "bypass" && approvalMode !== "bypass") {
-															setBypassWarningOpen(true)
-														} else {
-															setApprovalMode(candidate)
-														}
-													}}>
-													{t(`scheduledTasks:approvalMode.${candidate}`)}
-												</Button>
-											))}
-										</div>
-										<p className="mb-0 mt-4 text-xs leading-relaxed text-vscode-descriptionForeground">
-											{t(`scheduledTasks:approvalDescription.${approvalMode}`)}
-										</p>
-										{executionType === "command" && (
-											<p className="mb-0 mt-2 text-xs text-vscode-descriptionForeground">
-												{t("scheduledTasks:commandApprovalHelp")}
+										{(executionType === "prompt" || executionType === "skill") && (
+											<p
+												id="scheduled-prompt-help"
+												className="-mt-2 mb-0 text-xs leading-relaxed text-vscode-descriptionForeground">
+												{t(
+													executionType === "skill"
+														? "scheduledTasks:skillHelp"
+														: "scheduledTasks:promptHelp",
+												)}
 											</p>
 										)}
-									</CollapsibleContent>
-								</Collapsible>
-								<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
-									<AlertDialogContent>
-										<AlertDialogHeader>
-											<AlertDialogTitle>
-												{t("scheduledTasks:bypassWarning.title")}
-											</AlertDialogTitle>
-											<AlertDialogDescription>
-												{t("scheduledTasks:bypassWarning.body")}
-											</AlertDialogDescription>
-										</AlertDialogHeader>
-										<AlertDialogFooter>
-											<AlertDialogCancel>
-												{t("scheduledTasks:bypassWarning.cancel")}
-											</AlertDialogCancel>
-											<AlertDialogAction onClick={() => setApprovalMode("bypass")}>
-												{t("scheduledTasks:bypassWarning.confirm")}
-											</AlertDialogAction>
-										</AlertDialogFooter>
-									</AlertDialogContent>
-								</AlertDialog>
+									</section>
+									<section
+										aria-labelledby="schedule-heading"
+										className="flex flex-col gap-4 border-t border-[var(--border-subtle)] pt-5">
+										<h3
+											id="schedule-heading"
+											className="m-0 flex items-center gap-2 text-sm font-semibold">
+											<CalendarClock
+												className="size-4 text-vscode-descriptionForeground"
+												aria-hidden="true"
+											/>
+											Schedule
+										</h3>
+										<div className="grid grid-cols-1 gap-4 @min-[420px]:grid-cols-2">
+											<label className="flex min-w-0 flex-col gap-2 text-sm">
+												Schedule
+												<Select
+													value={scheduleType}
+													onValueChange={(value) => setScheduleType(value as ScheduleKind)}>
+													<SelectTrigger className="w-full min-w-0" aria-label="Schedule">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="once">Once</SelectItem>
+														<SelectItem value="hourly">Hourly</SelectItem>
+														<SelectItem value="daily">Daily</SelectItem>
+														<SelectItem value="weekly">Weekly</SelectItem>
+														<SelectItem value="monthly">Monthly</SelectItem>
+														<SelectItem value="customInterval">Custom minutes</SelectItem>
+													</SelectContent>
+												</Select>
+											</label>
+
+											{scheduleType !== "once" && (
+												<label className="flex min-w-0 flex-col gap-2 text-sm">
+													<span>{t("scheduledTasks:repeatEvery")}</span>
+													<div className="flex items-center gap-2">
+														<Input
+															className="w-20"
+															aria-label={t("scheduledTasks:repeatEvery")}
+															type="number"
+															min={1}
+															value={interval}
+															onChange={(event) =>
+																setIntervalValue(Number(event.target.value))
+															}
+														/>
+														<span className="text-vscode-descriptionForeground">
+															{t(intervalUnitKeys[scheduleType])}
+														</span>
+													</div>
+												</label>
+											)}
+										</div>
+										<div className="grid grid-cols-1 gap-4 @min-[560px]:grid-cols-2">
+											<div className="flex min-w-0 flex-col gap-2">
+												<label className="flex min-w-0 flex-col gap-2 text-sm">
+													Start
+													<Input
+														type="datetime-local"
+														className="min-w-0 max-w-full [.vscode-dark_&]:[color-scheme:dark] [.vscode-high-contrast_&]:[color-scheme:dark]"
+														value={startAt}
+														onChange={(event) => setStartAt(event.target.value)}
+														aria-describedby="scheduled-timezone"
+													/>
+												</label>
+												<span
+													id="scheduled-timezone"
+													className="text-xs text-vscode-descriptionForeground">
+													{timezone}
+												</span>
+											</div>
+											<label className="flex min-w-0 flex-col gap-2 text-sm">
+												Notifications
+												<Select
+													value={notificationPreference}
+													onValueChange={(value) =>
+														setNotificationPreference(
+															value as ScheduledTaskNotificationPreference,
+														)
+													}>
+													<SelectTrigger
+														className="w-full min-w-0"
+														aria-label="Notifications">
+														<SelectValue />
+													</SelectTrigger>
+													<SelectContent>
+														<SelectItem value="on_failure">Failure only</SelectItem>
+														<SelectItem value="on_completion">Completion</SelectItem>
+														<SelectItem value="before_run">Before run</SelectItem>
+														<SelectItem value="approval_required">
+															Approval required
+														</SelectItem>
+														<SelectItem value="never">Never</SelectItem>
+													</SelectContent>
+												</Select>
+											</label>
+										</div>
+									</section>
+									<Collapsible className="border-t border-[var(--border-subtle)] pt-5">
+										<CollapsibleTrigger
+											type="button"
+											className="group flex w-full items-center gap-2 rounded bg-transparent p-0 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder">
+											<Shield
+												className="size-4 shrink-0 text-vscode-descriptionForeground"
+												aria-hidden="true"
+											/>
+											<span className="text-sm font-semibold">
+												{t("scheduledTasks:approvals")}
+											</span>
+											<span className="ml-auto text-xs text-vscode-descriptionForeground">
+												{t(`scheduledTasks:approvalMode.${approvalMode}`)}
+											</span>
+											<ChevronDown
+												className="size-4 shrink-0 text-vscode-descriptionForeground group-data-[state=open]:rotate-180"
+												aria-hidden="true"
+											/>
+										</CollapsibleTrigger>
+										<CollapsibleContent className="pt-4">
+											{selectedTask?.autoApproval?.deniedCommands?.length &&
+												!isApprovalMode(selectedTask.autoApproval.approvalMode) && (
+													<p
+														role="alert"
+														className="mt-0 text-xs text-vscode-errorForeground">
+														{t("scheduledTasks:legacyCommandRules")}
+													</p>
+												)}
+											<div
+												className="flex flex-wrap gap-2"
+												role="group"
+												aria-label={t("scheduledTasks:approvals")}>
+												{APPROVAL_MODES.map((candidate) => (
+													<Button
+														key={candidate}
+														type="button"
+														variant={approvalMode === candidate ? "primary" : "secondary"}
+														aria-pressed={approvalMode === candidate}
+														onClick={() => {
+															if (candidate === "bypass" && approvalMode !== "bypass") {
+																setBypassWarningOpen(true)
+															} else {
+																setApprovalMode(candidate)
+															}
+														}}>
+														{t(`scheduledTasks:approvalMode.${candidate}`)}
+													</Button>
+												))}
+											</div>
+											<p className="mb-0 mt-4 text-xs leading-relaxed text-vscode-descriptionForeground">
+												{t(`scheduledTasks:approvalDescription.${approvalMode}`)}
+											</p>
+											{executionType === "command" && (
+												<p className="mb-0 mt-2 text-xs text-vscode-descriptionForeground">
+													{t("scheduledTasks:commandApprovalHelp")}
+												</p>
+											)}
+										</CollapsibleContent>
+									</Collapsible>
+									<AlertDialog open={bypassWarningOpen} onOpenChange={setBypassWarningOpen}>
+										<AlertDialogContent>
+											<AlertDialogHeader>
+												<AlertDialogTitle>
+													{t("scheduledTasks:bypassWarning.title")}
+												</AlertDialogTitle>
+												<AlertDialogDescription>
+													{t("scheduledTasks:bypassWarning.body")}
+												</AlertDialogDescription>
+											</AlertDialogHeader>
+											<AlertDialogFooter>
+												<AlertDialogCancel>
+													{t("scheduledTasks:bypassWarning.cancel")}
+												</AlertDialogCancel>
+												<AlertDialogAction onClick={() => setApprovalMode("bypass")}>
+													{t("scheduledTasks:bypassWarning.confirm")}
+												</AlertDialogAction>
+											</AlertDialogFooter>
+										</AlertDialogContent>
+									</AlertDialog>
+								</fieldset>
 							</form>
 							{selectedTask && (
 								<section
@@ -1050,6 +1123,11 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 							)}
 						</div>
 						<div className="sticky bottom-0 z-10 border-t border-[var(--border-subtle)] bg-vscode-editor-background">
+							{creationError && (
+								<div role="alert" className="px-4 pt-3">
+									{t(creationError)}
+								</div>
+							)}
 							<div className="mx-auto flex max-w-3xl items-center justify-end gap-2 px-4 py-3 @min-[480px]:px-7">
 								{selectedTask && (
 									<Button
@@ -1065,7 +1143,12 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 										Run Now
 									</Button>
 								)}
-								<Button type="submit" form="scheduled-task-form" variant="primary" disabled={!canSave}>
+								<Button
+									type="submit"
+									form="scheduled-task-form"
+									variant="primary"
+									disabled={!canSave || creating}
+									aria-busy={creating}>
 									{selectedTask ? "Save" : "Create"}
 								</Button>
 							</div>

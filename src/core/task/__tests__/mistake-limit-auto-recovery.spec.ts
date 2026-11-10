@@ -2,15 +2,6 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Task } from "../Task"
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureConsecutiveMistakeError: vi.fn(),
-			captureException: vi.fn(),
-		},
-	},
-}))
-
 describe("Task mistake-limit recovery", () => {
 	const createTask = (provider: any) => {
 		const task = Object.create(Task.prototype) as Task

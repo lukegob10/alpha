@@ -33,14 +33,6 @@ vi.mock("@src/components/ErrorBoundary", () => ({
 	default: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }))
 
-// Mock the telemetry client
-vi.mock("@src/utils/TelemetryClient", () => ({
-	telemetryClient: {
-		capture: vi.fn(),
-		updateTelemetryState: vi.fn(),
-	},
-}))
-
 vi.mock("@src/components/chat/ChatView", async () => {
 	const React = await import("react")
 	const { default: ChatToolbar } = await import("../components/chat/ChatToolbar")
@@ -76,10 +68,13 @@ vi.mock("@src/components/settings/SettingsView", async () => {
 	const React = await import("react")
 	return {
 		__esModule: true,
-		default: React.forwardRef(function SettingsView({ onDone }: { onDone: () => void }, ref) {
+		default: React.forwardRef(function SettingsView(
+			{ onDone, targetSection }: { onDone: () => void; targetSection?: string },
+			ref,
+		) {
 			React.useImperativeHandle(ref, () => ({ checkUnsaveChanges: mockCheckUnsavedChanges }))
 			return (
-				<div data-testid="settings-view" className="app-shell" onClick={onDone}>
+				<div data-testid="settings-view" data-target={targetSection} className="app-shell" onClick={onDone}>
 					Settings View
 				</div>
 			)
@@ -95,6 +90,22 @@ vi.mock("@src/components/scheduled-tasks/ScheduledTasksView", async () => {
 		),
 	}
 })
+
+vi.mock("@src/components/worktrees/WorktreesManagerView", () => ({
+	default: ({ onDone }: { onDone: () => void }) => (
+		<div data-testid="worktrees-manager-view" className="app-shell">
+			<button onClick={onDone}>Back to tasks</button>
+		</div>
+	),
+}))
+
+vi.mock("@src/components/settings/AboutView", () => ({
+	default: ({ onDone }: { onDone: () => void }) => (
+		<div data-testid="about-view" className="app-shell">
+			<button onClick={onDone}>Back to tasks</button>
+		</div>
+	),
+}))
 
 vi.mock("@src/components/mcp/McpView", () => ({
 	__esModule: true,
@@ -399,7 +410,6 @@ describe("App", () => {
 			shouldShowAnnouncement: false,
 			experiments: {},
 			language: "en",
-			telemetrySetting: "enabled",
 		})
 	})
 
@@ -709,6 +719,74 @@ describe("App", () => {
 			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } }))
 		})
 		expect(screen.getByTestId("chat-view")).toHaveAttribute("data-hidden", "false")
+	})
+
+	it.each([
+		{ tab: "worktrees", pane: "worktrees-manager-view", title: "worktrees:title" },
+		{ tab: "about", pane: "about-view", title: "settings:sections.about" },
+	])("opens standalone $tab without replacing the mounted chat or draft", async ({ tab, pane, title }) => {
+		render(<AppWithProviders />)
+		const chat = screen.getByTestId("chat-view")
+		const draft = screen.getByRole("textbox", { name: "Draft" })
+		fireEvent.change(draft, { target: { value: "Keep this draft" } })
+		act(() =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } })),
+		)
+
+		expect(await screen.findByTestId(pane)).toBeVisible()
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
+		expect(screen.getByText(title)).toBeVisible()
+		expect(screen.getByTestId("chat-view")).toBe(chat)
+		expect(chat).not.toBeVisible()
+		expect(draft).toHaveValue("Keep this draft")
+		fireEvent.click(screen.getByRole("button", { name: "Back to tasks" }))
+		expect(chat).toBeVisible()
+		expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft)
+		expect(draft).toHaveValue("Keep this draft")
+	})
+
+	it.each([
+		{ action: "switchTab", tab: "settings", section: "worktrees", pane: "worktrees-manager-view" },
+		{ action: "settingsButtonClicked", section: "worktrees", pane: "worktrees-manager-view" },
+		{ action: "switchTab", tab: "settings", section: "about", pane: "about-view" },
+		{ action: "settingsButtonClicked", section: "about", pane: "about-view" },
+	])("redirects legacy $action/$section deep links to their utility view", async ({ section, pane, ...request }) => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", { data: { type: "action", ...request, values: { section } } }),
+			),
+		)
+		expect(await screen.findByTestId(pane)).toBeVisible()
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
+	})
+
+	it.each([
+		{ tab: "worktrees", pane: "worktrees-manager-view" },
+		{ tab: "about", pane: "about-view" },
+	])("keeps settings and its section until the unsaved guard permits $tab", async ({ tab, pane }) => {
+		render(<AppWithProviders />)
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: { type: "action", action: "settingsButtonClicked", values: { section: "advanced" } },
+				}),
+			),
+		)
+		expect(await screen.findByTestId("settings-view")).toHaveAttribute("data-target", "advanced")
+		let continueNavigation: (() => void) | undefined
+		mockCheckUnsavedChanges.mockImplementation((onContinue) => {
+			continueNavigation = onContinue
+		})
+		act(() =>
+			window.dispatchEvent(new MessageEvent("message", { data: { type: "action", action: "switchTab", tab } })),
+		)
+		expect(mockCheckUnsavedChanges).toHaveBeenCalledTimes(1)
+		expect(screen.getByTestId("settings-view")).toHaveAttribute("data-target", "advanced")
+		expect(screen.queryByTestId(pane)).not.toBeInTheDocument()
+		act(() => continueNavigation?.())
+		expect(await screen.findByTestId(pane)).toBeVisible()
+		expect(screen.queryByTestId("settings-view")).not.toBeInTheDocument()
 	})
 
 	it("still opens a targeted scheduled task through switchTab", async () => {

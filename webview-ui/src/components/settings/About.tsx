@@ -1,10 +1,6 @@
 import { HTMLAttributes } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-import { Trans } from "react-i18next"
 import { Download, Upload, TriangleAlert } from "lucide-react"
-import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
-
-import type { TelemetrySetting } from "@alpha-code/types"
 
 import { Package } from "@alpha/package"
 
@@ -17,70 +13,24 @@ import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
 
 type AboutProps = HTMLAttributes<HTMLDivElement> & {
-	telemetrySetting: TelemetrySetting
-	setTelemetrySetting: (setting: TelemetrySetting) => void
-	debug?: boolean
-	setDebug?: (debug: boolean) => void
+	embedded?: boolean
 }
 
-export const About = ({ telemetrySetting, setTelemetrySetting, debug, setDebug, className, ...props }: AboutProps) => {
+export const About = ({ embedded = false, className, ...props }: AboutProps) => {
 	const { t } = useAppTranslation()
+	const version = Package.sha ? `${Package.version} (${Package.sha.slice(0, 8)})` : Package.version
 
 	return (
 		<div className={cn("flex flex-col gap-2", className)} {...props}>
-			<SectionHeader>{t("settings:sections.about")}</SectionHeader>
+			{!embedded && (
+				<SectionHeader description={t("settings:about.description")}>
+					{t("settings:sections.about")}
+				</SectionHeader>
+			)}
 
 			<Section>
-				<p>
-					{Package.sha
-						? `Version: ${Package.version} (${Package.sha.slice(0, 8)})`
-						: `Version: ${Package.version}`}
-				</p>
-				<SearchableSetting
-					settingId="about-telemetry"
-					section="about"
-					label={t("settings:footer.telemetry.label")}>
-					<VSCodeCheckbox
-						checked={telemetrySetting !== "disabled"}
-						onChange={(e: any) => {
-							const checked = e.target.checked === true
-							setTelemetrySetting(checked ? "enabled" : "disabled")
-						}}>
-						{t("settings:footer.telemetry.label")}
-					</VSCodeCheckbox>
-					<p className="text-vscode-descriptionForeground text-sm mt-0">
-						<Trans
-							i18nKey="settings:footer.telemetry.description"
-							components={{
-								privacyLink: (
-									<VSCodeLink href="https://github.com/AlphaInc/Alpha/blob/main/PRIVACY.md" />
-								),
-							}}
-						/>
-					</p>
-				</SearchableSetting>
+				<p className="m-0">{t("settings:about.version", { version })}</p>
 			</Section>
-
-			{setDebug && (
-				<Section className="space-y-0">
-					<SearchableSetting
-						settingId="about-debug-mode"
-						section="about"
-						label={t("settings:about.debugMode.label")}>
-						<VSCodeCheckbox
-							checked={debug ?? false}
-							onChange={(e: any) => {
-								const checked = e.target.checked === true
-								setDebug(checked)
-							}}>
-							{t("settings:about.debugMode.label")}
-						</VSCodeCheckbox>
-						<p className="text-vscode-descriptionForeground text-sm mt-0">
-							{t("settings:about.debugMode.description")}
-						</p>
-					</SearchableSetting>
-				</Section>
-			)}
 
 			<Section className="space-y-0">
 				<SearchableSetting
@@ -88,6 +38,9 @@ export const About = ({ telemetrySetting, setTelemetrySetting, debug, setDebug, 
 					section="about"
 					label={t("settings:about.manageSettings")}>
 					<h3>{t("settings:about.manageSettings")}</h3>
+					<p className="text-vscode-descriptionForeground text-sm">
+						{t("settings:about.manageSettingsDescription")}
+					</p>
 					<div className="flex flex-wrap items-center gap-2">
 						<Button onClick={() => vscode.postMessage({ type: "exportSettings" })} className="w-28">
 							<Upload className="p-0.5" />

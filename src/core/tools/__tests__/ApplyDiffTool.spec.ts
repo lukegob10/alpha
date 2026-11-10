@@ -1,7 +1,6 @@
 import fs from "fs/promises"
 
 import { fileExistsAtPath } from "../../../utils/fs"
-import { experiments } from "../../../shared/experiments"
 import { ApplyDiffTool } from "../ApplyDiffTool"
 import { MultiSearchReplaceDiffStrategy } from "../../diff/strategies/multi-search-replace"
 import { DiffViewProvider } from "../../../integrations/editor/DiffViewProvider"
@@ -9,10 +8,7 @@ import { ToolRegistry } from "../ToolRegistry"
 import { apply_diff as legacyDiffSchema } from "../../prompts/tools/native-tools/apply_diff"
 import { ToolScheduler } from "../../agent/ToolScheduler"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
-
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: { instance: { captureDiffApplicationError: vi.fn() } },
-}))
+import type { ToolCallbacks } from "../BaseTool"
 
 vi.mock("fs/promises", () => ({
 	default: {
@@ -24,11 +20,6 @@ vi.mock("fs/promises", () => ({
 vi.mock("../../../utils/fs", () => ({
 	fileExistsAtPath: vi.fn().mockResolvedValue(true),
 }))
-
-vi.mock("../../../shared/experiments", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("../../../shared/experiments")>()
-	return { ...actual, experiments: { isEnabled: vi.fn(() => true) } }
-})
 
 vi.mock("../../prompts/responses", () => ({
 	formatResponse: {
@@ -47,7 +38,7 @@ vi.mock("../../diff/stats", () => ({
 const mockedFs = vi.mocked(fs)
 const mockedFileExists = vi.mocked(fileExistsAtPath)
 
-function createTask() {
+function createTask(savedPreference?: boolean) {
 	return {
 		cwd: "/workspace",
 		consecutiveMistakeCount: 0,
@@ -65,7 +56,9 @@ function createTask() {
 				getState: vi.fn(async () => ({
 					diagnosticsEnabled: false,
 					writeDelayMs: 0,
-					experiments: {},
+					...(savedPreference === undefined
+						? {}
+						: { experiments: { preventFocusDisruption: savedPreference } }),
 				})),
 			}),
 		},
@@ -96,7 +89,7 @@ function createTask() {
 
 function createCallbacks() {
 	return {
-		askApproval: vi.fn(async () => true),
+		askApproval: vi.fn<ToolCallbacks["askApproval"]>().mockResolvedValue(true),
 		pushToolResult: vi.fn(),
 		handleError: vi.fn(),
 		setResultMetadata: vi.fn(),
@@ -158,10 +151,62 @@ describe("ApplyDiffTool", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-		vi.mocked(experiments.isEnabled).mockReturnValue(true)
 		mockedFileExists.mockResolvedValue(true)
 		mockedFs.readFile.mockResolvedValue("old\n")
 	})
+
+	it.each([undefined, false, true])(
+		"keeps edits in the background after approval with saved focus preference=%s",
+		async (savedPreference) => {
+			const task = createTask(savedPreference)
+			task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+			const callbacks = createCallbacks()
+			let approve!: (approved: boolean) => void
+			const approval = new Promise<boolean>((resolve) => {
+				approve = resolve
+			})
+			let reachedApproval!: () => void
+			const approvalStarted = new Promise<void>((resolve) => {
+				reachedApproval = resolve
+			})
+			callbacks.askApproval.mockImplementationOnce(() => {
+				reachedApproval()
+				return approval
+			})
+			const execution = new ApplyDiffTool().execute(
+				{ path: "test.txt", diff: patchBlock("old", "new") },
+				task,
+				callbacks,
+			)
+			await approvalStarted
+
+			expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.update).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.scrollToFirstDiff).not.toHaveBeenCalled()
+			expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
+			expect(JSON.parse(callbacks.askApproval.mock.calls[0][1]!)).toMatchObject({
+				originalContent: "old\n",
+				finalContent: "new\n",
+				content: "mock-diff",
+				isProtected: true,
+			})
+
+			approve(true)
+			await execution
+
+			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+				"test.txt",
+				"new\n",
+				false,
+				false,
+				0,
+				{ exists: true, content: "old\n" },
+			)
+			expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.reset).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("records an identical patch as one error in the scheduler, trace, and provider history without writing", async () => {
 		const task = createTask()
@@ -180,30 +225,30 @@ describe("ApplyDiffTool", () => {
 		expect(task.didEditFile).toBe(false)
 	})
 
-	it.each([true, false])("reports partial writes and only the failed block with direct writes=%s", async (direct) => {
-		vi.mocked(experiments.isEnabled).mockReturnValue(direct)
-		mockedFs.readFile.mockResolvedValue("old\nkeep\n")
-		const task = createTask()
-		task.diffStrategy = new MultiSearchReplaceDiffStrategy()
-		Object.assign(task.diffViewProvider, { relPath: "test.txt" })
-		task.diffViewProvider.pushToolWriteResult = DiffViewProvider.prototype.pushToolWriteResult
-		// Input order differs from line order: identify the submitted block, not its sorted position.
-		const { outcome, published } = await runScheduledDiff(
-			task,
-			[patchBlock("keep", "keep", 2), patchBlock("old", "new\nadded")].join("\n"),
-		)
+	it.each([undefined, false, true])(
+		"reports partial writes and only the failed block with saved focus preference=%s",
+		async (savedPreference) => {
+			mockedFs.readFile.mockResolvedValue("old\nkeep\n")
+			const task = createTask(savedPreference)
+			task.diffStrategy = new MultiSearchReplaceDiffStrategy()
+			Object.assign(task.diffViewProvider, { relPath: "test.txt" })
+			task.diffViewProvider.pushToolWriteResult = DiffViewProvider.prototype.pushToolWriteResult
+			// Input order differs from line order: identify the submitted block, not its sorted position.
+			const { outcome, published } = await runScheduledDiff(
+				task,
+				[patchBlock("keep", "keep", 2), patchBlock("old", "new\nadded")].join("\n"),
+			)
 
-		expect(outcome.results[0]).toMatchObject({ status: "error" })
-		const output = String(outcome.results[0].content)
-		expect(output).toContain('"operation":"modified"')
-		expect(output).toContain("SEARCH/REPLACE block 1 (original start line: 2)")
-		expect(output).toContain("identical")
-		expect(output).toContain("Do not reapply successful blocks")
-		expect(output).not.toContain("You do not need to re-read")
-		expect(published).toEqual([expect.objectContaining({ is_error: true })])
-		expect(task.didEditFile).toBe(true)
-		expect(task.recordToolError).toHaveBeenCalledWith("apply_diff", expect.stringContaining("identical"))
-		if (direct) {
+			expect(outcome.results[0]).toMatchObject({ status: "error" })
+			const output = String(outcome.results[0].content)
+			expect(output).toContain('"operation":"modified"')
+			expect(output).toContain("SEARCH/REPLACE block 1 (original start line: 2)")
+			expect(output).toContain("identical")
+			expect(output).toContain("Do not reapply successful blocks")
+			expect(output).not.toContain("You do not need to re-read")
+			expect(published).toEqual([expect.objectContaining({ is_error: true })])
+			expect(task.didEditFile).toBe(true)
+			expect(task.recordToolError).toHaveBeenCalledWith("apply_diff", expect.stringContaining("identical"))
 			expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
 				"test.txt",
 				"new\nadded\nkeep\n",
@@ -213,19 +258,17 @@ describe("ApplyDiffTool", () => {
 				{ exists: true, content: "old\nkeep\n" },
 			)
 			expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
-		} else {
-			expect(task.diffViewProvider.update).toHaveBeenCalledWith("new\nadded\nkeep\n", true)
-			expect(task.diffViewProvider.saveChanges).toHaveBeenCalledOnce()
-			expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
-		}
-	})
+			expect(task.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.update).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.scrollToFirstDiff).not.toHaveBeenCalled()
+		},
+	)
 
-	it.each([true, false])(
-		"does not save or claim partial changes after denial with direct writes=%s",
-		async (direct) => {
-			vi.mocked(experiments.isEnabled).mockReturnValue(direct)
+	it.each([undefined, false, true])(
+		"does not save or claim partial changes after denial with saved focus preference=%s",
+		async (savedPreference) => {
 			mockedFs.readFile.mockResolvedValue("old\nkeep\n")
-			const task = createTask()
+			const task = createTask(savedPreference)
 			task.diffStrategy = new MultiSearchReplaceDiffStrategy()
 			const { outcome, published } = await runScheduledDiff(
 				task,
@@ -236,10 +279,57 @@ describe("ApplyDiffTool", () => {
 			expect(published).toEqual([expect.objectContaining({ is_error: true })])
 			expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 			expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.revertChanges).not.toHaveBeenCalled()
 			expect(task.diffViewProvider.pushToolWriteResult).not.toHaveBeenCalled()
 			expect(task.didEditFile).toBe(false)
 		},
 	)
+
+	it("does not save when approval is cancelled", async () => {
+		const task = createTask(false)
+		const callbacks = createCallbacks()
+		const cancellation = new Error("Approval cancelled")
+		callbacks.askApproval.mockRejectedValueOnce(cancellation)
+
+		await new ApplyDiffTool().execute({ path: "test.txt", diff: patchBlock("old", "new") }, task, callbacks)
+
+		expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+		expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+		expect(task.diffViewProvider.open).not.toHaveBeenCalled()
+		expect(task.diffViewProvider.reset).toHaveBeenCalledOnce()
+		expect(task.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+		expect(task.didEditFile).toBe(false)
+		expect(callbacks.handleError).toHaveBeenCalledWith("applying diff", cancellation)
+	})
+
+	it("does not claim edits when a background save rejects a stale approval baseline", async () => {
+		const task = createTask(false)
+		const callbacks = createCallbacks()
+		const staleError = new Error("File changed after approval")
+		callbacks.askApproval.mockImplementationOnce(async () => {
+			mockedFs.readFile.mockResolvedValue("external changes")
+			return true
+		})
+		task.diffViewProvider.saveDirectly.mockRejectedValueOnce(staleError)
+
+		await new ApplyDiffTool().execute({ path: "test.txt", diff: patchBlock("old", "new") }, task, callbacks)
+
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+			"test.txt",
+			"new\n",
+			false,
+			false,
+			0,
+			{ exists: true, content: "old\n" },
+		)
+		expect(mockedFs.readFile).toHaveBeenCalledOnce()
+		expect(callbacks.handleError).toHaveBeenCalledWith("applying diff", staleError)
+		expect(task.diffViewProvider.reset).toHaveBeenCalledOnce()
+		expect(task.diffViewProvider.pushToolWriteResult).not.toHaveBeenCalled()
+		expect(task.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+		expect(task.didEditFile).toBe(false)
+	})
 
 	it.each(["missing path", "missing diff", "missing file", "ignored file"])(
 		"reports the structured status for %s before requesting approval",
@@ -262,6 +352,8 @@ describe("ApplyDiffTool", () => {
 			})
 			expect(callbacks.pushToolResult).toHaveBeenCalledOnce()
 			expect(callbacks.askApproval).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+			expect(task.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 		},
 	)
 
@@ -315,14 +407,13 @@ describe("ApplyDiffTool", () => {
 		expect(callbacks.handleError).not.toHaveBeenCalled()
 	})
 
-	it("passes the raw baseline to the diff preview after diff computation", async () => {
-		vi.mocked(experiments.isEnabled).mockReturnValue(false)
+	it("passes the raw baseline to a background save after diff computation", async () => {
 		const rawBaseline = "old\r\n"
 		const task = createTask()
 		const callbacks = createCallbacks()
 		task.diffStrategy.applyDiff.mockImplementationOnce(async () => {
-			// A later disk read must not become the preview baseline.
-			mockedFs.readFile.mockResolvedValueOnce("changed while computing diff")
+			// A later disk read must not become the approval baseline.
+			mockedFs.readFile.mockResolvedValue("changed while computing diff")
 			return { success: true, content: "new\r\n" }
 		})
 		mockedFs.readFile.mockResolvedValueOnce(rawBaseline)
@@ -333,9 +424,14 @@ describe("ApplyDiffTool", () => {
 			callbacks as any,
 		)
 
-		expect(task.diffViewProvider.open).toHaveBeenCalledWith("test.txt", {
-			exists: true,
-			content: rawBaseline,
-		})
+		expect(task.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+			"test.txt",
+			"new\r\n",
+			false,
+			false,
+			0,
+			{ exists: true, content: rawBaseline },
+		)
+		expect(task.diffViewProvider.open).not.toHaveBeenCalled()
 	})
 })

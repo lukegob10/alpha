@@ -1,7 +1,6 @@
 // npx vitest run core/webview/__tests__/AlphaProvider.lockApiConfig.spec.ts
 
 import * as vscode from "vscode"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { AlphaProvider } from "../AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 
@@ -239,21 +238,6 @@ vi.mock("proper-lockfile", () => ({
 	check: vi.fn().mockResolvedValue(true),
 }))
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		hasInstance: vi.fn().mockReturnValue(true),
-		createInstance: vi.fn(),
-		get instance() {
-			return {
-				trackEvent: vi.fn(),
-				trackError: vi.fn(),
-				setProvider: vi.fn(),
-				captureModeSwitch: vi.fn(),
-			}
-		},
-	},
-}))
-
 describe("AlphaProvider - Lock API Config Across Modes", () => {
 	let provider: AlphaProvider
 	let mockContext: vscode.ExtensionContext
@@ -262,10 +246,6 @@ describe("AlphaProvider - Lock API Config Across Modes", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		const globalState: Record<string, unknown> = {
 			mode: "code",

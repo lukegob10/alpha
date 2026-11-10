@@ -2,11 +2,14 @@ import React, { StrictMode } from "react"
 import { cleanup, render, screen } from "@testing-library/react"
 
 import type { ExtensionMessage, WebviewMessage } from "@alpha-code/types"
+import type { ExtensionStateContextType } from "@src/context/ExtensionStateContext"
 
 import { vscode } from "@src/utils/vscode"
 import { initializeSourceMaps } from "@src/utils/sourceMapInitializer"
 
 import AppWithProviders from "../App"
+
+const captureStartupState = vi.hoisted(() => vi.fn<(state: ExtensionStateContextType) => void>())
 
 vi.mock("@src/utils/vscode", () => ({
 	vscode: { postMessage: vi.fn(), getState: vi.fn(), setState: vi.fn() },
@@ -17,17 +20,14 @@ vi.mock("@src/components/chat/ChatView", async () => {
 	const { useShellState } = await import("@src/context/ExtensionStateContext")
 	return {
 		default: React.forwardRef(function StartupChat() {
-			const { customInstructions } = useShellState()
-			return <div data-testid="startup-chat">{customInstructions}</div>
+			const state = useShellState()
+			captureStartupState(state)
+			return <div data-testid="startup-chat">{state.customInstructions}</div>
 		}),
 	}
 })
 
 vi.mock("@src/components/welcome/WelcomeViewProvider", () => ({ default: () => <div>Welcome</div> }))
-
-vi.mock("@src/utils/TelemetryClient", () => ({
-	telemetryClient: { capture: vi.fn(), updateTelemetryState: vi.fn() },
-}))
 
 vi.mock("@src/utils/sourceMapInitializer", () => ({
 	initializeSourceMaps: vi.fn(() => vi.fn()),
@@ -62,6 +62,13 @@ describe("App startup", () => {
 		const firstMount = render(app)
 		expect(launches).toBe(1)
 		expect(screen.getByTestId("startup-chat")).toHaveTextContent("Hydrated on launch 1")
+		const startupState = captureStartupState.mock.calls.at(-1)?.[0]
+		for (const key of ["telemetrySetting", "telemetryKey", "machineId", "setTelemetrySetting"]) {
+			expect(startupState).not.toHaveProperty(key)
+		}
+		expect(vi.mocked(vscode.postMessage).mock.calls.map(([message]) => message.type)).not.toContain(
+			"telemetrySetting",
+		)
 
 		const disposeSourceMaps = vi.mocked(initializeSourceMaps).mock.results.at(-1)?.value
 		firstMount.unmount()

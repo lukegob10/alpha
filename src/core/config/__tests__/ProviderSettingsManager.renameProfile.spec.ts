@@ -273,7 +273,7 @@ describe("ProviderSettingsManager persisted profile rename", () => {
 						openAiModelId: "explicit-save",
 					},
 				),
-			).resolves.toEqual({ id: "profile-id", name: "renamed" })
+			).resolves.toEqual({ id: "profile-id", name: "renamed", version: expect.any(String) })
 			expect(secrets.store).toHaveBeenCalledOnce()
 			expect(JSON.parse(stored).apiConfigs.renamed).toMatchObject({
 				id: "profile-id",
@@ -325,7 +325,7 @@ describe("ProviderSettingsManager persisted profile rename", () => {
 			)
 			complete.resolve()
 			await rename
-			await expect(save).resolves.toEqual({ id: "profile-id", name: "renamed" })
+			await expect(save).resolves.toEqual({ id: "profile-id", name: "renamed", version: expect.any(String) })
 			expect(JSON.parse(stored).apiConfigs.renamed).toMatchObject({
 				id: "profile-id",
 				openAiModelId: "queued-save",

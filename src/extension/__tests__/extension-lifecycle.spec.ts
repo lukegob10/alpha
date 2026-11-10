@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => {
 		disposeProviders: vi.fn(async () => provider.dispose()),
 		shutdownGlobalStores: vi.fn().mockResolvedValue(undefined),
 		cleanupMcp: vi.fn().mockResolvedValue(undefined),
-		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
 		loadEnvironment: vi.fn().mockResolvedValue(undefined),
@@ -65,15 +64,6 @@ vi.mock("vscode", () => ({
 }))
 
 vi.mock("@alpha-code/core", () => ({ customToolRegistry: { setExtensionPath: vi.fn() } }))
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		createInstance: vi.fn(),
-		instance: {
-			setProvider: vi.fn(),
-			shutdown: mocks.shutdownTelemetry,
-		},
-	},
-}))
 vi.mock("../../utils/networkProxy", () => ({ initializeNetworkProxy: mocks.initializeNetworkProxy }))
 vi.mock("../../utils/loadEnvironment", () => ({ loadExtensionEnvironment: mocks.loadEnvironment }))
 vi.mock("../../shared/package", () => ({ Package: { name: "alpha", outputChannel: "Alpha" } }))
@@ -447,7 +437,6 @@ describe("extension lifecycle", () => {
 
 		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
-		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
 
@@ -488,40 +477,12 @@ describe("extension lifecycle", () => {
 		expect(mocks.provider.dispose).toHaveBeenCalledOnce()
 		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
-		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
-	it("awaits telemetry shutdown before completing deactivation", async () => {
-		let finish!: () => void
-		let started!: () => void
-		const shutdownStarted = new Promise<void>((resolve) => (started = resolve))
-		mocks.shutdownTelemetry.mockImplementationOnce(() => {
-			started()
-			return new Promise<void>((resolve) => (finish = resolve))
-		})
-		let settled = false
-		const deactivating = deactivate().then(() => {
-			settled = true
-		})
-		try {
-			await shutdownStarted
-			expect(settled).toBe(false)
-			expect(mocks.cleanupTerminal).not.toHaveBeenCalled()
-		} finally {
-			finish()
-			await deactivating
-		}
+	it("finishes other cleanup after MCP shutdown rejects without logging raw errors", async () => {
+		mocks.cleanupMcp.mockRejectedValueOnce(new Error("SECRET-shutdown-error"))
+		await expect(deactivate()).resolves.toBeUndefined()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+		expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
 	})
-	it.each(["telemetry", "mcp"])(
-		"finishes other cleanup after %s shutdown rejects without logging raw errors",
-		async (client) => {
-			const shutdown = client === "telemetry" ? mocks.shutdownTelemetry : mocks.cleanupMcp
-			shutdown.mockRejectedValueOnce(new Error("SECRET-shutdown-error"))
-			await expect(deactivate()).resolves.toBeUndefined()
-			expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
-			expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
-			expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
-		},
-	)
 })

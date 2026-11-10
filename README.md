@@ -10,12 +10,23 @@ The exact development and release reference host is VS Code **1.141.0**; it does
 
 ## Work in Alpha
 
+Start in **Settings → Providers**: choose a provider, sign in or enter its credentials, and select a model. Review
+**Settings → Preferences → Permissions** for the default approval mode, then start a chat. The composer lets you choose permissions
+for an individual chat.
+
+Settings has four dedicated sections: **Providers**, **Tools & agents**, **Preferences**, and **Advanced**. Help buttons beside controls explain options on demand.
+Manage skills, agent definitions, and MCP servers in **Tools & agents**. Permissions, chat, sound, and memory choices live
+in **Preferences**; context tuning, checkpoint configuration, and terminal troubleshooting live in **Advanced**.
+Click **Save** to apply preference edits. Skill-file and MCP-server management actions take effect immediately.
+Open **About Alpha** from the settings footer for version information and settings import, export, or reset.
+
 - Plan systems and changes in **Plan**, then implement, investigate, and debug in **Code**. Press `Shift+Tab` in the
   chat composer to switch modes.
-- Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff.
+- Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff. Agent file edits run in
+  the background; open a file or diff whenever you want to review it.
 - Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
 - Use built-in skills, Alpha Tickets, the HTML document previewer, and scheduled tasks.
-  Type `/skill-name` to invoke a skill, and manage reusable workflows in **Settings → Skills**.
+  Type `/skill-name` to invoke a skill, and manage reusable workflows in **Settings → Tools & agents → Skills**.
   Custom `.alpha/commands/*.md` files are no longer loaded.
 - Connect MCP servers and use automatic context compaction for longer tasks.
 
@@ -38,6 +49,7 @@ Subagents share the parent task's working directory and inherit its approval pol
 Their file changes are immediately visible to the parent and other agents, so assign separate files when delegating
 editing work in parallel. Agent roles describe their assignments; they do not grant additional permissions. Separate
 chats can still use an explicitly selected Git worktree. Saved isolated worker changes remain available for review.
+Use the worktree control beside a new chat to **Create worktree** or open **Manage Worktrees**.
 
 Streamable HTTP MCP servers supporting OAuth dynamic registration can request browser authorization. Alpha stores
 their credentials in VS Code SecretStorage. Servers with configured authorization headers and SSE servers retain
@@ -114,16 +126,16 @@ selection of Full Access requires its acknowledgment; cycling does not change th
 Previous Task walks toward older saved chats in the current workspace; Next Task walks toward newer chats. Navigation
 keeps a stable history order while browsing and stops at either end. It includes chats that are no longer loaded.
 
-Enable **Settings → Auto-Approve → Wait indefinitely for question answers**, then **Save**, to keep questions open until
-you answer, including in Full Access. Turning it off lets Full Access use first suggested answers after a configurable
-delay. Ask and Auto always wait for your answers.
+When **Full Access** is selected in **Settings → Permissions**, expand **Advanced permissions** to configure question
+waiting. **Wait indefinitely for question answers** is enabled by default. Turning it off and clicking **Save** lets
+Full Access use first suggested answers after a configurable delay. Ask and Auto always wait for your answers.
 
 Mermaid diagrams keep readable text in chat; scroll large diagrams to see the rest. Select **Open diagram** for the
 full editor SVG preview. Use **Zoom Out** and **Zoom In** in the editor toolbar. To fit the entire diagram again, select
 the zoom percentage in the status bar, then **Whole Image**. **Save Image** exports a PNG.
 
 Supported chat providers are native OpenAI, Sign in with ChatGPT, Anthropic, Gemini, xAI, Meta, Amazon Bedrock, OpenRouter,
-GCP Vertex AI, VS Code LM API, and OpenAI Compatible. Select the provider and model in Settings and click
+GCP Vertex AI, VS Code LM API, and OpenAI Compatible. Select the provider and model in **Settings → Providers** and click
 **Save**. API-key providers use their own credentials. Bedrock supports the default AWS credential chain, a named AWS
 profile, explicit AWS credentials, or a Bedrock API key. **Continue with ChatGPT** opens the browser for eligible ChatGPT
 plan access; its account credentials remain in VS Code SecretStorage and are not exported with provider profiles.
@@ -139,7 +151,7 @@ credentials. Indexing API keys are stored separately from chat credentials. Open
 URL, model ID, and vector dimension for custom models. Bedrock uses an AWS profile, the default AWS credential chain, or a
 Bedrock API key. Changing the embedding model or endpoint requires rebuilding the index. Retired saved modes resume in Plan.
 
-Enable optional local memory in **Settings → Context → Memories**, then **Save**. Use and generation have separate
+Enable optional local memory in **Settings → Preferences → Memories**, then **Save**. Use and generation have separate
 controls; background generation uses the selected provider and can incur model usage. Memory uses eligible idle
 conversations and stores `memory_summary.md` and `rollout_summaries/` under `~/.alpha/memories_v2/` (or
 `$ALPHA_HOME/memories_v2/`). Use changes apply to new conversations; generation changes also apply to the displayed

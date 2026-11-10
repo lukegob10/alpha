@@ -24,6 +24,7 @@ import {
 } from "@/components/ui"
 import { vscode } from "@/utils/vscode"
 import { getUserFacingModeOptions } from "@/utils/modePresentation"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface CreateSkillDialogProps {
 	open: boolean
@@ -64,7 +65,7 @@ const validateSkillName = (name: string): string | null => {
  * - 1-1024 characters
  */
 const validateDescription = (description: string): string | null => {
-	if (!description) return "settings:skills.validation.descriptionRequired"
+	if (!description.trim()) return "settings:skills.validation.descriptionRequired"
 	if (description.length > 1024) return "settings:skills.validation.descriptionTooLong"
 	return null
 }
@@ -201,33 +202,51 @@ export const CreateSkillDialog: React.FC<CreateSkillDialogProps> = ({
 							onChange={handleNameChange}
 							placeholder={t("settings:skills.createDialog.namePlaceholder")}
 							maxLength={64}
+							aria-required="true"
+							aria-invalid={Boolean(nameError)}
+							aria-describedby={nameError ? "skill-name-error" : undefined}
 							className="w-full bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border rounded-xl px-3 py-2 focus:outline-none focus:border-vscode-focusBorder"
 						/>
-						{nameError && <span className="text-xs text-vscode-errorForeground">{t(nameError)}</span>}
+						{nameError && (
+							<span id="skill-name-error" role="alert" className="text-xs text-vscode-errorForeground">
+								{t(nameError)}
+							</span>
+						)}
 					</div>
 
 					{/* Description Input */}
 					<div className="flex flex-col gap-1">
+						<label htmlFor="skill-description" className="text-sm font-medium text-vscode-foreground">
+							{t("settings:skills.createDialog.descriptionLabel")}
+						</label>
 						<Textarea
 							id="skill-description"
 							value={description}
 							onChange={handleDescriptionChange}
 							placeholder={t("settings:skills.createDialog.descriptionPlaceholder")}
 							maxLength={1024}
-							rows={5}
+							rows={3}
+							aria-required="true"
+							aria-invalid={Boolean(descriptionError)}
+							aria-describedby={descriptionError ? "skill-description-error" : undefined}
 						/>
 						{descriptionError && (
-							<span className="text-xs text-vscode-errorForeground">{t(descriptionError)}</span>
+							<span
+								id="skill-description-error"
+								role="alert"
+								className="text-xs text-vscode-errorForeground">
+								{t(descriptionError)}
+							</span>
 						)}
 					</div>
 
 					{/* Source Selection */}
 					<div className="flex flex-col gap-1">
-						<label className="text-sm font-medium text-vscode-foreground">
+						<label htmlFor="skill-source" className="text-sm font-medium text-vscode-foreground">
 							{t("settings:skills.createDialog.sourceLabel")}
 						</label>
 						<Select value={source} onValueChange={(value) => setSource(value as "global" | "project")}>
-							<SelectTrigger className="w-full">
+							<SelectTrigger id="skill-source" className="w-full">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -239,44 +258,50 @@ export const CreateSkillDialog: React.FC<CreateSkillDialogProps> = ({
 						</Select>
 					</div>
 
-					{/* Mode Selection (Optional) */}
-					<div className="flex flex-col gap-1">
-						<label className="text-sm font-medium text-vscode-foreground">
-							{t("settings:skills.createDialog.modeLabel")}
-						</label>
-						<span className="text-xs text-vscode-descriptionForeground mb-1">
-							{t("settings:skills.modeDialog.intro")}
-						</span>
-
-						{/* Individual mode checkboxes */}
-						<div className="flex flex-col max-h-28 overflow-y-auto">
-							{/* Any mode option */}
-							<div className="flex items-center gap-3 p-1 rounded-lg hover:bg-vscode-list-hoverBackground">
-								<Checkbox
-									id="create-mode-any"
-									checked={isAnyMode}
-									onCheckedChange={(checked) => handleAnyModeToggle(checked === true)}
-								/>
-								<label htmlFor="create-mode-any" className="flex-1 cursor-pointer font-medium">
-									{t("settings:skills.modeDialog.anyMode")}
-								</label>
+					<details className="text-sm">
+						<summary className="cursor-pointer text-vscode-descriptionForeground">
+							{t("settings:skills.advanced")}
+						</summary>
+						<div className="mt-2 flex flex-col gap-1">
+							<div className="flex items-center justify-between gap-2">
+								<span className="text-sm font-medium text-vscode-foreground">
+									{t("settings:skills.createDialog.modeLabel")}
+								</span>
+								<SettingsHelp label={t("settings:skills.createDialog.modeLabel")}>
+									{t("settings:skills.modeDialog.intro")}
+								</SettingsHelp>
 							</div>
-							{availableModes.map((m) => (
-								<div
-									key={m.slug}
-									className="flex items-center gap-3 p-1 rounded-lg hover:bg-vscode-list-hoverBackground">
+
+							{/* Individual mode checkboxes */}
+							<div className="flex flex-col max-h-28 overflow-y-auto">
+								{/* Any mode option */}
+								<div className="flex items-center gap-3 p-1 rounded-lg hover:bg-vscode-list-hoverBackground">
 									<Checkbox
-										id={`create-mode-${m.slug}`}
-										checked={selectedModes.includes(m.slug)}
-										onCheckedChange={(checked) => handleModeToggle(m.slug, checked === true)}
+										id="create-mode-any"
+										checked={isAnyMode}
+										onCheckedChange={(checked) => handleAnyModeToggle(checked === true)}
 									/>
-									<label htmlFor={`create-mode-${m.slug}`} className="flex-1 cursor-pointer">
-										{m.name}
+									<label htmlFor="create-mode-any" className="flex-1 cursor-pointer font-medium">
+										{t("settings:skills.modeDialog.anyMode")}
 									</label>
 								</div>
-							))}
+								{availableModes.map((m) => (
+									<div
+										key={m.slug}
+										className="flex items-center gap-3 p-1 rounded-lg hover:bg-vscode-list-hoverBackground">
+										<Checkbox
+											id={`create-mode-${m.slug}`}
+											checked={selectedModes.includes(m.slug)}
+											onCheckedChange={(checked) => handleModeToggle(m.slug, checked === true)}
+										/>
+										<label htmlFor={`create-mode-${m.slug}`} className="flex-1 cursor-pointer">
+											{m.name}
+										</label>
+									</div>
+								))}
+							</div>
 						</div>
-					</div>
+					</details>
 				</div>
 
 				<DialogFooter>

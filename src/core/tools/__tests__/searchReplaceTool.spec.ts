@@ -205,13 +205,18 @@ describe("searchReplaceTool", () => {
 
 	it.each(["\n", "\r\n"])("preserves BOM and %j endings while replacing literal dollar text", async (eol) => {
 		const replacement = "$& $$ $' &amp;\nchanged"
+		const originalContent = `\uFEFFLine 1${eol}Line 2${eol}Line 3`
 		await executeSearchReplaceTool(
 			{ old_string: "Line 1\nLine 2", new_string: replacement },
-			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
+			{ fileContent: originalContent },
 		)
-		expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(
+		expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+			testFilePath,
 			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			false,
 			true,
+			1000,
+			{ exists: true, content: originalContent },
 		)
 	})
 
@@ -222,6 +227,7 @@ describe("searchReplaceTool", () => {
 			expect.objectContaining({ message: expect.stringMatching(/mixed line endings/i) }),
 		)
 		expect(mockAskApproval).not.toHaveBeenCalled()
+		expect(mockAlphaTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 		expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
 	})
 
@@ -280,39 +286,42 @@ describe("searchReplaceTool", () => {
 	})
 
 	describe("search and replace logic", () => {
-		describe.each([false, true])("literal replacements with direct save = %s", (directSave) => {
-			it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])("preserves %s in replacement text", async (token) => {
-				mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
-					diagnosticsEnabled: true,
-					writeDelayMs: 1000,
-					experiments: { preventFocusDisruption: directSave },
-				})
-				const replacement = `const value = "${token}"`
-				const originalContent = "before\nTARGET\nafter"
-				const expectedContent = `before\n${replacement}\nafter`
+		describe.each([false, true])(
+			"literal replacements with legacy background preference %s",
+			(legacyPreference) => {
+				it.each(["$&", "$$", "$`", "$'", "$1", "$<name>"])(
+					"preserves %s in replacement text",
+					async (token) => {
+						mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
+							diagnosticsEnabled: true,
+							writeDelayMs: 1000,
+							experiments: { preventFocusDisruption: legacyPreference },
+						})
+						const replacement = `const value = "${token}"`
+						const originalContent = "before\nTARGET\nafter"
+						const expectedContent = `before\n${replacement}\nafter`
 
-				await executeSearchReplaceTool(
-					{ old_string: "TARGET", new_string: replacement },
-					{ fileContent: originalContent },
+						await executeSearchReplaceTool(
+							{ old_string: "TARGET", new_string: replacement },
+							{ fileContent: originalContent },
+						)
+
+						expect(mockHandleError).not.toHaveBeenCalled()
+						expect(mockAlphaTask.didEditFile).toBe(true)
+						expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+							testFilePath,
+							expectedContent,
+							false,
+							true,
+							1000,
+							{ exists: true, content: originalContent },
+						)
+						expect(mockAlphaTask.diffViewProvider.update).not.toHaveBeenCalled()
+						expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+					},
 				)
-
-				expect(mockHandleError).not.toHaveBeenCalled()
-				expect(mockAlphaTask.didEditFile).toBe(true)
-				if (directSave) {
-					expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
-						testFilePath,
-						expectedContent,
-						false,
-						true,
-						1000,
-						{ exists: true, content: originalContent },
-					)
-				} else {
-					expect(mockAlphaTask.diffViewProvider.update).toHaveBeenCalledWith(expectedContent, true)
-					expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
-				}
-			})
-		})
+			},
+		)
 
 		it("returns error when no match is found", async () => {
 			const result = await executeSearchReplaceTool(
@@ -354,27 +363,106 @@ describe("searchReplaceTool", () => {
 	})
 
 	describe("approval workflow", () => {
+		it.each([undefined, false, true])(
+			"keeps background edits behind approval with legacy preference %s",
+			async (legacyPreference) => {
+				const rawBaseline = "\uFEFFLine 1\r\nLine 2\r\nLine 3"
+				mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
+					diagnosticsEnabled: false,
+					writeDelayMs: 175,
+					...(legacyPreference === undefined
+						? {}
+						: { experiments: { preventFocusDisruption: legacyPreference } }),
+				})
+				mockAlphaTask.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+				let resolveApproval!: (approved: boolean) => void
+				let markApprovalRequested!: () => void
+				const approvalRequested = new Promise<void>((resolve) => {
+					markApprovalRequested = resolve
+				})
+				const approval = new Promise<boolean>((resolve) => {
+					resolveApproval = resolve
+				})
+				mockAskApproval.mockImplementation(() => {
+					markApprovalRequested()
+					return approval
+				})
+				const execution = executeSearchReplaceTool(
+					{ old_string: "Line 2", new_string: "Changed" },
+					{ fileContent: rawBaseline },
+				)
+				await approvalRequested
+				try {
+					expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
+					expect(mockAlphaTask.diffViewProvider.update).not.toHaveBeenCalled()
+					expect(mockAlphaTask.diffViewProvider.scrollToFirstDiff).not.toHaveBeenCalled()
+					expect(mockAlphaTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+					expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+					expect(mockAskApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
+					expect(JSON.parse(mockAskApproval.mock.calls[0][1])).toMatchObject({
+						diff: "mock-diff",
+						content: "mock-diff",
+						originalContent: rawBaseline,
+						finalContent: "\uFEFFLine 1\r\nChanged\r\nLine 3",
+						isProtected: true,
+					})
+				} finally {
+					resolveApproval(true)
+					await execution
+				}
+				expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+					testFilePath,
+					"\uFEFFLine 1\r\nChanged\r\nLine 3",
+					false,
+					false,
+					175,
+					{ exists: true, content: rawBaseline },
+				)
+				expect(mockAlphaTask.didEditFile).toBe(true)
+				expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+				expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalledTimes(1)
+			},
+		)
+
+		it("leaves the workspace unchanged when approval is cancelled", async () => {
+			const cancellation = new Error("Approval cancelled")
+			cancellation.name = "AbortError"
+			mockAskApproval.mockRejectedValueOnce(cancellation)
+			await executeSearchReplaceTool()
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockAlphaTask.recordToolUsage).not.toHaveBeenCalled()
+			expect(mockAlphaTask.didEditFile).toBe(false)
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
+			expect(mockHandleError).toHaveBeenCalledWith("search and replace", cancellation)
+		})
+
 		it("saves changes when user approves", async () => {
 			mockAskApproval.mockResolvedValue(true)
 
 			await executeSearchReplaceTool()
 
-			expect(mockAlphaTask.diffViewProvider.saveChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).toHaveBeenCalled()
 			expect(mockAlphaTask.didEditFile).toBe(true)
 			expect(mockAlphaTask.recordToolUsage).toHaveBeenCalledWith("search_replace")
 		})
 
-		it("reverts changes when user rejects", async () => {
+		it("leaves the workspace unchanged when the user rejects", async () => {
 			mockAskApproval.mockResolvedValue(false)
 
 			const result = await executeSearchReplaceTool()
 
-			expect(mockAlphaTask.diffViewProvider.revertChanges).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.revertChanges).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 			expect(mockAlphaTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockAlphaTask.didEditFile).toBe(false)
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalledTimes(1)
 			expect(result).toContain("rejected")
 		})
 
-		it("passes the raw baseline to the diff preview", async () => {
+		it("includes the raw baseline in the inline diff approval", async () => {
 			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
 
 			await executeSearchReplaceTool(
@@ -382,10 +470,11 @@ describe("searchReplaceTool", () => {
 				{ fileContent: rawBaseline },
 			)
 
-			expect(mockAlphaTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
-				exists: true,
-				content: rawBaseline,
+			expect(JSON.parse(mockAskApproval.mock.calls[0][1])).toMatchObject({
+				originalContent: rawBaseline,
+				finalContent: "Line 1\r\nChanged\r\nLine 3",
 			})
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
 		})
 	})
 
@@ -397,6 +486,9 @@ describe("searchReplaceTool", () => {
 			await executeSearchReplaceTool({}, { isPartial: true })
 
 			expect(mockAlphaTask.ask).toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.update).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 		})
 	})
 
@@ -438,7 +530,7 @@ describe("searchReplaceTool", () => {
 		})
 
 		it("handles general errors and resets diff view", async () => {
-			mockAlphaTask.diffViewProvider.open.mockRejectedValueOnce(new Error("General error"))
+			mockAlphaTask.diffViewProvider.saveDirectly.mockRejectedValueOnce(new Error("General error"))
 
 			await executeSearchReplaceTool()
 
@@ -526,7 +618,7 @@ describe("searchReplaceTool", () => {
 			mockAlphaTask.providerRef.deref().getState.mockResolvedValue({
 				diagnosticsEnabled: true,
 				writeDelayMs: 0,
-				experiments: { preventFocusDisruption: true },
+				experiments: { preventFocusDisruption: false },
 			})
 			mockAskApproval.mockImplementation(async () => {
 				mockedFsReadFile.mockResolvedValue("Line 1\r\nLine 2\r\nconcurrent edit")
@@ -558,6 +650,9 @@ describe("searchReplaceTool", () => {
 				expect.objectContaining({ message: expect.stringContaining("changed") }),
 			)
 			expect(mockAlphaTask.didEditFile).toBe(false)
+			expect(mockAlphaTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockAlphaTask.recordToolUsage).not.toHaveBeenCalled()
+			expect(mockAlphaTask.diffViewProvider.reset).toHaveBeenCalled()
 		})
 	})
 })

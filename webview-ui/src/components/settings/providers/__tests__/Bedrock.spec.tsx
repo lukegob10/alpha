@@ -5,7 +5,10 @@ import { fireEvent, render, screen } from "@/utils/test-utils"
 import { Bedrock } from "../Bedrock"
 
 vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({ t: (key: string) => key }),
+	useAppTranslation: () => ({
+		t: (key: string, options?: { label?: string }) =>
+			key === "settings:helpFor" ? `Help for ${options?.label}` : key,
+	}),
 }))
 vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	VSCodeTextField: ({ children, ...props }: PropsWithChildren<ComponentProps<"input">>) => (
@@ -51,6 +54,26 @@ function BufferedBedrock({ initial }: { initial: ProviderSettings }) {
 }
 
 describe("Bedrock settings buffer", () => {
+	it("keeps credential guidance beside authentication without adding routine form prose", async () => {
+		const initial: ProviderSettings = { apiProvider: "bedrock" }
+		render(<BufferedBedrock initial={initial} />)
+
+		expect(screen.queryByText("settings:providers.bedrock.credentialsDescription")).not.toBeInTheDocument()
+		expect(screen.queryByText("settings:providers.bedrock.inferenceProfileDescription")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:providers.bedrock.authMethod" }))
+		expect(await screen.findByText("settings:providers.bedrock.credentialsDescription")).toBeVisible()
+		expect(screen.getByTestId("buffer")).toHaveTextContent(JSON.stringify(initial))
+	})
+
+	it("shows inference-profile help on demand without changing the saved route", async () => {
+		const initial: ProviderSettings = { apiProvider: "bedrock", awsCustomArn: "saved-profile-route" }
+		render(<BufferedBedrock initial={initial} />)
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:providers.bedrock.inferenceProfile" }))
+		expect(await screen.findByText("settings:providers.bedrock.inferenceProfileDescription")).toBeVisible()
+		expect(screen.getByLabelText("settings:providers.bedrock.inferenceProfile")).toHaveValue("saved-profile-route")
+		expect(screen.getByTestId("buffer")).toHaveTextContent(JSON.stringify(initial))
+	})
+
 	it("shows the default region and credential-chain fields without modifying the profile", () => {
 		const initial: ProviderSettings = { apiProvider: "bedrock" }
 		render(<BufferedBedrock initial={initial} />)

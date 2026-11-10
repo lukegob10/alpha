@@ -91,6 +91,7 @@ describe("saved provider profile retention", () => {
 		expect(await manager.listConfig()).toContainEqual({
 			id: "invalid-id",
 			name: "invalid",
+			version: expect.any(String),
 			apiProvider: "openai",
 			availability: "invalid",
 			invalidFields: ["rateLimitSeconds"],
@@ -132,6 +133,7 @@ describe("saved provider profile retention", () => {
 		expect(await manager.listConfig()).toContainEqual({
 			id: "old-id",
 			name: "old",
+			version: expect.any(String),
 			apiProvider: "removed-provider",
 			availability: "unsupported",
 		})
@@ -169,7 +171,7 @@ describe("saved provider profile retention", () => {
 
 		await expect(
 			manager.saveConfig({ id: "invalid-id" }, { apiProvider: "vscode-lm", id: "wrong-id" }),
-		).resolves.toEqual({ id: "invalid-id", name: "invalid" })
+		).resolves.toEqual({ id: "invalid-id", name: "invalid", version: expect.any(String) })
 		expect(saved.read().retainedApiConfigs?.invalid).toBeUndefined()
 		await expect(manager.getProfile({ id: "invalid-id" })).resolves.toMatchObject({
 			name: "invalid",

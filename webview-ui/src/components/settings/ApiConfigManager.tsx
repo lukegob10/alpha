@@ -15,6 +15,7 @@ import {
 	StandardTooltip,
 	SearchableSelect,
 } from "@/components/ui"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface ApiConfigManagerProps {
 	currentApiConfigName?: string
@@ -232,8 +233,13 @@ const ApiConfigManager = ({
 	const isOnlyProfile = listApiConfigMeta?.length === 1
 
 	return (
-		<div className="flex flex-col gap-1">
-			<label className="block font-medium mb-1">{t("settings:providers.configProfile")}</label>
+		<div className="flex min-w-0 flex-col gap-2">
+			<div className="flex items-center gap-1">
+				<span className="font-medium">{t("settings:providers.configProfile")}</span>
+				<SettingsHelp label={t("settings:providers.configProfile")}>
+					{t("settings:providers.description")}
+				</SettingsHelp>
+			</div>
 
 			{isRenaming ? (
 				<div data-testid="rename-form" aria-busy={isRenameSaving || profileActionsDisabled}>
@@ -263,6 +269,7 @@ const ApiConfigManager = ({
 								size="icon"
 								disabled={!inputValue.trim() || isRenameSaving || profileActionsDisabled}
 								onClick={handleSave}
+								aria-label={t("settings:common.save")}
 								data-testid="save-rename-button">
 								<span className="codicon codicon-check" />
 							</Button>
@@ -272,6 +279,7 @@ const ApiConfigManager = ({
 								variant="ghost"
 								size="icon"
 								onClick={handleCancel}
+								aria-label={t("settings:common.cancel")}
 								disabled={isRenameSaving || profileActionsDisabled}
 								data-testid="cancel-rename-button">
 								<span className="codicon codicon-close" />
@@ -289,9 +297,10 @@ const ApiConfigManager = ({
 				</div>
 			) : (
 				<>
-					<div className="flex items-center gap-1">
+					<div className="flex min-w-0 flex-wrap items-center gap-1">
 						<SearchableSelect
 							value={currentApiConfigName}
+							aria-label={t("settings:providers.configProfile")}
 							disabled={profileActionsDisabled}
 							onValueChange={handleSelectConfig}
 							options={listApiConfigMeta.map((config) => {
@@ -319,7 +328,7 @@ const ApiConfigManager = ({
 							placeholder={t("settings:common.select")}
 							searchPlaceholder={t("settings:providers.searchPlaceholder")}
 							emptyMessage={t("settings:providers.noMatchFound")}
-							className="grow"
+							className="min-w-0 basis-36 grow"
 							data-testid="select-component"
 						/>
 						<StandardTooltip content={t("settings:providers.addProfile")}>
@@ -327,6 +336,7 @@ const ApiConfigManager = ({
 								variant="ghost"
 								size="icon"
 								onClick={handleAdd}
+								aria-label={t("settings:providers.addProfile")}
 								disabled={profileActionsDisabled}
 								data-testid="add-profile-button">
 								<span className="codicon codicon-add" />
@@ -339,6 +349,7 @@ const ApiConfigManager = ({
 										variant="ghost"
 										size="icon"
 										onClick={handleStartRename}
+										aria-label={t("settings:providers.renameProfile")}
 										disabled={profileActionsDisabled}
 										data-testid="rename-profile-button">
 										<span className="codicon codicon-edit" />
@@ -354,6 +365,7 @@ const ApiConfigManager = ({
 										variant="ghost"
 										size="icon"
 										onClick={handleDelete}
+										aria-label={t("settings:providers.deleteProfile")}
 										data-testid="delete-profile-button"
 										disabled={isOnlyProfile || profileActionsDisabled}>
 										<span className="codicon codicon-trash" />
@@ -361,9 +373,6 @@ const ApiConfigManager = ({
 								</StandardTooltip>
 							</>
 						)}
-					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:providers.description")}
 					</div>
 					{listApiConfigMeta.some(({ availability }) => availability) && (
 						<div

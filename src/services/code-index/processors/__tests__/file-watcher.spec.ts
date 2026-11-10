@@ -18,15 +18,6 @@ const deferred = <T>() => {
 	return { promise, resolve }
 }
 
-// Mock TelemetryService
-vi.mock("../../../../../packages/telemetry/src/TelemetryService", () => ({
-	TelemetryService: {
-		instance: {
-			captureEvent: vi.fn(),
-		},
-	},
-}))
-
 // Mock dependencies
 vi.mock("../../cache-manager")
 vi.mock("../../../core/ignore/AlphaIgnoreController", () => ({

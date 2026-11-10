@@ -42,7 +42,7 @@ function workspaceKey(workspace: string): string {
 }
 
 function isStoredHistoryItem(value: unknown): value is HistoryItem {
-	// Validation proves the known fields; keep the raw representation and unknown metadata for a name-only edit.
+	// Validate known fields while retaining legacy modes and unknown metadata in the stored representation.
 	return historyItemSchema.safeParse(value).success
 }
 
@@ -723,7 +723,7 @@ export class TaskHistoryStore {
 
 			if (index.version === 1 && Array.isArray(index.entries)) {
 				for (const entry of index.entries) {
-					if (entry.id) {
+					if (isStoredHistoryItem(entry) && entry.id) {
 						this.cache.set(entry.id, entry)
 					}
 				}
@@ -898,10 +898,13 @@ export class TaskHistoryStore {
 		try {
 			const raw = await fs.readFile(filePath, "utf8")
 			const parsed: unknown = JSON.parse(raw)
-			const item: HistoryItem = options.requireExisting
+			const item = options.requireExisting
 				? historyItemSchema.parse(parsed)
-				: (parsed as HistoryItem)
-			if (options.requireExisting && item.id !== taskId) throw new Error("Task history identity does not match")
+				: isStoredHistoryItem(parsed)
+					? parsed
+					: null
+			if (!item || item.id !== taskId)
+				throw new Error("Task history metadata is invalid or belongs to another task")
 			return item.id ? item : null
 		} catch (error) {
 			if (options.requireExisting)

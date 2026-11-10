@@ -1,5 +1,7 @@
+import { expect } from "vitest"
 import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import type { ComponentProps } from "react"
 
 import type { SkillMetadata } from "@alpha-code/types"
 
@@ -21,6 +23,9 @@ vi.mock("@/i18n/TranslationContext", () => ({
 		t: (key: string, params?: any) => {
 			if (params?.name) {
 				return `${key} ${params.name}`
+			}
+			if (params?.modes) {
+				return `${key} ${params.modes}`
 			}
 			return key
 		},
@@ -68,8 +73,9 @@ vi.mock("@/components/ui", () => ({
 			{children}
 		</button>
 	),
-	Button: ({ children, onClick, disabled, className, variant, size }: any) => (
+	Button: ({ children, onClick, disabled, className, variant, size, ...props }: any) => (
 		<button
+			{...props}
 			onClick={onClick}
 			disabled={disabled}
 			className={className}
@@ -175,7 +181,8 @@ vi.mock("@/context/ExtensionStateContext", () => ({
 const renderSkillsSettings = (
 	skills: SkillMetadata[] = mockSkills,
 	cwd?: string,
-	props: { disabledBuiltinSkills?: string[]; onDisabledBuiltinSkillsChange?: (names: string[]) => void } = {},
+	props: ComponentProps<typeof SkillsSettings> = {},
+	state: { skillsError?: string } = {},
 ) => {
 	const queryClient = new QueryClient({
 		defaultOptions: {
@@ -189,6 +196,7 @@ const renderSkillsSettings = (
 		skills,
 		cwd: cwd !== undefined ? cwd : "/workspace",
 		customModes: [],
+		...state,
 	}
 
 	return render(
@@ -220,7 +228,7 @@ describe("SkillsSettings", () => {
 		expect(
 			buttons.some((button) => button.querySelector(".lucide-square-pen, .lucide-trash-2, .lucide-settings")),
 		).toBe(false)
-		fireEvent.click(screen.getByText("settings:skills.inspectSkill"))
+		fireEvent.click(screen.getByRole("button", { name: "settings:skills.inspectSkill" }))
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "openSkillFile",
 			skillName: "rich-documents",
@@ -266,6 +274,49 @@ describe("SkillsSettings", () => {
 		renderSkillsSettings()
 
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestSkills" })
+	})
+
+	it("embeds a searchable skill manager without a nested sticky section header", () => {
+		const { container } = renderSkillsSettings(mockSkills, undefined, { embedded: true, searchSectionId: "tools" })
+
+		expect(screen.queryByTestId("section-header")).not.toBeInTheDocument()
+		expect(screen.getByRole("heading", { name: "settings:sections.skills" })).toBeInTheDocument()
+		expect(container.querySelector('[data-setting-id="skills-management"]')).toHaveAttribute(
+			"data-setting-section",
+			"tools",
+		)
+		expect(screen.queryByText("settings:skills.appliesImmediately")).not.toBeInTheDocument()
+	})
+
+	it("keeps paths, descriptions, and mode details out of default skill rows", () => {
+		renderSkillsSettings(mockSkills)
+
+		for (const skill of mockSkills) {
+			expect(screen.queryByText(skill.path)).not.toBeInTheDocument()
+			expect(screen.queryByText(skill.description)).not.toBeInTheDocument()
+		}
+		expect(screen.queryByText("settings:skills.availableIn Plan")).not.toBeInTheDocument()
+		expect(screen.queryByText("settings:skills.modeDialog.anyMode")).not.toBeInTheDocument()
+	})
+
+	it("shows discovery failure with retry while keeping the last loaded skill list", () => {
+		renderSkillsSettings(mockSkills, undefined, {}, { skillsError: "unavailable" })
+
+		expect(screen.getByRole("alert")).toHaveTextContent("settings:skills.catalogError")
+		expect(screen.getByText(mockSkills[0].name)).toBeVisible()
+		vi.mocked(vscode.postMessage).mockClear()
+
+		fireEvent.click(screen.getByRole("button", { name: "settings:skills.retry" }))
+
+		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "requestSkills" })
+	})
+
+	it("does not describe unavailable discovery as an empty workspace or personal catalog", () => {
+		renderSkillsSettings([], undefined, {}, { skillsError: "unavailable" })
+
+		expect(screen.getByRole("alert")).toBeVisible()
+		expect(screen.queryByText("settings:skills.noWorkspaceSkills")).not.toBeInTheDocument()
+		expect(screen.queryByText("settings:skills.noGlobalSkills")).not.toBeInTheDocument()
 	})
 
 	it("displays project skills section when in a workspace", () => {
@@ -314,11 +365,11 @@ describe("SkillsSettings", () => {
 		expect(screen.getByText("global-skill")).toBeInTheDocument()
 	})
 
-	it("displays skill descriptions", () => {
+	it("keeps skill descriptions off the default settings surface", () => {
 		renderSkillsSettings()
 
-		expect(screen.getByText("A project skill")).toBeInTheDocument()
-		expect(screen.getByText("A global skill")).toBeInTheDocument()
+		expect(screen.queryByText("A project skill")).not.toBeInTheDocument()
+		expect(screen.queryByText("A global skill")).not.toBeInTheDocument()
 	})
 
 	it("opens create skill dialog when add button is clicked", () => {
@@ -474,7 +525,7 @@ describe("SkillsSettings", () => {
 				path: "/workspace/.alpha/skills/duplicate-review/SKILL.md",
 			}
 			renderSkillsSettings([sibling, selected])
-			const selectedRow = screen.getByText(selected.description).closest(".border-transparent")!
+			const selectedRow = screen.getAllByText(selected.name)[1].closest(".border-transparent")!
 			const [configureButton, editButton, deleteButton] = selectedRow.querySelectorAll("button")
 			fireEvent.click(editButton)
 			expect(vscode.postMessage).toHaveBeenLastCalledWith({

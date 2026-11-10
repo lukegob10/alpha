@@ -23,6 +23,7 @@ const repository = fileURLToPath(new URL("../", import.meta.url))
 const verifier = path.join(repository, "scripts/verify-vsix-contents.mjs")
 const hostTarget = hostVsixTarget()
 const thirdPartyNotices = [
+	["src", "openai-codex", ["NOTICE"]],
 	["webview-ui/node_modules/@vscode/codicons", "vscode-codicons", ["LICENSE", "LICENSE-CODE", "README.md"]],
 	["src/node_modules/vscode-material-icons", "vscode-material-icons", ["LICENSE"]],
 	["src/node_modules/web-tree-sitter", "web-tree-sitter", ["LICENSE"]],

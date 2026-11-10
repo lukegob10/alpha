@@ -3,7 +3,6 @@ import * as os from "os"
 import * as path from "path"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OpenAiHandler } from "../../../api/providers/openai"
@@ -242,7 +241,6 @@ describe("assistant message phase persistence and replay", () => {
 	beforeEach(async () => {
 		responsesCreate.mockReset()
 		storagePath = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-message-phases-"))
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	})
 
 	afterEach(async () => {

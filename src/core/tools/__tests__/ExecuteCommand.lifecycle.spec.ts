@@ -2,14 +2,14 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { EventEmitter } from "node:events"
-import type { TerminalOutputPreviewSize } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
+import type { CommandToolResult, TerminalOutputPreviewSize } from "@alpha-code/types"
 
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import type { Task } from "../../task/Task"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalCallbacks, AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import { executeCommandInTerminal } from "../ExecuteCommandTool"
+import { getTaskDirectoryPath } from "../../../utils/storage"
 
 const directories: string[] = []
 
@@ -171,7 +171,6 @@ describe("primary command timeout mutation receipts", () => {
 	it.each([false, true, undefined])(
 		"preserves shell observation failure ownership (submitted: %s)",
 		async (submitted) => {
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const fixture = await createFixture()
 			Object.assign(fixture.process, { hasSubmittedCommand: submitted })
 			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
@@ -317,39 +316,56 @@ describe("primary command timeout mutation receipts", () => {
 	)
 
 	it.each<{
-		cachedPreview: TerminalOutputPreviewSize | undefined
-		capturedPreview: TerminalOutputPreviewSize | undefined
+		savedPreview: TerminalOutputPreviewSize | undefined
+		outputBytes: number
 		spills: boolean
 	}>([
-		{ cachedPreview: "small", capturedPreview: undefined, spills: true },
-		{ cachedPreview: undefined, capturedPreview: undefined, spills: false },
-		{ cachedPreview: "small", capturedPreview: "large", spills: false },
+		{ savedPreview: "small", outputBytes: 6 * 1024, spills: false },
+		{ savedPreview: "small", outputBytes: 12 * 1024, spills: true },
+		{ savedPreview: "large", outputBytes: 6 * 1024, spills: false },
+		{ savedPreview: "large", outputBytes: 12 * 1024, spills: true },
+		{ savedPreview: undefined, outputBytes: 6 * 1024, spills: false },
+		{ savedPreview: undefined, outputBytes: 12 * 1024, spills: true },
 	])(
-		"initializes output from cached preview $cachedPreview with captured override $capturedPreview",
-		async ({ cachedPreview, capturedPreview, spills }) => {
+		"keeps the standard 10 KB preview for $outputBytes bytes with legacy saved size $savedPreview",
+		async ({ savedPreview, outputBytes, spills }) => {
 			const fixture = await createFixture()
 			const storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-command-preview-test-"))
 			directories.push(storage)
 			Object.assign(fixture.provider, { context: { globalStorageUri: { fsPath: storage } } })
 			fixture.provider.getValue.mockImplementation((key) =>
-				key === "terminalOutputPreviewSize" ? cachedPreview : undefined,
+				key === "terminalOutputPreviewSize" ? savedPreview : undefined,
 			)
+			const onCommandResult = vi.fn<(result: CommandToolResult) => void>()
+			const output = "HEAD\n" + "x".repeat(outputBytes - 10) + "\nTAIL"
 			const execution = executeCommandInTerminal(fixture.task, {
-				executionId: "cached-preview",
-				toolCallId: "cached-preview-call",
+				executionId: "standard-preview",
+				toolCallId: "standard-preview-call",
 				command: "command",
 				terminalShellIntegrationDisabled: true,
-				capturedOutputPreviewSize: capturedPreview,
+				onCommandResult,
 			})
 			try {
 				await fixture.launch
-				await fixture.reportArchiveOutput("x".repeat(6 * 1024))
+				await fixture.reportArchiveOutput(output)
 				await fixture.finishProcess()
 				await execution
 				expect(fixture.provider.getState).not.toHaveBeenCalled()
-				expect(
-					"outputArtifactId" in fixture.process && typeof fixture.process.outputArtifactId === "string",
-				).toBe(spills)
+				expect(onCommandResult).toHaveBeenCalledOnce()
+				const result = onCommandResult.mock.calls[0]?.[0]
+				if (spills) {
+					if (!result?.artifact_id) throw new Error("Missing full command-output artifact")
+					expect(result.output).toMatch(/^HEAD\n/)
+					expect(result.output).toContain("[...2048 bytes omitted...]")
+					expect(result.output).toMatch(/\nTAIL$/)
+					const taskDirectory = await getTaskDirectoryPath(storage, fixture.task.taskId)
+					expect(
+						await fs.readFile(path.join(taskDirectory, "command-output", result.artifact_id), "utf8"),
+					).toBe(output)
+				} else {
+					expect(result?.artifact_id).toBeUndefined()
+					expect("outputArtifactId" in fixture.process).toBe(false)
+				}
 			} finally {
 				if (!fixture.process.isSettled) await fixture.finishProcess()
 				await execution.catch(() => undefined)

@@ -14,6 +14,7 @@ import { TEST_ROOT_OWNERSHIP_MARKER } from "./testProfile"
 import { CdpConnection } from "./ui/cdp"
 import { nativeChatHeaderExpression } from "./ui/nativeChatHeader"
 import { latencyObservation, summarizeLatencyObservations as summarize } from "./evidence/latencyObservation"
+import { dismissRenderedReleaseAnnouncement } from "./ui/renderedReleaseAnnouncement"
 
 interface Target {
 	targetId: string
@@ -538,6 +539,14 @@ export async function runTaskNavigationUi(executable: string, output: string, ex
 		assert.equal(coldReceipt.taskHistoryContainsTask, true)
 		try {
 			await waitForClickTarget(connection, targets.webviewSession, "task-open", taskId)
+			await dismissRenderedReleaseAnnouncement(
+				connection,
+				targets.webviewSession,
+				targets.pageSession,
+				reopenPhase.directory,
+				"navigation",
+				reopenPhase.abort.signal,
+			)
 		} catch (error) {
 			const dom = await evaluate<Record<string, unknown>>(
 				connection,

@@ -3,11 +3,11 @@
 import type { Mock } from "vitest"
 
 import { Anthropic } from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { ApiHandler } from "../../../api"
 import { ApiMessage } from "../../task-persistence/apiMessages"
 import { maybeRemoveImageBlocks } from "../../../api/transform/image-cleaning"
+import { DEFAULT_CONDENSING_PROMPT } from "../../../shared/condense-prompt"
 import {
 	summarizeConversation,
 	getMessagesSinceLastSummary,
@@ -164,14 +164,6 @@ describe("tool transaction occurrence integrity", () => {
 
 vi.mock("../../../api/transform/image-cleaning", () => ({
 	maybeRemoveImageBlocks: vi.fn((messages: ApiMessage[], _apiHandler: ApiHandler) => [...messages]),
-}))
-
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureContextCondensed: vi.fn(),
-		},
-	},
 }))
 
 const taskId = "test-task-id"
@@ -1521,23 +1513,18 @@ describe("summarizeConversation", () => {
 			taskId,
 		})
 
-		// Verify that createMessage was called with the SUMMARY_PROMPT (which contains CRITICAL instructions), messages array, and optional metadata
+		// Codex preserves task instructions and sends the exact compact prompt as user input.
 		expect(mockApiHandler.createMessage).toHaveBeenCalledWith(
-			expect.stringContaining("You are a helpful AI assistant tasked with summarizing conversations."),
+			defaultSystemPrompt,
 			expect.any(Array),
 			undefined, // metadata is undefined when not passed to summarizeConversation
 		)
-		// Verify the CRITICAL instructions are included in the prompt
-		const actualPrompt = (mockApiHandler.createMessage as Mock).mock.calls[0][0]
-		expect(actualPrompt).toContain("CRITICAL: This is a summarization-only request")
-		expect(actualPrompt).toContain("CRITICAL: This summarization request is a SYSTEM OPERATION")
 
 		// Check that maybeRemoveImageBlocks was called with the correct messages
-		// The final request message now contains the detailed CONDENSE instructions
 		const mockCallArgs = (maybeRemoveImageBlocks as Mock).mock.calls[0][0] as any[]
 		const finalMessage = mockCallArgs[mockCallArgs.length - 1]
 		expect(finalMessage.role).toBe("user")
-		expect(finalMessage.content).toContain("Create a concise handoff")
+		expect(finalMessage.content).toBe(DEFAULT_CONDENSING_PROMPT)
 	})
 
 	it("should include the original first user message in summarization input", async () => {
@@ -1775,9 +1762,6 @@ describe("summarizeConversation with custom settings", () => {
 		// Reset mocks
 		vi.clearAllMocks()
 
-		// Reset telemetry mock
-		;(TelemetryService.instance.captureContextCondensed as Mock).mockClear()
-
 		// Setup mock API handler
 		mockMainApiHandler = {
 			createMessage: vi.fn().mockImplementation(() => {
@@ -1825,14 +1809,13 @@ describe("summarizeConversation with custom settings", () => {
 		const requestMessages = createMessageCalls[0][1]
 		const lastMessage = requestMessages[requestMessages.length - 1]
 		expect(lastMessage.role).toBe("user")
-		expect(lastMessage.content).toContain(customPrompt)
-		expect(lastMessage.content).toMatch(/within \d+ tokens/)
+		expect(lastMessage.content).toBe(customPrompt)
 	})
 
 	/**
-	 * Test that default system prompt is used when custom prompt is empty
+	 * Blank overrides preserve task instructions and use the exact default user prompt.
 	 */
-	it("should use default systemPrompt when custom prompt is empty or not provided", async () => {
+	it("should use the default user prompt when custom prompt is empty or not provided", async () => {
 		// Test with empty string
 		await summarizeConversation({
 			messages: sampleMessages,
@@ -1843,13 +1826,10 @@ describe("summarizeConversation with custom settings", () => {
 			customCondensingPrompt: "  ",
 		})
 
-		// Verify the default SUMMARY_PROMPT was used (contains CRITICAL instructions)
 		let createMessageCalls = (mockMainApiHandler.createMessage as Mock).mock.calls
 		expect(createMessageCalls.length).toBe(1)
-		expect(createMessageCalls[0][0]).toContain(
-			"You are a helpful AI assistant tasked with summarizing conversations.",
-		)
-		expect(createMessageCalls[0][0]).toContain("CRITICAL: This is a summarization-only request")
+		expect(createMessageCalls[0][0]).toBe(defaultSystemPrompt)
+		expect(createMessageCalls[0][1].at(-1)).toEqual({ role: "user", content: DEFAULT_CONDENSING_PROMPT })
 
 		// Reset mock and test with undefined
 		vi.clearAllMocks()
@@ -1861,55 +1841,47 @@ describe("summarizeConversation with custom settings", () => {
 			isAutomaticTrigger: false,
 		})
 
-		// Verify the default SUMMARY_PROMPT was used again (contains CRITICAL instructions)
 		createMessageCalls = (mockMainApiHandler.createMessage as Mock).mock.calls
 		expect(createMessageCalls.length).toBe(1)
-		expect(createMessageCalls[0][0]).toContain(
-			"You are a helpful AI assistant tasked with summarizing conversations.",
-		)
-		expect(createMessageCalls[0][0]).toContain("CRITICAL: This is a summarization-only request")
+		expect(createMessageCalls[0][0]).toBe(defaultSystemPrompt)
+		expect(createMessageCalls[0][1].at(-1)).toEqual({ role: "user", content: DEFAULT_CONDENSING_PROMPT })
 	})
 
-	/**
-	 * Test that telemetry is called for custom prompt usage
-	 */
-	it("should capture telemetry when using custom prompt", async () => {
-		await summarizeConversation({
+	it("retains summary cost and omits stale environment details for a manual summary", async () => {
+		const environmentDetails = "Current workspace: /project"
+		const result = await summarizeConversation({
 			messages: sampleMessages,
 			apiHandler: mockMainApiHandler,
 			systemPrompt: defaultSystemPrompt,
 			taskId: localTaskId,
 			isAutomaticTrigger: false,
 			customCondensingPrompt: "Custom prompt",
+			environmentDetails,
 		})
 
-		// Verify telemetry was called with custom prompt flag
-		expect(TelemetryService.instance.captureContextCondensed).toHaveBeenCalledWith(
-			localTaskId,
-			false,
-			true, // usedCustomPrompt
-		)
+		expect(result.cost).toBe(0.05)
+		expect(result.summary).toContain("Summary from main handler")
+		const summaryMessage = result.messages.find((message) => message.isSummary)
+		expect(summaryMessage).toBeDefined()
+		expect(JSON.stringify(summaryMessage?.content)).not.toContain(environmentDetails)
 	})
 
-	/**
-	 * Test that telemetry is called with isAutomaticTrigger flag
-	 */
-	it("should capture telemetry with isAutomaticTrigger flag", async () => {
-		await summarizeConversation({
+	it("retains environment details in an automatically triggered summary", async () => {
+		const environmentDetails = "Current workspace: /project"
+		const result = await summarizeConversation({
 			messages: sampleMessages,
 			apiHandler: mockMainApiHandler,
 			systemPrompt: defaultSystemPrompt,
 			taskId: localTaskId,
 			isAutomaticTrigger: true,
 			customCondensingPrompt: "Custom prompt",
+			environmentDetails,
 		})
 
-		// Verify telemetry was called with isAutomaticTrigger flag
-		expect(TelemetryService.instance.captureContextCondensed).toHaveBeenCalledWith(
-			localTaskId,
-			true, // isAutomaticTrigger
-			true, // usedCustomPrompt
-		)
+		expect(result.cost).toBe(0.05)
+		const summaryMessage = result.messages.find((message) => message.isSummary)
+		expect(summaryMessage).toBeDefined()
+		expect(JSON.stringify(summaryMessage?.content)).toContain(environmentDetails)
 	})
 })
 

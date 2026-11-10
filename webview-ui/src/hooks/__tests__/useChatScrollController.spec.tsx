@@ -170,6 +170,50 @@ describe("useChatScrollController", () => {
 		expect(scroller.scrollTop).toBe(700)
 	})
 
+	it.each([1.01, 9, 12])("preserves a reading position %spx above the native bottom", (remaining) => {
+		const { result, rerender, initialProps, scroller } = createHarness()
+		// Match the narrow question fixture: its aligned header leaves 9px below the viewport.
+		setScrollGeometry(scroller, { scrollHeight: 825, clientHeight: 551, scrollTop: 274 })
+		flushFrame()
+		act(() => result.current.handleScrollerWheel({ deltaY: -80 } as React.WheelEvent<HTMLElement>))
+		scroller.scrollTop = 194
+		emitScroll(result, scroller)
+
+		// Native scrollIntoView, focus, or downward browsing can stop short of the actual bottom.
+		const readingPosition = 274 - remaining
+		scroller.scrollTop = readingPosition
+		emitScroll(result, scroller)
+		flushFrame()
+		expect(scroller.scrollTop).toBe(readingPosition)
+		expect(result.current.scrollMode).toBe("BROWSING")
+		expect(result.current.showScrollToBottom).toBe(true)
+
+		setScrollGeometry(scroller, { scrollHeight: 925, clientHeight: 551, scrollTop: readingPosition })
+		rerender({ ...initialProps, itemCount: 4 })
+		act(() => {
+			result.current.handleContentLoad()
+			resizeObserverCallback?.([], {} as ResizeObserver)
+		})
+		flushFrame()
+		expect(scroller.scrollTop).toBe(readingPosition)
+		expect(result.current.scrollMode).toBe("BROWSING")
+	})
+
+	it.each([0, 0.5, 1])("reattaches within the native bottom rounding tolerance of %spx", (remaining) => {
+		const { result, scroller } = createHarness()
+		flushFrame()
+		act(() => result.current.handleScrollerWheel({ deltaY: -80 } as React.WheelEvent<HTMLElement>))
+		scroller.scrollTop = 520
+		emitScroll(result, scroller)
+		scroller.scrollTop = 600 - remaining
+		emitScroll(result, scroller)
+		flushFrame()
+
+		expect(result.current.scrollMode).toBe("FOLLOWING")
+		expect(result.current.showScrollToBottom).toBe(false)
+		expect(scroller.scrollTop).toBe(600 - remaining)
+	})
+
 	it("never follows content growth while the user is browsing", () => {
 		const { result, scroller } = createHarness()
 		flushFrame()

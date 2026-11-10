@@ -189,9 +189,11 @@ test("offline selection cannot start services or provider campaigns", () => {
 })
 
 test("hard offline and host lanes require explicit execution receipts", () => {
-	assert.equal(lanes.unit.receipts.filter((receipt) => receipt?.runner === "vitest").length, 7)
+	assert.deepEqual(
+		lanes.unit.receipts.filter((receipt) => receipt?.runner === "vitest").map((receipt) => receipt.packageDir),
+		["packages/types", "packages/core", "packages/ipc", "packages/build", "webview-ui", "src"],
+	)
 	assert.ok(lanes.unit.commands.some((args) => args[1] === "packages/build" && args[2] === "test"))
-	assert.ok(lanes.unit.receipts.some((receipt) => receipt?.packageDir === "packages/telemetry"))
 	assert.ok(lanes.offline.receipts.slice(1).every((receipt) => receipt.requireAllTests))
 	assert.equal(lanes.host.receipts[0].runner, "extension-host")
 	assert.equal(lanes.outcomes.receipts[1].runner, "task-outcomes")

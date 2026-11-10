@@ -2,13 +2,11 @@ import path from "path"
 import fs from "fs/promises"
 
 import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { fileExistsAtPath } from "../../utils/fs"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
-import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
 import type { DiffResult, ToolUse } from "../../shared/tools"
 
@@ -90,7 +88,6 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				task.consecutiveMistakeCount++
 				const currentCount = (task.consecutiveMistakeCountForApplyDiff.get(relPath) || 0) + 1
 				task.consecutiveMistakeCountForApplyDiff.set(relPath, currentCount)
-				TelemetryService.instance.captureDiffApplicationError(task.taskId, currentCount)
 				const formattedError = `Unable to apply diff to file: ${absolutePath}\n\n${(failures.length > 0
 					? failures
 					: [diffResult]
@@ -116,15 +113,10 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 			const unifiedPatch = sanitizeUnifiedDiff(unifiedPatchRaw)
 			const diffStats = computeDiffStats(unifiedPatch) || undefined
 
-			// Check if preventFocusDisruption experiment is enabled
 			const provider = task.providerRef.deref()
 			const state = await provider?.getState()
 			const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 			const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-			const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-				state?.experiments ?? {},
-				EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-			)
 
 			// Check if file is write-protected
 			const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath) || false
@@ -136,92 +128,46 @@ export class ApplyDiffTool extends BaseTool<"apply_diff"> {
 				diff: diffContent,
 			}
 
-			if (isPreventFocusDisruptionEnabled) {
-				// Direct file write without diff view
-				const completeMessage = JSON.stringify({
-					...sharedMessageProps,
-					diff: diffContent,
-					content: unifiedPatch,
-					originalContent,
-					finalContent: diffResult.content,
-					diffStats,
-					isProtected: isWriteProtected,
-				} satisfies AlphaSayTool)
+			const completeMessage = JSON.stringify({
+				...sharedMessageProps,
+				diff: diffContent,
+				content: unifiedPatch,
+				originalContent,
+				finalContent: diffResult.content,
+				diffStats,
+				isProtected: isWriteProtected,
+			} satisfies AlphaSayTool)
 
-				let toolProgressStatus
+			let toolProgressStatus
 
-				if (task.diffStrategy && task.diffStrategy.getProgressStatus) {
-					const block: ToolUse<"apply_diff"> = {
-						type: "tool_use",
-						name: "apply_diff",
-						params: { path: relPath, diff: diffContent },
-						partial: false,
-					}
-					toolProgressStatus = task.diffStrategy.getProgressStatus(block, diffResult)
+			if (task.diffStrategy && task.diffStrategy.getProgressStatus) {
+				const block: ToolUse<"apply_diff"> = {
+					type: "tool_use",
+					name: "apply_diff",
+					params: { path: relPath, diff: diffContent },
+					partial: false,
 				}
-
-				const didApprove = await askApproval("tool", completeMessage, toolProgressStatus, isWriteProtected)
-
-				if (!didApprove) {
-					await task.diffViewProvider.reset()
-					this.resetPartialState()
-					return
-				}
-
-				// Save directly without showing diff view or opening the file
-				task.diffViewProvider.editType = "modify"
-				task.diffViewProvider.originalContent = originalContent
-				await task.diffViewProvider.saveDirectly(
-					relPath,
-					diffResult.content,
-					false,
-					diagnosticsEnabled,
-					writeDelayMs,
-					{ exists: true, content: originalContent },
-				)
-			} else {
-				// Original behavior with diff view
-				// Show diff view before asking for approval
-				task.diffViewProvider.editType = "modify"
-				await task.diffViewProvider.open(relPath, { exists: true, content: originalContent })
-				await task.diffViewProvider.update(diffResult.content, true)
-				task.diffViewProvider.scrollToFirstDiff()
-
-				const completeMessage = JSON.stringify({
-					...sharedMessageProps,
-					diff: diffContent,
-					content: unifiedPatch,
-					originalContent,
-					finalContent: diffResult.content,
-					diffStats,
-					isProtected: isWriteProtected,
-				} satisfies AlphaSayTool)
-
-				let toolProgressStatus
-
-				if (task.diffStrategy && task.diffStrategy.getProgressStatus) {
-					const block: ToolUse<"apply_diff"> = {
-						type: "tool_use",
-						name: "apply_diff",
-						params: { path: relPath, diff: diffContent },
-						partial: false,
-					}
-					toolProgressStatus = task.diffStrategy.getProgressStatus(block, diffResult)
-				}
-
-				const didApprove = await askApproval("tool", completeMessage, toolProgressStatus, isWriteProtected)
-
-				if (!didApprove) {
-					await task.diffViewProvider.revertChanges()
-					await task.diffViewProvider.reset()
-					this.resetPartialState()
-					task.processQueuedMessages()
-					return
-				}
-
-				// Call saveChanges to update the DiffViewProvider properties
-				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
+				toolProgressStatus = task.diffStrategy.getProgressStatus(block, diffResult)
 			}
+
+			const didApprove = await askApproval("tool", completeMessage, toolProgressStatus, isWriteProtected)
+
+			if (!didApprove) {
+				await task.diffViewProvider.reset()
+				this.resetPartialState()
+				return
+			}
+
+			task.diffViewProvider.editType = "modify"
+			task.diffViewProvider.originalContent = originalContent
+			await task.diffViewProvider.saveDirectly(
+				relPath,
+				diffResult.content,
+				false,
+				diagnosticsEnabled,
+				writeDelayMs,
+				{ exists: true, content: originalContent },
+			)
 
 			// Track file edit operation
 			if (relPath) {

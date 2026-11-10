@@ -20,7 +20,8 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 	const { t } = useAppTranslation()
 	const [open, setOpen] = useState(false)
 	const [worktrees, setWorktrees] = useState<Worktree[]>([])
-	const [isGitRepo, setIsGitRepo] = useState(true)
+	const [isSupportedWorkspace, setIsSupportedWorkspace] = useState(false)
+	const [error, setError] = useState<string | null>(null)
 	const [showCreateModal, setShowCreateModal] = useState(false)
 	const portalContainer = useAlphaPortal("alpha-portal")
 
@@ -38,8 +39,9 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 			const message = event.data
 			if (message.type === "worktreeList") {
 				const response: WorktreeListResponse = message
-				setWorktrees(response.worktrees || [])
-				setIsGitRepo(response.isGitRepo)
+				setIsSupportedWorkspace(response.isGitRepo && !response.isMultiRoot && !response.isSubfolder)
+				setError(response.error || null)
+				if (!response.error) setWorktrees(response.worktrees || [])
 			}
 		}
 
@@ -67,17 +69,15 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 		setOpen(false)
 	}, [])
 
-	const handleSettingsClick = useCallback(() => {
+	const handleManageClick = useCallback(() => {
 		vscode.postMessage({
 			type: "switchTab",
-			tab: "settings",
-			values: { section: "worktrees" },
+			tab: "worktrees",
 		})
 		setOpen(false)
 	}, [])
 
-	// Don't render if not a git repo or only one worktree
-	if (!isGitRepo || worktrees.length <= 1) {
+	if (!isSupportedWorkspace) {
 		return null
 	}
 
@@ -107,20 +107,25 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 				container={portalContainer}
 				className="p-0 overflow-hidden min-w-80 max-w-9/10">
 				<div className="flex flex-col w-full">
-					{/* Bottom bar with settings cog and title */}
 					<div className="px-3 pb-4">
 						<div className="flex flex-row items-center justify-between">
 							<h4 className="">{t("worktrees:selector.title")}</h4>
 							<IconButton
-								iconClass="codicon-settings-gear"
+								iconClass="codicon-list-tree"
 								title={t("worktrees:selector.settings")}
-								onClick={handleSettingsClick}
+								data-testid="manage-worktrees-button"
+								onClick={handleManageClick}
 							/>
 						</div>
 						<p className="m-0 text-xs text-vscode-descriptionForeground">
 							{t("worktrees:selector.description")}
 						</p>
 					</div>
+					{error && (
+						<div role="alert" className="px-3 pb-2 text-sm text-vscode-errorForeground">
+							{error}
+						</div>
+					)}
 
 					{/* Worktree list */}
 					<div className="max-h-[300px] overflow-y-auto py-1">
@@ -161,6 +166,9 @@ export const WorktreeSelector = ({ disabled = false }: WorktreeSelectorProps) =>
 
 					{/* New worktree button */}
 					<div className="px-3 py-2 border-t border-vscode-panel-border">
+						<Button variant="ghost" size="sm" className="w-full justify-start" onClick={fetchWorktrees}>
+							{t("worktrees:refresh")}
+						</Button>
 						<Button
 							variant="ghost"
 							size="sm"

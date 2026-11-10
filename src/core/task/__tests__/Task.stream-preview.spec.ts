@@ -2,7 +2,6 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { AlphaMessage, ProviderSettings } from "@alpha-code/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -71,7 +70,6 @@ const textRows = (messages: readonly AlphaMessage[]) =>
 	messages.filter((message) => message.type === "say" && message.say === "text")
 
 async function harness(script: PreviewScript) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const temporaryRoot = await fs.realpath(os.tmpdir())
 	const storage = await fs.mkdtemp(path.join(temporaryRoot, "alpha-stream-preview-"))
 	const cwd = path.join(storage, "workspace")

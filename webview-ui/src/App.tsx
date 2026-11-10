@@ -7,7 +7,6 @@ import type { ExtensionMessage } from "@alpha-code/types"
 import TranslationProvider from "./i18n/TranslationContext"
 
 import { vscode } from "./utils/vscode"
-import { telemetryClient } from "./utils/TelemetryClient"
 import { initializeSourceMaps } from "./utils/sourceMapInitializer"
 import { initializeWebviewErrorReporting } from "./utils/webviewErrors"
 import { ExtensionStateContextProvider, useShellState } from "./context/ExtensionStateContext"
@@ -28,9 +27,15 @@ const webviewAppStartedAt = performance.now()
 
 const SettingsView = React.lazy(() => import("./components/settings/SettingsView"))
 const ScheduledTasksView = React.lazy(() => import("./components/scheduled-tasks/ScheduledTasksView"))
+const WorktreesManagerView = React.lazy(() => import("./components/worktrees/WorktreesManagerView"))
+const AboutView = React.lazy(() => import("./components/settings/AboutView"))
 
-const supportedTabs = ["settings", "history", "chat", "scheduledTasks"] as const
+const supportedTabs = ["settings", "history", "chat", "scheduledTasks", "worktrees", "about"] as const
 type Tab = (typeof supportedTabs)[number]
+
+function resolveSettingsUtilityTab(tab: Tab, section?: string): Tab {
+	return tab === "settings" && (section === "worktrees" || section === "about") ? section : tab
+}
 
 interface DeleteMessageDialogState {
 	isOpen: boolean
@@ -60,17 +65,8 @@ const tabsByMessageAction: Partial<Record<NonNullable<ExtensionMessage["action"]
 }
 
 const App = () => {
-	const {
-		didHydrateState,
-		showWelcome,
-		shouldShowAnnouncement,
-		telemetrySetting,
-		telemetryKey,
-		machineId,
-		renderContext,
-		currentTaskId,
-		debug,
-	} = useShellState()
+	const { didHydrateState, showWelcome, shouldShowAnnouncement, renderContext, currentTaskId, debug } =
+		useShellState()
 	const { t } = useAppTranslation()
 	const didReportUiReady = useRef(false)
 
@@ -157,13 +153,17 @@ const App = () => {
 	}, [])
 
 	const switchTab = useCallback(
-		(newTab: Tab) => {
-			setCurrentSection(undefined)
-
+		(newTab: Tab, section?: string, scheduledTaskId?: string) => {
+			const navigate = () => {
+				const targetTab = resolveSettingsUtilityTab(newTab, section)
+				setCurrentSection(targetTab === "settings" ? section : undefined)
+				if (targetTab === "scheduledTasks") setScheduledTaskTargetId(scheduledTaskId)
+				navigateToTab(targetTab)
+			}
 			if (settingsRef.current?.checkUnsaveChanges) {
-				settingsRef.current.checkUnsaveChanges(() => navigateToTab(newTab))
+				settingsRef.current.checkUnsaveChanges(navigate)
 			} else {
-				navigateToTab(newTab)
+				navigate()
 			}
 		},
 		[navigateToTab],
@@ -190,26 +190,24 @@ const App = () => {
 				} else if (message.action === "switchTab" && message.tab) {
 					const targetTab = supportedTabs.find((tab) => tab === message.tab)
 					if (!targetTab) return
-					if (targetTab === "scheduledTasks") {
-						setScheduledTaskTargetId(message.values?.scheduledTaskId as string | undefined)
-					}
-					switchTab(targetTab)
-					// Extract targetSection from values if provided
-					const targetSection = message.values?.section as string | undefined
-					setCurrentSection(targetSection)
+					const targetSection =
+						typeof message.values?.section === "string" ? message.values.section : undefined
+					const scheduledTaskId =
+						typeof message.values?.scheduledTaskId === "string" ? message.values.scheduledTaskId : undefined
+					switchTab(targetTab, targetSection, scheduledTaskId)
 				} else {
 					// Handle other actions using the mapping
 					const newTab = tabsByMessageAction[message.action]
-					const section = message.values?.section as string | undefined
+					const section = typeof message.values?.section === "string" ? message.values.section : undefined
 
 					if (newTab) {
 						if (message.values?.force === true) {
-							setCurrentSection(undefined)
-							navigateToTab(newTab)
+							const targetTab = resolveSettingsUtilityTab(newTab, section)
+							setCurrentSection(targetTab === "settings" ? section : undefined)
+							navigateToTab(targetTab)
 						} else {
-							switchTab(newTab)
+							switchTab(newTab, section)
 						}
-						setCurrentSection(section)
 					}
 				}
 			}
@@ -261,12 +259,6 @@ const App = () => {
 			vscode.postMessage({ type: "didShowAnnouncement" })
 		}
 	}, [shouldShowAnnouncement, tab])
-
-	useEffect(() => {
-		if (didHydrateState) {
-			telemetryClient.updateTelemetryState(telemetrySetting, telemetryKey, machineId)
-		}
-	}, [telemetrySetting, telemetryKey, machineId, didHydrateState])
 
 	useEffect(() => {
 		let lastFocused: boolean | undefined
@@ -326,7 +318,13 @@ const App = () => {
 						onNewChat={startNewChat}
 						navigation={
 							<span className="min-w-0 truncate px-1 text-vscode-foreground">
-								{t(`common:chatToolbar.${tab === "scheduledTasks" ? "scheduledTasks" : tab}`)}
+								{t(
+									tab === "worktrees"
+										? "worktrees:title"
+										: tab === "about"
+											? "settings:sections.about"
+											: `common:chatToolbar.${tab}`,
+								)}
 							</span>
 						}
 					/>
@@ -350,6 +348,8 @@ const App = () => {
 									targetTaskId={scheduledTaskTargetId}
 								/>
 							)}
+							{tab === "worktrees" && <WorktreesManagerView onDone={() => switchTab("chat")} />}
+							{tab === "about" && <AboutView onDone={() => switchTab("chat")} />}
 						</React.Suspense>
 					</div>
 				</div>

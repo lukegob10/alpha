@@ -21,10 +21,30 @@ import {
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
-import { Section } from "./Section"
+import { Section, useSectionGroup } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
+import { SettingsHelp } from "./SettingsHelp"
+import type { SectionName } from "./SettingsView"
+
+// Environment snapshots bound each path list to 200 entries.
+const MAX_CONTEXT_PATHS = 200
+const contextPathLimit = (value: number | undefined, fallback: number) =>
+	typeof value === "number" && Number.isFinite(value)
+		? Math.max(0, Math.min(MAX_CONTEXT_PATHS, Math.floor(value)))
+		: fallback
+
+function ContextSettingLabel({ label, children }: { label: string; children: React.ReactNode }) {
+	return (
+		<div className="flex items-center gap-2">
+			<span className="font-medium">{label}</span>
+			<SettingsHelp label={label}>{children}</SettingsHelp>
+		</div>
+	)
+}
 
 type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
+	embedded?: boolean
+	section?: SectionName
 	autoCondenseContext: boolean
 	autoCondenseContextPercent?: number
 	autoCondenseContextScope?: AutoCondenseContextScope
@@ -64,6 +84,8 @@ type ContextManagementSettingsProps = HTMLAttributes<HTMLDivElement> & {
 }
 
 export const ContextManagementSettings = ({
+	embedded = false,
+	section = "advanced",
 	autoCondenseContext,
 	autoCondenseContextPercent = 100,
 	autoCondenseContextScope = "full-context",
@@ -87,6 +109,9 @@ export const ContextManagementSettings = ({
 	...props
 }: ContextManagementSettingsProps) => {
 	const { t } = useAppTranslation()
+	const grouped = useSectionGroup()
+	const openTabsLimit = contextPathLimit(maxOpenTabsContext, 20)
+	const workspaceFilesLimit = contextPathLimit(maxWorkspaceFiles, 200)
 
 	// Helper function to get the CONDENSE prompt value
 	const getCondensePromptValue = (): string => {
@@ -113,64 +138,71 @@ export const ContextManagementSettings = ({
 
 	return (
 		<div className={cn("flex flex-col gap-2", className)} {...props}>
-			<SectionHeader description={t("settings:contextManagement.description")}>
-				{t("settings:sections.contextManagement")}
-			</SectionHeader>
+			{!grouped &&
+				(embedded ? (
+					<div className="mx-5 mb-2 flex items-center gap-2">
+						<h4 className="m-0 text-base font-semibold">{t("settings:sections.contextManagement")}</h4>
+						<SettingsHelp label={t("settings:sections.contextManagement")}>
+							{t("settings:contextManagement.description")}
+						</SettingsHelp>
+					</div>
+				) : (
+					<SectionHeader>{t("settings:sections.contextManagement")}</SectionHeader>
+				))}
 
 			<Section>
 				<SearchableSetting
 					settingId="context-open-tabs"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.openTabs.label")}>
-					<span className="block font-medium mb-1">{t("settings:contextManagement.openTabs.label")}</span>
+					<ContextSettingLabel label={t("settings:contextManagement.openTabs.label")}>
+						{t("settings:contextManagement.openTabs.description")}
+					</ContextSettingLabel>
 					<div className="flex items-center gap-2">
 						<Slider
+							aria-label={t("settings:contextManagement.openTabs.label")}
 							min={0}
-							max={500}
+							max={MAX_CONTEXT_PATHS}
 							step={1}
-							value={[maxOpenTabsContext ?? 20]}
+							value={[openTabsLimit]}
 							onValueChange={([value]) => setCachedStateField("maxOpenTabsContext", value)}
 							data-testid="open-tabs-limit-slider"
 						/>
-						<span className="w-10">{maxOpenTabsContext ?? 20}</span>
-					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:contextManagement.openTabs.description")}
+						<span className="w-10">{openTabsLimit}</span>
 					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-workspace-files"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.workspaceFiles.label")}>
-					<span className="block font-medium mb-1">
-						{t("settings:contextManagement.workspaceFiles.label")}
-					</span>
+					<ContextSettingLabel label={t("settings:contextManagement.workspaceFiles.label")}>
+						{t("settings:contextManagement.workspaceFiles.description")}
+					</ContextSettingLabel>
 					<div className="flex items-center gap-2">
 						<Slider
+							aria-label={t("settings:contextManagement.workspaceFiles.label")}
 							min={0}
-							max={500}
+							max={MAX_CONTEXT_PATHS}
 							step={1}
-							value={[maxWorkspaceFiles ?? 200]}
+							value={[workspaceFilesLimit]}
 							onValueChange={([value]) => setCachedStateField("maxWorkspaceFiles", value)}
 							data-testid="workspace-files-limit-slider"
 						/>
-						<span className="w-10">{maxWorkspaceFiles ?? 200}</span>
-					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:contextManagement.workspaceFiles.description")}
+						<span className="w-10">{workspaceFilesLimit}</span>
 					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-max-git-status-files"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.maxGitStatusFiles.label")}>
-					<span className="block font-medium mb-1">
-						{t("settings:contextManagement.maxGitStatusFiles.label")}
-					</span>
+					<ContextSettingLabel label={t("settings:contextManagement.maxGitStatusFiles.label")}>
+						{t("settings:contextManagement.maxGitStatusFiles.description")}
+					</ContextSettingLabel>
 					<div className="flex items-center gap-2">
 						<Slider
+							aria-label={t("settings:contextManagement.maxGitStatusFiles.label")}
 							min={0}
 							max={50}
 							step={1}
@@ -180,53 +212,53 @@ export const ContextManagementSettings = ({
 						/>
 						<span className="w-10">{maxGitStatusFiles ?? 0}</span>
 					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:contextManagement.maxGitStatusFiles.description")}
-					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-show-alphaignored-files"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.alphaignore.label")}>
 					<VSCodeCheckbox
 						checked={showAlphaIgnoredFiles}
 						onChange={(e: any) => setCachedStateField("showAlphaIgnoredFiles", e.target.checked)}
 						data-testid="show-alphaignored-files-checkbox">
-						<label className="block font-medium mb-1">
-							{t("settings:contextManagement.alphaignore.label")}
-						</label>
+						<span className="font-medium">{t("settings:contextManagement.alphaignore.label")}</span>
 					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1 mb-3">
+					<SettingsHelp label={t("settings:contextManagement.alphaignore.label")}>
 						{t("settings:contextManagement.alphaignore.description")}
-					</div>
+					</SettingsHelp>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-enable-subfolder-rules"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.enableSubfolderRules.label")}>
 					<VSCodeCheckbox
 						checked={enableSubfolderRules}
 						onChange={(e: any) => setCachedStateField("enableSubfolderRules", e.target.checked)}
 						data-testid="enable-subfolder-rules-checkbox">
-						<label className="block font-medium mb-1">
+						<span className="font-medium">
 							{t("settings:contextManagement.enableSubfolderRules.label")}
-						</label>
+						</span>
 					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1 mb-3">
+					<SettingsHelp label={t("settings:contextManagement.enableSubfolderRules.label")}>
 						{t("settings:contextManagement.enableSubfolderRules.description")}
-					</div>
+					</SettingsHelp>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-max-image-file-size"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.maxImageFileSize.label")}>
 					<div className="flex flex-col gap-2">
-						<span className="font-medium">{t("settings:contextManagement.maxImageFileSize.label")}</span>
+						<ContextSettingLabel label={t("settings:contextManagement.maxImageFileSize.label")}>
+							{t("settings:contextManagement.maxImageFileSize.description")}
+						</ContextSettingLabel>
 						<div className="flex items-center gap-4">
 							<Input
+								aria-label={t("settings:contextManagement.maxImageFileSize.label")}
 								type="number"
 								pattern="[0-9]*"
 								className="w-24 bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1 rounded text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -245,19 +277,19 @@ export const ContextManagementSettings = ({
 							<span>{t("settings:contextManagement.maxImageFileSize.mb")}</span>
 						</div>
 					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-2">
-						{t("settings:contextManagement.maxImageFileSize.description")}
-					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-max-total-image-size"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.maxTotalImageSize.label")}>
 					<div className="flex flex-col gap-2">
-						<span className="font-medium">{t("settings:contextManagement.maxTotalImageSize.label")}</span>
+						<ContextSettingLabel label={t("settings:contextManagement.maxTotalImageSize.label")}>
+							{t("settings:contextManagement.maxTotalImageSize.description")}
+						</ContextSettingLabel>
 						<div className="flex items-center gap-4">
 							<Input
+								aria-label={t("settings:contextManagement.maxTotalImageSize.label")}
 								type="number"
 								pattern="[0-9]*"
 								className="w-24 bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1 rounded text-right [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
@@ -276,35 +308,33 @@ export const ContextManagementSettings = ({
 							<span>{t("settings:contextManagement.maxTotalImageSize.mb")}</span>
 						</div>
 					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-2">
-						{t("settings:contextManagement.maxTotalImageSize.description")}
-					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-include-diagnostic-messages"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.diagnostics.includeMessages.label")}>
 					<VSCodeCheckbox
 						checked={includeDiagnosticMessages}
 						onChange={(e: any) => setCachedStateField("includeDiagnosticMessages", e.target.checked)}
 						data-testid="include-diagnostic-messages-checkbox">
-						<label className="block font-medium mb-1">
+						<span className="font-medium">
 							{t("settings:contextManagement.diagnostics.includeMessages.label")}
-						</label>
+						</span>
 					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1 mb-3">
+					<SettingsHelp label={t("settings:contextManagement.diagnostics.includeMessages.label")}>
 						{t("settings:contextManagement.diagnostics.includeMessages.description")}
-					</div>
+					</SettingsHelp>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-max-diagnostic-messages"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.diagnostics.maxMessages.label")}>
-					<span className="block font-medium mb-1">
-						{t("settings:contextManagement.diagnostics.maxMessages.label")}
-					</span>
+					<ContextSettingLabel label={t("settings:contextManagement.diagnostics.maxMessages.label")}>
+						{t("settings:contextManagement.diagnostics.maxMessages.description")}
+					</ContextSettingLabel>
 					<div className="flex items-center gap-2">
 						<Slider
 							min={1}
@@ -329,15 +359,13 @@ export const ContextManagementSettings = ({
 									: (maxDiagnosticMessages ?? 50)
 							}
 							aria-valuetext={
-								(maxDiagnosticMessages !== undefined && maxDiagnosticMessages <= 0) ||
-								maxDiagnosticMessages === 100
+								maxDiagnosticMessages !== undefined && maxDiagnosticMessages <= 0
 									? t("settings:contextManagement.diagnostics.maxMessages.unlimitedLabel")
 									: `${maxDiagnosticMessages ?? 50} ${t("settings:contextManagement.diagnostics.maxMessages.label")}`
 							}
 						/>
 						<span className="w-20 text-sm font-medium">
-							{(maxDiagnosticMessages !== undefined && maxDiagnosticMessages <= 0) ||
-							maxDiagnosticMessages === 100
+							{maxDiagnosticMessages !== undefined && maxDiagnosticMessages <= 0
 								? t("settings:contextManagement.diagnostics.maxMessages.unlimitedLabel")
 								: (maxDiagnosticMessages ?? 50)}
 						</span>
@@ -351,20 +379,18 @@ export const ContextManagementSettings = ({
 							<span className="codicon codicon-discard" />
 						</Button>
 					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:contextManagement.diagnostics.maxMessages.description")}
-					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-write-delay"
-					section="contextManagement"
+					section={section}
 					label={t("settings:contextManagement.diagnostics.delayAfterWrite.label")}>
-					<span className="block font-medium mb-1">
-						{t("settings:contextManagement.diagnostics.delayAfterWrite.label")}
-					</span>
+					<ContextSettingLabel label={t("settings:contextManagement.diagnostics.delayAfterWrite.label")}>
+						{t("settings:contextManagement.diagnostics.delayAfterWrite.description")}
+					</ContextSettingLabel>
 					<div className="flex items-center gap-2">
 						<Slider
+							aria-label={t("settings:contextManagement.diagnostics.delayAfterWrite.label")}
 							min={0}
 							max={5000}
 							step={100}
@@ -374,81 +400,88 @@ export const ContextManagementSettings = ({
 						/>
 						<span className="w-20">{writeDelayMs}ms</span>
 					</div>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						{t("settings:contextManagement.diagnostics.delayAfterWrite.description")}
-					</div>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-include-current-time"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.includeCurrentTime.label")}>
 					<VSCodeCheckbox
 						checked={includeCurrentTime}
 						onChange={(e: any) => setCachedStateField("includeCurrentTime", e.target.checked)}
 						data-testid="include-current-time-checkbox">
-						<label className="block font-medium mb-1">
-							{t("settings:contextManagement.includeCurrentTime.label")}
-						</label>
+						<span className="font-medium">{t("settings:contextManagement.includeCurrentTime.label")}</span>
 					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1 mb-3">
+					<SettingsHelp label={t("settings:contextManagement.includeCurrentTime.label")}>
 						{t("settings:contextManagement.includeCurrentTime.description")}
-					</div>
+					</SettingsHelp>
 				</SearchableSetting>
 
 				<SearchableSetting
 					settingId="context-include-current-cost"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.includeCurrentCost.label")}>
 					<VSCodeCheckbox
 						checked={includeCurrentCost}
 						onChange={(e: any) => setCachedStateField("includeCurrentCost", e.target.checked)}
 						data-testid="include-current-cost-checkbox">
-						<label className="block font-medium mb-1">
-							{t("settings:contextManagement.includeCurrentCost.label")}
-						</label>
+						<span className="font-medium">{t("settings:contextManagement.includeCurrentCost.label")}</span>
 					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1 mb-3">
+					<SettingsHelp label={t("settings:contextManagement.includeCurrentCost.label")}>
 						{t("settings:contextManagement.includeCurrentCost.description")}
-					</div>
+					</SettingsHelp>
 				</SearchableSetting>
 			</Section>
 			<Section className="pt-2">
-				{/* Context Condensing Prompt Editor */}
-				<SearchableSetting
-					settingId="context-condense-prompt"
-					section="contextManagement"
-					label={t("prompts:supportPrompts.types.CONDENSE.label")}>
-					<div className="flex justify-between items-center mb-1">
-						<label className="block font-medium">{t("prompts:supportPrompts.types.CONDENSE.label")}</label>
-						<StandardTooltip content={t("prompts:supportPrompts.resetPrompt", { promptType: "CONDENSE" })}>
-							<Button variant="ghost" size="icon" onClick={handleCondenseReset}>
-								<span className="codicon codicon-discard"></span>
-							</Button>
-						</StandardTooltip>
-					</div>
-					<div className="text-sm text-vscode-descriptionForeground mb-2">
-						{t("prompts:supportPrompts.types.CONDENSE.description")}
-					</div>
-					<VSCodeTextArea
-						resize="vertical"
-						value={getCondensePromptValue()}
-						onInput={(e) => {
-							const value =
-								(e as unknown as CustomEvent)?.detail?.target?.value ??
-								((e as any).target as HTMLTextAreaElement).value
-							updateCondensePrompt(value)
-						}}
-						rows={6}
-						className="w-full"
-						data-testid="condense-prompt-textarea"
-					/>
-				</SearchableSetting>
+				<details data-settings-advanced="condense-prompt">
+					<summary className="cursor-pointer font-medium focus-visible:outline focus-visible:outline-vscode-focusBorder">
+						{t("prompts:supportPrompts.types.CONDENSE.label")}
+					</summary>
+					<SearchableSetting
+						settingId="context-condense-prompt"
+						section={section}
+						label={t("prompts:supportPrompts.types.CONDENSE.label")}
+						className="mt-3">
+						<div className="mb-1 flex items-center justify-end gap-1">
+							<SettingsHelp label={t("prompts:supportPrompts.types.CONDENSE.label")}>
+								<p>{t("prompts:supportPrompts.types.CONDENSE.description")}</p>
+								<p>{t("settings:contextManagement.customPromptNotice")}</p>
+							</SettingsHelp>
+							<StandardTooltip
+								content={t("prompts:supportPrompts.resetPrompt", { promptType: "CONDENSE" })}>
+								<Button
+									variant="ghost"
+									size="icon"
+									aria-label={t("prompts:supportPrompts.resetPrompt", { promptType: "CONDENSE" })}
+									onClick={handleCondenseReset}>
+									<span className="codicon codicon-discard"></span>
+								</Button>
+							</StandardTooltip>
+						</div>
+						<VSCodeTextArea
+							aria-label={t("prompts:supportPrompts.types.CONDENSE.label")}
+							resize="vertical"
+							value={getCondensePromptValue()}
+							onInput={(e) => {
+								const value =
+									(e as unknown as CustomEvent)?.detail?.target?.value ??
+									((e as any).target as HTMLTextAreaElement).value
+								updateCondensePrompt(value)
+							}}
+							rows={6}
+							className="w-full"
+							data-testid="condense-prompt-textarea"
+						/>
+					</SearchableSetting>
+				</details>
 
 				{/* Auto Condense Context */}
 				<SearchableSetting
 					settingId="context-auto-condense"
-					section="contextManagement"
+					section={section}
+					className="flex items-center gap-2"
 					label={t("settings:contextManagement.autoCondenseContext.name")}>
 					<VSCodeCheckbox
 						checked={autoCondenseContext}
@@ -456,16 +489,19 @@ export const ContextManagementSettings = ({
 						data-testid="auto-condense-context-checkbox">
 						<span className="font-medium">{t("settings:contextManagement.autoCondenseContext.name")}</span>
 					</VSCodeCheckbox>
+					<SettingsHelp label={t("settings:contextManagement.autoCondenseContext.name")}>
+						{t("settings:contextManagement.autoCondenseContext.description")}
+					</SettingsHelp>
 				</SearchableSetting>
 				{autoCondenseContext && (
 					<div className="flex flex-col gap-3 pl-3 border-l-2 border-vscode-button-background">
 						<SearchableSetting
 							settingId="context-condense-scope"
-							section="contextManagement"
+							section={section}
 							label={t("settings:contextManagement.condensingScope.label")}>
-							<span className="block font-medium mb-1">
-								{t("settings:contextManagement.condensingScope.label")}
-							</span>
+							<ContextSettingLabel label={t("settings:contextManagement.condensingScope.label")}>
+								{t("settings:contextManagement.condensingScope.description")}
+							</ContextSettingLabel>
 							<Select
 								value={autoCondenseContextScope}
 								onValueChange={(value) =>
@@ -486,17 +522,14 @@ export const ContextManagementSettings = ({
 									</SelectItem>
 								</SelectContent>
 							</Select>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:contextManagement.condensingScope.description")}
-							</div>
 						</SearchableSetting>
 						<SearchableSetting
 							settingId="context-post-turn-condense"
-							section="contextManagement"
+							section={section}
 							label={t("settings:contextManagement.postTurnCondense.label")}>
-							<span className="block font-medium mb-1">
-								{t("settings:contextManagement.postTurnCondense.label")}
-							</span>
+							<ContextSettingLabel label={t("settings:contextManagement.postTurnCondense.label")}>
+								{t("settings:contextManagement.postTurnCondense.description")}
+							</ContextSettingLabel>
 							<div className="flex items-center gap-2">
 								<Slider
 									min={0}
@@ -515,17 +548,15 @@ export const ContextManagementSettings = ({
 										: `${postTurnCondenseContextPercent}%`}
 								</span>
 							</div>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:contextManagement.postTurnCondense.description")}
-							</div>
 						</SearchableSetting>
 						<SearchableSetting
 							settingId="context-condense-threshold"
-							section="contextManagement"
+							section={section}
 							label={t("settings:contextManagement.autoCondenseContextPercent.label")}>
-							<span className="block font-medium mb-1">
-								{t("settings:contextManagement.autoCondenseContextPercent.label")}
-							</span>
+							<ContextSettingLabel
+								label={t("settings:contextManagement.autoCondenseContextPercent.label")}>
+								{t("settings:contextManagement.autoCondenseContextPercent.description")}
+							</ContextSettingLabel>
 							<div className="flex items-center gap-2">
 								<Slider
 									min={5}
@@ -541,9 +572,6 @@ export const ContextManagementSettings = ({
 								<span className="w-20" data-testid="condense-threshold-value">
 									{autoCondenseContextPercent}%
 								</span>
-							</div>
-							<div className="text-vscode-descriptionForeground text-sm mt-1">
-								{t("settings:contextManagement.autoCondenseContextPercent.description")}
 							</div>
 						</SearchableSetting>
 					</div>

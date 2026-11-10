@@ -2,10 +2,6 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 
 import { validateAndFixToolResultIds } from "../validateToolResultIds"
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: { hasInstance: () => false },
-}))
-
 function repair(ids: string[], results: Anthropic.ToolResultBlockParam[]) {
 	const assistant: Anthropic.MessageParam = {
 		role: "assistant",

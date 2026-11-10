@@ -36,6 +36,10 @@ function correlatedFixture(save: () => Promise<void>) {
 		getState: vi.fn(async () => ({})),
 		postMessageToWebview: vi.fn(async () => {}),
 		postTaskQueueToWebview: vi.fn(async () => {}),
+		queueMessageForTaskDurably: vi.fn(
+			async (_taskId: string, text: string, images?: string[], requestId?: string) =>
+				Boolean(await queue.addMessageDurably(text, images, requestId)),
+		),
 		log: vi.fn(),
 	} as unknown as AlphaProvider
 	Object.assign(task, { providerRef: { deref: () => provider } })
@@ -177,6 +181,43 @@ describe("published ask response admission", () => {
 		expect(provider.postMessageToWebview).not.toHaveBeenCalledWith(
 			expect.objectContaining({
 				chatCommandResult: expect.objectContaining({ status: "rejected" }),
+			}),
+		)
+	})
+
+	it("never binds an earlier async answer to a blocking ask published after the client sent it", async () => {
+		const started = deferred()
+		const saved = deferred()
+		const { task, queue, provider, message } = correlatedFixture(async () => {
+			started.resolve()
+			await saved.promise
+		})
+		// The client sent this card from an idle projection; a different ask now owns the host.
+		Reflect.set(task, "activeAsk", { type: "followup", ts: 30 })
+		const annotate = vi.spyOn(task, "markAsyncUserInputAnswered").mockResolvedValue(true)
+		const dispatch = webviewMessageHandler(provider, {
+			...message,
+			askMessageTs: undefined,
+			asyncUserInputMessageTs: 2,
+		})
+		await started.promise
+		saved.resolve()
+		await dispatch
+
+		expect(task["askResponse"]).toBeUndefined()
+		expect(task.getActiveAskTimestamp()).toBe(30)
+		expect(queue.messages.map(({ id }) => id)).toEqual([message.requestId])
+		expect(provider.queueMessageForTaskDurably).toHaveBeenCalledWith(
+			task.taskId,
+			"Use this answer",
+			[],
+			message.requestId,
+			{ source: "human" },
+		)
+		expect(annotate).toHaveBeenCalledExactlyOnceWith(2)
+		expect(provider.postMessageToWebview).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ command: "askResponse", status: "accepted" }),
 			}),
 		)
 	})

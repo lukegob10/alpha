@@ -59,6 +59,7 @@ for (const testFile of [
 	"file-review-ui.test",
 	"task-navigation-ui.test",
 	"composer-ui.test",
+	"settings-ui.test",
 	"request-user-input-ui.test",
 	"transcript-lifecycle-ui.test",
 ]) {

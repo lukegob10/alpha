@@ -1446,25 +1446,104 @@ describe("ChatTextArea", () => {
 				expect(setInputValue).toHaveBeenCalledWith("Third prompt")
 			})
 
-			it("should navigate history with Command+Up when cursor is at beginning", () => {
+			it.each([{ shiftKey: true }, { ctrlKey: true }, { altKey: true }, { metaKey: true }])(
+				"preserves modified arrow editing shortcuts at a history boundary: %o",
+				(modifiers) => {
+					const setInputValue = vi.fn()
+					const { container } = render(
+						<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="Some text here" />,
+					)
+					const textarea = container.querySelector("textarea")!
+					textarea.setSelectionRange(0, 0)
+					const up = new KeyboardEvent("keydown", {
+						key: "ArrowUp",
+						...modifiers,
+						bubbles: true,
+						cancelable: true,
+					})
+					fireEvent(textarea, up)
+					expect(up.defaultPrevented).toBe(false)
+					expect(setInputValue).not.toHaveBeenCalled()
+
+					fireEvent.keyDown(textarea, { key: "ArrowUp" })
+					expect(setInputValue).toHaveBeenCalledWith("Third prompt")
+					setInputValue.mockClear()
+					const down = new KeyboardEvent("keydown", {
+						key: "ArrowDown",
+						...modifiers,
+						bubbles: true,
+						cancelable: true,
+					})
+					fireEvent(textarea, down)
+					expect(down.defaultPrevented).toBe(false)
+					expect(setInputValue).not.toHaveBeenCalled()
+				},
+			)
+
+			it("leaves an already-handled history shortcut alone", () => {
 				const setInputValue = vi.fn()
 				const { container } = render(
 					<ChatTextArea {...defaultProps} setInputValue={setInputValue} inputValue="Some text here" />,
 				)
-
 				const textarea = container.querySelector("textarea")!
-				// Set cursor to beginning of text
 				textarea.setSelectionRange(0, 0)
-
-				// Clear any calls from initial render
-				setInputValue.mockClear()
-
-				// Simulate Command+Up key press
-				fireEvent.keyDown(textarea, { key: "ArrowUp", metaKey: true })
-
-				// Should navigate to history since cursor is at beginning (same as regular Up)
-				expect(setInputValue).toHaveBeenCalledWith("Third prompt")
+				const event = new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true })
+				event.preventDefault()
+				fireEvent(textarea, event)
+				expect(setInputValue).not.toHaveBeenCalled()
 			})
+
+			it.each(["url", "file", "drop", "insert"] as const)(
+				"retains a recalled prompt edited by %s insertion when pressing Down",
+				(method) => {
+					function Composer() {
+						const [inputValue, setInputValue] = useState("Original draft")
+						return <ChatTextArea {...defaultProps} inputValue={inputValue} setInputValue={setInputValue} />
+					}
+					const { container } = render(<Composer />)
+					const textarea = container.querySelector("textarea")!
+					textarea.setSelectionRange(0, 0)
+					fireEvent.keyDown(textarea, { key: "ArrowUp" })
+					expect(textarea).toHaveValue("Third prompt")
+					textarea.setSelectionRange(textarea.value.length, textarea.value.length)
+					fireEvent.select(textarea)
+
+					if (method === "drop") {
+						fireEvent.drop(container.querySelector(".chat-text-area")!, {
+							dataTransfer: {
+								getData: (type: string) => (type === "text" ? "/test/workspace/file.ts" : ""),
+							},
+						})
+					} else if (method === "insert") {
+						fireEvent(
+							window,
+							new MessageEvent("message", {
+								data: { type: "insertTextIntoTextarea", text: "additional context" },
+							}),
+						)
+					} else {
+						fireEvent.paste(textarea, {
+							clipboardData: {
+								items: [],
+								getData: (type: string) =>
+									method === "url" && type === "text"
+										? "https://example.com/context"
+										: method === "file" && type === "text/uri-list"
+											? "file:///test/workspace/file.ts"
+											: "",
+							},
+						})
+					}
+
+					const editedDraft = textarea.value
+					expect(editedDraft).not.toBe("Third prompt")
+					textarea.setSelectionRange(editedDraft.length, editedDraft.length)
+					const down = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })
+					fireEvent(textarea, down)
+					expect(textarea).toHaveValue(editedDraft)
+					expect(down.defaultPrevented).toBe(false)
+				},
+			)
 
 			it("should not navigate history with Command+Up when cursor is not at beginning", () => {
 				const setInputValue = vi.fn()

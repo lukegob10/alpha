@@ -84,16 +84,6 @@ vi.mock("../../../api", () => ({
 	})),
 }))
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		hasInstance: vi.fn(() => true),
-		createInstance: vi.fn(),
-		get instance() {
-			return { trackEvent: vi.fn(), trackError: vi.fn(), setProvider: vi.fn(), captureModeSwitch: vi.fn() }
-		},
-	},
-}))
-
 vi.mock("../../../shared/modes", () => ({
 	modes: [
 		{ slug: "code", name: "Code", roleDefinition: "code", groups: ["read", "edit"] },

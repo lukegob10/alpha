@@ -12,7 +12,6 @@ vi.mock("../../environment/getEnvironmentDetails", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../environment/getEnvironmentDetails")>()),
 	captureEnvironmentDetails: vi.fn(),
 }))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureConversationMessage: vi.fn() } } }))
 
 const stopBeforeProvider = new Error("fixture: provider boundary reached")
 const queueDeletionFailure = new Error("fixture: queued input deletion failed after transcript commit")

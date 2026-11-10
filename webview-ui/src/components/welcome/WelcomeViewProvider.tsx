@@ -28,6 +28,7 @@ const WelcomeViewProvider = () => {
 	)
 
 	const handleFinish = useCallback(() => {
+		if (errorMessage) return
 		const error = apiConfiguration ? validateApiConfiguration(apiConfiguration) : undefined
 
 		if (error) {
@@ -37,7 +38,7 @@ const WelcomeViewProvider = () => {
 
 		setErrorMessage(undefined)
 		vscode.postMessage({ type: "upsertApiConfiguration", text: currentApiConfigName, apiConfiguration })
-	}, [apiConfiguration, currentApiConfigName])
+	}, [apiConfiguration, currentApiConfigName, errorMessage])
 
 	if (!showProviderSetup) {
 		return (
@@ -109,7 +110,7 @@ const WelcomeViewProvider = () => {
 							<ArrowLeft className="size-4" />
 							Back
 						</Button>
-						<Button onClick={handleFinish} variant="primary">
+						<Button onClick={handleFinish} disabled={!!errorMessage} variant="primary">
 							Finish
 						</Button>
 					</div>

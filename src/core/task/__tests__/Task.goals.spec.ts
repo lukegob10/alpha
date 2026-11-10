@@ -7,8 +7,6 @@ import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBind
 import { accountGoalResponse } from "../../agent/GoalStepAccounting"
 import type { GoalStateStore, TaskGoalEnvelope } from "../../task-persistence/TaskGoalStore"
 
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureTaskCompleted: vi.fn() } } }))
-
 function barrier() {
 	let resolve!: () => void
 	const promise = new Promise<void>((done) => (resolve = done))

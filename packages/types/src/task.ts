@@ -8,7 +8,6 @@ import type { SubagentModelRouteState } from "./subagent.js"
 import type { SubagentContextManifest } from "./subagent-context.js"
 import type { SubagentDelegationPolicy } from "./subagent-orchestration.js"
 import type { ToolUsage, ToolName } from "./tool.js"
-import type { StaticAppProperties, GitProperties, TelemetryProperties } from "./telemetry.js"
 import type { TodoItem } from "./todo.js"
 import type { AgentLifecyclePhase } from "./agent-lifecycle.js"
 import type { ModelInfo } from "./model.js"
@@ -43,10 +42,7 @@ export interface TaskProviderLike {
 	getProviderProfile(): Promise<string>
 	setProviderProfile(providerProfile: string): Promise<void>
 
-	// Telemetry
-	readonly appProperties: StaticAppProperties
-	readonly gitProperties: GitProperties | undefined
-	getTelemetryProperties(): Promise<TelemetryProperties>
+	// Workspace
 	readonly cwd: string
 
 	// Event Emitter

@@ -296,6 +296,7 @@ export function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<v
 	return new Promise<void>((resolve, reject) => {
 		let settled = false
 		let timer: ReturnType<typeof setTimeout> | undefined
+		const deadline = performance.now() + normalizedDelayMs
 
 		const cleanup = () => {
 			if (timer !== undefined) clearTimeout(timer)
@@ -313,10 +314,17 @@ export function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<v
 			cleanup()
 			reject(getAbortReason(signal!))
 		}
+		const schedule = () => {
+			const remainingMs = Math.ceil(deadline - performance.now())
+			if (remainingMs <= 0) return finish()
+			// Node turns delays above the signed 32-bit limit into 1ms. Preserve the
+			// provider deadline across timer chunks (Codex df769889 responses_retry.rs).
+			timer = setTimeout(remainingMs > 2_147_483_647 ? schedule : finish, Math.min(remainingMs, 2_147_483_647))
+		}
 
-		timer = setTimeout(finish, normalizedDelayMs)
 		signal?.addEventListener("abort", onAbort, { once: true })
 		// Cover a signal that aborted between the initial check and listener setup.
 		if (signal?.aborted) onAbort()
+		else schedule()
 	})
 }

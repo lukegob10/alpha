@@ -30,16 +30,6 @@ vi.mock("../../../api", () => ({
 	})),
 }))
 
-// Mock TelemetryService
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureTaskCreated: vi.fn(),
-			captureTaskRestarted: vi.fn(),
-		},
-	},
-}))
-
 describe("Task dispose method", () => {
 	let mockProvider: any
 	let mockApiConfiguration: ProviderSettings

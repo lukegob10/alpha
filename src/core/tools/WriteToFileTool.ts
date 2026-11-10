@@ -1,5 +1,4 @@
 import path from "path"
-import delay from "delay"
 import fs from "fs/promises"
 
 import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
@@ -8,11 +7,8 @@ import { Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { fileExistsAtPath } from "../../utils/fs"
-import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { convertNewFileToUnifiedDiff, computeDiffStats, sanitizeUnifiedDiff } from "../diff/stats"
-import type { ToolUse } from "../../shared/tools"
 import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
-import { t } from "../../i18n"
 
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
@@ -28,7 +24,7 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 	async execute(params: WriteToFileParams, task: Task, callbacks: ToolCallbacks): Promise<void> {
 		const { pushToolResult, handleError, askApproval } = callbacks
 		const relPath = params.path
-		let newContent = params.content
+		const newContent = params.content
 
 		if (!relPath) {
 			task.consecutiveMistakeCount++
@@ -94,88 +90,47 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			const state = await provider?.getState()
 			const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 			const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-			const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-				state?.experiments ?? {},
-				EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-			)
+			task.diffViewProvider.editType = fileExists ? "modify" : "create"
+			const directExpectedFileState =
+				expectedFileState ??
+				(fileExists
+					? { exists: true, content: task.diffViewProvider.originalContent ?? "" }
+					: { exists: false })
+			task.diffViewProvider.originalContent = directExpectedFileState.exists
+				? directExpectedFileState.content
+				: ""
 
-			if (isPreventFocusDisruptionEnabled) {
-				task.diffViewProvider.editType = fileExists ? "modify" : "create"
-				const directExpectedFileState =
-					expectedFileState ??
-					(fileExists
-						? { exists: true, content: task.diffViewProvider.originalContent ?? "" }
-						: { exists: false })
-				task.diffViewProvider.originalContent = directExpectedFileState.exists
-					? directExpectedFileState.content
-					: ""
+			let unified = fileExists
+				? formatResponse.createPrettyPatch(relPath, task.diffViewProvider.originalContent, newContent)
+				: convertNewFileToUnifiedDiff(newContent, relPath)
+			unified = sanitizeUnifiedDiff(unified)
+			const completeMessage = JSON.stringify({
+				...sharedMessageProps,
+				content: unified,
+				originalContent: fileExists ? task.diffViewProvider.originalContent || "" : "",
+				finalContent: newContent,
+				diffStats: computeDiffStats(unified) || undefined,
+			} satisfies AlphaSayTool)
 
-				let unified = fileExists
-					? formatResponse.createPrettyPatch(relPath, task.diffViewProvider.originalContent, newContent)
-					: convertNewFileToUnifiedDiff(newContent, relPath)
-				unified = sanitizeUnifiedDiff(unified)
-				const completeMessage = JSON.stringify({
-					...sharedMessageProps,
-					content: unified,
-					originalContent: fileExists ? task.diffViewProvider.originalContent || "" : "",
-					finalContent: newContent,
-					diffStats: computeDiffStats(unified) || undefined,
-				} satisfies AlphaSayTool)
+			// Alpha keeps editor presentation separate from approval: approve the full inline diff before a background write.
+			// Codex 4688e49329637b8b50dd8450ef784020537e2215 (retrieved 2026-11-06),
+			// core/src/apply_patch.rs: policy precedes writes.
+			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
 
-				const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
-
-				if (!didApprove) {
-					await task.diffViewProvider.reset()
-					this.resetPartialState()
-					return
-				}
-
-				await task.diffViewProvider.saveDirectly(
-					relPath,
-					newContent,
-					false,
-					diagnosticsEnabled,
-					writeDelayMs,
-					directExpectedFileState,
-				)
-			} else {
-				if (!task.diffViewProvider.isEditing) {
-					const partialMessage = JSON.stringify(sharedMessageProps)
-					await task.ask("tool", partialMessage, true).catch(() => {})
-					if (!expectedFileState) {
-						throw new Error(t("tools:diffView.missingExpectedFileState"))
-					}
-					await task.diffViewProvider.open(relPath, expectedFileState)
-				}
-
-				await task.diffViewProvider.update(newContent, true)
-
-				await delay(300)
-				task.diffViewProvider.scrollToFirstDiff()
-
-				let unified = fileExists
-					? formatResponse.createPrettyPatch(relPath, task.diffViewProvider.originalContent, newContent)
-					: convertNewFileToUnifiedDiff(newContent, relPath)
-				unified = sanitizeUnifiedDiff(unified)
-				const completeMessage = JSON.stringify({
-					...sharedMessageProps,
-					content: unified,
-					originalContent: fileExists ? task.diffViewProvider.originalContent || "" : "",
-					finalContent: newContent,
-					diffStats: computeDiffStats(unified) || undefined,
-				} satisfies AlphaSayTool)
-
-				const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
-
-				if (!didApprove) {
-					await task.diffViewProvider.revertChanges()
-					await task.diffViewProvider.reset()
-					this.resetPartialState()
-					return
-				}
-
-				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
+			if (!didApprove) {
+				await task.diffViewProvider.reset()
+				this.resetPartialState()
+				return
 			}
+
+			await task.diffViewProvider.saveDirectly(
+				relPath,
+				newContent,
+				false,
+				diagnosticsEnabled,
+				writeDelayMs,
+				directExpectedFileState,
+			)
 
 			if (relPath) {
 				await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)
@@ -198,77 +153,6 @@ export class WriteToFileTool extends BaseTool<"write_to_file"> {
 			await task.diffViewProvider.reset()
 			this.resetPartialState()
 			return
-		}
-	}
-
-	override async handlePartial(task: Task, block: ToolUse<"write_to_file">): Promise<void> {
-		const relPath: string | undefined = block.params.path
-		let newContent: string | undefined = block.params.content
-
-		// Wait for path to stabilize before showing UI (prevents truncated paths)
-		if (!this.hasPathStabilized(relPath) || newContent === undefined) {
-			return
-		}
-
-		if (task.alphaIgnoreController && !task.alphaIgnoreController.validateAccess(relPath!)) {
-			return
-		}
-
-		const provider = task.providerRef.deref()
-		const state = await provider?.getState()
-		const isPreventFocusDisruptionEnabled = experiments.isEnabled(
-			state?.experiments ?? {},
-			EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION,
-		)
-
-		if (isPreventFocusDisruptionEnabled) {
-			return
-		}
-
-		// relPath is guaranteed non-null after hasPathStabilized
-		const absolutePath = path.resolve(task.cwd, relPath!)
-		let fileExists: boolean
-
-		if (task.diffViewProvider.editType !== undefined) {
-			fileExists = task.diffViewProvider.editType === "modify"
-		} else {
-			fileExists = await fileExistsAtPath(absolutePath)
-			task.diffViewProvider.editType = fileExists ? "modify" : "create"
-		}
-
-		// Capture the raw source before the partial tool row can yield. The first
-		// open stores this state on the provider; later partial updates reuse it
-		// instead of recapturing the current disk contents.
-		let expectedFileState: ExpectedFileState | undefined
-		if (!task.diffViewProvider.isEditing) {
-			expectedFileState = fileExists
-				? { exists: true, content: await fs.readFile(absolutePath, "utf-8") }
-				: { exists: false }
-		}
-
-		const isWriteProtected = task.alphaProtectedController?.isWriteProtected(relPath!) || false
-		const isOutsideWorkspace = isTaskPathOutsideWorkspace(task, absolutePath)
-
-		const sharedMessageProps: AlphaSayTool = {
-			tool: fileExists ? "editedExistingFile" : "newFileCreated",
-			path: getTaskReadablePath(task, relPath!),
-			content: newContent || "",
-			isOutsideWorkspace,
-			isProtected: isWriteProtected,
-		}
-
-		const partialMessage = JSON.stringify(sharedMessageProps)
-		await task.ask("tool", partialMessage, block.partial).catch(() => {})
-
-		if (newContent !== undefined) {
-			if (!task.diffViewProvider.isEditing) {
-				if (!expectedFileState) {
-					throw new Error(t("tools:diffView.missingExpectedFileState"))
-				}
-				await task.diffViewProvider.open(relPath!, expectedFileState)
-			}
-
-			await task.diffViewProvider.update(newContent, false)
 		}
 	}
 }

@@ -1,7 +1,7 @@
-import { useMemo, useState, useCallback, useEffect, useRef } from "react"
+import { useMemo, useState, useCallback, useEffect, useRef, useId } from "react"
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 import { Trans } from "react-i18next"
-import { ChevronsUpDown, Check, X, Info } from "lucide-react"
+import { ChevronsUpDown, Check, X } from "lucide-react"
 
 import { type ProviderSettings, type ModelInfo, type OrganizationAllowList, isProviderName } from "@alpha-code/types"
 
@@ -25,6 +25,7 @@ import { useEscapeKey } from "@src/hooks/useEscapeKey"
 
 import { ModelInfoView } from "./ModelInfoView"
 import { ApiErrorMessage } from "./ApiErrorMessage"
+import { SettingsHelp } from "./SettingsHelp"
 
 type ModelIdKey = keyof Pick<ProviderSettings, "openAiModelId" | "apiModelId" | "vsCodeLmModelSelector">
 
@@ -84,9 +85,11 @@ export const ModelPicker = ({
 	allowCustomModel = true,
 }: ModelPickerProps) => {
 	const { t } = useAppTranslation()
+	const pickerId = useId()
+	const labelId = `${pickerId}-label`
+	const valueId = `${pickerId}-value`
 
 	const [open, setOpen] = useState(false)
-	const [isDescriptionExpanded, setIsDescriptionExpanded] = useState(false)
 	const isInitialized = useRef(false)
 	const searchInputRef = useRef<HTMLInputElement>(null)
 	const selectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
@@ -225,16 +228,54 @@ export const ModelPicker = ({
 	return (
 		<>
 			<div>
-				<label className="block font-medium mb-1">{label ?? t("settings:modelPicker.label")}</label>
+				<div className="mb-1 flex items-center gap-1">
+					<label id={labelId} htmlFor={pickerId} className="block font-medium">
+						{label ?? t("settings:modelPicker.label")}
+					</label>
+					{(simplifySettings || selectedModelInfo || (!hidePricing && serviceUrl)) && (
+						<SettingsHelp label={label ?? t("settings:modelPicker.label")}>
+							{simplifySettings ? (
+								<p className="m-0">{t("settings:modelPicker.simplifiedExplanation")}</p>
+							) : (
+								<>
+									{selectedModelId && selectedModelInfo && !selectedModelInfo.deprecated && (
+										<ModelInfoView modelInfo={selectedModelInfo} hidePricing={hidePricing} />
+									)}
+									{!hidePricing && serviceUrl && (
+										<div className="text-sm">
+											<Trans
+												i18nKey="settings:modelPicker.automaticFetch"
+												components={{
+													serviceLink: <VSCodeLink href={serviceUrl} className="text-sm" />,
+													defaultModelLink: (
+														<VSCodeLink
+															onClick={() => onSelect(defaultModelId)}
+															className="text-sm"
+														/>
+													),
+												}}
+												values={{ serviceName, defaultModelId }}
+											/>
+										</div>
+									)}
+								</>
+							)}
+						</SettingsHelp>
+					)}
+				</div>
 				<Popover open={open} onOpenChange={onOpenChange}>
 					<PopoverTrigger asChild>
 						<Button
+							id={pickerId}
 							variant="combobox"
 							role="combobox"
 							aria-expanded={open}
+							aria-labelledby={`${labelId} ${valueId}`}
 							className="w-full justify-between"
 							data-testid="model-picker-button">
-							<div className="truncate">{displayLabel ?? t("settings:common.select")}</div>
+							<div id={valueId} className="truncate">
+								{displayLabel ?? t("settings:common.select")}
+							</div>
 							<ChevronsUpDown className="opacity-50" />
 						</Button>
 					</PopoverTrigger>
@@ -311,38 +352,6 @@ export const ModelPicker = ({
 			{errorMessage && <ApiErrorMessage errorMessage={errorMessage} />}
 			{selectedModelInfo?.deprecated && (
 				<ApiErrorMessage errorMessage={t("settings:validation.modelDeprecated")} />
-			)}
-
-			{simplifySettings ? (
-				<p className="text-xs text-vscode-descriptionForeground m-0">
-					<Info className="size-3 inline mr-1" />
-					{t("settings:modelPicker.simplifiedExplanation")}
-				</p>
-			) : (
-				<div>
-					{selectedModelId && selectedModelInfo && !selectedModelInfo.deprecated && (
-						<ModelInfoView
-							modelInfo={selectedModelInfo}
-							isDescriptionExpanded={isDescriptionExpanded}
-							setIsDescriptionExpanded={setIsDescriptionExpanded}
-							hidePricing={hidePricing}
-						/>
-					)}
-					{!hidePricing && serviceUrl && (
-						<div className="text-sm text-vscode-descriptionForeground">
-							<Trans
-								i18nKey="settings:modelPicker.automaticFetch"
-								components={{
-									serviceLink: <VSCodeLink href={serviceUrl} className="text-sm" />,
-									defaultModelLink: (
-										<VSCodeLink onClick={() => onSelect(defaultModelId)} className="text-sm" />
-									),
-								}}
-								values={{ serviceName, defaultModelId }}
-							/>
-						</div>
-					)}
-				</div>
 			)}
 		</>
 	)

@@ -97,17 +97,6 @@ vi.mock("@alpha-code/core", () => ({
 		get: vi.fn(),
 	},
 }))
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureToolUsage: vi.fn(),
-			captureConsecutiveMistakeError: vi.fn(),
-			captureException: vi.fn(),
-			captureEvent: vi.fn(),
-		},
-	},
-}))
-
 describe("presentAssistantMessage preview", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()

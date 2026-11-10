@@ -2,6 +2,7 @@ import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import { Slider } from "@/components/ui"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface TemperatureControlProps {
 	value: number | undefined | null
@@ -16,17 +17,18 @@ export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue
 
 	return (
 		<>
-			<div>
+			<div className="flex items-center gap-1">
 				<VSCodeCheckbox
 					checked={isCustomTemperature}
 					onChange={(e: any) => {
 						onChange(e.target.checked ? (value ?? defaultValue ?? 0) : null)
 					}}>
-					<label className="block font-medium mb-1">{t("settings:temperature.useCustom")}</label>
+					<span className="font-medium">{t("settings:temperature.useCustom")}</span>
 				</VSCodeCheckbox>
-				<div className="text-sm text-vscode-descriptionForeground mt-1">
-					{t("settings:temperature.description")}
-				</div>
+				<SettingsHelp label={t("settings:temperature.useCustom")}>
+					<p className="m-0">{t("settings:temperature.description")}</p>
+					<p className="m-0">{t("settings:temperature.rangeDescription")}</p>
+				</SettingsHelp>
 			</div>
 
 			{isCustomTemperature && (
@@ -34,6 +36,7 @@ export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue
 					<div>
 						<div className="flex items-center gap-2">
 							<Slider
+								aria-label={t("settings:temperature.useCustom")}
 								min={0}
 								max={maxValue}
 								step={0.01}
@@ -41,9 +44,6 @@ export const TemperatureControl = ({ value, onChange, maxValue = 1, defaultValue
 								onValueChange={([nextValue]) => onChange(nextValue)}
 							/>
 							<span className="w-10">{value}</span>
-						</div>
-						<div className="text-vscode-descriptionForeground text-sm mt-1">
-							{t("settings:temperature.rangeDescription")}
 						</div>
 					</div>
 				</div>

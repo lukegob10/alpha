@@ -1,21 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
-import {
-	validateAndFixToolResultIds,
-	ToolResultIdMismatchError,
-	MissingToolResultError,
-} from "../validateToolResultIds"
-
-// Mock TelemetryService
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		hasInstance: vi.fn(() => true),
-		instance: {
-			captureException: vi.fn(),
-		},
-	},
-}))
+import { validateAndFixToolResultIds } from "../validateToolResultIds"
 
 describe("validateAndFixToolResultIds", () => {
 	beforeEach(() => {
@@ -816,8 +801,8 @@ describe("validateAndFixToolResultIds", () => {
 		})
 	})
 
-	describe("telemetry", () => {
-		it("should call captureException for both missing and mismatch when there is a mismatch", () => {
+	describe("local receipt repair", () => {
+		it("repairs a mismatched result without discarding its content", () => {
 			const assistantMessage: Anthropic.MessageParam = {
 				role: "assistant",
 				content: [
@@ -841,31 +826,12 @@ describe("validateAndFixToolResultIds", () => {
 				],
 			}
 
-			validateAndFixToolResultIds(userMessage, [assistantMessage])
+			const result = validateAndFixToolResultIds(userMessage, [assistantMessage])
 
-			// A mismatch also triggers missing detection since the wrong-id doesn't match any tool_use
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledTimes(2)
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledWith(
-				expect.any(MissingToolResultError),
-				expect.objectContaining({
-					missingToolUseIds: ["correct-id"],
-					existingToolResultIds: ["wrong-id"],
-					toolUseCount: 1,
-					toolResultCount: 1,
-				}),
-			)
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledWith(
-				expect.any(ToolResultIdMismatchError),
-				expect.objectContaining({
-					toolResultIds: ["wrong-id"],
-					toolUseIds: ["correct-id"],
-					toolResultCount: 1,
-					toolUseCount: 1,
-				}),
-			)
+			expect(result.content).toEqual([{ type: "tool_result", tool_use_id: "correct-id", content: "Content" }])
 		})
 
-		it("should not call captureException when IDs match", () => {
+		it("preserves a result whose ID already matches", () => {
 			const assistantMessage: Anthropic.MessageParam = {
 				role: "assistant",
 				content: [
@@ -889,44 +855,12 @@ describe("validateAndFixToolResultIds", () => {
 				],
 			}
 
-			validateAndFixToolResultIds(userMessage, [assistantMessage])
-
-			expect(TelemetryService.instance.captureException).not.toHaveBeenCalled()
+			expect(validateAndFixToolResultIds(userMessage, [assistantMessage])).toEqual(userMessage)
 		})
 	})
 
-	describe("ToolResultIdMismatchError", () => {
-		it("should create error with correct properties", () => {
-			const error = new ToolResultIdMismatchError(
-				"Mismatch detected",
-				["result-1", "result-2"],
-				["use-1", "use-2"],
-			)
-
-			expect(error.name).toBe("ToolResultIdMismatchError")
-			expect(error.message).toBe("Mismatch detected")
-			expect(error.toolResultIds).toEqual(["result-1", "result-2"])
-			expect(error.toolUseIds).toEqual(["use-1", "use-2"])
-		})
-	})
-
-	describe("MissingToolResultError", () => {
-		it("should create error with correct properties", () => {
-			const error = new MissingToolResultError(
-				"Missing tool results detected",
-				["tool-1", "tool-2"],
-				["existing-result-1"],
-			)
-
-			expect(error.name).toBe("MissingToolResultError")
-			expect(error.message).toBe("Missing tool results detected")
-			expect(error.missingToolUseIds).toEqual(["tool-1", "tool-2"])
-			expect(error.existingToolResultIds).toEqual(["existing-result-1"])
-		})
-	})
-
-	describe("telemetry for missing tool_results", () => {
-		it("should call captureException when tool_results are missing", () => {
+	describe("local receipt completion", () => {
+		it("inserts an interrupted receipt before accompanying text", () => {
 			const assistantMessage: Anthropic.MessageParam = {
 				role: "assistant",
 				content: [
@@ -949,21 +883,20 @@ describe("validateAndFixToolResultIds", () => {
 				],
 			}
 
-			validateAndFixToolResultIds(userMessage, [assistantMessage])
+			const result = validateAndFixToolResultIds(userMessage, [assistantMessage])
 
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledTimes(1)
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledWith(
-				expect.any(MissingToolResultError),
-				expect.objectContaining({
-					missingToolUseIds: ["tool-123"],
-					existingToolResultIds: [],
-					toolUseCount: 1,
-					toolResultCount: 0,
-				}),
-			)
+			expect(result.content).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "tool-123",
+					content: "Tool execution was interrupted before completion.",
+					is_error: true,
+				},
+				{ type: "text", text: "No tool results here" },
+			])
 		})
 
-		it("should call captureException twice when both mismatch and missing occur", () => {
+		it("repairs a mismatch and adds the remaining missing receipt", () => {
 			const assistantMessage: Anthropic.MessageParam = {
 				role: "assistant",
 				content: [
@@ -994,21 +927,20 @@ describe("validateAndFixToolResultIds", () => {
 				],
 			}
 
-			validateAndFixToolResultIds(userMessage, [assistantMessage])
+			const result = validateAndFixToolResultIds(userMessage, [assistantMessage])
 
-			// Should be called twice: once for missing, once for mismatch
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledTimes(2)
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledWith(
-				expect.any(MissingToolResultError),
-				expect.any(Object),
-			)
-			expect(TelemetryService.instance.captureException).toHaveBeenCalledWith(
-				expect.any(ToolResultIdMismatchError),
-				expect.any(Object),
-			)
+			expect(result.content).toEqual([
+				{
+					type: "tool_result",
+					tool_use_id: "tool-2",
+					content: "Tool execution was interrupted before completion.",
+					is_error: true,
+				},
+				{ type: "tool_result", tool_use_id: "tool-1", content: "Content" },
+			])
 		})
 
-		it("should not call captureException for missing when all tool_results exist", () => {
+		it("does not add receipts when every tool result already exists", () => {
 			const assistantMessage: Anthropic.MessageParam = {
 				role: "assistant",
 				content: [
@@ -1032,9 +964,7 @@ describe("validateAndFixToolResultIds", () => {
 				],
 			}
 
-			validateAndFixToolResultIds(userMessage, [assistantMessage])
-
-			expect(TelemetryService.instance.captureException).not.toHaveBeenCalled()
+			expect(validateAndFixToolResultIds(userMessage, [assistantMessage])).toEqual(userMessage)
 		})
 	})
 })

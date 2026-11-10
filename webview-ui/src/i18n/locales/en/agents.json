@@ -3,6 +3,17 @@
 	"description": "Configure subagents with the same agent settings as Codex CLI. Subagents share the parent's working directory and inherit its approval policy, permissions, and workspace scope.",
 	"timing": "Agents run until they finish, fail, or are stopped. Waiting can time out without stopping an agent. Delegation follows your requests and applicable project or skill instructions. New launches capture model settings; existing agents keep their captured model.",
 	"inherit": "Inherit",
+	"advanced": {
+		"title": "Advanced agent settings",
+		"description": "Agents inherit the parent model and reasoning by default. Overrides must be supported by the connection used for the new agent."
+	},
+	"totalCapacity": {
+		"label": "Maximum concurrent tasks",
+		"description": "Maximum live tasks across the extension, including parent tasks and subagents. Other running tasks also consume this capacity.",
+		"available": "With one parent task and no other running tasks, up to {{count}} subagents can run.",
+		"available_one": "With one parent task and no other running tasks, up to {{count}} subagent can run.",
+		"available_other": "With one parent task and no other running tasks, up to {{count}} subagents can run."
+	},
 	"enabled": {
 		"label": "Enable subagents",
 		"description": "Make agent tools available. Turning this off prevents new launches; running agents remain available to inspect or stop."
@@ -26,7 +37,16 @@
 	},
 	"types": {
 		"title": "Custom agents",
-		"description": "Define named agents with a description, model, reasoning effort, and developer instructions. Custom settings override launch defaults. Agents inherit the parent's provider, permissions, and workspace scope.",
+		"detailsLabel": "{{name}} details",
+		"description": "Named agents inherit parent permissions and workspace scope. Model, reasoning, instructions, and saved connection overrides apply to new launches.",
+		"routeLabel": "{{name}} connection",
+		"routeInherited": "Inherits the invoking parent connection",
+		"routeProfile": "Saved profile: {{profile}}",
+		"routeUnavailable": "Saved profile unavailable ({{id}})",
+		"roleLabel": "{{name}} saved role",
+		"roleInherited": "Automatic, based on the parent",
+		"sourceLabel": "{{name}} configuration source",
+		"sourceSettings": "Extension settings",
 		"name": "New agent type name",
 		"nameHint": "Use a lowercase letter first, then lowercase letters, digits, underscores, or hyphens; maximum 64 characters.",
 		"newDescription": "New agent type description",
@@ -39,6 +59,7 @@
 		"empty": "No custom agents configured."
 	},
 	"validation": {
+		"taskCapacity": "Choose a whole number from 1 to 50 for concurrent tasks.",
 		"concurrency": "Choose a positive whole number for concurrent agents.",
 		"model": "Use a model identifier of at most 256 characters.",
 		"reasoning": "Choose a supported reasoning effort or Inherit.",

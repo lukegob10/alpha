@@ -11,7 +11,6 @@ import { historyItemSchema } from "./history.js"
 import { taskReasoningPreferenceSchema } from "./task-reasoning.js"
 import { codebaseIndexModelsSchema, codebaseIndexConfigSchema } from "./codebase-index.js"
 import { experimentsSchema } from "./experiment.js"
-import { telemetrySettingsSchema } from "./telemetry.js"
 import { modeConfigSchema } from "./mode.js"
 import { customModePromptsSchema, customSupportPromptsSchema } from "./mode.js"
 import { toolNamesSchema } from "./tool.js"
@@ -41,9 +40,9 @@ export const MIN_MAX_CONCURRENT_TASKS = 1
 export const MAX_MAX_CONCURRENT_TASKS = 50
 
 /**
- * Terminal output preview size options for persisted command output.
+ * Shared output preview budgets for persisted command output.
  *
- * Controls how much command output is kept in memory as a "preview" before
+ * Command execution uses DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE. These budgets bound the preview before
  * the LLM decides to retrieve more via the `manage_command` read action. Larger previews
  * mean more immediate context but consume more of the context window.
  *
@@ -51,7 +50,7 @@ export const MAX_MAX_CONCURRENT_TASKS = 50
  * - `medium`: 10KB preview - Balanced default for most use cases
  * - `large`: 20KB preview - Best when commands produce critical info early
  *
- * @see OutputInterceptor - Uses this setting to determine when to spill to disk
+ * @see OutputInterceptor - Uses the preview budget to determine when to spill to disk
  * @see PersistedCommandOutput - Contains the resulting preview and artifact reference
  */
 export type TerminalOutputPreviewSize = "small" | "medium" | "large"
@@ -71,7 +70,7 @@ export const TERMINAL_PREVIEW_BYTES: Record<TerminalOutputPreviewSize, number> =
 
 /**
  * Default terminal output preview size.
- * The "medium" (10KB) setting provides a good balance between immediate
+ * The "medium" (10KB) budget provides a balance between immediate
  * visibility and context window conservation for most use cases.
  */
 export const DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE: TerminalOutputPreviewSize = "medium"
@@ -225,7 +224,6 @@ export const globalSettingsSchema = z.object({
 	maxImageFileSize: z.number().optional(),
 	maxTotalImageSize: z.number().optional(),
 
-	terminalOutputPreviewSize: z.enum(["small", "medium", "large"]).optional(),
 	terminalShellIntegrationTimeout: z.number().optional(),
 	terminalShellIntegrationDisabled: z.boolean().optional(),
 	terminalCommandDelay: z.number().optional(),
@@ -245,8 +243,6 @@ export const globalSettingsSchema = z.object({
 	codebaseIndexConfig: codebaseIndexConfigSchema.optional(),
 
 	language: languagesSchema.optional(),
-
-	telemetrySetting: telemetrySettingsSchema.optional(),
 
 	mcpEnabled: z.boolean().optional(),
 
@@ -409,7 +405,6 @@ export const EVALS_SETTINGS: AlphaCodeSettings = {
 	maxDiagnosticMessages: 50,
 
 	language: "en",
-	telemetrySetting: "enabled",
 
 	mcpEnabled: false,
 

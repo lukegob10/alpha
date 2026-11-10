@@ -6,7 +6,6 @@ import { registerCommands } from "../registerCommands"
 
 vi.mock("../../core/webview/AlphaProvider")
 vi.mock("../../core/webview/diagnosticsHandler", () => ({ generateErrorDiagnostics: vi.fn() }))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: {} } }))
 vi.mock("vscode", () => ({
 	CodeActionKind: { QuickFix: { value: "quickfix" }, RefactorRewrite: { value: "refactor.rewrite" } },
 	commands: { registerCommand: vi.fn(() => ({ dispose: vi.fn() })) },

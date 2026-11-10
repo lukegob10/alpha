@@ -52,12 +52,7 @@ import {
 	type ProviderSettings,
 	type AlphaCodeSettings,
 	type ProviderSettingsEntry,
-	type StaticAppProperties,
-	type DynamicAppProperties,
-	type TaskProperties,
-	type GitProperties,
-	type TelemetryProperties,
-	type TelemetryPropertiesProvider,
+	type ProviderProfileSnapshot,
 	type HistoryItem,
 	type ThreadListOptions,
 	type ThreadListResult,
@@ -73,6 +68,7 @@ import {
 	type ExtensionMessage,
 	type ChatGptAuthStatus,
 	type ExtensionState,
+	type CommandRuleSettings,
 	type QueuedMessage,
 	type SubagentGroupState,
 	type SubagentLifecycleEvent,
@@ -148,7 +144,6 @@ import {
 	ticketSearchRequestSchema,
 } from "@alpha-code/types"
 import { aggregateTaskCostsRecursive, type AggregatedCosts } from "./aggregateTaskCosts"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Package } from "../../shared/package"
 import { findLast } from "../../shared/array"
@@ -178,7 +173,6 @@ import { captureProjectInstructionDiscoveryOptions } from "../../services/config
 import type { ScheduledTaskService } from "../../services/scheduled-tasks"
 
 import { fileExistsAtPath } from "../../utils/fs"
-import { getWorkspaceGitInfo } from "../../utils/git"
 import { getWorkspacePath } from "../../utils/path"
 import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/tool-id"
 
@@ -199,6 +193,8 @@ import {
 	ProviderProfileUnavailableError,
 	type ProviderProfileRename,
 	type ProviderProfileSaved,
+	type ProviderProfileSaveTarget,
+	type ProviderProfileCreateTarget,
 } from "../config/ProviderSettingsManager"
 import { getProviderProfileUnavailableMessage } from "./providerProfileErrors"
 import { CustomModesManager } from "../config/CustomModesManager"
@@ -543,7 +539,7 @@ function hasFiniteTaskCallLimit(state: Pick<GlobalState, "allowedMaxCost" | "all
 
 export class AlphaProvider
 	extends EventEmitter<TaskProviderEvents>
-	implements vscode.WebviewViewProvider, TelemetryPropertiesProvider, TaskProviderLike, CrossTaskOrchestrationProvider
+	implements vscode.WebviewViewProvider, TaskProviderLike, CrossTaskOrchestrationProvider
 {
 	// Used in package.json as the view's id. This value cannot be changed due
 	// to how VSCode caches views based on their id, and updating the id would
@@ -1221,10 +1217,6 @@ export class AlphaProvider
 
 		// Start configuration loading (which might trigger indexing) in the background.
 		// Don't await, allowing activation to continue immediately.
-
-		// Register this provider with the telemetry service to enable it to add
-		// properties like mode and provider.
-		TelemetryService.instance.setProvider(this)
 
 		this._workspaceTracker = new WorkspaceTracker(this)
 
@@ -2919,9 +2911,7 @@ export class AlphaProvider
 				() => task.abort,
 			)
 			if (!transition) {
-				throw new Error(
-					"Cannot enter Plan mode while a workspace mutation, command, or Worker admission is active or queued. Let it finish or cancel it, then retry.",
-				)
+				throw new Error(t("common:subagentMode.busy"))
 			}
 			return transition
 		}
@@ -2938,7 +2928,6 @@ export class AlphaProvider
 		const { postState } = options
 		await this.assertPlanModeEntryAllowed(task, currentMode, mode)
 
-		TelemetryService.instance.captureModeSwitch(task.taskId, mode)
 		task.emit(AlphaCodeEventName.TaskModeSwitched, task.taskId, mode)
 
 		const taskHistoryItem =
@@ -2960,6 +2949,21 @@ export class AlphaProvider
 		}
 	}
 
+	private subagentRequiresCodeMode(agent: Pick<AgentRecord, "taskId" | "role" | "snapshot">): boolean {
+		// Codex df769889c0b4 (child_config.rs) inherits runtime authority independently
+		// of role. Alpha's Plan boundary must cover editing Explorers and Reviewers too.
+		const policy =
+			agent.snapshot?.contextManifest?.runtimePolicy ??
+			this.subagentDescriptors.get(agent.taskId)?.contextManifest?.runtimePolicy
+		return (
+			agent.role === "worker" ||
+			policy?.mutate === true ||
+			policy?.network === true ||
+			policy?.externalSideEffects === true ||
+			(policy?.execute === true && policy.mode !== planModeSlug)
+		)
+	}
+
 	private async assertPlanModeEntryAllowed(
 		task: Task,
 		currentMode: string | undefined,
@@ -2979,14 +2983,18 @@ export class AlphaProvider
 		if (!callerRecord) return
 
 		const activeStatuses: ReadonlySet<string> = new Set(["pending", "running", "cancelling"])
-		const activeWorkers = this.agentControlStore
+		const activeAgents = this.agentControlStore
 			.listDescendants(callerRecord.taskId, rootTaskId)
-			.filter((record) => record.role === "worker" && activeStatuses.has(record.status))
-		const activeWorkerTargets = new Map(activeWorkers.map((record) => [record.taskId, record.path]))
+			.filter((record) => this.subagentRequiresCodeMode(record) && activeStatuses.has(record.status))
+		const activeAgentTargets = new Map(activeAgents.map((record) => [record.taskId, record.path]))
 
 		for (const prepared of this.preparedSubagentGroups.values()) {
 			if (!activeStatuses.has(prepared.group.status)) continue
-			if (!prepared.group.agents.some((agent) => agent.role === "worker" && activeStatuses.has(agent.status))) {
+			if (
+				!prepared.group.agents.some(
+					(agent) => this.subagentRequiresCodeMode(agent) && activeStatuses.has(agent.status),
+				)
+			) {
 				continue
 			}
 			if (
@@ -2995,21 +3003,19 @@ export class AlphaProvider
 			) {
 				for (const agent of prepared.group.agents) {
 					if (
-						agent.role === "worker" &&
+						this.subagentRequiresCodeMode(agent) &&
 						activeStatuses.has(agent.status) &&
-						!activeWorkerTargets.has(agent.taskId)
+						!activeAgentTargets.has(agent.taskId)
 					) {
-						activeWorkerTargets.set(agent.taskId, agent.nickname)
+						activeAgentTargets.set(agent.taskId, agent.nickname)
 					}
 				}
 			}
 		}
 
-		if (activeWorkerTargets.size > 0) {
-			const targets = [...activeWorkerTargets.values()].join(", ")
-			throw new Error(
-				`Cannot enter Plan mode while ${activeWorkerTargets.size} Worker descendant${activeWorkerTargets.size === 1 ? " is" : "s are"} active: ${targets}. Wait for or cancel the Worker${activeWorkerTargets.size === 1 ? "" : "s"}, then retry.`,
-			)
+		if (activeAgentTargets.size > 0) {
+			const targets = [...activeAgentTargets.values()].join(", ")
+			throw new Error(t("common:subagentMode.active", { targets }))
 		}
 	}
 
@@ -3186,8 +3192,35 @@ export class AlphaProvider
 		)
 	}
 
+	public createProviderProfile(name: string, providerSettings: ProviderSettings): Promise<ProviderProfileSaved> {
+		const task = this.getCurrentTask()
+		return this.enqueueConfiguration(async () => {
+			try {
+				// Initial setup has no persisted ID yet. Resolve absence inside the same
+				// queue as other profile writes, so a delayed first Save cannot replace one.
+				if (this.contextProxy.getValue("currentApiConfigName") !== name) {
+					throw new ProviderProfileSaveError("invalid")
+				}
+				const profiles = await this.providerSettingsManager.listConfig()
+				if (profiles.some((profile) => profile.name === name)) throw new ProviderProfileSaveError("invalid")
+
+				const saved = await this.upsertProviderProfileWithinQueue(
+					{ name, createOnly: true },
+					providerSettings,
+					true,
+					task,
+				)
+				if (!saved || typeof saved === "string") throw new ProviderProfileSaveError("saveFailed")
+				return saved
+			} catch (error) {
+				if (error instanceof ProviderProfileSaveError) throw error
+				throw new ProviderProfileSaveError("saveFailed")
+			}
+		})
+	}
+
 	upsertProviderProfile(
-		target: { id: string },
+		target: ProviderProfileSaveTarget,
 		providerSettings: ProviderSettings,
 		activate?: boolean,
 	): Promise<ProviderProfileSaved>
@@ -3197,7 +3230,7 @@ export class AlphaProvider
 		activate?: boolean,
 	): Promise<string | undefined>
 	async upsertProviderProfile(
-		target: string | { id: string },
+		target: string | ProviderProfileSaveTarget,
 		providerSettings: ProviderSettings,
 		activate: boolean = true,
 	): Promise<string | ProviderProfileSaved | undefined> {
@@ -3208,21 +3241,23 @@ export class AlphaProvider
 	}
 
 	private async upsertProviderProfileWithinQueue(
-		target: string | { id: string },
+		target: string | ProviderProfileSaveTarget | ProviderProfileCreateTarget,
 		providerSettings: ProviderSettings,
 		activate: boolean,
 		task: Task | undefined,
 	): Promise<string | ProviderProfileSaved | undefined> {
+		let committed: ProviderProfileSaved | undefined
 		try {
 			// TODO: Do we need to be calling `activateProfile`? It's not
 			// clear to me what the source of truth should be; in some cases
 			// we rely on the `ContextProxy`'s data store and in other cases
 			// we rely on the `ProviderSettingsManager`'s data store. It might
 			// be simpler to unify these two.
-			const { id, name } =
+			const { id, name, version } =
 				typeof target === "string"
 					? { id: await this.providerSettingsManager.saveConfig(target, providerSettings), name: target }
 					: await this.providerSettingsManager.saveConfig(target, providerSettings)
+			if (typeof target !== "string") committed = { id, name, version }
 
 			if (activate) {
 				const { mode } = await this.getState()
@@ -3254,11 +3289,24 @@ export class AlphaProvider
 				await this.updateGlobalState("listApiConfigMeta", await this.providerSettingsManager.listConfig())
 			}
 
-			await this.postStateToWebview()
-			return typeof target === "string" ? id : { id, name }
+			try {
+				await this.postStateToWebview()
+			} catch (error) {
+				if (typeof target === "string") throw error
+				// Projection delivery cannot invalidate the durable save or its successful application.
+				this.log("[ProviderProfileSave] state_delivery_failed")
+			}
+			return typeof target === "string" ? id : { id, name, ...(version !== undefined ? { version } : {}) }
 		} catch (error) {
 			this.log("Error create new api configuration")
 			if (typeof target !== "string") {
+				if (committed?.version !== undefined) {
+					throw new ProviderProfileSaveError("applyFailed", {
+						id: committed.id,
+						name: committed.name,
+						version: committed.version,
+					})
+				}
 				if (error instanceof ProviderProfileSaveError) throw error
 				throw new ProviderProfileSaveError("saveFailed")
 			}
@@ -5068,6 +5116,41 @@ export class AlphaProvider
 		]
 	}
 
+	private getCommandRuleSettings(
+		globalState: Pick<AlphaCodeSettings, "allowedCommands" | "deniedCommands">,
+	): CommandRuleSettings {
+		// Effective command lists also include VS Code configuration. Keep their editable
+		// storage separate so an unrelated Settings save cannot promote workspace grants.
+		const settings: CommandRuleSettings = {
+			allowedCommands: this.normalizeCommandList(globalState.allowedCommands),
+			deniedCommands: this.normalizeCommandList(globalState.deniedCommands),
+			inherited: [],
+		}
+
+		try {
+			const configuration = vscode.workspace.getConfiguration(Package.name)
+			if (typeof configuration.inspect !== "function") return settings
+
+			const allowed = configuration.inspect<string[]>("allowedCommands")
+			const denied = configuration.inspect<string[]>("deniedCommands")
+			for (const [source, key] of [
+				["user", "globalValue"],
+				["workspace", "workspaceValue"],
+				["workspaceFolder", "workspaceFolderValue"],
+			] as const) {
+				const allowedCommands = this.normalizeCommandList(allowed?.[key])
+				const deniedCommands = this.normalizeCommandList(denied?.[key])
+				if (allowedCommands.length > 0 || deniedCommands.length > 0) {
+					settings.inherited.push({ source, allowedCommands, deniedCommands })
+				}
+			}
+		} catch (error) {
+			console.error("Error reading command rule sources:", error)
+		}
+
+		return settings
+	}
+
 	private mergeCommandLists(
 		configKey: "allowedCommands" | "deniedCommands",
 		commandType: "allowed" | "denied",
@@ -5273,6 +5356,7 @@ export class AlphaProvider
 			alwaysAllowExecute,
 			allowedCommands,
 			deniedCommands,
+			commandRuleSettings,
 			alwaysAllowMcp,
 			alwaysAllowSubtasks,
 			alwaysAllowSubagents,
@@ -5295,7 +5379,6 @@ export class AlphaProvider
 			checkpointTimeout,
 			soundVolume,
 			writeDelayMs,
-			terminalOutputPreviewSize,
 			terminalShellIntegrationTimeout,
 			terminalShellIntegrationDisabled,
 			terminalCommandDelay,
@@ -5319,7 +5402,6 @@ export class AlphaProvider
 			maxOpenTabsContext,
 			maxWorkspaceFiles,
 			disabledTools,
-			telemetrySetting,
 			showAlphaIgnoredFiles,
 			enableSubfolderRules,
 			language,
@@ -5344,8 +5426,6 @@ export class AlphaProvider
 			lockApiConfigAcrossModes,
 		} = await this.getState({ includeTaskHistory: false, includeScheduledTasks: false })
 
-		const telemetryKey = undefined
-		const machineId = vscode.env.machineId
 		const mergedAllowedCommands = this.mergeAllowedCommands(allowedCommands)
 		const mergedDeniedCommands = this.mergeDeniedCommands(deniedCommands)
 		const cwd = this.cwd
@@ -5389,6 +5469,15 @@ export class AlphaProvider
 			}
 		}
 		const currentTaskApiConfiguration = currentTask?.apiConfiguration ?? apiConfiguration
+		let settingsProviderProfile: ProviderProfileSnapshot | null = null
+		try {
+			settingsProviderProfile = await this.providerSettingsManager.getProfileSnapshot({
+				name: currentTaskApiConfigName ?? currentApiConfigName ?? "default",
+			})
+		} catch {
+			// A missing/unreadable saved profile cannot lend a fresh version to older task settings.
+			this.log("[SettingsProviderProfile] snapshot_unavailable")
+		}
 		const scheduledTaskState = this.scheduledTaskService?.getState()
 		const orchestrationSettings = resolveSubagentOrchestrationSettings({
 			maxConcurrentSubagents,
@@ -5410,6 +5499,7 @@ export class AlphaProvider
 			version: this.context.extension?.packageJSON?.version ?? "",
 			taskReasoning: await this.getReasoningProjection(currentTask),
 			apiConfiguration: currentTaskApiConfiguration,
+			settingsProviderProfile,
 			customInstructions,
 			profileThresholds: profileThresholds ?? {},
 			approvalMode,
@@ -5466,13 +5556,12 @@ export class AlphaProvider
 			soundEnabled: soundEnabled ?? false,
 			enableCheckpoints: enableCheckpoints ?? true,
 			checkpointTimeout: checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-			shouldShowAnnouncement:
-				telemetrySetting !== "unset" && lastShownAnnouncementId !== this.latestAnnouncementId,
+			shouldShowAnnouncement: lastShownAnnouncementId !== this.latestAnnouncementId,
 			allowedCommands: mergedAllowedCommands,
 			deniedCommands: mergedDeniedCommands,
+			commandRuleSettings,
 			soundVolume: soundVolume ?? 0.5,
 			writeDelayMs: writeDelayMs ?? DEFAULT_WRITE_DELAY_MS,
-			terminalOutputPreviewSize: terminalOutputPreviewSize ?? "medium",
 			terminalShellIntegrationTimeout: terminalShellIntegrationTimeout ?? Terminal.defaultShellIntegrationTimeout,
 			terminalShellIntegrationDisabled: terminalShellIntegrationDisabled ?? true,
 			terminalCommandDelay: terminalCommandDelay ?? 0,
@@ -5497,9 +5586,6 @@ export class AlphaProvider
 			maxWorkspaceFiles: maxWorkspaceFiles ?? 200,
 			cwd,
 			disabledTools,
-			telemetrySetting,
-			telemetryKey,
-			machineId,
 			showAlphaIgnoredFiles: showAlphaIgnoredFiles ?? false,
 			enableSubfolderRules: enableSubfolderRules ?? false,
 			language: formatLanguage(language ?? vscode.env.language),
@@ -5627,12 +5713,12 @@ export class AlphaProvider
 			scheduledTaskRuns: scheduledTaskState?.runs ?? [],
 			allowedCommands: this.mergeAllowedCommands(stateValues.allowedCommands),
 			deniedCommands: this.mergeDeniedCommands(stateValues.deniedCommands),
+			commandRuleSettings: this.getCommandRuleSettings(stateValues),
 			soundEnabled: stateValues.soundEnabled ?? false,
 			enableCheckpoints: stateValues.enableCheckpoints ?? true,
 			checkpointTimeout: stateValues.checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 			soundVolume: stateValues.soundVolume,
 			writeDelayMs: stateValues.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS,
-			terminalOutputPreviewSize: stateValues.terminalOutputPreviewSize ?? "medium",
 			terminalShellIntegrationTimeout:
 				stateValues.terminalShellIntegrationTimeout ?? Terminal.defaultShellIntegrationTimeout,
 			terminalShellIntegrationDisabled: stateValues.terminalShellIntegrationDisabled ?? true,
@@ -5659,7 +5745,6 @@ export class AlphaProvider
 			maxOpenTabsContext: stateValues.maxOpenTabsContext ?? 20,
 			maxWorkspaceFiles: stateValues.maxWorkspaceFiles ?? 200,
 			disabledTools: stateValues.disabledTools,
-			telemetrySetting: stateValues.telemetrySetting || "unset",
 			showAlphaIgnoredFiles: stateValues.showAlphaIgnoredFiles ?? false,
 			enableSubfolderRules: stateValues.enableSubfolderRules ?? false,
 			maxImageFileSize: stateValues.maxImageFileSize ?? 5,
@@ -6118,7 +6203,7 @@ export class AlphaProvider
 	}
 
 	/**
-	 * TaskProviderLike, TelemetryPropertiesProvider
+	 * TaskProviderLike
 	 */
 
 	private markTaskLifecycle(taskId: string, lifecycle: TaskLifecycleState, waitingReason?: string): void {
@@ -8817,88 +8902,6 @@ export class AlphaProvider
 		await this.activateProviderProfile({ name })
 	}
 
-	// Telemetry
-
-	private _appProperties?: StaticAppProperties
-	private _gitProperties?: GitProperties
-
-	private getAppProperties(): StaticAppProperties {
-		if (!this._appProperties) {
-			const packageJSON = this.context.extension?.packageJSON
-
-			this._appProperties = {
-				appName: packageJSON?.name ?? Package.name,
-				appVersion: packageJSON?.version ?? Package.version,
-				vscodeVersion: vscode.version,
-				platform: process.platform,
-				editorName: vscode.env.appName,
-			}
-		}
-
-		return this._appProperties
-	}
-
-	public get appProperties(): StaticAppProperties {
-		return this._appProperties ?? this.getAppProperties()
-	}
-
-	private async getTaskProperties(): Promise<DynamicAppProperties & TaskProperties> {
-		const {
-			language = "en",
-			mode: foregroundMode,
-			apiConfiguration: foregroundApiConfiguration,
-		} = await this.getState()
-
-		const task = this.getCurrentTask()
-		const todoList = task?.todoList
-		let todos: { total: number; completed: number; inProgress: number; pending: number } | undefined
-
-		if (todoList && todoList.length > 0) {
-			todos = {
-				total: todoList.length,
-				completed: todoList.filter((todo) => todo.status === "completed").length,
-				inProgress: todoList.filter((todo) => todo.status === "in_progress").length,
-				pending: todoList.filter((todo) => todo.status === "pending").length,
-			}
-		}
-
-		const taskMode = task ? await task.getTaskMode() : foregroundMode
-		const apiConfiguration = task?.apiConfiguration ?? foregroundApiConfiguration
-		const apiProvider = apiConfiguration?.apiProvider
-
-		return {
-			language,
-			mode: taskMode,
-			taskId: task?.taskId,
-			parentTaskId: task?.parentTaskId,
-			apiProvider: isProviderName(apiProvider) ? apiProvider : undefined,
-			modelId: task?.api?.getModel().id,
-			diffStrategy: task?.diffStrategy?.getName(),
-			isSubtask: task ? !!task.parentTaskId : undefined,
-			...(todos && { todos }),
-		}
-	}
-
-	private async getGitProperties(): Promise<GitProperties> {
-		if (!this._gitProperties) {
-			this._gitProperties = await getWorkspaceGitInfo()
-		}
-
-		return this._gitProperties
-	}
-
-	public get gitProperties(): GitProperties | undefined {
-		return this._gitProperties
-	}
-
-	public async getTelemetryProperties(): Promise<TelemetryProperties> {
-		return {
-			...this.getAppProperties(),
-			...(await this.getTaskProperties()),
-			...(await this.getGitProperties()),
-		}
-	}
-
 	public get cwd() {
 		return this.currentWorkspacePath || getWorkspacePath()
 	}
@@ -9695,10 +9698,10 @@ export class AlphaProvider
 		}
 
 		try {
-			return await (prepared.group.agents[0].role === "worker"
+			return await (this.subagentRequiresCodeMode(prepared.group.agents[0])
 				? this.workspaceMutationGate.run(
 						parent.taskId,
-						"Worker launch admission",
+						"Code-authorized agent launch admission",
 						launch,
 						() => Boolean(parent.abort || admissionSignal.aborted),
 						admissionSignal,
@@ -9737,9 +9740,9 @@ export class AlphaProvider
 	): Promise<void> {
 		if (
 			(await getTaskModeForSwitch(parent)) === planModeSlug &&
-			prepared.group.agents.some((agent) => agent.role === "worker")
+			prepared.group.agents.some((agent) => this.subagentRequiresCodeMode(agent))
 		) {
-			throw new Error("Plan mode cannot launch or relaunch a Worker; switch to Code before starting it")
+			throw new Error(t("common:subagentMode.launch"))
 		}
 	}
 
@@ -10447,8 +10450,12 @@ export class AlphaProvider
 			void vscode.window.showWarningMessage("This sub-agent is no longer available to steer.")
 			return false
 		}
-		if (agent.role === "worker" && descriptor && (await getTaskModeForSwitch(descriptor.parent)) === planModeSlug) {
-			void vscode.window.showWarningMessage("Plan mode cannot steer a Worker. Switch to Code to advance it.")
+		if (
+			this.subagentRequiresCodeMode(agent) &&
+			descriptor &&
+			(await getTaskModeForSwitch(descriptor.parent)) === planModeSlug
+		) {
+			void vscode.window.showWarningMessage(t("common:subagentMode.steer"))
 			return false
 		}
 		if (!instruction || instruction.length > 2_000) {
@@ -11926,10 +11933,10 @@ export class AlphaProvider
 				}
 				const resume = () =>
 					this.followupAgentTaskAfterAdmission(parent, latest, instruction, capturedAutoApprovalPolicy)
-				return latest.role === "worker"
+				return this.subagentRequiresCodeMode(latest)
 					? this.workspaceMutationGate.run(
 							parent.taskId,
-							"Worker follow-up admission",
+							"Code-authorized agent follow-up admission",
 							resume,
 							() => parent.abort,
 							parent.getTaskLifetimeCancellationSignal(),
@@ -12268,8 +12275,8 @@ export class AlphaProvider
 	}
 
 	private async assertPlanAgentAdvanceAllowed(parent: Task, record: AgentRecord, action: string): Promise<void> {
-		if ((await getTaskModeForSwitch(parent)) === planModeSlug && record.role === "worker") {
-			throw new Error(`Plan mode cannot ${action} Worker ${record.path}; switch to Code to advance it`)
+		if ((await getTaskModeForSwitch(parent)) === planModeSlug && this.subagentRequiresCodeMode(record)) {
+			throw new Error(t("common:subagentMode.advance", { action, path: record.path }))
 		}
 	}
 
@@ -13592,17 +13599,17 @@ export class AlphaProvider
 			await this.assertPreparedSubagentGroupAllowedInCurrentMode(parent, prepared)
 			this.assertSubagentAdmissionSignals([parentSignal])
 			this.finalizePreparedSubagentAuthorization(prepared)
-			// Create pending control rows before releasing Worker admission. A
-			// concurrent Code -> Plan transition will then see an active Worker and
+			// Create pending control rows before releasing admission. A concurrent
+			// Code -> Plan transition will then see each child's captured authority and
 			// fail closed before any child can begin running.
 			await this.ensurePreparedSubagentControlRecords(parent, prepared, controlRecords)
 			this.assertSubagentAdmissionSignals([parentSignal])
 		}
 		try {
-			if (prepared.group.agents.some((agent) => agent.role === "worker")) {
+			if (prepared.group.agents.some((agent) => this.subagentRequiresCodeMode(agent))) {
 				await this.workspaceMutationGate.run(
 					parent.taskId,
-					"Worker blocking launch admission",
+					"Code-authorized agent blocking launch admission",
 					admit,
 					() => Boolean(parent.abort || parentSignal.aborted),
 					parentSignal,

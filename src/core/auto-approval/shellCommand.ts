@@ -146,6 +146,8 @@ export interface ShellCommandTokenAnalysis {
 	/** Supported quote notation whose execution differs between Windows shells. */
 	ambiguousSyntax: boolean
 	hasChainOperators: boolean
+	/** Literal separators, excluding PowerShell's leading executable invocation operator. */
+	chainOperators: string[]
 }
 
 export type ShellCommandPlatform = "win32" | "posix"
@@ -161,6 +163,7 @@ function tokenizeShellCommandDetails(
 		unsupportedSyntax: false,
 		ambiguousSyntax: false,
 		hasChainOperators: false,
+		chainOperators: [],
 	}
 	let tokens: ShellCommandToken[] = []
 	let current = ""
@@ -357,6 +360,7 @@ function tokenizeShellCommandDetails(
 				(character === "&" && nextCharacter === "&") || (character === "|" && nextCharacter === "|")
 			if (doubleSeparator) {
 				analysis.hasChainOperators = true
+				analysis.chainOperators.push(character + nextCharacter)
 				if (!pushCommand(index)) analysis.malformed = true
 				requiresCommand = true
 				index++
@@ -378,6 +382,7 @@ function tokenizeShellCommandDetails(
 					continue
 				}
 				const newline = character === "\n" || character === "\r"
+				analysis.chainOperators.push(character)
 				analysis.hasChainOperators ||= !newline || tokens.length > 0 || tokenStarted
 				const hasTokens = pushCommand(index)
 				if (!newline && !hasTokens) analysis.malformed = true

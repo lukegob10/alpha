@@ -12,6 +12,7 @@ import { activateNativeChatHeader, readNativeChatHeader } from "./ui/nativeChatH
 import { waitUntil } from "./evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "./suite/preflightEvidence"
 import { latencyObservation } from "./evidence/latencyObservation"
+import { dismissRenderedReleaseAnnouncement } from "./ui/renderedReleaseAnnouncement"
 import {
 	dismissRenderedDialogAndRestoreFocus,
 	dispatchRenderedDialogKey,
@@ -588,6 +589,7 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		await check(
 			"!!d.querySelector('[data-testid=history-view-all]') && d.querySelectorAll('[data-testid^=task-item-history-visual-]').length === 3",
 		)
+		await dismissRenderedReleaseAnnouncement(connection, sessionId, pageSession, directory, "history", abort.signal)
 		assert.equal(
 			await evaluate("!!d.querySelector('[data-testid=task-item-history-foreign-project]')"),
 			false,

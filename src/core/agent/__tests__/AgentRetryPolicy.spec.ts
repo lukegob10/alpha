@@ -231,6 +231,46 @@ describe("AgentRetryPolicy", () => {
 			vi.useRealTimers()
 		})
 
+		it("honors provider advice beyond the maximum timer interval", async () => {
+			vi.useFakeTimers()
+			const maximumTimerInterval = 2_147_483_647
+			const policy = new AgentRetryPolicy()
+			const decision = policy.decide({
+				category: "rate-limit",
+				attempt: 1,
+				retryAfterMs: maximumTimerInterval + 1_000,
+			})
+			const completed = vi.fn()
+			const pending = delayWithAbort(decision.delayMs).then(completed)
+
+			await vi.advanceTimersByTimeAsync(maximumTimerInterval)
+			expect(completed).not.toHaveBeenCalled()
+			expect(vi.getTimerCount()).toBe(1)
+			await vi.advanceTimersByTimeAsync(999)
+			expect(completed).not.toHaveBeenCalled()
+			await vi.advanceTimersByTimeAsync(1)
+			await pending
+			expect(completed).toHaveBeenCalledOnce()
+			expect(vi.getTimerCount()).toBe(0)
+		})
+
+		it("cancels and cleans up a later interval in a long provider delay", async () => {
+			vi.useFakeTimers()
+			const maximumTimerInterval = 2_147_483_647
+			const controller = new AbortController()
+			const completed = vi.fn()
+			const pending = delayWithAbort(maximumTimerInterval + 1_000, controller.signal).then(completed)
+
+			await vi.advanceTimersByTimeAsync(maximumTimerInterval)
+			expect(completed).not.toHaveBeenCalled()
+			const abortReason = new Error("cancelled long retry")
+			const rejection = expect(pending).rejects.toBe(abortReason)
+			controller.abort(abortReason)
+
+			await rejection
+			expect(vi.getTimerCount()).toBe(0)
+		})
+
 		it.each([10_000, 60_000])("rejects promptly when cancellation occurs during a %dms delay", async (delayMs) => {
 			vi.useFakeTimers()
 			const controller = new AbortController()

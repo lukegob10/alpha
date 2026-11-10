@@ -5,6 +5,30 @@ import type { AlphaMessage } from "@alpha-code/types"
 import { consolidateCommands, COMMAND_OUTPUT_STRING } from "../consolidateCommands.js"
 
 describe("consolidateCommands", () => {
+	it("replays full MCP responses only into the same call even when approvals and responses interleave", () => {
+		const messages: AlphaMessage[] = [
+			{ ts: 1, type: "ask", ask: "use_mcp_server", toolCallId: "one", text: "{}" },
+			{ ts: 2, type: "ask", ask: "use_mcp_server", toolCallId: "two", text: "{}" },
+			{ ts: 3, type: "say", say: "mcp_server_response", toolCallId: "one", text: "x".repeat(120_000) },
+			{ ts: 4, type: "say", say: "mcp_server_response", toolCallId: "two", text: "Second response" },
+		]
+		const output = consolidateCommands(JSON.parse(JSON.stringify(messages)))
+		expect(output).toHaveLength(2)
+		expect(JSON.parse(output[0]!.text!).response).toBe("x".repeat(120_000))
+		expect(JSON.parse(output[1]!.text!).response).toBe("Second response")
+	})
+
+	it("never assigns an identified orphan response to legacy positional approvals", () => {
+		const messages: AlphaMessage[] = [
+			{ ts: 1, type: "ask", ask: "use_mcp_server", text: "{}" },
+			{ ts: 2, type: "say", say: "mcp_server_response", toolCallId: "another-call", text: "Wrong response" },
+			{ ts: 3, type: "say", say: "mcp_server_response", text: "Legacy response" },
+		]
+		const output = consolidateCommands(messages)
+		expect(output).toHaveLength(1)
+		expect(JSON.parse(output[0]!.text!).response).toBe("Legacy response")
+	})
+
 	it.each(["command", "use_mcp_server"] as const)(
 		"reuses completed %s projections and invalidates mutable source fields and output changes",
 		(ask) => {

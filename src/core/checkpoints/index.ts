@@ -1,7 +1,6 @@
 import * as vscode from "vscode"
 
 import type { AlphaApiReqInfo } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
 
@@ -371,8 +370,6 @@ export async function checkpointSave(task: Task, force = false, suppressMessage 
 		return
 	}
 
-	TelemetryService.instance.captureCheckpointCreated(task.taskId)
-
 	// A save is awaited at the mutation gate. Bound the entire operation, including
 	// queue time, and cancel its Git process so an optional checkpoint cannot retain
 	// the gate after task cancellation or its configured deadline.
@@ -446,7 +443,6 @@ export async function checkpointRestore(
 		await awaitTaskCancellationBoundary(task, abortResult)
 
 		await service.restoreCheckpoint(commitHash)
-		TelemetryService.instance.captureCheckpointRestored(task.taskId)
 		await provider?.postMessageToWebview({ type: "currentCheckpointUpdated", text: commitHash })
 
 		if (mode === "restore") {
@@ -509,8 +505,6 @@ export async function checkpointDiff(task: Task, { ts, previousCommitHash, commi
 	if (!service) {
 		return
 	}
-
-	TelemetryService.instance.captureCheckpointDiffed(task.taskId)
 
 	let fromHash: string | undefined
 	let toHash: string | undefined

@@ -6,7 +6,6 @@ import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as path from "path"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import { customToolRegistry } from "@alpha-code/core"
 
 import "./utils/path" // Necessary to have access to String.prototype.toPosix.
@@ -149,9 +148,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	// Migrate old settings to new
 	await migrateSettings(context, outputChannel)
 
-	// Initialize telemetry service.
-	TelemetryService.createInstance()
-
 	// Initialize i18n for internationalization support.
 	initializeI18n(context.globalState.get("language") ?? formatLanguage(vscode.env.language))
 
@@ -219,9 +215,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 		)
 	})
 
-	// Finish initializing the provider.
-	TelemetryService.instance.setProvider(provider)
-
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(AlphaProvider.sideBarId, provider, {
 			webviewOptions: { retainContextWhenHidden: true },
@@ -271,7 +264,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 		const watchPaths = [
 			{ path: context.extensionPath, pattern: "**/*.ts" },
 			{ path: path.join(context.extensionPath, "../packages/types"), pattern: "**/*.ts" },
-			{ path: path.join(context.extensionPath, "../packages/telemetry"), pattern: "**/*.ts" },
 		]
 
 		console.log(
@@ -357,11 +349,6 @@ export async function deactivate() {
 		await McpServerManager.cleanup(extensionContext)
 	} catch {
 		log("Failed to shut down MCP services")
-	}
-	try {
-		await TelemetryService.instance.shutdown()
-	} catch {
-		log("Failed to shut down telemetry clients")
 	}
 	TerminalRegistry.cleanup()
 }

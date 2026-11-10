@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { ApiHandler } from "../../../api"
-import { TelemetryService } from "@alpha-code/telemetry"
 import * as condenseModule from "../../condense"
 
 import {
@@ -37,10 +36,6 @@ function createCountingHandler(): ApiHandler {
 }
 
 describe("bounded context recovery policy", () => {
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-	})
-
 	it("uses explicit no-tools metadata for summarization without mutating the caller", async () => {
 		const handler = createCountingHandler()
 		const tools = [

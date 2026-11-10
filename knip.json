@@ -29,6 +29,7 @@
 				"src/runEvidence.ts",
 				"src/runFailure.ts",
 				"src/runComposerUi.ts",
+				"src/runSettingsUi.ts",
 				"src/runReasoningUi.ts",
 				"src/runRequestUserInputUi.ts",
 				"src/runFileReviewUi.ts",
@@ -61,7 +62,7 @@
 			"entry": ["src/certification/cli.ts", "src/evidence/cli.ts"],
 			"project": ["src/**/*.ts"]
 		},
-		"packages/{build,ipc,telemetry,types}": {
+		"packages/{build,ipc,types}": {
 			"project": ["src/**/*.ts"]
 		},
 		"evals": {

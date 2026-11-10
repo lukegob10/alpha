@@ -44,10 +44,6 @@ vi.mock("@src/components/welcome/AlphaHero", () => ({
 	default: () => null,
 }))
 
-vi.mock("../common/TelemetryBanner", () => ({
-	default: () => null,
-}))
-
 // Mock i18n
 vi.mock("react-i18next", () => ({
 	useTranslation: () => ({
@@ -95,7 +91,6 @@ const mockPostMessage = (state: any) => {
 				shouldShowAnnouncement: false,
 				allowedCommands: [],
 				alwaysAllowExecute: false,
-				telemetrySetting: "enabled",
 				mode: "code",
 				customModes: [],
 				...state,

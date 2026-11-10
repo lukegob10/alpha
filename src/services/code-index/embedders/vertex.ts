@@ -9,8 +9,6 @@ import {
 import type { JWTInput } from "google-auth-library"
 import { safeJsonParse } from "@alpha-code/core"
 import type { ProviderSettings } from "@alpha-code/types"
-import { TelemetryEventName } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { t } from "../../../i18n"
 import { GEMINI_MAX_ITEM_TOKENS, MAX_BATCH_RETRIES } from "../constants"
@@ -177,25 +175,16 @@ export class VertexGeminiEmbedder implements IEmbedder {
 
 	async validateConfiguration(): Promise<{ valid: boolean; error?: string }> {
 		return withValidationErrorHandling(async () => {
-			try {
-				const response = await this.createEmbeddings(["test"])
+			const response = await this.createEmbeddings(["test"])
 
-				if (!response.embeddings.length) {
-					return {
-						valid: false,
-						error: t("embeddings:validation.invalidResponse"),
-					}
+			if (!response.embeddings.length) {
+				return {
+					valid: false,
+					error: t("embeddings:validation.invalidResponse"),
 				}
-
-				return { valid: true }
-			} catch (error) {
-				TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-					location: "VertexGeminiEmbedder:validateConfiguration",
-				})
-				throw error
 			}
+
+			return { valid: true }
 		}, "vertex")
 	}
 
@@ -280,12 +269,6 @@ export class VertexGeminiEmbedder implements IEmbedder {
 					continue
 				}
 
-				TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-					error: error instanceof Error ? error.message : String(error),
-					stack: error instanceof Error ? error.stack : undefined,
-					location: "VertexGeminiEmbedder:createEmbeddings",
-					attempt: requestAttempts,
-				})
 				throw new EmbeddingRequestError(formatEmbeddingError(error, requestAttempts))
 			}
 		}

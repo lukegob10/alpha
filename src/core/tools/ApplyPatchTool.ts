@@ -10,7 +10,6 @@ import { formatResponse } from "../prompts/responses"
 import { RecordSource } from "../context-tracking/FileContextTrackerTypes"
 import { fileExistsAtPath } from "../../utils/fs"
 import { arePathsEqual } from "../../utils/path"
-import { EXPERIMENT_IDS, experiments } from "../../shared/experiments"
 import { sanitizeUnifiedDiff, computeDiffStats } from "../diff/stats"
 import { BaseTool, ToolCallbacks } from "./BaseTool"
 import type { ToolResponse, ToolUse } from "../../shared/tools"
@@ -403,13 +402,10 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 
 		const diff = formatResponse.createPrettyPatch(relPath, "", newContent)
 
-		// Check experiment settings
 		const provider = task.providerRef.deref()
 		const state = await provider?.getState()
 		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-		const isPreventFocusDisruptionEnabled =
-			preapproved || experiments.isEnabled(state?.experiments ?? {}, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)
 
 		const sanitizedDiff = sanitizeUnifiedDiff(diff || "")
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -430,19 +426,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			diffStats,
 		} satisfies AlphaSayTool)
 
-		// Show diff view if focus disruption prevention is disabled
-		if (!isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.open(relPath, { exists: false })
-			await task.diffViewProvider.update(newContent, true)
-			task.diffViewProvider.scrollToFirstDiff()
-		}
-
 		const didApprove = preapproved || (await askApproval("tool", completeMessage, undefined, isWriteProtected))
 
 		if (!didApprove || isPatchCancelled(task, callbacks)) {
-			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.revertChanges()
-			}
 			await task.diffViewProvider.reset()
 			task.didRejectTool = !isPatchCancelled(task, callbacks)
 			return isPatchCancelled(task, callbacks)
@@ -450,14 +436,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				: { status: "denied", result: "Changes were rejected by the user." }
 		}
 
-		// Save the changes
-		if (isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
-				exists: false,
-			})
-		} else {
-			await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
-		}
+		await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+			exists: false,
+		})
 
 		onApplied()
 		// Track file edit operation
@@ -624,8 +605,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		}
 		const expectedSourceFileState: ExpectedFileState = { exists: true, content: originalContent }
 
-		// Validate and snapshot the move destination before showing the diff or
-		// asking for approval. Both save paths re-check this snapshot before
+		// Validate and snapshot the move destination before asking for approval.
+		// The save boundary re-checks this snapshot before
 		// writing so an approval cannot authorize a changed destination.
 		if (effectiveMovePath && moveAbsolutePath) {
 			const moveAccessAllowed = task.alphaIgnoreController?.validateAccess(effectiveMovePath)
@@ -664,13 +645,11 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			)
 		}
 
-		// Check experiment settings only after all raw baselines have been captured.
+		// Resolve write diagnostics only after all raw baselines have been captured.
 		const provider = task.providerRef.deref()
 		const state = await provider?.getState()
 		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
 		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-		const isPreventFocusDisruptionEnabled =
-			preapproved || experiments.isEnabled(state?.experiments ?? {}, EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION)
 
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -694,19 +673,9 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			diffStats,
 		} satisfies AlphaSayTool)
 
-		// Show diff view if focus disruption prevention is disabled
-		if (!isPreventFocusDisruptionEnabled) {
-			await task.diffViewProvider.open(relPath, expectedSourceFileState)
-			await task.diffViewProvider.update(newContent, true)
-			task.diffViewProvider.scrollToFirstDiff()
-		}
-
 		const didApprove = preapproved || (await askApproval("tool", completeMessage, undefined, isWriteProtected))
 
 		if (!didApprove || isPatchCancelled(task, callbacks)) {
-			if (!isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.revertChanges()
-			}
 			await task.diffViewProvider.reset()
 			task.didRejectTool = !isPatchCancelled(task, callbacks)
 			return isPatchCancelled(task, callbacks)
@@ -725,24 +694,15 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			await task.diffViewProvider.assertExpectedFileState(absolutePath, relPath, expectedSourceFileState)
 
 			// Save new content to the new path
-			if (isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.saveDirectly(
-					effectiveMovePath,
-					newContent,
-					false,
-					diagnosticsEnabled,
-					writeDelayMs,
-					expectedMoveFileState,
-					validateMoveAccess,
-				)
-			} else {
-				await task.diffViewProvider.saveChanges(
-					diagnosticsEnabled,
-					writeDelayMs,
-					{ relPath: effectiveMovePath, expectedFileState: expectedMoveFileState },
-					validateMoveAccess,
-				)
-			}
+			await task.diffViewProvider.saveDirectly(
+				effectiveMovePath,
+				newContent,
+				false,
+				diagnosticsEnabled,
+				writeDelayMs,
+				expectedMoveFileState,
+				validateMoveAccess,
+			)
 
 			// The destination is committed even if cancellation or source cleanup
 			// prevents the move from finishing. Preserve that effect in the receipt.
@@ -797,18 +757,14 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			}
 		} else {
 			// Save changes to the same file
-			if (isPreventFocusDisruptionEnabled) {
-				await task.diffViewProvider.saveDirectly(
-					relPath,
-					newContent,
-					false,
-					diagnosticsEnabled,
-					writeDelayMs,
-					expectedSourceFileState,
-				)
-			} else {
-				await task.diffViewProvider.saveChanges(diagnosticsEnabled, writeDelayMs)
-			}
+			await task.diffViewProvider.saveDirectly(
+				relPath,
+				newContent,
+				false,
+				diagnosticsEnabled,
+				writeDelayMs,
+				expectedSourceFileState,
+			)
 
 			onApplied()
 			await task.fileContextTracker.trackFileContext(relPath, "alpha_edited" as RecordSource)

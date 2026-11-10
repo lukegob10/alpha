@@ -135,6 +135,7 @@ export const isKnownProvider = (value: unknown): value is ProviderNameWithRetire
 export type ProviderSettingsEntry = {
 	id: string
 	name: string
+	version?: string
 	apiProvider?: string
 	modelId?: string
 	availability?: "invalid" | "unsupported"
@@ -144,6 +145,7 @@ export type ProviderSettingsEntry = {
 export const providerSettingsEntrySchema = z.object({
 	id: z.string(),
 	name: z.string(),
+	version: z.string().optional(),
 	apiProvider: persistedProviderNameSchema.optional(),
 	modelId: z.string().optional(),
 	availability: z.enum(["invalid", "unsupported"]).optional(),

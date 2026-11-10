@@ -24,7 +24,6 @@ interface ExtensionStateMessage {
 		shouldShowAnnouncement: boolean
 		allowedCommands: string[]
 		alwaysAllowExecute: boolean
-		telemetrySetting: "enabled" | "disabled" | "unset"
 	}
 }
 
@@ -44,7 +43,6 @@ vi.mock("@src/hooks/useCloudUpsell", () => ({
 	}),
 }))
 
-vi.mock("../common/TelemetryBanner", nullDefaultModule)
 vi.mock("../common/VersionIndicator", nullDefaultModule)
 vi.mock("../history/HistoryPreview", nullDefaultModule)
 vi.mock("@src/components/welcome/AlphaHero", nullDefaultModule)
@@ -165,7 +163,6 @@ const postState = (alphaMessages: AlphaMessage[], taskId?: string) => {
 			shouldShowAnnouncement: false,
 			allowedCommands: [],
 			alwaysAllowExecute: false,
-			telemetrySetting: "enabled",
 		},
 	}
 

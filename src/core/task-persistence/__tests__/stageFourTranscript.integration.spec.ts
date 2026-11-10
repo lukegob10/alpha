@@ -4,7 +4,6 @@ import * as path from "path"
 import crypto from "crypto"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 import { getTaskDirectoryPath } from "../../../utils/storage"
@@ -298,7 +297,6 @@ function toolResults(messages: ApiMessage[]) {
 describe("Stage Four real Task transcript persistence", () => {
 	const harnesses: Harness[] = []
 	const setup = async () => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		const harness = await createHarness()
 		harnesses.push(harness)
 		return harness

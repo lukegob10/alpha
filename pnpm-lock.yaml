@@ -331,28 +331,6 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@24.2.1)(@vitest/ui@4.1.12)(jsdom@26.1.0(supports-color@8.1.1))(vite@6.4.4(@types/node@24.2.1)(jiti@2.4.2)(lightningcss@1.30.1)(tsx@4.22.0)(yaml@2.8.3))
 
-  packages/telemetry:
-    dependencies:
-      '@alpha-code/types':
-        specifier: workspace:^
-        version: link:../types
-      zod:
-        specifier: 3.25.76
-        version: 3.25.76(patch_hash=72639dda1961fe113de8318da8afe59a4ad0fdcb5c66dec4cddb793e18696a42)
-    devDependencies:
-      '@alpha-code/config-eslint':
-        specifier: workspace:^
-        version: link:../config-eslint
-      '@alpha-code/config-typescript':
-        specifier: workspace:^
-        version: link:../config-typescript
-      '@types/node':
-        specifier: ^24.1.0
-        version: 24.2.1
-      vitest:
-        specifier: ^4.1.12
-        version: 4.1.12(@opentelemetry/api@1.9.0)(@types/node@24.2.1)(@vitest/ui@4.1.12)(jsdom@26.1.0(supports-color@8.1.1))(vite@6.4.4(@types/node@24.2.1)(jiti@2.4.2)(lightningcss@1.30.1)(tsx@4.22.0)(yaml@2.8.3))
-
   packages/types:
     dependencies:
       zod:
@@ -392,9 +370,6 @@ importers:
       '@alpha-code/ipc':
         specifier: workspace:^
         version: link:../packages/ipc
-      '@alpha-code/telemetry':
-        specifier: workspace:^
-        version: link:../packages/telemetry
       '@alpha-code/types':
         specifier: workspace:^
         version: link:../packages/types

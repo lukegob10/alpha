@@ -48,6 +48,14 @@ function read(apiMessages = completedHistory(), options = {}, lifecycleEvents?: 
 	})
 }
 
+it("does not copy another task's mail sampling authority into a fork", () => {
+	const original = completedHistory()
+	original[3].sampled_agent_message_ids = ["source-task-mail"]
+	const fork = forkTaskHistory(original, [], { active: false })
+	expect(fork.apiMessages.every((message) => message.sampled_agent_message_ids === undefined)).toBe(true)
+	expect(original[3].sampled_agent_message_ids).toEqual(["source-task-mail"])
+})
+
 function lifecycleTurn(
 	turnId: string,
 	startedAt: number,

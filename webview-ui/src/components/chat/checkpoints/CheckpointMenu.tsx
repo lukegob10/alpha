@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react"
+import { useState, useCallback, useEffect, useId, useLayoutEffect, useRef } from "react"
 import { CheckIcon, Cross2Icon } from "@radix-ui/react-icons"
 import { useTranslation } from "react-i18next"
 
@@ -23,6 +23,13 @@ type CheckpointMenuUncontrolledProps = {
 }
 type CheckpointMenuProps = CheckpointMenuBaseProps & (CheckpointMenuControlledProps | CheckpointMenuUncontrolledProps)
 
+type RestoreConfirmation = {
+	taskId: string
+	ts: number
+	commitHash: string
+	mode: "preview" | "restore"
+}
+
 export const CheckpointMenu = ({
 	ts,
 	commitHash,
@@ -32,10 +39,37 @@ export const CheckpointMenu = ({
 }: CheckpointMenuProps) => {
 	const { t } = useTranslation()
 	const [internalRestoreOpen, setInternalRestoreOpen] = useState(false)
-	const [restoreConfirming, setRestoreConfirming] = useState(false)
+	const [pendingRestore, setPendingRestore] = useState<RestoreConfirmation>()
 	const [internalMoreOpen, setInternalMoreOpen] = useState(false)
+	const fileRestoreActionRef = useRef<HTMLButtonElement>(null)
+	const taskRestoreActionRef = useRef<HTMLButtonElement>(null)
+	const cancelledRestoreFocus = useRef<RestoreConfirmation>()
+	const restoreWarningId = useId()
 	const portalContainer = useAlphaPortal("alpha-portal")
 	const { currentTaskId } = useShellState()
+	const restoreConfirmation =
+		pendingRestore?.taskId === currentTaskId &&
+		pendingRestore?.ts === ts &&
+		pendingRestore?.commitHash === commitHash
+			? pendingRestore
+			: undefined
+	useEffect(() => setPendingRestore(undefined), [currentTaskId, ts, commitHash])
+	useLayoutEffect(() => {
+		const cancelled = cancelledRestoreFocus.current
+		if (!cancelled) return
+		cancelledRestoreFocus.current = undefined
+		if (
+			!internalRestoreOpen ||
+			restoreConfirmation ||
+			cancelled.taskId !== currentTaskId ||
+			cancelled.ts !== ts ||
+			cancelled.commitHash !== commitHash
+		) {
+			return
+		}
+		const actionRef = cancelled.mode === "preview" ? fileRestoreActionRef : taskRestoreActionRef
+		actionRef.current?.focus()
+	}, [internalRestoreOpen, restoreConfirmation, currentTaskId, ts, commitHash])
 
 	const previousCommitHash = checkpoint?.from
 
@@ -44,6 +78,8 @@ export const CheckpointMenu = ({
 	const setRestoreOpen = useCallback(
 		(open: boolean) => {
 			setInternalRestoreOpen(open)
+			setPendingRestore(undefined)
+			cancelledRestoreFocus.current = undefined
 			if (onOpenChange) {
 				onOpenChange(open)
 			}
@@ -85,48 +121,42 @@ export const CheckpointMenu = ({
 		})
 	}, [ts, commitHash, currentTaskId])
 
-	const onPreview = useCallback(() => {
-		vscode.postMessage({
-			type: "checkpointRestore",
-			taskId: currentTaskId,
-			payload: { ts, commitHash, mode: "preview" },
-		})
-		setRestoreOpen(false)
-	}, [ts, commitHash, currentTaskId, setRestoreOpen])
-
 	const onRestore = useCallback(() => {
+		if (!restoreConfirmation) return
+		const { taskId, ts, commitHash, mode } = restoreConfirmation
 		vscode.postMessage({
 			type: "checkpointRestore",
-			taskId: currentTaskId,
-			payload: { ts, commitHash, mode: "restore" },
+			taskId,
+			payload: { ts, commitHash, mode },
 		})
 		setRestoreOpen(false)
-	}, [ts, commitHash, currentTaskId, setRestoreOpen])
+	}, [restoreConfirmation, setRestoreOpen])
 
-	const handleOpenChange = useCallback(
-		(open: boolean) => {
-			setRestoreOpen(open)
-			if (!open) {
-				setRestoreConfirming(false)
-			}
+	const requestRestore = useCallback(
+		(mode: RestoreConfirmation["mode"]) => {
+			if (!currentTaskId) return
+			setPendingRestore({ taskId: currentTaskId, ts, commitHash, mode })
 		},
-		[setRestoreOpen],
+		[currentTaskId, ts, commitHash],
 	)
+	const cancelRestore = useCallback(() => {
+		if (!restoreConfirmation) return
+		cancelledRestoreFocus.current = restoreConfirmation
+		setPendingRestore(undefined)
+	}, [restoreConfirmation])
 
 	return (
 		<div className="flex flex-row gap-1">
 			<StandardTooltip content={t("chat:checkpoint.menu.viewDiff")}>
-				<Button variant="ghost" size="icon" onClick={onCheckpointDiff}>
+				<Button
+					variant="ghost"
+					size="icon"
+					onClick={onCheckpointDiff}
+					aria-label={t("chat:checkpoint.menu.viewDiff")}>
 					<span className="codicon codicon-diff-single" />
 				</Button>
 			</StandardTooltip>
-			<Popover
-				open={restoreOpen}
-				onOpenChange={(open) => {
-					handleOpenChange(open)
-					setRestoreConfirming(false)
-				}}
-				data-testid="restore-popover">
+			<Popover open={restoreOpen} onOpenChange={setRestoreOpen} data-testid="restore-popover">
 				<StandardTooltip content={t("chat:checkpoint.menu.restore")}>
 					<PopoverTrigger asChild>
 						<Button variant="ghost" size="icon" aria-label={t("chat:checkpoint.menu.restore")}>
@@ -136,52 +166,73 @@ export const CheckpointMenu = ({
 				</StandardTooltip>
 				<PopoverContent align="end" container={portalContainer}>
 					<div className="flex flex-col gap-2">
-						<div className="flex flex-col gap-1 group hover:text-foreground">
-							<Button variant="secondary" onClick={onPreview} data-testid="restore-files-btn">
-								{t("chat:checkpoint.menu.restoreFiles")}
-							</Button>
-							<div className="text-muted transition-colors group-hover:text-foreground">
-								{t("chat:checkpoint.menu.restoreFilesDescription")}
-							</div>
-						</div>
-						<div className="flex flex-col gap-1 group hover:text-foreground">
-							{!restoreConfirming ? (
-								<Button
-									variant="secondary"
-									onClick={() => setRestoreConfirming(true)}
-									data-testid="restore-files-and-task-btn">
-									{t("chat:checkpoint.menu.restoreFilesAndTask")}
-								</Button>
-							) : (
-								<>
+						{!restoreConfirmation ? (
+							<>
+								<div className="flex flex-col gap-1 group hover:text-foreground">
 									<Button
-										variant="primary"
-										onClick={onRestore}
-										className="grow"
-										data-testid="confirm-restore-btn">
-										<div className="flex flex-row gap-1">
-											<CheckIcon />
-											<div>{t("chat:checkpoint.menu.confirm")}</div>
-										</div>
+										ref={fileRestoreActionRef}
+										variant="secondary"
+										onClick={() => requestRestore("preview")}
+										disabled={!currentTaskId}
+										data-testid="restore-files-btn">
+										{t("chat:checkpoint.menu.restoreFiles")}
 									</Button>
-									<Button variant="secondary" onClick={() => setRestoreConfirming(false)}>
-										<div className="flex flex-row gap-1">
-											<Cross2Icon />
-											<div>{t("chat:checkpoint.menu.cancel")}</div>
-										</div>
+									<div className="text-muted transition-colors group-hover:text-foreground">
+										{t("chat:checkpoint.menu.restoreFilesDescription")}
+									</div>
+								</div>
+								<div className="flex flex-col gap-1 group hover:text-foreground">
+									<Button
+										ref={taskRestoreActionRef}
+										variant="secondary"
+										onClick={() => requestRestore("restore")}
+										disabled={!currentTaskId}
+										data-testid="restore-files-and-task-btn">
+										{t("chat:checkpoint.menu.restoreFilesAndTask")}
 									</Button>
-								</>
-							)}
-							{restoreConfirming ? (
-								<div data-testid="checkpoint-confirm-warning" className="text-destructive font-bold">
-									{t("chat:checkpoint.menu.cannotUndo")}
+									<div className="text-muted transition-colors group-hover:text-foreground">
+										{t("chat:checkpoint.menu.restoreFilesAndTaskDescription")}
+									</div>
 								</div>
-							) : (
-								<div className="text-muted transition-colors group-hover:text-foreground">
-									{t("chat:checkpoint.menu.restoreFilesAndTaskDescription")}
+							</>
+						) : (
+							<>
+								<div className="font-medium">
+									{t(
+										restoreConfirmation.mode === "preview"
+											? "chat:checkpoint.menu.restoreFiles"
+											: "chat:checkpoint.menu.restoreFilesAndTask",
+									)}
 								</div>
-							)}
-						</div>
+								<div
+									id={restoreWarningId}
+									role="alert"
+									data-testid="checkpoint-confirm-warning"
+									className="flex flex-col gap-1 text-vscode-foreground">
+									<span>{t("chat:checkpoint.menu.restoreWorkspaceWarning")}</span>
+									<span className="text-destructive font-bold">
+										{t("chat:checkpoint.menu.cannotUndo")}
+									</span>
+								</div>
+								<Button
+									variant="primary"
+									onClick={onRestore}
+									aria-describedby={restoreWarningId}
+									className="grow"
+									data-testid="confirm-restore-btn">
+									<div className="flex flex-row gap-1">
+										<CheckIcon />
+										<div>{t("chat:checkpoint.menu.confirm")}</div>
+									</div>
+								</Button>
+								<Button variant="secondary" autoFocus onClick={cancelRestore}>
+									<div className="flex flex-row gap-1">
+										<Cross2Icon />
+										<div>{t("chat:checkpoint.menu.cancel")}</div>
+									</div>
+								</Button>
+							</>
+						)}
 					</div>
 				</PopoverContent>
 			</Popover>

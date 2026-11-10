@@ -50,7 +50,6 @@ import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
 import AlphaHero from "@src/components/welcome/AlphaHero"
 import { StandardTooltip, Button } from "@src/components/ui"
 
-import TelemetryBanner from "../common/TelemetryBanner"
 import HistoryPreview from "../history/HistoryPreview"
 import ChatHistorySwitcher from "../history/ChatHistorySwitcher"
 import ChatToolbar from "./ChatToolbar"
@@ -354,7 +353,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		taskHistory,
 		apiConfiguration,
 		mode,
-		telemetrySetting,
 		soundEnabled,
 		soundVolume,
 		autoSteer = false,
@@ -2334,7 +2332,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							pendingAskRequests: current.pendingAskRequests.filter(
 								(request) => request.requestId !== result.requestId,
 							),
-							...(result.status === "rejected" && !submission.isNativeUserInput
+							...(result.status === "rejected" &&
+							!submission.isNativeUserInput &&
+							submission.asyncUserInputMessageTs === undefined
 								? {
 										inputValue: current.inputValue
 											? `${current.inputValue} ${submission.text}`
@@ -2362,10 +2362,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 							return {
 								...current,
 								pendingQueueRequest: null,
-								...(result.status === "accepted" && unchanged
+								...(result.status === "accepted" &&
+								unchanged &&
+								queueRequest.asyncUserInputMessageTs === undefined
 									? { inputValue: "", selectedImages: [] }
 									: {}),
-								...(result.status === "rejected"
+								...(result.status === "rejected" && queueRequest.asyncUserInputMessageTs === undefined
 									? {
 											inputValue: unchangedText
 												? current.inputValue
@@ -2442,7 +2444,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						updateTaskDraft(owner, (current) => ({
 							...current,
 							pendingResumeRequest: null,
-							...(result.status === "rejected"
+							...(result.status === "rejected" && submission.asyncUserInputMessageTs === undefined
 								? {
 										inputValue: current.inputValue
 											? `${current.inputValue} ${submission.text}`
@@ -3084,17 +3086,41 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return false
 			}
 
+			const boundary = messagesRef.current.findLast(
+				(message) =>
+					message.type === "ask" ||
+					(message.type === "say" && (message.say === "api_req_started" || message.say === "user_feedback")),
+			)
+			if (
+				boundary?.type === "ask" &&
+				boundary.isAnswered !== true &&
+				(boundary.ask === "followup" ||
+					boundary.ask === "api_req_failed" ||
+					boundary.ask === "mistake_limit_reached")
+			) {
+				// An earlier nonblocking question cannot answer a different live input boundary.
+				return postQueuedMessage(response, [], messageTs)
+			}
+
+			// Question replies have their own draft; ordinary input routing must preserve the composer.
+			const preservedInput = inputValueRef.current
+			const preservedImages = [...selectedImagesRef.current]
 			if (!handleSendMessage(response, [], messageTs)) return false
+			setInputValue(preservedInput)
+			setSelectedImages(preservedImages)
 			return true
 		},
 		[
 			handleSendMessage,
+			postQueuedMessage,
 			visibleCurrentTaskId,
 			editingQueuedMessage,
 			isVisibleTaskFailedOrClosed,
 			apiConfiguration?.apiProvider,
 			answeredAsyncUserInputTs,
 			getTaskDraft,
+			setInputValue,
+			setSelectedImages,
 		],
 	)
 
@@ -3459,8 +3485,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					}
 				/>
 			)}
-			{telemetrySetting === "unset" && <TelemetryBanner />}
-			{showAnnouncement && <Announcement hideAnnouncement={hideAnnouncement} />}
+			{showAnnouncement && !isHidden && <Announcement hideAnnouncement={hideAnnouncement} />}
 			{task ? (
 				<>
 					{parentChatId && <TaskHeader {...taskHeaderProps} presentation="identity" />}

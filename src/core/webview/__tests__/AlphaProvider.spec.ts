@@ -17,12 +17,12 @@ import {
 	AlphaCodeEventName,
 	TaskLifecycleState,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { defaultModeSlug } from "../../../shared/modes"
 import { experimentDefault } from "../../../shared/experiments"
 import type { SystemPromptFragments } from "../../prompts/system"
 import { ContextProxy } from "../../config/ContextProxy"
+import { ProviderProfileSaveError } from "../../config/ProviderSettingsManager"
 import { Task, TaskOptions } from "../../task/Task"
 import type { McpHub } from "../../../services/mcp/McpHub"
 import { McpServerManager } from "../../../services/mcp/McpServerManager"
@@ -60,10 +60,18 @@ vi.mock("p-wait-for", () => ({
 vi.mock("fs/promises", () => {
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
+	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
+	const fenceHandle = (filePath: string) => ({
+		writeFile: vi.fn(async (data: unknown) => {
+			transactionFiles.set(fenceKey(filePath), String(data))
+		}),
+		sync: vi.fn(),
+		close: vi.fn(),
+	})
 	const mockedFs = {
 		readdir: vi.fn().mockResolvedValue([]),
 		access: vi.fn().mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOENT" })),
-		open: vi.fn().mockResolvedValue({ writeFile: vi.fn(), sync: vi.fn(), close: vi.fn() }),
+		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -71,6 +79,12 @@ vi.mock("fs/promises", () => {
 			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
 		}),
 		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				return data === undefined
+					? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+					: Promise.resolve(data)
+			}
 			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
 			if (filePath.includes(".transaction.lock")) {
 				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
@@ -80,12 +94,24 @@ vi.mock("fs/promises", () => {
 				: Promise.resolve("")
 		}),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				return { isFile: () => true, isDirectory: () => false, size: Buffer.byteLength(data) }
+			}
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
 			}
 			return { isDirectory: () => true }
 		}),
 		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			if (sourcePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(sourcePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				transactionFiles.delete(fenceKey(sourcePath))
+				transactionFiles.set(fenceKey(destinationPath), data)
+				return
+			}
 			if (transactionDirectories.has(destinationPath)) {
 				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
 			}
@@ -99,7 +125,11 @@ vi.mock("fs/promises", () => {
 				transactionFiles.set(`${destinationPath}${filePath.slice(sourcePath.length)}`, data)
 			}
 		}),
+		rm: vi.fn(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
+		}),
 		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
 			transactionFiles.delete(filePath)
 		}),
 		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
@@ -440,12 +470,9 @@ describe("AlphaProvider", () => {
 		} as unknown as vscode.WebviewView
 	}
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
+		await fs.unlink("provider-profiles")
 
 		const globalState: Record<string, string | undefined> = {
 			mode: "architect",
@@ -706,17 +733,20 @@ describe("AlphaProvider", () => {
 		expect(writes).toEqual(["running", "completed"])
 	})
 
-	test("shows the current release announcement once per installation", async () => {
+	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
 		const announcementId = "november-2026-v3.2.24-composer-recovery"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
-		await provider.contextProxy.setValue("telemetrySetting", "enabled")
 		await provider.contextProxy.setValue(
 			"lastShownAnnouncementId",
 			"november-2026-v3.2.22-simpler-settings-and-reliable-tools",
 		)
-		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(true)
+		const state = await provider.getStateToPostToWebview()
+		expect(state.shouldShowAnnouncement).toBe(true)
+		for (const key of ["telemetrySetting", "telemetryKey", "machineId"]) {
+			expect(state).not.toHaveProperty(key)
+		}
 
 		await provider.contextProxy.setValue("lastShownAnnouncementId", announcementId)
 		expect((await provider.getStateToPostToWebview()).shouldShowAnnouncement).toBe(false)
@@ -867,7 +897,6 @@ describe("AlphaProvider", () => {
 			maxOpenTabsContext: 20,
 			maxWorkspaceFiles: 200,
 			maxConcurrentTasks: 1,
-			telemetrySetting: "unset",
 			showAlphaIgnoredFiles: false,
 			enableSubfolderRules: false,
 			renderContext: "sidebar",
@@ -1613,36 +1642,16 @@ describe("AlphaProvider", () => {
 		}
 	})
 
-	test.each(["enabled", "disabled", "unset", undefined] as const)(
-		"initializes %s telemetry without assembling a second warm-startup state",
-		async (telemetrySetting) => {
-			await (provider as unknown as { taskHistoryStoreReady: Promise<void> }).taskHistoryStoreReady
-			await provider.contextProxy.setValue("telemetrySetting", telemetrySetting)
-			await provider.resolveWebviewView(mockWebviewView)
-			const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
-			const assembleState = vi.spyOn(provider, "getStateToPostToWebview")
-			const updateTelemetry = vi.spyOn(TelemetryService.instance, "updateTelemetryState")
-
-			await messageHandler({ type: "webviewDidLaunch" })
-
-			expect(assembleState).toHaveBeenCalledTimes(1)
-			expect(updateTelemetry).toHaveBeenCalledWith(telemetrySetting !== "disabled")
-		},
-	)
-
-	test("contains telemetry initialization failures without blocking webview readiness", async () => {
+	test("assembles one warm-startup state and establishes webview readiness", async () => {
+		await (provider as unknown as { taskHistoryStoreReady: Promise<void> }).taskHistoryStoreReady
 		await provider.resolveWebviewView(mockWebviewView)
 		const messageHandler = vi.mocked(mockWebviewView.webview.onDidReceiveMessage).mock.calls[0][0]
-		vi.spyOn(TelemetryService.instance, "updateTelemetryState").mockImplementationOnce(() => {
-			throw new Error("telemetry unavailable")
-		})
+		const assembleState = vi.spyOn(provider, "getStateToPostToWebview")
 
 		await expect(messageHandler({ type: "webviewDidLaunch" })).resolves.toBeUndefined()
 
 		expect(provider.viewLaunched).toBe(true)
-		expect(mockOutputChannel.appendLine).toHaveBeenCalledWith(
-			expect.stringContaining("Failed to initialize telemetry state: telemetry unavailable"),
-		)
+		expect(assembleState).toHaveBeenCalledTimes(1)
 	})
 
 	test("tracks sidebar readiness across replacement launch and disposal", async () => {
@@ -2162,6 +2171,99 @@ describe("AlphaProvider", () => {
 		}
 	})
 
+	describe("command rule settings scope", () => {
+		let originalConfiguration: vscode.WorkspaceConfiguration
+		type ScopedCommands = {
+			globalValue?: string[]
+			workspaceValue?: string[]
+			workspaceFolderValue?: string[]
+		}
+
+		const configureCommands = (allowed: ScopedCommands, denied: ScopedCommands = {}) => {
+			vi.mocked(vscode.workspace.getConfiguration).mockReturnValue({
+				...originalConfiguration,
+				inspect: vi.fn().mockImplementation((key: string) => {
+					if (key === "allowedCommands") return allowed
+					if (key === "deniedCommands") return denied
+					return {}
+				}),
+			})
+		}
+
+		beforeEach(() => {
+			originalConfiguration = vscode.workspace.getConfiguration()
+		})
+
+		afterEach(() => {
+			vi.mocked(vscode.workspace.getConfiguration).mockReturnValue(originalConfiguration)
+		})
+
+		test("separates editable global rules from every inherited configuration scope", async () => {
+			await provider.contextProxy.setValues({
+				allowedCommands: [" git status ", "git status"],
+				deniedCommands: ["git reset"],
+			})
+			configureCommands(
+				{
+					globalValue: [" git diff ", ""],
+					workspaceValue: ["pnpm dev", "pnpm dev"],
+					workspaceFolderValue: ["pnpm test"],
+				},
+				{ workspaceValue: [" git push "], workspaceFolderValue: ["git clean"] },
+			)
+
+			for (const state of [await provider.getState(), await provider.getStateToPostToWebview()]) {
+				expect(state.allowedCommands).toEqual(["git status", "git diff", "pnpm dev", "pnpm test"])
+				expect(state.deniedCommands).toEqual(["git reset", "git push", "git clean"])
+				expect(state.commandRuleSettings).toEqual({
+					allowedCommands: ["git status"],
+					deniedCommands: ["git reset"],
+					inherited: [
+						{ source: "user", allowedCommands: ["git diff"], deniedCommands: [] },
+						{ source: "workspace", allowedCommands: ["pnpm dev"], deniedCommands: ["git push"] },
+						{ source: "workspaceFolder", allowedCommands: ["pnpm test"], deniedCommands: ["git clean"] },
+					],
+				})
+			}
+			expect(provider.contextProxy.getValue("allowedCommands")).toEqual([" git status ", "git status"])
+			expect(provider.contextProxy.getValue("deniedCommands")).toEqual(["git reset"])
+		})
+
+		test("round-trips editable rules without retaining a previous workspace's grants", async () => {
+			await provider.contextProxy.setValue("allowedCommands", ["git status"])
+			configureCommands({ workspaceValue: ["pnpm dev"] }, { workspaceValue: ["git push"] })
+			const firstWorkspace = await provider.getStateToPostToWebview()
+			expect(firstWorkspace.allowedCommands).toContain("pnpm dev")
+
+			const editable = firstWorkspace.commandRuleSettings!
+			await provider.contextProxy.setValues({
+				allowedCommands: [...editable.allowedCommands, "rg"],
+				deniedCommands: editable.deniedCommands,
+			})
+			configureCommands({})
+
+			const secondWorkspace = await provider.getStateToPostToWebview()
+			expect(secondWorkspace.allowedCommands).toEqual(["git status", "rg"])
+			expect(secondWorkspace.deniedCommands).toEqual([])
+			expect(secondWorkspace.commandRuleSettings?.inherited).toEqual([])
+			expect(provider.contextProxy.getValue("allowedCommands")).toEqual(["git status", "rg"])
+		})
+
+		test("keeps a workspace-owned rule visible after its duplicate global rule is removed", async () => {
+			await provider.contextProxy.setValue("allowedCommands", ["git status"])
+			configureCommands({ workspaceValue: ["git status"] })
+			await provider.contextProxy.setValue("allowedCommands", [])
+
+			const state = await provider.getStateToPostToWebview()
+			expect(state.allowedCommands).toEqual(["git status"])
+			expect(state.commandRuleSettings).toEqual({
+				allowedCommands: [],
+				deniedCommands: [],
+				inherited: [{ source: "workspace", allowedCommands: ["git status"], deniedCommands: [] }],
+			})
+		})
+	})
+
 	test("marks a visible legacy managed child as approval-restricted", async () => {
 		const child = new Task(defaultTaskOptions) as any
 		child.taskKind = "subagent"
@@ -2351,6 +2453,193 @@ describe("AlphaProvider", () => {
 			expect(updateGlobalStateSpy).toHaveBeenCalledWith(key, value)
 			expect(mockContext.globalState.update).toHaveBeenCalledWith(key, value)
 		}
+	})
+
+	describe("initial provider profile creation", () => {
+		const initialSettings = { apiProvider: "openai" as const, openAiModelId: "initial-model" }
+
+		test("projects a paired saved editor snapshot after an inactive save while preserving frozen task settings", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			const original = { ...initialSettings, openAiBaseUrl: "https://task-a.example/v1" }
+			await provider.createProviderProfile("first-profile", original)
+			const task = Object.assign(new Task(defaultTaskOptions), {
+				apiConfiguration: original,
+				getTaskApiConfigName: vi.fn(async () => "first-profile"),
+				getTaskMode: vi.fn(async () => "code"),
+				updateApiConfiguration: vi.fn(),
+			})
+			await provider.addTaskToStack(task)
+			await provider.upsertProviderProfile(
+				"first-profile",
+				{ ...original, openAiBaseUrl: "https://saved-b.example/v1" },
+				false,
+			)
+			const state = await provider.getStateToPostToWebview()
+			expect(state.apiConfiguration).toMatchObject({ openAiBaseUrl: "https://task-a.example/v1" })
+			expect(state.settingsProviderProfile).toMatchObject({
+				configuration: { openAiBaseUrl: "https://saved-b.example/v1" },
+			})
+			const snapshot = state.settingsProviderProfile!
+			await provider.upsertProviderProfile(
+				{ id: snapshot.id, expectedVersion: snapshot.version },
+				{ ...snapshot.configuration, openAiModelId: "edited-model" },
+			)
+			expect(await provider.providerSettingsManager.getAvailableProfile("first-profile")).toMatchObject({
+				openAiBaseUrl: "https://saved-b.example/v1",
+				openAiModelId: "edited-model",
+			})
+		})
+
+		test("creates the selected initial profile and returns its persisted identity", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+
+			const created = await provider.createProviderProfile("first-profile", initialSettings)
+
+			expect(created).toEqual({
+				id: expect.any(String),
+				name: "first-profile",
+				version: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+			})
+			expect(await provider.providerSettingsManager.listConfig()).toContainEqual(expect.objectContaining(created))
+			expect(await provider.providerSettingsManager.getAvailableProfile(created.name)).toMatchObject(
+				initialSettings,
+			)
+			expect(provider.contextProxy.getValue("currentApiConfigName")).toBe(created.name)
+		})
+
+		test("rejects an initial save after the selected profile name changes", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "new-selection")
+			const saveConfig = vi.spyOn(provider.providerSettingsManager, "saveConfig")
+
+			await expect(provider.createProviderProfile("first-profile", initialSettings)).rejects.toMatchObject({
+				code: "invalid",
+			})
+			expect(saveConfig).not.toHaveBeenCalled()
+		})
+
+		test("does not overwrite a profile created by an earlier queued save", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			let releaseProjection = () => {}
+			let markProjectionStarted = () => {}
+			const projectionStarted = new Promise<void>((resolve) => {
+				markProjectionStarted = resolve
+			})
+			const projectionGate = new Promise<void>((resolve) => {
+				releaseProjection = resolve
+			})
+			const originalList = provider.providerSettingsManager.listConfig.bind(provider.providerSettingsManager)
+			vi.spyOn(provider.providerSettingsManager, "listConfig").mockImplementationOnce(async () => {
+				markProjectionStarted()
+				await projectionGate
+				return originalList()
+			})
+			const earlierSave = provider.upsertProviderProfile("first-profile", initialSettings, false)
+			await projectionStarted
+
+			const delayedInitialSave = expect(
+				provider.createProviderProfile("first-profile", { ...initialSettings, openAiModelId: "stale-model" }),
+			).rejects.toMatchObject({ code: "invalid" })
+			releaseProjection()
+			await earlierSave
+			await delayedInitialSave
+
+			expect(await provider.providerSettingsManager.getAvailableProfile("first-profile")).toMatchObject(
+				initialSettings,
+			)
+		})
+
+		test("reports a failed initial profile write as an unsuccessful save", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider.providerSettingsManager, "saveConfig").mockRejectedValueOnce(
+				new Error("storage unavailable"),
+			)
+
+			await expect(provider.createProviderProfile("first-profile", initialSettings)).rejects.toMatchObject({
+				code: "saveFailed",
+			})
+		})
+
+		test.each(["create", "update"] as const)(
+			"retains the committed %s receipt after apply failure and retries by ID",
+			async (operation) => {
+				await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+				vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+				const existing =
+					operation === "update"
+						? await provider.createProviderProfile("first-profile", initialSettings)
+						: undefined
+				vi.spyOn(provider.contextProxy, "setProviderSettings").mockRejectedValueOnce(
+					new Error("private apply failure"),
+				)
+				const draft = { ...initialSettings, openAiModelId: "committed-model" }
+				let failure: unknown
+				try {
+					if (existing)
+						await provider.upsertProviderProfile(
+							{ id: existing.id, expectedVersion: existing.version },
+							draft,
+						)
+					else await provider.createProviderProfile("first-profile", draft)
+				} catch (error) {
+					failure = error
+				}
+				expect(failure).toBeInstanceOf(ProviderProfileSaveError)
+				if (!(failure instanceof ProviderProfileSaveError) || !failure.saved)
+					throw new Error("Missing committed receipt")
+				expect(failure.code).toBe("applyFailed")
+				expect(Object.keys(failure.saved).sort()).toEqual(["id", "name", "version"])
+				expect(await provider.providerSettingsManager.getAvailableProfile(failure.saved.name)).toMatchObject(
+					draft,
+				)
+				await expect(
+					provider.upsertProviderProfile(
+						{ id: failure.saved.id, expectedVersion: failure.saved.version },
+						draft,
+					),
+				).resolves.toMatchObject(failure.saved)
+				expect(provider.contextProxy.getProviderSettings()).toMatchObject(draft)
+			},
+		)
+
+		test("rejects a retry when another view changes a durably saved profile after apply failure", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider, "postStateToWebview").mockResolvedValue(undefined)
+			vi.spyOn(provider.contextProxy, "setProviderSettings").mockRejectedValueOnce(new Error("apply failed"))
+			let failure: unknown
+			try {
+				await provider.createProviderProfile("first-profile", initialSettings)
+			} catch (error) {
+				failure = error
+			}
+			if (!(failure instanceof ProviderProfileSaveError) || !failure.saved)
+				throw new Error("Missing committed receipt")
+			await provider.providerSettingsManager.saveConfig(
+				{ id: failure.saved.id },
+				{ ...initialSettings, openAiModelId: "external-model" },
+			)
+			await expect(
+				provider.upsertProviderProfile(
+					{ id: failure.saved.id, expectedVersion: failure.saved.version },
+					initialSettings,
+				),
+			).rejects.toMatchObject({ code: "conflict" })
+			expect(await provider.providerSettingsManager.getAvailableProfile("first-profile")).toMatchObject({
+				openAiModelId: "external-model",
+			})
+		})
+
+		test("returns durable creation success when only webview state delivery fails", async () => {
+			await provider.contextProxy.setValue("currentApiConfigName", "first-profile")
+			vi.spyOn(provider, "postStateToWebview").mockRejectedValueOnce(new Error("webview detached"))
+			const save = vi.spyOn(provider.providerSettingsManager, "saveConfig")
+			const created = await provider.createProviderProfile("first-profile", initialSettings)
+			expect(created).toMatchObject({ id: expect.any(String), version: expect.stringMatching(/^sha256:/) })
+			expect(save).toHaveBeenCalledOnce()
+			expect(provider.contextProxy.getProviderSettings()).toMatchObject(initialSettings)
+		})
 	})
 
 	test("keeps the interactive profile when creating a background task with its own profile", async () => {
@@ -3744,83 +4033,6 @@ describe.skip("ContextProxy integration", () => {
 	})
 })
 
-describe("getTelemetryProperties", () => {
-	let defaultTaskOptions: TaskOptions
-	let provider: AlphaProvider
-	let mockContext: vscode.ExtensionContext
-	let mockOutputChannel: vscode.OutputChannel
-	let mockAlphaTask: any
-
-	beforeEach(() => {
-		// Reset mocks
-		vi.clearAllMocks()
-
-		// Initialize TelemetryService if not already initialized
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
-		// Setup basic mocks
-		mockContext = {
-			globalState: {
-				get: vi.fn().mockImplementation((key: string) => {
-					if (key === "mode") return "code"
-					if (key === "apiProvider") return "anthropic"
-					return undefined
-				}),
-				update: vi.fn(),
-				keys: vi.fn().mockReturnValue([]),
-			},
-			workspaceState: {
-				get: vi.fn().mockReturnValue(undefined),
-				update: vi.fn().mockResolvedValue(undefined),
-				keys: vi.fn().mockReturnValue([]),
-			},
-			secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn() },
-			extensionUri: {} as vscode.Uri,
-			globalStorageUri: { fsPath: "/test/path" },
-			extension: { packageJSON: { version: "1.0.0" } },
-		} as unknown as vscode.ExtensionContext
-
-		mockOutputChannel = { appendLine: vi.fn() } as unknown as vscode.OutputChannel
-		provider = new AlphaProvider(mockContext, mockOutputChannel, "sidebar", new ContextProxy(mockContext))
-
-		defaultTaskOptions = {
-			provider,
-			apiConfiguration: {
-				apiProvider: "openai",
-			},
-		}
-
-		// Setup Task instance with mocked getModel method
-		mockAlphaTask = new Task(defaultTaskOptions)
-		mockAlphaTask.api = {
-			getModel: vi.fn().mockReturnValue({
-				id: "claude-sonnet-4-20250514",
-				info: { contextWindow: 200000 },
-			}),
-		}
-		;(mockAlphaTask as any).getTaskMode = vi.fn().mockResolvedValue("code")
-	})
-
-	test("includes basic properties in telemetry", async () => {
-		const properties = await provider.getTelemetryProperties()
-
-		expect(properties).toHaveProperty("vscodeVersion")
-		expect(properties).toHaveProperty("platform")
-		expect(properties).toHaveProperty("appVersion", "1.0.0")
-	})
-
-	test("includes model ID from current Alpha instance if available", async () => {
-		// Add mock Alpha to stack
-		await provider.addTaskToStack(mockAlphaTask)
-
-		const properties = await provider.getTelemetryProperties()
-
-		expect(properties).toHaveProperty("modelId", "claude-sonnet-4-20250514")
-	})
-})
-
 describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 	let provider: AlphaProvider
 	let mockContext: vscode.ExtensionContext
@@ -3831,10 +4043,6 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		const globalState: Record<string, string | undefined> = {
 			mode: "code",

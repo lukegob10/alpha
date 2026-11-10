@@ -10,7 +10,6 @@ import {
 	type ModeConfig,
 	type ExperimentId,
 	type TodoItem,
-	type TelemetrySetting,
 	type ExtensionMessage,
 	type ExtensionState,
 	type EditorChatState,
@@ -84,7 +83,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	terminalZdotdir?: boolean
 	setTerminalZdotdir: (value: boolean) => void
 	checkpointTimeout: number
-	terminalOutputPreviewSize?: "small" | "medium" | "large"
 	mcpEnabled: boolean
 	mode: Mode
 	setMode: (value: Mode) => void
@@ -96,11 +94,9 @@ export interface ExtensionStateContextType extends ExtensionState {
 	setApprovalModeBypassAcknowledged: (value: boolean) => void
 	customModes: ModeConfig[]
 	maxWorkspaceFiles: number
-	setTelemetrySetting: (value: TelemetrySetting) => void
 	awsUsePromptCache?: boolean
 	maxImageFileSize: number
 	maxTotalImageSize: number
-	machineId?: string
 	pinnedApiConfigs?: Record<string, boolean>
 	togglePinnedApiConfig: (configName: string) => void
 	setHistoryPreviewCollapsed: (value: boolean) => void
@@ -116,6 +112,7 @@ export interface ExtensionStateContextType extends ExtensionState {
 	showWorktreesInHomeScreen: boolean
 	getCachedTranscriptRevision: (taskId: string) => number | undefined
 	skills?: SkillMetadata[]
+	skillsError?: string
 }
 
 export interface ManagedSteeringDraft {
@@ -138,8 +135,14 @@ type TaskTranscriptCache = Map<string, CachedTaskTranscript>
 
 const MAX_CACHED_TASK_TRANSCRIPTS = 2
 
-function shouldApplyIncrementalLiveTask(existing: LiveTaskMetadata | undefined, incoming: LiveTaskMetadata): boolean {
-	if (!existing) return true
+function shouldApplyIncrementalLiveTask(
+	existing: LiveTaskMetadata | undefined,
+	incoming: LiveTaskMetadata,
+	state: Pick<ExtensionState, "taskStateSeq" | "liveTasksById">,
+): boolean {
+	// Once host membership is known, only a task snapshot may admit a task.
+	// Delayed background messages must not restore a runtime the host removed.
+	if (!existing) return state.taskStateSeq === undefined || state.liveTasksById === undefined
 	// Every host message publication advances this task's revision. A state
 	// snapshot at the same revision may already contain a later lifecycle boundary.
 	if (existing.transcriptRevision !== undefined && incoming.transcriptRevision !== undefined) {
@@ -535,7 +538,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		maxOpenTabsContext: 20,
 		maxWorkspaceFiles: 200,
 		cwd: "",
-		telemetrySetting: "unset",
 		showAlphaIgnoredFiles: true, // Default to showing .alphaignore'd files with lock symbol (current behavior).
 		enableSubfolderRules: false, // Default to disabled - must be enabled to load rules from subdirectories
 		renderContext: "sidebar",
@@ -589,6 +591,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [alwaysAllowFollowupQuestions, setAlwaysAllowFollowupQuestions] = useState(false) // Add state for follow-up questions auto-approve
 	const [followupAutoApproveTimeoutMs, setFollowupAutoApproveTimeoutMs] = useState<number | undefined>(undefined) // Will be set from global settings
 	const [skills, setSkills] = useState<SkillMetadata[]>([])
+	const [skillsError, setSkillsError] = useState<string>()
 	const [includeCurrentTime, setIncludeCurrentTime] = useState(true)
 	const [includeCurrentCost, setIncludeCurrentCost] = useState(true)
 	const latestTaskStateSeqRef = useRef<number>()
@@ -643,7 +646,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					continue
 				}
 				const existingLiveTask = liveTask ? liveTasksById?.[liveTask.id] : undefined
-				if (liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)) {
+				if (liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask, prevState)) {
 					// Share one copy across the frame while checking each task's latest revision.
 					if (!liveTasksById || liveTasksById === prevState.liveTasksById) {
 						liveTasksById = { ...(liveTasksById ?? {}) }
@@ -689,7 +692,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 				}
 				const existingLiveTask = liveTask ? prevState.liveTasksById?.[liveTask.id] : undefined
 				const liveTasksById =
-					liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask)
+					liveTask && shouldApplyIncrementalLiveTask(existingLiveTask, liveTask, prevState)
 						? { ...(prevState.liveTasksById ?? {}), [liveTask.id]: liveTask }
 						: prevState.liveTasksById
 				if (!isVisibleTask) {
@@ -922,8 +925,11 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					break
 				}
 				case "skills": {
-					if (message.skills) {
+					if (message.skillsError) {
+						setSkillsError(message.skillsError)
+					} else if (message.skills) {
 						setSkills(message.skills)
+						setSkillsError(undefined)
 					}
 					break
 				}
@@ -1096,7 +1102,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		setApprovalMode: (value) => setState((prevState) => ({ ...prevState, approvalMode: value })),
 		setApprovalModeBypassAcknowledged: (value) =>
 			setState((prevState) => ({ ...prevState, approvalModeBypassAcknowledged: value })),
-		setTelemetrySetting: (value) => setState((prevState) => ({ ...prevState, telemetrySetting: value })),
 		setShowAlphaIgnoredFiles: (value) => setState((prevState) => ({ ...prevState, showAlphaIgnoredFiles: value })),
 		togglePinnedApiConfig: (configId) =>
 			setState((prevState) => {
@@ -1124,6 +1129,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		includeCurrentTime,
 		includeCurrentCost,
 		skills,
+		skillsError,
 		showWorktreesInHomeScreen: state.showWorktreesInHomeScreen ?? true,
 		getCachedTranscriptRevision,
 	}

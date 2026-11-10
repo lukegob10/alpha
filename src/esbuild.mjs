@@ -100,6 +100,7 @@ function copyThirdPartyNotices(srcDir, distDir) {
 	// Raw assets and bundled packages do not bring package-root legal files into a --no-dependencies VSIX.
 	// Keep Codicons' content and code licenses together with its upstream explanation of their scopes.
 	const packages = [
+		["src", "openai-codex", ["NOTICE"]],
 		["webview-ui/node_modules/@vscode/codicons", "vscode-codicons", ["LICENSE", "LICENSE-CODE", "README.md"]],
 		["src/node_modules/vscode-material-icons", "vscode-material-icons", ["LICENSE"]],
 		["src/node_modules/web-tree-sitter", "web-tree-sitter", ["LICENSE"]],

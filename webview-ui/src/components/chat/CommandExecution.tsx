@@ -32,6 +32,8 @@ interface CommandPattern {
 
 interface CommandExecutionProps {
 	executionId: string
+	executionStatus?: CommandExecutionStatus
+	executionOutput?: string
 	workingDirectory?: string
 	pathApproval?: ToolProgressStatus["commandPathApproval"]
 	text?: string
@@ -44,6 +46,8 @@ interface CommandExecutionProps {
 
 export const CommandExecution = ({
 	executionId,
+	executionStatus,
+	executionOutput,
 	text,
 	icon,
 	title,
@@ -69,12 +73,16 @@ export const CommandExecution = ({
 	const isExpanded = controlledExpanded ?? localExpanded
 	const detailsId = useId()
 	const [streamingOutput, setStreamingOutput] = useState("")
-	const [status, setStatus] = useState<CommandExecutionStatus | null>(null)
+	const [streamedStatus, setStatus] = useState<CommandExecutionStatus | null>(null)
+	// The host transcript owns status across folding, navigation, task switches and reload.
+	const status = executionStatus ?? streamedStatus
 
 	// The command's output can either come from the text associated with the
 	// task message (this is the case for completed commands) or from the
 	// streaming output (this is the case for running commands).
-	const output = status?.status === "exited" && parsedOutput ? parsedOutput : streamingOutput || parsedOutput
+	const hasTerminalStatus = status && ["exited", "error", "cancelled", "timeout"].includes(status.status)
+	const output =
+		hasTerminalStatus && parsedOutput ? parsedOutput : (executionOutput ?? (streamingOutput || parsedOutput))
 
 	// Extract command patterns from the actual command that was executed
 	const commandPatterns = useMemo<CommandPattern[]>(() => {
@@ -141,7 +149,7 @@ export const CommandExecution = ({
 				if (result.success) {
 					const data = result.data
 
-					if (data.executionId !== executionId) {
+					if (data.executionId !== executionId || (data.taskId && data.taskId !== currentTaskId)) {
 						return
 					}
 
@@ -159,7 +167,7 @@ export const CommandExecution = ({
 				}
 			}
 		},
-		[executionId],
+		[executionId, currentTaskId],
 	)
 
 	useEvent("message", onMessage)
@@ -243,6 +251,12 @@ export const CommandExecution = ({
 							</StandardTooltip>
 						</div>
 					)}
+					{status &&
+						(status.status === "error" || status.status === "cancelled" || status.status === "timeout") && (
+							<span className="text-xs text-vscode-errorForeground">
+								{t(`chat:commandExecution.${status.status}`)}
+							</span>
+						)}
 				</button>
 				<div className=" flex flex-row items-center justify-between gap-2 px-1">
 					<div className="flex flex-row items-center gap-1">

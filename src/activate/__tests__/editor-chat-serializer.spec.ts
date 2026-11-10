@@ -28,7 +28,6 @@ vi.mock("vscode", () => ({
 	window: { registerWebviewPanelSerializer: mocks.registerSerializer },
 	Uri: { joinPath: vi.fn(() => ({})) },
 }))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: {} }))
 vi.mock("../../core/webview/AlphaProvider", () => ({ AlphaProvider: mocks.createProvider }))
 vi.mock("../../core/config/ContextProxy", () => ({ ContextProxy: { getInstance: mocks.getContextProxy } }))
 vi.mock("../../core/config/importExport", () => ({ importSettingsWithFeedback: vi.fn() }))

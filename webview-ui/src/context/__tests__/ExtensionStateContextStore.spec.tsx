@@ -20,7 +20,6 @@ const createState = (): ExtensionState => ({
 	maxOpenTabsContext: 20,
 	maxWorkspaceFiles: 100,
 	mcpEnabled: false,
-	telemetrySetting: "unset",
 	showAlphaIgnoredFiles: true,
 	enableSubfolderRules: false,
 	renderContext: "sidebar",

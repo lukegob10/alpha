@@ -6,6 +6,7 @@ import { HttpEmbedder } from "../embedders/http"
 import { LanceDbVectorStore } from "../vector-store/lancedb-client"
 import { QdrantVectorStore } from "../vector-store/qdrant-client"
 import { getDefaultModelId, getModelDimension } from "../../../shared/embeddingModels"
+import type { IEmbedder } from "../interfaces/embedder"
 
 vi.mock("../embedders/vertex", () => ({ VertexGeminiEmbedder: vi.fn() }))
 vi.mock("../embedders/gemini", () => ({ GeminiEmbedder: vi.fn() }))
@@ -16,10 +17,6 @@ vi.mock("../../../shared/embeddingModels", () => ({
 	getDefaultModelId: vi.fn(() => "gemini-embedding-001"),
 	getModelDimension: vi.fn(() => 3072),
 }))
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: { instance: { captureEvent: vi.fn() } },
-}))
-
 describe("CodeIndexServiceFactory", () => {
 	let factory: CodeIndexServiceFactory
 	let configManager: {
@@ -36,6 +33,17 @@ describe("CodeIndexServiceFactory", () => {
 			isFeatureConfigured: true,
 		}
 		factory = new CodeIndexServiceFactory(configManager as any, "/workspace", cacheManager as any)
+	})
+
+	it("returns an actionable validation failure when an embedder throws", async () => {
+		const embedder = {
+			validateConfiguration: vi.fn().mockRejectedValue(new Error("Embedding deployment is not ready")),
+		} as unknown as IEmbedder
+
+		await expect(factory.validateEmbedder(embedder)).resolves.toEqual({
+			valid: false,
+			error: "Embedding deployment is not ready",
+		})
 	})
 
 	it("creates the Vertex embedder with the selected model and rate limit", () => {

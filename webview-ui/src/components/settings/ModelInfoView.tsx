@@ -8,17 +8,10 @@ import { ModelDescriptionMarkdown } from "./ModelDescriptionMarkdown"
 
 type ModelInfoViewProps = {
 	modelInfo?: ModelInfo
-	isDescriptionExpanded: boolean
-	setIsDescriptionExpanded: (isExpanded: boolean) => void
 	hidePricing?: boolean
 }
 
-export const ModelInfoView = ({
-	modelInfo,
-	isDescriptionExpanded,
-	setIsDescriptionExpanded,
-	hidePricing,
-}: ModelInfoViewProps) => {
+export const ModelInfoView = ({ modelInfo, hidePricing }: ModelInfoViewProps) => {
 	const { t } = useAppTranslation()
 
 	const baseInfoItems = [
@@ -77,14 +70,7 @@ export const ModelInfoView = ({
 
 	return (
 		<>
-			{modelInfo?.description && (
-				<ModelDescriptionMarkdown
-					key="description"
-					markdown={modelInfo.description}
-					isExpanded={isDescriptionExpanded}
-					setIsExpanded={setIsDescriptionExpanded}
-				/>
-			)}
+			{modelInfo?.description && <ModelDescriptionMarkdown markdown={modelInfo.description} />}
 			<div className="text-sm text-vscode-descriptionForeground">
 				{infoItems.map((item, index) => (
 					<div key={index}>{item}</div>

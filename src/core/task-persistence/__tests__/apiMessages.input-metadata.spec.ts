@@ -4,6 +4,7 @@ import * as path from "path"
 
 import { readApiMessages, saveApiMessages, type ApiMessage } from "../apiMessages"
 import { getEffectiveApiHistory } from "../../condense"
+import { getPendingAgentMailIds } from "../agentMailSampling"
 
 let storage: string
 beforeEach(async () => {
@@ -31,6 +32,7 @@ it("preserves host origin and consumption receipts in the canonical transcript t
 			condenseParent: "summary",
 		},
 		{ role: "user", content: "summary", input_origin: "agent", isSummary: true, condenseId: "summary" },
+		{ role: "assistant", content: "Sampled agent mail", sampled_agent_message_ids: ["agent-receipt"] },
 	]
 	await saveApiMessages({ taskId: "task", globalStoragePath: storage, messages })
 	const restored = await readApiMessages({ taskId: "task", globalStoragePath: storage })
@@ -40,6 +42,7 @@ it("preserves host origin and consumption receipts in the canonical transcript t
 	).toBe(false)
 	expect(restored.flatMap((message) => message.queued_message_ids ?? [])).toEqual(["accepted-input"])
 	expect(restored.find((message) => message.agent_message_id === "agent-receipt")?.input_origin).toBe("agent")
+	expect([...getPendingAgentMailIds(restored)]).toEqual([])
 })
 
 it.each([
@@ -47,6 +50,10 @@ it.each([
 	{ queued_message_ids: [""] },
 	{ queued_message_ids: ["x".repeat(257)] },
 	{ queued_message_ids: Array.from({ length: 101 }, (_, index) => `id-${index}`) },
+	{ sampled_agent_message_ids: ["not-on-user-input"] },
+	{ role: "assistant", sampled_agent_message_ids: "not-an-array" },
+	{ role: "assistant", sampled_agent_message_ids: [""] },
+	{ role: "assistant", sampled_agent_message_ids: Array.from({ length: 101 }, (_, index) => `mail-${index}`) },
 ])("rejects malformed input metadata without rewriting the saved history: %j", async (metadata) => {
 	const dir = path.join(storage, "tasks", "task")
 	await fs.mkdir(dir, { recursive: true })

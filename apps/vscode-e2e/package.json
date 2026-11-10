@@ -30,6 +30,8 @@
 		"test:cross-task:1410": "pnpm -w bundle && pnpm compile && node ./out/runTest.js --vscode-version 1.141.0 --provider scripted --require-all-tests --file cross-task-orchestration.acceptance.test",
 		"test:reasoning:1410": "pnpm -w bundle && pnpm compile && node ./out/runReasoningUi.js",
 		"test:composer-ui:1410": "pnpm -w bundle && pnpm compile && node ./out/runComposerUi.js",
+		"test:settings-ui:1410": "pnpm -w bundle && pnpm test:settings-ui:1410:run",
+		"test:settings-ui:1410:run": "pnpm compile && node ./out/runSettingsUi.js",
 		"test:rendered:1410:run": "pnpm compile && node ./out/runComposerUi.js && node ./out/runTranscriptLifecycleUi.js && node ./out/runRequestUserInputUi.js && node ../../scripts/harness/host-probes.mjs rendered-acceptance",
 		"test:transcript-lifecycle-ui:1410": "pnpm -w bundle && pnpm compile && node ./out/runTranscriptLifecycleUi.js",
 		"test:request-user-input-ui:1410": "pnpm -w bundle && pnpm compile && node ./out/runRequestUserInputUi.js",

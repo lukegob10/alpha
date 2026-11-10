@@ -434,11 +434,6 @@ export interface ToolUse<TName extends ToolName = ToolName> {
 	partial: boolean
 	// nativeArgs is properly typed based on TName if it's in NativeToolArgs, otherwise never
 	nativeArgs?: TName extends keyof NativeToolArgs ? NativeToolArgs[TName] : never
-	/**
-	 * Flag indicating whether the tool call used a legacy/deprecated format.
-	 * Used for telemetry tracking to monitor migration from old formats.
-	 */
-	usedLegacyFormat?: boolean
 }
 
 /**

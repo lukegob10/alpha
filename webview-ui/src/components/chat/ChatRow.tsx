@@ -2076,7 +2076,10 @@ const ChatRowContentInner = ({
 				case "command":
 					return (
 						<CommandExecution
+							key={`${currentTaskId}:${message.ts}`}
 							executionId={message.ts.toString()}
+							executionStatus={message.commandExecutionStatus}
+							executionOutput={message.commandExecutionOutput}
 							workingDirectory={message.progressStatus?.text}
 							pathApproval={
 								message.toolApprovalRequest?.commandPathApproval ??
@@ -2139,7 +2142,11 @@ const ChatRowContentInner = ({
 								)}
 								{useMcpServer.type === "use_mcp_tool" && (
 									<McpExecution
+										key={`${currentTaskId}:${message.ts}`}
 										executionId={message.ts.toString()}
+										taskId={currentTaskId}
+										executionStatus={message.mcpExecutionStatus}
+										executionResponse={message.mcpExecutionResponse}
 										text={useMcpServer.arguments !== "{}" ? useMcpServer.arguments : undefined}
 										serverName={useMcpServer.serverName}
 										toolName={useMcpServer.toolName}

@@ -52,6 +52,7 @@ import {
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Slider, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
 import { useSelectedModel } from "@src/components/ui/hooks/useSelectedModel"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface ThinkingBudgetProps {
 	apiConfiguration: ProviderSettings
@@ -101,7 +102,7 @@ export const ThinkingBudget = ({
 	// When the model provides an explicit array, respect those exact values.
 	type ReasoningEffortOption = ReasoningEffortExtended | "disable"
 	const shouldAutoAddDisable =
-		!modelInfo?.requiredReasoningEffort && supports === true && !baseAvailableOptions.includes("disable" as any)
+		!modelInfo?.requiredReasoningEffort && supports === true && !baseAvailableOptions.includes("disable")
 	const availableOptions: ReadonlyArray<ReasoningEffortOption> = shouldAutoAddDisable
 		? (["disable", ...baseAvailableOptions] as ReasoningEffortOption[])
 		: (baseAvailableOptions as ReadonlyArray<ReasoningEffortOption>)
@@ -172,14 +173,12 @@ export const ThinkingBudget = ({
 		return null
 	}
 
-	const profileDefaultDescription = (
-		<div className="text-sm text-vscode-descriptionForeground mt-1">{t("chat:reasoning.profileDefault")}</div>
-	)
+	const profileDefaultDescription = t("chat:reasoning.profileDefault")
 
 	// Models with supportsReasoningBinary (binary reasoning) show a simple on/off toggle
 	if (isReasoningSupported) {
 		return (
-			<div className="flex flex-col gap-1">
+			<div className="flex items-center gap-1">
 				<Checkbox
 					checked={enableReasoningEffort}
 					onChange={(checked: boolean) =>
@@ -187,16 +186,15 @@ export const ThinkingBudget = ({
 					}>
 					{t("settings:providers.useReasoning")}
 				</Checkbox>
-				{profileDefaultDescription}
+				<SettingsHelp label={t("settings:providers.useReasoning")}>{profileDefaultDescription}</SettingsHelp>
 			</div>
 		)
 	}
 
 	return isReasoningBudgetSupported && !!modelInfo.maxTokens ? (
 		<>
-			{profileDefaultDescription}
 			{!isReasoningBudgetRequired && (
-				<div className="flex flex-col gap-1">
+				<div className="flex items-center gap-1">
 					<Checkbox
 						checked={enableReasoningEffort}
 						onChange={(checked: boolean) =>
@@ -204,14 +202,25 @@ export const ThinkingBudget = ({
 						}>
 						{t("settings:providers.useReasoning")}
 					</Checkbox>
+					<SettingsHelp label={t("settings:providers.useReasoning")}>
+						{profileDefaultDescription}
+					</SettingsHelp>
 				</div>
 			)}
 			{(isReasoningBudgetRequired || enableReasoningEffort) && (
 				<>
 					<div className="flex flex-col gap-1">
-						<div className="font-medium">{t("settings:thinkingBudget.maxTokens")}</div>
+						<div className="flex items-center gap-1">
+							<div className="font-medium">{t("settings:thinkingBudget.maxTokens")}</div>
+							{isReasoningBudgetRequired && (
+								<SettingsHelp label={t("settings:thinkingBudget.maxTokens")}>
+									{profileDefaultDescription}
+								</SettingsHelp>
+							)}
+						</div>
 						<div className="flex items-center gap-1">
 							<Slider
+								aria-label={t("settings:thinkingBudget.maxTokens")}
 								min={8192}
 								max={Math.max(
 									modelInfo.maxTokens || 8192,
@@ -229,6 +238,7 @@ export const ThinkingBudget = ({
 						<div className="font-medium">{t("settings:thinkingBudget.maxThinkingTokens")}</div>
 						<div className="flex items-center gap-1" data-testid="reasoning-budget">
 							<Slider
+								aria-label={t("settings:thinkingBudget.maxThinkingTokens")}
 								min={minThinkingTokens}
 								max={modelMaxThinkingTokens}
 								step={minThinkingTokens === 128 ? 128 : 1024}
@@ -243,8 +253,11 @@ export const ThinkingBudget = ({
 		</>
 	) : isReasoningEffortSupported ? (
 		<div className="flex flex-col gap-1" data-testid="reasoning-effort">
-			<div className="flex justify-between items-center">
-				<label className="block font-medium mb-1">{t("settings:providers.reasoningEffort.label")}</label>
+			<div className="flex items-center gap-1">
+				<label className="block font-medium">{t("settings:providers.reasoningEffort.label")}</label>
+				<SettingsHelp label={t("settings:providers.reasoningEffort.label")}>
+					{profileDefaultDescription}
+				</SettingsHelp>
 			</div>
 			<Select
 				value={currentReasoningEffort}
@@ -280,7 +293,6 @@ export const ThinkingBudget = ({
 					))}
 				</SelectContent>
 			</Select>
-			{profileDefaultDescription}
 		</div>
 	) : null
 }

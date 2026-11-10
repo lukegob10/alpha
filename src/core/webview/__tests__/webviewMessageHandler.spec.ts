@@ -270,12 +270,18 @@ describe("provider profile Save messages", () => {
 	const draft = { apiProvider: "openai" as const, openAiModelId: "explicit-save-model" }
 	const saved = { id: "profile-id", name: "current-name" }
 	const upsert = vi.fn(async (_target: { id: string }, _draft: typeof draft) => saved)
-	const modernHost = { ...mockAlphaProvider, upsertProviderProfile: upsert } as unknown as AlphaProvider
+	const create = vi.fn(async (_name: string, _draft: typeof draft) => saved)
+	const modernHost = {
+		...mockAlphaProvider,
+		upsertProviderProfile: upsert,
+		createProviderProfile: create,
+	} as unknown as AlphaProvider
 
 	beforeEach(() => {
 		vi.clearAllMocks()
 		vi.mocked(mockAlphaProvider.upsertProviderProfile).mockResolvedValue("profile-id")
 		upsert.mockReset().mockResolvedValue(saved)
+		create.mockReset().mockResolvedValue(saved)
 	})
 
 	it("routes a modern Save by stable ID and ignores its stale display name", async () => {
@@ -380,7 +386,7 @@ describe("provider profile Save messages", () => {
 		},
 	)
 
-	it("rejects a requestId-only packet instead of falling back to its legacy name", async () => {
+	it("acknowledges initial profile creation through the bounded creation path", async () => {
 		await webviewMessageHandler(modernHost, {
 			type: "upsertApiConfiguration",
 			requestId: "missing-id",
@@ -388,9 +394,25 @@ describe("provider profile Save messages", () => {
 			apiConfiguration: draft,
 		} as unknown as WebviewMessage)
 		expect(upsert).not.toHaveBeenCalled()
+		expect(create).toHaveBeenCalledExactlyOnceWith("legacy-name", draft)
 		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 			type: "apiConfigurationSaved",
-			apiConfigurationSaveResult: { requestId: "missing-id", status: "error", error: "invalid" },
+			apiConfigurationSaveResult: { requestId: "missing-id", status: "success", ...saved },
+		})
+	})
+
+	it("reports a refused initial creation without trying an existing profile by name", async () => {
+		create.mockRejectedValueOnce(new ProviderProfileSaveError("invalid"))
+		await webviewMessageHandler(modernHost, {
+			type: "upsertApiConfiguration",
+			requestId: "create-conflict",
+			text: "existing",
+			apiConfiguration: draft,
+		})
+		expect(upsert).not.toHaveBeenCalled()
+		expect(modernHost.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
+			type: "apiConfigurationSaved",
+			apiConfigurationSaveResult: { requestId: "create-conflict", status: "error", error: "invalid" },
 		})
 	})
 
@@ -1559,6 +1581,7 @@ describe("webviewMessageHandler - image mentions", () => {
 	it("persists the exact async question card after accepting its ordinary reply", async () => {
 		const handleWebviewAskResponse = vi.fn()
 		const markAsyncUserInputAnswered = vi.fn().mockResolvedValue(true)
+		vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mockResolvedValueOnce(true)
 		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValue({
 			handleWebviewAskResponse,
 			markAsyncUserInputAnswered,
@@ -1572,9 +1595,16 @@ describe("webviewMessageHandler - image mentions", () => {
 			asyncUserInputMessageTs: 42,
 		})
 
-		expect(handleWebviewAskResponse).toHaveBeenCalledOnce()
+		expect(handleWebviewAskResponse).not.toHaveBeenCalled()
+		expect(mockAlphaProvider.queueMessageForTaskDurably).toHaveBeenCalledWith(
+			"task-1",
+			"Answers to the earlier questions:\n\nWhich color?\nAnswer: Blue",
+			[],
+			undefined,
+			{ source: "human" },
+		)
 		expect(markAsyncUserInputAnswered).toHaveBeenCalledExactlyOnceWith(42)
-		expect(handleWebviewAskResponse.mock.invocationCallOrder[0]).toBeLessThan(
+		expect(vi.mocked(mockAlphaProvider.queueMessageForTaskDurably).mock.invocationCallOrder[0]).toBeLessThan(
 			markAsyncUserInputAnswered.mock.invocationCallOrder[0],
 		)
 	})

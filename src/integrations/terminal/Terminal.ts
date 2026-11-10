@@ -138,7 +138,7 @@ export class Terminal extends BaseTerminal {
 
 						process.emit(
 							"no_shell_integration",
-							`Shell integration initialization sequence '\\x1b]633;A' was not received within ${Terminal.getShellIntegrationTimeout() / 1000}s. Shell integration has been disabled for this terminal instance. Increase the timeout in the settings if necessary.`,
+							`Shell integration initialization sequence '\\x1b]633;A' was not received within ${Terminal.getShellIntegrationTimeout() / 1000}s. Shell integration has been disabled for this terminal instance.`,
 						)
 					},
 				)

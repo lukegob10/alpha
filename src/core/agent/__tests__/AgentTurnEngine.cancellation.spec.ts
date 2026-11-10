@@ -135,3 +135,59 @@ describe("AgentTurnEngine staged continuation cancellation", () => {
 		},
 	)
 })
+
+describe("AgentTurnEngine staged cleanup cancellation", () => {
+	it.each([
+		["sample", "failed"],
+		["sample", "incomplete"],
+		["sample", "exhausted"],
+		["sample", "awaiting-user"],
+		["commit", "failed"],
+		["effects", "failed"],
+		["callback", "failed"],
+		["continuation", "failed"],
+		["continuation", "incomplete"],
+		["continuation", "exhausted"],
+		["continuation", "awaiting-user"],
+		["admission", "failed"],
+		["release", "failed"],
+	] as const)("preserves Stop during cleanup after a %s %s boundary", async (phase, status) => {
+		let aborted = false
+		let settled = false
+		const entered = barrier()
+		const release = barrier()
+		const error = new Error(`${phase} boundary before Stop.`)
+		const terminal = { status, reason: error.message, error }
+		const host: AgentTurnStagedHost<string> = {
+			shouldAbort: () => aborted,
+			sampleStep: vi.fn(async () => ({ response, ...(phase === "sample" ? terminal : {}) })),
+			commitResponse: async () => (phase === "commit" ? terminal : undefined),
+			executeEffects: async () => (phase === "effects" ? terminal : undefined),
+			onStepComplete: async () => (phase === "callback" ? terminal : undefined),
+			selectContinuation: async () => ({ nextInput: "complete", ...(phase === "continuation" ? terminal : {}) }),
+			admitCompletion: async () => (phase === "admission" ? { nextInput: "complete", ...terminal } : undefined),
+			selectRecovery: vi.fn(),
+			releaseStep: vi.fn(async () => {
+				entered.resolve()
+				await release.promise
+				if (phase === "release") throw error
+			}),
+		}
+		const running = new AgentTurnEngine(host).run("first").then((outcome) => {
+			settled = true
+			return outcome
+		})
+		try {
+			await entered.promise
+			expect(settled).toBe(false)
+			aborted = true
+		} finally {
+			release.resolve()
+		}
+
+		expect(await running).toMatchObject({ status: "aborted", steps: 1, response, reason: error.message })
+		expect(host.releaseStep).toHaveBeenCalledOnce()
+		expect(host.sampleStep).toHaveBeenCalledOnce()
+		expect(host.selectRecovery).not.toHaveBeenCalled()
+	})
+})

@@ -143,8 +143,12 @@ export const scheduledTaskAutoApprovalSchema = z.object({
 
 export type ScheduledTaskAutoApproval = z.infer<typeof scheduledTaskAutoApprovalSchema>
 
+export const scheduledTaskCreationRequestIdSchema = z.string().uuid()
+
 export const scheduledTaskSchema = z.object({
 	id: z.string(),
+	// Persist the creation intent so retries remain idempotent across extension reloads.
+	creationRequestId: scheduledTaskCreationRequestIdSchema.optional(),
 	name: z.string(),
 	prompt: z.string(),
 	// Optional for legacy schedules. Model runs must explicitly select a saved profile.
@@ -168,6 +172,21 @@ export const scheduledTaskSchema = z.object({
 })
 
 export type ScheduledTask = z.infer<typeof scheduledTaskSchema>
+
+export const scheduledTaskCreationResultSchema = z.discriminatedUnion("status", [
+	z.object({
+		requestId: scheduledTaskCreationRequestIdSchema,
+		status: z.literal("success"),
+		task: scheduledTaskSchema,
+	}),
+	z.object({
+		requestId: scheduledTaskCreationRequestIdSchema,
+		status: z.literal("error"),
+		error: z.enum(["invalid_request", "unavailable", "save_failed"]),
+	}),
+])
+
+export type ScheduledTaskCreationResult = z.infer<typeof scheduledTaskCreationResultSchema>
 
 export const scheduledTaskRunSchema = z.object({
 	id: z.string(),
@@ -209,6 +228,7 @@ export const scheduledTaskStateSchema = z.object({
 export type ScheduledTaskState = z.infer<typeof scheduledTaskStateSchema>
 
 export type CreateScheduledTaskPayload = {
+	creationRequestId?: string
 	name: string
 	prompt: string
 	apiConfig?: z.infer<typeof scheduledTaskProfileSchema>
@@ -221,7 +241,7 @@ export type CreateScheduledTaskPayload = {
 	notificationPreference?: ScheduledTaskNotificationPreference
 }
 
-export type UpdateScheduledTaskPayload = Partial<CreateScheduledTaskPayload> & {
+export type UpdateScheduledTaskPayload = Partial<Omit<CreateScheduledTaskPayload, "creationRequestId">> & {
 	enabled?: boolean
 	permissions?: ScheduledTaskPermissionSet
 }

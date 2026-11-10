@@ -1,5 +1,4 @@
 import * as vscode from "vscode"
-import { ZodError } from "zod"
 
 import {
 	PROVIDER_SETTINGS_KEYS,
@@ -21,7 +20,6 @@ import {
 	isRetiredProvider,
 	RETIRED_SUBAGENT_SETTING_KEYS,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { logger } from "../../utils/logging"
 import { DEFAULT_CONDENSING_PROMPT } from "../../shared/condense-prompt"
@@ -46,6 +44,9 @@ export class ContextProxy {
 	private readonly originalContext: vscode.ExtensionContext
 
 	private stateCache: GlobalState
+	private readonly globalStateWrites = new Map<GlobalStateKey, Promise<void>>()
+	private readonly committedGlobalState = new Map<GlobalStateKey, GlobalState[GlobalStateKey]>()
+	private globalStateGeneration = 0
 	private secretCache: SecretState
 	private openAiHeadersRevision = 0
 	private _isInitialized = false
@@ -62,6 +63,8 @@ export class ContextProxy {
 	}
 
 	public async initialize() {
+		this.globalStateGeneration++
+		this.committedGlobalState.clear()
 		for (const key of GLOBAL_STATE_KEYS) {
 			// Keep the public settings shape while loading credential-bearing headers only through the secure reader.
 			if (key === "openAiHeaders") continue
@@ -87,6 +90,7 @@ export class ContextProxy {
 		await this.migrateOldDefaultCondensingPrompt()
 
 		await this.removeRetiredSubagentSettings()
+		for (const key of GLOBAL_STATE_KEYS) this.committedGlobalState.set(key, this.stateCache[key])
 
 		this._isInitialized = true
 	}
@@ -287,11 +291,9 @@ export class ContextProxy {
 		return value !== undefined ? value : defaultValue
 	}
 
-	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K]) {
+	updateGlobalState<K extends GlobalStateKey>(key: K, value: GlobalState[K], rollbackOnFailure = false) {
 		if (key === "language") {
-			const language = languagesSchema.parse(value)
-			this.stateCache.language = language
-			return this.originalContext.globalState.update("language", language)
+			value = languagesSchema.parse(value) as GlobalState[K]
 		}
 
 		if (key === "openAiHeaders") {
@@ -307,8 +309,40 @@ export class ContextProxy {
 			return this.originalContext.globalState.update(key, value)
 		}
 
+		if (!this.committedGlobalState.has(key)) this.committedGlobalState.set(key, this.stateCache[key])
+		// Revocations remain visible immediately. Persistence is ordered per preference,
+		// and a correlated Save failure cannot leave its unpersisted value in the cache.
 		this.stateCache[key] = value
-		return this.originalContext.globalState.update(key, value)
+		const previous = this.globalStateWrites.get(key)
+		const generation = this.globalStateGeneration
+		const persist = () => Promise.resolve(this.originalContext.globalState.update(key, value))
+		let writing: Promise<void>
+		try {
+			writing = previous ? previous.then(persist, persist) : persist()
+		} catch (error) {
+			writing = Promise.reject(error)
+		}
+		const tracked = writing
+			.then(
+				() => {
+					if (generation === this.globalStateGeneration) this.committedGlobalState.set(key, value)
+				},
+				(error: unknown) => {
+					if (
+						rollbackOnFailure &&
+						generation === this.globalStateGeneration &&
+						this.globalStateWrites.get(key) === tracked
+					) {
+						this.stateCache[key] = this.committedGlobalState.get(key) as GlobalState[K]
+					}
+					throw error
+				},
+			)
+			.finally(() => {
+				if (this.globalStateWrites.get(key) === tracked) this.globalStateWrites.delete(key)
+			})
+		this.globalStateWrites.set(key, tracked)
+		return tracked
 	}
 
 	private getAllGlobalState(): GlobalState {
@@ -456,11 +490,7 @@ export class ContextProxy {
 
 		try {
 			return globalSettingsSchema.parse(values)
-		} catch (error) {
-			if (error instanceof ZodError) {
-				TelemetryService.instance.captureSchemaValidationError({ schemaName: "GlobalSettings", error })
-			}
-
+		} catch {
 			return GLOBAL_SETTINGS_KEYS.reduce((acc, key) => ({ ...acc, [key]: values[key] }), {} as GlobalSettings)
 		}
 	}
@@ -482,11 +512,7 @@ export class ContextProxy {
 
 		try {
 			return schema.parse(preservedValues) as ProviderSettings
-		} catch (error) {
-			if (error instanceof ZodError) {
-				TelemetryService.instance.captureSchemaValidationError({ schemaName: "ProviderSettings", error })
-			}
-
+		} catch {
 			return { ...preservedValues } as ProviderSettings
 		}
 	}
@@ -553,13 +579,19 @@ export class ContextProxy {
 	 * AlphaCodeSettings
 	 */
 
-	public async setValue<K extends AlphaCodeSettingsKey>(key: K, value: AlphaCodeSettings[K]) {
+	public async setValue<K extends AlphaCodeSettingsKey>(
+		key: K,
+		value: AlphaCodeSettings[K],
+		rollbackOnFailure = false,
+	) {
 		if (RETIRED_SUBAGENT_SETTING_KEYS.includes(key)) return
 		if (isSecretStateKey(key)) {
 			return this.storeSecret(key as SecretStateKey, value as string)
 		}
 		if (isGlobalStateKey(key)) {
-			return this.updateGlobalState(key as GlobalStateKey, value)
+			return rollbackOnFailure
+				? this.updateGlobalState(key as GlobalStateKey, value, true)
+				: this.updateGlobalState(key as GlobalStateKey, value)
 		}
 	}
 
@@ -597,11 +629,7 @@ export class ContextProxy {
 			globalSettings.customModes = globalSettings.customModes?.filter((mode) => mode.source === "global")
 
 			return Object.fromEntries(Object.entries(globalSettings).filter(([_, value]) => value !== undefined))
-		} catch (error) {
-			if (error instanceof ZodError) {
-				TelemetryService.instance.captureSchemaValidationError({ schemaName: "GlobalSettings", error })
-			}
-
+		} catch {
 			return undefined
 		}
 	}
@@ -612,6 +640,10 @@ export class ContextProxy {
 	 * @returns A promise that resolves when all reset operations are complete
 	 */
 	public async resetAllState() {
+		await Promise.allSettled([...this.globalStateWrites.values()])
+		this.globalStateGeneration++
+		this.globalStateWrites.clear()
+		this.committedGlobalState.clear()
 		// Clear in-memory caches
 		this.stateCache = {}
 		this.secretCache = {}

@@ -3,7 +3,6 @@ import * as os from "node:os"
 import * as path from "node:path"
 
 import type { ProviderSettings, ToolApprovalRequest } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { ApiHandler } from "../../../api"
@@ -94,7 +93,6 @@ async function harness(
 	boundary: Boundary = "EOF",
 	options: { holdReceipt?: boolean; approvedRead?: boolean; throughEngine?: boolean; isolationReady?: boolean } = {},
 ) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-post-eof-cancellation-"))
 	const cwd = path.join(storage, "workspace")
 	await fs.mkdir(cwd)

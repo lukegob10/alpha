@@ -9,7 +9,6 @@ import {
 	type ProviderSettings,
 	type SubagentGroupState,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import i18n from "../../../i18n"
 import common from "../../../i18n/locales/en/common.json"
 import { readTaskMessages } from "../../task-persistence/taskMessages"
@@ -92,7 +91,6 @@ afterEach(async () => {
 })
 
 async function fixture(operation: Operation) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-group-owner-"))
 	const workspace = path.join(storage, "workspace")
 	await fs.mkdir(workspace)

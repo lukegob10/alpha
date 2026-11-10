@@ -5,7 +5,6 @@ import { EventEmitter } from "node:events"
 import nock from "nock"
 import * as vscode from "vscode"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { ProviderSettings } from "@alpha-code/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -152,7 +151,6 @@ async function harness(
 		handler?: ApiHandler
 	} = {},
 ) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-stream-recovery-"))
 	const cwd = path.join(storage, "workspace")
 	await fs.mkdir(cwd)
