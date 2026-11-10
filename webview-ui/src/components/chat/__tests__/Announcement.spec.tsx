@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.24",
+		version: "3.2.25",
 	},
 }))
 
@@ -37,12 +37,12 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.24" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.25" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.24")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.25")).toBeInTheDocument()
 		expect(
-			screen.getByText("Alpha v3.2.24 refreshes the composer and strengthens task recovery."),
+			screen.getByText("Alpha v3.2.25 brings clearer settings and more focused implementation checks."),
 		).toBeInTheDocument()
 	})
 
@@ -52,7 +52,7 @@ describe("Announcement", () => {
 		expect(screen.getAllByRole("listitem")).toHaveLength(3)
 		expect(
 			screen.getByText(
-				"Use compact profile, approval, and reasoning menus, with a Plan badge and keyboard mode switching.",
+				"Find settings in four focused sections, with help, search, and validation that preserves your edits.",
 			),
 		).toBeInTheDocument()
 	})
@@ -61,11 +61,11 @@ describe("Announcement", () => {
 		renderAnnouncement("de")
 
 		expect(
-			screen.getByText("Alpha v3.2.24 refreshes the composer and strengthens task recovery."),
+			screen.getByText("Alpha v3.2.25 brings clearer settings and more focused implementation checks."),
 		).toBeInTheDocument()
 		expect(
 			screen.getByText(
-				"Use compact profile, approval, and reasoning menus, with a Plan badge and keyboard mode switching.",
+				"Find settings in four focused sections, with help, search, and validation that preserves your edits.",
 			),
 		).toBeInTheDocument()
 	})

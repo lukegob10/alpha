@@ -36,11 +36,17 @@ async function acceptancePrompt(
 
 describe("shared implementation acceptance guidance", () => {
 	it.each(["gpt-6.1-sol", "claude-sonnet-4-5"])(
-		"supplies requirement-based acceptance without AGENTS.md for %s while retaining the model base",
+		"prepares substantial implementation without AGENTS.md for %s while retaining the model base",
 		async (model) => {
 			const fragments = await acceptancePrompt({}, "code", model)
 			const prompt = renderSystemPromptFragments(fragments)
 			expect(prompt).toContain("ACCEPTANCE OF IMPLEMENTED WORK")
+			expect(prompt).toContain("Before substantial implementation, identify the intended behavior")
+			expect(prompt).toContain("intended behavior, important constraints, and how success will be checked")
+			expect(prompt).toContain(
+				"Reuse requirements already clear in the conversation or task context; resolve only material gaps within the requested scope",
+			)
+			expect(prompt).toContain("in existing task context; no separate document or agent is required")
 			expect(prompt).toContain("Could these checks pass while the requested behavior is wrong?")
 			expect(prompt).toContain("requirement, check, observed result, and remaining gap")
 			expect(prompt).toContain("mocks, excluded state, and unexercised supported conditions")
@@ -81,6 +87,8 @@ describe("shared implementation acceptance guidance", () => {
 		expect(prompt).toContain("Verify your assigned outcomes and dependency contracts")
 		expect(prompt).toContain("Return the checks, observed results, and gaps to the parent")
 		expect(prompt).toContain("Project acceptance: preserve external edits.")
+		expect(prompt).toContain("Before substantial implementation, identify the intended behavior")
+		expect(prompt).toContain("Reuse requirements already clear in the conversation or task context")
 		expect(prompt).not.toContain('fork_turns="none"')
 	})
 

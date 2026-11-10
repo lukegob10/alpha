@@ -734,7 +734,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
-		const announcementId = "november-2026-v3.2.24-composer-recovery"
+		const announcementId = "november-2026-v3.2.25-settings-and-acceptance"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

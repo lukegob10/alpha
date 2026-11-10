@@ -1152,7 +1152,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.24-composer-recovery"
+	public readonly latestAnnouncementId = "november-2026-v3.2.25-settings-and-acceptance"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

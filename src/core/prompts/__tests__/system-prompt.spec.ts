@@ -933,7 +933,8 @@ describe("SYSTEM_PROMPT", () => {
 		// Direct native batching guidance adds 67 tokens; no wrapper tool or duplicate model prompt is needed.
 		// Ticket filtering/deletion guidance adds 97 tokens in this same fixture.
 		// Requirement-based acceptance guidance adds 346 local tokens; model calls remain agent-selected.
-		expect(newTokenCount).toBe(4737)
+		// Clarifying expected behavior before substantial implementation adds another 29 tokens in this fixture.
+		expect(newTokenCount).toBe(4766)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

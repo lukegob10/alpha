@@ -1,8 +1,9 @@
 /**
- * Codex 4dcd8df891ad38ed7d4ea59c44b817c293ffc0e2 (2026-11-09),
+ * Codex b6d93b4cbadd6f449395d326f72465a5823f1492 (2026-11-10),
  * core/src/session/turn.rs and core/tests/suite/hooks.rs, leaves acceptance to
- * the agent and configured Stop hooks. Alpha intentionally adds a concrete
- * evidence-review strategy here, not a mandatory stop hook or another runtime.
+ * the agent and configured Stop hooks. Alpha intentionally establishes outcomes
+ * before substantial implementation and guides evidence review through shared
+ * instructions, without adding a mandatory stop hook or another runtime.
  * Keep it shared across providers and independent of ticket/AGENTS.md presence.
  */
 export function getAcceptanceSection(isPlanMode: boolean, subagentRole?: "explore" | "review" | "worker"): string {
@@ -21,7 +22,7 @@ When material coverage uncertainty remains on substantial or risky work, use one
 
 ACCEPTANCE OF IMPLEMENTED WORK
 
-For implementation requests, derive observable expected behavior from the user's request and applicable project guidance before judging the code. For substantial work, keep a compact acceptance record in the existing plan or tickets: requirement, check, observed result, and remaining gap. Questions and trivial edits do not need an extra review phase or acceptance paperwork.
+Before substantial implementation, identify the intended behavior, important constraints, and how success will be checked. Use the user's request and applicable project guidance. Reuse requirements already clear in the conversation or task context; resolve only material gaps within the requested scope. As work proceeds, record requirement, check, observed result, and remaining gap in existing task context; no separate document or agent is required. Questions and trivial edits do not need an extra review phase or acceptance paperwork.
 
 Before claiming completion, ask: Could these checks pass while the requested behavior is wrong? Examine mocks, excluded state, and unexercised supported conditions. Use the smallest real-behavior check that resolves a consequential gap. Command success, test counts, and worker summaries alone do not establish requirement coverage.
 

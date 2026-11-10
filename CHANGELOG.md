@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.25
+
+### Patch Changes
+
+- Reorganize settings into Providers, Tools & agents, Preferences, and Advanced, with focused help, searchable controls, and validation that preserves unsaved edits.
+- Clarify intended behavior, constraints, and observable success before substantial implementation, reusing requirements already present in the conversation or task context.
+- Keep parent goals and dependency contracts in delegated work, verify combined workflows in the integrated workspace, and reuse valid checks while reporting remaining gaps.
+- Remove retired telemetry and reporting controls and retain compatibility handling for saved settings.
+- Update the extension, VSIX, and in-app release announcement together for Alpha 3.2.25. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
+
 ## 3.2.24
 
 ### Patch Changes
