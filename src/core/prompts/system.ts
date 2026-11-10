@@ -1,5 +1,6 @@
 import * as vscode from "vscode"
 import { getTicketsSection } from "./sections/tickets"
+import { getAcceptanceSection } from "./sections/acceptance"
 import { APPROVAL_CONTEXT_ORIGIN, buildApprovalContextInstructionPartForMode } from "./approval-context"
 
 import {
@@ -345,6 +346,7 @@ MCP tools and resources are available only when supplied by Alpha for this turn.
 			isPlanMode,
 			settings?.subagentInheritsPermissions,
 		),
+		getAcceptanceSection(isPlanMode, subagentRole),
 		ticketSection,
 		mcpToolsSection,
 		subagentRole || isPlanMode
