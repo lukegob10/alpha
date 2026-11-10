@@ -200,6 +200,10 @@ vi.mock("fs/promises", () => {
 		}),
 		readdir: vi.fn().mockResolvedValue([]),
 		open: vi.fn().mockImplementation(async (filePath: string) => ({
+			writeFile: vi.fn(async (data: unknown) => {
+				transactionFiles.set(filePath, String(data))
+			}),
+			sync: vi.fn().mockResolvedValue(undefined),
 			read: vi
 				.fn()
 				.mockImplementation(async (buffer: Buffer, offset: number, length: number, position: number) => {
@@ -211,12 +215,22 @@ vi.mock("fs/promises", () => {
 			close: vi.fn().mockResolvedValue(undefined),
 		})),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			const data = transactionFiles.get(filePath)
+			if (data !== undefined) {
+				return { isFile: () => true, isDirectory: () => false, size: Buffer.byteLength(data) }
+			}
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
 			}
 			return { isDirectory: () => true }
 		}),
 		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			const data = transactionFiles.get(sourcePath)
+			if (data !== undefined) {
+				transactionFiles.delete(sourcePath)
+				transactionFiles.set(destinationPath, data)
+				return
+			}
 			if (transactionDirectories.has(destinationPath)) {
 				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
 			}
@@ -237,7 +251,9 @@ vi.mock("fs/promises", () => {
 			transactionDirectories.delete(filePath)
 		}),
 		access: vi.fn().mockResolvedValue(undefined),
-		rm: vi.fn().mockResolvedValue(undefined),
+		rm: vi.fn(async (filePath: string) => {
+			transactionFiles.delete(filePath)
+		}),
 	}
 })
 

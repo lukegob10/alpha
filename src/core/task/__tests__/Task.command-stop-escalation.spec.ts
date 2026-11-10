@@ -62,6 +62,7 @@ describe("task cancellation of owned VS Code commands", () => {
 			const task = Object.assign(Object.create(Task.prototype), {
 				taskId: "cancelled-task",
 				taskKind: "primary",
+				providerRef: { deref: () => undefined },
 				terminalProcess: background ? undefined : fixture.command,
 				commandExecutionEvidence: new Map(),
 			}) as Task
