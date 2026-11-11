@@ -5,8 +5,9 @@ export const wait_agent = {
 	type: "function",
 	function: {
 		name: "wait_agent",
+		// Codex CLI 5228d94a recommends minute-scale waits to reduce empty parent requests.
 		description:
-			"Wait for a mailbox update from any live agent, including queued messages and final-status notifications. The wait also ends early when new user input is steered into the active turn. Returns a summary of which agents have updates, an interruption summary for steered input, or a timeout summary. Call this blocking tool alone after useful local work.",
+			"Wait for a mailbox update from any live agent, including queued messages and final-status notifications, or for user steering. Returns an update, interruption, or timeout summary. Call alone after useful local work. Prefer a timeout of several minutes (e.g. 180000 ms) to avoid repeated empty waits.",
 		strict: false,
 		parameters: {
 			type: "object",

@@ -561,10 +561,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"welcome": "Alpha v{{version}} streamlines integrated browser approvals.",
-			"browserApprovals": "Auto and Full Access use your VS Code tool grants to open pages, navigate, and run Playwright.",
-			"manageApprovals": "Manage those grants with Chat: Manage Tool Approval in the Command Palette.",
-			"fileApproval": "Alpha asks for confirmation before selecting local files in a browser dialog."
+			"description": "Alpha recommends longer waits for delegated work. An update from a subagent or a message you send to steer the task can end the wait early."
 		}
 	},
 	"crossTasks": {

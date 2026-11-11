@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.28
+
+### Patch Changes
+
+- Recommend longer waits for delegated work to reduce repeated model requests. Subagent updates and user steering can end the wait early.
+
 ## 3.2.27
 
 ### Patch Changes

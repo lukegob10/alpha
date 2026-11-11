@@ -34,17 +34,10 @@ const Announcement = ({ hideAnnouncement }: AnnouncementProps) => {
 			<DialogContent>
 				<DialogHeader>
 					<DialogTitle>{t("chat:announcement.title", { version: Package.version })}</DialogTitle>
-				</DialogHeader>
-				<div className="space-y-2 text-sm">
 					<DialogDescription className="text-inherit">
-						{t("chat:announcement.release.welcome", { version: Package.version })}
+						{t("chat:announcement.release.description")}
 					</DialogDescription>
-					<ul className="list-disc space-y-1 pl-5">
-						<li>{t("chat:announcement.release.browserApprovals")}</li>
-						<li>{t("chat:announcement.release.manageApprovals")}</li>
-						<li>{t("chat:announcement.release.fileApproval")}</li>
-					</ul>
-				</div>
+				</DialogHeader>
 			</DialogContent>
 		</Dialog>
 	)

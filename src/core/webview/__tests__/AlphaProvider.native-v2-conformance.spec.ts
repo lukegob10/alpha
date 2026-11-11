@@ -1,4 +1,4 @@
-import { createManagedPublicLifecycleHarness } from "./managedPublicLifecycleHarness"
+import { createManagedPublicLifecycleHarness, deferred } from "./managedPublicLifecycleHarness"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -33,6 +33,67 @@ function ownedFinalization(fixture: Harness, taskId: string): Promise<void> {
 // not start a turn, and wait_agent takes only a timeout. Run that surface through
 // the existing real provider/Task harness rather than the legacy array helper.
 describe("native V2 extension lifecycle conformance", () => {
+	it.each([
+		{ name: "default waits", args: {}, quietIntervals: [30_000, 30_000, 30_000, 5_000] },
+		{ name: "a three-minute wait", args: { timeout_ms: 180_000 }, quietIntervals: [95_000] },
+	])("collects the same quiet child report with $name", async ({ args, quietIntervals }) => {
+		const fixture = await createManagedPublicLifecycleHarness()
+		fixtures.push(fixture)
+		const { root, store } = fixture
+		const waits = quietIntervals.map((_, index) =>
+			fixture.queueTurn(root.taskId, "Wait for the child report.", [
+				{
+					type: "tool_call",
+					id: `quiet-child-wait-${index}`,
+					name: "wait_agent",
+					arguments: JSON.stringify(args),
+				},
+			]),
+		)
+		const reply = fixture.queueTurn(root.taskId, "Integrated and verified the child report.")
+		root.start()
+		await waits[0].entered
+		const child = await fixture.spawnChild("quiet-review")
+		const subscriptions = waits.map(() => deferred())
+		const subscribe = store.subscribe.bind(store)
+		let nextWait = 0
+		const subscription = vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+			const unsubscribe = subscribe(listener)
+			subscriptions[nextWait++]?.resolve()
+			return unsubscribe
+		})
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldClearNativeTimers: true })
+		try {
+			for (const [index, wait] of waits.entries()) {
+				await wait.entered
+				if (index > 0) {
+					const previousResult = wait.messages
+						?.flatMap((message) =>
+							message.role === "user" && Array.isArray(message.content) ? message.content : [],
+						)
+						.find(
+							(block) =>
+								block.type === "tool_result" && block.tool_use_id === `quiet-child-wait-${index - 1}`,
+						)
+					expect(previousResult).toMatchObject({ content: expect.stringContaining('"timedOut":true') })
+				}
+				wait.release()
+				await subscriptions[index].promise
+				await vi.advanceTimersByTimeAsync(quietIntervals[index])
+			}
+			expect(reply.request).toBeUndefined()
+			child.turn.release()
+			await reply.entered
+			expect(JSON.stringify(reply.messages)).toContain(child.turn.summary)
+			expect(subscription).toHaveBeenCalledTimes(quietIntervals.length)
+		} finally {
+			vi.useRealTimers()
+		}
+		reply.release()
+		await root.waitForTermination()
+		expect(root.isCompleted()).toBe(true)
+	})
+
 	it("keeps one shared-workspace child across passive mail, triggered follow-up and a durable native wait", async () => {
 		const fixture = await createManagedPublicLifecycleHarness({
 			maxLiveTasks: 3,
