@@ -493,7 +493,11 @@ describe("importExport", () => {
 				customModesManager: mockCustomModesManager,
 			})
 
-			expect(result).toEqual({ success: false, error: "[providerProfiles.currentApiConfigName]: Required" })
+			// Zod 4 includes the expected type in missing-field diagnostics.
+			expect(result).toEqual({
+				success: false,
+				error: "[providerProfiles.currentApiConfigName]: Invalid input: expected string, received undefined",
+			})
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
 			expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()

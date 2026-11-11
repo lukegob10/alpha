@@ -280,6 +280,22 @@ describe("explicit human memory notes", () => {
 		expect(test.provider.addMemoryNote).toHaveBeenCalledExactlyOnceWith(note, undefined)
 		expect(test.response().path).toBe("extensions/ad_hoc/notes/host-selected.md")
 	})
+	it("returns the receipt when cancellation arrives after the note was saved", async () => {
+		const test = fixture()
+		const note = "Please forget the old deployment preference."
+		const path = "extensions/ad_hoc/notes/host-selected.md"
+		test.task.apiConversationHistory = [{ role: "user", content: note, ts: 1 }]
+		test.provider.addMemoryNote.mockImplementationOnce(async () => {
+			test.cancellation.abort()
+			return path
+		})
+
+		await test.execute("memories_add_ad_hoc_note", { note }, test.cancellation.signal)
+
+		expect(test.provider.addMemoryNote).toHaveBeenCalledExactlyOnceWith(note, test.cancellation.signal)
+		expect(test.callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "success" })
+		expect(test.response()).toEqual({ path })
+	})
 	it("rejects model-authored content and agent messages as note authorization", async () => {
 		const test = fixture()
 		test.task.apiConversationHistory = [

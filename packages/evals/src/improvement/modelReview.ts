@@ -55,7 +55,9 @@ export const modelReviewInputSchema = z
 		harnessContext: z
 			.object({
 				buildIdentity: z.string().min(1).max(200),
-				effectiveConfiguration: z.record(z.unknown()).refine((value) => Object.keys(value).length > 0),
+				effectiveConfiguration: z
+					.record(z.string(), z.unknown())
+					.refine((value) => Object.keys(value).length > 0),
 				requirements: z
 					.array(z.object({ id: improvementIdSchema, text: z.string().min(1).max(4_000) }).strict())
 					.min(1)

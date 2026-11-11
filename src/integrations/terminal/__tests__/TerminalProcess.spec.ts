@@ -1,7 +1,6 @@
 // npx vitest run src/integrations/terminal/__tests__/TerminalProcess.spec.ts
 
 import * as vscode from "vscode"
-import pWaitFor from "p-wait-for"
 import type { MockInstance } from "vitest"
 
 import { mergePromise } from "../mergePromise"
@@ -20,7 +19,6 @@ class TestTerminalProcess extends TerminalProcess {
 vi.mock("execa", () => ({
 	execa: vi.fn(),
 }))
-vi.mock("p-wait-for", () => ({ default: vi.fn().mockResolvedValue(undefined) }))
 
 describe("TerminalProcess", () => {
 	let terminalProcess: TestTerminalProcess
@@ -131,7 +129,7 @@ describe("TerminalProcess", () => {
 		})
 
 		it.each(
-			["\x1b]633;C\x07", "\x1b]133;C\x07"].flatMap((marker) =>
+			["\x1b]633;C\x07", "\x1b]133;C\x07", "\x1b]633;C\x1b\\", "\x1b]133;C\x1b\\"].flatMap((marker) =>
 				Array.from({ length: marker.length - 1 }, (_, index) => ({ marker, split: index + 1 })),
 			),
 		)("preserves output when the command start marker is split at $split in $marker", async ({ marker, split }) => {
@@ -149,6 +147,54 @@ describe("TerminalProcess", () => {
 			await run
 			expect(integrationFailure).not.toHaveBeenCalled()
 			expect(completed).toHaveBeenCalledExactlyOnceWith("command output\n")
+		})
+
+		it.each([
+			{ family: "bash", profile: "PowerShell", expected: "echo test" },
+			{ family: "powershell", profile: "Git Bash", expected: "echo test ; start-sleep -milliseconds 50" },
+		] as const)("uses $family for Windows workarounds", async ({ family, profile, expected }) => {
+			const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
+			const originalDelay = Terminal.getCommandDelay()
+			const originalCounter = Terminal.getPowershellCounter()
+			const config = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+				...vscode.workspace.getConfiguration("terminal.integrated.defaultProfile"),
+				get: vi.fn().mockReturnValue(profile),
+			})
+			try {
+				Object.defineProperty(process, "platform", { value: "win32" })
+				Terminal.setCommandDelay(50)
+				Terminal.setPowershellCounter(false)
+				const terminal = new Terminal(
+					99_001,
+					mockTerminal,
+					"./",
+					{},
+					{
+						shellPath: family === "powershell" ? "C:\\pwsh.exe" : "C:\\bash.exe",
+						family,
+						login: false,
+						binaryIdentity: "test shell",
+						identity: family,
+					},
+				)
+				const command = new TerminalProcess(terminal)
+				terminal.process = command
+				mockTerminal.shellIntegration.executeCommand.mockImplementation(() => {
+					terminal.setActiveStream(
+						(async function* () {
+							yield "\x1b]633;C\x07output\n"
+							terminal.shellExecutionComplete({ exitCode: 0 })
+						})(),
+					)
+				})
+				await command.run("echo test")
+				expect(mockTerminal.shellIntegration.executeCommand).toHaveBeenCalledExactlyOnceWith(expected)
+			} finally {
+				Object.defineProperty(process, "platform", originalPlatform)
+				Terminal.setCommandDelay(originalDelay)
+				Terminal.setPowershellCounter(originalCounter)
+				config.mockRestore()
+			}
 		})
 
 		it("does not submit a command cancelled before shell integration becomes available", async () => {
@@ -609,15 +655,19 @@ describe("TerminalProcess", () => {
 		})
 
 		it("retains the shell integration diagnostic when integration itself never becomes available", async () => {
-			vi.mocked(pWaitFor).mockRejectedValueOnce(new Error("integration timed out"))
+			vi.useFakeTimers()
+			mockTerminal.shellIntegration = undefined
 			const run = vi.spyOn(TerminalProcess.prototype, "run")
 			const observed = callbacks()
 			try {
-				await mockTerminalInfo.runCommand("echo test", observed)
+				const running = mockTerminalInfo.runCommand("echo test", observed)
+				await vi.advanceTimersByTimeAsync(Terminal.getShellIntegrationTimeout())
+				await running
 				expect(run).not.toHaveBeenCalled()
 				expect(observed.onNoShellIntegration).toHaveBeenCalledTimes(1)
 			} finally {
 				run.mockRestore()
+				vi.useRealTimers()
 			}
 		})
 

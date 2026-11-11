@@ -340,7 +340,9 @@ export async function executeMemoryTool({ task, call, callbacks, signal }: ToolE
 				break
 			}
 		}
-		check()
+		// The note store checks cancellation before committing. Once it returns a path,
+		// preserve the receipt so a late abort cannot hide a saved note.
+		if (call.name !== "memories_add_ad_hoc_note") check()
 		const serialized = JSON.stringify(result)
 		if (serialized.length > Math.min(100_000, callbacks.getRemainingOutputChars?.() ?? 100_000)) {
 			throw new Error("Memory results exceed the output allowance; request fewer results, lines, or context.")

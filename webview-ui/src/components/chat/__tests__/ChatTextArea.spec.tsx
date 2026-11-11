@@ -336,6 +336,55 @@ describe("ChatTextArea", () => {
 		})
 	})
 
+	it("keeps delayed Git mention results with the task that requested them", () => {
+		function Composer({ taskId }: { taskId: string }) {
+			const [inputValue, setInputValue] = useState("")
+			return (
+				<ChatTextArea
+					{...defaultProps}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					conversationTaskId={taskId}
+					conversationAlphaMessages={[]}
+				/>
+			)
+		}
+		const searchRequests = () => mockPostMessage.mock.calls.filter(([message]) => message.type === "searchCommits")
+		const reply = (request: { requestId?: string; taskId?: string }, subject: string, hash: string) =>
+			act(() =>
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: {
+							type: "commitSearchResults",
+							requestId: request.requestId,
+							taskId: request.taskId,
+							commits: [
+								{ hash, shortHash: hash.slice(0, 7), subject, author: "Reviewer", date: "2026-11-10" },
+							],
+						},
+					}),
+				),
+			)
+		const { rerender } = render(<Composer taskId="task-a" />)
+		const textarea = screen.getByRole("textbox")
+		fireEvent.change(textarea, { target: { value: "@", selectionStart: 1 } })
+		fireEvent.click(screen.getByRole("option", { name: /Git Commits/ }))
+		const first = searchRequests().at(-1)![0]
+
+		rerender(<Composer taskId="task-b" />)
+		reply(first, "Commit from task A", "a".repeat(40))
+		expect(screen.queryByRole("option", { name: /Commit from task A/ })).not.toBeInTheDocument()
+
+		const second = searchRequests().at(-1)![0]
+		expect(first).toMatchObject({ taskId: "task-a", requestId: expect.any(String) })
+		expect(second).toMatchObject({ taskId: "task-b", requestId: expect.any(String) })
+		expect(second.requestId).not.toBe(first.requestId)
+		const hash = "b".repeat(40)
+		reply(second, "Commit from task B", hash)
+		fireEvent.click(screen.getByRole("option", { name: /Commit from task B/ }))
+		expect(textarea).toHaveValue(`@${hash} `)
+	})
+
 	describe("mode selection surface", () => {
 		it.each(["@tickets:PM", "@ticket:PM-", "@PM-0", "@PM"])(
 			"searches a typed ticket reference: %s",

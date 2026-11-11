@@ -1152,7 +1152,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.25-settings-and-acceptance"
+	public readonly latestAnnouncementId = "november-2026-v3.2.26-task-and-command-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -2050,7 +2050,9 @@ export class AlphaProvider
 	): Promise<Task> {
 		const observedTask = this.getLiveTask(historyItem.id)
 		const supersededCancellation = new Error("The originating task cancellation was superseded")
-		const assertCancellationOwner = () => {
+		const assertRestoreAdmission = () => {
+			// Cold restores can outlive disposal while awaiting profile or storage I/O.
+			if (this._disposed) throw new Error("Cannot restore a task in a disposed provider")
 			if (options?.isRestoreCurrent && !options.isRestoreCurrent()) throw supersededCancellation
 			if (
 				options?.cancellation &&
@@ -2059,12 +2061,12 @@ export class AlphaProvider
 				throw supersededCancellation
 		}
 		try {
-			assertCancellationOwner()
+			assertRestoreAdmission()
 			await this.taskHistoryStoreReady
-			assertCancellationOwner()
+			assertRestoreAdmission()
 			return await this.taskSessions
 				.runOwnershipOperation(historyItem.id, async () => {
-					assertCancellationOwner()
+					assertRestoreAdmission()
 					const existing = this.getLiveTask(historyItem.id)
 					const owner = this.getTaskOwner(historyItem.id)
 					// A view opened while hydration was pending borrows the canonical runtime.
@@ -2073,11 +2075,10 @@ export class AlphaProvider
 							await this.focusTask(historyItem.id, options?.navigationGeneration, {
 								underOwnership: true,
 							})
-						assertCancellationOwner()
+						assertRestoreAdmission()
 						return existing
 					}
-					if (this._disposed) throw new Error("Cannot restore a task in a disposed provider")
-					return this.createTaskWithHistoryItemUnderOwnership(historyItem, options, assertCancellationOwner)
+					return this.createTaskWithHistoryItemUnderOwnership(historyItem, options, assertRestoreAdmission)
 				})
 				.then((task) => {
 					if (task.taskKind === "subagent")
@@ -2095,10 +2096,10 @@ export class AlphaProvider
 
 	private async createTaskWithHistoryItemUnderOwnership(
 		historyItem: HistoryItem & { rootTask?: Task; parentTask?: Task },
-		options?: Parameters<AlphaProvider["createTaskWithHistoryItem"]>[1],
-		assertCancellationOwner?: () => void,
+		options: Parameters<AlphaProvider["createTaskWithHistoryItem"]>[1],
+		assertRestoreAdmission: () => void,
 	): Promise<Task> {
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 		let restoredApiConfiguration: ProviderSettings | undefined
 		const capturedModelRoute = historyItem.threadModelRoute
 			? await restoreIndependentTaskModelSelection(historyItem, this.providerSettingsManager)
@@ -2112,12 +2113,12 @@ export class AlphaProvider
 				threadModelRoute: capturedModelRoute.route,
 			}
 		}
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 		const savedProfileEntries =
 			!hasCapturedConfiguration && historyItem.apiConfigName
 				? await this.providerSettingsManager.listConfig()
 				: undefined
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 		this.assertProviderProfileAvailable(savedProfileEntries?.find(({ name }) => name === historyItem.apiConfigName))
 
 		// Check if we're replacing an already-live task. Foreground replacement avoids
@@ -2136,7 +2137,7 @@ export class AlphaProvider
 			historyItem = { ...historyItem, mode: restoredMode }
 
 			if (!options?.preserveSelection) await this.updateGlobalState("mode", historyItem.mode)
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 
 			// Load the saved API config for the restored mode if it exists.
 			// Skip mode-based profile activation if historyItem.apiConfigName exists,
@@ -2145,13 +2146,13 @@ export class AlphaProvider
 
 			if (!historyItem.apiConfigName && !lockApiConfigAcrossModes && !options?.preserveSelection) {
 				const savedConfigId = await this.providerSettingsManager.getModeConfigId(restoredMode)
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 				const listApiConfig = await this.providerSettingsManager.listConfig()
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 
 				// Update listApiConfigMeta first to ensure UI has latest data.
 				await this.updateGlobalState("listApiConfigMeta", listApiConfig)
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 
 				// If this mode has a saved config, use it.
 				if (savedConfigId) {
@@ -2162,7 +2163,7 @@ export class AlphaProvider
 						try {
 							// Check if the profile has actual API configuration (not just an id).
 							const fullProfile = await this.providerSettingsManager.getProfile({ name: profile.name })
-							assertCancellationOwner?.()
+							assertRestoreAdmission()
 							const hasActualSettings = !!fullProfile.apiProvider
 
 							if (hasActualSettings) {
@@ -2170,12 +2171,12 @@ export class AlphaProvider
 									{ name: profile.name },
 									{ persistTaskHistory: false, notifyWebview: false },
 								)
-								assertCancellationOwner?.()
+								assertRestoreAdmission()
 							} else {
 								// The task will continue with the current/default configuration.
 							}
 						} catch (error) {
-							assertCancellationOwner?.()
+							assertRestoreAdmission()
 							if (error instanceof ProviderProfileUnavailableError) throw error
 							// Log the error but continue with task restoration.
 							this.log(
@@ -2195,18 +2196,18 @@ export class AlphaProvider
 		// specific provider profile takes precedence over mode defaults.
 		if (!hasCapturedConfiguration && historyItem.apiConfigName) {
 			const listApiConfig = savedProfileEntries ?? []
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 			// Keep global state/UI in sync with latest profiles for parity with mode restoration above.
 			if (!options?.preserveSelection) await this.updateGlobalState("listApiConfigMeta", listApiConfig)
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 			const profile = listApiConfig.find(({ name }) => name === historyItem.apiConfigName)
 
 			if (profile?.name) {
 				try {
 					restoredApiConfiguration = await this.getProviderSettingsForProfileName(profile.name)
-					assertCancellationOwner?.()
+					assertRestoreAdmission()
 				} catch (error) {
-					assertCancellationOwner?.()
+					assertRestoreAdmission()
 					if (error instanceof ProviderProfileUnavailableError) throw error
 					if (options?.requireSavedConfiguration) throw error
 					// Log the error but continue with task restoration.
@@ -2254,13 +2255,13 @@ export class AlphaProvider
 			options?.subagentRuntime?.apiConfiguration ?? restoredApiConfiguration ?? currentApiConfiguration
 		if (!options?.subagentRuntime?.apiConfiguration && !restoredApiConfiguration) {
 			const entries = await this.providerSettingsManager.listConfig()
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 			const selected = entries.find(({ name }) => name === stateValues.currentApiConfigName)
 			this.assertProviderProfileAvailable(selected)
 			if (selected) {
 				apiConfiguration =
 					(await this.getProviderSettingsForProfileName(selected.name, entries)) ?? apiConfiguration
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 			}
 		}
 		const restoredConfiguration =
@@ -2277,7 +2278,7 @@ export class AlphaProvider
 
 		if (!isRehydratingCurrentTask && !options?.preserveExisting) {
 			await this.removeTaskFromStack()
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 		}
 
 		let rehydrationStackIndex = -1
@@ -2290,14 +2291,14 @@ export class AlphaProvider
 			// starts reading history. Starting both instances concurrently lets the new
 			// resume path observe an empty/stale file and overwrite the visible transcript.
 			try {
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 				if (options?.cancellation) {
 					await options.cancellation.termination
 				} else {
 					const abortResult = await rehydratedOldTask.abortTask(true)
 					await awaitTaskCancellationBoundary(rehydratedOldTask, abortResult)
 				}
-				assertCancellationOwner?.()
+				assertRestoreAdmission()
 			} catch (error) {
 				this.log(
 					`[createTaskWithHistoryItem] abortTask() failed for old task ${rehydratedOldTask.taskId}.${rehydratedOldTask.instanceId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -2308,9 +2309,9 @@ export class AlphaProvider
 			const cleanupFunctions = this.taskEventListeners.get(rehydratedOldTask)
 			if (cleanupFunctions) {
 				for (const cleanup of cleanupFunctions) {
-					assertCancellationOwner?.()
+					assertRestoreAdmission()
 					cleanup()
-					assertCancellationOwner?.()
+					assertRestoreAdmission()
 				}
 				this.taskEventListeners.delete(rehydratedOldTask)
 			}
@@ -2320,9 +2321,9 @@ export class AlphaProvider
 		// agent-control ACK (or its compensating release) failed. The control store
 		// survives Task replacement and retains that exact disposition in memory.
 		// Settle it before a replacement can start another delivery turn.
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 		await this.agentControlStore.retryPendingMailboxClaimSettlements(historyItem.id)
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 
 		let restoredWorkspacePath = options?.subagentRuntime?.workspacePath ?? historyItem.workspace
 		if (historyItem.orchestrationWorkspaceMode === "worktree") {
@@ -2331,7 +2332,7 @@ export class AlphaProvider
 				historyItem.orchestrationWorkspaceTaskId ?? historyItem.id,
 				historyItem.orchestrationWorkspaceRelativePath ?? "",
 			)
-			assertCancellationOwner?.()
+			assertRestoreAdmission()
 		}
 
 		const registerRestoredTask = (instance: Task) => {
@@ -2343,7 +2344,7 @@ export class AlphaProvider
 			if (focusThisRestore()) this.currentView = { type: "task", taskId: instance.taskId }
 		}
 		// Admitted synchronous construction commits the restore and supersedes the old Task.
-		assertCancellationOwner?.()
+		assertRestoreAdmission()
 		const task = new Task({
 			provider: this,
 			apiConfiguration: restoredConfiguration,
@@ -14846,6 +14847,7 @@ export class AlphaProvider
 				await managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, artifact.id, {
 					signal: applySignal,
 					terminateProcessTree,
+					expectedWorkspace: parent.cwd,
 					validateBeforeMutation: (currentArtifact) => {
 						if (
 							!this.isCurrentWorkerChangeSetMutation(parent, parentSignal, approvalMode) ||
@@ -15218,6 +15220,7 @@ export class AlphaProvider
 				return managedSubagentWorktreeService.apply(this.context.globalStorageUri.fsPath, changeSetId, {
 					signal: parentSignal,
 					terminateProcessTree,
+					expectedWorkspace: target.parent.cwd,
 					validateBeforeMutation: (artifact) => {
 						const current = this.getWorkerChangeSetTarget(parentTaskId, groupId, changeSetId)
 						if (

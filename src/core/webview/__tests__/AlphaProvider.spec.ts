@@ -57,7 +57,8 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockResolvedValue(undefined),
 }))
 
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
@@ -69,6 +70,8 @@ vi.mock("fs/promises", () => {
 		close: vi.fn(),
 	})
 	const mockedFs = {
+		lstat,
+		realpath,
 		readdir: vi.fn().mockResolvedValue([]),
 		access: vi.fn().mockRejectedValue(Object.assign(new Error("not found"), { code: "ENOENT" })),
 		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
@@ -159,8 +162,7 @@ vi.mock("axios", () => ({
 vi.mock("../../../utils/safeWriteJson")
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
-	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
-		.resolveTaskDirectoryPath,
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: vi.fn().mockResolvedValue("/test/storage/path"),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
@@ -734,7 +736,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
-		const announcementId = "november-2026-v3.2.25-settings-and-acceptance"
+		const announcementId = "november-2026-v3.2.26-task-and-command-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

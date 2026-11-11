@@ -561,10 +561,10 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"welcome": "Alpha v{{version}} brings clearer settings and more focused implementation checks.",
-			"settings": "Find settings in four focused sections, with help, search, and validation that preserves your edits.",
-			"implementation": "Define expected behavior before substantial coding and reuse requirements already clear in the conversation.",
-			"verification": "Check the combined result, reuse valid verification, and report remaining gaps."
+			"welcome": "Alpha v{{version}} improves command execution and task recovery.",
+			"commands": "Keep terminal startup, output, and completion tied to the command that produced them.",
+			"taskRecovery": "Preserve completed tasks and recent history when saves and recovery overlap.",
+			"worktreeSafety": "Verify the target checkout before applying changes from a delegated task."
 		}
 	},
 	"crossTasks": {

@@ -8,6 +8,7 @@ import { getToolCallId, getToolResultId, sanitizeToolUseId } from "../../utils/t
 import type { ApiMessage, ApiMessagesCommitReceipt } from "./apiMessages"
 import { atomicWriteText, withFileLock } from "./atomicWrite"
 import {
+	assertAuthoritativeTranscriptPreimage,
 	assertAuthoritativeTranscriptReplacementAllowed,
 	ProviderTranscriptStoreError,
 	serializeProviderTranscript,
@@ -149,6 +150,8 @@ export async function recoverApiMessages({
 			}
 		}
 		const contents = serializeProviderTranscript(messages)
+		// An editor can save during archive I/O without taking the advisory lock.
+		await assertAuthoritativeTranscriptPreimage(filePath, taskId, { digest, byteLength: original.byteLength })
 		await atomicWriteText(filePath, contents, { requireAtomicReplace: true })
 		// The host must acknowledge this receipt with repairAuthoritativeTranscript before effects resume.
 		return {

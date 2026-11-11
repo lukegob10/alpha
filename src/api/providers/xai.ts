@@ -31,6 +31,8 @@ export class XAIHandler extends OpenAiHandler {
 			enableReasoningEffort: options.enableReasoningEffort,
 			reasoningEffort: options.reasoningEffort,
 		})
+		// The OpenAI SDK defaults these account headers from its own environment.
+		this.client = this.client.withOptions({ organization: null, project: null })
 	}
 
 	protected override shouldUseResponsesApi(): boolean {

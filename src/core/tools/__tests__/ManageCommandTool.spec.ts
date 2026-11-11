@@ -695,3 +695,46 @@ it("rejects a numeric session when approval resumes after its process identity c
 	expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 	expect(callbacks.handleError).toHaveBeenCalledWith("controlling command", expect.any(Error))
 })
+
+it.each(["execution changed", "session released"] as const)(
+	"does not consume or publish output when a pending poll's %s",
+	async (change) => {
+		vi.useFakeTimers()
+		const { task, callbacks, process, terminal, commandEvidence } = harness()
+		const sessionId = commandSessionRegistry.register(task, process)
+		const initialListeners = process.listenerCount("completed")
+		const poll = new ToolRegistry().resolve("write_stdin")!.execute({
+			task,
+			call: {
+				type: "tool_use",
+				id: "stale-poll",
+				name: "write_stdin",
+				params: {},
+				partial: false,
+				nativeArgs: { session_id: sessionId },
+			},
+			callbacks,
+		})
+		await vi.advanceTimersByTimeAsync(0)
+		expect(process.listenerCount("completed")).toBe(initialListeners + 1)
+		try {
+			if (change === "execution changed") process.executionId = "replacement"
+			else commandSessionRegistry.release(task, sessionId)
+			process.isSettled = true
+			terminal.running = false
+			commandEvidence.status = "succeeded"
+			commandEvidence.exitCode = 0
+			process.emit("completed")
+			await poll
+
+			expect.soft(process.captureUnretrievedOutput).not.toHaveBeenCalled()
+			expect.soft(callbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(callbacks.handleError).toHaveBeenCalledExactlyOnceWith(
+				"controlling command",
+				expect.objectContaining({ message: "Command session changed while waiting for output" }),
+			)
+		} finally {
+			commandSessionRegistry.releaseForTask(task)
+		}
+	},
+)

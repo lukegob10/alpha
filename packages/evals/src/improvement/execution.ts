@@ -147,7 +147,7 @@ export async function createRegressionExecutionBoundary(input: {
 				z.object({
 					Id: digest,
 					Os: z.literal("linux"),
-					Config: z.object({ Volumes: z.record(z.unknown()).nullable().optional() }).optional(),
+					Config: z.object({ Volumes: z.record(z.string(), z.unknown()).nullable().optional() }).optional(),
 				}),
 			)
 			.length(1)

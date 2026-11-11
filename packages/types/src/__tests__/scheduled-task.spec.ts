@@ -19,6 +19,26 @@ const legacy = {
 }
 
 describe("scheduled setup contracts", () => {
+	it("preserves legacy UUID-like creation and owner identities", () => {
+		const legacyId = "12345678-1234-1234-1234-123456789abc"
+		expect(scheduledTaskSchema.parse({ ...legacy, creationRequestId: legacyId }).creationRequestId).toBe(legacyId)
+		expect(
+			scheduledTaskCreationResultSchema.parse({ requestId: legacyId, status: "error", error: "save_failed" })
+				.requestId,
+		).toBe(legacyId)
+		expect(
+			scheduledTaskRunSchema.parse({
+				id: "run",
+				taskId: "schedule",
+				ownerId: legacyId,
+				status: "succeeded",
+				trigger: "manual",
+				scheduledFor: 1,
+				prompt: legacy.prompt,
+			}).ownerId,
+		).toBe(legacyId)
+	})
+
 	it("round trips creation correlation without requiring it on legacy records", () => {
 		const requestId = "d5b82d17-3f59-4ba9-883c-b9a865cd1234"
 		const task = scheduledTaskSchema.parse({ ...legacy, creationRequestId: requestId })

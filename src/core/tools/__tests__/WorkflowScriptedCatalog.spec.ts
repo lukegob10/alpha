@@ -32,7 +32,7 @@ const scalarSchema = z
 const parameterSchema = z
 	.object({
 		type: z.literal("object"),
-		properties: z.record(scalarSchema),
+		properties: z.record(z.string(), scalarSchema),
 		required: z.array(z.string()).default([]),
 		additionalProperties: z.literal(false),
 	})
@@ -40,7 +40,7 @@ const parameterSchema = z
 
 function expectAdvertisedArguments(schema: unknown, input: unknown): void {
 	const parameters = parameterSchema.parse(schema)
-	const args = z.record(z.unknown()).parse(input)
+	const args = z.record(z.string(), z.unknown()).parse(input)
 	for (const required of parameters.required) expect(Object.hasOwn(args, required), required).toBe(true)
 	for (const [key, value] of Object.entries(args)) {
 		const property = parameters.properties[key]
@@ -126,7 +126,7 @@ describe("workflow scripted provider against the actual Code tool surface", () =
 						expect(surface.isCallable(chunk.name), chunk.name).toBe(true)
 						expect(surface.resolve(chunk.name)?.name, chunk.name).toBe(chunk.name)
 						if (!schema || schema.type !== "function") throw new Error(`Unadvertised call: ${chunk.name}`)
-						const args = z.record(z.unknown()).parse(JSON.parse(chunk.arguments))
+						const args = z.record(z.string(), z.unknown()).parse(JSON.parse(chunk.arguments))
 						expectAdvertisedArguments(schema.function.parameters, args)
 						if (chunk.name === "exec_command") expect(workflowCommands(phase)).toContain(args.cmd)
 						if (readOnlyPhases.has(phase)) expect(chunk.name).toBe("exec_command")

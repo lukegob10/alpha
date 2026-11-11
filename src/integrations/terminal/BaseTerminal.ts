@@ -74,14 +74,19 @@ export abstract class BaseTerminal implements AlphaTerminal {
 		this.busy = false
 		this.running = false
 
-		if (this.process) {
-			// Add to the front of the queue (most recent first).
-			if (this.process.hasUnretrievedOutput()) {
-				this.completedProcesses.unshift(this.process)
-			}
+		const completed = this.process
+		if (!completed) return
 
-			this.process.emit("shell_execution_complete", exitDetails)
-			this.process = undefined
+		// Add to the front of the queue (most recent first).
+		if (completed.hasUnretrievedOutput()) {
+			this.completedProcesses.unshift(completed)
+		}
+
+		try {
+			completed.emit("shell_execution_complete", exitDetails)
+		} finally {
+			// An exit observer can synchronously reuse this terminal.
+			if (this.process === completed) this.process = undefined
 			this.cleanCompletedProcessQueue()
 		}
 	}

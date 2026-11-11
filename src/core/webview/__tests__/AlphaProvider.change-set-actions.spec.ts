@@ -92,6 +92,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 		const parent = Object.assign(Object.create(Task.prototype), {
 			taskId: "parent-1",
 			taskKind: "primary",
+			workspacePath: repo,
 			_taskMode: "code",
 			taskApprovalModePersistence: Promise.resolve(),
 			metadata: { task: "Coordinate work" },
@@ -568,6 +569,7 @@ describe("AlphaProvider Worker change-set actions", () => {
 				taskId: "outer-worker",
 				rootTaskId: "root-1",
 				taskKind: "subagent",
+				workspacePath: repo,
 				_taskMode: "code",
 				taskApprovalMode: "ask",
 				subagentRole: "worker",
@@ -652,6 +654,34 @@ describe("AlphaProvider Worker change-set actions", () => {
 				store.readMailbox("outer-worker", { rootTaskId: "root-1" }).entries.map((entry) => entry.name),
 			).toEqual(["parent_verification_pending", "parent_verification_satisfied"])
 			expect(store.readMailbox("root-1", { rootTaskId: "root-1" }).entries).toEqual([])
+		},
+		TEST_TIMEOUT_MS,
+	)
+
+	it(
+		"keeps a proposal quarantined when saved metadata points Apply at another repository",
+		async () => {
+			const artifact = await createArtifact()
+			const { provider, parent, group, store } = await createHarness(artifact)
+			const foreignRepo = path.join(root, "foreign")
+			await git(["clone", "--quiet", "--no-local", repo, foreignRepo])
+			const capturedBlob = artifact.changes[0]?.afterHash
+			if (!capturedBlob) throw new Error("The fixture did not capture the added file")
+			const metadataPath = path.join(storage, "subagent-change-sets", artifact.id, "metadata.json")
+			await fs.writeFile(metadataPath, JSON.stringify({ ...artifact, gitRoot: foreignRepo }))
+
+			const result = await provider.applySubagentChangeSet(parent.taskId, group.groupId, artifact.id)
+
+			expect(result).toMatchObject({
+				success: false,
+				message: expect.stringContaining("parent workspace"),
+			})
+			for (const workspace of [repo, foreignRepo]) {
+				await expect(fs.stat(path.join(workspace, "docs/worker.txt"))).rejects.toMatchObject({ code: "ENOENT" })
+			}
+			await expect(git(["-C", foreignRepo, "cat-file", "-e", capturedBlob])).rejects.toMatchObject({ code: 1 })
+			expect((await managedSubagentWorktreeService.load(storage, artifact.id)).status).toBe("pending_review")
+			expect(store.getVerificationObligations({ parentTaskId: parent.taskId })).toEqual([])
 		},
 		TEST_TIMEOUT_MS,
 	)

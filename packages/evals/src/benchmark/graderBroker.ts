@@ -28,7 +28,7 @@ export type GraderBrokerResponse =
 
 const requestSchema = z.object({
 	schemaVersion: z.literal(1),
-	requestId: z.string().uuid(),
+	requestId: z.guid(),
 	attemptId: z.number().int().positive(),
 	workspaceRoot: z.string().min(1),
 	changedPaths: z.array(z.string()),
@@ -41,7 +41,7 @@ const requestSchema = z.object({
 		}),
 	),
 	usage: z.unknown().optional(),
-	environment: z.record(z.unknown()),
+	environment: z.record(z.string(), z.unknown()),
 })
 const artifactSchema: z.ZodType<ArtifactDescriptor> = z.object({
 	schemaVersion: z.literal(1),
@@ -60,13 +60,13 @@ const artifactSchema: z.ZodType<ArtifactDescriptor> = z.object({
 const responseSchema = z.discriminatedUnion("ok", [
 	z.object({
 		schemaVersion: z.literal(1),
-		requestId: z.string().uuid(),
+		requestId: z.guid(),
 		ok: z.literal(true),
-		result: z.object({ run: z.unknown(), artifacts: z.array(artifactSchema) }),
+		result: z.object({ run: z.unknown().optional(), artifacts: z.array(artifactSchema) }),
 	}),
 	z.object({
 		schemaVersion: z.literal(1),
-		requestId: z.string().uuid(),
+		requestId: z.guid(),
 		ok: z.literal(false),
 		error: z.string().min(1),
 	}),

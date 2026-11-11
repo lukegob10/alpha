@@ -112,6 +112,92 @@ describe("Managed worker artifact validation", () => {
 		expect(settlement).toBe("rejected")
 	})
 
+	it.each(["capture", "delete", "recover"] as const)(
+		"preserves a separate registered checkout when stored metadata redirects %s",
+		async (operation) => {
+			const checkout = path.join(root, "user checkout")
+			const git = (args: string[]) => execFileAsync("git", args, { cwd: repo, windowsHide: true })
+			await git(["worktree", "add", "--detach", checkout, "HEAD"])
+			const canary = path.join(checkout, "user-only.txt")
+			await fs.writeFile(canary, "unsaved user work\n")
+			await fs.writeFile(metadataPath, JSON.stringify({ ...artifact, worktreePath: checkout }))
+			try {
+				if (operation === "recover") {
+					await expect(service.recoverOrphans(storage)).resolves.toEqual([])
+				} else {
+					const settle =
+						operation === "capture"
+							? service.capture(storage, artifact.id)
+							: service.deleteArtifact(storage, artifact.id)
+					await expect(settle).rejects.toThrow("Managed worker checkout ownership changed")
+				}
+				expect(await fs.readFile(canary, "utf8")).toBe("unsaved user work\n")
+			} finally {
+				await git(["worktree", "remove", "--force", checkout]).catch(() => undefined)
+			}
+		},
+	)
+
+	it.each([false, ...(process.platform === "win32" ? [true] : [])])(
+		"preserves a replacement directory at the registered checkout path (short checkout: %s)",
+		async (useShortCheckout) => {
+			const checkoutStorage = useShortCheckout ? path.join(root, "s".repeat(185)) : storage
+			const worker = await service.create(
+				checkoutStorage,
+				"worker-checkout-replaced",
+				await service.validateScope(repo, ["value.txt"]),
+			)
+			const checkout = worker.workspacePath
+			const relocated = `${checkout}-relocated`
+			const canary = path.join(checkout, "replacement.txt")
+			await fs.rename(checkout, relocated)
+			try {
+				await fs.mkdir(checkout)
+				await fs.copyFile(path.join(relocated, ".git"), path.join(checkout, ".git"))
+				await fs.writeFile(canary, "outside ownership\n")
+
+				const reloaded = new ManagedSubagentWorktreeService()
+				await expect(reloaded.deleteArtifact(checkoutStorage, worker.artifact.id)).rejects.toThrow(
+					"Managed worker checkout ownership changed",
+				)
+				expect(await fs.readFile(canary, "utf8")).toBe("outside ownership\n")
+				const recovered = await reloaded.recoverOrphans(checkoutStorage)
+				expect(recovered.map((candidate) => candidate.id)).not.toContain(worker.artifact.id)
+				expect(await fs.readFile(canary, "utf8")).toBe("outside ownership\n")
+			} finally {
+				await fs.unlink(canary)
+				await fs.unlink(path.join(checkout, ".git"))
+				await fs.rmdir(checkout)
+				await fs.rename(relocated, checkout)
+				await service.deleteArtifact(checkoutStorage, worker.artifact.id)
+			}
+		},
+	)
+
+	it.skipIf(process.platform !== "win32")("recovers a legacy short checkout using its managed Git lock", async () => {
+		const longStorage = path.join(root, "s".repeat(185))
+		const worker = await service.create(
+			longStorage,
+			"legacy-short-worker",
+			await service.validateScope(repo, ["value.txt"]),
+		)
+		const checkout = worker.workspacePath
+		try {
+			expect(path.dirname(checkout)).toBe(path.resolve(os.tmpdir()))
+			await fs.unlink(path.join(longStorage, "subagent-change-sets", worker.artifact.id, "worktree-owner.json"))
+			await fs.writeFile(path.join(checkout, "value.txt"), "legacy worker edit\n")
+
+			const reloaded = new ManagedSubagentWorktreeService()
+			const recovered = await reloaded.recoverOrphans(longStorage)
+			expect(recovered).toEqual([
+				expect.objectContaining({ id: worker.artifact.id, status: "pending_review", partial: true }),
+			])
+			await expect(fs.access(checkout)).rejects.toMatchObject({ code: "ENOENT" })
+		} finally {
+			await service.deleteArtifact(longStorage, worker.artifact.id)
+		}
+	})
+
 	it.each(["undeclared path", "declared content", "declared mode"] as const)(
 		"rejects a patch with altered %s before changing parent files or index",
 		async (tampering) => {

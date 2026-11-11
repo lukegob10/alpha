@@ -32,7 +32,7 @@ const identifier = z
 	.max(100)
 	.regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/)
 const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)
-const claimSchema = z.object({ token: z.string().uuid(), until: timestamp, sourceVersion: timestamp })
+const claimSchema = z.object({ token: z.guid(), until: timestamp, sourceVersion: timestamp })
 const outputSchema = z.object({
 	updatedAt: timestamp,
 	slug: z
@@ -62,7 +62,7 @@ const usageSchema = z.object({
 })
 const stateSchema = z.object({
 	version: z.literal(1),
-	epoch: z.string().uuid(),
+	epoch: z.guid(),
 	rows: z.array(rowSchema).max(MAX_ROWS),
 	selection: z.array(identifier).max(4_096),
 	notes: z

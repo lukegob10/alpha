@@ -12,7 +12,7 @@ import { FilesystemArtifactStore } from "../../evidence/artifactStore"
 import { canonicalJson, sha256 } from "../../evidence/canonical"
 import { runImprovementCli, improvementCliExitCode } from "../cli"
 import { sealFeedback } from "../feedback"
-import { ImprovementArtifactStore, stageReference, type StoredStage } from "../store"
+import { ImprovementArtifactStore, parseImprovementEvidenceBundle, stageReference, type StoredStage } from "../store"
 import { evaluateConfirmation } from "../confirmation"
 import { harnessContextSchema, regradeArchivedEvidence } from "../handoff"
 import { materializeRegressionProposal } from "../regressions"
@@ -74,6 +74,18 @@ function requestDigestFor(command: string[], input: unknown, stages: StoredStage
 }
 
 describe("reviewed improvement CLI", () => {
+	it("distinguishes an absent event payload from an explicitly undefined payload", async () => {
+		const { evidence } = await createConfirmationFixture()
+		const bundle = evidence.bundle
+		const first = bundle.events[0]!
+		const { payload: _payload, ...missingPayload } = first
+		expect(() => parseImprovementEvidenceBundle({ ...bundle, events: [missingPayload] })).toThrow(
+			"Evidence event payload is required",
+		)
+		const parsed = parseImprovementEvidenceBundle({ ...bundle, events: [{ ...first, payload: undefined }] })
+		expect(parsed.events[0]).toHaveProperty("payload", undefined)
+	})
+
 	it("executes the actual package help script and gives malformed input a nonzero exit", async () => {
 		const help = await execa("pnpm", ["--config.verify-deps-before-run=false", "benchmark:improve", "--help"], {
 			cwd: packageRoot,

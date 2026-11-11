@@ -57,27 +57,18 @@ test("local, extension, CI and evaluator toolchain pins agree", () => {
 	}
 })
 
-test("the evaluator install stage receives every configured dependency patch", () => {
-	const workspace = readFileSync(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8")
-	const patchFiles = [...workspace.matchAll(/^\s+[^:\r\n]+:\s+(patches\/[^\s]+)\s*$/gmu)].map((match) => match[1])
-	assert.ok(patchFiles.length > 0, "The workspace's dependency patches must be checked")
+test("the evaluator frozen install receives its dependency manifests", () => {
 	const runner = readFileSync(new URL("../packages/evals/Dockerfile.runner", import.meta.url), "utf8")
 	const install = runner.indexOf("RUN pnpm install --frozen-lockfile")
 	assert.notEqual(install, -1, "The evaluator must install from its frozen lockfile")
 	const installCopies = [...runner.slice(0, install).matchAll(/^COPY\s+\.\/(\S+)\s+\.\/(\S*)\s*$/gmu)]
 	const dockerignore = readFileSync(new URL("../.dockerignore", import.meta.url), "utf8").split(/\r?\n/u)
-	for (const patch of patchFiles) {
-		assert.ok(existsSync(new URL(`../${patch}`, import.meta.url)), `${patch} must exist`)
+	for (const manifest of ["package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
 		assert.ok(
-			installCopies.some(
-				([, source, destination]) =>
-					source === destination && (patch === source || patch.startsWith(`${source}/`)),
-			),
-			`${patch} must be copied to its configured path before the frozen install`,
+			installCopies.some(([, source, destination]) => source === manifest && destination === ""),
+			`${manifest} must be copied before the frozen install`,
 		)
-		const directory = patch.slice(0, patch.lastIndexOf("/"))
-		assert.ok(dockerignore.includes(`!${directory}/`), `${directory} must be allowed into the build context`)
-		assert.ok(dockerignore.includes(`!${directory}/**`), `${patch} must be allowed into the build context`)
+		assert.ok(dockerignore.includes(`!${manifest}`), `${manifest} must be allowed into the build context`)
 	}
 })
 

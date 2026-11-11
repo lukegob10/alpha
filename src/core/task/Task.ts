@@ -342,6 +342,7 @@ import {
 	type AgentRetryCategory,
 	type AgentRetryDecision,
 } from "../agent/AgentRetryPolicy"
+import { readRetryAfterMs } from "../agent/RequestPacing"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../agent/AgentStepContextBuilder"
 import {
 	captureInheritedStepInstructions,
@@ -6812,6 +6813,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const candidate = error as {
 			retryAfterMs?: unknown
 			errorDetails?: Array<{ [key: string]: unknown }>
+			headers?: unknown
 		}
 		if (typeof candidate?.retryAfterMs === "number") return candidate.retryAfterMs
 		const retryInfo = candidate?.errorDetails?.find(
@@ -6822,7 +6824,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const match = retryDelay.match(/^(\d+(?:\.\d+)?)s$/)
 			if (match) return Math.ceil(Number(match[1]) * 1000)
 		}
-		return undefined
+		return readRetryAfterMs(candidate?.headers)
 	}
 
 	private retryCategoryForError(error: unknown, fallback: AgentRetryCategory = "transport"): AgentRetryCategory {
@@ -10179,15 +10181,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.didEmitTaskCompleted = false
 				return false
 			}
-
-			this.markCompleted()
-			const completionMetrics = this.getMutableCompletionStageMetrics()
-			completionMetrics.completedAt = Date.now()
-			completionMetrics.lastReasonCode = "ready"
-			completionMetrics.settledUsage = this.getTokenUsage()
-			this.emitFinalTokenUsageUpdate()
-			this.emit(AlphaCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
-			return true
 		} catch (error) {
 			if (stagedToolCallId && this.persistedToolResultIds.has(sanitizeToolUseId(stagedToolCallId))) {
 				try {
@@ -10220,6 +10213,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			throw error
 		}
+		this.markCompleted()
+		const completionMetrics = this.getMutableCompletionStageMetrics()
+		completionMetrics.completedAt = Date.now()
+		completionMetrics.lastReasonCode = "ready"
+		const settledUsage = this.getTokenUsage()
+		completionMetrics.settledUsage = settledUsage
+		this.emitFinalTokenUsageUpdate()
+		this.notifyTaskSummary(AlphaCodeEventName.TaskCompleted, settledUsage, this.toolUsage)
+		return true
 	}
 
 	/**
@@ -14796,12 +14798,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private notifyTaskSummary(
+		event: AlphaCodeEventName.TaskTokenUsageUpdated | AlphaCodeEventName.TaskCompleted,
+		tokenUsage: TokenUsage,
+		toolUsage: ToolUsage,
+	): void {
+		// Isolate subscribers and use raw listeners so one-shot subscriptions still unregister.
+		for (const listener of this.rawListeners(event)) {
+			try {
+				listener.call(this, this.taskId, tokenUsage, toolUsage)
+			} catch (error) {
+				console.error(
+					`[Task#${this.taskId}] ${event} listener failed`,
+					error instanceof Error ? error.name : typeof error,
+				)
+			}
+		}
+	}
+
 	private publishTokenUsageUpdate(tokenUsage: TokenUsage, toolUsage: ToolUsage): void {
 		const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
 		const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
 
 		if (tokenChanged || toolChanged) {
-			this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
+			this.notifyTaskSummary(AlphaCodeEventName.TaskTokenUsageUpdated, tokenUsage, toolUsage)
 			this.tokenUsageSnapshot = tokenUsage
 			this.tokenUsageSnapshotAt = this.alphaMessages.at(-1)?.ts
 			// Deep copy tool usage for snapshot
@@ -18745,9 +18765,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								hasSemanticOutput,
 							})
 
-							// A provider explicitly marking an error as non-retryable must not
-							// be replayed, even when the category budget remains.
-							if (retryMetadata.retryable === false) {
+							const providerFailure = normalizeApiStreamErrorMetadata(error)
+							// Native SDK errors can carry a permanent HTTP status without a retryable flag.
+							// Context overflow still uses the existing compaction recovery path.
+							if (
+								retryMetadata.retryable === false ||
+								(category !== "context" &&
+									providerFailure.status !== undefined &&
+									providerFailure.retryable === false)
+							) {
 								return {
 									status: "failed",
 									reason: retryError.message,
@@ -21866,9 +21892,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		if (goalStep && this.currentAgentStep?.snapshot.context.mode.slug !== "architect") {
 			try {
-				await goalStep.controller.get()
+				await this.waitForRequestControl(
+					goalStep.controller.get(),
+					abortSignal,
+					requestAdmissionDeadline,
+					admissionDeadlineScope,
+				)
 			} catch (error) {
 				clearRequestOwnership()
+				this.recordProviderRequestTimeout(error, step)
 				throw error
 			}
 		}

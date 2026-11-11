@@ -32,17 +32,28 @@ function notificationChoice(choice: Promise<boolean>) {
 }
 
 describe("before-run notifications remain advisory", () => {
-	afterEach(() => vi.restoreAllMocks())
+	let originalFolders: typeof vscode.workspace.workspaceFolders
+
+	beforeEach(() => {
+		originalFolders = vscode.workspace.workspaceFolders
+	})
+
+	afterEach(() => {
+		Object.assign(vscode.workspace, { workspaceFolders: originalFolders })
+		vi.restoreAllMocks()
+	})
 
 	function fixture(kind: "prompt" | "command", approvalMode: "ask" | "bypass" = "bypass") {
 		commandRunner.mockClear()
+		const workspace = process.cwd()
+		Object.assign(vscode.workspace, { workspaceFolders: [{ uri: vscode.Uri.file(workspace) }] })
 		const tasks: ScheduledTask[] = ["first", "second"].map((id, index) =>
 			scheduledTaskSchema.parse({
 				id,
 				name: id,
 				prompt: "Review the repository",
 				apiConfig: { id: "background", name: "Background" },
-				workspace: "F:/workspace",
+				workspace,
 				enabled: true,
 				mode: "code",
 				execution: kind === "command" ? { type: "command", command: "echo done" } : { type: "prompt" },

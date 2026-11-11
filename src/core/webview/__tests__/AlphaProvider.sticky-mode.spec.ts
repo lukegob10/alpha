@@ -179,10 +179,13 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
 }))
 
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	return {
+		lstat,
+		realpath,
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),

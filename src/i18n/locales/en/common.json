@@ -230,6 +230,7 @@
 		"command_output_archive_interrupted": "Output artifact was interrupted and is incomplete.",
 		"command_terminal_closed": "The command terminal closed before the command exit was reported. Its outcome is unknown.",
 		"command_terminal_closed_output": "The command terminal closed before its output could be finalized.",
+		"command_shell_integration_timeout": "VS Code shell integration did not become available within {{seconds}}s. The command was not started. Check terminal.integrated.shellIntegration.enabled and your shell profile. On Windows, use PowerShell 7 or Git Bash; Command Prompt does not support shell integration.",
 		"command_capacity_exceeded": "The active command limit ({{limit}}) has been reached. Wait for a running command to finish or stop an existing command before starting another. Existing commands remain running.",
 		"share_task_failed": "Failed to share task. Please try again.",
 		"share_no_active_task": "No active task to share",
@@ -367,6 +368,10 @@
 			"resetFailed": "Failed to reset custom modes: {{error}}",
 			"modeNotFound": "Write error: Mode not found",
 			"noWorkspaceForProject": "No workspace folder found for project-specific mode",
+			"invalidRulePath": "The rule path is unsafe or conflicts with another rule: {{relativePath}}",
+			"duplicateImportMode": "The import contains more than one mode with the slug {{slug}}.",
+			"linkedRulePath": "Cannot export rules from a linked path at {{path}}.",
+			"ruleExportLimit": "The rules directory exceeds the size or depth limit for a mode export.",
 			"rulesCleanupFailed": "Mode deleted successfully, but failed to delete rules folder at {{rulesFolderPath}}. You may need to delete it manually."
 		},
 		"scope": {

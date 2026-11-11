@@ -16,6 +16,14 @@ import { GLOBAL_STATE_KEYS, SECRET_STATE_KEYS } from "../global-settings.js"
 import { getProviderDefaultModelId } from "../providers/index.js"
 
 describe("supported provider settings", () => {
+	it("keeps an unselected provider valid without inserting an undefined discriminator", () => {
+		expect(providerSettingsSchemaDiscriminated.parse({})).toEqual({})
+		expect(providerSettingsSchemaDiscriminated.parse({ apiProvider: undefined })).toEqual({
+			apiProvider: undefined,
+		})
+		expect(providerSettingsSchemaDiscriminated.safeParse({ apiProvider: null }).success).toBe(false)
+	})
+
 	it("keeps old profile metadata compatible and preserves bounded availability metadata", () => {
 		expect(providerSettingsEntrySchema.parse({ id: "saved", name: "Saved" })).toEqual({
 			id: "saved",

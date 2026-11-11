@@ -22,6 +22,7 @@ import {
 	type ChatCommand,
 	type ChatCommandErrorCode,
 	type ChatCommandResult,
+	type GitCommit,
 	TaskLifecycleState,
 	taskApprovalModeUpdateSchema,
 	approvalModeSchema,
@@ -1361,33 +1362,49 @@ export const webviewMessageHandler = async (
 			break
 		case "checkpointRestore": {
 			const result = checkoutRestorePayloadSchema.safeParse(message.payload)
-
-			if (result.success) {
-				if (!message.taskId) {
-					provider.log("[webviewMessageHandler] Ignoring checkpointRestore: missing taskId")
-					break
-				}
-
-				await provider.cancelTask(message.taskId, "checkpoint_restore")
-				const task = getRequiredTaskForMessage(provider, message, "checkpointRestore")
-
-				try {
-					await pWaitFor(() => task?.isInitialized === true, { timeout: 3_000 })
-				} catch (error) {
-					vscode.window.showErrorMessage(t("common:errors.checkpoint_timeout"))
-				}
-
-				try {
-					if (task) {
-						await provider.runWorkspaceMutation(task, "checkpoint_restore", () =>
-							task.checkpointRestore(result.data),
-						)
-					}
-				} catch (error) {
-					vscode.window.showErrorMessage(t("common:errors.checkpoint_failed"))
-				}
+			if (!result.success) break
+			const { taskId } = message
+			if (!taskId) {
+				provider.log("[webviewMessageHandler] Ignoring checkpointRestore: missing taskId")
+				break
 			}
 
+			await provider.cancelTask(taskId, "checkpoint_restore")
+			const task = getRequiredTaskForMessage(provider, message, "checkpointRestore")
+			if (!task) break
+			const isCurrentTask = () => provider.getLiveTask(taskId) === task
+
+			try {
+				await pWaitFor(() => task.isInitialized || !isCurrentTask(), { timeout: 3_000 })
+			} catch {
+				void vscode.window.showErrorMessage(t("common:errors.checkpoint_timeout"))
+				break
+			}
+			if (!isCurrentTask()) break
+
+			try {
+				const restored = await provider.runWorkspaceMutation(task, "checkpoint_restore", async () => {
+					if (!isCurrentTask()) return false
+					return task.checkpointRestore(result.data)
+				})
+				if (!restored || !isCurrentTask()) break
+
+				// Checkpoint restore stops its runtime. Reopen the updated transcript through its owner.
+				const owner = provider.getTaskOwner(taskId) ?? provider
+				const { historyItem } = await owner.getTaskWithId(taskId, { includeApiConversationHistory: false })
+				if (!isCurrentTask()) break
+				await owner.createTaskWithHistoryItem(
+					{ ...historyItem, rootTask: task.rootTask, parentTask: task.parentTask },
+					{
+						preserveExisting: true,
+						requireExplicitResume: true,
+						background: owner.getCurrentTask()?.taskId !== taskId,
+						isRestoreCurrent: isCurrentTask,
+					},
+				)
+			} catch {
+				void vscode.window.showErrorMessage(t("common:errors.checkpoint_failed"))
+			}
 			break
 		}
 		case "closeTask":
@@ -1859,21 +1876,20 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "searchCommits": {
-			const cwd = getCurrentCwd()
+			const { taskId, requestId, query } = message
+			const task = typeof taskId === "string" && taskId ? provider.getLiveTask(taskId) : undefined
+			const cwd = taskId === undefined ? (requestId === undefined ? getCurrentCwd() : provider.cwd) : task?.cwd
+			let commits: GitCommit[] = []
 			if (cwd) {
 				try {
-					const commits = await searchCommits(message.query || "", cwd)
-					await provider.postMessageToWebview({
-						type: "commitSearchResults",
-						commits,
-					})
+					commits = await searchCommits(query || "", cwd)
 				} catch (error) {
-					provider.log(
-						`Error searching commits: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`,
-					)
-					vscode.window.showErrorMessage(t("common:errors.search_commits"))
+					provider.log(`Error searching commits: ${error instanceof Error ? error.message : String(error)}`)
+					void vscode.window.showErrorMessage(t("common:errors.search_commits"))
 				}
 			}
+			if (task && provider.getLiveTask(taskId) !== task) commits = []
+			await provider.postMessageToWebview({ type: "commitSearchResults", taskId, requestId, commits })
 			break
 		}
 		case "searchFiles": {

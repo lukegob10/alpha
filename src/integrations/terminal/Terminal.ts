@@ -1,5 +1,4 @@
 import * as vscode from "vscode"
-import pWaitFor from "p-wait-for"
 
 import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, CommandShellLaunch } from "./types"
 import { terminalShellArgs } from "../../utils/shell"
@@ -7,6 +6,7 @@ import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
 import { mergePromise } from "./mergePromise"
+import { t } from "../../i18n"
 
 export class Terminal extends BaseTerminal {
 	public terminal: vscode.Terminal
@@ -67,6 +67,54 @@ export class Terminal extends BaseTerminal {
 		this.busy = false
 	}
 
+	private waitForShellIntegration(
+		process: TerminalProcess,
+		timeoutMs: number,
+	): Promise<"ready" | "timeout" | "settled"> {
+		if (process.isSettled || process.terminalClosedSignal.aborted) return Promise.resolve("settled")
+		if (this.terminal.shellIntegration) return Promise.resolve("ready")
+
+		return new Promise((resolve, reject) => {
+			let settled = false
+			let subscription: vscode.Disposable | undefined
+			let timer: ReturnType<typeof setTimeout> | undefined
+			const cleanup = () => {
+				clearTimeout(timer)
+				subscription?.dispose()
+				process.removeListener("completed", onSettled)
+				process.removeListener("error", onSettled)
+				process.terminalClosedSignal.removeEventListener("abort", onSettled)
+			}
+			const finish = (result: "ready" | "timeout" | "settled") => {
+				if (settled) return
+				settled = true
+				cleanup()
+				resolve(result)
+			}
+			const onSettled = () => finish("settled")
+			// Release startup resources even when a later public observer throws.
+			process.prependOnceListener("completed", onSettled)
+			process.prependOnceListener("error", onSettled)
+			process.terminalClosedSignal.addEventListener("abort", onSettled, { once: true })
+			try {
+				// VS Code's activation event avoids rejecting readiness between the last poll and deadline.
+				subscription = vscode.window.onDidChangeTerminalShellIntegration?.(({ terminal }) => {
+					if (terminal === this.terminal && terminal.shellIntegration) finish("ready")
+				})
+				if (settled) {
+					subscription?.dispose()
+					return
+				}
+				timer = setTimeout(() => finish(this.terminal.shellIntegration ? "ready" : "timeout"), timeoutMs)
+				if (process.isSettled || process.terminalClosedSignal.aborted) finish("settled")
+				else if (this.terminal.shellIntegration) finish("ready")
+			} catch (error) {
+				cleanup()
+				reject(error)
+			}
+		})
+	}
+
 	public override runCommand(command: string, callbacks: AlphaTerminalCallbacks): AlphaTerminalProcessResultPromise {
 		// We set busy before the command is running because the terminal may be
 		// waiting on terminal integration, and we must prevent another instance
@@ -113,35 +161,25 @@ export class Terminal extends BaseTerminal {
 				reject(error)
 			})
 
-			// Wait for shell integration before executing the command
-			pWaitFor(() => this.terminal.shellIntegration !== undefined, {
-				timeout: {
-					milliseconds: Terminal.getShellIntegrationTimeout(),
-					signal: process.terminalClosedSignal,
-				},
-			})
-				.then(
-					() => {
-						// Clean up temporary directory if shell integration is available, zsh did its job:
-						ShellIntegrationManager.zshCleanupTmpDir(this.id)
-
-						// Run the command in the terminal
-						// Closing during async completed observers may remove continue listeners.
-						return process.run(command).then(() => resolve())
-					},
-					() => {
-						if (process.terminalClosedSignal.aborted) return
-						console.log(`[Terminal ${this.id}] Shell integration not available. Command execution aborted.`)
-
-						// Clean up temporary directory if shell integration is not available
-						ShellIntegrationManager.zshCleanupTmpDir(this.id)
-
+			const timeoutMs = Terminal.getShellIntegrationTimeout()
+			this.waitForShellIntegration(process, timeoutMs)
+				.then((readiness) => {
+					if (readiness === "settled" || process.isSettled || process.terminalClosedSignal.aborted) {
+						// The shell can still need its startup script after a command is cancelled.
+						resolve()
+						return
+					}
+					ShellIntegrationManager.zshCleanupTmpDir(this.id)
+					if (readiness === "timeout") {
 						process.emit(
 							"no_shell_integration",
-							`Shell integration initialization sequence '\\x1b]633;A' was not received within ${Terminal.getShellIntegrationTimeout() / 1000}s. Shell integration has been disabled for this terminal instance.`,
+							t("common:errors.command_shell_integration_timeout", { seconds: timeoutMs / 1_000 }),
 						)
-					},
-				)
+						return
+					}
+					// Closing during async completed observers may remove continue listeners.
+					return process.run(command).then(() => resolve())
+				})
 				.catch((error: unknown) => {
 					if (process.terminalClosedSignal.aborted) {
 						// Preserve an observer failure after close without emitting a second error.
@@ -150,7 +188,7 @@ export class Terminal extends BaseTerminal {
 					}
 					// A stream failure does not prove the shell command stopped. Keep a
 					// running terminal reserved until its physical end event arrives.
-					if (!this.process || this.process === process) {
+					if (this.process === process) {
 						if (!this.running) this.busy = false
 						this.setActiveStream(undefined)
 					}

@@ -143,7 +143,8 @@ export const scheduledTaskAutoApprovalSchema = z.object({
 
 export type ScheduledTaskAutoApproval = z.infer<typeof scheduledTaskAutoApprovalSchema>
 
-export const scheduledTaskCreationRequestIdSchema = z.string().uuid()
+// Existing correlation IDs retain their pre-Zod-4 UUID-like syntax across reloads.
+export const scheduledTaskCreationRequestIdSchema = z.guid()
 
 export const scheduledTaskSchema = z.object({
 	id: z.string(),
@@ -192,7 +193,7 @@ export const scheduledTaskRunSchema = z.object({
 	id: z.string(),
 	taskId: z.string(),
 	// The extension host that owns an active run. Absent on historical records.
-	ownerId: z.string().uuid().optional(),
+	ownerId: z.guid().optional(),
 	alphaTaskId: z.string().optional(),
 	apiConfig: scheduledTaskProfileSchema.optional(),
 	resolvedApiConfig: scheduledTaskProfileSchema.optional(),

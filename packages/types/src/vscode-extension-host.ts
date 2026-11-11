@@ -215,7 +215,7 @@ function validateLifecycleEnvelope(message: unknown, context: z.RefinementCtx): 
  * `event`/`snapshot` aliases are retained for hosts that adopted the contract
  * before the message envelope was standardized.
  */
-export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleEvent"),
 		taskId: agentTaskIdSchema.optional(),
@@ -271,9 +271,9 @@ export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMess
 				message: "Attached lifecycle snapshot must include the event for the same task, run, and turn",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleEventMessage, unknown>
 
-export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleSnapshot"),
 		taskId: agentTaskIdSchema.optional(),
@@ -311,9 +311,9 @@ export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapsh
 				message: "Lifecycle snapshot aliases must describe the same snapshot",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, unknown>
 
-export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleDegraded"),
 		taskId: agentTaskIdSchema.optional(),
@@ -351,7 +351,7 @@ export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegrad
 				message: "Lifecycle degraded aliases must describe the same signal",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, unknown>
 
 // Explicit aliases make the schema names discoverable to extension callers.
 export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMessageSchema

@@ -53,18 +53,20 @@ export const subsetMeasurementSchema = z
 		taskId: z.string().regex(/^[a-z0-9][a-z0-9._/-]*$/),
 		taskVersion: z
 			.number({
-				required_error: "Subset measurement task version is required",
-				invalid_type_error: "Invalid subset measurement task version",
+				error: (issue) =>
+					issue.input === undefined
+						? "Subset measurement task version is required"
+						: "Invalid subset measurement task version",
 			})
 			.int("Invalid subset measurement task version")
 			.positive("Invalid subset measurement task version")
 			.safe("Invalid subset measurement task version"),
 		costUsd: z
-			.number({ invalid_type_error: "Invalid measured cost" })
+			.number({ error: "Invalid measured cost" })
 			.finite("Invalid measured cost")
 			.nonnegative("Invalid measured cost"),
 		latencyMs: z
-			.number({ invalid_type_error: "Invalid measured latency" })
+			.number({ error: "Invalid measured latency" })
 			.finite("Invalid measured latency")
 			.nonnegative("Invalid measured latency"),
 	})

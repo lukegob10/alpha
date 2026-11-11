@@ -34,6 +34,11 @@ vi.mock("fs/promises", () => ({
 	writeFile: vi.fn(),
 	stat: vi.fn(),
 	readdir: vi.fn(),
+	opendir: vi.fn(async (directory: string) => ({
+		async *[Symbol.asyncIterator]() {
+			yield* await fs.readdir(directory, { withFileTypes: true })
+		},
+	})),
 	rm: vi.fn(),
 	realpath: vi.fn(async (value) => value.toString()),
 }))
@@ -1269,36 +1274,11 @@ describe("CustomModesManager", () => {
 					],
 				})
 
-				let writtenFiles: string[] = []
-				;(fs.readFile as Mock).mockImplementation(async (path: string) => {
-					if (path === mockSettingsPath) {
-						return yaml.stringify({ customModes: [] })
-					}
-					throw Object.assign(new Error("File not found"), { code: "ENOENT" })
-				})
-				;(fs.writeFile as Mock).mockImplementation(async (path: string) => {
-					writtenFiles.push(path)
-					return Promise.resolve()
-				})
-				;(fs.mkdir as Mock).mockResolvedValue(undefined)
-
 				const result = await manager.importModeWithRules(maliciousYaml)
 
-				expect(result.success).toBe(true)
-
-				// Verify that no files were written outside the .alpha directory
-				const mockWorkspacePath = path.resolve("/mock/workspace")
-				const writtenRuleFiles = writtenFiles.filter((p) => !p.includes(".alphamodes"))
-				writtenRuleFiles.forEach((filePath) => {
-					const normalizedPath = path.normalize(filePath)
-					const expectedBasePath = path.normalize(path.join(mockWorkspacePath, ".alpha"))
-					expect(normalizedPath.startsWith(expectedBasePath)).toBe(true)
-				})
-
-				// Verify that malicious paths were not written
-				expect(writtenFiles.some((p) => p.includes("etc/passwd"))).toBe(false)
-				expect(writtenFiles.some((p) => p.includes("sensitive.txt"))).toBe(false)
-				expect(writtenFiles.some((p) => path.isAbsolute(p) && !p.startsWith(mockWorkspacePath))).toBe(false)
+				expect(result.success).toBe(false)
+				expect(fs.writeFile).not.toHaveBeenCalled()
+				expect(fs.rm).not.toHaveBeenCalled()
 			})
 
 			it("should handle malformed YAML gracefully", async () => {
@@ -1650,7 +1630,7 @@ describe("CustomModesManager", () => {
 				}
 				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
-			;(fs.stat as Mock).mockRejectedValue(new Error("Directory not found"))
+			;(fs.stat as Mock).mockRejectedValue(Object.assign(new Error("Directory not found"), { code: "ENOENT" }))
 
 			const result = await manager.exportModeWithRules("test-mode")
 
@@ -1762,7 +1742,7 @@ describe("CustomModesManager", () => {
 			expect(fs.rm).not.toHaveBeenCalled()
 		})
 
-		it("should handle file read errors gracefully", async () => {
+		it("should fail the export when an existing rule cannot be read", async () => {
 			const alphaModesContent = {
 				customModes: [
 					{
@@ -1793,9 +1773,8 @@ describe("CustomModesManager", () => {
 
 			const result = await manager.exportModeWithRules("test-mode")
 
-			// Should still succeed even if file read fails
-			expect(result.success).toBe(true)
-			expect(result.yaml).toContain("test-mode")
+			// A partial export could overwrite the original rules with incomplete data on import.
+			expect(result).toEqual({ success: false, error: "Permission denied" })
 		})
 
 		it("should successfully export global mode with rules from global .alpha directory", async () => {
@@ -1866,7 +1845,7 @@ describe("CustomModesManager", () => {
 			;(fileExistsAtPath as Mock).mockImplementation(async (path: string) => {
 				return path === mockSettingsPath
 			})
-			;(fs.stat as Mock).mockRejectedValue(new Error("Directory not found"))
+			;(fs.stat as Mock).mockRejectedValue(Object.assign(new Error("Directory not found"), { code: "ENOENT" }))
 
 			const result = await freshManager.exportModeWithRules("global-test-mode")
 

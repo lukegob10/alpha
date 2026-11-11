@@ -166,7 +166,8 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
 }))
 
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
@@ -178,6 +179,8 @@ vi.mock("fs/promises", () => {
 		close: vi.fn(),
 	})
 	const mocked = {
+		lstat,
+		realpath,
 		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)

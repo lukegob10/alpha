@@ -211,12 +211,14 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 	}
 
 	protected getNativeToolParams(metadata?: ApiHandlerCreateMessageMetadata): AnthropicMessageToolParams {
+		if (!metadata?.tools?.length) return {}
+		const choice = this.getToolChoiceForRequest(metadata)
 		return {
-			tools: convertOpenAIToolsToAnthropic(metadata?.tools ?? []),
-			tool_choice: convertOpenAIToolChoiceToAnthropic(
-				this.getToolChoiceForRequest(metadata),
-				metadata?.parallelToolCalls,
-			),
+			tools: convertOpenAIToolsToAnthropic(metadata.tools),
+			tool_choice:
+				choice === "none"
+					? { type: "none" }
+					: convertOpenAIToolChoiceToAnthropic(choice, metadata.parallelToolCalls),
 		}
 	}
 

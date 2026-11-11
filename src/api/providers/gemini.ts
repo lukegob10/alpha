@@ -847,6 +847,8 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				throw error
 			} finally {
 				if (resultIterator && !streamIteratorCompleted) {
+					// GenAI 1.47.0 releases its reader lock on return without cancelling the SSE body.
+					requestAbortController.abort()
 					try {
 						void Promise.resolve(resultIterator.return?.()).catch(() => undefined)
 					} catch {

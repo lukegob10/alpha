@@ -529,6 +529,52 @@ describe("ManagedSubagentWorktreeService", () => {
 	}
 
 	it(
+		"applies and recognizes an already applied symlink change in a SHA-256 repository",
+		async ({ skip }) => {
+			const sha256Repo = path.join(root, "sha256")
+			await fs.mkdir(sha256Repo)
+			await git(["init", "--object-format=sha256"], sha256Repo)
+			await git(["config", "core.symlinks", "true"], sha256Repo)
+			await fs.writeFile(path.join(sha256Repo, "before.txt"), "before\n")
+			await fs.writeFile(path.join(sha256Repo, "after.txt"), "after\n")
+			const link = path.join(sha256Repo, "link.txt")
+			try {
+				await fs.symlink("before.txt", link, "file")
+			} catch (error) {
+				if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") skip()
+				throw error
+			}
+			const worker = await service.create(
+				storage,
+				"sha256-worker",
+				await service.validateScope(sha256Repo, ["link.txt"]),
+			)
+			const workerLink = path.join(worker.workspacePath, "link.txt")
+			await fs.unlink(workerLink)
+			await fs.symlink("after.txt", workerLink, "file")
+			const artifact = await service.capture(storage, worker.artifact.id)
+			expect(artifact.changes).toEqual([
+				expect.objectContaining({
+					beforeMode: "120000",
+					afterMode: "120000",
+					beforeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+				}),
+			])
+			const metadata = path.join(storage, "subagent-change-sets", artifact.id, "metadata.json")
+			const pendingReceipt = await fs.readFile(metadata)
+
+			await expect(service.apply(storage, artifact.id)).resolves.toEqual({ status: "applied" })
+			expect(await fs.readlink(link)).toBe("after.txt")
+			await fs.writeFile(metadata, pendingReceipt)
+			await expect(new ManagedSubagentWorktreeService().apply(storage, artifact.id)).resolves.toEqual({
+				status: "applied",
+			})
+			expect(await fs.readlink(link)).toBe("after.txt")
+		},
+		WORKTREE_TEST_TIMEOUT_MS,
+	)
+
+	it(
 		"captures and applies renames and deletions without staging them",
 		async () => {
 			await write("src/rename-me.txt", "rename me\n")

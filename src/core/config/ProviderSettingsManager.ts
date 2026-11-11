@@ -29,7 +29,7 @@ import { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableErr
 import { atomicWriteText, withFileLock } from "../task-persistence/atomicWrite"
 export { ProviderProfileUnavailableError } from "./ProviderProfileUnavailableError"
 
-const retainedProviderConfigSchema = z.object({ id: z.string().min(1), value: z.unknown() })
+const retainedProviderConfigSchema = z.object({ id: z.string().min(1), value: z.unknown().optional() })
 export type RetainedProviderConfig = { id: string; value: unknown }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -692,7 +692,7 @@ export class ProviderSettingsManager {
 				const providerProfiles = await this.load()
 				let name: string
 				let id: string
-				if (typeof target !== "string") z.record(z.unknown()).parse(config)
+				if (typeof target !== "string") z.record(z.string(), z.unknown()).parse(config)
 				if (typeof target === "string" || "createOnly" in target) {
 					name = typeof target === "string" ? target : target.name
 					const existingId = Object.hasOwn(providerProfiles.apiConfigs, name)

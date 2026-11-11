@@ -17,8 +17,8 @@
 		"@alpha-code/types": "workspace:^",
 		"execa": "^9.5.2",
 		"ignore": "^7.0.3",
-		"openai": "^5.12.2",
-		"zod": "^3.25.61"
+		"openai": "^6.49.0",
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@alpha-code/config-eslint": "workspace:^",

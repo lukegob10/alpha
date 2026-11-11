@@ -28,6 +28,7 @@ export class TerminalRegistry {
 	private static disposables: vscode.Disposable[] = []
 	private static isInitialized = false
 	private static readonly removingTerminalIds = new Set<number>()
+	private static readonly activeShellExecutions = new WeakMap<Terminal, vscode.TerminalShellExecution>()
 
 	private static assertCommandCapacity(): void {
 		// Codex unified_exec bounds its process store at 64 (b75d1e89665d, 2026-10-29).
@@ -73,26 +74,12 @@ export class TerminalRegistry {
 
 		try {
 			const startDisposable = vscode.window.onDidStartTerminalShellExecution?.(
-				async (e: vscode.TerminalShellExecutionStartEvent) => {
-					// Get a handle to the stream as early as possible:
-					const stream = e.execution.read()
-					const terminal = this.getTerminalByVSCETerminal(e.terminal)
-
-					if (terminal) {
-						console.info("[onDidStartTerminalShellExecution]", {
-							command: e.execution?.commandLine?.value,
-							terminalId: terminal.id,
-						})
-						terminal.setActiveStream(stream)
-						terminal.busy = true // Mark terminal as busy when shell execution starts
-					} else {
-						console.debug(
-							"[onDidStartTerminalShellExecution] Ignoring unregistered terminal shell execution.",
-							{
-								command: e.execution?.commandLine?.value,
-							},
-						)
-					}
+				({ terminal: host, execution }) => {
+					const terminal = this.getTerminalByVSCETerminal(host)
+					if (!terminal) return
+					this.activeShellExecutions.set(terminal, execution)
+					if (terminal.process instanceof TerminalProcess)
+						terminal.process.observeShellExecutionStart(execution)
 				},
 			)
 
@@ -101,51 +88,14 @@ export class TerminalRegistry {
 			}
 
 			const endDisposable = vscode.window.onDidEndTerminalShellExecution?.(
-				async (e: vscode.TerminalShellExecutionEndEvent) => {
-					const terminal = this.getTerminalByVSCETerminal(e.terminal)
-					const process = terminal?.process
-					const exitDetails = TerminalProcess.interpretExitCode(e.exitCode)
-
-					if (!terminal) {
-						console.debug(
-							"[onDidEndTerminalShellExecution] Ignoring unregistered terminal shell execution.",
-							{
-								command: e.execution?.commandLine?.value,
-								...exitDetails,
-							},
-						)
-
-						return
+				({ terminal: host, execution, exitCode }) => {
+					const terminal = this.getTerminalByVSCETerminal(host)
+					if (!terminal) return
+					if (this.activeShellExecutions.get(terminal) === execution)
+						this.activeShellExecutions.delete(terminal)
+					if (terminal.process instanceof TerminalProcess) {
+						terminal.process.observeShellExecutionEnd(execution, exitCode)
 					}
-
-					console.info("[onDidEndTerminalShellExecution]", {
-						command: e.execution?.commandLine?.value,
-						terminalId: terminal.id,
-						...exitDetails,
-					})
-
-					if (!terminal.running) {
-						console.error(
-							"[TerminalRegistry] Shell execution end event received, but process is not running for terminal:",
-							{ terminalId: terminal?.id, command: process?.command, exitCode: e.exitCode },
-						)
-
-						terminal.busy = false
-						return
-					}
-
-					if (!process) {
-						console.error(
-							"[TerminalRegistry] Shell execution end event received on running terminal, but process is undefined:",
-							{ terminalId: terminal.id, exitCode: e.exitCode },
-						)
-
-						return
-					}
-
-					// Signal completion to any waiting processes.
-					terminal.shellExecutionComplete(exitDetails)
-					terminal.busy = false // Mark terminal as not busy when shell execution ends
 				},
 			)
 
@@ -198,6 +148,7 @@ export class TerminalRegistry {
 				if (
 					t.busy ||
 					t.running ||
+					(t instanceof Terminal && this.activeShellExecutions.has(t)) ||
 					t.provider !== provider ||
 					t.shellLaunch?.identity !== shellLaunch?.identity
 				) {
@@ -382,8 +333,8 @@ export class TerminalRegistry {
 	 * @param terminal The VSCode terminal instance
 	 * @returns The Terminal object, or undefined if not found
 	 */
-	private static getTerminalByVSCETerminal(vsceTerminal: vscode.Terminal): AlphaTerminal | undefined {
-		const found = this.terminals.find((t) => t instanceof Terminal && t.terminal === vsceTerminal)
+	private static getTerminalByVSCETerminal(vsceTerminal: vscode.Terminal): Terminal | undefined {
+		const found = this.terminals.find((t): t is Terminal => t instanceof Terminal && t.terminal === vsceTerminal)
 
 		if (found?.isClosed()) {
 			this.removeTerminal(found.id)
@@ -402,6 +353,7 @@ export class TerminalRegistry {
 		} finally {
 			// Close notification can synchronously trigger registry pruning/lookups.
 			this.terminals = this.terminals.filter((candidate) => candidate !== terminal)
+			if (terminal instanceof Terminal) this.activeShellExecutions.delete(terminal)
 			this.removingTerminalIds.delete(id)
 			ShellIntegrationManager.zshCleanupTmpDir(id)
 		}

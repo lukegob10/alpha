@@ -1,4 +1,5 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
+import { GoogleGenAI } from "@google/genai"
 import type { ApiHandler, SingleCompletionHandler } from "../../index"
 import * as requestTimeout from "../utils/timeout-config"
 import type { ApiStreamChunk } from "../../transform/stream"
@@ -234,7 +235,36 @@ describe("Gemini stream fidelity", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 
-	afterEach(() => vi.restoreAllMocks())
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllGlobals()
+	})
+
+	it("aborts the real Gemini SDK request when the consumer closes the response early", async () => {
+		const { GoogleGenAI: ActualGoogleGenAI } =
+			await vi.importActual<typeof import("@google/genai")>("@google/genai")
+		vi.mocked(GoogleGenAI).mockImplementationOnce(function (options) {
+			return new ActualGoogleGenAI(options)
+		})
+		const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) => {
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					const event = { candidates: [{ content: { parts: [{ text: "Partial" }] } }] }
+					controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`))
+					init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true })
+				},
+			})
+			return new Response(body, { headers: { "content-type": "text/event-stream" } })
+		})
+		vi.stubGlobal("fetch", fetch)
+		const stream = new GeminiHandler({ geminiApiKey: "fixture-key" }).createMessage("System", messages)
+		expect((await stream.next()).value).toEqual({ type: "text", text: "Partial" })
+		const signal = fetch.mock.calls[0]?.[1]?.signal
+		expect(signal?.aborted).toBe(false)
+
+		await expect(stream.return(undefined)).resolves.toEqual({ done: true, value: undefined })
+		expect(signal?.aborted).toBe(true)
+	})
 
 	it.each(routes.flatMap((route) => ["completed", "failed", "cancelled"].map((ending) => ({ ...route, ending }))))(
 		"retains received usage once when $name ends as $ending",

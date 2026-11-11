@@ -130,7 +130,7 @@ const bundleSchema = z
 						sequence: z.number().int().positive(),
 						timestamp: z.string().datetime(),
 						type: z.string().min(1).max(256),
-						payload: z.unknown(),
+						payload: z.unknown().optional(),
 						payloadDigest: digestSchema,
 						redactionVersion: z.literal("alpha-redaction-v1"),
 						late: z.boolean(),

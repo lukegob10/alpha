@@ -277,12 +277,12 @@ export const taskEventSchema = z.discriminatedUnion("eventName", [
 	// Evals
 	z.object({
 		eventName: z.literal(AlphaCodeEventName.EvalPass),
-		payload: z.undefined(),
+		payload: z.undefined().optional(),
 		taskId: z.number(),
 	}),
 	z.object({
 		eventName: z.literal(AlphaCodeEventName.EvalFail),
-		payload: z.undefined(),
+		payload: z.undefined().optional(),
 		taskId: z.number(),
 	}),
 ])

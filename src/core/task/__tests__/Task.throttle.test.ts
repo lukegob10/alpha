@@ -1,4 +1,5 @@
 import { AlphaCodeEventName, ProviderSettings, TokenUsage, ToolUsage } from "@alpha-code/types"
+import type { Mock } from "vitest"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
@@ -64,6 +65,7 @@ describe("Task token usage throttling", () => {
 	let mockProvider: any
 	let mockApiConfiguration: ProviderSettings
 	let task: Task
+	let onTokenUsage: Mock<(taskId: string, tokenUsage: TokenUsage, toolUsage: ToolUsage) => void>
 
 	beforeEach(() => {
 		// Reset all mocks
@@ -94,6 +96,8 @@ describe("Task token usage throttling", () => {
 			apiConfiguration: mockApiConfiguration,
 			startTask: false,
 		})
+		onTokenUsage = vi.fn()
+		task.on(AlphaCodeEventName.TaskTokenUsageUpdated, onTokenUsage)
 	})
 
 	afterEach(() => {
@@ -104,8 +108,6 @@ describe("Task token usage throttling", () => {
 	})
 
 	test("should emit TaskTokenUsageUpdated immediately on first change", async () => {
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Add a message to trigger saveAlphaMessages
 		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
@@ -115,12 +117,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		// Should emit immediately on first change
-		expect(emitSpy).toHaveBeenCalledWith(
-			AlphaCodeEventName.TaskTokenUsageUpdated,
-			task.taskId,
-			expect.any(Object),
-			expect.any(Object),
-		)
+		expect(onTokenUsage).toHaveBeenCalledExactlyOnceWith(task.taskId, expect.any(Object), expect.any(Object))
 	})
 
 	test("should throttle subsequent emissions within 2 seconds", async () => {
@@ -151,8 +148,6 @@ describe("Task token usage throttling", () => {
 			}
 		})
 
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// First message - should emit
 		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
@@ -161,9 +156,7 @@ describe("Task token usage throttling", () => {
 			text: "Message 1",
 		})
 
-		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
+		expect(onTokenUsage).toHaveBeenCalledTimes(1)
 
 		// Second message immediately after - should NOT emit due to throttle
 		vi.advanceTimersByTime(500) // Advance only 500ms
@@ -174,12 +167,8 @@ describe("Task token usage throttling", () => {
 			text: "Message 2",
 		})
 
-		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
-
 		// Should still be the same count (throttled)
-		expect(secondEmitCount).toBe(firstEmitCount)
+		expect(onTokenUsage).toHaveBeenCalledTimes(1)
 
 		// Third message after 2+ seconds - should emit
 		vi.advanceTimersByTime(1600) // Total time: 2100ms
@@ -190,17 +179,11 @@ describe("Task token usage throttling", () => {
 			text: "Message 3",
 		})
 
-		const thirdEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
-
 		// Should have emitted again after throttle period
-		expect(thirdEmitCount).toBeGreaterThan(secondEmitCount)
+		expect(onTokenUsage).toHaveBeenCalledTimes(2)
 	})
 
 	test("should include toolUsage in emission payload", async () => {
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Set some tool usage
 		task.toolUsage = {
 			read_file: { attempts: 5, failures: 1 },
@@ -216,8 +199,7 @@ describe("Task token usage throttling", () => {
 		})
 
 		// Should emit with toolUsage as third parameter
-		expect(emitSpy).toHaveBeenCalledWith(
-			AlphaCodeEventName.TaskTokenUsageUpdated,
+		expect(onTokenUsage).toHaveBeenCalledExactlyOnceWith(
 			task.taskId,
 			expect.any(Object), // tokenUsage
 			task.toolUsage, // toolUsage
@@ -225,8 +207,6 @@ describe("Task token usage throttling", () => {
 	})
 
 	test("should force final emission on task abort", async () => {
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Set some tool usage
 		task.toolUsage = {
 			read_file: { attempts: 5, failures: 1 },
@@ -240,24 +220,15 @@ describe("Task token usage throttling", () => {
 			text: "Message 1",
 		})
 
-		// Clear the spy to check for final emission
-		emitSpy.mockClear()
+		const events: AlphaCodeEventName[] = []
+		task.on(AlphaCodeEventName.TaskTokenUsageUpdated, () => events.push(AlphaCodeEventName.TaskTokenUsageUpdated))
+		task.on(AlphaCodeEventName.TaskAborted, () => events.push(AlphaCodeEventName.TaskAborted))
 
 		// Abort task immediately (within throttle window)
 		vi.advanceTimersByTime(500)
 		await task.abortTask()
 
-		// Should have emitted TaskTokenUsageUpdated before TaskAborted
-		const calls = emitSpy.mock.calls
-		const tokenUsageUpdateIndex = calls.findIndex((call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated)
-		const taskAbortedIndex = calls.findIndex((call) => call[0] === AlphaCodeEventName.TaskAborted)
-
-		// Should have both events
-		expect(tokenUsageUpdateIndex).toBeGreaterThanOrEqual(0)
-		expect(taskAbortedIndex).toBeGreaterThanOrEqual(0)
-
-		// TaskTokenUsageUpdated should come before TaskAborted
-		expect(tokenUsageUpdateIndex).toBeLessThan(taskAbortedIndex)
+		expect(events).toEqual([AlphaCodeEventName.TaskTokenUsageUpdated, AlphaCodeEventName.TaskAborted])
 	})
 
 	test("should update tokenUsageSnapshot when throttled emission occurs", async () => {
@@ -352,8 +323,6 @@ describe("Task token usage throttling", () => {
 			tokenUsage: constantTokenUsage,
 		})
 
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Add first message
 		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
@@ -362,9 +331,7 @@ describe("Task token usage throttling", () => {
 			text: "Message 1",
 		})
 
-		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
+		expect(onTokenUsage).toHaveBeenCalledTimes(1)
 
 		// Wait for throttle period and add another message
 		vi.advanceTimersByTime(2100)
@@ -375,12 +342,8 @@ describe("Task token usage throttling", () => {
 			text: "Message 2",
 		})
 
-		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
-
 		// Should not have emitted again since token usage didn't change
-		expect(secondEmitCount).toBe(firstEmitCount)
+		expect(onTokenUsage).toHaveBeenCalledTimes(1)
 	})
 
 	test("should emit when tool usage changes even if token usage is the same", async () => {
@@ -409,8 +372,6 @@ describe("Task token usage throttling", () => {
 			tokenUsage: constantTokenUsage,
 		})
 
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Add first message - should emit
 		await (task as any).addToAlphaMessages({
 			ts: Date.now(),
@@ -419,9 +380,7 @@ describe("Task token usage throttling", () => {
 			text: "Message 1",
 		})
 
-		const firstEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
+		expect(onTokenUsage).toHaveBeenCalledTimes(1)
 
 		// Wait for throttle period
 		vi.advanceTimersByTime(2100)
@@ -439,12 +398,8 @@ describe("Task token usage throttling", () => {
 			text: "Message 2",
 		})
 
-		const secondEmitCount = emitSpy.mock.calls.filter(
-			(call) => call[0] === AlphaCodeEventName.TaskTokenUsageUpdated,
-		).length
-
 		// Should have emitted because tool usage changed even though token usage didn't
-		expect(secondEmitCount).toBeGreaterThan(firstEmitCount)
+		expect(onTokenUsage).toHaveBeenCalledTimes(2)
 	})
 
 	test("should update toolUsageSnapshot when emission occurs", async () => {
@@ -486,8 +441,6 @@ describe("Task token usage throttling", () => {
 	})
 
 	test("emitFinalTokenUsageUpdate should emit on tool usage change alone", async () => {
-		const emitSpy = vi.spyOn(task, "emit")
-
 		// Set initial tool usage and simulate previous emission
 		;(task as any).tokenUsageSnapshot = task.getTokenUsage()
 		;(task as any).toolUsageSnapshot = {}
@@ -501,12 +454,7 @@ describe("Task token usage throttling", () => {
 		task.emitFinalTokenUsageUpdate()
 
 		// Should emit due to tool usage change
-		expect(emitSpy).toHaveBeenCalledWith(
-			AlphaCodeEventName.TaskTokenUsageUpdated,
-			task.taskId,
-			expect.any(Object),
-			task.toolUsage,
-		)
+		expect(onTokenUsage).toHaveBeenCalledExactlyOnceWith(task.taskId, expect.any(Object), task.toolUsage)
 	})
 })
 

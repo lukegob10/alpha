@@ -1459,6 +1459,7 @@ export async function executeCommandInTerminal(
 			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.releasePrimaryMutation(task, physicalExecutionId)
+			mutationReservationAcquired = false
 		} catch (error) {
 			const receiptError = new CommandMutationReceiptError("release-pre-launch-reservation", false, error)
 			await handleCommandMutationFailure(receiptError)
@@ -1617,6 +1618,7 @@ export async function executeCommandInTerminal(
 	}
 
 	let createdProcess: AlphaTerminalProcess | undefined
+	let creationHookFailure: { cause: unknown } | undefined
 	let backgroundPreviewTimer: NodeJS.Timeout | undefined
 	let backgroundPreviewPublication: Promise<void> | undefined
 	let backgroundPreviewDirty = false
@@ -1684,6 +1686,7 @@ export async function executeCommandInTerminal(
 				bindCreatedProcess(process)
 			} catch (error) {
 				onCreationHookFailure?.(process)
+				creationHookFailure = { cause: error }
 				throw error
 			}
 		},
@@ -1983,6 +1986,12 @@ export async function executeCommandInTerminal(
 				)
 		}
 		const launchError = new CommandExecutionLifecycleError("launch-command", launchCause)
+		// Only the canonical pre-spawn hook proves non-submission. A failure
+		// from runCommand itself or the post-return binding still needs reconciliation.
+		if (creationHookFailure && Object.is(error, creationHookFailure.cause)) {
+			onExecutionState?.("no")
+			await releaseMutationReservationBeforeLaunch(launchError)
+		}
 		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
 			const { recoveryError } = await handleCommandMutationFailure(receiptError)

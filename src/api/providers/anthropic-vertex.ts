@@ -24,6 +24,7 @@ import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadat
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { createLinkedAbortController, iterateApiStreamWithAbort, type ApiStream } from "../transform/stream"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
+import { getApiRequestTimeout } from "./utils/timeout-config"
 
 // A configured model ID may be newer than the static catalog. Keep
 // the opaque ID usable while withholding reasoning capabilities until the model
@@ -49,13 +50,17 @@ export class AnthropicVertexHandler extends AnthropicMessageHandler {
 			return this.directClient
 		}
 
-		const projectId = this.getConfiguredProjectId() ?? "not-provided"
-		const region = this.getConfiguredLocation() ?? "us-east5"
+		const clientOptions = {
+			projectId: this.getConfiguredProjectId() ?? "not-provided",
+			region: this.getConfiguredLocation() ?? "us-east5",
+			timeout: getApiRequestTimeout(),
+			// Leave transient request retries to the agent's retry policy.
+			maxRetries: 0,
+		}
 
 		if (this.options.vertexJsonCredentials) {
 			this.directClient = new AnthropicVertex({
-				projectId,
-				region,
+				...clientOptions,
 				googleAuth: new GoogleAuth({
 					scopes: ["https://www.googleapis.com/auth/cloud-platform"],
 					credentials: safeJsonParse<JWTInput>(this.options.vertexJsonCredentials, undefined),
@@ -63,15 +68,14 @@ export class AnthropicVertexHandler extends AnthropicMessageHandler {
 			})
 		} else if (this.options.vertexKeyFile) {
 			this.directClient = new AnthropicVertex({
-				projectId,
-				region,
+				...clientOptions,
 				googleAuth: new GoogleAuth({
 					scopes: ["https://www.googleapis.com/auth/cloud-platform"],
 					keyFile: this.options.vertexKeyFile,
 				}),
 			})
 		} else {
-			this.directClient = new AnthropicVertex({ projectId, region })
+			this.directClient = new AnthropicVertex(clientOptions)
 		}
 
 		return this.directClient

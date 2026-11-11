@@ -342,9 +342,12 @@ export class WorktreeIncludeService {
 		let proc: ReturnType<typeof spawn> | undefined
 		const copyPromise = new Promise<void>((resolve, reject) => {
 			if (isWindows) {
-				proc = spawn("robocopy", [source, target, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"], {
-					windowsHide: true,
-				})
+				// Discovery skips junctions. Keep the same boundary inside a matched directory.
+				proc = spawn(
+					"robocopy",
+					[source, target, "/E", "/XJ", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"],
+					{ windowsHide: true },
+				)
 			} else {
 				proc = spawn("cp", ["-r", "--", source, target])
 			}

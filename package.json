@@ -58,7 +58,7 @@
 		"test:tooling": "node --require=tsx/cjs --test --test-reporter=spec --test-reporter=./scripts/harness/node-reporter.mjs --test-reporter-destination=stdout --test-reporter-destination=stdout scripts/*.test.js scripts/*.test.mjs scripts/harness/*.test.mjs scripts/evals/*.test.mjs scripts/evals/*.test.ts"
 	},
 	"devDependencies": {
-		"@changesets/cli": "^2.27.10",
+		"@changesets/cli": "^3.0.3",
 		"@dotenvx/dotenvx": "^1.34.0",
 		"@alpha-code/config-typescript": "workspace:^",
 		"@types/node": "^24.1.0",
@@ -66,8 +66,8 @@
 		"eslint": "^9.27.0",
 		"fflate": "0.8.3",
 		"husky": "^9.1.7",
-		"knip": "^5.44.4",
-		"lint-staged": "^16.0.0",
+		"knip": "6.44.1",
+		"lint-staged": "^17.6.0",
 		"prettier": "^3.4.2",
 		"rimraf": "^6.0.1",
 		"saxes": "6.0.0",

@@ -57,7 +57,7 @@ interface DirectorySnapshot {
 }
 
 interface CompiledSource {
-	fingerprint: string
+	directoryFingerprint: string
 	url: string
 }
 
@@ -213,13 +213,13 @@ export class CustomToolRegistry {
 					failed.push({ file, error: errorMessage(error) })
 				}
 			}
-			const sourceFingerprint = fingerprint(JSON.stringify({ manifest, failed }))
+			const directoryFingerprint = fingerprint(JSON.stringify({ manifest, failed }))
 			const cached = this.directorySnapshots.get(key)
-			if (!force && cached?.fingerprint === sourceFingerprint && cached.failed.length === 0) return cached
+			if (!force && cached?.fingerprint === directoryFingerprint && cached.failed.length === 0) return cached
 			for (const entry of manifest) {
 				const filePath = path.join(directory, entry.file)
 				try {
-					const mod = await this.import(filePath, entry.fingerprint, force)
+					const mod = await this.import(filePath, entry.fingerprint, directoryFingerprint, force)
 					const fileTools: StoredCustomTool[] = []
 					for (const [exportName, value] of Object.entries(mod)) {
 						const definition = this.validate(exportName, value)
@@ -235,7 +235,7 @@ export class CustomToolRegistry {
 					failed.push({ file: entry.file, error: message })
 				}
 			}
-			return { fingerprint: sourceFingerprint, tools: Object.freeze([...tools.values()]), loaded, failed }
+			return { fingerprint: directoryFingerprint, tools: Object.freeze([...tools.values()]), loaded, failed }
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT")
 				failed.push({ file: directory, error: errorMessage(error) })
@@ -387,6 +387,7 @@ export class CustomToolRegistry {
 	private async import(
 		filePath: string,
 		sourceFingerprint: string,
+		directoryFingerprint: string,
 		force: boolean,
 	): Promise<Record<string, unknown>> {
 		const absolutePath = path.resolve(filePath)
@@ -402,7 +403,7 @@ export class CustomToolRegistry {
 		if (pendingModuleLoads.size >= MAX_CACHED_DIRECTORIES) {
 			throw new Error("Too many concurrent custom tool module loads. Retry after the current loads finish.")
 		}
-		const loading = this.importSource(absolutePath, sourceFingerprint, force)
+		const loading = this.importSource(absolutePath, sourceFingerprint, directoryFingerprint, force)
 		pendingModuleLoads.set(key, loading)
 		try {
 			return await loading
@@ -414,6 +415,7 @@ export class CustomToolRegistry {
 	private async importSource(
 		absolutePath: string,
 		sourceFingerprint: string,
+		directoryFingerprint: string,
 		force: boolean,
 	): Promise<Record<string, unknown>> {
 		const assertSourceCurrent = async () => {
@@ -438,7 +440,8 @@ export class CustomToolRegistry {
 		}
 
 		const cached = this.tsCache.get(absolutePath)
-		if (!force && cached?.fingerprint === sourceFingerprint) return this.importModule(cached.url)
+		// A bundle can include sibling sources, so the entry file alone cannot identify a cache hit.
+		if (!force && cached?.directoryFingerprint === directoryFingerprint) return this.importModule(cached.url)
 
 		await this.ensureCacheDirectory()
 		const stagingDirectory = path.join(this.cacheDir, `stage-${fingerprint(absolutePath).slice(0, 32)}`)
@@ -512,7 +515,7 @@ export class CustomToolRegistry {
 				const mod = await this.importModule(url)
 				await assertSourceCurrent()
 				this.tsCache.delete(absolutePath)
-				this.tsCache.set(absolutePath, { fingerprint: sourceFingerprint, url })
+				this.tsCache.set(absolutePath, { directoryFingerprint, url })
 				while (this.tsCache.size > MAX_COMPILED_SOURCES) this.tsCache.delete(this.tsCache.keys().next().value!)
 				return mod
 			} finally {

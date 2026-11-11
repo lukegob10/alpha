@@ -17,6 +17,17 @@ import {
 } from "../index.js"
 
 describe("agent lifecycle contracts", () => {
+	it("reads historical tool calls with absent or explicitly undefined arguments", () => {
+		const call = { itemId: "legacy-call", type: "tool_call", toolCallId: "call-1", name: "read_file" }
+		expect(agentLifecycleToolCallItemSchema.parse(call)).toEqual({ ...call, status: "accepted" })
+		expect(agentLifecycleItemSchema.parse(call)).toEqual({ ...call, status: "accepted" })
+		expect(agentLifecycleToolCallItemSchema.parse({ ...call, arguments: undefined })).toEqual({
+			...call,
+			arguments: undefined,
+			status: "accepted",
+		})
+	})
+
 	it("validates all opaque lifecycle identifiers without imposing provider formats", () => {
 		for (const schema of [
 			agentTaskIdSchema,

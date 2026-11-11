@@ -311,6 +311,36 @@ describe("AgentLifecycleJournal", () => {
 		expect((await readAgentLifecycleEvents(ids.taskId, storagePath)).map(({ sequence }) => sequence)).toEqual([1])
 	})
 
+	it("requires a successful sync to acknowledge a durable replay after a failed append sync", async () => {
+		const journal = await AgentLifecycleJournal.open(ids.taskId, storagePath)
+		await journal.append(phaseEvent("event-1"))
+		const eventsPath = await journal.getEventsFilePath()
+		const probe = await fs.open(eventsPath, "r+")
+		const fileHandlePrototype = Object.getPrototypeOf(probe)
+		await probe.close()
+		const syncFailure = new Error("journal sync unavailable")
+		const sync = vi
+			.spyOn(fileHandlePrototype, "sync")
+			.mockRejectedValueOnce(syncFailure)
+			.mockRejectedValueOnce(syncFailure)
+		const event = phaseEvent("event-2")
+
+		try {
+			await expect(journal.append(event, { durable: true })).rejects.toMatchObject({ code: "write_failed" })
+			const written = await fs.readFile(eventsPath, "utf8")
+			expect(written).toContain('"eventId":"event-2"')
+
+			await expect(journal.append(event, { durable: true })).rejects.toMatchObject({ code: "write_failed" })
+			await expect(journal.append(event, { durable: true })).resolves.toMatchObject({
+				sequence: 2,
+				replayed: true,
+			})
+			expect(await fs.readFile(eventsPath, "utf8")).toBe(written)
+		} finally {
+			sync.mockRestore()
+		}
+	})
+
 	it.each(["replay", "refresh"] as const)("orders %s behind the accepted write queue", async (operation) => {
 		const journal = new AgentLifecycleJournal(ids.taskId, storagePath)
 		await journal.initialize()

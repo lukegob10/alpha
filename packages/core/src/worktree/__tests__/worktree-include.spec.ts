@@ -335,6 +335,25 @@ describe("WorktreeIncludeService", () => {
 			expect(await fs.readFile(path.join(outside, "private.env"), "utf8")).toBe("outside contents")
 		})
 
+		it.skipIf(process.platform !== "win32")("does not follow a junction inside a copied directory", async () => {
+			const outside = path.join(tempDir, "outside")
+			const dependencies = path.join(sourceDir, "dependencies")
+			await fs.mkdir(outside)
+			await fs.mkdir(dependencies)
+			const canary = path.join(outside, "private.env")
+			await fs.writeFile(canary, "outside contents")
+			await fs.writeFile(path.join(dependencies, "dependency.js"), "dependency contents")
+			await fs.symlink(outside, path.join(dependencies, "linked"), "junction")
+			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "dependencies/\n")
+			await fs.writeFile(path.join(sourceDir, ".gitignore"), "dependencies/\n")
+
+			expect(await service.copyWorktreeIncludeFiles(sourceDir, targetDir)).toEqual(["dependencies"])
+			const copied = path.join(targetDir, "dependencies")
+			expect(await fs.readFile(path.join(copied, "dependency.js"), "utf8")).toBe("dependency contents")
+			await expect(fs.lstat(path.join(copied, "linked"))).rejects.toMatchObject({ code: "ENOENT" })
+			expect(await fs.readFile(canary, "utf8")).toBe("outside contents")
+		})
+
 		it("fails explicitly when nested discovery exceeds its depth bound", async () => {
 			await fs.writeFile(path.join(sourceDir, ".worktreeinclude"), "**/*.env")
 			await fs.writeFile(path.join(sourceDir, ".gitignore"), "*.env")

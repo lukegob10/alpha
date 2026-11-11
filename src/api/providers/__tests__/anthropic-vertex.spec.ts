@@ -65,6 +65,7 @@ import { VERTEX_1M_CONTEXT_MODEL_IDS } from "@alpha-code/types"
 import { ApiStreamChunk } from "../../transform/stream"
 
 import { AnthropicVertexHandler } from "../anthropic-vertex"
+import * as requestTimeout from "../utils/timeout-config"
 
 describe("VertexHandler", () => {
 	let handler: AnthropicVertexHandler
@@ -87,6 +88,14 @@ describe("VertexHandler", () => {
 	})
 
 	describe("constructor", () => {
+		beforeEach(() => {
+			vitest.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(45_000)
+		})
+
+		afterEach(() => {
+			vitest.restoreAllMocks()
+		})
+
 		it("should defer direct client initialization until the first request", async () => {
 			handler = new AnthropicVertexHandler({
 				apiModelId: "claude-3-5-sonnet-v2@20241022",
@@ -99,6 +108,8 @@ describe("VertexHandler", () => {
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
+				maxRetries: 0,
+				timeout: 45_000,
 			})
 		})
 
@@ -131,6 +142,8 @@ describe("VertexHandler", () => {
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
+				maxRetries: 0,
+				timeout: 45_000,
 				googleAuth: { options: expect.objectContaining({ credentials: expect.any(Object) }) },
 			})
 		})
@@ -147,6 +160,8 @@ describe("VertexHandler", () => {
 			expect(AnthropicVertex).toHaveBeenCalledWith({
 				projectId: "test-project",
 				region: "us-central1",
+				maxRetries: 0,
+				timeout: 45_000,
 				googleAuth: { options: expect.objectContaining({ keyFile: "/path/to/key.json" }) },
 			})
 		})
@@ -375,12 +390,11 @@ describe("VertexHandler", () => {
 						},
 					],
 					stream: true,
-					// Tools are now always present (minimum 6 from ALWAYS_AVAILABLE_TOOLS)
-					tools: expect.any(Array),
-					tool_choice: expect.any(Object),
 				}),
 				{ signal: expect.any(AbortSignal) },
 			)
+			expect(mockCreate.mock.calls[0][0]).not.toHaveProperty("tools")
+			expect(mockCreate.mock.calls[0][0]).not.toHaveProperty("tool_choice")
 		})
 
 		it("should use non-streaming responses when Vertex streaming is disabled for Claude", async () => {

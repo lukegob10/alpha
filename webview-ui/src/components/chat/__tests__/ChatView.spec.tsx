@@ -2920,6 +2920,34 @@ describe("ChatView - Follow-up suggestion copy", () => {
 	})
 	beforeEach(() => vi.clearAllMocks())
 
+	it("keeps the composer draft and its attachments when sending a suggested answer", async () => {
+		const { getByTestId } = renderChatView()
+		const taskId = "suggestion-with-separate-draft"
+		const images = ["data:image/png;base64,separate-composer-image"]
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			alphaMessages: [
+				{ type: "say", say: "task", ts: 100, text: "Test follow-up" },
+				{ type: "ask", ask: "followup", ts: 101, text: "Choose an answer" },
+			],
+		})
+		const suggestion = await waitFor(() => getByTestId("copy-mode-suggestion"))
+		const composer = getByTestId("chat-textarea")
+		const input = composer.querySelector("input")!
+		fireEvent.change(input, { target: { value: "Keep this separate draft" } })
+		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } })))
+		expect(composer).toHaveAttribute("data-selected-images", JSON.stringify(images))
+
+		fireEvent.click(suggestion)
+
+		expect(vscode.postMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "askResponse", taskId, askMessageTs: 101, text: "Draft plan", images: [] }),
+		)
+		expect(input).toHaveValue("Keep this separate draft")
+		expect(composer).toHaveAttribute("data-selected-images", JSON.stringify(images))
+	})
+
 	it("cancels follow-up auto-approval for the visible task when typing begins", async () => {
 		const { getByTestId } = renderChatView()
 

@@ -14,6 +14,9 @@ import { ContextProxy } from "../../config/ContextProxy"
 import { AlphaProvider } from "../AlphaProvider"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
+import type { SafeWriteJsonOptions } from "../../../utils/safeWriteJson"
+
+const historyFiles = vi.hoisted(() => new Map<string, string>())
 
 // Mock setup
 vi.mock("p-wait-for", () => ({
@@ -46,6 +49,7 @@ vi.mock("fs/promises", () => {
 			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
 		}),
 		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (historyFiles.has(filePath)) return Promise.resolve(historyFiles.get(filePath))
 			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
 			if (filePath.includes(".transaction.lock")) {
 				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
@@ -55,6 +59,10 @@ vi.mock("fs/promises", () => {
 				: Promise.resolve("")
 		}),
 		readdir: vi.fn().mockResolvedValue([]),
+		lstat: vi.fn(async (filePath: string) => {
+			if (historyFiles.has(filePath)) return { isFile: () => true, isSymbolicLink: () => false }
+			throw Object.assign(new Error("not found"), { code: "ENOENT" })
+		}),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
@@ -76,6 +84,7 @@ vi.mock("fs/promises", () => {
 			}
 		}),
 		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			historyFiles.delete(filePath)
 			transactionFiles.delete(filePath)
 		}),
 		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
@@ -115,8 +124,7 @@ vi.mock("delay", () => {
 vi.mock("../../prompts/sections/custom-instructions")
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
-	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
-		.resolveTaskDirectoryPath,
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	getGlobalStoragePath: vi.fn().mockResolvedValue("/test/storage/path"),
@@ -124,7 +132,10 @@ vi.mock("../../../utils/storage", async (importOriginal) => ({
 }))
 
 vi.mock("../../../utils/safeWriteJson", () => ({
-	safeWriteJson: vi.fn().mockResolvedValue(undefined),
+	safeWriteJson: vi.fn(async (filePath: string, value: unknown, options?: SafeWriteJsonOptions) => {
+		const snapshot = options?.prepareData ? await options.prepareData() : value
+		historyFiles.set(filePath, JSON.stringify(snapshot))
+	}),
 }))
 
 vi.mock("@modelcontextprotocol/sdk/types.js", () => ({
@@ -304,6 +315,7 @@ describe("AlphaProvider Task History Synchronization", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		historyFiles.clear()
 		// This suite uses nonexistent, mocked storage paths. File locking is
 		// covered by persistence and exact-host tests; retain the real store API.
 		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
@@ -1166,23 +1178,13 @@ describe("AlphaProvider Task History Synchronization", () => {
 
 			// Temporarily make the store's safeWriteJson throw
 			const { safeWriteJson } = await import("../../../utils/safeWriteJson")
-			const mockSafeWriteJson = vi.mocked(safeWriteJson)
-			let callCount = 0
-			mockSafeWriteJson.mockImplementation(async () => {
-				callCount++
-				if (callCount === 1) {
-					throw new Error("simulated write failure")
-				}
-			})
+			vi.mocked(safeWriteJson).mockRejectedValueOnce(new Error("simulated write failure"))
 
 			// First call should fail (store write failure)
 			const item1 = createHistoryItem({ id: "fail-item", task: "Fail" })
 			await expect(provider.updateTaskHistory(item1, { broadcast: false })).rejects.toThrow(
 				"simulated write failure",
 			)
-
-			// Restore mock
-			mockSafeWriteJson.mockResolvedValue(undefined)
 
 			// Second call should still succeed (store lock not stuck)
 			const item2 = createHistoryItem({ id: "ok-item", task: "OK" })

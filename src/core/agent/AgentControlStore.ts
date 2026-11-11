@@ -1384,8 +1384,6 @@ interface PendingMailboxClaimSettlement {
 
 interface OwnerLeaseRecovery {
 	readonly previousOwnerIds: Set<AgentRuntimeOwnerId>
-	readonly activeTaskIds: Set<string>
-	readonly mailboxEventIds: Set<string>
 	readonly causes: Error[]
 	targetOwnerId?: AgentRuntimeOwnerId
 }
@@ -3461,29 +3459,16 @@ export class AgentControlStore {
 		await persistence.releaseOwnerLease(ownerId)
 	}
 
-	private recordOwnerLeaseCompromise(ownerId: AgentRuntimeOwnerId, error: Error): OwnerLeaseRecovery {
+	private recordOwnerLeaseCompromise(ownerId: AgentRuntimeOwnerId, error: Error): void {
 		const recovery =
 			this.ownerLeaseRecovery ??
 			({
 				previousOwnerIds: new Set<AgentRuntimeOwnerId>(),
-				activeTaskIds: new Set<string>(),
-				mailboxEventIds: new Set<string>(),
 				causes: [],
 			} satisfies OwnerLeaseRecovery)
 		recovery.previousOwnerIds.add(ownerId)
 		recovery.causes.push(error)
-		for (const record of this.state.agents) {
-			if (ACTIVE_STATUSES.has(record.status) && record.runtimeOwnerId === ownerId) {
-				recovery.activeTaskIds.add(record.taskId)
-			}
-		}
-		for (const entry of this.state.mailbox) {
-			if (entry.claimId && entry.acknowledgedAt === undefined && entry.claimOwnerId === ownerId) {
-				recovery.mailboxEventIds.add(entry.eventId)
-			}
-		}
 		this.ownerLeaseRecovery = recovery
-		return recovery
 	}
 
 	private async ensureCurrentOwnerLease(): Promise<OwnerLeaseRecovery | undefined> {
@@ -3514,25 +3499,41 @@ export class AgentControlStore {
 	private applyOwnerLeaseRecovery(draft: AgentControlState, recovery: OwnerLeaseRecovery): boolean {
 		const acceptedOwnerIds = new Set(recovery.previousOwnerIds)
 		acceptedOwnerIds.add(this.runtimeOwnerId)
-		const changedTaskIds = [...recovery.activeTaskIds].filter((taskId) => {
+		// A heartbeat can fail while a successful transaction is still writing or
+		// releasing its lock. Compare against the local state published by the last
+		// successful transaction, after the store queue has drained that operation.
+		const changedTaskIds: string[] = []
+		for (const { taskId, status, runtimeOwnerId } of this.state.agents) {
+			if (!ACTIVE_STATUSES.has(status) || !runtimeOwnerId || !recovery.previousOwnerIds.has(runtimeOwnerId))
+				continue
 			const record = draft.agents.find((candidate) => candidate.taskId === taskId)
-			return (
+			if (
 				!record ||
 				!ACTIVE_STATUSES.has(record.status) ||
 				!record.runtimeOwnerId ||
 				!acceptedOwnerIds.has(record.runtimeOwnerId)
 			)
-		})
-		const changedMailboxEventIds = [...recovery.mailboxEventIds].filter((eventId) => {
+				changedTaskIds.push(taskId)
+		}
+		const changedMailboxEventIds: string[] = []
+		for (const { eventId, claimId, acknowledgedAt, claimOwnerId } of this.state.mailbox) {
+			if (
+				!claimId ||
+				acknowledgedAt !== undefined ||
+				!claimOwnerId ||
+				!recovery.previousOwnerIds.has(claimOwnerId)
+			)
+				continue
 			const entry = draft.mailbox.find((candidate) => candidate.eventId === eventId)
-			return (
+			if (
 				!entry ||
 				!entry.claimId ||
 				entry.acknowledgedAt !== undefined ||
 				!entry.claimOwnerId ||
 				!acceptedOwnerIds.has(entry.claimOwnerId)
 			)
-		})
+				changedMailboxEventIds.push(eventId)
+		}
 		if (changedTaskIds.length > 0 || changedMailboxEventIds.length > 0) {
 			const changedOwnership = [
 				changedTaskIds.length > 0 ? `tasks: ${changedTaskIds.join(", ")}` : undefined,
@@ -3541,7 +3542,7 @@ export class AgentControlStore {
 				.filter(Boolean)
 				.join("; ")
 			throw new Error(
-				`Agent runtime ownership changed after its lease was compromised (${changedOwnership}). Reload the task before continuing.`,
+				`Agent runtime ownership changed after its lease was compromised (${changedOwnership}). Reload the VS Code window before continuing.`,
 				{ cause: recovery.causes.at(-1) },
 			)
 		}

@@ -48,7 +48,7 @@ const geminiResponsePartSchema = z
 		thought: z.boolean().optional(),
 		thoughtSignature: z.string().optional(),
 		functionCall: z
-			.object({ id: z.string().optional(), name: z.string(), args: z.record(z.unknown()).optional() })
+			.object({ id: z.string().optional(), name: z.string(), args: z.record(z.string(), z.unknown()).optional() })
 			.passthrough()
 			.optional(),
 	})

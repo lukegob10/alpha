@@ -290,7 +290,7 @@ export const providerSettingsSchemaDiscriminated = z.discriminatedUnion("apiProv
 	openRouterSchema.merge(z.object({ apiProvider: z.literal("openrouter") })),
 	vsCodeLmSchema.merge(z.object({ apiProvider: z.literal("vscode-lm") })),
 	fakeAiSchema.merge(z.object({ apiProvider: z.literal("fake-ai") })),
-	z.object({ apiProvider: z.undefined() }),
+	z.object({ apiProvider: z.undefined().optional() }),
 ])
 
 export const providerSettingsSchema = z.object({

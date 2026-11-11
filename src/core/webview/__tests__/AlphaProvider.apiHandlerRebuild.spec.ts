@@ -10,7 +10,8 @@ import { Task, TaskOptions } from "../../task/Task"
 import { AlphaProvider } from "../AlphaProvider"
 
 // Mock setup
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
@@ -22,6 +23,8 @@ vi.mock("fs/promises", () => {
 		close: vi.fn(),
 	})
 	return {
+		lstat,
+		realpath,
 		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
@@ -95,8 +98,7 @@ vi.mock("proper-lockfile", () => ({
 }))
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
-	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
-		.resolveTaskDirectoryPath,
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: vi.fn(async (defaultPath: string) => defaultPath),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),

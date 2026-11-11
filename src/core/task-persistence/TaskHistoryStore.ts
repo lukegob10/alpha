@@ -15,8 +15,8 @@ import { GlobalFileNames } from "../../shared/globalFileNames"
 import { safeWriteJson } from "../../utils/safeWriteJson"
 import {
 	getStorageBasePath,
+	resolveExistingTaskDirectoryInStorage,
 	resolveExistingTaskDirectoryPathReadOnly,
-	resolveTaskDirectoryPath,
 } from "../../utils/storage"
 import { withFileLock } from "./atomicWrite"
 
@@ -236,13 +236,8 @@ export class TaskHistoryStore {
 	 */
 	async upsert(item: HistoryItem, options: { preserveMode?: boolean } = {}): Promise<HistoryItem[]> {
 		return this.withLock(async () => {
-			const existing = this.cache.get(item.id)
-
-			// Merge: preserve existing metadata unless explicitly overwritten
-			let merged = existing ? { ...existing, ...item } : item
-
-			// Write per-task file (source of truth)
-			merged = await this.writeTaskFile(merged, options)
+			// Merge omitted fields from the durable record under the file lease.
+			const merged = await this.writeTaskFile(item, options)
 
 			// Update in-memory cache
 			this.cache.set(merged.id, merged)
@@ -272,6 +267,9 @@ export class TaskHistoryStore {
 			if (!guard()) return false
 			const taskDirectory = await resolveExistingTaskDirectoryPathReadOnly(this.globalStoragePath, taskId)
 			const filePath = path.join(taskDirectory, GlobalFileNames.historyItem)
+			if (!(await this.readHistoryForMutation(filePath, taskId))) {
+				throw new Error("Task history disappeared during model route recovery")
+			}
 			const selection = (item: HistoryItem) => ({
 				apiConfigName: item.apiConfigName,
 				threadModelOverride: item.threadModelOverride,
@@ -554,15 +552,16 @@ export class TaskHistoryStore {
 			// Keep every read in this scan on the listed root, without revalidating custom storage per task.
 			const tasksDir = await this.getTasksDir()
 
-			let dirEntries: string[]
+			let dirEntries: fsSync.Dirent[]
 			try {
-				dirEntries = await fs.readdir(tasksDir)
+				dirEntries = await fs.readdir(tasksDir, { withFileTypes: true })
 			} catch {
 				return // tasks dir doesn't exist yet
 			}
 
-			// Filter out the index file and hidden files
-			const taskDirNames = dirEntries.filter((name) => !name.startsWith("_") && !name.startsWith("."))
+			const taskDirNames = dirEntries
+				.filter((entry) => entry.isDirectory() && !entry.name.startsWith("_") && !entry.name.startsWith("."))
+				.map((entry) => entry.name)
 
 			const onDiskIds = new Set(taskDirNames)
 			const cacheIds = new Set(this.cache.keys())
@@ -718,6 +717,8 @@ export class TaskHistoryStore {
 		const indexPath = await this.getIndexPath()
 
 		try {
+			const stats = await fs.lstat(indexPath)
+			if (!stats.isFile() || stats.isSymbolicLink()) return
 			const raw = await fs.readFile(indexPath, "utf8")
 			const index: HistoryIndex = JSON.parse(raw)
 
@@ -893,9 +894,10 @@ export class TaskHistoryStore {
 		taskId: string,
 		options: { requireExisting?: boolean; tasksDir?: string } = {},
 	): Promise<HistoryItem | null> {
-		const filePath = await this.getTaskFilePath(taskId, options.tasksDir)
-
 		try {
+			const filePath = await this.getTaskFilePath(taskId, options.tasksDir)
+			const stats = await fs.lstat(filePath)
+			if (!stats.isFile() || stats.isSymbolicLink()) throw new Error("Task history is not a regular file")
 			const raw = await fs.readFile(filePath, "utf8")
 			const parsed: unknown = JSON.parse(raw)
 			const item = options.requireExisting
@@ -1006,7 +1008,16 @@ export class TaskHistoryStore {
 	 */
 	private async getTasksDir(): Promise<string> {
 		const basePath = await getStorageBasePath(this.globalStoragePath)
-		return path.join(basePath, "tasks")
+		const tasksDir = path.join(basePath, "tasks")
+		try {
+			const stats = await fs.lstat(tasksDir)
+			if (!stats.isDirectory() || stats.isSymbolicLink()) {
+				throw new Error("Tasks storage path is not a regular directory")
+			}
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+		}
+		return tasksDir
 	}
 
 	/**
@@ -1014,7 +1025,8 @@ export class TaskHistoryStore {
 	 */
 	private async getTaskFilePath(taskId: string, tasksDir?: string): Promise<string> {
 		const tasksRoot = tasksDir ?? (await this.getTasksDir())
-		return path.join(resolveTaskDirectoryPath(path.dirname(tasksRoot), taskId), GlobalFileNames.historyItem)
+		const taskDirectory = await resolveExistingTaskDirectoryInStorage(path.dirname(tasksRoot), taskId)
+		return path.join(taskDirectory, GlobalFileNames.historyItem)
 	}
 
 	/**

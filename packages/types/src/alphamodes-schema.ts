@@ -6,7 +6,6 @@
  */
 
 import { z } from "zod"
-import { zodToJsonSchema } from "zod-to-json-schema"
 
 import { groupEntrySchema, modeConfigSchema } from "./mode.js"
 
@@ -35,10 +34,7 @@ const alphamodesZodSchema = z
  * Includes metadata fields ($id, title, description).
  */
 export function generateAlphamodesJsonSchema(): Record<string, unknown> {
-	const jsonSchema = zodToJsonSchema(alphamodesZodSchema, {
-		$refStrategy: "none",
-		target: "jsonSchema7",
-	}) as Record<string, unknown>
+	const jsonSchema: Record<string, unknown> = z.toJSONSchema(alphamodesZodSchema, { target: "draft-07" })
 
 	jsonSchema["$id"] = "https://github.com/AlphaInc/Alpha/blob/main/schemas/alphamodes.json"
 	jsonSchema["title"] = "Alpha Custom Modes"

@@ -6,6 +6,7 @@ import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
 import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "./commandTimeouts"
+import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
 import type { CommandToolResult } from "@alpha-code/types"
 import { boundCommandToolResult, formatCommandToolResult, getCommandToolResultLimit } from "./BaseTool"
@@ -21,8 +22,8 @@ const paramsSchema = z.discriminatedUnion("action", [
 		action: z.literal("read"),
 		artifact_id: z.string().min(1),
 		search: z.string().min(1).optional(),
-		offset: z.number().int().min(0).optional(),
-		limit: z.number().int().min(1).optional(),
+		offset: z.number().int({ error: "Invalid offset" }).min(0).optional(),
+		limit: z.number().int({ error: "Invalid limit" }).min(1).optional(),
 	}),
 ])
 
@@ -162,6 +163,16 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 			}
 			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
 			assertActive()
+			// Like Codex's refresh_process_state (upstream main, retrieved 2026-11-10),
+			// recheck the original command after waiting. A settled session can still
+			// own its output even when its terminal has been reused.
+			if (
+				(process && process.executionId !== params.execution_id) ||
+				(sessionId !== undefined &&
+					(!process || commandSessionRegistry.resolve(task, sessionId)?.process !== process))
+			) {
+				throw new Error("Command session changed while waiting for output")
+			}
 			const current = evidence()!
 			const physicallyRunning = isPhysicallyRunning()
 			// A completed nonzero exit is a process failure, not a failed tool transaction.

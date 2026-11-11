@@ -3008,15 +3008,16 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					return currentValue !== "" ? `${currentValue} \n${suggestion.answer}` : suggestion.answer
 				})
 			} else {
-				// Don't clear the input value when sending a follow-up choice
-				// The message should be sent but the text area should preserve what the user typed
+				// A suggested answer is separate from the draft in the composer.
 				const preservedInput = inputValueRef.current
-				handleSendMessage(suggestion.answer, [])
-				// Restore the input value after sending
-				setInputValue(preservedInput)
+				const preservedImages = selectedImagesRef.current
+				if (handleSendMessage(suggestion.answer, [])) {
+					setInputValue(preservedInput)
+					setSelectedImages(preservedImages)
+				}
 			}
 		},
-		[handleSendMessage, setInputValue, switchToMode],
+		[handleSendMessage, setInputValue, setSelectedImages, switchToMode],
 	)
 
 	const handleRequestUserInputSubmit = useCallback(

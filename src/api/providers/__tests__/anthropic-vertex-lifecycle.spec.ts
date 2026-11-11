@@ -86,6 +86,19 @@ afterEach(() => {
 })
 
 describe("Vertex Claude request lifecycle", () => {
+	it("disables tool calls without dropping tool definitions", async () => {
+		await collect(handler(), {
+			taskId: "fixture",
+			tools: [{ type: "function", function: { name: "read_file", parameters: { type: "object" } } }],
+			tool_choice: "none",
+		})
+
+		expect(mocks.create.mock.calls[0][0]).toMatchObject({
+			tools: [{ name: "read_file", input_schema: { type: "object" } }],
+			tool_choice: { type: "none" },
+		})
+	})
+
 	it("rejects cancellation and elapsed deadlines before credentials or dispatch", async () => {
 		const target = handler()
 		const controller = new AbortController()

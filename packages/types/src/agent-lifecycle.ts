@@ -151,7 +151,8 @@ export const agentLifecycleToolCallItemSchema = z
 		type: z.literal("tool_call"),
 		toolCallId: agentToolCallIdSchema,
 		name: z.string().min(1),
-		arguments: z.unknown(),
+		// Historical tool calls may omit arguments; Zod 4 requires explicit key optionality.
+		arguments: z.unknown().optional(),
 		status: agentToolCallStatusSchema.default("accepted"),
 		/** Compatibility marker for producers that model acceptance as a boolean. */
 		accepted: z.boolean().optional(),
@@ -288,10 +289,8 @@ export const agentLifecycleItemSchema = z
 		agentLifecycleProgressItemShapeSchema,
 	])
 	.superRefine((item, context) => {
-		// Zod 3's discriminatedUnion requires plain object options, so the
-		// specialized refinements cannot be supplied as union members directly.
-		// Re-apply them at the union boundary; otherwise item_added/item_updated
-		// silently accept malformed tool results and progress records.
+		// The union shares unrefined shapes; enforce the specialized result and
+		// progress invariants here too so item_added/item_updated cannot bypass them.
 		if (item.type === "tool_result" && item.output === undefined && item.result === undefined) {
 			context.addIssue({
 				code: z.ZodIssueCode.custom,

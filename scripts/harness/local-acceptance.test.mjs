@@ -109,3 +109,10 @@ test("unknown shutdown cannot release the shared build lease", () => {
 	assert.equal(localAcceptanceHostsStopped({ host: { hostExitObserved: true } }), true)
 	assert.equal(localAcceptanceHostsStopped({ runs: [{ hostExitObserved: true }, { hostExitObserved: true }] }), true)
 })
+
+test("host exit with explicitly unverified cleanup cannot release the shared build lease", () => {
+	const unverified = { hostExitObserved: true, hostCleanupVerified: false }
+	assert.equal(localAcceptanceHostsStopped(unverified), false)
+	assert.equal(localAcceptanceHostsStopped({ host: unverified }), false)
+	assert.equal(localAcceptanceHostsStopped({ runs: [{ hostExitObserved: true }, unverified] }), false)
+})
