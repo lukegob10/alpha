@@ -35,7 +35,7 @@ export const providerTranscriptReceiptSchema = z
 		digest: z.string().regex(DIGEST_PATTERN),
 		writtenAt: z.number().finite().nonnegative(),
 		byteLength: z.number().int().nonnegative().safe(),
-		commitId: z.string().uuid(),
+		commitId: z.guid(),
 	})
 	.strict()
 

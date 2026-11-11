@@ -1,5 +1,6 @@
 import type { Anthropic } from "@anthropic-ai/sdk"
-import type { ApiHandler } from "../../index"
+import { GoogleGenAI } from "@google/genai"
+import type { ApiHandler, SingleCompletionHandler } from "../../index"
 import * as requestTimeout from "../utils/timeout-config"
 import type { ApiStreamChunk } from "../../transform/stream"
 import { convertAnthropicMessagesToGemini } from "../../transform/gemini-format"
@@ -23,7 +24,7 @@ vi.mock("@google/genai", async (importOriginal) => ({
 }))
 
 const messages: Anthropic.MessageParam[] = [{ role: "user", content: "Inspect the project" }]
-const routes: Array<{ name: string; create(): ApiHandler }> = [
+const routes: Array<{ name: string; create(): ApiHandler & SingleCompletionHandler }> = [
 	{ name: "native", create: () => new GeminiHandler({ geminiApiKey: "fixture-key" }) },
 	{
 		name: "Vertex",
@@ -37,6 +38,53 @@ const routes: Array<{ name: string; create(): ApiHandler }> = [
 ]
 
 describe("Gemini stream fidelity", () => {
+	it.each(routes.flatMap((route) => ["stream", "completion"].map((operation) => ({ ...route, operation }))))(
+		"preserves $name $operation errors and retry metadata",
+		async ({ create, operation }) => {
+			const failure = Object.assign(new Error("Fixture quota exhausted"), {
+				response: { status: "429" },
+				code: "RESOURCE_EXHAUSTED",
+				retryAfterMs: 2500,
+				retryable: false,
+				errorDetails: [{ reason: "QUOTA_EXHAUSTED" }],
+			})
+			const handler = create()
+			if (operation === "stream") generateContentStream.mockRejectedValueOnce(failure)
+			else generateContent.mockRejectedValueOnce(failure)
+			const result =
+				operation === "stream"
+					? (async () => {
+							for await (const _chunk of handler.createMessage("System", messages)) {
+								// Drain the failed request without changing its error contract.
+							}
+						})()
+					: handler.completePrompt("Summarize the project")
+
+			await expect(result).rejects.toMatchObject({
+				status: 429,
+				statusCode: 429,
+				code: "RESOURCE_EXHAUSTED",
+				retryAfterMs: 2500,
+				retryable: false,
+				retryCategory: "rate-limit",
+				errorDetails: [{ reason: "QUOTA_EXHAUSTED" }],
+			})
+			await expect(result).rejects.toThrow("Fixture quota exhausted")
+		},
+	)
+
+	it.each(routes)("preserves a non-Error $name stream failure", async ({ create }) => {
+		const failure = { status: 503, message: "Provider is unavailable" }
+		generateContentStream.mockRejectedValueOnce(failure)
+		const result = (async () => {
+			for await (const _chunk of create().createMessage("System", messages)) {
+				// Non-Error SDK failures must remain available to the host's error handling.
+			}
+		})()
+
+		await expect(result).rejects.toBe(failure)
+	})
+
 	it.each(routes)("retains $name startup hook provenance alongside project instructions", async ({ create }) => {
 		generateContentStream.mockResolvedValue({
 			async *[Symbol.asyncIterator]() {
@@ -187,7 +235,36 @@ describe("Gemini stream fidelity", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 
-	afterEach(() => vi.restoreAllMocks())
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllGlobals()
+	})
+
+	it("aborts the real Gemini SDK request when the consumer closes the response early", async () => {
+		const { GoogleGenAI: ActualGoogleGenAI } =
+			await vi.importActual<typeof import("@google/genai")>("@google/genai")
+		vi.mocked(GoogleGenAI).mockImplementationOnce(function (options) {
+			return new ActualGoogleGenAI(options)
+		})
+		const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_input, init) => {
+			const body = new ReadableStream<Uint8Array>({
+				start(controller) {
+					const event = { candidates: [{ content: { parts: [{ text: "Partial" }] } }] }
+					controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`))
+					init?.signal?.addEventListener("abort", () => controller.error(init.signal?.reason), { once: true })
+				},
+			})
+			return new Response(body, { headers: { "content-type": "text/event-stream" } })
+		})
+		vi.stubGlobal("fetch", fetch)
+		const stream = new GeminiHandler({ geminiApiKey: "fixture-key" }).createMessage("System", messages)
+		expect((await stream.next()).value).toEqual({ type: "text", text: "Partial" })
+		const signal = fetch.mock.calls[0]?.[1]?.signal
+		expect(signal?.aborted).toBe(false)
+
+		await expect(stream.return(undefined)).resolves.toEqual({ done: true, value: undefined })
+		expect(signal?.aborted).toBe(true)
+	})
 
 	it.each(routes.flatMap((route) => ["completed", "failed", "cancelled"].map((ending) => ({ ...route, ending }))))(
 		"retains received usage once when $name ends as $ending",

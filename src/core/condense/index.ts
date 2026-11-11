@@ -1,7 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk"
 import crypto from "crypto"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import { snapshotNativeCompactionCheckpoint, type NativeCompactionScope } from "@alpha-code/types"
 
 import { t } from "../../i18n"
@@ -10,6 +9,7 @@ import { NativeCompactionInvalidResultError, NativeCompactionUnavailableError } 
 import { getApiStreamErrorMessage } from "../../api/transform/stream"
 import type { ApiStreamError, ApiStreamOutcomeChunk, ApiStreamUsageChunk } from "../../api/transform/stream"
 import { ApiMessage } from "../task-persistence/apiMessages"
+import { getPendingAgentMailIds } from "../task-persistence/agentMailSampling"
 import { digestProviderTranscript } from "../task-persistence/ProviderTranscriptStore"
 import { isOpaqueProviderContentBlock, stripProviderResponseItemMetadata } from "../task-persistence/providerStateScope"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
@@ -326,6 +326,7 @@ const HISTORY_BOOKKEEPING_KEYS = new Set([
 	"input_origin",
 	"queued_message_ids",
 	"agent_message_id",
+	"sampled_agent_message_ids",
 	"hook_prompt",
 	"goal_usage_receipts",
 	"agentResponseItems",
@@ -552,7 +553,7 @@ async function truncateVerbatimUserMessage(
 	return { message: bestMessage, tokens: bestTokens }
 }
 
-type VerbatimUserMessageSelection = { messages: ApiMessage[]; tokens: number }
+type VerbatimUserMessageSelection = { messages: ApiMessage[]; tokens: number; sources: ApiMessage[] }
 
 /** Retain recent direct user records verbatim without copying tool or generated user content. */
 async function selectVerbatimUserMessages(
@@ -566,6 +567,7 @@ async function selectVerbatimUserMessages(
 		tailMessages.flatMap((message) => getVerbatimUserTextBlocks(message).map((block) => block.text)),
 	)
 	const selected: ApiMessage[] = []
+	const sources: ApiMessage[] = []
 	let tokens = 0
 
 	for (let index = prefixMessages.length - 1; index >= 0; index--) {
@@ -580,7 +582,7 @@ async function selectVerbatimUserMessages(
 		const candidate = createVerbatimUserMessage(source, textBlocks)
 		const messageTokens = await countHistoryTokens([candidate], apiHandler, countContext)
 		if (!Number.isFinite(messageTokens) || messageTokens < 0) {
-			return { messages: [], tokens: Number.NaN }
+			return { messages: [], tokens: Number.NaN, sources: [] }
 		}
 		if (tokens + messageTokens > tokenBudget) {
 			// Newer user records win. If the next record is too large, retain a
@@ -595,19 +597,21 @@ async function selectVerbatimUserMessages(
 				countContext,
 			)
 			if (!Number.isFinite(truncated.tokens) || truncated.tokens < 0) {
-				return { messages: [], tokens: Number.NaN }
+				return { messages: [], tokens: Number.NaN, sources: [] }
 			}
 			if (!truncated.message) break
 			selected.push(truncated.message)
+			sources.push(source)
 			tokens += truncated.tokens
 			break
 		}
 
 		selected.push(candidate)
+		sources.push(source)
 		tokens += messageTokens
 	}
 
-	return { messages: selected.reverse(), tokens }
+	return { messages: selected.reverse(), tokens, sources: sources.reverse() }
 }
 
 export async function countContextTokens(
@@ -624,7 +628,10 @@ export async function countContextTokens(
 			remoteDeadline: metadata?.deadline,
 		})
 	operation.signal?.throwIfAborted()
-	const overhead: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: systemPrompt }]
+	// Role-aware adapters replace the fallback prompt with these captured fragments.
+	const overhead: Anthropic.Messages.ContentBlockParam[] = metadata?.instructionFragments
+		? metadata.instructionFragments.map(({ content }) => ({ type: "text" as const, text: content }))
+		: [{ type: "text", text: systemPrompt }]
 	if (metadata?.tools?.length) overhead.push({ type: "text", text: JSON.stringify(metadata.tools) })
 	const overheadTokens = await operation.countTokens(overhead, apiHandler)
 	operation.signal?.throwIfAborted()
@@ -663,17 +670,6 @@ export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
 }
 
 export { MIN_CONDENSE_THRESHOLD, MAX_CONDENSE_THRESHOLD } from "../context-management/recovery"
-
-const SUMMARY_PROMPT = `You are a helpful AI assistant tasked with summarizing conversations.
-
-CRITICAL: This is a summarization-only request. DO NOT call any tools or functions.
-Your ONLY task is to analyze the conversation and produce a text summary.
-Respond with text only - no tool calls will be processed.
-
-CRITICAL: This summarization request is a SYSTEM OPERATION, not a user message.
-When analyzing "user requests" and "user intent", completely EXCLUDE this summarization message.
-The "most recent user request" and "next step" must be based on what the user was doing BEFORE this system message appeared.
-The goal is for work to continue seamlessly after condensation - as if it never happened.`
 
 /**
  * Injects synthetic tool_results for orphan tool_calls that don't have matching results.
@@ -852,8 +848,9 @@ export type SummarizeConversationOptions = {
  * tool registry or a required/automatic tool choice into this request is both
  * unnecessary and provider-dependent.  Keep tracing/request controls intact,
  * but explicitly provide an empty tool list and disable tool selection.
- * Live instruction fragments must not override the summary system prompt, and
- * a provider must not append this operation to the live response chain. The
+ * Keep captured instruction roles, as Codex 2889d8e1 compact.rs and its request
+ * tests do; the compaction request is a final user message under task instructions.
+ * A provider must not append this operation to the live response chain. The
  * input object is never mutated. `undefined` remains `undefined` for callers
  * that did not provide metadata, preserving the historical API call shape.
  */
@@ -870,7 +867,6 @@ export function getToolFreeMetadata(
 		parallelToolCalls: false,
 		allowedFunctionNames: [],
 	}
-	delete isolated.instructionFragments
 	return isolated
 }
 
@@ -916,19 +912,25 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			remoteDeadline: metadata?.deadline,
 		})
 	countContext.signal?.throwIfAborted()
-	TelemetryService.instance.captureContextCondensed(
-		taskId,
-		isAutomaticTrigger ?? false,
-		!!customCondensingPrompt?.trim(),
-	)
 
 	const response: SummarizeResponse = { messages, cost: 0, summary: "" }
 
 	// Summarize only the history that would be sent to the model. The stored history
 	// also contains messages hidden by prior truncation and condensation markers.
 	const nativeCompaction = apiHandler?.nativeCompaction
+	const pendingMailIds = getPendingAgentMailIds(messages)
+	// Older versions have no sampling receipts. Mail already represented by an
+	// installed summary stays historical; it cannot permanently disable native compaction.
+	const hasVisiblePendingMail =
+		nativeCompaction &&
+		getEffectiveApiHistory(messages, nativeCompaction.scope).some(
+			(message) => message.agent_message_id && pendingMailIds.has(message.agent_message_id),
+		)
 	const useNativeCompaction =
-		nativeCompaction && compactionApiHandler === apiHandler && !customCondensingPrompt?.trim()
+		nativeCompaction &&
+		compactionApiHandler === apiHandler &&
+		!customCondensingPrompt?.trim() &&
+		!hasVisiblePendingMail
 	let activeMessages = getMessagesSinceLastSummary(
 		getEffectiveApiHistory(messages, useNativeCompaction ? nativeCompaction.scope : null),
 	)
@@ -1008,8 +1010,10 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			"insufficient_history",
 		)
 	}
-	// Native compaction consumes the canonical window; custom summary instructions
-	// and previous-model recovery retain the existing local summarizer.
+	// Codex 2889d8e1 uses first-party V2 for its OpenAI default. Alpha's verified
+	// public capability consumes the whole canonical window. A saved nonempty
+	// override (even the displayed default) keeps its existing text-summary meaning;
+	// previous-model recovery also uses text, without replaying an opaque checkpoint.
 	let nativeAttemptCost = 0
 	let compactAdmission: Promise<void> | undefined
 	const beforeCompact = () => (compactAdmission ??= Promise.resolve().then(() => options.beforeCompact?.()))
@@ -1117,7 +1121,8 @@ export async function summarizeConversation(options: SummarizeConversationOption
 			if (error instanceof Error && error.name === "AbortError") throw error
 			if (
 				!(error instanceof NativeCompactionUnavailableError) &&
-				!(error instanceof NativeCompactionInvalidResultError)
+				!(error instanceof NativeCompactionInvalidResultError) &&
+				!checkContextWindowExceededError(error)
 			) {
 				return finish(
 					{ ...response, cost, error: t("common:errors.condense_failed"), status: "no_progress" },
@@ -1209,6 +1214,21 @@ ${commandBlocks}
 	}
 	const messagesToSummarize = activeMessages.slice(0, tail.startIndex)
 	const retainedMessages = activeMessages.slice(tail.startIndex)
+	// Codex d4a341bd (2026-11-06) retains unsampled mail separately from summaries.
+	// Alpha uses the actual target budget instead of Codex's per-item 10k cap:
+	// unread mail must fit the request or recovery leaves history intact.
+	const activePendingMail = activeMessages.filter(
+		(message) => message.agent_message_id && pendingMailIds.has(message.agent_message_id),
+	)
+	const pendingMailToCarry = activePendingMail.filter((message) => messagesToSummarize.includes(message))
+	const carriedMailTokens = await countHistoryTokens(pendingMailToCarry, apiHandler, countContext)
+	if (!Number.isFinite(carriedMailTokens) || carriedMailTokens + tail.tokens >= availableHistoryTokens) {
+		if (Number.isFinite(carriedMailTokens) && canLeaveUnchanged) return unchanged()
+		return finish(
+			{ ...response, error: t("common:errors.condense_failed"), status: "no_progress" },
+			"insufficient_budget",
+		)
+	}
 	if (messagesToSummarize.length === 0) {
 		if (canLeaveUnchanged) return unchanged()
 		return finish(
@@ -1227,7 +1247,7 @@ ${commandBlocks}
 		Math.min(
 			MAX_PRESERVED_USER_MESSAGE_TOKENS,
 			Math.floor(availableHistoryTokens / 4),
-			availableHistoryTokens - tail.tokens - minimumSummaryBudget,
+			availableHistoryTokens - tail.tokens - carriedMailTokens - minimumSummaryBudget,
 		),
 	)
 	const verbatimUserSelection = await selectVerbatimUserMessages(
@@ -1244,19 +1264,34 @@ ${commandBlocks}
 		)
 	}
 	const verbatimUserMessages = verbatimUserSelection.messages
+	const carriedBySource = new Map(
+		verbatimUserSelection.sources.map((source, index) => [source, verbatimUserMessages[index]]),
+	)
+	for (const mail of pendingMailToCarry) {
+		const copy = { ...mail }
+		delete copy.condenseParent
+		delete copy.condenseCopyParent
+		delete copy.truncationParent
+		carriedBySource.set(mail, copy)
+	}
+	const verbatimMessages = messagesToSummarize.flatMap((source) => {
+		const copy = carriedBySource.get(source)
+		return copy ? [copy] : []
+	})
 
-	// Use custom prompt if provided and non-empty, otherwise use the default CONDENSE prompt
-	// This respects user's custom condensing prompt setting
-	const condenseInstructions = customCondensingPrompt?.trim() || DEFAULT_CONDENSING_PROMPT
+	// Codex 2889d8e1 compact.rs and suite/compact.rs send the prompt unchanged as
+	// the final user message. Enforce Alpha's target by validating the candidate,
+	// without rewriting the default or a nonempty saved customization.
+	const condenseInstructions = customCondensingPrompt?.trim() ? customCondensingPrompt : DEFAULT_CONDENSING_PROMPT
 	const summaryBudgetTokens = Math.max(
 		0,
-		Math.floor(availableHistoryTokens - tail.tokens - verbatimUserSelection.tokens),
+		Math.floor(availableHistoryTokens - tail.tokens - carriedMailTokens - verbatimUserSelection.tokens),
 	)
 	diagnostic.summaryBudgetTokens = summaryBudgetTokens
 
 	const finalRequestMessage: Anthropic.MessageParam = {
 		role: "user",
-		content: `${condenseInstructions}\n\nKeep the handoff summary within ${summaryBudgetTokens} tokens.`,
+		content: condenseInstructions,
 	}
 
 	// Transform tool_use and tool_result blocks to text representations.
@@ -1267,8 +1302,7 @@ ${commandBlocks}
 	let overflowRetries = 0
 	let previousAttemptCost = nativeAttemptCost
 
-	// Note: this doesn't need to be a stream, consider using something like apiHandler.completePrompt
-	const promptToUse = SUMMARY_PROMPT
+	const promptToUse = systemPrompt
 
 	let summary = ""
 	let cost = nativeAttemptCost
@@ -1287,7 +1321,7 @@ ${commandBlocks}
 		const stepStarts = getLogicalStepStarts(summaryInput)
 		const nextStep = stepStarts[1]
 		if (nextStep === undefined) return false
-		// Codex ac558e2a, core/src/compact.rs:363 shrinks overflowed summary input.
+		// Codex 2889d8e1, core/src/compact.rs shrinks overflowed summary input.
 		// Prune enough complete steps for this compactor's measured input budget
 		// while keeping Alpha's three-attempt bound and untouched exact recent tail.
 		const fixedInputTokens = await countContextTokens(
@@ -1534,7 +1568,7 @@ ${commandBlocks}
 					if (section.trim()) {
 						const candidate = [...summaryContent, { type: "text" as const, text: section }]
 						const tokens = await countContextTokens(
-							[{ role: "user", content: candidate }, ...verbatimUserMessages, ...retainedMessages],
+							[{ role: "user", content: candidate }, ...verbatimMessages, ...retainedMessages],
 							apiHandler,
 							systemPrompt,
 							metadata,
@@ -1560,7 +1594,7 @@ ${commandBlocks}
 
 	// Generate a unique condenseId for this summary
 	const condenseId = crypto.randomUUID()
-	const carriedUserMessages = verbatimUserMessages.map((message) => ({ ...message, condenseCopyParent: condenseId }))
+	const carriedUserMessages = verbatimMessages.map((message) => ({ ...message, condenseCopyParent: condenseId }))
 
 	// Creation time stays newer than every original record even though the summary
 	// is inserted before the tail. Timestamp-based rewind then restores the prefix.

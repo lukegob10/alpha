@@ -93,14 +93,15 @@ export class WorktreeService {
 	/**
 	 * List all worktrees in the repository
 	 */
-	async listWorktrees(cwd: string): Promise<Worktree[]> {
+	async listWorktrees(cwd: string, options: { throwOnError?: boolean } = {}): Promise<Worktree[]> {
 		try {
 			const { stdout } = await execAsync("git worktree list --porcelain", {
 				cwd,
 				env: createWorktreeGitEnvironment(),
 			})
 			return this.parseWorktreeOutput(stdout, cwd)
-		} catch {
+		} catch (error) {
+			if (options.throwOnError) throw error
 			return []
 		}
 	}

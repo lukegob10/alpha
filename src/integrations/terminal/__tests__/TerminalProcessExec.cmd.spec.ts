@@ -118,11 +118,8 @@ async function testCmdCommand(
 		}
 
 		// Configure the mock terminal to return our stream
-		mockTerminal.shellIntegration.executeCommand.mockImplementation(() => {
-			return {
-				read: vi.fn().mockReturnValue(stream),
-			}
-		})
+		const execution = { commandLine: { value: command }, read: vi.fn().mockReturnValue(stream) }
+		mockTerminal.shellIntegration.executeCommand.mockReturnValue(execution)
 
 		// Set up event listeners to capture output
 		let capturedOutput = ""
@@ -156,10 +153,7 @@ async function testCmdCommand(
 		if (eventHandlers.startTerminalShellExecution) {
 			eventHandlers.startTerminalShellExecution({
 				terminal: mockTerminal,
-				execution: {
-					commandLine: { value: command },
-					read: () => stream,
-				},
+				execution,
 			})
 		}
 
@@ -185,6 +179,7 @@ async function testCmdCommand(
 		if (eventHandlers.endTerminalShellExecution) {
 			eventHandlers.endTerminalShellExecution({
 				terminal: mockTerminal,
+				execution,
 				exitCode: exitCode,
 			})
 		}

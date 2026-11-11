@@ -5,7 +5,6 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import type { GlobalState, ProviderSettings } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
 import { AlphaProvider } from "../../webview/AlphaProvider"
@@ -230,10 +229,6 @@ describe("flushPendingToolResultsToHistory", () => {
 	let mockExtensionContext: vscode.ExtensionContext
 
 	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
 		const storageUri = {
 			fsPath: path.join(os.tmpdir(), "test-storage"),
 		}

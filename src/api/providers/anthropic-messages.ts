@@ -211,12 +211,14 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 	}
 
 	protected getNativeToolParams(metadata?: ApiHandlerCreateMessageMetadata): AnthropicMessageToolParams {
+		if (!metadata?.tools?.length) return {}
+		const choice = this.getToolChoiceForRequest(metadata)
 		return {
-			tools: convertOpenAIToolsToAnthropic(metadata?.tools ?? []),
-			tool_choice: convertOpenAIToolChoiceToAnthropic(
-				this.getToolChoiceForRequest(metadata),
-				metadata?.parallelToolCalls,
-			),
+			tools: convertOpenAIToolsToAnthropic(metadata.tools),
+			tool_choice:
+				choice === "none"
+					? { type: "none" }
+					: convertOpenAIToolChoiceToAnthropic(choice, metadata.parallelToolCalls),
 		}
 	}
 
@@ -316,11 +318,9 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 		}
 
 		if (typeof input === "object") {
-			if (!Array.isArray(input) && Object.keys(input).length === 0) {
-				return undefined
-			}
-
 			try {
+				// A completed block may retain its initial input, including {}. The stream
+				// defers this fallback until block_stop and prefers any JSON deltas.
 				return JSON.stringify(input)
 			} catch {
 				return undefined

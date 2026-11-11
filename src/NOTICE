@@ -1,0 +1,9 @@
+OpenAI Codex
+Copyright 2025 OpenAI
+
+The default context compaction prompt in shared/condense-prompt.ts is reproduced
+verbatim from codex-rs/prompts/templates/compact/prompt.md in openai/codex,
+commit 2889d8e1bf564af2ed3a72dc929b583551561363, retrieved 2026-11-06:
+https://github.com/openai/codex/blob/2889d8e1bf564af2ed3a72dc929b583551561363/codex-rs/prompts/templates/compact/prompt.md
+
+Licensed under the Apache License, Version 2.0. See LICENSE.

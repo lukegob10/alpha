@@ -70,6 +70,8 @@ describe("ModelPicker", () => {
 			/>,
 		)
 
+		expect(screen.queryByTestId("selected-model-info")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for Model" }))
 		expect(screen.getByTestId("selected-model-info")).toHaveTextContent("200000")
 	})
 
@@ -82,6 +84,7 @@ describe("ModelPicker", () => {
 			/>,
 		)
 
+		fireEvent.click(screen.getByRole("button", { name: "Help for Model" }))
 		expect(screen.queryByTestId("selected-model-info")).not.toBeInTheDocument()
 		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 	})
@@ -262,6 +265,44 @@ describe("ModelPicker", () => {
 		})
 
 		expect(screen.queryByRole("link", { name: "Custom Gateway" })).not.toBeInTheDocument()
+	})
+
+	it("keeps model information out of the form until help is requested without changing the selection", () => {
+		render(<ModelPicker {...defaultProps} apiConfiguration={{ apiProvider: "openai", openAiModelId: "model1" }} />)
+		expect(screen.getByTestId("model-picker-button")).toHaveTextContent("model1")
+		expect(screen.queryByTestId("selected-model-info")).not.toBeInTheDocument()
+		expect(screen.queryByText("Test Service")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for Model" }))
+		expect(screen.getByRole("dialog", { name: "Help for Model" })).toBeInTheDocument()
+		expect(screen.getByTestId("selected-model-info")).toBeInTheDocument()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
+	})
+
+	it("associates the field label with the model selector and announces its current value", () => {
+		render(
+			<ModelPicker
+				{...defaultProps}
+				label="Default model"
+				apiConfiguration={{ apiProvider: "openai", openAiModelId: "model1" }}
+			/>,
+		)
+		expect(screen.getByLabelText("Default model", { selector: "button" })).toBe(
+			screen.getByRole("combobox", { name: "Default model model1" }),
+		)
+	})
+
+	it("keeps setup guidance in help when simplified settings are shown", () => {
+		render(
+			<ModelPicker
+				{...defaultProps}
+				apiConfiguration={{ apiProvider: "openai", openAiModelId: "model1" }}
+				simplifySettings
+			/>,
+		)
+		expect(screen.queryByText("You can adjust detailed model settings later.")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for Model" }))
+		expect(screen.getByText("You can adjust detailed model settings later.")).toBeInTheDocument()
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 	})
 
 	describe("Error Message Display", () => {

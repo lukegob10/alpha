@@ -118,6 +118,102 @@ describe("CustomModesManager mutation integrity", () => {
 		])
 	})
 
+	it.each([
+		["null rule entry", [null]],
+		["non-array rules", { relativePath: "new.md", content: "Replacement rule" }],
+		["traversing path", [{ relativePath: "rules-existing/../outside.md", content: "Replacement rule" }]],
+		["drive-relative path", [{ relativePath: "C:outside.md", content: "Replacement rule" }]],
+		[
+			"file/directory path collision",
+			[
+				{ relativePath: "nested", content: "Replacement rule" },
+				{ relativePath: "nested/new.md", content: "Replacement rule" },
+			],
+		],
+	])("preserves existing settings and rules when a later imported mode has %s", async (_label, rulesFiles) => {
+		const original = yaml.stringify({ customModes: [newMode("existing", "project")] })
+		const projectModes = path.join(directory, ".alphamodes")
+		const rulesDirectory = path.join(directory, ".alpha", "rules-existing")
+		const existingRule = path.join(rulesDirectory, "keep.md")
+		await fs.writeFile(projectModes, original)
+		await fs.mkdir(rulesDirectory, { recursive: true })
+		await fs.writeFile(existingRule, "Keep this rule")
+
+		const result = await createManager().importModeWithRules(
+			yaml.stringify({
+				customModes: [
+					newMode("would-be-added"),
+					{ ...newMode("existing"), name: "Replacement mode", rulesFiles },
+				],
+			}),
+		)
+
+		await expect(fs.readFile(projectModes, "utf-8")).resolves.toBe(original)
+		await expect(fs.readFile(existingRule, "utf-8")).resolves.toBe("Keep this rule")
+		expect(result.success).toBe(false)
+	})
+
+	it("preserves nested rules through a same-mode export and import", async () => {
+		const projectModes = path.join(directory, ".alphamodes")
+		const rulesDirectory = path.join(directory, ".alpha", "rules-existing")
+		const nestedRule = path.join(rulesDirectory, "rules-nested", "deep.md")
+		const emptyRule = path.join(path.dirname(nestedRule), "empty.md")
+		await fs.writeFile(projectModes, yaml.stringify({ customModes: [newMode("existing", "project")] }))
+		await fs.mkdir(path.dirname(nestedRule), { recursive: true })
+		await fs.writeFile(path.join(rulesDirectory, "top.md"), "Top-level rule")
+		await fs.writeFile(nestedRule, "  Nested rule\n")
+		await fs.writeFile(emptyRule, "")
+
+		const manager = createManager()
+		const exported = await manager.exportModeWithRules("existing")
+		expect(exported).toMatchObject({ success: true, yaml: expect.any(String) })
+		await expect(manager.importModeWithRules(exported.yaml!)).resolves.toMatchObject({ success: true })
+
+		await expect(fs.readFile(nestedRule, "utf-8")).resolves.toBe("  Nested rule\n")
+		await expect(fs.readFile(emptyRule, "utf-8")).resolves.toBe("")
+		await expect(fs.readFile(path.join(rulesDirectory, "top.md"), "utf-8")).resolves.toBe("Top-level rule")
+	})
+
+	it("does not export rules from linked directories", async () => {
+		const projectModes = path.join(directory, ".alphamodes")
+		const rulesDirectory = path.join(directory, ".alpha", "rules-existing")
+		const linkedDirectory = path.join(directory, "linked-rules-target")
+		await fs.writeFile(projectModes, yaml.stringify({ customModes: [newMode("existing", "project")] }))
+		await fs.mkdir(rulesDirectory, { recursive: true })
+		await fs.mkdir(linkedDirectory)
+		await fs.writeFile(path.join(linkedDirectory, "private.md"), "Private rule")
+		const linkedEntry = path.join(rulesDirectory, "linked")
+		const linkType = process.platform === "win32" ? "junction" : "dir"
+		await fs.symlink(linkedDirectory, linkedEntry, linkType)
+
+		const manager = createManager()
+		const exported = await manager.exportModeWithRules("existing")
+		expect(exported.success).toBe(true)
+		expect(exported.yaml).not.toContain("Private rule")
+
+		await fs.unlink(linkedEntry)
+		await fs.rmdir(rulesDirectory)
+		await fs.symlink(linkedDirectory, rulesDirectory, linkType)
+		await expect(manager.exportModeWithRules("existing")).resolves.toMatchObject({ success: false })
+	})
+
+	it("fails instead of emitting a partial export when rules exceed the content budget", async () => {
+		const projectModes = path.join(directory, ".alphamodes")
+		const rulesDirectory = path.join(directory, ".alpha", "rules-existing")
+		const oversizedRule = path.join(rulesDirectory, "oversized.md")
+		await fs.writeFile(projectModes, yaml.stringify({ customModes: [newMode("existing", "project")] }))
+		await fs.mkdir(rulesDirectory, { recursive: true })
+		await fs.writeFile(oversizedRule, "")
+		await fs.truncate(oversizedRule, 9 * 1024 * 1024)
+		const readFile = vi.spyOn(fs, "readFile")
+
+		await expect(createManager().exportModeWithRules("existing")).resolves.toEqual({
+			success: false,
+			error: "customModes.errors.ruleExportLimit",
+		})
+		expect(readFile).not.toHaveBeenCalledWith(await fs.realpath(oversizedRule), "utf-8")
+	})
+
 	it("creates default settings only when the file is missing", async () => {
 		await fs.unlink(settingsPath)
 		await expect(createManager().getCustomModesFilePath()).resolves.toBe(settingsPath)

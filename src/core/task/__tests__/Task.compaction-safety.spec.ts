@@ -606,8 +606,6 @@ describe("forced compaction step ownership", () => {
 
 describe("Task small Copilot context exhaustion", () => {
 	async function smallWindowFixture(automatic: boolean, irreducible = false) {
-		const { TelemetryService } = await import("@alpha-code/telemetry")
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		const fixture = harness()
 		const { task, api, provider, history } = fixture
 		const contextWindow = getVscodeLlmContextWindow(
@@ -2656,8 +2654,6 @@ describe("Task context recovery admission", () => {
 		"keeps human corrections installed after actual failed %s compaction",
 		async (trigger) => {
 			const { task, api, save, history, provider } = harness()
-			const { TelemetryService } = await import("@alpha-code/telemetry")
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const actualContext =
 				await vi.importActual<typeof import("../../context-management")>("../../context-management")
 			const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")
@@ -2706,8 +2702,6 @@ describe("Task context recovery admission", () => {
 		"dispatches after actual proactive summary failure with reported usage %s",
 		async (contextTokens) => {
 			const { task, api, save, history, provider } = harness()
-			const { TelemetryService } = await import("@alpha-code/telemetry")
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const actualContext =
 				await vi.importActual<typeof import("../../context-management")>("../../context-management")
 			const actualCondense = await vi.importActual<typeof import("../../condense")>("../../condense")

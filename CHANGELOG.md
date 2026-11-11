@@ -1,5 +1,33 @@
 # Changelog
 
+## 3.2.27
+
+### Patch Changes
+
+- Use VS Code’s tool grants for integrated browser actions in Auto and Full Access, avoiding a second confirmation in Alpha.
+- Require explicit Alpha approval before selecting local files in a browser dialog.
+- Document how to manage VS Code browser tool grants from the Command Palette.
+
+## 3.2.26
+
+### Patch Changes
+
+- Fix false runtime takeover errors during task saves and match terminal startup, output, and exit events to the command that owns them.
+- Preserve completed tasks and task history across overlapping saves and recovery. Propagate cancellation and request deadlines through provider and task operations.
+- Verify managed worktree ownership before cleanup and confirm the destination checkout before applying delegated changes.
+- Preserve attachments on follow-up answers, route Git suggestions to the requesting chat, and validate mode imports before saving them.
+- Update the extension and in-app release announcement to 3.2.26. The minimum supported host is VS Code 1.125.0 and the release reference is VS Code 1.141.0.
+
+## 3.2.25
+
+### Patch Changes
+
+- Reorganize settings into Providers, Tools & agents, Preferences, and Advanced, with focused help, searchable controls, and validation that preserves unsaved edits.
+- Clarify intended behavior, constraints, and observable success before substantial implementation, reusing requirements already present in the conversation or task context.
+- Keep parent goals and dependency contracts in delegated work, verify combined workflows in the integrated workspace, and reuse valid checks while reporting remaining gaps.
+- Remove retired telemetry and reporting controls and retain compatibility handling for saved settings.
+- Update the extension, VSIX, and in-app release announcement together for Alpha 3.2.25. VS Code 1.125.0 remains the minimum; exact VS Code 1.141.0 remains the reference host.
+
 ## 3.2.24
 
 ### Patch Changes

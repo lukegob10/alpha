@@ -1,9 +1,12 @@
 import { strict as assert } from "node:assert"
+import { once } from "node:events"
 import * as fs from "node:fs/promises"
+import { createServer } from "node:http"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
 import { alphaMessageSchema, type AlphaMessage } from "@alpha-code/types"
+import { withAutomatedBrowserApprovals } from "./host-browser-approvals"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
@@ -31,7 +34,10 @@ interface ApprovalModeHostProvider {
 interface Observation {
 	task?: ApprovalTask
 	requests: number
-	calls: Array<{ name: string; arguments: Record<string, unknown> }>
+	calls: Array<{
+		name: string
+		arguments: Record<string, unknown> | ((messages: unknown[]) => Record<string, unknown>)
+	}>
 	modelInputs: unknown[][]
 }
 
@@ -103,7 +109,9 @@ class ApprovalModeAI {
 				type: "tool_call" as const,
 				id: `approval-mode-${index}`,
 				name: call.name,
-				arguments: JSON.stringify(call.arguments),
+				arguments: JSON.stringify(
+					typeof call.arguments === "function" ? call.arguments(messages) : call.arguments,
+				),
 			}
 			return
 		}
@@ -204,6 +212,75 @@ async function runScriptedApproval(options: {
 
 suite("Ask / Auto / Full Access in the extension host", function () {
 	this.timeout(180_000)
+
+	for (const approvalMode of ["auto", "bypass"] as const) {
+		test(`${approvalMode} opens, navigates and runs Playwright with only VS Code's browser grants`, async () => {
+			const tools = ["open_browser_page", "navigate_page", "run_playwright_code"] as const
+			const title = "Alpha browser approval destination"
+			const server = createServer((request, response) => {
+				const page = request.url === "/destination" ? title : "Alpha browser approval start"
+				response.writeHead(200, { "Content-Type": "text/html" }).end(`<title>${page}</title><h1>${page}</h1>`)
+			})
+			const browser = vscode.workspace.getConfiguration("workbench.browser")
+			const enabled = browser.inspect<boolean>("enableChatTools")?.globalValue
+			await withBoundedFixtureCleanup(async () => {
+				await browser.update("enableChatTools", true, vscode.ConfigurationTarget.Global)
+				await waitFor(() => tools.every((name) => vscode.lm.tools.some((tool) => tool.name === name)), {
+					timeout: 15_000,
+					description: "VS Code integrated browser tool catalog",
+				})
+				server.listen(0, "127.0.0.1")
+				await once(server, "listening")
+				const address = server.address()
+				assert.ok(address && typeof address !== "string")
+				const url = `http://127.0.0.1:${address.port}`
+				const pageId = (messages: unknown[]) => {
+					const id = /Page ID:\s*([\w-]+)/.exec(JSON.stringify(messages))?.[1]
+					assert.ok(id, "The browser open call must return a page ID")
+					return id
+				}
+				await withAutomatedBrowserApprovals(async () => {
+					const { asks, modelInputs } = await runScriptedApproval({
+						approvalMode,
+						requestText:
+							"Open the local test site in Alpha's integrated browser, navigate to the destination page, and verify its title with Playwright.",
+						calls: [
+							{ name: "open_browser_page", arguments: { url, forceNew: true } },
+							{
+								name: "navigate_page",
+								arguments: (messages) => ({ pageId: pageId(messages), url: `${url}/destination` }),
+							},
+							{
+								name: "run_playwright_code",
+								arguments: (messages) => ({
+									pageId: pageId(messages),
+									code: "return (await page.title()).toUpperCase()",
+								}),
+							},
+						],
+						onAsk: (_task, ask) => assert.equal(ask.ask, "completion_result", "Unexpected Alpha approval"),
+					})
+					assert.deepEqual(
+						asks.filter((ask) => ask !== "completion_result"),
+						[],
+					)
+					assert.ok(
+						JSON.stringify(modelInputs.at(-1)).includes(title.toUpperCase()),
+						"Playwright must report the destination title",
+					)
+				}, tools)
+			}, [
+				() => browser.update("enableChatTools", enabled, vscode.ConfigurationTarget.Global),
+				() => {
+					server.closeAllConnections()
+					if (server.listening)
+						return new Promise<void>((resolve, reject) =>
+							server.close((error) => (error ? reject(error) : resolve())),
+						)
+				},
+			])
+		})
+	}
 
 	for (const approvalMode of ["ask", "auto", "bypass"] as const) {
 		for (const viaCommand of [false, true]) {

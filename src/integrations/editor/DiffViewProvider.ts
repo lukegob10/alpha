@@ -493,8 +493,10 @@ export class DiffViewProvider {
 	}
 
 	/**
-	 * Directly save content to a file without showing diff view
-	 * Used when preventFocusDisruption experiment is enabled
+	 * Save an approved edit without creating a diff preview. Agent tools pass openFile=false;
+	 * explicit user actions can still open files or previews. Approval stays with the caller.
+	 * This presentation choice preserves policy-before-write semantics (Codex CLI apply_patch,
+	 * 4688e49329637b8b50dd8450ef784020537e2215, reviewed 2026-11-06).
 	 *
 	 * @param relPath - Relative path to the file
 	 * @param content - Content to write to the file

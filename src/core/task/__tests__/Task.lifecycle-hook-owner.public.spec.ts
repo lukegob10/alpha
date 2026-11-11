@@ -4,7 +4,6 @@ import * as path from "node:path"
 import * as vscode from "vscode"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AlphaMessage, ProviderSettings } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { ApiHandler } from "../../../api"
 import i18n from "../../../i18n"
 import common from "../../../i18n/locales/en/common.json"
@@ -134,7 +133,6 @@ async function harness(
 		schedulerEvent?: SchedulerEvent
 	} = {},
 ) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-lifecycle-owner-"))
 	const workspace = path.join(storage, "workspace")
 	await fs.mkdir(workspace)

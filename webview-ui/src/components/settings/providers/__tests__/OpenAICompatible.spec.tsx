@@ -60,7 +60,8 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 // Mock the translation hook
 vi.mock("@src/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
-		t: (key: string) => key,
+		t: (key: string, options?: { label?: string }) =>
+			key === "settings:helpFor" ? `Help for ${options?.label}` : key,
 	}),
 }))
 
@@ -68,6 +69,9 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 vi.mock("@src/components/ui", () => ({
 	Button: ({ children, onClick }: any) => <button onClick={onClick}>{children}</button>,
 	StandardTooltip: ({ children, content }: any) => <div title={content}>{children}</div>,
+	Collapsible: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
+	CollapsibleTrigger: ({ children }: React.PropsWithChildren) => <button>{children}</button>,
+	CollapsibleContent: ({ children }: React.PropsWithChildren) => <div>{children}</div>,
 }))
 
 // Mock other components
@@ -182,8 +186,7 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			const checkbox = screen.getByTestId("checkbox-settings:includemaxoutputtokens")
 			expect(checkbox).toBeInTheDocument()
 
-			// Check that the description text is rendered
-			expect(screen.getByText("settings:includeMaxOutputTokensDescription")).toBeInTheDocument()
+			expect(screen.queryByText("settings:includeMaxOutputTokensDescription")).not.toBeInTheDocument()
 		})
 
 		it("should render the checkbox with correct translation keys", () => {
@@ -202,8 +205,8 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			// Check that the correct translation key is used for the label
 			expect(screen.getByText("settings:includeMaxOutputTokens")).toBeInTheDocument()
 
-			// Check that the correct translation key is used for the description
-			expect(screen.getByText("settings:includeMaxOutputTokensDescription")).toBeInTheDocument()
+			fireEvent.click(screen.getByRole("button", { name: "Help for settings:includeMaxOutputTokens" }))
+			expect(screen.getByRole("dialog")).toHaveTextContent("settings:includeMaxOutputTokensDescription")
 		})
 	})
 
@@ -358,7 +361,7 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 				expect(screen.getByTestId("max-output-tokens")).toHaveAttribute("aria-invalid", "true")
 				expect(screen.getByTestId("max-output-tokens")).toHaveAttribute(
 					"aria-describedby",
-					"openai-output-token-limit-description openai-output-token-limit-error",
+					"openai-output-token-limit-error",
 				)
 				expect(screen.getByRole("alert")).toHaveTextContent("settings:validation.outputTokenLimit")
 				expect(onOutputTokenLimitError).toHaveBeenLastCalledWith("settings:validation.outputTokenLimit")
@@ -388,6 +391,19 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 			unmount()
 			expect(onOutputTokenLimitError).toHaveBeenLastCalledWith(undefined)
+		})
+
+		it("keeps an invalid output draft and its Save blocker active while help is open", () => {
+			render(editor())
+			fireEvent.change(screen.getByTestId("max-output-tokens"), { target: { value: "1.5" } })
+			expect(onOutputTokenLimitError).toHaveBeenLastCalledWith("settings:validation.outputTokenLimit")
+			fireEvent.click(
+				screen.getByRole("button", { name: "Help for settings:providers.customModel.maxTokens.label" }),
+			)
+			expect(screen.getByRole("dialog")).toHaveTextContent("settings:providers.customModel.maxTokens.description")
+			expect(screen.getByTestId("max-output-tokens")).toHaveValue("1.5")
+			expect(screen.getByRole("alert")).toHaveTextContent("settings:validation.outputTokenLimit")
+			expect(onOutputTokenLimitError).toHaveBeenLastCalledWith("settings:validation.outputTokenLimit")
 		})
 
 		it("resets an invalid local draft on a profile identity change with the same saved cap", () => {
@@ -576,7 +592,7 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 	})
 
 	describe("UI Structure", () => {
-		it("should render the checkbox with description in correct structure", () => {
+		it("opens explanatory help without toggling the neighboring checkbox", () => {
 			const apiConfiguration: Partial<ProviderSettings> = {
 				includeMaxTokens: true,
 			}
@@ -594,9 +610,60 @@ describe("OpenAICompatible Component - includeMaxTokens checkbox", () => {
 			const parentDiv = checkbox.closest("div")
 			expect(parentDiv).toBeInTheDocument()
 
-			// Check that the description has the correct styling classes
-			const description = screen.getByText("settings:includeMaxOutputTokensDescription")
-			expect(description).toHaveClass("text-sm", "text-vscode-descriptionForeground", "ml-6")
+			const help = screen.getByRole("button", { name: "Help for settings:includeMaxOutputTokens" })
+			expect(checkbox).not.toContainElement(help)
+			fireEvent.click(help)
+			expect(screen.getByRole("dialog")).toHaveTextContent("settings:includeMaxOutputTokensDescription")
+			expect(screen.getByTestId("checkbox-input-settings:includemaxoutputtokens")).toBeChecked()
+			expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 		})
+	})
+
+	it.each([
+		["settings:providers.advancedConnection", "settings:providers.customModel.capabilities"],
+		["settings:providers.customModel.maxTokens.label", "settings:providers.customModel.maxTokens.description"],
+		[
+			"settings:providers.customModel.contextWindow.label",
+			"settings:providers.customModel.contextWindow.description",
+		],
+		[
+			"settings:providers.customModel.temperatureSupport.label",
+			"settings:providers.customModel.temperatureSupport.description",
+		],
+		[
+			"settings:providers.customModel.imageSupport.label",
+			"settings:providers.customModel.imageSupport.description",
+		],
+		["settings:providers.customModel.promptCache.label", "settings:providers.customModel.promptCache.description"],
+		[
+			"settings:providers.customModel.pricing.input.label",
+			"settings:providers.customModel.pricing.input.description",
+		],
+		[
+			"settings:providers.customModel.pricing.output.label",
+			"settings:providers.customModel.pricing.output.description",
+		],
+		[
+			"settings:providers.customModel.pricing.cacheReads.label",
+			"settings:providers.customModel.pricing.cacheReads.description",
+		],
+		[
+			"settings:providers.customModel.pricing.cacheWrites.label",
+			"settings:providers.customModel.pricing.cacheWrites.description",
+		],
+	])("keeps %s guidance hidden until its help action is requested", (label, description) => {
+		render(
+			<OpenAICompatible
+				apiConfiguration={{
+					openAiCustomModelInfo: { ...openAiModelInfoSaneDefaults, supportsPromptCache: true },
+				}}
+				setApiConfigurationField={mockSetApiConfigurationField}
+				organizationAllowList={mockOrganizationAllowList}
+			/>,
+		)
+		expect(screen.queryByText(description)).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: `Help for ${label}` }))
+		expect(screen.getByRole("dialog")).toHaveTextContent(description)
+		expect(mockSetApiConfigurationField).not.toHaveBeenCalled()
 	})
 })

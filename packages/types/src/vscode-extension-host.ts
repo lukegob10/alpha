@@ -39,11 +39,15 @@ export interface TaskReasoningResponse {
 import type { GlobalSettings, AlphaCodeSettings } from "./global-settings.js"
 import type { ProviderSettings, ProviderSettingsEntry } from "./provider-settings.js"
 import type { ProviderProfileRenameRequest, ProviderProfileRenameResult } from "./provider-profile-rename.js"
-import type { ProviderProfileSaveId, ProviderProfileSaveResult } from "./provider-profile-save.js"
+import type {
+	ProviderProfileSaveId,
+	ProviderProfileSaveResult,
+	ProviderProfileSnapshot,
+} from "./provider-profile-save.js"
+import type { SettingsSaveRequest, SettingsSaveResult } from "./settings-save.js"
 import type { HistoryItem } from "./history.js"
 import type { TaskRenameRequest, TaskRenameResult } from "./task-rename.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
-import type { TelemetrySetting } from "./telemetry.js"
 import type { Experiments } from "./experiment.js"
 import type { AlphaMessage, QueuedMessage } from "./message.js"
 import type { CurrentTaskView, LiveTaskMetadata } from "./task.js"
@@ -66,6 +70,7 @@ import type { CodebaseIndexEmbedderProvider } from "./codebase-index.js"
 import type {
 	CreateScheduledTaskPayload,
 	ScheduledTask,
+	ScheduledTaskCreationResult,
 	ScheduledTaskRun,
 	ScheduledTaskState,
 	ScheduledTaskSkillsRequest,
@@ -210,7 +215,7 @@ function validateLifecycleEnvelope(message: unknown, context: z.RefinementCtx): 
  * `event`/`snapshot` aliases are retained for hosts that adopted the contract
  * before the message envelope was standardized.
  */
-export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleEvent"),
 		taskId: agentTaskIdSchema.optional(),
@@ -266,9 +271,9 @@ export const agentLifecycleEventMessageSchema: z.ZodType<AgentLifecycleEventMess
 				message: "Attached lifecycle snapshot must include the event for the same task, run, and turn",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleEventMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleEventMessage, unknown>
 
-export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapshotMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleSnapshot"),
 		taskId: agentTaskIdSchema.optional(),
@@ -306,9 +311,9 @@ export const agentLifecycleSnapshotMessageSchema: z.ZodType<AgentLifecycleSnapsh
 				message: "Lifecycle snapshot aliases must describe the same snapshot",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleSnapshotMessage, unknown>
 
-export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown> = z
+export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegradedMessage, unknown> = z
 	.object({
 		type: z.literal("agentLifecycleDegraded"),
 		taskId: agentTaskIdSchema.optional(),
@@ -346,7 +351,7 @@ export const agentLifecycleDegradedMessageSchema: z.ZodType<AgentLifecycleDegrad
 				message: "Lifecycle degraded aliases must describe the same signal",
 			})
 		}
-	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, z.ZodTypeDef, unknown>
+	}) as unknown as z.ZodType<AgentLifecycleDegradedMessage, unknown>
 
 // Explicit aliases make the schema names discoverable to extension callers.
 export const extensionAgentLifecycleEventMessageSchema = agentLifecycleEventMessageSchema
@@ -508,9 +513,11 @@ export interface ExtensionMessage {
 		| "branchWorktreeIncludeResult"
 		| "folderSelected"
 		| "skills"
+		| "settingsSaved"
 		| "fileContent"
 		| "scheduledTasksUpdated"
 		| "scheduledTaskSkills"
+		| "scheduledTaskCreationResult"
 		| "taskReasoningUpdated"
 		| "apiConfigurationRenamed"
 		| "apiConfigurationSaved"
@@ -535,10 +542,12 @@ export interface ExtensionMessage {
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	scheduledTaskState?: ScheduledTaskState
+	scheduledTaskCreationResult?: ScheduledTaskCreationResult
 	scheduledTaskSkills?: ScheduledTaskSkillsResponse
 	taskReasoningResponse?: TaskReasoningResponse
 	apiConfigurationRenameResult?: ProviderProfileRenameResult
 	apiConfigurationSaveResult?: ProviderProfileSaveResult
+	settingsSaveResult?: SettingsSaveResult
 	taskApprovalModeUpdateResult?: TaskApprovalModeUpdateResult
 	/** Canonical lifecycle event payload for extension -> webview rollout. */
 	agentLifecycleEvent?: AgentLifecycleEvent
@@ -621,6 +630,7 @@ export interface ExtensionMessage {
 	list?: string[] // For dismissedUpsells
 	tools?: SerializedCustomToolDefinition[] // For customToolsResult
 	skills?: SkillMetadata[] // For skills response
+	skillsError?: string
 	modes?: { slug: string; name: string }[] // For modes response
 	aggregatedCosts?: {
 		// For taskWithAggregatedCosts response
@@ -682,6 +692,16 @@ export interface ExtensionMessage {
 	path?: string
 }
 
+export interface CommandRuleSettings {
+	allowedCommands: string[]
+	deniedCommands: string[]
+	inherited: {
+		source: "user" | "workspace" | "workspaceFolder"
+		allowedCommands: string[]
+		deniedCommands: string[]
+	}[]
+}
+
 export type ExtensionState = Pick<
 	GlobalSettings,
 	| "currentApiConfigName"
@@ -719,7 +739,6 @@ export type ExtensionState = Pick<
 	| "allowedMaxCost"
 	| "soundEnabled"
 	| "soundVolume"
-	| "terminalOutputPreviewSize"
 	| "terminalShellIntegrationTimeout"
 	| "terminalShellIntegrationDisabled"
 	| "terminalCommandDelay"
@@ -751,6 +770,7 @@ export type ExtensionState = Pick<
 	| "showWorktreesInHomeScreen"
 	| "disabledTools"
 > & {
+	commandRuleSettings?: CommandRuleSettings
 	lockApiConfigAcrossModes?: boolean
 	version: string
 	alphaMessages: AlphaMessage[]
@@ -771,6 +791,8 @@ export type ExtensionState = Pick<
 	agentLifecycleDegraded?: Record<string, AgentLifecycleDegradedSignal>
 	managedAgentTree?: ManagedAgentTreeProjection
 	apiConfiguration: ProviderSettings
+	/** Settings edit values and their content version come from one saved-profile read. */
+	settingsProviderProfile?: ProviderProfileSnapshot | null
 	uriScheme?: string
 	shouldShowAnnouncement: boolean
 
@@ -798,9 +820,6 @@ export type ExtensionState = Pick<
 	toolRequirements?: Record<string, boolean> // Map of tool names to their requirements (e.g. {"apply_diff": true})
 
 	cwd?: string // Current working directory
-	telemetrySetting: TelemetrySetting
-	telemetryKey?: string
-	machineId?: string
 
 	renderContext: "sidebar" | "editor"
 	settingsImportedAt?: number
@@ -875,6 +894,7 @@ interface WebviewMessageBase {
 		| "getListApiConfiguration"
 		| "customInstructions"
 		| "webviewDidLaunch"
+		| "requestState"
 		| "webviewUiReady"
 		| "webviewFocusChanged"
 		| "webviewError"
@@ -919,6 +939,7 @@ interface WebviewMessageBase {
 		| "discardSubagentChangeSet"
 		| "cancelAutoApproval"
 		| "updateVSCodeSetting"
+		| "openTerminalSettings"
 		| "getVSCodeSetting"
 		| "vsCodeSetting"
 		| "updateCondensingPrompt"
@@ -953,7 +974,6 @@ interface WebviewMessageBase {
 		| "checkpointRestore"
 		| "deleteMcpServer"
 		| "codebaseIndexEnabled"
-		| "telemetrySetting"
 		| "searchFiles"
 		| "searchTickets"
 		| "openTicket"
@@ -1063,7 +1083,7 @@ interface WebviewMessageBase {
 	reasoningProfileId?: string
 	reasoningPreference?: z.infer<typeof taskReasoningPreferenceSchema>
 	editedMessageContent?: string
-	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "scheduledTasks"
+	tab?: "settings" | "history" | "mcp" | "modes" | "chat" | "scheduledTasks" | "about" | "worktrees"
 	disabled?: boolean
 	context?: string
 	dataUri?: string
@@ -1160,6 +1180,7 @@ interface WebviewMessageBase {
 		codebaseIndexBedrockProfile?: string
 	}
 	updatedSettings?: AlphaCodeSettings
+	settingsSave?: SettingsSaveRequest
 	/** Task configuration applied via `createTask()`. */
 	taskConfiguration?: AlphaCodeSettings
 	// Worktree properties
@@ -1205,6 +1226,18 @@ export type WebviewMessage =
 			requestId: string
 			/** Resolve the saved name by ID inside the host's configuration queue. */
 			apiConfigurationId: ProviderProfileSaveId
+			/** Content version captured with the local settings edit buffer. */
+			apiConfigurationExpectedVersion?: string
+			apiConfiguration: ProviderSettings
+	  })
+	| (Omit<WebviewMessageBase, "type" | "requestId"> & {
+			type: "upsertApiConfiguration"
+			/** Initial setup is acknowledged, but cannot replace an existing saved identity by name. */
+			apiConfigurationId?: never
+			requestId: string
+			/** Opt in to versioned creation receipts; older webviews use strict result readers. */
+			apiConfigurationReturnVersion?: true
+			text: string
 			apiConfiguration: ProviderSettings
 	  })
 	| (Omit<WebviewMessageBase, "type" | "requestId"> & {

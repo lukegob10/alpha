@@ -1,6 +1,7 @@
 import { useAppTranslation } from "@/i18n/TranslationContext"
 
 import { Slider } from "@/components/ui"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface RateLimitSecondsControlProps {
 	value: number
@@ -12,7 +13,12 @@ export const RateLimitSecondsControl = ({ value, onChange }: RateLimitSecondsCon
 
 	return (
 		<div className="flex flex-col gap-1">
-			<label className="block font-medium mb-1">{t("settings:providers.rateLimitSeconds.label")}</label>
+			<div className="flex items-center gap-1">
+				<label className="block font-medium">{t("settings:providers.rateLimitSeconds.label")}</label>
+				<SettingsHelp label={t("settings:providers.rateLimitSeconds.label")}>
+					{t("settings:providers.rateLimitSeconds.description", { value })}
+				</SettingsHelp>
+			</div>
 			<div className="flex items-center gap-2">
 				<Slider
 					aria-label={t("settings:providers.rateLimitSeconds.label")}
@@ -23,9 +29,6 @@ export const RateLimitSecondsControl = ({ value, onChange }: RateLimitSecondsCon
 					onValueChange={(newValue) => onChange(newValue[0])}
 				/>
 				<span className="w-10">{value}s</span>
-			</div>
-			<div className="text-sm text-vscode-descriptionForeground">
-				{t("settings:providers.rateLimitSeconds.description", { value })}
 			</div>
 		</div>
 	)

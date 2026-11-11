@@ -1,4 +1,5 @@
-import "@testing-library/jest-dom"
+import "./src/zod-config"
+
 import "@testing-library/jest-dom/vitest"
 
 // Force React into development mode for tests

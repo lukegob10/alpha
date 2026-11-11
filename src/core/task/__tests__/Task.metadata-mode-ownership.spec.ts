@@ -10,7 +10,6 @@ import { AlphaProvider } from "../../webview/AlphaProvider"
 import { Task } from "../Task"
 import { WorkspaceMutationGate } from "../WorkspaceMutationGate"
 
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureModeSwitch: vi.fn() } } }))
 vi.mock("../../../utils/storage", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: async (storagePath: string) => storagePath,

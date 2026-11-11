@@ -6,6 +6,7 @@ import {
 	type ExtensionState,
 	type SubagentAutoApprovalPolicy,
 	type ApprovalMode,
+	browserToolNames,
 	deriveAutoApprovalFlags,
 	effectiveCommandAllowlistForMode,
 	inferApprovalModeFromPolicy,
@@ -303,6 +304,17 @@ export async function checkAutoApproval({
 				: { decision: "ask" }
 		}
 
+		if (toolName === "browserAction") {
+			// Codex 5228d94a27b7 omits the harness prompt for approved tools.
+			// VS Code evaluates its own per-tool grants after Alpha admits the action.
+			return (mode === "auto" || mode === "bypass") &&
+				!requiresExplicitApproval &&
+				!isProtected &&
+				browserToolNames.some((name) => name === tool.action)
+				? { decision: "approve" }
+				: { decision: "ask" }
+		}
+
 		if (requiresExplicitApproval && mode !== "bypass") return { decision: "ask" }
 		if (toolName === "create_thread" || toolName === "fork_thread") {
 			return mode === "auto" || mode === "bypass" ? { decision: "approve" } : { decision: "ask" }
@@ -398,8 +410,8 @@ export async function checkAutoApprovalWithInheritedPolicy({
 		liveMode === "bypass" &&
 		inheritedMode === "bypass" &&
 		(input.ask === "command" || input.ask === "tool" || input.ask === "use_mcp_server")
-	if (input.ask === "tool" && !parseToolApprovalMetadata(input.text))
-		return { decision: fullAccessPermission ? "deny" : "ask" }
+	const tool = input.ask === "tool" ? parseToolApprovalMetadata(input.text) : undefined
+	if (input.ask === "tool" && !tool) return { decision: fullAccessPermission ? "deny" : "ask" }
 	const checkInheritedPolicy = async (): Promise<CheckAutoApprovalResult> => {
 		if (input.ask === "use_mcp_server") {
 			return checkAutoApproval({
@@ -411,7 +423,11 @@ export async function checkAutoApprovalWithInheritedPolicy({
 				},
 			})
 		}
-		if (input.ask !== "command") return checkAutoApproval({ ...input, state: inheritedState })
+		if (input.ask !== "command") {
+			const state =
+				tool?.tool === "browserAction" ? { ...inheritedState, approvalMode: inheritedMode } : inheritedState
+			return checkAutoApproval({ ...input, state })
+		}
 		if (!input.text) return { decision: "ask" }
 		const decisions = [inheritedState.commandApproval, ...(inheritedState.commandApprovalCeilings ?? [])].map(
 			(policy) => getSubagentCommandDecision(input.text!, policy),

@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import * as vscode from "vscode"
 import * as path from "path"
+import { worktreeService } from "@alpha-code/core"
 
 import type { AlphaProvider } from "../../AlphaProvider"
-import { handleGetWorktreeDefaults, handleSwitchWorktree } from "../handlers"
+import { handleGetWorktreeDefaults, handleListWorktrees, handleSwitchWorktree } from "../handlers"
 import { getGlobalConfigDirectory } from "../../../../services/config-paths/index.js"
 
 vi.mock("vscode", () => ({
@@ -12,7 +13,10 @@ vi.mock("vscode", () => ({
 	workspace: { workspaceFolders: [{ name: "example" }] },
 }))
 
-vi.mock("@alpha-code/core", () => ({ worktreeService: {}, worktreeIncludeService: {} }))
+vi.mock("@alpha-code/core", () => ({
+	worktreeService: { checkGitRepo: vi.fn(), getGitRootPath: vi.fn(), listWorktrees: vi.fn() },
+	worktreeIncludeService: {},
+}))
 vi.mock("../../../../services/config-paths/index.js", () => ({
 	getGlobalConfigDirectory: vi.fn(() => "/home/alpha/.alpha"),
 }))
@@ -25,6 +29,21 @@ describe("handleGetWorktreeDefaults", () => {
 		const worktreeName = path.basename(defaults.suggestedPath)
 		expect(worktreeName).toMatch(/^example-[a-z0-9]{5}$/)
 		expect(defaults.suggestedBranch).toBe(`worktree/alpha-${worktreeName.slice("example-".length)}`)
+	})
+})
+
+describe("handleListWorktrees", () => {
+	it("reports a Git listing failure instead of presenting an empty repository", async () => {
+		vi.mocked(worktreeService.checkGitRepo).mockResolvedValueOnce(true)
+		vi.mocked(worktreeService.getGitRootPath).mockResolvedValue("/workspace")
+		vi.mocked(worktreeService.listWorktrees).mockRejectedValueOnce(new Error("Git listing failed"))
+
+		await expect(handleListWorktrees({ cwd: "/workspace" } as AlphaProvider)).resolves.toMatchObject({
+			worktrees: [],
+			isGitRepo: true,
+			error: "Failed to list worktrees: Git listing failed",
+		})
+		expect(worktreeService.listWorktrees).toHaveBeenCalledWith("/workspace", { throwOnError: true })
 	})
 })
 

@@ -74,14 +74,19 @@ export abstract class BaseTerminal implements AlphaTerminal {
 		this.busy = false
 		this.running = false
 
-		if (this.process) {
-			// Add to the front of the queue (most recent first).
-			if (this.process.hasUnretrievedOutput()) {
-				this.completedProcesses.unshift(this.process)
-			}
+		const completed = this.process
+		if (!completed) return
 
-			this.process.emit("shell_execution_complete", exitDetails)
-			this.process = undefined
+		// Add to the front of the queue (most recent first).
+		if (completed.hasUnretrievedOutput()) {
+			this.completedProcesses.unshift(completed)
+		}
+
+		try {
+			completed.emit("shell_execution_complete", exitDetails)
+		} finally {
+			// An exit observer can synchronously reuse this terminal.
+			if (this.process === completed) this.process = undefined
 			this.cleanCompletedProcessQueue()
 		}
 	}
@@ -280,7 +285,7 @@ export abstract class BaseTerminal implements AlphaTerminal {
 	/**
 	 * Compresses terminal output by applying run-length encoding and truncating to reasonable limits.
 	 * Uses hardcoded defaults: 500 lines, 50K characters - these are UI display limits to prevent
-	 * memory issues, not LLM context limits (which are controlled by terminalOutputPreviewSize).
+	 * memory issues, not the command output preview limit applied to model context.
 	 * @param input The terminal output to compress
 	 * @returns The compressed terminal output
 	 */

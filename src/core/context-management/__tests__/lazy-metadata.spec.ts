@@ -1,5 +1,4 @@
 import type Anthropic from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import * as condense from "../../condense"
@@ -48,7 +47,6 @@ function fixture() {
 
 describe("context management tool metadata admission", () => {
 	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		vi.spyOn(condense, "summarizeConversation").mockImplementation(async ({ messages }) => ({
 			messages,
 			summary: "Summary",

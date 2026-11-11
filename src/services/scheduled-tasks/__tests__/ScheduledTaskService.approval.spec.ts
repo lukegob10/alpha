@@ -13,7 +13,7 @@ describe("scheduled task approval grants", () => {
 		{ approvalMode: "auto" as const, canMutate: true },
 		{ approvalMode: "bypass" as const, canMutate: true },
 	])("stores $approvalMode for a direct command without forcing execute", async ({ approvalMode, canMutate }) => {
-		vi.spyOn(ScheduledTaskStore.prototype, "upsertTask").mockResolvedValue({ tasks: [], runs: [] })
+		vi.spyOn(ScheduledTaskStore.prototype, "createTask").mockImplementation(async (task) => task)
 		vi.spyOn(ScheduledTaskStore.prototype, "getState").mockReturnValue({ tasks: [], runs: [] })
 		const provider = {
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
@@ -175,6 +175,8 @@ describe("scheduled direct command approval", () => {
 			provider,
 			{ appendLine: vi.fn() } as unknown as vscode.OutputChannel,
 		)
+		const originalFolders = vscode.workspace.workspaceFolders
+		Object.assign(vscode.workspace, { workspaceFolders: [{ uri: vscode.Uri.file(process.cwd()) }] })
 		try {
 			await service.runNow(task.id)
 			if (approvalMode === "bypass") {
@@ -194,7 +196,8 @@ describe("scheduled direct command approval", () => {
 			resolveApproval(undefined)
 			await vi.waitFor(() => expect(currentRun?.status).toBe("canceled"))
 		} finally {
-			service.dispose()
+			await service.dispose()
+			Object.assign(vscode.workspace, { workspaceFolders: originalFolders })
 		}
 	})
 })

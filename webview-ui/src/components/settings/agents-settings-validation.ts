@@ -1,4 +1,5 @@
 import {
+	globalSettingsSchema,
 	maxConcurrentSubagentsSchema,
 	reasoningEffortExtendedSchema,
 	subagentAgentTypesSchema,
@@ -19,6 +20,11 @@ export function getManagedAgentSettingsIssues(values: SettingsCachedState): Mana
 		maxConcurrentSubagentsSchema.safeParse(values.maxConcurrentSubagents).success,
 		"agents-concurrency",
 		"agents:validation.concurrency",
+	)
+	add(
+		globalSettingsSchema.shape.maxConcurrentTasks.safeParse(values.maxConcurrentTasks).success,
+		"agents-total-capacity",
+		"agents:validation.taskCapacity",
 	)
 	add(
 		typeof values.subagentDefaultModel === "string" && values.subagentDefaultModel.trim().length <= 256,

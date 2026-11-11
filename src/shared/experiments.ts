@@ -14,7 +14,7 @@ interface ExperimentConfig {
 }
 
 export const experimentConfigsMap: Record<ExperimentKey, ExperimentConfig> = {
-	PREVENT_FOCUS_DISRUPTION: { enabled: false },
+	PREVENT_FOCUS_DISRUPTION: { enabled: true },
 	CUSTOM_TOOLS: { enabled: false },
 }
 
@@ -27,5 +27,8 @@ export const experimentDefault = Object.fromEntries(
 
 export const experiments = {
 	get: (id: ExperimentKey): ExperimentConfig | undefined => experimentConfigsMap[id],
-	isEnabled: (experimentsConfig: Experiments, id: ExperimentId) => experimentsConfig[id] ?? experimentDefault[id],
+	// Background editing is unconditional. Keep the retired flag readable without
+	// allowing an old saved false value to reopen automatic editor previews.
+	isEnabled: (experimentsConfig: Experiments, id: ExperimentId) =>
+		id === EXPERIMENT_IDS.PREVENT_FOCUS_DISRUPTION || (experimentsConfig[id] ?? experimentDefault[id]),
 } as const

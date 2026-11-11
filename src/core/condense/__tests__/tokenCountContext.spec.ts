@@ -1,5 +1,4 @@
 import type Anthropic from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import type { ApiHandler, ApiHandlerCountTokensMetadata, ApiHandlerCreateMessageMetadata } from "../../../api"
 import { manageContext } from "../../context-management"
@@ -94,7 +93,6 @@ describe("operation-scoped context token counting", () => {
 		async (threshold) => {
 			vi.useFakeTimers()
 			vi.setSystemTime(TEST_START)
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const countTokens = vi.fn(async (content: Anthropic.Messages.ContentBlockParam[]) =>
 				Math.ceil(JSON.stringify(content).length / 4),
 			)
@@ -579,7 +577,6 @@ describe("operation-scoped context token counting", () => {
 	it("honors a direct 100ms deadline while summarizing with an implicit count context", async () => {
 		vi.useFakeTimers()
 		vi.setSystemTime(TEST_START)
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		const countTokens = vi.fn(
 			(_content: Anthropic.Messages.ContentBlockParam[], _metadata?: ApiHandlerCountTokensMetadata) =>
 				new Promise<number>(() => undefined),

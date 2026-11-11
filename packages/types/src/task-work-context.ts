@@ -32,7 +32,7 @@ export const acceptanceReceiptSchema = z.object({
 	status: z.enum(["running", "passed", "failed", "stale", "unavailable"]),
 	/** Bounded host diagnostic; never includes raw filesystem errors or file contents. */
 	diagnostic: z.string().max(500).optional(),
-	files: z.record(z.string()).optional(),
+	files: z.record(z.string(), z.string()).optional(),
 	exitCode: z.number().optional(),
 	observedAt: z.number(),
 })

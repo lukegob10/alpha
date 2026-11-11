@@ -40,8 +40,20 @@ export class VSCodeBrowserTool<TName extends BrowserToolName> extends BaseTool<T
 		const { handleError, pushToolResult, setResultMetadata, signal } = callbacks
 
 		try {
+			// A file chooser can hand local filesystem contents to a web page.
+			const selectsFiles =
+				this.name === "handle_dialog" && "selectFiles" in params && !!params.selectFiles?.length
 			// Alpha admits and journals the effect before VS Code applies its own confirmation policy.
-			if (!(await callbacks.askApproval("tool", browserActionMessage(this.name, params, "running")))) return
+			if (
+				!(await callbacks.askApproval(
+					"tool",
+					browserActionMessage(this.name, params, "running"),
+					undefined,
+					undefined,
+					selectsFiles,
+				))
+			)
+				return
 			signal?.throwIfAborted()
 			await task.say("tool", browserActionMessage(this.name, params, "running"), undefined, true)
 

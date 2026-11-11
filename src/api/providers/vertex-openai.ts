@@ -5,7 +5,7 @@ import { safeJsonParse } from "@alpha-code/core"
 import { resolveVertexOpenAiModelInfo } from "@alpha-code/types"
 import type { ApiHandlerOptions } from "../../shared/api"
 import type { ApiHandlerCreateMessageMetadata, ApiHandlerSingleCompletionMetadata } from "../index"
-import type { ApiStream } from "../transform/stream"
+import { createLinkedAbortController, type ApiStream } from "../transform/stream"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { OpenAiHandler } from "./openai"
 import { DEFAULT_HEADERS } from "./constants"
@@ -71,6 +71,8 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 		this.client = new OpenAI({
 			baseURL: this.baseUrl,
 			apiKey: token,
+			organization: null,
+			project: null,
 			defaultHeaders: DEFAULT_HEADERS,
 			timeout: getApiRequestTimeout(),
 			maxRetries: 0,
@@ -83,7 +85,13 @@ export class VertexOpenAiHandler extends OpenAiHandler {
 		messages: Anthropic.Messages.MessageParam[],
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiStream {
-		await this.prepareClient(metadata)
+		// The shared adapter starts its deadline handling after Google authentication.
+		const authControl = metadata?.deadline !== undefined ? createLinkedAbortController(metadata) : undefined
+		try {
+			await this.prepareClient(authControl ?? metadata)
+		} finally {
+			authControl?.dispose()
+		}
 		yield* super.createMessage(systemPrompt, messages, metadata)
 	}
 

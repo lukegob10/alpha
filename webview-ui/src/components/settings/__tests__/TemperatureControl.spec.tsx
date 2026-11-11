@@ -43,6 +43,16 @@ describe("TemperatureControl", () => {
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
 	})
 
+	it("shows temperature guidance only in help and does not enable an override by opening it", () => {
+		const onChange = vi.fn()
+		render(<TemperatureControl value={undefined} onChange={onChange} />)
+		expect(screen.queryByText("Controls randomness in the model's responses.")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for Use custom temperature" }))
+		expect(screen.getByText("Controls randomness in the model's responses.")).toBeInTheDocument()
+		expect(screen.getByRole("checkbox")).not.toBeChecked()
+		expect(onChange).not.toHaveBeenCalled()
+	})
+
 	it("renders with custom temperature enabled", () => {
 		const onChange = vi.fn()
 		render(<TemperatureControl value={0.7} onChange={onChange} />)

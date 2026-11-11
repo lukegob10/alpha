@@ -4,7 +4,7 @@ import type { LucideIcon } from "lucide-react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { cn } from "@/lib/utils"
 
-import type { SectionName } from "./SettingsView"
+import type { SectionName } from "./settingsNavigation"
 import type { SearchResult } from "./useSettingsSearch"
 
 export interface SettingsSearchResultsProps {

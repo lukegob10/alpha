@@ -1,3 +1,5 @@
+import "./zod-config"
+
 import { lazy, Suspense } from "react"
 import { StrictMode } from "react"
 import { createRoot } from "react-dom/client"

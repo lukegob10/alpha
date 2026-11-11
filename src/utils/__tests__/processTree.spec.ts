@@ -1,11 +1,12 @@
-import { terminateProcessTree } from "../processTree"
+import { getDescendantPids, terminateProcessTree } from "../processTree"
 import type { MockInstance } from "vitest"
 
 const execFile = vi.hoisted(() => vi.fn())
-const psTree = vi.hoisted(() => vi.fn())
+const discover = vi.hoisted(() => vi.fn())
 
-vi.mock("node:child_process", () => ({ execFile }))
-vi.mock("ps-tree", () => ({ default: psTree }))
+vi.mock("node:child_process", () => ({
+	execFile: (...args: [string, string[], unknown, unknown]) => (args[1][0] === "-A" ? discover : execFile)(...args),
+}))
 
 describe("owned detached POSIX process groups", () => {
 	let platform: PropertyDescriptor | undefined
@@ -17,7 +18,7 @@ describe("owned detached POSIX process groups", () => {
 		platform = Object.getOwnPropertyDescriptor(process, "platform")
 		Object.defineProperty(process, "platform", { value: "linux" })
 		kill = vi.spyOn(process, "kill").mockReturnValue(true)
-		psTree.mockReset().mockImplementation((_pid, callback) => callback(null, []))
+		discover.mockReset().mockImplementation((_file, _args, _options, callback) => callback(null, "", ""))
 		execFile.mockReset().mockImplementation((_file, _args, _options, callback) => callback(null, "", ""))
 	})
 
@@ -36,7 +37,37 @@ describe("owned detached POSIX process groups", () => {
 		)
 		expect(kill).not.toHaveBeenCalled()
 		expect(execFile).not.toHaveBeenCalled()
-		expect(psTree).not.toHaveBeenCalled()
+		expect(discover).not.toHaveBeenCalled()
+	})
+
+	it("returns all descendants from an unordered process snapshot without including unrelated PIDs", async () => {
+		discover.mockImplementation((_file, _args, _options, callback) => {
+			callback(null, "  130    41\n  123   130\n    0     0\n    1   123\n    1   999\n", "")
+		})
+
+		await expect(getDescendantPids(123, 1_000)).resolves.toEqual([130, 41])
+		expect(discover).toHaveBeenCalledExactlyOnceWith(
+			"ps",
+			["-A", "-o", "ppid=,pid="],
+			{ timeout: 1_000, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" },
+			expect.any(Function),
+		)
+	})
+
+	it("reports a missing process lister as a discovery failure", async () => {
+		const failure = Object.assign(new Error("spawn ps ENOENT"), { code: "ENOENT" })
+		discover.mockImplementation((_file, _args, _options, callback) => callback(failure, "", ""))
+
+		await expect(getDescendantPids(123)).rejects.toMatchObject({
+			message: "Failed to get process tree for PID 123: spawn ps ENOENT",
+			cause: failure,
+		})
+	})
+
+	it("rejects a malformed snapshot rather than returning a partially discovered tree", async () => {
+		discover.mockImplementation((_file, _args, _options, callback) => callback(null, "123 124\n124 invalid\n", ""))
+
+		await expect(getDescendantPids(123)).rejects.toThrow("Invalid process-tree snapshot for PID 123")
 	})
 
 	it("exposes unverifiable Windows orphan cleanup while retaining explicit terminal missing-root compatibility", async () => {
@@ -70,7 +101,7 @@ describe("owned detached POSIX process groups", () => {
 	})
 
 	it("escalates the original group after a TERM-aware parent exits and observes newly orphaned members", async () => {
-		psTree.mockImplementation((_pid, callback) => callback(null, [{ PID: "124" }]))
+		discover.mockImplementation((_file, _args, _options, callback) => callback(null, "123 124\n", ""))
 		kill.mockImplementation((pid) => {
 			if (pid > 0) throw Object.assign(new Error("parent and old child exited"), { code: "ESRCH" })
 			return true
@@ -122,7 +153,7 @@ describe("owned detached POSIX process groups", () => {
 
 	it.each([false, true])("confirms a Darwin zombie-only group after EPERM (graceful: %s)", async (graceful) => {
 		Object.defineProperty(process, "platform", { value: "darwin" })
-		psTree.mockImplementation((_pid, callback) => callback(null, [{ PID: "124" }]))
+		discover.mockImplementation((_file, _args, _options, callback) => callback(null, "123 124\n", ""))
 		kill.mockImplementation((pid) => {
 			if (pid < 0) throw Object.assign(new Error("no signalable group members"), { code: "EPERM" })
 			return true

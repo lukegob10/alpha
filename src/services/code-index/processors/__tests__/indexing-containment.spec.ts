@@ -13,7 +13,6 @@ import { codeParser } from "../parser"
 import { DirectoryScanner } from "../scanner"
 
 vi.mock("fs/promises", async () => vi.importActual("fs/promises"))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureEvent: vi.fn() } } }))
 vi.mock("../../../glob/list-files", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../glob/list-files")>()),
 	listFiles: vi.fn(),

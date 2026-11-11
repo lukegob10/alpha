@@ -4,6 +4,8 @@ import {
 	providerProfileSaveIdSchema,
 	providerProfileSaveRequestSchema,
 	providerProfileSaveResultSchema,
+	providerProfileVersionSchema,
+	providerProfileCreateRequestSchema,
 } from "../provider-profile-save.js"
 import type { ExtensionMessage, WebviewMessage } from "../vscode-extension-host.js"
 
@@ -67,7 +69,7 @@ describe("existing provider profile save identity", () => {
 		expect(providerProfileSaveResultSchema.safeParse({ ...result, apiConfiguration: {} }).success).toBe(false)
 	})
 
-	it.each(["invalid", "notFound", "saveFailed"] as const)(
+	it.each(["invalid", "notFound", "conflict", "saveFailed", "applyFailed"] as const)(
 		"returns a bounded %s failure without provider data",
 		(error) => {
 			const result = { requestId: "save-request", status: "error", error } as const
@@ -87,5 +89,43 @@ describe("existing provider profile save identity", () => {
 		expect(
 			providerProfileSaveResultSchema.safeParse({ requestId: "", status: "error", error: "saveFailed" }).success,
 		).toBe(false)
+	})
+
+	it("accepts only a bounded committed receipt on an apply failure", () => {
+		const saved = { id: "profile", name: "saved", version: `sha256:${"a".repeat(64)}` }
+		const result = { requestId: "save", status: "error", error: "applyFailed", saved }
+		expect(providerProfileSaveResultSchema.parse(result)).toEqual(result)
+		expect(providerProfileSaveResultSchema.safeParse({ ...result, error: "conflict" }).success).toBe(false)
+		expect(
+			providerProfileSaveResultSchema.safeParse({ ...result, saved: { ...saved, apiKey: "private" } }).success,
+		).toBe(false)
+		expect(
+			providerProfileSaveResultSchema.safeParse({ ...result, saved: { id: "profile", name: "saved" } }).success,
+		).toBe(false)
+	})
+
+	it("validates optional content versions while retaining historical requests and receipts", () => {
+		const version = `sha256:${"a".repeat(64)}`
+		const request = { requestId: "save", id: "profile", expectedVersion: version }
+		expect(providerProfileSaveRequestSchema.parse(request)).toEqual(request)
+		const result = { requestId: "save", status: "success", id: "profile", name: "saved", version }
+		expect(providerProfileSaveResultSchema.parse(result)).toEqual(result)
+		for (const invalid of ["", "sha256:short", `sha256:${"g".repeat(64)}`, 1, null]) {
+			expect(providerProfileVersionSchema.safeParse(invalid).success).toBe(false)
+			expect(providerProfileSaveRequestSchema.safeParse({ ...request, expectedVersion: invalid }).success).toBe(
+				false,
+			)
+			expect(providerProfileSaveResultSchema.safeParse({ ...result, version: invalid }).success).toBe(false)
+		}
+	})
+
+	it("negotiates creation version receipts explicitly while accepting historical creation requests", () => {
+		const request = { requestId: "create", name: "new" }
+		expect(providerProfileCreateRequestSchema.parse(request)).toEqual(request)
+		expect(providerProfileCreateRequestSchema.parse({ ...request, returnVersion: true })).toEqual({
+			...request,
+			returnVersion: true,
+		})
+		expect(providerProfileCreateRequestSchema.safeParse({ ...request, returnVersion: false }).success).toBe(false)
 	})
 })

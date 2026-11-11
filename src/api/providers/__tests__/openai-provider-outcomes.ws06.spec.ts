@@ -107,6 +107,60 @@ describe("WS06 provider terminal errors and usage", () => {
 			])
 		})
 
+		it.each(["text", "tool_call_end", "usage"])(
+			"retains received Responses usage exactly once when %s delivery triggers cancellation",
+			async (trigger) => {
+				const output =
+					trigger === "tool_call_end"
+						? {
+								type: "function_call",
+								call_id: "call-usage-cancellation",
+								name: "read_file",
+								arguments: '{"path":"example.txt"}',
+								status: "completed",
+							}
+						: {
+								type: "message",
+								id: "msg-usage-cancellation",
+								role: "assistant",
+								content: [{ type: "output_text", text: "Answer", annotations: [] }],
+								status: "completed",
+							}
+				mockResponse(streaming, {
+					id: "response-usage-cancellation",
+					status: "completed",
+					output: [output],
+					usage: responseUsage,
+				})
+				const controller = new AbortController()
+				const reason = new Error("Caller stopped")
+				const chunks: ApiStreamChunk[] = []
+				const collect = async () => {
+					for await (const chunk of provider().createMessage("system", [], {
+						taskId: "usage-cancellation",
+						signal: controller.signal,
+					})) {
+						chunks.push(chunk)
+						if (chunk.type === trigger) controller.abort(reason)
+					}
+				}
+
+				await expect(collect()).rejects.toBe(reason)
+				expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+					expect.objectContaining({
+						inputTokens: 120,
+						outputTokens: 30,
+						cacheReadTokens: 40,
+						cacheWriteTokens: 60,
+						reasoningTokens: 12,
+						usageSource: "provider",
+					}),
+				])
+				expect(chunks.some((chunk) => chunk.type === "outcome" && chunk.status === "completed")).toBe(false)
+				expect(responsesCreate).toHaveBeenCalledOnce()
+			},
+		)
+
 		it.each(["rate_limit_exceeded", "slow_down"])(
 			"classifies opaque %s by code and retains safe server advice",
 			async (code) => {

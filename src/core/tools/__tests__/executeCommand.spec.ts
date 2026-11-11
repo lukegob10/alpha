@@ -86,6 +86,7 @@ describe("executeCommand", () => {
 			completeCommandExecution: vitest.fn(),
 			markCommandExecutionBackgrounded: vitest.fn(),
 			failCommandExecution: vitest.fn(),
+			recordCommandExecutionStatus: vitest.fn(async () => undefined),
 		}
 
 		// Create mock process that resolves immediately
@@ -985,6 +986,11 @@ describe("executeCommand", () => {
 						"exited",
 					])
 					for (const update of updates) expect(update.executionId).toBe("1001")
+					for (const update of updates) {
+						expect(update.taskId).toBe("test-task-123")
+						expect(update.toolCallId).toBe("correlated-command")
+						expect(mockTask.recordCommandExecutionStatus).toHaveBeenCalledWith(update)
+					}
 					expect(mockProcess.executionId).toMatch(/^1001:[\da-f-]+$/)
 					expect(mockTask.completeCommandExecution).toHaveBeenCalledWith(
 						"correlated-command",

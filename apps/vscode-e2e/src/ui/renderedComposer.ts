@@ -6,6 +6,7 @@ import type { CdpConnection } from "./cdp"
 import { requireNativeChatHeader } from "./nativeChatHeader"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { exerciseRenderedFirstPrompt } from "./renderedFirstPrompt"
+import { dismissRenderedReleaseAnnouncement } from "./renderedReleaseAnnouncement"
 
 interface ComposerSendState {
 	disabled: boolean
@@ -41,11 +42,28 @@ export async function exerciseRenderedComposer(
 		assert.equal(result.exceptionDetails, undefined)
 		return result.result.value
 	}
+	const keyboard = async (key: string, code: string, keyCode: number, modifiers = 0) => {
+		for (const type of ["keyDown", "keyUp"]) {
+			await cdp.request(
+				"Input.dispatchKeyEvent",
+				{
+					type,
+					key,
+					code,
+					windowsVirtualKeyCode: keyCode,
+					modifiers,
+					...(type === "keyDown" && key === "Enter" ? { text: "\r" } : {}),
+				},
+				sessionId,
+			)
+		}
+	}
 	await waitUntil(
 		() => evaluate<boolean>("!!d.querySelector('.new-task-composer textarea')"),
 		Date.now() + 15_000,
 		"composer_render_timeout",
 	)
+	await dismissRenderedReleaseAnnouncement(cdp, sessionId, workbenchSession, directory, "composer", signal)
 	const nativeHeader = await requireNativeChatHeader(cdp, workbenchSession)
 	const webviewToolbarCount = await evaluate<number>("d.querySelectorAll('.chat-toolbar').length")
 	assert.equal(webviewToolbarCount, 0, "empty sidebar must not reserve a duplicate webview toolbar row")
@@ -79,22 +97,6 @@ export async function exerciseRenderedComposer(
 		workbenchSession,
 	)
 	await fs.writeFile(path.join(directory, "ui-composer-empty-send.png"), Buffer.from(emptyScreenshot.data, "base64"))
-	const keyboard = async (key: string, code: string, keyCode: number, modifiers = 0) => {
-		for (const type of ["keyDown", "keyUp"]) {
-			await cdp.request(
-				"Input.dispatchKeyEvent",
-				{
-					type,
-					key,
-					code,
-					windowsVirtualKeyCode: keyCode,
-					modifiers,
-					...(type === "keyDown" && key === "Enter" ? { text: "\r" } : {}),
-				},
-				sessionId,
-			)
-		}
-	}
 	const captureControls = async (name: string) => {
 		await waitUntil(
 			() =>
@@ -113,7 +115,13 @@ export async function exerciseRenderedComposer(
 	}
 	assert.equal(await evaluate("!!d.querySelector('[data-testid=mode-selector-trigger]')"), false)
 	assert.equal(await evaluate("!!d.querySelector('[data-testid=plan-mode-badge]')"), false)
-	await evaluate("d.querySelector('.new-task-composer textarea').focus()")
+	assert.equal(
+		await evaluate<boolean>(
+			"(()=>{const e=d.querySelector('.new-task-composer textarea');e.focus();return d.activeElement===e})()",
+		),
+		true,
+		"composer textarea must own focus before Shift+Tab",
+	)
 	await keyboard("Tab", "Tab", 9, 8)
 	await waitUntil(
 		() => evaluate<boolean>("!!d.querySelector('[data-testid=plan-mode-badge]')"),

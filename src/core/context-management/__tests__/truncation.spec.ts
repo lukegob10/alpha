@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach } from "vitest"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { truncateConversation } from "../index"
 import { getEffectiveApiHistory, cleanupAfterTruncation } from "../../condense"
 import { ApiMessage } from "../../task-persistence/apiMessages"
@@ -8,11 +7,6 @@ describe("Non-Destructive Sliding Window Truncation", () => {
 	let messages: ApiMessage[]
 
 	beforeEach(() => {
-		// Initialize TelemetryService for tests
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
-
 		// Create a sample conversation with 11 messages (1 initial + 10 conversation messages)
 		messages = [
 			{ role: "user", content: "Initial task", ts: 1000 },
@@ -30,6 +24,19 @@ describe("Non-Destructive Sliding Window Truncation", () => {
 	})
 
 	describe("truncateConversation()", () => {
+		it("protects unsampled host-delivered mail while allowing already sampled mail to truncate", () => {
+			messages[2] = { ...messages[2], input_origin: "agent", agent_message_id: "mail" }
+			const unread = truncateConversation(messages, 0.5, "task")
+			expect(getEffectiveApiHistory(unread.messages).some((message) => message.agent_message_id === "mail")).toBe(
+				true,
+			)
+			messages.push({ role: "assistant", content: "Sampled", sampled_agent_message_ids: ["mail"] })
+			const sampled = truncateConversation(messages, 0.5, "task")
+			expect(
+				getEffectiveApiHistory(sampled.messages).some((message) => message.agent_message_id === "mail"),
+			).toBe(false)
+		})
+
 		it("should tag messages with truncationParent instead of deleting", () => {
 			const result = truncateConversation(messages, 0.5, "test-task-id")
 

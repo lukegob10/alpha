@@ -1,5 +1,4 @@
 import type { ModelInfo, ProviderSettings } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import * as vscode from "vscode"
 
 import type { ApiHandler } from "../../../api"
@@ -1471,7 +1470,6 @@ describe("Task retained retry wire inputs", () => {
 	it.each(["openai", "vertex", "vscode-lm"] as const)(
 		"retains recent %s provider state through real compaction and a transport retry",
 		async (apiProvider) => {
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const { task, live, originalHandler } = harness()
 			task.apiConfiguration = { apiProvider, apiModelId: "original-model" }
 			Reflect.set(task, "effectiveApiConfiguration", { ...task.apiConfiguration })

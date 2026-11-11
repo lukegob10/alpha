@@ -321,9 +321,7 @@ describe("calibration report publication", () => {
 			expect(error).toBeInstanceOf(CalibrationReportValidationError)
 			const validation = error as CalibrationReportValidationError
 			expect(validation.code).toBe("CALIBRATION_REPORT_INVALID")
-			expect(validation.issues).toEqual([
-				{ message: "Invalid calibration field schemaVersion (invalid_literal)" },
-			])
+			expect(validation.issues).toEqual([{ message: "Invalid calibration field schemaVersion (invalid_value)" }])
 			expect(JSON.stringify(validation)).not.toContain(secret)
 		}
 	})

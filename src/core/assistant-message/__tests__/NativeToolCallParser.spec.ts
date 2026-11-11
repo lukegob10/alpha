@@ -1077,7 +1077,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as { files: Array<{ path: string }>; _legacyFormat: true }
 						expect(nativeArgs._legacyFormat).toBe(true)
 						expect(nativeArgs.files).toHaveLength(1)
@@ -1099,7 +1098,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as { files: Array<{ path: string }>; _legacyFormat: true }
 						expect(nativeArgs.files).toHaveLength(3)
 						expect(nativeArgs.files[0].path).toBe("src/file1.ts")
@@ -1130,7 +1128,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as {
 							files: Array<{ path: string; lineRanges?: Array<{ start: number; end: number }> }>
 							_legacyFormat: true
@@ -1163,7 +1160,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as {
 							files: Array<{ path: string; lineRanges?: Array<{ start: number; end: number }> }>
 						}
@@ -1192,7 +1188,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as {
 							files: Array<{ path: string; lineRanges?: Array<{ start: number; end: number }> }>
 						}
@@ -1221,7 +1216,6 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBe(true)
 						const nativeArgs = result.nativeArgs as {
 							files: Array<{ path: string }>
 							_legacyFormat: true
@@ -1233,7 +1227,7 @@ describe("NativeToolCallParser", () => {
 					}
 				})
 
-				it("should NOT set usedLegacyFormat for new format", () => {
+				it("should preserve single-path arguments without legacy file conversion", () => {
 					const toolCall = {
 						id: "toolu_new",
 						name: "read_file" as const,
@@ -1250,7 +1244,14 @@ describe("NativeToolCallParser", () => {
 					expect(result).not.toBeNull()
 					expect(result?.type).toBe("tool_use")
 					if (result?.type === "tool_use") {
-						expect(result.usedLegacyFormat).toBeUndefined()
+						expect(result.nativeArgs).toMatchObject({
+							path: "src/new/format.ts",
+							mode: "slice",
+							offset: 1,
+							limit: 100,
+						})
+						expect(result.nativeArgs).not.toHaveProperty("files")
+						expect(result.nativeArgs).not.toHaveProperty("_legacyFormat")
 					}
 				})
 			})

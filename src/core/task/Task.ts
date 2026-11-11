@@ -7,6 +7,8 @@ import {
 	MAX_DESIGN_HANDOFF_CHARS,
 	type TaskDesignHandoff,
 	type AlphaMessageTurn,
+	type CommandExecutionStatus,
+	type McpExecutionStatus,
 	type TaskGoal,
 	type TaskGoalUsageReceipt,
 	type TaskGoalCreateInput,
@@ -53,6 +55,11 @@ import { canContinueFromCommittedHistoryTools } from "../agent/CommittedHistoryR
 import { AskIgnoredError } from "./AskIgnoredError"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
+import {
+	getPendingAgentMailIds,
+	hasAgentMailSamplingEvidence,
+	MAX_SAMPLED_AGENT_MAIL_IDS,
+} from "../task-persistence/agentMailSampling"
 import { TaskMessageQueuePersistence } from "../task-persistence/TaskMessageQueuePersistence"
 import {
 	canReplayMessageProviderState,
@@ -190,7 +197,6 @@ import {
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	MAX_CHECKPOINT_TIMEOUT_SECONDS,
 	MIN_CHECKPOINT_TIMEOUT_SECONDS,
-	ConsecutiveMistakeError,
 	MAX_MCP_TOOLS_THRESHOLD,
 	countEnabledMcpTools,
 	diagnosticTaskIdentitySchema,
@@ -199,7 +205,6 @@ import {
 	disabledSubagentAutoApprovalPolicy,
 	type SubagentAutoApprovalPolicy,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 // api
 import { ApiHandler, ApiHandlerCreateMessageMetadata, buildApiHandler, type ApiInstructionFragment } from "../../api"
@@ -276,6 +281,11 @@ import { findToolName } from "../../integrations/misc/export-markdown"
 import { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import { commandSessionRegistry, type TaskCommandOutputFinalization } from "../tools/CommandSessionRegistry"
+import {
+	projectCommandExecutionStatus,
+	projectMcpExecutionStatus,
+	reconcileExecutionStatuses,
+} from "../task-persistence/executionStatus"
 import { BaseTerminal } from "../../integrations/terminal/BaseTerminal"
 import { OutputInterceptor } from "../../integrations/terminal/OutputInterceptor"
 
@@ -332,6 +342,7 @@ import {
 	type AgentRetryCategory,
 	type AgentRetryDecision,
 } from "../agent/AgentRetryPolicy"
+import { readRetryAfterMs } from "../agent/RequestPacing"
 import { AgentStepContextBuilder, type AgentStepSnapshot } from "../agent/AgentStepContextBuilder"
 import {
 	captureInheritedStepInstructions,
@@ -686,6 +697,8 @@ interface TaskStepExecutionResult {
 }
 
 interface CurrentAgentStep {
+	/** IDs captured before provider projection; retries cannot acknowledge later mail. */
+	sampledAgentMessageIds?: readonly string[]
 	createReasoningSummaryHandler: () => ApiHandler
 	snapshot: AgentStepSnapshot<ApiHandler, unknown>
 	/** Fresh wire copies from the private, unsanitized logical capture; never persisted or logged. */
@@ -2156,13 +2169,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this._taskApiConfigName = historyItem.apiConfigName
 			this.taskModeReady = Promise.resolve()
 			this.taskApiConfigReady = Promise.resolve()
-			TelemetryService.instance.captureTaskRestarted(this.taskId)
 		} else {
 			this._taskMode = taskMode
 			this._taskApiConfigName = taskApiConfigName
 			this.taskModeReady = taskMode ? Promise.resolve() : this.initializeTaskMode(provider)
 			this.taskApiConfigReady = taskApiConfigName ? Promise.resolve() : this.initializeTaskApiConfigName(provider)
-			TelemetryService.instance.captureTaskCreated(this.taskId)
 		}
 
 		this.assistantMessageParser = undefined
@@ -4209,7 +4220,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			)
 			if (!ownsTerminalStep()) return supersededResult()
 			if (assistantPersisted) {
-				TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
 				await this.appendAgentTurnEvent(
 					{ type: "assistant_committed", response },
 					terminalStep?.snapshot.context,
@@ -4715,6 +4725,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			canonicalMessage.agentResponseItems = response.items.map((item) => ({ ...item }))
 			if (response.outcome) canonicalMessage.agentResponseOutcome = { ...response.outcome }
+			// Codex d4a341bd records sampling only with regular inference output.
+			// Persist this receipt atomically with successful canonical response bytes;
+			// failed/cancelled responses and compaction never consume agent mail.
+			if (
+				message.role === "assistant" &&
+				!this.abort &&
+				(!response.outcome || response.outcome.status === "completed") &&
+				!response.items.some((item) => item.type === "error") &&
+				hasAgentMailSamplingEvidence(response.items) &&
+				responseStep?.sampledAgentMessageIds?.length
+			) {
+				;(message as ApiMessage).sampled_agent_message_ids = [...responseStep.sampledAgentMessageIds]
+			}
 
 			if (message.role === "assistant") {
 				const provider = this.apiConfiguration.apiProvider
@@ -6790,6 +6813,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const candidate = error as {
 			retryAfterMs?: unknown
 			errorDetails?: Array<{ [key: string]: unknown }>
+			headers?: unknown
 		}
 		if (typeof candidate?.retryAfterMs === "number") return candidate.retryAfterMs
 		const retryInfo = candidate?.errorDetails?.find(
@@ -6800,7 +6824,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const match = retryDelay.match(/^(\d+(?:\.\d+)?)s$/)
 			if (match) return Math.ceil(Number(match[1]) * 1000)
 		}
-		return undefined
+		return readRetryAfterMs(candidate?.headers)
 	}
 
 	private retryCategoryForError(error: unknown, fallback: AgentRetryCategory = "transport"): AgentRetryCategory {
@@ -6862,7 +6886,83 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	// Alpha Messages
 
 	private async getSavedAlphaMessages(requireExisting = false): Promise<AlphaMessage[]> {
-		return readTaskMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath, requireExisting })
+		const messages = await readTaskMessages({
+			taskId: this.taskId,
+			globalStoragePath: this.globalStoragePath,
+			requireExisting,
+		})
+		return reconcileExecutionStatuses(messages, (message, kind) => {
+			if (kind === "mcp") {
+				if (!this.currentAgentStep || this.abort) return false
+				const callId = message.toolCallId ?? message.mcpExecutionStatus?.toolCallId
+				const lifecycle = this.getCanonicalLifecycleSnapshot()
+				return Boolean(
+					callId &&
+						lifecycle?.effectStartedToolCallIds.includes(callId) &&
+						!lifecycle.items.some((item) => item.type === "tool_result" && item.toolCallId === callId),
+				)
+			}
+			const id = message.ts.toString()
+			const matches = (process: AlphaTerminalProcess | undefined) =>
+				process &&
+				process.isSettled !== true &&
+				(process.executionId === id || process.executionId?.startsWith(`${id}:`))
+			return Boolean(
+				matches(this.terminalProcess) ||
+					(TerminalRegistry.getTerminals(true, this.taskId) ?? []).some(
+						(terminal) => terminal.running && matches(terminal.process),
+					),
+			)
+		})
+	}
+
+	/** Existing transcript rows own tool presentation; output updates share the next durable boundary. */
+	public async recordCommandExecutionStatus(
+		status: CommandExecutionStatus,
+		options: { confirmedPrelaunchFallback?: true } = {},
+	): Promise<void> {
+		const index = this.alphaMessages.findIndex((message) => message.ts.toString() === status.executionId)
+		if (index < 0) return
+		const projected = projectCommandExecutionStatus(
+			this.alphaMessages[index],
+			status,
+			this.taskId,
+			options.confirmedPrelaunchFallback,
+		)
+		if (!projected) return
+		this.alphaMessages[index] = projected
+		await this.publishExecutionStatus(projected, status.status !== "output", "command execution status")
+	}
+
+	public async recordMcpExecutionStatus(status: McpExecutionStatus): Promise<void> {
+		const index = this.alphaMessages.findIndex((message) => message.ts.toString() === status.executionId)
+		if (index < 0) return
+		const projected = projectMcpExecutionStatus(this.alphaMessages[index], status, this.taskId)
+		if (!projected) return
+		this.alphaMessages[index] = projected
+		await this.publishExecutionStatus(projected, status.status !== "output", "MCP execution status")
+	}
+
+	private async publishExecutionStatus(message: AlphaMessage, durable: boolean, context: string): Promise<void> {
+		let persistenceFailure: { error: unknown } | undefined
+		try {
+			if (durable) await this.requireAlphaMessagesSaved(context)
+		} catch (error) {
+			persistenceFailure = { error }
+		}
+		try {
+			// A failed disk must not leave the visible process running after it stopped.
+			// updateAlphaMessage resolves the current row if output advanced during the save.
+			await this.updateAlphaMessage(message)
+		} catch (error) {
+			if (persistenceFailure)
+				throw new AggregateError(
+					[persistenceFailure.error, error],
+					"Tool status could not be saved or published",
+				)
+			throw error
+		}
+		if (persistenceFailure) throw persistenceFailure.error
 	}
 
 	private getLastNonAgentMessage(): AlphaMessage | undefined {
@@ -7541,22 +7641,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async handleConsecutiveMistakeLimit(currentUserContent: Anthropic.Messages.ContentBlockParam[]) {
-		// Track consecutive mistake errors in telemetry via event and PostHog exception tracking.
-		// The reason is "no_tools_used" because this limit is reached via initiateTaskLoop
-		// which increments consecutiveMistakeCount when the model doesn't use any tools.
-		TelemetryService.instance.captureConsecutiveMistakeError(this.taskId)
-		TelemetryService.instance.captureException(
-			new ConsecutiveMistakeError(
-				`Task reached consecutive mistake limit (${this.consecutiveMistakeLimit})`,
-				this.taskId,
-				this.consecutiveMistakeCount,
-				this.consecutiveMistakeLimit,
-				"no_tools_used",
-				this.apiConfiguration.apiProvider,
-				getModelId(this.apiConfiguration),
-			),
-		)
-
 		const queuedGuidance = this.messageQueueService.isEmpty() ? undefined : this.dequeueQueuedMessage()
 		if (queuedGuidance) {
 			// The user has already supplied the guidance this safeguard would ask
@@ -7800,12 +7884,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			this.activeAsk = installedAsk
 		}
+		const toolCallId = this.toolInputContext?.getStore()?.toolCallId
 
 		if (partial !== undefined) {
 			const lastMessage = this.getLastNonAgentMessage()
 
 			const isUpdatingPreviousPartial =
-				lastMessage && lastMessage.partial && lastMessage.type === "ask" && lastMessage.ask === type
+				lastMessage &&
+				lastMessage.partial &&
+				lastMessage.type === "ask" &&
+				lastMessage.ask === type &&
+				lastMessage.toolCallId === toolCallId
 
 			if (partial) {
 				if (isUpdatingPreviousPartial) {
@@ -7815,6 +7904,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.progressStatus = progressStatus
 					lastMessage.isProtected = isProtected
 					lastMessage.toolApprovalRequest = alphaToolApprovalRequest
+					lastMessage.toolCallId = toolCallId
 					// TODO: Be more efficient about saving and posting only new
 					// data or one whole message at a time so ignore partial for
 					// saves, and only post parts of partial message instead of
@@ -7835,6 +7925,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						isProtected,
 						progressStatus,
 						toolApprovalRequest: alphaToolApprovalRequest,
+						...(toolCallId ? { toolCallId } : {}),
 					})
 					throw new AskIgnoredError("new partial")
 				}
@@ -7866,6 +7957,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lastMessage.progressStatus = progressStatus
 					lastMessage.isProtected = isProtected
 					lastMessage.toolApprovalRequest = alphaToolApprovalRequest
+					lastMessage.toolCallId = toolCallId
 					lastMessage.isAnswered = isAutomaticallyResolved ? true : undefined
 					await this.saveAlphaMessages()
 					this.updateAlphaMessage(lastMessage)
@@ -7886,6 +7978,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						isProtected,
 						progressStatus,
 						toolApprovalRequest: alphaToolApprovalRequest,
+						...(toolCallId ? { toolCallId } : {}),
 						...(isAutomaticallyResolved ? { isAnswered: true } : {}),
 					})
 				}
@@ -7907,6 +8000,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				isProtected,
 				progressStatus,
 				toolApprovalRequest: alphaToolApprovalRequest,
+				...(toolCallId ? { toolCallId } : {}),
 				...(isAutomaticallyResolved ? { isAnswered: true } : {}),
 			})
 		}
@@ -10087,16 +10181,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.didEmitTaskCompleted = false
 				return false
 			}
-
-			this.markCompleted()
-			const completionMetrics = this.getMutableCompletionStageMetrics()
-			completionMetrics.completedAt = Date.now()
-			completionMetrics.lastReasonCode = "ready"
-			completionMetrics.settledUsage = this.getTokenUsage()
-			this.emitFinalTokenUsageUpdate()
-			TelemetryService.instance.captureTaskCompleted(this.taskId)
-			this.emit(AlphaCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage(), this.toolUsage)
-			return true
 		} catch (error) {
 			if (stagedToolCallId && this.persistedToolResultIds.has(sanitizeToolUseId(stagedToolCallId))) {
 				try {
@@ -10129,6 +10213,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			throw error
 		}
+		this.markCompleted()
+		const completionMetrics = this.getMutableCompletionStageMetrics()
+		completionMetrics.completedAt = Date.now()
+		completionMetrics.lastReasonCode = "ready"
+		const settledUsage = this.getTokenUsage()
+		completionMetrics.settledUsage = settledUsage
+		this.emitFinalTokenUsageUpdate()
+		this.notifyTaskSummary(AlphaCodeEventName.TaskCompleted, settledUsage, this.toolUsage)
+		return true
 	}
 
 	/**
@@ -10705,6 +10798,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (!evidence || evidence.status !== "running" || (executionId && evidence.executionId !== executionId)) return
 		evidence.status = status
 		evidence.completedAt = Date.now()
+		const approval = this.alphaMessages?.find(
+			(message) =>
+				message.ask === "command" &&
+				(message.toolCallId === toolCallId ||
+					message.commandExecutionStatus?.toolCallId === toolCallId ||
+					(!message.toolCallId && message.ts.toString() === evidence.executionId.split(":")[0])),
+		)
+		if (approval) {
+			void this.recordCommandExecutionStatus({
+				executionId: approval.ts.toString(),
+				taskId: this.taskId,
+				toolCallId,
+				status: status === "cancelled" ? "cancelled" : status === "timed_out" ? "timeout" : "error",
+			}).catch((error) => console.error("Failed to persist terminal command presentation", error))
+		}
 		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		this.publishParentVerificationEvidence()
 	}
@@ -10810,8 +10918,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private failActiveCommandExecutions(status: "cancelled" | "failed"): void {
 		for (const evidence of this.commandExecutionEvidence.values()) {
 			if (evidence.status !== "running") continue
-			evidence.status = status
-			evidence.completedAt = Date.now()
+			this.failCommandExecution(evidence.toolCallId, status, evidence.executionId)
 		}
 	}
 
@@ -13512,8 +13619,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			capturedTurn = { ...capturedTurn, inputKind: this.openingTurnInputPending ? "start" : "steer" }
 			this.openingTurnInputPending = false
 		}
+		const mcpToolCallId = type === "mcp_server_response" ? this.toolInputContext?.getStore()?.toolCallId : undefined
 		const addMessage = (message: AlphaMessage, stateUpdate?: "full" | "task") =>
-			this.addToAlphaMessages(message, stateUpdate, undefined, capturedTurn, options.onCreated)
+			this.addToAlphaMessages(
+				mcpToolCallId ? { ...message, toolCallId: mcpToolCallId } : message,
+				stateUpdate,
+				undefined,
+				capturedTurn,
+				options.onCreated,
+			)
 		if (
 			options.contextCondenseErrorCost !== undefined &&
 			(!Number.isFinite(options.contextCondenseErrorCost) ||
@@ -14684,12 +14798,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
+	private notifyTaskSummary(
+		event: AlphaCodeEventName.TaskTokenUsageUpdated | AlphaCodeEventName.TaskCompleted,
+		tokenUsage: TokenUsage,
+		toolUsage: ToolUsage,
+	): void {
+		// Isolate subscribers and use raw listeners so one-shot subscriptions still unregister.
+		for (const listener of this.rawListeners(event)) {
+			try {
+				listener.call(this, this.taskId, tokenUsage, toolUsage)
+			} catch (error) {
+				console.error(
+					`[Task#${this.taskId}] ${event} listener failed`,
+					error instanceof Error ? error.name : typeof error,
+				)
+			}
+		}
+	}
+
 	private publishTokenUsageUpdate(tokenUsage: TokenUsage, toolUsage: ToolUsage): void {
 		const tokenChanged = hasTokenUsageChanged(tokenUsage, this.tokenUsageSnapshot)
 		const toolChanged = hasToolUsageChanged(toolUsage, this.toolUsageSnapshot)
 
 		if (tokenChanged || toolChanged) {
-			this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, this.taskId, tokenUsage, toolUsage)
+			this.notifyTaskSummary(AlphaCodeEventName.TaskTokenUsageUpdated, tokenUsage, toolUsage)
 			this.tokenUsageSnapshot = tokenUsage
 			this.tokenUsageSnapshotAt = this.alphaMessages.at(-1)?.ts
 			// Deep copy tool usage for snapshot
@@ -17477,7 +17609,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						throw error
 					}
 					this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-					TelemetryService.instance.captureConversationMessage(this.taskId, "user")
 				}
 				if ((currentItem.retryAttempt ?? 0) === 0) await this.deliverAgentMessages()
 				this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
@@ -18300,8 +18431,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							let bgCacheReadTokens = currentTokens.cacheRead
 							let bgTotalCost = currentTokens.total
 
-							// Helper function to capture telemetry and update messages
-							const captureUsageData = async (
+							// Keep late usage in the local request message and task totals.
+							const updateUsageData = async (
 								tokens: {
 									input: number
 									output: number
@@ -18335,33 +18466,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									if (apiReqMessage) {
 										await this.updateAlphaMessage(apiReqMessage)
 									}
-
-									if (!this.isBackgroundUsageDrainCurrent(owner)) return
-									// Use the provider protocol/model captured at request admission.
-									const costResult =
-										apiProtocol === "anthropic"
-											? calculateApiCostAnthropic(
-													streamModelInfo,
-													tokens.input,
-													tokens.output,
-													tokens.cacheWrite,
-													tokens.cacheRead,
-												)
-											: calculateApiCostOpenAI(
-													streamModelInfo,
-													tokens.input,
-													tokens.output,
-													tokens.cacheWrite,
-													tokens.cacheRead,
-												)
-
-									TelemetryService.instance.captureLlmCompletion(this.taskId, {
-										inputTokens: costResult.totalInputTokens,
-										outputTokens: costResult.totalOutputTokens,
-										cacheWriteTokens: tokens.cacheWrite,
-										cacheReadTokens: tokens.cacheRead,
-										cost: tokens.total ?? costResult.totalCost,
-									})
 								}
 							}
 
@@ -18412,7 +18516,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									bgCacheReadTokens > 0
 								) {
 									// We have usage data either from a usage chunk or accumulated tokens
-									await captureUsageData(
+									await updateUsageData(
 										{
 											input: bgInputTokens,
 											output: bgOutputTokens,
@@ -18437,7 +18541,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									bgCacheWriteTokens > 0 ||
 									bgCacheReadTokens > 0
 								) {
-									await captureUsageData(
+									await updateUsageData(
 										{
 											input: bgInputTokens,
 											output: bgOutputTokens,
@@ -18661,9 +18765,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								hasSemanticOutput,
 							})
 
-							// A provider explicitly marking an error as non-retryable must not
-							// be replayed, even when the category budget remains.
-							if (retryMetadata.retryable === false) {
+							const providerFailure = normalizeApiStreamErrorMetadata(error)
+							// Native SDK errors can carry a permanent HTTP status without a retryable flag.
+							// Context overflow still uses the existing compaction recovery path.
+							if (
+								retryMetadata.retryable === false ||
+								(category !== "context" &&
+									providerFailure.status !== undefined &&
+									providerFailure.retryable === false)
+							) {
 								return {
 									status: "failed",
 									reason: retryError.message,
@@ -19217,7 +19327,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 							}
 
-							TelemetryService.instance.captureConversationMessage(this.taskId, "assistant")
 							await this.appendAgentTurnEvent(
 								{ type: "assistant_committed", response: canonicalResponse! },
 								streamLifecycleStep?.snapshot.context,
@@ -21468,6 +21577,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// This allows non-destructive condensing where messages are tagged but not deleted,
 		// enabling accurate rewind operations while still sending condensed history to the API.
 		let cleanConversationHistory: ReturnType<Task["buildCleanConversationHistory"]>
+		let sampledAgentMessageIds = retainedStep?.sampledAgentMessageIds ?? []
 		if (retainedRequest && !options.recoveryStep) {
 			cleanConversationHistory = retainedRequest.messages
 		} else {
@@ -21476,6 +21586,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				requestHandler.nativeCompaction?.scope ?? null,
 			)
 			const messagesSinceLastSummary = getMessagesSinceLastSummary(effectiveHistory)
+			const pendingMailIds = getPendingAgentMailIds(this.apiConversationHistory)
+			sampledAgentMessageIds = [
+				...new Set(
+					messagesSinceLastSummary.flatMap((message) =>
+						message.agent_message_id && pendingMailIds.has(message.agent_message_id)
+							? [message.agent_message_id]
+							: [],
+					),
+				),
+			].slice(0, MAX_SAMPLED_AGENT_MAIL_IDS)
 			// For API only: merge consecutive user messages without mutating stored history.
 			const mergedForApi = mergeConsecutiveApiMessages(messagesSinceLastSummary, { roles: ["user"] })
 			const messagesWithoutImages = maybeRemoveImageBlocks(mergedForApi, requestHandler)
@@ -21691,6 +21811,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 		// Capture step and surface together, including a preflight failure before
 		// active request ownership is installed.
+		step.sampledAgentMessageIds = sampledAgentMessageIds
 		this.currentTaskToolSurface = step.surface
 		options.onStepCaptured?.(step)
 		if (!retainedStep && step.snapshot.context.policy.approval.mode !== capturedApprovalMode) {
@@ -21771,9 +21892,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		if (goalStep && this.currentAgentStep?.snapshot.context.mode.slug !== "architect") {
 			try {
-				await goalStep.controller.get()
+				await this.waitForRequestControl(
+					goalStep.controller.get(),
+					abortSignal,
+					requestAdmissionDeadline,
+					admissionDeadlineScope,
+				)
 			} catch (error) {
 				clearRequestOwnership()
+				this.recordProviderRequestTimeout(error, step)
 				throw error
 			}
 		}

@@ -1,8 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
 import crypto from "crypto"
 
-import { TelemetryService } from "@alpha-code/telemetry"
-
 import { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../api"
 import {
 	countContextTokens,
@@ -18,6 +16,7 @@ import {
 	type CompactionUsageObserver,
 } from "../condense"
 import { ApiMessage } from "../task-persistence/apiMessages"
+import { getPendingAgentMailIds } from "../task-persistence/agentMailSampling"
 import { ANTHROPIC_DEFAULT_MAX_TOKENS, type AutoCondenseContextScope } from "@alpha-code/types"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { checkContextWindowExceededError } from "../context/context-management/context-error-handling"
@@ -80,12 +79,10 @@ export type TruncationResult = {
  *
  * @param {ApiMessage[]} messages - The conversation messages.
  * @param {number} fracToRemove - The fraction (between 0 and 1) of messages (excluding the first) to hide.
- * @param {string} taskId - The task ID for the conversation, used for telemetry
+ * @param {string} _taskId - Retained task identity argument for call compatibility.
  * @returns {TruncationResult} Object containing the tagged messages, truncation ID, and count of messages removed.
  */
-export function truncateConversation(messages: ApiMessage[], fracToRemove: number, taskId: string): TruncationResult {
-	TelemetryService.instance.captureSlidingWindowTruncation(taskId)
-
+export function truncateConversation(messages: ApiMessage[], fracToRemove: number, _taskId: string): TruncationResult {
 	const truncationId = crypto.randomUUID()
 
 	// A summary is a fresh-start boundary: messages before the latest summary remain
@@ -128,6 +125,11 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 	// hidden together; an incomplete candidate is kept visible instead.
 	const candidateIndices = new Set(visibleIndices.slice(1, requestedMessagesToRemove + 1))
 	const indicesToTruncate = new Set(candidateIndices)
+	const pendingMailIds = getPendingAgentMailIds(messages)
+	for (const index of indicesToTruncate) {
+		const id = messages[index].agent_message_id
+		if (id && pendingMailIds.has(id)) indicesToTruncate.delete(index)
+	}
 	const visibleIndexSet = new Set(visibleIndices)
 	const firstVisibleIndex = visibleIndices[0]
 
@@ -141,7 +143,7 @@ export function truncateConversation(messages: ApiMessage[], fracToRemove: numbe
 		if (!intersectsCandidate) continue
 
 		const canHideWholePair = [...pairIndices].every(
-			(index) => index !== firstVisibleIndex && candidateIndices.has(index),
+			(index) => index !== firstVisibleIndex && indicesToTruncate.has(index),
 		)
 		if (canHideWholePair) {
 			for (const index of pairIndices) indicesToTruncate.add(index)
@@ -216,7 +218,6 @@ async function truncateToTokenBudget(
 	apiHandler: ApiHandler,
 	systemPrompt: string,
 	maxContextTokens: number,
-	taskId: string,
 	metadata?: ApiHandlerCreateMessageMetadata,
 	beforeTokens?: number,
 	countContext?: TokenCountContext,
@@ -268,12 +269,20 @@ async function truncateToTokenBudget(
 		return { ...unchanged, tokens: Number.NaN, status: "no_progress" }
 	}
 	if (tail.startIndex === active.length || tail.startIndex <= firstStepEnd) return unchanged
-	const hidden = new Set(active.slice(firstStepEnd, tail.startIndex))
+	const pendingMailIds = getPendingAgentMailIds(messages)
+	const hidden = new Set(
+		active
+			.slice(firstStepEnd, tail.startIndex)
+			.filter((message) => !message.agent_message_id || !pendingMailIds.has(message.agent_message_id)),
+	)
+	if (hidden.size === 0) return unchanged
 	const insertIndex = messages.indexOf(active[tail.startIndex])
 	const tagged = messages.map((message) =>
 		hidden.has(message) ? { ...message, truncationParent: truncationId } : message,
 	)
 	tagged.splice(insertIndex, 0, marker)
+	if (!hasToolCallResultIntegrity(getEffectiveApiHistory(tagged, apiHandler.nativeCompaction?.scope ?? null)))
+		return unchanged
 	const tokens = await countContextTokens(
 		getEffectiveApiHistory(tagged, apiHandler.nativeCompaction?.scope ?? null),
 		apiHandler,
@@ -289,7 +298,6 @@ async function truncateToTokenBudget(
 		(beforeTokens !== undefined && (!Number.isFinite(beforeTokens) || tokens >= beforeTokens))
 	)
 		return { ...unchanged, tokens }
-	TelemetryService.instance.captureSlidingWindowTruncation(taskId)
 	return { messages: tagged, truncationId, messagesRemoved: hidden.size, tokens, status: "reduced" }
 }
 
@@ -716,7 +724,6 @@ export async function manageContext({
 			apiHandler,
 			systemPrompt,
 			targetContextTokens,
-			taskId,
 			metadata,
 			prevContextTokens,
 			operation,

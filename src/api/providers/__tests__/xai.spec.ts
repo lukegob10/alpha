@@ -13,7 +13,12 @@ const { responsesCreate, chatCreate } = vi.hoisted(() => ({ responsesCreate: vi.
 
 vi.mock("openai", () => {
 	const constructor = vi.fn(function () {
-		return { responses: { create: responsesCreate }, chat: { completions: { create: chatCreate } } }
+		const client = {
+			responses: { create: responsesCreate },
+			chat: { completions: { create: chatCreate } },
+			withOptions: vi.fn(() => client),
+		}
+		return client
 	})
 	return { default: constructor, AzureOpenAI: constructor }
 })
@@ -87,7 +92,33 @@ describe("native xAI Responses provider", () => {
 		vi.spyOn(console, "error").mockImplementation(() => {})
 	})
 
-	afterEach(() => vi.restoreAllMocks())
+	afterEach(() => {
+		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
+		vi.unstubAllGlobals()
+	})
+
+	it("does not send ambient OpenAI account headers through the real SDK", async () => {
+		vi.stubEnv("OPENAI_ORG_ID", "unrelated-openai-organization")
+		vi.stubEnv("OPENAI_PROJECT_ID", "unrelated-openai-project")
+		const { default: ActualOpenAI } = await vi.importActual<typeof import("openai")>("openai")
+		vi.mocked(OpenAI).mockImplementationOnce(function (options) {
+			return new ActualOpenAI(options)
+		})
+		const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+			return new Response(JSON.stringify(response()), { headers: { "content-type": "application/json" } })
+		})
+		vi.stubGlobal("fetch", fetch)
+
+		await expect(createHandler().completePrompt("Summarize.")).resolves.toBe("Done.")
+		expect(fetch).toHaveBeenCalledOnce()
+		const [url, request] = fetch.mock.calls[0]!
+		const headers = new Headers(request?.headers)
+		expect(url).toBe("https://api.x.ai/v1/responses")
+		expect(headers.get("authorization")).toBe("Bearer xai-fixture-key")
+		expect(headers.has("openai-organization")).toBe(false)
+		expect(headers.has("openai-project")).toBe(false)
+	})
 
 	it("uses Grok 4.7's verified limits and required reasoning capabilities", () => {
 		expect(createHandler().getModel()).toMatchObject({

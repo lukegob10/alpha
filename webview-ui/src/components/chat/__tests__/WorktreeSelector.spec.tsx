@@ -52,7 +52,11 @@ const mockWorktrees: Worktree[] = [
 	},
 ]
 
-const simulateWorktreeListMessage = (worktrees: Worktree[], isGitRepo: boolean = true) => {
+const simulateWorktreeListMessage = (
+	worktrees: Worktree[],
+	isGitRepo: boolean = true,
+	overrides: Partial<WorktreeListResponse> = {},
+) => {
 	const message: Partial<WorktreeListResponse> & { type: string } = {
 		type: "worktreeList",
 		worktrees,
@@ -60,6 +64,7 @@ const simulateWorktreeListMessage = (worktrees: Worktree[], isGitRepo: boolean =
 		isMultiRoot: false,
 		isSubfolder: false,
 		gitRootPath: "/path/to/repo",
+		...overrides,
 	}
 
 	act(() => {
@@ -86,12 +91,44 @@ describe("WorktreeSelector", () => {
 		expect(container.querySelector('[data-testid="worktree-selector-trigger"]')).not.toBeInTheDocument()
 	})
 
-	test("does not render when only one worktree exists", () => {
-		const { container } = render(<WorktreeSelector />)
+	test("offers creation when only the current worktree exists", () => {
+		render(<WorktreeSelector />)
 
 		simulateWorktreeListMessage([mockWorktrees[0]])
 
-		expect(container.querySelector('[data-testid="worktree-selector-trigger"]')).not.toBeInTheDocument()
+		fireEvent.click(screen.getByTestId("worktree-selector-trigger"))
+		fireEvent.click(screen.getByRole("button", { name: "worktrees:newWorktree" }))
+
+		expect(screen.getByRole("dialog")).toBeInTheDocument()
+		expect(mockPostMessage).toHaveBeenCalledWith({ type: "getWorktreeDefaults" })
+	})
+
+	test.each([{ isMultiRoot: true }, { isSubfolder: true }])(
+		"hides workspace actions for unsupported workspaces: %j",
+		(overrides) => {
+			render(<WorktreeSelector />)
+			simulateWorktreeListMessage(mockWorktrees, true, overrides)
+
+			expect(screen.queryByTestId("worktree-selector-trigger")).not.toBeInTheDocument()
+		},
+	)
+
+	test("preserves the list and its error until a refresh succeeds", () => {
+		render(<WorktreeSelector />)
+		simulateWorktreeListMessage(mockWorktrees)
+		fireEvent.click(screen.getByTestId("worktree-selector-trigger"))
+		simulateWorktreeListMessage([], true, { error: "Git listing failed" })
+
+		expect(screen.getByRole("alert")).toHaveTextContent("Git listing failed")
+		expect(screen.getByText("feature-branch")).toBeInTheDocument()
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByRole("button", { name: "worktrees:refresh" }))
+
+		expect(mockPostMessage).toHaveBeenCalledWith({ type: "listWorktrees" })
+		expect(screen.getByRole("alert")).toHaveTextContent("Git listing failed")
+		simulateWorktreeListMessage([mockWorktrees[0]])
+		expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+		expect(screen.queryByText("feature-branch")).not.toBeInTheDocument()
 	})
 
 	test("renders trigger when multiple worktrees exist", () => {
@@ -202,35 +239,28 @@ describe("WorktreeSelector", () => {
 		)
 	})
 
-	test("shows settings button in footer", () => {
+	test("shows the manager action", () => {
 		render(<WorktreeSelector />)
 
 		simulateWorktreeListMessage(mockWorktrees)
 
 		fireEvent.click(screen.getByTestId("worktree-selector-trigger"))
 
-		// Check for settings gear icon button
-		const settingsButton = document.querySelector(".codicon-settings-gear")
-		expect(settingsButton).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "worktrees:selector.settings" })).toBeInTheDocument()
 	})
 
-	test("navigates to worktree settings when settings button clicked", () => {
+	test("opens the standalone worktree manager", () => {
 		render(<WorktreeSelector />)
 
 		simulateWorktreeListMessage(mockWorktrees)
 
 		fireEvent.click(screen.getByTestId("worktree-selector-trigger"))
 
-		// Find and click the settings button
-		const settingsButton = document.querySelector(".codicon-settings-gear")
-		expect(settingsButton).toBeInTheDocument()
-
-		fireEvent.click(settingsButton!.closest("button")!)
+		fireEvent.click(screen.getByRole("button", { name: "worktrees:selector.settings" }))
 
 		expect(mockPostMessage).toHaveBeenCalledWith({
 			type: "switchTab",
-			tab: "settings",
-			values: { section: "worktrees" },
+			tab: "worktrees",
 		})
 	})
 

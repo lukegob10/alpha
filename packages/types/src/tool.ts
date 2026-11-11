@@ -118,7 +118,7 @@ export interface CommandToolResult {
  */
 
 // Historical usage remains readable after a tool is retired; it does not register executable tools.
-export const toolUsageSchema = z.record(
+export const toolUsageSchema = z.partialRecord(
 	z.enum([...toolNames, "switch_mode"]),
 	z.object({
 		attempts: z.number(),

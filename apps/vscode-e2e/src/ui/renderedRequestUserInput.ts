@@ -6,6 +6,7 @@ import type { RequestUserInputAnswerMap, RequestUserInputQuestion } from "@alpha
 import type { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
+import { dismissRenderedReleaseAnnouncement } from "./renderedReleaseAnnouncement"
 
 interface InputStage {
 	nonce: string
@@ -471,6 +472,7 @@ export async function exerciseRenderedRequestUserInput(
 	try {
 		await check("d.body.classList.contains('vscode-dark')")
 		await question(0)
+		await dismissRenderedReleaseAnnouncement(cdp, sessionId, workbenchSession, directory, "input", signal)
 		assert.equal(await evaluate<boolean>(`${button("Continue")}.disabled`), true)
 		await assertFits(form)
 		await capture("input-wizard-dark", form)

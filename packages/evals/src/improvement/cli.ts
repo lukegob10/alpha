@@ -252,7 +252,7 @@ function confirmationSources(stages: StoredStage[], feedbackRecord?: string) {
 		feedbackReview: only(stages, "feedback-review").value,
 		regression: parseRegressionProposal(only(stages, "regression-proposal").value),
 		handoff: parseHandoff(
-			z.object({ manifest: z.unknown() }).passthrough().parse(only(stages, "handoff").value).manifest,
+			z.object({ manifest: z.unknown().optional() }).passthrough().parse(only(stages, "handoff").value).manifest,
 		),
 		reviewedRepair: parseReviewedHandoffRepairRecord(only(stages, "reviewed-repair").value),
 	}
@@ -497,7 +497,7 @@ export async function runImprovementCli(
 				.object({
 					sourceTask: benchmarkTaskManifestSchema,
 					runtimeManifest: taskManifestSchema.strict(),
-					capture: z.unknown(),
+					capture: z.unknown().optional(),
 				})
 				.strict()
 				.parse((await store.read(nativeReferences[0])).value)
@@ -557,7 +557,7 @@ export async function runImprovementCli(
 	}
 	if (opts.command === "context") {
 		const supplied = z
-			.object({ sourcePaths: z.array(z.string().min(1)).min(1).max(64), identityReceipt: z.unknown() })
+			.object({ sourcePaths: z.array(z.string().min(1)).min(1).max(64), identityReceipt: z.unknown().optional() })
 			.strict()
 			.parse(input)
 		const root = opts.required("--source-root")
@@ -643,7 +643,10 @@ export async function runImprovementCli(
 		return write("feedback-review", record)
 	}
 	if (opts.command === "propose") {
-		const supplied = z.object({ draft: z.unknown(), policy: regressionHostPolicySchema }).strict().parse(input)
+		const supplied = z
+			.object({ draft: z.unknown().optional(), policy: regressionHostPolicySchema })
+			.strict()
+			.parse(input)
 		const observed = await validateFeedback(feedback(), evidence())
 		const review = validateFeedbackReview(only(stages, "feedback-review").value, observed)
 		return write(
@@ -805,7 +808,7 @@ export async function runImprovementCli(
 	}
 	if (opts.command === "review-repair") {
 		const manifest = parseHandoff(
-			z.object({ manifest: z.unknown() }).passthrough().parse(only(stages, "handoff").value).manifest,
+			z.object({ manifest: z.unknown().optional() }).passthrough().parse(only(stages, "handoff").value).manifest,
 		)
 		const record = sealReviewedHandoffRepair(input)
 		await parseReviewedHandoffRepair(record, {
@@ -833,7 +836,8 @@ export async function runImprovementCli(
 			feedbackReview: only(stages, "feedback-review").value,
 			regression: proposal(),
 			handoff: parseHandoff(
-				z.object({ manifest: z.unknown() }).passthrough().parse(only(stages, "handoff").value).manifest,
+				z.object({ manifest: z.unknown().optional() }).passthrough().parse(only(stages, "handoff").value)
+					.manifest,
 			),
 			reviewedRepair: parseReviewedHandoffRepairRecord(only(stages, "reviewed-repair").value),
 		}
@@ -885,7 +889,7 @@ const armAdapterSchema = z
 		repositoryRoot: z.string().min(1),
 		campaignRoot: z.string().min(1),
 		profileRoot: z.string().min(1),
-		config: z.unknown(),
+		config: z.unknown().optional(),
 	})
 	.strict()
 const hostAdapterSchema = z.object({ control: armAdapterSchema, candidate: armAdapterSchema }).strict()
@@ -938,12 +942,18 @@ export async function runExistingHostCampaign(
 	const ownedCampaignRoot = await openCampaignRoot(adapter.campaignRoot, false)
 	await ensureOwnedDirectory(path.join(adapter.repositoryRoot, "artifacts", "harness"))
 	await readOwnedFile(adapter.repositoryRoot, "scripts/harness/lease.mjs", 65536)
+	const releaseLeaseSchema = z
+		.custom<() => Promise<void>>((value) => typeof value === "function")
+		.transform((release) => z.function({ input: [], output: z.void() }).implementAsync(release))
 	const leaseModule = z
 		.object({
 			acquireBuildLease: z
-				.function()
-				.args(z.string(), z.string())
-				.returns(z.promise(z.function().args().returns(z.promise(z.void())))),
+				.custom<
+					(repositoryRoot: string, owner: string) => Promise<() => Promise<void>>
+				>((value) => typeof value === "function")
+				.transform((acquire) =>
+					z.function({ input: [z.string(), z.string()], output: releaseLeaseSchema }).implementAsync(acquire),
+				),
 		})
 		.passthrough()
 		.parse(createRequire(import.meta.url)(path.join(adapter.repositoryRoot, "scripts", "harness", "lease.mjs")))

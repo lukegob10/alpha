@@ -14,9 +14,5 @@
 		"finish": "Finish"
 	},
 	"startCustom": "Or you can bring your provider API key:",
-	"telemetry": {
-		"helpImprove": "Help Improve Alpha",
-		"helpImproveMessage": "Alpha collects error and usage data to help us fix bugs and improve the extension. This telemetry does not collect code, prompts or personal information. You can turn this off in <settingsLink>settings</settingsLink>."
-	},
 	"importSettings": "Import Settings"
 }

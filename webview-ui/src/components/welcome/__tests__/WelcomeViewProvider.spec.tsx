@@ -35,8 +35,8 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 
 // Mock Button component
 vi.mock("@src/components/ui", () => ({
-	Button: ({ children, onClick, variant }: any) => (
-		<button onClick={onClick} data-testid={`button-${variant}`}>
+	Button: ({ children, onClick, variant, disabled }: any) => (
+		<button onClick={onClick} disabled={disabled} data-testid={`button-${variant}`}>
 			{children}
 		</button>
 	),
@@ -45,7 +45,15 @@ vi.mock("@src/components/ui", () => ({
 // Mock ApiOptions
 vi.mock("../../settings/ApiOptions", () => {
 	apiOptionsModule.loaded = true
-	return { default: () => <div data-testid="api-options">API Options Component</div> }
+	return {
+		default: ({ setErrorMessage }: { setErrorMessage: (error: string | undefined) => void }) => (
+			<div data-testid="api-options">
+				API Options Component
+				<button onClick={() => setErrorMessage("Invalid numeric draft")}>Report invalid draft</button>
+				<button onClick={() => setErrorMessage(undefined)}>Repair draft</button>
+			</div>
+		),
+	}
 })
 
 // Mock Tab components
@@ -187,6 +195,26 @@ describe("WelcomeViewProvider", () => {
 			const getStartedButton = screen.getByTestId("button-primary")
 			fireEvent.click(getStartedButton)
 
+			expect(vscode.postMessage).toHaveBeenCalledWith({
+				type: "upsertApiConfiguration",
+				text: "default",
+				apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" },
+			})
+		})
+
+		it("blocks Finish while the provider editor reports an invalid uncommitted draft", async () => {
+			renderWelcomeViewProvider({ apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" } })
+			await navigateToProviderSelection()
+			fireEvent.click(screen.getByText("Report invalid draft"))
+			const finish = screen.getByRole("button", { name: "Finish" })
+			expect(finish).toBeDisabled()
+			fireEvent.click(finish)
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "upsertApiConfiguration" }),
+			)
+			fireEvent.click(screen.getByText("Repair draft"))
+			expect(finish).toBeEnabled()
+			fireEvent.click(finish)
 			expect(vscode.postMessage).toHaveBeenCalledWith({
 				type: "upsertApiConfiguration",
 				text: "default",

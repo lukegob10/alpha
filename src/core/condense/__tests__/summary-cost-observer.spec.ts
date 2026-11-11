@@ -4,8 +4,6 @@ import type { ApiStreamChunk } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { summarizeConversation } from "../index"
 
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureContextCondensed: vi.fn() } } }))
-
 describe("summary usage observation", () => {
 	function fixture(chunks: ApiStreamChunk[]) {
 		const messages: ApiMessage[] = [

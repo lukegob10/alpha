@@ -1,7 +1,9 @@
 // pnpm --filter @alpha-code/vscode-webview test src/components/settings/__tests__/SettingsView.spec.tsx
 
 import { render, screen, fireEvent, within, act } from "@/utils/test-utils"
+import React from "react"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { getProviderDefaultModelId, settingsForApprovalMode } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
 import { ExtensionStateContextProvider } from "@/context/ExtensionStateContext"
@@ -83,46 +85,15 @@ vi.mock("@vscode/webview-ui-toolkit/react", () => ({
 	),
 }))
 
-vi.mock("../../../components/common/Tab", () => ({
-	...vi.importActual("../../../components/common/Tab"),
+vi.mock("../../common/Tab", async () => ({
+	...(await vi.importActual<typeof import("../../common/Tab")>("../../common/Tab")),
 	Tab: ({ children }: any) => <div data-testid="tab-container">{children}</div>,
 	TabHeader: ({ children }: any) => <div data-testid="tab-header">{children}</div>,
-	TabContent: ({ children, "data-testid": dataTestId }: any) => (
-		<div data-testid={dataTestId || "tab-content"}>{children}</div>
-	),
-	TabList: ({ children, value, onValueChange, "data-testid": dataTestId }: any) => {
-		// Store onValueChange in a global variable so TabTrigger can access it
-		;(window as any).__onValueChange = onValueChange
-		return (
-			<div data-testid={dataTestId} data-value={value}>
-				{children}
-			</div>
-		)
-	},
-	TabTrigger: ({ children, value, "data-testid": dataTestId, onClick, isSelected }: any) => {
-		// This function simulates clicking on a tab and making its content visible
-		const handleClick = () => {
-			if (onClick) onClick()
-			// Access onValueChange from the global variable
-			const onValueChange = (window as any).__onValueChange
-			if (onValueChange) onValueChange(value)
-			// Make all tab contents invisible
-			document.querySelectorAll("[data-tab-content]").forEach((el) => {
-				;(el as HTMLElement).style.display = "none"
-			})
-			// Make this tab's content visible
-			const tabContent = document.querySelector(`[data-tab-content="${value}"]`)
-			if (tabContent) {
-				;(tabContent as HTMLElement).style.display = "block"
-			}
-		}
-
-		return (
-			<button data-testid={dataTestId} data-value={value} data-selected={isSelected} onClick={handleClick}>
-				{children}
-			</button>
-		)
-	},
+	TabContent: React.forwardRef<HTMLDivElement, any>(({ children, "data-testid": dataTestId }, ref) => (
+		<div ref={ref} data-testid={dataTestId || "tab-content"}>
+			{children}
+		</div>
+	)),
 }))
 
 vi.mock("@/components/ui", () => ({
@@ -167,9 +138,12 @@ vi.mock("@/components/ui", () => ({
 	),
 	CommandList: ({ children }: any) => <div data-testid="command-list">{children}</div>,
 	CommandEmpty: ({ children }: any) => <div data-testid="command-empty">{children}</div>,
-	Slider: ({ value, onValueChange, "data-testid": dataTestId }: any) => (
+	Slider: ({ value, onValueChange, min, max, step, "data-testid": dataTestId }: any) => (
 		<input
 			type="range"
+			min={min}
+			max={max}
+			step={step}
 			value={value?.[0] ?? 0}
 			onChange={(e) => onValueChange?.([parseFloat(e.target.value)])}
 			data-testid={dataTestId}
@@ -234,11 +208,7 @@ vi.mock("@/components/ui", () => ({
 			))}
 		</select>
 	),
-	AlertDialog: ({ children, open }: any) => (
-		<div data-testid="alert-dialog" data-open={open}>
-			{children}
-		</div>
-	),
+	AlertDialog: ({ children, open }: any) => (open ? <div data-testid="alert-dialog">{children}</div> : null),
 	AlertDialogContent: ({ children }: any) => <div data-testid="alert-dialog-content">{children}</div>,
 	AlertDialogHeader: ({ children }: any) => <div data-testid="alert-dialog-header">{children}</div>,
 	AlertDialogTitle: ({ children }: any) => <div data-testid="alert-dialog-title">{children}</div>,
@@ -302,23 +272,31 @@ vi.mock("@/components/ui", () => ({
 
 // Mock window.postMessage to trigger state hydration
 const mockPostMessage = (state: any) => {
-	window.postMessage(
-		{
-			type: "state",
-			state: {
-				version: "1.0.0",
-				alphaMessages: [],
-				taskHistory: [],
-				shouldShowAnnouncement: false,
-				allowedCommands: [],
-				alwaysAllowExecute: false,
-				soundEnabled: false,
-				soundVolume: 0.5,
-				...state,
-			},
-		},
-		"*",
-	)
+	act(() => {
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "state",
+					state: {
+						version: "1.0.0",
+						alphaMessages: [],
+						taskHistory: [],
+						shouldShowAnnouncement: false,
+						apiConfiguration: {
+							apiProvider: "anthropic",
+							apiModelId: getProviderDefaultModelId("anthropic"),
+							apiKey: "test-key",
+						},
+						...settingsForApprovalMode("ask"),
+						allowedCommands: [],
+						soundEnabled: false,
+						soundVolume: 0.5,
+						...state,
+					},
+				},
+			}),
+		)
+	})
 }
 
 const renderSettingsView = (targetSection?: string, initialState: Record<string, unknown> = {}) => {
@@ -336,48 +314,95 @@ const renderSettingsView = (targetSection?: string, initialState: Record<string,
 	// Hydrate initial state.
 	mockPostMessage(initialState)
 
-	// Helper function to activate a tab and ensure its content is visible
-	const activateTab = (tabId: string) => {
-		// Skip trying to find and click the tab, just directly render with the target section
-		// This bypasses the actual tab clicking mechanism but ensures the content is shown
+	// Retained links select the control's current page without replacing the edit buffer.
+	const revealSection = (sectionId: string) => {
 		result.rerender(
 			<ExtensionStateContextProvider>
 				<QueryClientProvider client={queryClient}>
-					<SettingsView onDone={onDone} targetSection={tabId} />
+					<SettingsView onDone={onDone} targetSection={sectionId} />
 				</QueryClientProvider>
 			</ExtensionStateContextProvider>,
 		)
 	}
 
-	// Helper to get elements within the settings content (not the indexing container)
-	const getSettingsContent = () => screen.getByTestId("settings-content")
+	const getSettingsContent = () => screen.getByRole("tabpanel")
 
-	return { onDone, activateTab, getSettingsContent, unmount: result.unmount }
+	return { onDone, revealSection, getSettingsContent, unmount: result.unmount }
+}
+
+function getSectionElement(section: string): HTMLElement {
+	const element = document.querySelector<HTMLElement>(`[data-settings-section="${section}"]`)
+	if (!element) throw new Error(`Missing settings section: ${section}`)
+	return element
+}
+
+function getPermissionsContent(): HTMLElement {
+	const group = getSectionElement("preferences").querySelector<HTMLElement>('[data-settings-group="permissions"]')
+	if (!group) throw new Error("Missing Permissions group in Preferences")
+	const summary = within(group).getByText("settings:autoApprove.advanced", { selector: "summary" })
+	if (!summary.closest<HTMLDetailsElement>("details")?.open) fireEvent.click(summary)
+	expect(group).toBeVisible()
+	expect(summary.closest("details")).toHaveAttribute("open")
+	return group
+}
+
+const acknowledgeSettingsSave = () => {
+	const request = vi
+		.mocked(vscode.postMessage)
+		.mock.calls.findLast(([message]) => message.type === "updateSettings")?.[0]
+	expect(request?.settingsSave?.requestId).toEqual(expect.any(String))
+	if (!request?.settingsSave) throw new Error("Expected a correlated settings save")
+	const requestId = request.settingsSave.requestId
+	act(() => {
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				data: {
+					type: "settingsSaved",
+					settingsSaveResult: { requestId, status: "success" },
+				},
+			}),
+		)
+	})
 }
 
 describe("SettingsView - Startup rendering", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it.each(["modes", "prompts"])("opens the default section for the retired %s settings page", (section) => {
+	it.each(["modes", "prompts"])("ignores a retired %s link without restoring a settings category", (section) => {
 		const { getSettingsContent } = renderSettingsView(section)
 
 		expect(sectionNames).not.toContain(section)
 		expect(screen.queryByTestId(`tab-${section}`)).not.toBeInTheDocument()
-		expect(screen.getByTestId("tab-providers")).toHaveAttribute("data-selected", "true")
+		expect(document.querySelector(`[data-settings-section="${section}"]`)).not.toBeInTheDocument()
+		expect(screen.getByTestId("tab-providers")).toHaveAttribute("aria-selected", "true")
 		expect(within(getSettingsContent()).getByTestId("api-config-management")).toBeInTheDocument()
 	})
 
-	it("opens the discoverable Agents route with its buffered controls", () => {
+	it("keeps four settings pages and opens legacy Agents links in Tools & agents", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
-		expect(sectionNames).toContain("agents")
+		expect(sectionNames).toEqual(["providers", "tools", "preferences", "advanced"])
 		expect(getSettingsContent()).toHaveTextContent("agents:title")
 		expect(within(getSettingsContent()).getByLabelText("agents:concurrency.label")).toBeInTheDocument()
-		expect(screen.getByTestId("tab-agents")).toHaveTextContent("settings:sections.agents")
+		expect(screen.getByTestId("tab-tools")).toHaveAttribute("aria-selected", "true")
+		expect(document.querySelectorAll("[data-settings-section]")).toHaveLength(4)
+		for (const retired of [
+			"permissions",
+			"agents",
+			"skills",
+			"mcp",
+			"notifications",
+			"terminal",
+			"worktrees",
+			"language",
+			"about",
+		]) {
+			expect(screen.queryByTestId(`tab-${retired}`)).not.toBeInTheDocument()
+		}
 	})
 
-	it("indexes settings without loading resources for unrelated tabs", async () => {
+	it("makes settings searchable without loading unvisited resource managers", async () => {
 		vi.useFakeTimers()
-		const { unmount } = renderSettingsView("agents")
+		const { unmount } = renderSettingsView("preferences")
 		try {
 			let indexingFrames = 0
 			while (!screen.queryByTestId("settings-search-input") && indexingFrames <= sectionNames.length) {
@@ -400,21 +425,18 @@ describe("SettingsView - Startup rendering", () => {
 		}
 	})
 
-	it("keeps unindexed tab titles searchable and loads resources after navigation", async () => {
+	it("finds page titles and loads resource managers only after selection", async () => {
 		vi.useFakeTimers()
-		const { unmount } = renderSettingsView("agents")
+		const { unmount } = renderSettingsView("preferences")
 		try {
 			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
 				await act(async () => vi.advanceTimersToNextFrame())
 			}
 			const search = screen.getByTestId("settings-search-input")
 			fireEvent.focus(search)
-			for (const section of ["providers", "skills", "mcp", "worktrees"]) {
+			for (const section of ["providers", "tools"]) {
 				fireEvent.change(search, { target: { value: `settings:sections.${section}` } })
-				expect(screen.getByRole("option", { name: `settings:sections.${section}` })).toHaveAttribute(
-					"id",
-					`settings-search-result-tab-${section}`,
-				)
+				expect(screen.getByRole("option", { name: `settings:sections.${section}` })).toBeInTheDocument()
 			}
 			fireEvent.change(search, { target: { value: "settings:sections.slashCommands" } })
 			expect(screen.queryByRole("option", { name: "settings:sections.slashCommands" })).not.toBeInTheDocument()
@@ -423,17 +445,11 @@ describe("SettingsView - Startup rendering", () => {
 			fireEvent.change(search, { target: { value: "settings:sections.prompts" } })
 			expect(screen.queryByRole("option", { name: "settings:sections.prompts" })).not.toBeInTheDocument()
 
-			for (const { section, requests } of [
-				{ section: "skills", requests: ["requestSkills"] },
-				{ section: "worktrees", requests: ["listWorktrees", "getWorktreeIncludeStatus"] },
-			]) {
-				vi.mocked(vscode.postMessage).mockClear()
-				fireEvent.change(search, { target: { value: `settings:sections.${section}` } })
-				fireEvent.click(screen.getByRole("option", { name: `settings:sections.${section}` }))
-				for (const type of requests) {
-					expect(vscode.postMessage).toHaveBeenCalledWith({ type })
-				}
-			}
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.change(search, { target: { value: "settings:sections.tools" } })
+			fireEvent.click(screen.getByRole("option", { name: "settings:sections.tools" }))
+			expect(vscode.postMessage).toHaveBeenCalledWith({ type: "requestSkills" })
+			expect(vscode.postMessage).not.toHaveBeenCalledWith({ type: "listWorktrees" })
 		} finally {
 			unmount()
 			vi.clearAllTimers()
@@ -441,9 +457,9 @@ describe("SettingsView - Startup rendering", () => {
 		}
 	})
 
-	it("indexes enabled custom tools without refreshing them until Experimental is opened", async () => {
+	it("indexes enabled custom tools without refreshing them until Tools & agents is opened", async () => {
 		vi.useFakeTimers()
-		const { unmount } = renderSettingsView("agents", { experiments: { customTools: true } })
+		const { unmount } = renderSettingsView("preferences", { experiments: { customTools: true } })
 		const refreshRequests = () =>
 			vi.mocked(vscode.postMessage).mock.calls.filter(([message]) => message.type === "refreshCustomTools")
 		try {
@@ -454,14 +470,76 @@ describe("SettingsView - Startup rendering", () => {
 
 			const search = screen.getByTestId("settings-search-input")
 			fireEvent.focus(search)
-			fireEvent.change(search, { target: { value: "settings:experimental.CUSTOM_TOOLS.name" } })
-			fireEvent.click(screen.getByRole("option", { name: "settings:experimental.CUSTOM_TOOLS.name" }))
+			fireEvent.change(search, { target: { value: "settings:customTools.name" } })
+			fireEvent.click(screen.getByRole("option", { name: "settings:customTools.name" }))
+			await act(async () => vi.advanceTimersByTime(150))
 			expect(refreshRequests()).toHaveLength(1)
 			expect(
-				within(screen.getByTestId("settings-content")).getByRole("checkbox", {
-					name: "settings:experimental.CUSTOM_TOOLS.name",
+				within(screen.getByRole("tabpanel")).getByRole("checkbox", {
+					name: "settings:customTools.name",
 				}),
 			).toBeChecked()
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
+
+	it("opens and reopens the folded compaction prompt through search without applying settings", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("preferences")
+		try {
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			const editor = screen.getByTestId("condense-prompt-textarea")
+			const details = editor.closest<HTMLDetailsElement>('details[data-settings-advanced="condense-prompt"]')
+			if (!details) throw new Error("Missing compaction prompt disclosure")
+			expect(details.open).toBe(false)
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const search = screen.getByTestId("settings-search-input")
+				fireEvent.focus(search)
+				fireEvent.change(search, { target: { value: "prompts:supportPrompts.types.CONDENSE.label" } })
+				fireEvent.click(screen.getByRole("option", { name: "prompts:supportPrompts.types.CONDENSE.label" }))
+				await act(async () => vi.advanceTimersByTime(150))
+				expect(screen.getByTestId("tab-advanced")).toHaveAttribute("aria-selected", "true")
+				expect(details.open).toBe(true)
+				expect(editor).toBeVisible()
+				expect(within(screen.getByRole("tabpanel")).getByTestId("condense-prompt-textarea")).toBe(editor)
+				details.open = false
+				fireEvent.click(screen.getByTestId("tab-preferences"))
+				expect(editor).not.toBeVisible()
+			}
+			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+		} finally {
+			unmount()
+			vi.clearAllTimers()
+			vi.useRealTimers()
+		}
+	})
+
+	it("omits retired terminal setup controls from the Advanced page and settings search", async () => {
+		vi.useFakeTimers()
+		const { unmount } = renderSettingsView("advanced")
+		try {
+			for (let frame = 0; frame < sectionNames.length + 1; frame++) {
+				await act(async () => vi.advanceTimersToNextFrame())
+			}
+			const panel = screen.getByRole("tabpanel")
+			expect(panel.querySelector('[data-setting-id^="terminal-"]')).not.toBeInTheDocument()
+			expect(within(panel).queryByText("settings:advanced.terminal")).not.toBeInTheDocument()
+			const search = screen.getByTestId("settings-search-input")
+			for (const label of [
+				"settings:terminal.shellIntegrationTimeout.label",
+				"settings:terminal.outputPreviewSize.label",
+				"settings:terminal.zdotdir.label",
+			]) {
+				fireEvent.focus(search)
+				fireEvent.change(search, { target: { value: label } })
+				expect(screen.queryByRole("option", { name: label })).not.toBeInTheDocument()
+			}
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 		} finally {
 			unmount()
@@ -475,16 +553,21 @@ describe("SettingsView - Agents edit buffer", () => {
 	beforeEach(() => vi.clearAllMocks())
 	const refresh = (state: Record<string, unknown>) =>
 		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "state", state } })))
+	const openAdvanced = (content: HTMLElement) => {
+		const summary = within(content).getByText("agents:advanced.title", { selector: "summary" })
+		if (!summary.closest<HTMLDetailsElement>("details")?.open) fireEvent.click(summary)
+		expect(within(content).getByTestId("agents-default-model")).toBeVisible()
+	}
 
 	it("saves Codex settings without forwarding retired settings", () => {
-		const { getSettingsContent } = renderSettingsView("agents")
-		refresh({
+		const { getSettingsContent } = renderSettingsView("agents", {
 			maxConcurrentSubagents: 2,
 			subagentDefaultModel: "old-model",
 			subagentRoleTimeoutsMs: { worker: 10_000 },
 			subagentRootCostBudget: 1,
 		})
 		const content = getSettingsContent()
+		openAdvanced(content)
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.change(within(content).getByTestId("agents-concurrency"), { target: { value: "4" } })
 		fireEvent.change(within(content).getByTestId("agents-default-model"), { target: { value: "new-model" } })
@@ -497,22 +580,24 @@ describe("SettingsView - Agents edit buffer", () => {
 			expect.objectContaining({
 				updatedSettings: expect.objectContaining({
 					maxConcurrentSubagents: 4,
-					subagentsEnabled: true,
 					subagentDefaultModel: "new-model",
-					subagentDefaultReasoningEffort: null,
-					subagentInterruptMessage: true,
 				}),
 			}),
 		)
 		expect(update?.updatedSettings).not.toHaveProperty("subagentRoleTimeoutsMs")
 		expect(update?.updatedSettings).not.toHaveProperty("subagentRootCostBudget")
 		expect(update?.updatedSettings).not.toHaveProperty("subagentDefaultApiConfigId")
+		expect(update?.updatedSettings).not.toHaveProperty("subagentsEnabled")
+		expect(update?.updatedSettings).not.toHaveProperty("subagentInterruptMessage")
 		expect(screen.getByTestId("save-button")).toBeDisabled()
 	})
 
 	it("retains dirty edits during refresh and Cancel, then discards to the latest host values", () => {
-		const { getSettingsContent, onDone } = renderSettingsView("agents")
-		refresh({ maxConcurrentSubagents: 2, subagentDefaultModel: "initial-model" })
+		const { getSettingsContent, onDone } = renderSettingsView("agents", {
+			maxConcurrentSubagents: 2,
+			subagentDefaultModel: "initial-model",
+		})
+		openAdvanced(getSettingsContent())
 		const concurrency = () => within(getSettingsContent()).getByTestId("agents-concurrency")
 		fireEvent.change(concurrency(), { target: { value: "4" } })
 		vi.mocked(vscode.postMessage).mockClear()
@@ -531,22 +616,23 @@ describe("SettingsView - Agents edit buffer", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
 	})
 
-	it("keeps Save disabled for invalid agent edits after leaving the Agents tab", () => {
-		const { getSettingsContent, activateTab } = renderSettingsView("agents")
-		refresh({ maxConcurrentSubagents: 2 })
+	it("keeps Save disabled for invalid agent edits after leaving Tools & agents", () => {
+		const { getSettingsContent, revealSection } = renderSettingsView("agents", { maxConcurrentSubagents: 2 })
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "2.5" } })
 		expect(screen.getByTestId("save-button")).toBeDisabled()
-		activateTab("notifications")
+		fireEvent.click(screen.getByTestId("tab-preferences"))
+		revealSection("notifications")
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
-		activateTab("agents")
+		revealSection("agents")
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "3" } })
 		expect(screen.getByTestId("save-button")).toBeEnabled()
 	})
 
 	it("resyncs imported current settings while ignoring retired limits", () => {
 		const { getSettingsContent } = renderSettingsView("agents")
+		openAdvanced(getSettingsContent())
 		refresh({ maxConcurrentSubagents: 2 })
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-concurrency"), { target: { value: "4" } })
 		refresh({
@@ -563,18 +649,18 @@ describe("SettingsView - Agents edit buffer", () => {
 	})
 
 	it("serializes inheritance clearing without losing custom agent definitions", () => {
-		const { getSettingsContent } = renderSettingsView("agents")
 		const definition = {
 			description: "Review public contracts",
 			model: "review-model",
 			reasoningEffort: "low",
 			developerInstructions: "Preserve compatibility.",
 		}
-		refresh({
+		const { getSettingsContent } = renderSettingsView("agents", {
 			subagentDefaultModel: "old-model",
 			subagentDefaultReasoningEffort: "high",
 			subagentAgentTypes: { reviewer: definition },
 		})
+		openAdvanced(getSettingsContent())
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-default-model"), { target: { value: "" } })
 		fireEvent.change(within(getSettingsContent()).getByTestId("agents-default-reasoning"), {
 			target: { value: "" },
@@ -589,33 +675,52 @@ describe("SettingsView - Agents edit buffer", () => {
 				updatedSettings: expect.objectContaining({
 					subagentDefaultModel: "",
 					subagentDefaultReasoningEffort: null,
-					subagentAgentTypes: { reviewer: definition },
 				}),
 			}),
 		)
+		expect(update?.updatedSettings).not.toHaveProperty("subagentAgentTypes")
 	})
 })
 
 describe("SettingsView - Context compaction", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it("saves the global threshold and drops loaded legacy profile overrides", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
+	it("retains the raw conflict baseline for an untouched setting across an unrelated successful save", () => {
+		const { revealSection, getSettingsContent } = renderSettingsView("preferences")
 		act(() =>
 			window.dispatchEvent(
 				new MessageEvent("message", {
 					data: {
 						type: "state",
-						state: {
-							autoCondenseContext: true,
-							autoCondenseContextPercent: 80,
-							profileThresholds: { "legacy-profile": 35 },
-						},
+						state: { settingsImportedAt: 1, soundEnabled: false, maxWorkspaceFiles: 450 },
 					},
 				}),
 			),
 		)
-		activateTab("contextManagement")
+		fireEvent.click(within(getSettingsContent()).getByTestId("sound-enabled-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		acknowledgeSettingsSave()
+		revealSection("advanced")
+		const count = within(getSettingsContent()).getByTestId("workspace-files-limit-slider")
+		expect(count).toHaveValue("200")
+		fireEvent.change(count, { target: { value: "199" } })
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		if (!update?.settingsSave) throw new Error("Expected a correlated settings save")
+		expect(update.updatedSettings).toEqual({ maxWorkspaceFiles: 199 })
+		expect(update.settingsSave.expectedSettings).toEqual({ maxWorkspaceFiles: 450 })
+	})
+
+	it("saves the global threshold and drops loaded legacy profile overrides", () => {
+		const { revealSection, getSettingsContent } = renderSettingsView(undefined, {
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 80,
+			profileThresholds: { "legacy-profile": 35 },
+		})
+		revealSection("contextManagement")
 
 		const content = getSettingsContent()
 		const threshold = within(content).getByTestId("condense-threshold-slider")
@@ -644,7 +749,7 @@ describe("SettingsView - Context compaction", () => {
 	})
 
 	it("keeps a compaction edit after Cancel and discards it without saving", () => {
-		const { activateTab, getSettingsContent, onDone } = renderSettingsView()
+		const { revealSection, getSettingsContent, onDone } = renderSettingsView()
 		act(() =>
 			window.dispatchEvent(
 				new MessageEvent("message", {
@@ -655,7 +760,7 @@ describe("SettingsView - Context compaction", () => {
 				}),
 			),
 		)
-		activateTab("contextManagement")
+		revealSection("contextManagement")
 
 		const threshold = () => within(getSettingsContent()).getByTestId("condense-threshold-slider")
 		fireEvent.change(threshold(), { target: { value: "65" } })
@@ -683,7 +788,7 @@ describe("SettingsView - Built-in Skills", () => {
 	}
 
 	it("keeps built-in enablement buffered across live refreshes and saves both disabled and enabled values", () => {
-		const { activateTab } = renderSettingsView()
+		const { revealSection } = renderSettingsView()
 		const skills = [
 			{
 				name: "rich-documents",
@@ -694,7 +799,7 @@ describe("SettingsView - Built-in Skills", () => {
 		]
 		dispatchSettings({ settingsImportedAt: 1, disabledBuiltinSkills: ["other-default"], skills })
 		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "skills", skills } })))
-		activateTab("skills")
+		revealSection("skills")
 		const checkbox = screen.getByLabelText("settings:skills.enabled")
 		expect(checkbox).toBeChecked()
 		fireEvent.click(checkbox)
@@ -712,6 +817,7 @@ describe("SettingsView - Built-in Skills", () => {
 				}),
 			}),
 		)
+		acknowledgeSettingsSave()
 
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(checkbox)
@@ -730,6 +836,23 @@ describe("SettingsView - Built-in Skills", () => {
 describe("SettingsView - Sound Settings", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it("omits anonymous reporting controls and never saves a retained legacy reporting preference", () => {
+		const { getSettingsContent } = renderSettingsView("preferences", { telemetrySetting: "enabled" })
+		const content = getSettingsContent()
+		expect(document.querySelector('[data-setting-id="about-telemetry"]')).not.toBeInTheDocument()
+		expect(within(content).queryByLabelText("settings:footer.telemetry.label")).not.toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(within(content).getByTestId("sound-enabled-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		if (!update?.settingsSave) throw new Error("Expected a correlated settings save")
+		expect(update.updatedSettings).toEqual({ soundEnabled: true })
+		expect(update.settingsSave.expectedSettings).toEqual({ soundEnabled: false })
+		expect(update.updatedSettings).not.toHaveProperty("telemetrySetting")
 	})
 
 	it("ignores legacy speech settings and buffers notification sound edits until Save", () => {
@@ -754,17 +877,17 @@ describe("SettingsView - Sound Settings", () => {
 		const update = vi
 			.mocked(vscode.postMessage)
 			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
-		expect(update?.updatedSettings).toMatchObject({ soundEnabled: true, soundVolume: 0.5 })
+		expect(update?.updatedSettings).toEqual({ soundEnabled: true })
 		expect(update?.updatedSettings).not.toHaveProperty("ttsEnabled")
 		expect(update?.updatedSettings).not.toHaveProperty("ttsSpeed")
 	})
 
 	it("initializes with sound disabled by default", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection, getSettingsContent } = renderSettingsView()
 
-		// Activate the notifications tab
-		activateTab("notifications")
+		// Reveal sound preferences
+		revealSection("notifications")
 
 		const content = getSettingsContent()
 		const soundCheckbox = within(content).getByTestId("sound-enabled-checkbox")
@@ -775,11 +898,11 @@ describe("SettingsView - Sound Settings", () => {
 	})
 
 	it("toggles sound setting and sends message to VSCode", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection, getSettingsContent } = renderSettingsView()
 
-		// Activate the notifications tab
-		activateTab("notifications")
+		// Reveal sound preferences
+		revealSection("notifications")
 
 		const content = getSettingsContent()
 		const soundCheckbox = within(content).getByTestId("sound-enabled-checkbox")
@@ -803,11 +926,11 @@ describe("SettingsView - Sound Settings", () => {
 	})
 
 	it("shows volume slider when sound is enabled", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection, getSettingsContent } = renderSettingsView()
 
-		// Activate the notifications tab
-		activateTab("notifications")
+		// Reveal sound preferences
+		revealSection("notifications")
 
 		const content = getSettingsContent()
 		// Enable sound
@@ -821,11 +944,11 @@ describe("SettingsView - Sound Settings", () => {
 	})
 
 	it("updates volume and sends message to VSCode when slider changes", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection, getSettingsContent } = renderSettingsView()
 
-		// Activate the notifications tab
-		activateTab("notifications")
+		// Reveal sound preferences
+		revealSection("notifications")
 
 		const content = getSettingsContent()
 		// Enable sound
@@ -872,10 +995,13 @@ describe("SettingsView - Approval Mode", () => {
 	}
 
 	it("keeps the session dial buffered through live refreshes and saves mode with derived chips", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		const { revealSection, getSettingsContent } = renderSettingsView()
 		dispatchSettings({ settingsImportedAt: 1, approvalMode: "ask" })
-		activateTab("autoApprove")
+		revealSection("autoApprove")
 		const auto = within(getSettingsContent()).getByTestId("approval-mode-auto")
+		expect(auto).toBeVisible()
+		expect(screen.getByTestId("tab-preferences")).toHaveAttribute("aria-selected", "true")
+		expect(screen.queryByTestId("tab-permissions")).not.toBeInTheDocument()
 
 		expect(within(getSettingsContent()).getByTestId("approval-mode-ask")).toHaveAttribute("aria-pressed", "true")
 		fireEvent.click(auto)
@@ -891,17 +1017,42 @@ describe("SettingsView - Approval Mode", () => {
 				updatedSettings: expect.objectContaining({
 					approvalMode: "auto",
 					alwaysAllowWrite: true,
-					alwaysAllowWriteOutsideWorkspace: false,
 					alwaysAllowTickets: true,
 				}),
 			}),
 		)
 	})
 
+	it("resyncs imported Preferences permissions and discards a later draft to the latest host permissions", () => {
+		const { getSettingsContent, onDone } = renderSettingsView("preferences", { ...settingsForApprovalMode("ask") })
+		const mode = (name: "ask" | "auto" | "bypass") =>
+			within(getSettingsContent()).getByTestId("approval-mode-" + name)
+		expect(mode("ask")).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		// Imports explicitly replace the form snapshot; ordinary live pushes preserve buffered edits.
+		dispatchSettings({ ...settingsForApprovalMode("auto"), settingsImportedAt: 1 })
+		expect(mode("auto")).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(mode("ask"))
+		dispatchSettings({ ...settingsForApprovalMode("bypass"), liveTaskIds: ["background-task"] })
+		expect(mode("ask")).toHaveAttribute("aria-pressed", "true")
+		fireEvent.click(screen.getByTestId("tab-tools"))
+		fireEvent.click(screen.getByTestId("tab-preferences"))
+		expect(mode("ask")).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		fireEvent.click(screen.getByRole("button", { name: "settings:common.done" }))
+		fireEvent.click(screen.getByTestId("alert-dialog-action"))
+		expect(mode("bypass")).toHaveAttribute("aria-pressed", "true")
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		expect(onDone).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "updateSettings" }))
+	})
+
 	it("preserves approval-mode edits on Cancel and resets them on Discard", () => {
-		const { activateTab, getSettingsContent, onDone } = renderSettingsView()
+		const { revealSection, getSettingsContent, onDone } = renderSettingsView()
 		dispatchSettings({ settingsImportedAt: 1, approvalMode: "ask" })
-		activateTab("autoApprove")
+		revealSection("autoApprove")
 		const auto = within(getSettingsContent()).getByTestId("approval-mode-auto")
 
 		fireEvent.click(auto)
@@ -924,17 +1075,59 @@ describe("SettingsView - Allowed Commands", () => {
 	})
 
 	it("shows allowed commands section for the session dial", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
-		activateTab("autoApprove")
-		const content = getSettingsContent()
+		const { revealSection } = renderSettingsView()
+		revealSection("autoApprove")
+		const content = getPermissionsContent()
 		expect(within(content).getByTestId("allowed-commands-heading")).toBeInTheDocument()
 		expect(within(content).getByTestId("command-input")).toBeInTheDocument()
 	})
 
+	it("edits only global command rules while inherited workspace rules remain read-only", () => {
+		renderSettingsView("permissions")
+		act(() =>
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "state",
+						state: {
+							settingsImportedAt: 1,
+							approvalMode: "ask",
+							allowedCommands: ["git status", "workspace-only-command"],
+							commandRuleSettings: {
+								allowedCommands: ["git status"],
+								deniedCommands: [],
+								inherited: [
+									{
+										source: "workspace",
+										allowedCommands: ["workspace-only-command"],
+										deniedCommands: [],
+									},
+								],
+							},
+						},
+					},
+				}),
+			),
+		)
+		const content = getPermissionsContent()
+		expect(within(content).getByText("workspace-only-command")).toBeInTheDocument()
+		expect(within(content).queryByTestId("remove-command-1")).not.toBeInTheDocument()
+		fireEvent.click(within(content).getByTestId("remove-command-0"))
+		expect(within(content).getByText("workspace-only-command")).toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		if (!update?.settingsSave) throw new Error("Expected a correlated settings save")
+		expect(update.updatedSettings).toEqual({ allowedCommands: [] })
+		expect(update.settingsSave.expectedSettings).toEqual({ allowedCommands: ["git status"] })
+	})
+
 	it("adds new command to the list", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
-		activateTab("autoApprove")
-		const content = getSettingsContent()
+		const { revealSection } = renderSettingsView()
+		revealSection("autoApprove")
+		const content = getPermissionsContent()
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
 		fireEvent.click(within(content).getByTestId("add-command-button"))
@@ -950,9 +1143,9 @@ describe("SettingsView - Allowed Commands", () => {
 	})
 
 	it("removes command from the list", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
-		activateTab("autoApprove")
-		const content = getSettingsContent()
+		const { revealSection } = renderSettingsView()
+		revealSection("autoApprove")
+		const content = getPermissionsContent()
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
 		fireEvent.click(within(content).getByTestId("add-command-button"))
@@ -968,28 +1161,27 @@ describe("SettingsView - Allowed Commands", () => {
 		)
 	})
 
-	describe("SettingsView - Tab Navigation", () => {
+	describe("SettingsView - Section Navigation", () => {
 		beforeEach(() => {
 			vi.clearAllMocks()
 		})
 
-		it("renders with providers tab active by default", () => {
+		it("opens Providers by default and exposes four dedicated settings pages", () => {
 			renderSettingsView()
 
-			// Check that the tab list is rendered
-			const tabList = screen.getByTestId("settings-tab-list")
-			expect(tabList).toBeInTheDocument()
-
-			// Check that providers content is visible
+			expect(screen.getByRole("tablist")).toBeInTheDocument()
+			expect(document.querySelectorAll("[data-settings-section]")).toHaveLength(4)
 			expect(screen.getByTestId("api-config-management")).toBeInTheDocument()
+			expect(screen.getByTestId("tab-providers")).toHaveAttribute("aria-selected", "true")
+			expect(screen.getByRole("tabpanel")).toHaveAttribute("data-settings-section", "providers")
 		})
 
 		it("shows unsaved changes dialog when clicking Done with unsaved changes", () => {
-			// Render once and get the activateTab helper
-			const { activateTab, getSettingsContent } = renderSettingsView()
+			// Render once and get the revealSection helper
+			const { revealSection, getSettingsContent } = renderSettingsView()
 
-			// Activate the notifications tab
-			activateTab("notifications")
+			// Reveal sound preferences
+			revealSection("notifications")
 
 			const content = getSettingsContent()
 			// Make a change to create unsaved changes
@@ -1012,13 +1204,13 @@ describe("SettingsView - Duplicate Commands", () => {
 	})
 
 	it("prevents duplicate commands", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection } = renderSettingsView()
 
-		// Activate the autoApprove tab
-		activateTab("autoApprove")
+		// Reveal permissions
+		revealSection("autoApprove")
 
-		const content = getSettingsContent()
+		const content = getPermissionsContent()
 		const input = within(content).getByTestId("command-input")
 		const addButton = within(content).getByTestId("add-command-button")
 
@@ -1036,13 +1228,13 @@ describe("SettingsView - Duplicate Commands", () => {
 	})
 
 	it("saves allowed commands when clicking Save", () => {
-		// Render once and get the activateTab helper
-		const { activateTab, getSettingsContent } = renderSettingsView()
+		// Render once and get the revealSection helper
+		const { revealSection } = renderSettingsView()
 
-		// Activate the autoApprove tab
-		activateTab("autoApprove")
+		// Reveal permissions
+		revealSection("autoApprove")
 
-		const content = getSettingsContent()
+		const content = getPermissionsContent()
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: "npm test" } })
 		fireEvent.click(within(content).getByTestId("add-command-button"))
@@ -1060,23 +1252,21 @@ describe("SettingsView - Duplicate Commands", () => {
 	})
 
 	it("saves the session dial and derived chips together", () => {
-		const { activateTab, getSettingsContent } = renderSettingsView()
-		activateTab("autoApprove")
-		const content = getSettingsContent()
-		fireEvent.click(within(content).getByTestId("approval-mode-auto"))
+		const { revealSection } = renderSettingsView()
+		revealSection("autoApprove")
+		const content = getPermissionsContent()
 		const input = within(content).getByTestId("command-input")
 		fireEvent.change(input, { target: { value: " * " } })
 		fireEvent.click(within(content).getByTestId("add-command-button"))
+		fireEvent.click(within(content).getByTestId("approval-mode-auto"))
 		fireEvent.click(screen.getByTestId("save-button"))
 		expect(vscode.postMessage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "updateSettings",
 				updatedSettings: expect.objectContaining({
 					approvalMode: "auto",
-					autoApprovalEnabled: true,
 					alwaysAllowExecute: true,
 					alwaysAllowSubagents: true,
-					alwaysAllowWriteOutsideWorkspace: false,
 					allowedCommands: ["*"],
 				}),
 			}),

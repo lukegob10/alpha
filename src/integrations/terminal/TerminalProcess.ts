@@ -31,6 +31,9 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private readonly terminalClosedController = new AbortController()
 	private disposeRunResources?: () => void
 	private activeIterator?: AsyncIterator<string>
+	private shellExecution?: vscode.TerminalShellExecution
+	private pendingShellEvents?: (() => void)[]
+	private shellExecutionStarted = false
 	private shellExecutionReported = false
 	private terminationPromise?: Promise<void>
 
@@ -45,7 +48,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.once("shell_execution_complete", () => (this.shellExecutionReported = true))
 
 		this.once("completed", () => {
-			if (!this.terminal.process || this.terminal.process === this) this.terminal.busy = false
+			if (this.terminal.process === this && !this.terminal.running) this.terminal.busy = false
 		})
 		this.once("error", () => {
 			this.stopHotTimer()
@@ -53,8 +56,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 		})
 
 		this.once("no_shell_integration", () => {
+			// Submitted command paths publish their own descriptive completion below.
+			// This fallback owns only initialization failures before run() starts.
+			if (this.commandSubmitted) return
 			this.emit("completed", "<no shell integration>")
-			if (!this.terminal.process || this.terminal.process === this) {
+			if (this.terminal.process === this) {
 				this.terminal.busy = false
 				this.terminal.setActiveStream(undefined)
 			}
@@ -91,6 +97,38 @@ export class TerminalProcess extends BaseTerminalProcess {
 		return this.terminalClosedController.signal
 	}
 
+	public observeShellExecutionStart(execution: vscode.TerminalShellExecution): void {
+		this.handleShellExecutionEvent(execution, () => {
+			if (this.shellExecutionStarted || this.isSettled) return
+			this.shellExecutionStarted = true
+			this.terminal.setActiveStream(execution.read())
+		})
+	}
+
+	public observeShellExecutionEnd(execution: vscode.TerminalShellExecution, exitCode: number | undefined): void {
+		this.handleShellExecutionEvent(execution, () => {
+			this.shellExecution = undefined
+			this.terminal.shellExecutionComplete(TerminalProcess.interpretExitCode(exitCode))
+		})
+	}
+
+	private handleShellExecutionEvent(execution: vscode.TerminalShellExecution, apply: () => void): void {
+		const dispatch = () => {
+			if (
+				this.shellExecution &&
+				this.shellExecution === execution &&
+				this.terminal.process === this &&
+				!this.terminalClosedSignal.aborted
+			) {
+				apply()
+			}
+		}
+		// The host can report a start from inside executeCommand. Match it
+		// against the returned handle before opening its stream or settling the run.
+		if (this.pendingShellEvents) this.pendingShellEvents.push(dispatch)
+		else dispatch()
+	}
+
 	public notifyTerminalClosed(): void {
 		if (this.terminalClosedSignal.aborted) return
 		const error = new Error(
@@ -101,6 +139,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			),
 		)
 		this.terminalClosedController.abort(error)
+		this.shellExecution = undefined
 		if (!this.isOutputFinalized && !this.isSettled) {
 			this.outputArchiveInterrupted = true
 			this.outputArtifactId = undefined
@@ -233,41 +272,27 @@ export class TerminalProcess extends BaseTerminalProcess {
 			this.isHot = false
 		}
 
-		// Execute command
-		const defaultWindowsShellProfile = vscode.workspace
-			.getConfiguration("terminal.integrated.defaultProfile")
-			.get("windows")
-
-		const isPowerShell =
-			process.platform === "win32" &&
-			(defaultWindowsShellProfile === null ||
-				(defaultWindowsShellProfile as string)?.toLowerCase().includes("powershell"))
-
+		let commandToExecute = command
+		if (this.usesWindowsPowerShell()) {
+			if (Terminal.getPowershellCounter()) {
+				commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
+			}
+			if (Terminal.getCommandDelay() > 0) {
+				commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
+			}
+		}
+		const pendingShellEvents: (() => void)[] = []
+		this.pendingShellEvents = pendingShellEvents
 		try {
 			this.commandSubmitted = true
-			if (isPowerShell) {
-				let commandToExecute = command
-
-				// Only add the PowerShell counter workaround if enabled
-				if (Terminal.getPowershellCounter()) {
-					commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
-				}
-
-				// Only add the sleep command if the command delay is greater than 0
-				if (Terminal.getCommandDelay() > 0) {
-					commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
-				}
-
-				terminal.shellIntegration.executeCommand(commandToExecute)
-			} else {
-				terminal.shellIntegration.executeCommand(command)
-			}
-		} catch (error) {
-			clearTimeout(streamTimeoutId)
-			if (onStreamAvailable) this.removeListener("stream_available", onStreamAvailable)
-			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
-			throw error
+			this.shellExecution = terminal.shellIntegration.executeCommand(commandToExecute)
+			// Once the host has accepted the command, a missing stream
+			// cannot release the shell for reuse. Only its end or close can.
+			if (this.shellExecution && this.terminal.process === this) this.terminal.running = true
+		} finally {
+			this.pendingShellEvents = undefined
 		}
+		for (const dispatch of pendingShellEvents) dispatch()
 
 		this.isHot = true
 
@@ -286,8 +311,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 				"completed",
 				"<VSCE shell integration stream did not start: terminal output and command execution status is unknown>",
 			)
-
-			if (!this.terminal.process || this.terminal.process === this) this.terminal.busy = false
 
 			// Emit continue event to allow execution to proceed
 			this.emit("continue")
@@ -323,7 +346,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			// Check for command output start marker
 			if (!commandOutputStarted) {
 				preOutput = terminalOutputSuffix(preOutput + data, 4_096)
-				// Output chunks may split the eight-character OSC start marker.
+				// Output chunks may split the OSC start marker, including its terminator.
 				// Retain only its possible prefix instead of rescanning all pre-output.
 				const markerInput = startMarkerCarry + data
 				const match = this.matchAfterVsceStartMarkers(markerInput)
@@ -334,7 +357,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 					this.resetOutputBuffer()
 					this.emit("line", "") // Trigger UI to proceed
 				} else {
-					startMarkerCarry = markerInput.slice(-7)
+					startMarkerCarry = markerInput.slice(-8)
 					continue
 				}
 			}
@@ -427,6 +450,16 @@ export class TerminalProcess extends BaseTerminalProcess {
 		const completionFailure = await this.emitCompletedAndWait(this.getOutputTranscript())
 		if (completionFailure) throw completionFailure
 		this.emit("continue")
+	}
+
+	private usesWindowsPowerShell(): boolean {
+		if (process.platform !== "win32") return false
+		const launch = this.terminal.shellLaunch
+		if (launch) return launch.family === "powershell"
+		const profile = vscode.workspace
+			.getConfiguration("terminal.integrated.defaultProfile")
+			.get<string | null>("windows")
+		return profile === null || profile?.toLowerCase().includes("powershell") === true
 	}
 
 	public override continue() {
@@ -632,57 +665,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 		}
 	}
 
-	private stringIndexMatch(
-		data: string,
-		prefix?: string,
-		suffix?: string,
-		bell: string = "\x07",
-	): string | undefined {
-		let startIndex: number
-		let endIndex: number
-		let prefixLength: number
-
-		if (prefix === undefined) {
-			startIndex = 0
-			prefixLength = 0
-		} else {
-			startIndex = data.indexOf(prefix)
-
-			if (startIndex === -1) {
-				return undefined
-			}
-
-			if (bell.length > 0) {
-				// Find the bell character after the prefix
-				const bellIndex = data.indexOf(bell, startIndex + prefix.length)
-
-				if (bellIndex === -1) {
-					return undefined
-				}
-
-				const distanceToBell = bellIndex - startIndex
-				prefixLength = distanceToBell + bell.length
-			} else {
-				prefixLength = prefix.length
-			}
-		}
-
-		const contentStart = startIndex + prefixLength
-
-		if (suffix === undefined) {
-			// When suffix is undefined, match to end
-			endIndex = data.length
-		} else {
-			endIndex = data.indexOf(suffix, contentStart)
-
-			if (endIndex === -1) {
-				return undefined
-			}
-		}
-
-		return data.slice(contentStart, endIndex)
-	}
-
 	/**
 	 * Remove only VSCode shell integration sequences (OSC 633/133) while
 	 * preserving standard ANSI SGR escape codes for color/formatting.
@@ -866,72 +848,22 @@ export class TerminalProcess extends BaseTerminalProcess {
 		)
 	}
 
-	/**
-	 * Helper function to match VSCode shell integration start markers (C).
-	 * Looks for content after ]633;C or ]133;C markers.
-	 * If both exist, takes the content after the last marker found.
-	 */
 	private matchAfterVsceStartMarkers(data: string): string | undefined {
-		return this.matchVsceMarkers(data, "\x1b]633;C", "\x1b]133;C", undefined, undefined)
+		// The documented OSC terminator (ST) and the built-in scripts' BEL
+		// are both valid. Match the terminator immediately after the C marker.
+		// eslint-disable-next-line no-control-regex
+		const marker633 = /\x1b\]633;C(?:\x07|\x1b\\)/.exec(data)
+		const after633 = marker633 ? data.slice(marker633.index + marker633[0].length) : data
+		// eslint-disable-next-line no-control-regex
+		const marker133 = /\x1b\]133;C(?:\x07|\x1b\\)/.exec(after633)
+		if (marker133) return after633.slice(marker133.index + marker133[0].length)
+		return marker633 ? after633 : undefined
 	}
 
-	/**
-	 * Helper function to match VSCode shell integration end markers (D).
-	 * Looks for content before ]633;D or ]133;D markers.
-	 * If both exist, takes the content before the first marker found.
-	 */
 	private matchBeforeVsceEndMarkers(data: string): string | undefined {
-		return this.matchVsceMarkers(data, undefined, undefined, "\x1b]633;D", "\x1b]133;D")
-	}
-
-	/**
-	 * Handles VSCode shell integration markers for command output:
-	 *
-	 * For C (Command Start):
-	 * - Looks for content after ]633;C or ]133;C markers
-	 * - These markers indicate the start of command output
-	 * - If both exist, takes the content after the last marker found
-	 * - This ensures we get the actual command output after any shell integration prefixes
-	 *
-	 * For D (Command End):
-	 * - Looks for content before ]633;D or ]133;D markers
-	 * - These markers indicate command completion
-	 * - If both exist, takes the content before the first marker found
-	 * - This ensures we don't include shell integration suffixes in the output
-	 *
-	 * In both cases, checks 633 first since it's more commonly used in VSCode shell integration
-	 *
-	 * @param data The string to search for markers in
-	 * @param prefix633 The 633 marker to match after (for C markers)
-	 * @param prefix133 The 133 marker to match after (for C markers)
-	 * @param suffix633 The 633 marker to match before (for D markers)
-	 * @param suffix133 The 133 marker to match before (for D markers)
-	 * @returns The content between/after markers, or undefined if no markers found
-	 *
-	 * Note: Always makes exactly 2 calls to stringIndexMatch regardless of match results.
-	 * Using string indexOf matching is ~500x faster than regular expressions, so even
-	 * matching twice is still very efficient comparatively.
-	 */
-	private matchVsceMarkers(
-		data: string,
-		prefix633: string | undefined,
-		prefix133: string | undefined,
-		suffix633: string | undefined,
-		suffix133: string | undefined,
-	): string | undefined {
-		// Support both VSCode shell integration markers (633 and 133)
-		// Check 633 first since it's more commonly used in VSCode shell integration
-		let match133: string | undefined
-		const match633 = this.stringIndexMatch(data, prefix633, suffix633)
-
-		// Must check explicitly for undefined because stringIndexMatch can return empty strings
-		// that are valid matches (e.g., when a marker exists but has no content between markers)
-		if (match633 !== undefined) {
-			match133 = this.stringIndexMatch(match633, prefix133, suffix133)
-		} else {
-			match133 = this.stringIndexMatch(data, prefix133, suffix133)
-		}
-
-		return match133 !== undefined ? match133 : match633
+		const marker633 = data.indexOf("\x1b]633;D")
+		const marker133 = data.indexOf("\x1b]133;D")
+		if (marker633 === -1) return marker133 === -1 ? undefined : data.slice(0, marker133)
+		return data.slice(0, marker133 === -1 ? marker633 : Math.min(marker633, marker133))
 	}
 }

@@ -1,7 +1,6 @@
 // npx vitest core/webview/__tests__/AlphaProvider.sticky-mode.spec.ts
 
 import * as vscode from "vscode"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { AlphaProvider } from "../AlphaProvider"
 import { ContextProxy } from "../../config/ContextProxy"
 import { Task } from "../../task/Task"
@@ -180,10 +179,13 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
 }))
 
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
 	return {
+		lstat,
+		realpath,
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -201,6 +203,10 @@ vi.mock("fs/promises", () => {
 		}),
 		readdir: vi.fn().mockResolvedValue([]),
 		open: vi.fn().mockImplementation(async (filePath: string) => ({
+			writeFile: vi.fn(async (data: unknown) => {
+				transactionFiles.set(filePath, String(data))
+			}),
+			sync: vi.fn().mockResolvedValue(undefined),
 			read: vi
 				.fn()
 				.mockImplementation(async (buffer: Buffer, offset: number, length: number, position: number) => {
@@ -212,12 +218,22 @@ vi.mock("fs/promises", () => {
 			close: vi.fn().mockResolvedValue(undefined),
 		})),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			const data = transactionFiles.get(filePath)
+			if (data !== undefined) {
+				return { isFile: () => true, isDirectory: () => false, size: Buffer.byteLength(data) }
+			}
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
 			}
 			return { isDirectory: () => true }
 		}),
 		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			const data = transactionFiles.get(sourcePath)
+			if (data !== undefined) {
+				transactionFiles.delete(sourcePath)
+				transactionFiles.set(destinationPath, data)
+				return
+			}
 			if (transactionDirectories.has(destinationPath)) {
 				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
 			}
@@ -238,7 +254,9 @@ vi.mock("fs/promises", () => {
 			transactionDirectories.delete(filePath)
 		}),
 		access: vi.fn().mockResolvedValue(undefined),
-		rm: vi.fn().mockResolvedValue(undefined),
+		rm: vi.fn(async (filePath: string) => {
+			transactionFiles.delete(filePath)
+		}),
 	}
 })
 
@@ -256,21 +274,6 @@ vi.mock("../../../utils/storage", async (importOriginal) => {
 		getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
 	}
 })
-
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		hasInstance: vi.fn().mockReturnValue(true),
-		createInstance: vi.fn(),
-		get instance() {
-			return {
-				trackEvent: vi.fn(),
-				trackError: vi.fn(),
-				setProvider: vi.fn(),
-				captureModeSwitch: vi.fn(),
-			}
-		},
-	},
-}))
 
 let storageFixtureCounter = 0
 
@@ -301,10 +304,6 @@ describe("AlphaProvider - Sticky Mode", () => {
 		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
 			() => new AgentControlStore(new InMemoryAgentControlPersistence()),
 		)
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		const globalState: Record<string, string | undefined> = {
 			mode: "code",

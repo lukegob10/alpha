@@ -9,7 +9,6 @@ import {
 	isProviderName,
 	isCuratedProvider,
 	getModelId,
-	DEFAULT_CONSECUTIVE_MISTAKE_LIMIT,
 	resolveModelParameterApplicability,
 } from "@alpha-code/types"
 
@@ -29,7 +28,7 @@ import { filterProviders, filterModels } from "./utils/organizationFilters"
 import { SearchableSelect, Collapsible, CollapsibleTrigger, CollapsibleContent } from "@src/components/ui"
 
 import { OpenAICompatible, Vertex, VSCodeLM } from "./providers"
-import { CuratedProvider } from "./providers/CuratedProvider"
+import { CuratedProvider, CuratedProviderAdvanced } from "./providers/CuratedProvider"
 import { Bedrock } from "./providers/Bedrock"
 import { ChatGptAuth } from "./providers/ChatGptAuth"
 
@@ -39,12 +38,10 @@ import { ModelPicker } from "./ModelPicker"
 import { ApiErrorMessage } from "./ApiErrorMessage"
 import { ThinkingBudget } from "./ThinkingBudget"
 import { Verbosity } from "./Verbosity"
-import { TodoListSettingsControl } from "./TodoListSettingsControl"
 import { TemperatureControl } from "./TemperatureControl"
 import { RateLimitSecondsControl } from "./RateLimitSecondsControl"
-import { ConsecutiveMistakeLimitControl } from "./ConsecutiveMistakeLimitControl"
+import { SettingsHelp } from "./SettingsHelp"
 import { buildDocLink } from "@src/utils/docLinks"
-import { BookOpenText } from "lucide-react"
 
 export interface ApiOptionsProps {
 	uriScheme: string | undefined
@@ -279,26 +276,73 @@ const ApiOptions = ({
 		return options
 	}, [organizationAllowList, apiConfiguration.apiProvider, t])
 
+	const advancedSettings = (
+		<>
+			{isCuratedProvider(selectedProvider) && (
+				<CuratedProviderAdvanced
+					key={`${profileIdentity ?? ""}:${selectedProvider}`}
+					provider={selectedProvider}
+					apiConfiguration={apiConfiguration}
+					setApiConfigurationField={setApiConfigurationField}
+					onOutputTokenLimitError={setOutputTokenLimitError}
+				/>
+			)}
+			{!fromWelcomeView && selectedProvider !== "vscode-lm" && (
+				<ThinkingBudget
+					key={`${selectedProvider}-${selectedModelId}`}
+					apiConfiguration={apiConfiguration}
+					setApiConfigurationField={setApiConfigurationField}
+					modelInfo={selectedModelInfo}
+					showReasoningEffort={false}
+				/>
+			)}
+			{!fromWelcomeView && parameterApplicability.supportsVerbosity && (
+				<Verbosity
+					apiConfiguration={apiConfiguration}
+					setApiConfigurationField={setApiConfigurationField}
+					modelInfo={selectedModelInfo}
+					modelId={selectedModelId}
+				/>
+			)}
+			{!fromWelcomeView && parameterApplicability.supportsTemperature && (
+				<TemperatureControl
+					value={apiConfiguration.modelTemperature}
+					onChange={handleInputChange("modelTemperature", noTransform)}
+					maxValue={2}
+					defaultValue={selectedModelInfo?.defaultTemperature}
+				/>
+			)}
+			{!fromWelcomeView && (
+				<RateLimitSecondsControl
+					value={apiConfiguration.rateLimitSeconds || 0}
+					onChange={(value) => setApiConfigurationField("rateLimitSeconds", value)}
+				/>
+			)}
+		</>
+	)
+
 	return (
-		<div className="flex flex-col gap-3">
-			<div className="flex flex-col gap-1 relative">
-				<div className="flex justify-between items-center">
-					<label className="block font-medium">{t("settings:providers.apiProvider")}</label>
+		<div className="flex flex-col gap-2">
+			<div className="flex min-w-0 flex-col gap-1">
+				<div className="flex items-center gap-1">
+					<span className="font-medium">{t("settings:providers.apiProvider")}</span>
 					{docs && (
-						<VSCodeLink href={docs.url} target="_blank" className="flex gap-2">
-							{t("settings:providers.apiProviderDocs")}
-							<BookOpenText className="size-4 inline ml-2" />
-						</VSCodeLink>
+						<SettingsHelp label={t("settings:providers.apiProvider")}>
+							<VSCodeLink href={docs.url} target="_blank">
+								{t("settings:providers.apiProviderDocs")}
+							</VSCodeLink>
+						</SettingsHelp>
 					)}
 				</div>
 				<SearchableSelect
 					value={selectedProvider}
+					aria-label={t("settings:providers.apiProvider")}
 					onValueChange={(value) => onProviderChange(value as ProviderName)}
 					options={providerOptions}
 					placeholder={t("settings:common.select")}
 					searchPlaceholder={t("settings:providers.searchProviderPlaceholder")}
 					emptyMessage={t("settings:providers.noProviderMatchFound")}
-					className="w-full"
+					className="w-full min-w-0"
 					data-testid="provider-select"
 				/>
 			</div>
@@ -326,7 +370,6 @@ const ApiOptions = ({
 							provider={selectedProvider}
 							apiConfiguration={apiConfiguration}
 							setApiConfigurationField={setApiConfigurationField}
-							onOutputTokenLimitError={setOutputTokenLimitError}
 						/>
 					)}
 					{selectedProvider === "vertex" && (
@@ -344,6 +387,7 @@ const ApiOptions = ({
 							modelValidationError={modelValidationError}
 							simplifySettings={fromWelcomeView}
 							onOutputTokenLimitError={setOutputTokenLimitError}
+							advancedSettings={advancedSettings}
 						/>
 					)}
 
@@ -361,10 +405,7 @@ const ApiOptions = ({
 								apiConfiguration={apiConfiguration}
 								setApiConfigurationField={setApiConfigurationField}
 								defaultModelId={getDefaultModelIdForProvider(activeSelectedProvider, apiConfiguration)}
-								models={getStaticModelsForProvider(
-									activeSelectedProvider,
-									t("settings:labels.useCustomArn"),
-								)}
+								models={getStaticModelsForProvider(activeSelectedProvider)}
 								modelIdKey="apiModelId"
 								allowCustomModel={!isCuratedProvider(activeSelectedProvider)}
 								serviceName={getProviderServiceConfig(activeSelectedProvider).serviceName}
@@ -388,60 +429,21 @@ const ApiOptions = ({
 						</>
 					)}
 
-					{!fromWelcomeView && selectedProvider !== "vscode-lm" && (
-						<ThinkingBudget
-							key={`${selectedProvider}-${selectedModelId}`}
-							apiConfiguration={apiConfiguration}
-							setApiConfigurationField={setApiConfigurationField}
-							modelInfo={selectedModelInfo}
-							showReasoningEffort={false}
-						/>
-					)}
-
-					{!fromWelcomeView && parameterApplicability.supportsVerbosity && (
-						<Verbosity
-							apiConfiguration={apiConfiguration}
-							setApiConfigurationField={setApiConfigurationField}
-							modelInfo={selectedModelInfo}
-							modelId={selectedModelId}
-						/>
-					)}
-
-					{!fromWelcomeView && (
-						<Collapsible open={isAdvancedSettingsOpen} onOpenChange={setIsAdvancedSettingsOpen}>
-							<CollapsibleTrigger className="flex items-center gap-1 w-full cursor-pointer hover:opacity-80 mb-2">
-								<span
-									className={`codicon codicon-chevron-${isAdvancedSettingsOpen ? "down" : "right"}`}></span>
-								<span className="font-medium">{t("settings:advancedSettings.title")}</span>
-							</CollapsibleTrigger>
-							<CollapsibleContent className="space-y-3">
-								<TodoListSettingsControl
-									todoListEnabled={apiConfiguration.todoListEnabled}
-									onChange={(field, value) => setApiConfigurationField(field, value)}
-								/>
-								{parameterApplicability.supportsTemperature && (
-									<TemperatureControl
-										value={apiConfiguration.modelTemperature}
-										onChange={handleInputChange("modelTemperature", noTransform)}
-										maxValue={2}
-										defaultValue={selectedModelInfo?.defaultTemperature}
-									/>
-								)}
-								<RateLimitSecondsControl
-									value={apiConfiguration.rateLimitSeconds || 0}
-									onChange={(value) => setApiConfigurationField("rateLimitSeconds", value)}
-								/>
-								<ConsecutiveMistakeLimitControl
-									value={
-										apiConfiguration.consecutiveMistakeLimit !== undefined
-											? apiConfiguration.consecutiveMistakeLimit
-											: DEFAULT_CONSECUTIVE_MISTAKE_LIMIT
-									}
-									onChange={(value) => setApiConfigurationField("consecutiveMistakeLimit", value)}
-								/>
-							</CollapsibleContent>
-						</Collapsible>
-					)}
+					{selectedProvider !== "openai" &&
+						(!fromWelcomeView ||
+							(isCuratedProvider(selectedProvider) && selectedProvider !== "openai-codex")) && (
+							<Collapsible open={isAdvancedSettingsOpen} onOpenChange={setIsAdvancedSettingsOpen}>
+								<CollapsibleTrigger className="flex items-center gap-1 w-full cursor-pointer hover:opacity-80 mb-2">
+									<span
+										className={`codicon codicon-chevron-${isAdvancedSettingsOpen ? "down" : "right"}`}
+										aria-hidden="true"></span>
+									<span className="font-medium">{t("settings:providers.advancedModel")}</span>
+								</CollapsibleTrigger>
+								<CollapsibleContent forceMount hidden={!isAdvancedSettingsOpen} className="space-y-3">
+									{advancedSettings}
+								</CollapsibleContent>
+							</Collapsible>
+						)}
 				</>
 			)}
 		</div>

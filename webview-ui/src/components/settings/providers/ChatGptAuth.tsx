@@ -4,6 +4,7 @@ import type { ChatGptAuthStatus, ExtensionMessage } from "@alpha-code/types"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Button, SearchableSelect } from "@src/components/ui"
 import { vscode } from "@src/utils/vscode"
+import { SettingsHelp } from "../SettingsHelp"
 
 type AccountState = Pick<ChatGptAuthStatus, "connected" | "connecting" | "email" | "accountId" | "accounts">
 type AuthAction = "signIn" | "signOut" | "cancel" | "selectAccount"
@@ -54,21 +55,32 @@ export const ChatGptAuth = () => {
 	const accounts = status.accounts ?? []
 	const accountLabel = status.email ?? status.accountId
 	const shortAccountId = (id: string) => (id.length > 16 ? `${id.slice(0, 4)}…${id.slice(-8)}` : id)
+	const accountHelp = (
+		<SettingsHelp label={t("settings:providers.chatGpt.account")}>
+			{t("settings:providers.chatGpt.description")}
+		</SettingsHelp>
+	)
 
 	return (
 		<div className="flex flex-col gap-2" data-testid="chatgpt-auth">
-			<div className="text-sm text-vscode-descriptionForeground" role="status" aria-live="polite">
-				{connecting
-					? t("settings:providers.chatGpt.connecting")
-					: status.connected
-						? accountLabel
-							? t("settings:providers.chatGpt.connectedAs", { account: accountLabel })
-							: t("settings:providers.chatGpt.connected")
-						: t("settings:providers.chatGpt.disconnected")}
+			<div className="flex items-center gap-1">
+				<div className="text-sm text-vscode-descriptionForeground" role="status" aria-live="polite">
+					{connecting
+						? t("settings:providers.chatGpt.connecting")
+						: status.connected
+							? accountLabel
+								? t("settings:providers.chatGpt.connectedAs", { account: accountLabel })
+								: t("settings:providers.chatGpt.connected")
+							: t("settings:providers.chatGpt.disconnected")}
+				</div>
+				{accounts.length === 0 && accountHelp}
 			</div>
 			{accounts.length > 0 && (
 				<div className="flex flex-col gap-1">
-					<label className="block font-medium">{t("settings:providers.chatGpt.account")}</label>
+					<div className="flex items-center gap-1">
+						<span className="font-medium">{t("settings:providers.chatGpt.account")}</span>
+						{accountHelp}
+					</div>
 					<SearchableSelect
 						value={status.accountId ?? ""}
 						disabled={busy}
@@ -134,9 +146,6 @@ export const ChatGptAuth = () => {
 						{t("settings:providers.chatGpt.addAccount")}
 					</Button>
 				)}
-			</div>
-			<div className="text-sm text-vscode-descriptionForeground">
-				{t("settings:providers.chatGpt.description")}
 			</div>
 			{error && (
 				<div role="alert" className="text-sm text-vscode-errorForeground">

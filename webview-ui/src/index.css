@@ -1294,3 +1294,76 @@ input[cmdk-input]:focus {
 	padding: 8px;
 	margin: -8px;
 }
+
+/* Compact navigation leaves space for the page's controls in narrow sidebars. */
+.settings-shell[data-settings-compact="true"] [data-testid="settings-content"] .surface-raised {
+	margin-inline: 12px;
+	padding: 12px;
+}
+
+/* Very narrow sidebars retain the same controls with room for wrapped labels. */
+.settings-shell[data-settings-stacked="true"] .settings-header {
+	padding-inline: 12px;
+}
+
+.settings-shell[data-settings-stacked="true"] [data-testid="settings-content"] .glass-header {
+	padding: 14px 12px;
+}
+
+.settings-shell[data-settings-stacked="true"] [data-testid="settings-content"] .surface-raised {
+	margin-inline: 8px;
+	padding: 12px;
+}
+
+.settings-shell vscode-checkbox::part(control) {
+	flex-shrink: 0;
+}
+
+.settings-shell[data-settings-stacked="true"] .settings-skill-row {
+	flex-direction: column;
+	align-items: stretch;
+}
+
+.settings-shell[data-settings-stacked="true"] .settings-skill-name {
+	white-space: normal;
+	overflow: visible;
+	text-overflow: clip;
+	overflow-wrap: anywhere;
+}
+
+.settings-shell[data-settings-stacked="true"] .settings-skill-actions {
+	align-self: flex-start;
+	flex-wrap: wrap;
+	max-width: 100%;
+}
+
+.settings-shell[data-settings-stacked="true"] [data-testid="settings-content"] :not([data-settings-help-trigger]) {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.settings-shell[data-settings-stacked="true"] [data-testid="settings-content"] :is(input, textarea, select) {
+	max-width: 100%;
+}
+
+@media (max-width: 299px) {
+	.settings-discard-dialog,
+	.settings-confirmation-dialog {
+		gap: 12px;
+		padding: 12px;
+	}
+
+	.settings-discard-dialog [data-slot="alert-dialog-footer"],
+	.settings-confirmation-dialog [data-slot="alert-dialog-footer"] {
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.settings-discard-dialog [data-slot="alert-dialog-footer"] button,
+	.settings-confirmation-dialog [data-slot="alert-dialog-footer"] button {
+		height: auto;
+		min-height: 32px;
+		white-space: normal;
+		overflow-wrap: anywhere;
+	}
+}

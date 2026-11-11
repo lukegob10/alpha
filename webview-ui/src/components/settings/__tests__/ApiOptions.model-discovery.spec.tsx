@@ -10,11 +10,10 @@ vi.mock("@src/components/settings/providers", () => ({
 vi.mock("../ModelPicker", () => ({ ModelPicker: () => null }))
 vi.mock("../ThinkingBudget", () => ({ ThinkingBudget: () => null }))
 vi.mock("../ApiErrorMessage", () => ({ ApiErrorMessage: () => null }))
+vi.mock("../SettingsHelp", () => ({ SettingsHelp: () => null }))
 vi.mock("../Verbosity", () => ({ Verbosity: () => null }))
-vi.mock("../TodoListSettingsControl", () => ({ TodoListSettingsControl: () => null }))
 vi.mock("../TemperatureControl", () => ({ TemperatureControl: () => null }))
 vi.mock("../RateLimitSecondsControl", () => ({ RateLimitSecondsControl: () => null }))
-vi.mock("../ConsecutiveMistakeLimitControl", () => ({ ConsecutiveMistakeLimitControl: () => null }))
 vi.mock("@src/components/ui", () => ({ SearchableSelect: () => null }))
 vi.mock("@src/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({ t: (key: string) => key }),

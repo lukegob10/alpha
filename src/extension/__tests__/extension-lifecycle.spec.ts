@@ -20,7 +20,6 @@ const mocks = vi.hoisted(() => {
 		disposeProviders: vi.fn(async () => provider.dispose()),
 		shutdownGlobalStores: vi.fn().mockResolvedValue(undefined),
 		cleanupMcp: vi.fn().mockResolvedValue(undefined),
-		shutdownTelemetry: vi.fn(),
 		cleanupTerminal: vi.fn(),
 		getContextProxy: vi.fn().mockResolvedValue(provider.contextProxy),
 		loadEnvironment: vi.fn().mockResolvedValue(undefined),
@@ -30,6 +29,7 @@ const mocks = vi.hoisted(() => {
 		startMemory: vi.fn(),
 		constructApi: vi.fn(),
 		initializeScheduledTasks: vi.fn().mockResolvedValue(undefined),
+		disposeScheduledTasks: vi.fn().mockResolvedValue(undefined),
 		getCodeIndexManager: vi.fn(),
 		registerCommands: vi.fn(),
 		workspaceFolders: undefined as undefined | Array<{ uri: { fsPath: string } }>,
@@ -65,15 +65,6 @@ vi.mock("vscode", () => ({
 }))
 
 vi.mock("@alpha-code/core", () => ({ customToolRegistry: { setExtensionPath: vi.fn() } }))
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		createInstance: vi.fn(),
-		instance: {
-			setProvider: vi.fn(),
-			shutdown: mocks.shutdownTelemetry,
-		},
-	},
-}))
 vi.mock("../../utils/networkProxy", () => ({ initializeNetworkProxy: mocks.initializeNetworkProxy }))
 vi.mock("../../utils/loadEnvironment", () => ({ loadExtensionEnvironment: mocks.loadEnvironment }))
 vi.mock("../../shared/package", () => ({ Package: { name: "alpha", outputChannel: "Alpha" } }))
@@ -104,7 +95,7 @@ vi.mock("../../services/code-index/manager", () => ({
 }))
 vi.mock("../../services/scheduled-tasks", () => ({
 	ScheduledTaskService: vi.fn(function () {
-		return { initialize: mocks.initializeScheduledTasks }
+		return { initialize: mocks.initializeScheduledTasks, dispose: mocks.disposeScheduledTasks }
 	}),
 }))
 vi.mock("../../services/tickets/TicketPanel", () => ({
@@ -189,12 +180,14 @@ describe("extension lifecycle", () => {
 		await activate(context)
 		const auth = ChatGptAuthService.tryGetInstance()
 		expect(auth).toBeDefined()
-		expect(context.subscriptions).toContain(auth)
 		expect(secrets.onDidChange).toHaveBeenCalledOnce()
 		const secretListener = secrets.onDidChange.mock.results[0].value
 		expect(secretListener.dispose).not.toHaveBeenCalled()
 		await expect(auth?.getStatus()).resolves.toMatchObject({ connected: false, connecting: false, accounts: [] })
-		await deactivate()
+		const deactivating = deactivate()
+		// VS Code disposes the subscriptions while asynchronous deactivation is still in flight.
+		await Promise.all(context.subscriptions.map((subscription) => subscription.dispose()))
+		await deactivating
 		expect(secretListener.dispose).toHaveBeenCalledOnce()
 		expect(ChatGptAuthService.tryGetInstance()).toBeUndefined()
 	})
@@ -262,27 +255,78 @@ describe("extension lifecycle", () => {
 		},
 	)
 
-	it("does not start constructor memory work when activation fails after the import", async () => {
+	it("rolls back services and registrations when activation fails after the import", async () => {
+		vi.useFakeTimers()
+		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
+		const initializationError = new Error("API initialization failed")
+		const existing = { dispose: vi.fn() }
+		const command = { dispose: vi.fn() }
+		const failingRegistration = { dispose: vi.fn().mockRejectedValue(new Error("SECRET disposal error")) }
+		const secrets = createSecretStorage()
+		mocks.registerCommands.mockImplementationOnce((options: { context: vscode.ExtensionContext }) => {
+			options.context.subscriptions.push(command, failingRegistration)
+		})
 		mocks.providerConstructed.mockImplementationOnce((ready: Promise<void> = Promise.resolve()) => {
 			void ready.then(() => mocks.startMemory()).catch(() => undefined)
 		})
 		mocks.constructApi.mockImplementationOnce(() => {
-			throw new Error("API initialization failed")
+			throw initializationError
 		})
 		const context = {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
-			secrets: createSecretStorage(),
+			secrets,
+			globalState: {
+				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
+				update: vi.fn().mockResolvedValue(undefined),
+			},
+			subscriptions: [existing],
+		} as unknown as vscode.ExtensionContext
+		await expect(activate(context)).rejects.toBe(initializationError)
+		expect(mocks.startMemory).not.toHaveBeenCalled()
+		expect(command.dispose).toHaveBeenCalledOnce()
+		expect(failingRegistration.dispose).toHaveBeenCalledOnce()
+		expect(mocks.disposeScheduledTasks).toHaveBeenCalledOnce()
+		expect(secrets.onDidChange.mock.results[0].value.dispose).toHaveBeenCalledOnce()
+		expect(ChatGptAuthService.tryGetInstance()).toBeUndefined()
+		expect(mocks.disposeProviders).toHaveBeenCalledOnce()
+		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
+		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
+		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+		expect(mocks.outputChannel.dispose).toHaveBeenCalledOnce()
+		expect(mocks.disposeScheduledTasks.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.disposeProviders.mock.invocationCallOrder[0],
+		)
+		expect(mocks.cleanupTerminal.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.outputChannel.dispose.mock.invocationCallOrder[0],
+		)
+		expect(context.subscriptions).toEqual([existing])
+		expect(existing.dispose).not.toHaveBeenCalled()
+		expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
+		await vi.advanceTimersByTimeAsync(500)
+		expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
+		expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.activationCompleted")
+	})
+
+	it("releases listeners when provider configuration fails before a task provider exists", async () => {
+		const error = new Error("Context initialization failed")
+		mocks.getContextProxy.mockRejectedValueOnce(error)
+		const secrets = createSecretStorage()
+		const context = {
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			secrets,
 			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
-		try {
-			await expect(activate(context)).rejects.toThrow("API initialization failed")
-			expect(mocks.startMemory).not.toHaveBeenCalled()
-		} finally {
-			await deactivate()
-		}
+		await expect(activate(context)).rejects.toBe(error)
+		expect(mocks.providerConstructed).not.toHaveBeenCalled()
+		expect(secrets.onDidChange.mock.results[0].value.dispose).toHaveBeenCalledOnce()
+		expect(ChatGptAuthService.tryGetInstance()).toBeUndefined()
+		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+		expect(context.subscriptions).toEqual([])
 	})
 
 	it("waits for command registration before auto-opening a switched worktree", async () => {
@@ -437,6 +481,7 @@ describe("extension lifecycle", () => {
 
 		await activate(context)
 		const deactivating = deactivate()
+		expect(deactivate()).toBe(deactivating)
 
 		await vi.waitFor(() => expect(mocks.provider.dispose).toHaveBeenCalledOnce())
 		expect(mocks.disposeProviders).toHaveBeenCalledOnce()
@@ -447,7 +492,6 @@ describe("extension lifecycle", () => {
 
 		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
-		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
 
@@ -457,6 +501,14 @@ describe("extension lifecycle", () => {
 		mocks.disposeProviders.mockImplementationOnce(async () => {
 			await Promise.all([mocks.provider.dispose(), editorCleanup])
 		})
+		await activate({
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext)
 		const deactivating = deactivate()
 		try {
 			await Promise.resolve()
@@ -488,40 +540,20 @@ describe("extension lifecycle", () => {
 		expect(mocks.provider.dispose).toHaveBeenCalledOnce()
 		expect(mocks.shutdownGlobalStores).toHaveBeenCalledOnce()
 		expect(mocks.cleanupMcp).toHaveBeenCalledWith(context)
-		expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
 	})
-	it("awaits telemetry shutdown before completing deactivation", async () => {
-		let finish!: () => void
-		let started!: () => void
-		const shutdownStarted = new Promise<void>((resolve) => (started = resolve))
-		mocks.shutdownTelemetry.mockImplementationOnce(() => {
-			started()
-			return new Promise<void>((resolve) => (finish = resolve))
-		})
-		let settled = false
-		const deactivating = deactivate().then(() => {
-			settled = true
-		})
-		try {
-			await shutdownStarted
-			expect(settled).toBe(false)
-			expect(mocks.cleanupTerminal).not.toHaveBeenCalled()
-		} finally {
-			finish()
-			await deactivating
-		}
+	it("finishes other cleanup after MCP shutdown rejects without logging raw errors", async () => {
+		mocks.cleanupMcp.mockRejectedValueOnce(new Error("SECRET-shutdown-error"))
+		await activate({
+			extensionPath: "/extension",
+			extensionUri: {},
+			globalStorageUri: { fsPath: "/storage" },
+			secrets: createSecretStorage(),
+			globalState: { get: vi.fn(), update: vi.fn().mockResolvedValue(undefined) },
+			subscriptions: [],
+		} as unknown as vscode.ExtensionContext)
+		await expect(deactivate()).resolves.toBeUndefined()
 		expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
+		expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
 	})
-	it.each(["telemetry", "mcp"])(
-		"finishes other cleanup after %s shutdown rejects without logging raw errors",
-		async (client) => {
-			const shutdown = client === "telemetry" ? mocks.shutdownTelemetry : mocks.cleanupMcp
-			shutdown.mockRejectedValueOnce(new Error("SECRET-shutdown-error"))
-			await expect(deactivate()).resolves.toBeUndefined()
-			expect(mocks.shutdownTelemetry).toHaveBeenCalledOnce()
-			expect(mocks.cleanupTerminal).toHaveBeenCalledOnce()
-			expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
-		},
-	)
 })

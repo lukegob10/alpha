@@ -2,7 +2,7 @@ import React from "react"
 import { act, cleanup, render, renderHook } from "@testing-library/react"
 
 import { SearchableSetting } from "../SearchableSetting"
-import type { SectionName } from "../SettingsView"
+import { lazyToolsSearchSettings, type SectionName } from "../settingsNavigation"
 import { SearchIndexProvider, useSearchIndexRegistry, useSettingsSearch } from "../useSettingsSearch"
 
 const getSectionLabel = (section: SectionName): string => section
@@ -76,7 +76,7 @@ describe("useSearchIndexRegistry", () => {
 		flushFrame()
 		expect(result.current.index).not.toBe(published)
 		expect(result.current.index).toEqual([
-			{ ...setting, section: "terminal", label: "Updated label", sectionLabel: "terminal" },
+			{ ...setting, section: "advanced", label: "Updated label", sectionLabel: "advanced" },
 		])
 	})
 
@@ -103,11 +103,13 @@ describe("useSearchIndexRegistry", () => {
 		expect(cancelAnimationFrame).toHaveBeenCalledWith(staleFrame)
 		expect(frameCallbacks.size).toBe(1)
 		flushFrame()
-		expect(result.current.index).toEqual([{ ...setting, sectionLabel: "Updated ui" }])
+		expect(result.current.index).toEqual([
+			{ ...setting, section: "preferences", sectionLabel: "Updated preferences" },
+		])
 
 		rerender({ label: (section: SectionName) => `Translated ${section}` })
 		flushFrame()
-		expect(result.current.index[0].sectionLabel).toBe("Translated ui")
+		expect(result.current.index[0].sectionLabel).toBe("Translated preferences")
 	})
 
 	it("does not republish labels when an equivalent callback changes identity", () => {
@@ -161,7 +163,7 @@ describe("useSearchIndexRegistry", () => {
 			</React.StrictMode>,
 		)
 		flushFrame()
-		expect(index).toEqual([{ ...setting, sectionLabel: "ui" }])
+		expect(index).toEqual([{ ...setting, section: "preferences", sectionLabel: "preferences" }])
 		const published = index
 		rerender(
 			<React.StrictMode>
@@ -186,5 +188,131 @@ describe("useSearchIndexRegistry", () => {
 		expect(result.current.search.results).toEqual([
 			expect.objectContaining({ settingId: setting.settingId, label: "Updated setting" }),
 		])
+	})
+
+	it("normalizes legacy controls into their new section without duplicating equivalent registrations", () => {
+		const { result } = renderHook(() => useSearchIndexRegistry(getSectionLabel))
+		act(() => {
+			result.current.contextValue.registerSetting(setting)
+			result.current.contextValue.registerSetting({
+				settingId: "checkpoints-enable",
+				section: "checkpoints",
+				label: "Automatic checkpoints",
+			})
+		})
+		flushFrame()
+		expect(result.current.index).toEqual([
+			{ ...setting, section: "preferences", sectionLabel: "preferences" },
+			{
+				settingId: "checkpoints-enable",
+				section: "advanced",
+				label: "Automatic checkpoints",
+				sectionLabel: "advanced",
+			},
+		])
+		const published = result.current.index
+		act(() => result.current.contextValue.registerSetting({ ...setting, section: "preferences" }))
+		flushFrame()
+		expect(result.current.index).toBe(published)
+	})
+
+	it("leaves auxiliary managers out of the preference search index", () => {
+		const { result } = renderHook(() => useSearchIndexRegistry(getSectionLabel))
+		act(() => {
+			result.current.contextValue.registerSetting({
+				settingId: "about-version",
+				section: "about",
+				label: "Version",
+			})
+			result.current.contextValue.registerSetting({
+				settingId: "worktrees-create",
+				section: "worktrees",
+				label: "Create worktree",
+			})
+		})
+		flushFrame()
+		expect(result.current.index).toEqual([])
+		expect(requestAnimationFrame).not.toHaveBeenCalled()
+	})
+
+	it("indexes both retained permission section names under Preferences", () => {
+		const { result } = renderHook(() => {
+			const registry = useSearchIndexRegistry(getSectionLabel)
+			return { ...registry, search: useSettingsSearch({ index: registry.index }) }
+		})
+		act(() => {
+			result.current.contextValue.registerSetting({
+				settingId: "auto-approve-mode",
+				section: "permissions",
+				label: "Default permission mode",
+			})
+			result.current.contextValue.registerSetting({
+				settingId: "auto-approve-denied-commands",
+				section: "autoApprove",
+				label: "Permission command rules",
+			})
+		})
+		flushFrame()
+		act(() => result.current.search.setSearchQuery("permission"))
+		expect(result.current.search.results).toHaveLength(2)
+		expect(result.current.search.results).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					settingId: "auto-approve-mode",
+					section: "preferences",
+					sectionLabel: "preferences",
+				}),
+				expect.objectContaining({
+					settingId: "auto-approve-denied-commands",
+					section: "preferences",
+					sectionLabel: "preferences",
+				}),
+			]),
+		)
+		const published = result.current.index
+		act(() =>
+			result.current.contextValue.registerSetting({
+				settingId: "auto-approve-mode",
+				section: "preferences",
+				label: "Default permission mode",
+			}),
+		)
+		flushFrame()
+		expect(result.current.index).toBe(published)
+	})
+
+	it("finds unopened agent controls from static metadata through the same registration path", () => {
+		const { result } = renderHook(() => {
+			const registry = useSearchIndexRegistry(getSectionLabel)
+			return { ...registry, search: useSettingsSearch({ index: registry.index }) }
+		})
+		act(() => {
+			for (const { settingId, labelKey } of lazyToolsSearchSettings) {
+				result.current.contextValue.registerSetting({
+					settingId,
+					section: "tools",
+					label: labelKey === "agents:defaultReasoning.label" ? "Default agent reasoning" : labelKey,
+				})
+			}
+		})
+		flushFrame()
+		act(() => result.current.search.setSearchQuery("Default agent reasoning"))
+		expect(result.current.search.results).toEqual([
+			expect.objectContaining({ section: "tools", settingId: "agents-default-reasoning" }),
+		])
+
+		const published = result.current.index
+		// The real field's registration replaces the static metadata seamlessly when
+		// the Tools group opens; it does not create a duplicate search result.
+		act(() =>
+			result.current.contextValue.registerSetting({
+				settingId: "agents-default-reasoning",
+				section: "agents",
+				label: "Default agent reasoning",
+			}),
+		)
+		flushFrame()
+		expect(result.current.index).toBe(published)
+		expect(result.current.search.results).toHaveLength(1)
 	})
 })

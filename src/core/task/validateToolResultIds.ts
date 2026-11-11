@@ -1,38 +1,6 @@
 import { Anthropic } from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { findLastIndex } from "../../shared/array"
 import { getToolCallId, getToolResultId } from "../../utils/tool-id"
-
-/**
- * Custom error class for tool result ID mismatches.
- * Used for structured error tracking via PostHog.
- */
-export class ToolResultIdMismatchError extends Error {
-	constructor(
-		message: string,
-		public readonly toolResultIds: string[],
-		public readonly toolUseIds: string[],
-	) {
-		super(message)
-		this.name = "ToolResultIdMismatchError"
-	}
-}
-
-/**
- * Custom error class for missing tool results.
- * Used for structured error tracking via PostHog when tool_use blocks
- * don't have corresponding tool_result blocks.
- */
-export class MissingToolResultError extends Error {
-	constructor(
-		message: string,
-		public readonly missingToolUseIds: string[],
-		public readonly existingToolResultIds: string[],
-	) {
-		super(message)
-		this.name = "MissingToolResultError"
-	}
-}
 
 /**
  * Validates and fixes tool_result IDs in a user message against the previous assistant message.
@@ -120,44 +88,6 @@ export function validateAndFixToolResultIds(
 	// If no missing tool_results and no invalid IDs, no changes needed
 	if (missingToolUseIds.length === 0 && !hasInvalidIds) {
 		return userMessage
-	}
-
-	// We have issues - need to fix them
-	const toolResultIdList = toolResults.map((result) => getToolResultId(result) ?? "")
-	const toolUseIdList = toolUseIds
-
-	// Report missing tool_results to PostHog error tracking
-	if (missingToolUseIds.length > 0 && TelemetryService.hasInstance()) {
-		TelemetryService.instance.captureException(
-			new MissingToolResultError(
-				`Detected missing tool_result blocks. Missing tool_use IDs: [${missingToolUseIds.join(", ")}], existing tool_result IDs: [${toolResultIdList.join(", ")}]`,
-				missingToolUseIds,
-				toolResultIdList,
-			),
-			{
-				missingToolUseIds,
-				existingToolResultIds: toolResultIdList,
-				toolUseCount: toolUseIds.length,
-				toolResultCount: toolResults.length,
-			},
-		)
-	}
-
-	// Report ID mismatches to PostHog error tracking
-	if (hasInvalidIds && TelemetryService.hasInstance()) {
-		TelemetryService.instance.captureException(
-			new ToolResultIdMismatchError(
-				`Detected tool_result ID mismatch. tool_result IDs: [${toolResultIdList.join(", ")}], tool_use IDs: [${toolUseIdList.join(", ")}]`,
-				toolResultIdList,
-				toolUseIdList,
-			),
-			{
-				toolResultIds: toolResultIdList,
-				toolUseIds: toolUseIdList,
-				toolResultCount: toolResults.length,
-				toolUseCount: toolUseIds.length,
-			},
-		)
 	}
 
 	// Match tool_results to tool_uses by position and fix incorrect IDs

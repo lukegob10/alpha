@@ -43,7 +43,7 @@ export function localAcceptanceHostsStopped(result) {
 			result.phases.every((phase) => phase.cleanupVerified === true && phase.leaseReleased === true)
 		)
 	const runs = result?.runs ?? (result?.host ? [result.host] : [result])
-	return runs.length > 0 && runs.every((run) => run?.hostExitObserved === true)
+	return runs.length > 0 && runs.every((run) => run?.hostExitObserved === true && run.hostCleanupVerified !== false)
 }
 
 export async function recordLocalAcceptanceFailure(report, stage, cleanupVerified, save) {

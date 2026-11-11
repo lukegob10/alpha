@@ -7,8 +7,6 @@ import { GoalAccountingBindingStore } from "../../agent/goals/GoalAccountingBind
 import { accountGoalResponse } from "../../agent/GoalStepAccounting"
 import type { GoalStateStore, TaskGoalEnvelope } from "../../task-persistence/TaskGoalStore"
 
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureTaskCompleted: vi.fn() } } }))
-
 function barrier() {
 	let resolve!: () => void
 	const promise = new Promise<void>((done) => (resolve = done))
@@ -90,7 +88,6 @@ function fixture(store = new MemoryStore()) {
 		saveAlphaMessages: vi.fn(async () => true),
 		saveApiConversationHistory: vi.fn(async () => true),
 		checkpointSave: vi.fn(async () => undefined),
-		emit: vi.fn(),
 		prepareForRetainedLifecycle: vi.fn(async () => undefined),
 		hasPendingAgentMessages: vi.fn(() => false),
 		flushPendingToolResultsToHistory: vi.fn(async () => true),
@@ -108,7 +105,8 @@ describe("Task goal controls at the existing completion gate", () => {
 			rollbackTaskCompletionLifecycle: vi.fn(async () => undefined),
 		}
 		const metrics = {}
-		const emit = vi.fn<(event: string, ...args: unknown[]) => boolean>(() => true)
+		const completed = vi.fn()
+		base.task.on(AlphaCodeEventName.TaskCompleted, completed)
 		Object.assign(base.task, {
 			providerRef: { deref: () => provider },
 			finalizeTaskCompletion: Task.prototype.finalizeTaskCompletion,
@@ -119,13 +117,12 @@ describe("Task goal controls at the existing completion gate", () => {
 			emitFinalTokenUsageUpdate: vi.fn(),
 			retractCompletionResult: vi.fn(async () => undefined),
 			wakeGoalFromHost: vi.fn(async () => undefined),
-			emit,
 		})
-		return { ...base, provider, emit }
+		return { ...base, provider, completed }
 	}
 
 	it("reserves concurrent completion exactly once after an awaited goal read", async () => {
-		const { task, provider } = completingTask()
+		const { task, provider, completed } = completingTask()
 		const release = barrier()
 		vi.spyOn(task, "getGoal").mockImplementation(async () => {
 			await release.promise
@@ -137,13 +134,13 @@ describe("Task goal controls at the existing completion gate", () => {
 		release.resolve()
 		expect(await Promise.all([first, second])).toEqual([true, false])
 		expect(provider.prepareTaskCompletionLifecycle).toHaveBeenCalledOnce()
-		expect(task.emit).toHaveBeenCalledOnce()
+		expect(completed).toHaveBeenCalledOnce()
 	})
 
 	it.each(["create", "resume"] as const)(
 		"lets a human goal %s win the final completion verification await",
 		async (action) => {
-			const { task, controller, provider } = completingTask()
+			const { task, controller, provider, completed } = completingTask()
 			if (action === "resume") {
 				await controller.create({ objective: "Finish." }, "user")
 				await controller.pause()
@@ -164,14 +161,14 @@ describe("Task goal controls at the existing completion gate", () => {
 			expect(await completing).toBe(false)
 			expect(task.isCompleted()).toBe(false)
 			expect(task["didEmitTaskCompleted"]).toBe(false)
-			expect(task.emit).not.toHaveBeenCalled()
+			expect(completed).not.toHaveBeenCalled()
 			expect(provider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
 			expect(await controller.get()).toMatchObject({ status: "active" })
 		},
 	)
 
 	it("enters a new explicit goal in the same loop after it supersedes final completion", async () => {
-		const { task, controller, emit } = completingTask()
+		const { task, controller, completed } = completingTask()
 		const entered = barrier(),
 			release = barrier()
 		vi.mocked(task.getCompletionGateDecision).mockImplementationOnce(async () => {
@@ -197,7 +194,7 @@ describe("Task goal controls at the existing completion gate", () => {
 			undefined,
 			expect.objectContaining({ inputOrigin: "agent" }),
 		)
-		expect(emit.mock.calls.filter(([event]) => event === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(completed).toHaveBeenCalledOnce()
 		expect(task.ask).not.toHaveBeenCalled()
 		expect(await controller.get()).toMatchObject({ status: "complete", continuationCount: 0 })
 	})
@@ -205,7 +202,7 @@ describe("Task goal controls at the existing completion gate", () => {
 	it.each(["legacy", "canonical"] as const)(
 		"continues %s goal completion progress and publishes TaskCompleted only after the goal completes",
 		async (resultKind) => {
-			const { task, controller, emit, queue } = completingTask()
+			const { task, controller, completed, queue } = completingTask()
 			await controller.create({ objective: "Finish the objective." }, "user")
 			const completeGoalTurn = vi.spyOn(task, "completeGoalTurn")
 			vi.mocked(task.runAgentRequests)
@@ -232,7 +229,7 @@ describe("Task goal controls at the existing completion gate", () => {
 					undefined,
 					expect.objectContaining({ inputOrigin: "agent" }),
 				)
-				expect(emit.mock.calls.filter(([event]) => event === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+				expect(completed).toHaveBeenCalledOnce()
 				expect(task.ask).not.toHaveBeenCalled()
 				expect(await controller.get()).toMatchObject({ status: "complete", continuationCount: 1 })
 			} finally {

@@ -62,13 +62,13 @@ export async function runCoreConfidence(
 			return 1
 		report.artifactDigest = await dependencies.fingerprintGateArtifacts(repositoryRoot, true)
 		let completionEvidence: string | undefined
-		for (const testFile of [
+		for (const [index, testFile] of [
 			"core-loop.test",
 			"core-loop-boundaries.test",
 			"completion-idle.test",
 			"managed-agents.acceptance.test",
 			"long-context-fanout.test",
-		]) {
+		].entries()) {
 			signal.throwIfAborted()
 			report.stage = testFile
 			process.stdout.write(`Core confidence: ${testFile} on VS Code 1.141.0\n`)
@@ -78,7 +78,8 @@ export async function runCoreConfidence(
 				providerMode: "scripted",
 				testFile,
 				requireAllTests: true,
-				profileDir: path.join(hostDirectory, "p"),
+				// Each scripted host has fresh VS Code storage; its disk profile receipts must be fresh too.
+				profileDir: path.join(hostDirectory, `p${index}`),
 				initializeProfile: true,
 				workspace: path.join(hostDirectory, "workspaces", testFile),
 				artifactsDir: path.join(hostDirectory, "runs"),

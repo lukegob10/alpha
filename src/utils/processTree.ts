@@ -1,6 +1,5 @@
 import { execFile, type ExecFileException } from "node:child_process"
 import { win32 as windowsPath } from "node:path"
-import psTree from "ps-tree"
 
 const PROCESS_TERMINATION_TIMEOUT_MS = 5_000
 const PROCESS_SETTLEMENT_POLL_MS = 25
@@ -24,7 +23,7 @@ export async function terminateProcessTree(roots: readonly number[], options: Pr
 
 	if (process.platform === "win32") {
 		// taskkill performs its own tree snapshot and forcefully terminates the
-		// complete tree. Unlike ps-tree@1.x, it does not depend on WMIC.
+		// complete tree without relying on WMIC.
 		const results = await Promise.allSettled(
 			roots.map((pid) => terminateWindowsProcessTree(pid, options.allowMissingWindowsRoots ?? false)),
 		)
@@ -209,25 +208,47 @@ function isProcessAlive(pid: number): boolean {
 
 export function getDescendantPids(pid: number, timeoutMs = PROCESS_TERMINATION_TIMEOUT_MS): Promise<number[]> {
 	return new Promise((resolve, reject) => {
-		let settled = false
-		const timeout = setTimeout(() => {
-			settled = true
-			reject(new Error(`Timed out discovering the process tree for PID ${pid}`))
-		}, timeoutMs)
-		psTree(pid, (error, children) => {
-			if (settled) return
-			settled = true
-			clearTimeout(timeout)
-			if (error) {
-				reject(new Error(`Failed to get process tree for PID ${pid}: ${error.message}`, { cause: error }))
-				return
-			}
-			resolve(
-				children
-					.map((child) => Number.parseInt(child.PID, 10))
-					.filter((childPid) => Number.isInteger(childPid) && childPid > 0),
-			)
-		})
+		// execFile observes spawn errors and stops the lister on timeout, even if
+		// it ignores SIGTERM. A timeout on the returned promise alone cannot do that.
+		execFile(
+			"ps",
+			["-A", "-o", "ppid=,pid="],
+			{ timeout: timeoutMs, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" },
+			(error, stdout) => {
+				if (error) {
+					reject(new Error(`Failed to get process tree for PID ${pid}: ${error.message}`, { cause: error }))
+					return
+				}
+
+				const childrenByParent = new Map<number, number[]>()
+				for (const row of stdout.trim().split("\n").filter(Boolean)) {
+					const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(row)
+					const parentPid = Number(match?.[1])
+					const childPid = Number(match?.[2])
+					if (!Number.isSafeInteger(parentPid) || !Number.isSafeInteger(childPid)) {
+						reject(new Error(`Invalid process-tree snapshot for PID ${pid}`))
+						return
+					}
+					if (childPid === 0) continue
+					const children = childrenByParent.get(parentPid)
+					if (children) children.push(childPid)
+					else childrenByParent.set(parentPid, [childPid])
+				}
+
+				// ps can list a child before its parent after PID rollover. Walk
+				// from the root so reversing the result still stops children first.
+				const seen = new Set([pid])
+				const tree = [pid]
+				for (let index = 0; index < tree.length; index++) {
+					for (const childPid of childrenByParent.get(tree[index]) ?? []) {
+						if (seen.has(childPid)) continue
+						seen.add(childPid)
+						tree.push(childPid)
+					}
+				}
+				resolve(tree.slice(1))
+			},
+		)
 	})
 }
 

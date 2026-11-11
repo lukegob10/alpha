@@ -121,6 +121,25 @@ describe("ThinkingBudget", () => {
 		expect(screen.getAllByTestId("slider")).toHaveLength(2)
 	})
 
+	it("keeps the profile-default explanation in help without changing the chosen budget", () => {
+		const setApiConfigurationField = vi.fn()
+		render(
+			<ThinkingBudget
+				{...defaultProps}
+				apiConfiguration={{ modelMaxTokens: 16384, modelMaxThinkingTokens: 4096 }}
+				setApiConfigurationField={setApiConfigurationField}
+			/>,
+		)
+		expect(screen.queryByText("chat:reasoning.profileDefault")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "settings:helpFor" }))
+		expect(screen.getByText("chat:reasoning.profileDefault")).toBeInTheDocument()
+		expect(screen.getAllByTestId("slider").map((slider) => (slider as HTMLInputElement).value)).toEqual([
+			"16384",
+			"4096",
+		])
+		expect(setApiConfigurationField).not.toHaveBeenCalled()
+	})
+
 	it("should update modelMaxThinkingTokens", () => {
 		const setApiConfigurationField = vi.fn()
 

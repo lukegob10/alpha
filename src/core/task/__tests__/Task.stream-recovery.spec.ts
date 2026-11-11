@@ -5,7 +5,6 @@ import { EventEmitter } from "node:events"
 import nock from "nock"
 import * as vscode from "vscode"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { ProviderSettings } from "@alpha-code/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -134,6 +133,7 @@ type TaskHooks = {
 	appendAgentTurnEvent: Task["appendAgentTurnEvent"]
 	flushAgentTurnEvents: Task["flushAgentTurnEvents"]
 	waitForRetryDecision: Task["waitForRetryDecision"]
+	waitForProviderPacingDelay: Task["waitForProviderPacingDelay"]
 	persistAssistantResponseBeforeEffects: Task["persistAssistantResponseBeforeEffects"]
 	handleContextWindowExceededError: Task["handleContextWindowExceededError"]
 }
@@ -152,7 +152,6 @@ async function harness(
 		handler?: ApiHandler
 	} = {},
 ) {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 	const storage = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), "alpha-stream-recovery-"))
 	const cwd = path.join(storage, "workspace")
 	await fs.mkdir(cwd)
@@ -609,6 +608,84 @@ describe("Task recovery through provider adapters", () => {
 		).toHaveLength(hasText ? 1 : 0)
 		expect(fixture.task.ask).not.toHaveBeenCalled()
 		expect(scope.isDone()).toBe(true)
+	})
+
+	it.each([
+		[401, "authentication_error"],
+		[403, "permission_error"],
+	] as const)("does not replay a native Anthropic HTTP %i failure", async (status, type) => {
+		const body = { type: "error", error: { type, message: "Provider access rejected." } }
+		const scope = nock("https://api.anthropic.com").post("/v1/messages").reply(status, body)
+		scope.post("/v1/messages").optionally().reply(status, body)
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new AnthropicHandler({ apiKey: "fixture-key" }),
+				apiProvider: "anthropic",
+			},
+		)
+		fixture.live.autoApprovalEnabled = true
+
+		await fixture.run()
+
+		expect(scope.isDone()).toBe(true)
+		expect(fixture.createMessage).toHaveBeenCalledOnce()
+		expect(fixture.events.filter((event) => event.type === "retry")).toHaveLength(0)
+		expect(fixture.events).toContainEqual(
+			expect.objectContaining({
+				type: "turn_failed",
+				reason: expect.stringContaining("Provider access rejected"),
+			}),
+		)
+		expect(fixture.task.isCompleted()).toBe(false)
+		expect(fixture.task.ask).toHaveBeenCalledWith("resume_task")
+	})
+
+	it("honors the native Anthropic Retry-After header before the next request", async () => {
+		const retryAfterMs = 60_000
+		const scope = nock("https://api.anthropic.com")
+			.post("/v1/messages")
+			.reply(
+				429,
+				{ type: "error", error: { type: "rate_limit_error", message: "Rate limited." } },
+				{ "Retry-After": "60" },
+			)
+			.post("/v1/messages")
+			.reply(
+				200,
+				sse(
+					{ type: "message_start", message: { usage: { input_tokens: 8, output_tokens: 0 } } },
+					{ type: "content_block_start", index: 0, content_block: { type: "text", text: "Recovered." } },
+					{ type: "content_block_stop", index: 0 },
+					{ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } },
+					{ type: "message_stop" },
+				),
+				{ "Content-Type": "text/event-stream" },
+			)
+		const fixture = await harness(
+			async function* () {},
+			{},
+			{
+				handler: new AnthropicHandler({ apiKey: "fixture-key" }),
+				apiProvider: "anthropic",
+			},
+		)
+		fixture.live.autoApprovalEnabled = true
+		const pace = vi.spyOn(fixture.hooks, "waitForProviderPacingDelay").mockImplementation(async () => {
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+		})
+		vi.useFakeTimers({ toFake: ["Date"] })
+		try {
+			await fixture.run()
+			expect(fixture.events).toContainEqual(expect.objectContaining({ type: "retry", delayMs: retryAfterMs }))
+			expect(pace).toHaveBeenCalledExactlyOnceWith(retryAfterMs, expect.any(AbortSignal), undefined)
+			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+			expect(fixture.task.isCompleted()).toBe(true)
+			expect(scope.isDone()).toBe(true)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it.each(["maximum context length exceeded", "prompt is too long"])(

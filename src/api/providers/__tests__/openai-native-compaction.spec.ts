@@ -99,6 +99,16 @@ describe("public native compaction", () => {
 		expect(mocks.post).toHaveBeenCalledOnce()
 	})
 
+	it("keeps native compaction available after a context-size rejection", async () => {
+		const native = handler()
+		const error = Object.assign(new Error("maximum context length exceeded"), { status: 400 })
+		mocks.post.mockRejectedValueOnce(error)
+		await expect(native.nativeCompaction?.compact("", [])).rejects.toBe(error)
+		expect(native.nativeCompaction).toBeDefined()
+		await expect(native.nativeCompaction?.compact("", [])).resolves.toHaveProperty("responseId", "compact-1")
+		expect(mocks.post).toHaveBeenCalledTimes(2)
+	})
+
 	it("cancels a stalled SDK operation without adopting its late response", async () => {
 		let release = (_value: ReturnType<typeof response>) => {}
 		mocks.post.mockReturnValue(

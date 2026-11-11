@@ -67,10 +67,10 @@ describe("WorkspaceMutationGate", () => {
 		const failed = gate.run("task-a", "failed admission", () => {
 			throw new Error("synchronous mutation failure")
 		})
-		await expect(failed).rejects.toThrow("synchronous mutation failure")
-		await Promise.resolve()
-		const recovery = gate.runIfIdle("task-b", "recover", async () => "recovered")
-		expect(recovery).toBeDefined()
+		const recovery = failed.catch((error: unknown) => {
+			expect(error).toEqual(new Error("synchronous mutation failure"))
+			return gate.runIfIdle("task-b", "recover", async () => "recovered")
+		})
 		await expect(recovery).resolves.toBe("recovered")
 	})
 
@@ -217,8 +217,9 @@ describe("WorkspaceMutationGate", () => {
 
 		mutationRelease.resolve()
 		await mutation
-		await Promise.resolve()
-		await expect(gate.runIfIdle("task-a", "enter Plan", async () => "entered")).resolves.toBe("entered")
+		const transition = gate.runIfIdle("task-a", "enter Plan", async () => "entered")
+		expect(transition).toBeDefined()
+		await expect(transition).resolves.toBe("entered")
 	})
 
 	it("holds an admitted transition against a racing Worker launch", async () => {

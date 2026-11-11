@@ -70,7 +70,6 @@ async function commandFixture(
 		allowedCommands: [],
 		deniedCommands: [],
 		terminalShellIntegrationDisabled: true,
-		terminalOutputPreviewSize: "small" as const,
 	}
 	const store = new AgentControlStore(new InMemoryAgentControlPersistence())
 	await store.initialize()
@@ -127,6 +126,7 @@ async function commandFixture(
 		admitCommandExecution: vi.fn(Task.prototype.admitCommandExecution),
 		completeCommandExecution: vi.fn(Task.prototype.completeCommandExecution),
 		failCommandExecution: Task.prototype.failCommandExecution,
+		recordCommandExecutionStatus: vi.fn(async () => undefined),
 		getCommandExecutionEvidence: Task.prototype.getCommandExecutionEvidence,
 		markCommandExecutionBackgrounded: Task.prototype.markCommandExecutionBackgrounded,
 		presentApprovedCommand: Task.prototype.presentApprovedCommand,

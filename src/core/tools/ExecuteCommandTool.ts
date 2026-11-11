@@ -10,9 +10,7 @@ import {
 	DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE,
 	PersistedCommandOutput,
 	type CommandToolResult,
-	type TerminalOutputPreviewSize,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../task/Task"
 
@@ -958,7 +956,6 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 							onCreationHookFailure: host.onCreationHookFailure,
 							capturedExecutionMode: executionMode,
 							capturedProvider: provider,
-							capturedOutputPreviewSize: provider?.getValue("terminalOutputPreviewSize"),
 						}
 					: {}),
 				onExecutionState: (state) => {
@@ -1005,7 +1002,13 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				// alternate transport is safe only with positive pre-submission proof.
 				if (tty === true || !error.commandNotSubmitted) throw error
 
-				const status: CommandExecutionStatus = { executionId: approvedExecutionId, status: "fallback" }
+				const status: CommandExecutionStatus = {
+					executionId: approvedExecutionId,
+					taskId: task.taskId,
+					toolCallId: callbacks.toolCallId,
+					status: "fallback",
+				}
+				await task.recordCommandExecutionStatus?.(status, { confirmedPrelaunchFallback: true })
 				provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
 				await task.say("shell_integration_warning")
 
@@ -1181,7 +1184,6 @@ export type ExecuteCommandOptions = {
 	onCreationHookFailure?: (process: AlphaTerminalProcess) => void
 	capturedExecutionMode?: string
 	capturedProvider?: ReturnType<Task["providerRef"]["deref"]>
-	capturedOutputPreviewSize?: TerminalOutputPreviewSize
 	/** Trusted launch boundary for distinguishing rejection from an unknown process outcome. */
 	onExecutionState?: (state: ToolFailureMetadata["effectsStarted"]) => void
 	onCommandResult?: (result: CommandToolResult) => void
@@ -1212,7 +1214,6 @@ export async function executeCommandInTerminal(
 		onCreationHookFailure,
 		capturedExecutionMode,
 		capturedProvider,
-		capturedOutputPreviewSize,
 	}: ExecuteCommandOptions,
 ): Promise<[boolean, ToolResponse]> {
 	const commandTurn = task.captureMessageTurn?.() ?? null
@@ -1362,7 +1363,23 @@ export async function executeCommandInTerminal(
 		const slot =
 			status.status === "started" ? "started" : status.status === "output" ? "output-status" : "terminal-status"
 		return project(slot, async () => {
-			await provider?.postMessageToWebview({ type: "commandExecutionStatus", text: JSON.stringify(status) })
+			// A proven prelaunch fallback reuses its approval row with a new physical
+			// attempt. Retired transport callbacks cannot publish over that attempt.
+			const evidence = toolCallId ? task.getCommandExecutionEvidence?.() : undefined
+			if (
+				evidence &&
+				!evidence.some((entry) => entry.toolCallId === toolCallId && entry.executionId === physicalExecutionId)
+			)
+				return
+			const scopedStatus = { ...status, taskId: task.taskId, toolCallId }
+			// Recording updates canonical memory synchronously. Preserve immediate start
+			// delivery during runCommand while joining its existing persistence boundary.
+			const recording = task.recordCommandExecutionStatus?.(scopedStatus)
+			const publication = provider?.postMessageToWebview({
+				type: "commandExecutionStatus",
+				text: JSON.stringify(scopedStatus),
+			})
+			await Promise.all([recording, publication])
 		}).catch((error) => console.error("[ExecuteCommandTool] Could not publish command status", error))
 	}
 	const handleCommandMutationFailure = (error: unknown): Promise<{ recoveryError?: unknown }> => {
@@ -1442,6 +1459,7 @@ export async function executeCommandInTerminal(
 			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.releasePrimaryMutation(task, physicalExecutionId)
+			mutationReservationAcquired = false
 		} catch (error) {
 			const receiptError = new CommandMutationReceiptError("release-pre-launch-reservation", false, error)
 			await handleCommandMutationFailure(receiptError)
@@ -1460,17 +1478,13 @@ export async function executeCommandInTerminal(
 	if (globalStoragePath) {
 		const taskDir = await getTaskDirectoryPath(globalStoragePath, task.taskId)
 		const storageDir = path.join(taskDir, "command-output")
-		const terminalOutputPreviewSize =
-			capturedOutputPreviewSize ??
-			(presentation ? undefined : provider?.getValue("terminalOutputPreviewSize")) ??
-			DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE
-
 		interceptor = new OutputInterceptor({
 			executionId,
 			taskId: task.taskId,
 			command,
 			storageDir,
-			previewSize: terminalOutputPreviewSize,
+			// Archive previews stay fixed; per-call tool-result token limits are applied separately.
+			previewSize: DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE,
 		})
 	}
 	let archiveFinalization: Promise<void> | undefined
@@ -1604,6 +1618,7 @@ export async function executeCommandInTerminal(
 	}
 
 	let createdProcess: AlphaTerminalProcess | undefined
+	let creationHookFailure: { cause: unknown } | undefined
 	let backgroundPreviewTimer: NodeJS.Timeout | undefined
 	let backgroundPreviewPublication: Promise<void> | undefined
 	let backgroundPreviewDirty = false
@@ -1671,6 +1686,7 @@ export async function executeCommandInTerminal(
 				bindCreatedProcess(process)
 			} catch (error) {
 				onCreationHookFailure?.(process)
+				creationHookFailure = { cause: error }
 				throw error
 			}
 		},
@@ -1769,8 +1785,11 @@ export async function executeCommandInTerminal(
 			postStatus(status)
 		},
 		onShellExecutionComplete: (details: ExitCodeDetails) => {
-			const status: CommandExecutionStatus = { executionId, status: "exited", exitCode: details.exitCode }
-			postStatus(status)
+			const status: CommandExecutionStatus = taskWasCancelled()
+				? { executionId, status: "cancelled" }
+				: details.signalName
+					? { executionId, status: "error", error: `Command terminated by ${details.signalName}` }
+					: { executionId, status: "exited", exitCode: details.exitCode }
 			exitDetails = details
 			// A process-level failure already persisted unknown mutation debt and owns
 			// the terminal evidence. Late success callbacks may flush output, but must
@@ -1795,6 +1814,7 @@ export async function executeCommandInTerminal(
 							throw new CommandMutationReceiptError("complete-command-evidence", false, error)
 						}
 					}
+					await postStatus(status)
 					if (details.exitCode === 0 && !details.signalName && !taskWasCancelled() && !fileChangesPublished) {
 						fileChangesPublished = true
 						await project("file-changes", async (assertOwnership) => {
@@ -1831,7 +1851,6 @@ export async function executeCommandInTerminal(
 
 	if (terminalProvider === "vscode") {
 		callbacks.onNoShellIntegration = async (error: string) => {
-			TelemetryService.instance.captureShellIntegrationError(task.taskId)
 			shellIntegrationError = error
 		}
 	}
@@ -1967,6 +1986,12 @@ export async function executeCommandInTerminal(
 				)
 		}
 		const launchError = new CommandExecutionLifecycleError("launch-command", launchCause)
+		// Only the canonical pre-spawn hook proves non-submission. A failure
+		// from runCommand itself or the post-return binding still needs reconciliation.
+		if (creationHookFailure && Object.is(error, creationHookFailure.cause)) {
+			onExecutionState?.("no")
+			await releaseMutationReservationBeforeLaunch(launchError)
+		}
 		if (mutationReservationAcquired) {
 			const receiptError = new CommandMutationReceiptError("launch-outcome-unknown", true, launchError)
 			const { recoveryError } = await handleCommandMutationFailure(receiptError)

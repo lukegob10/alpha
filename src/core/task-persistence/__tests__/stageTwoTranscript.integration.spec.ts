@@ -4,7 +4,6 @@ import * as path from "path"
 
 import { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { describe, expect, it } from "vitest"
 
 import type { ApiHandlerCreateMessageMetadata } from "../../../api"
@@ -335,10 +334,6 @@ function assertRetainedTail(
 }
 
 describe("Stage Two transcript boundary integration", () => {
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-	})
-
 	it("publishes a reverse-completing read batch in model order and retains the committed transaction", async () => {
 		const storagePath = await fs.mkdtemp(
 			await fs.realpath(os.tmpdir()).then((directory) => `${directory}/stage-two-`),

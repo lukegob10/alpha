@@ -12,7 +12,8 @@ export const ticketTypeSchema = z.enum([
 	"review",
 ])
 export const ticketPrioritySchema = z.enum(["high", "medium", "low"])
-export const ticketIdSchema = z.string().uuid()
+// Persisted IDs retain the broad UUID syntax accepted before the Zod 4 migration.
+export const ticketIdSchema = z.guid()
 export const ticketReferenceSchema = z
 	.string()
 	.regex(/^[A-Z]{2,4}-\d{2,10}$/)
@@ -264,7 +265,7 @@ export const ticketImportPreviewItemSchema = z.object({
 export type TicketImportPreviewItem = z.infer<typeof ticketImportPreviewItemSchema>
 export const ticketImportPreviewSchema = z.object({
 	kind: z.literal("importPreview"),
-	token: z.string().uuid(),
+	token: z.guid(),
 	tickets: z.array(ticketImportPreviewItemSchema).min(1).max(1000),
 	warnings: z.array(z.string().max(1000)).max(1000),
 })
@@ -293,11 +294,11 @@ export const ticketRequestSchema = z
 			z.object({ action: z.literal("previewImport") }),
 			z.object({
 				action: z.literal("import"),
-				token: z.string().uuid(),
+				token: z.guid(),
 				mode: z.enum(["copy", "update"]),
 				resetStatus: z.boolean(),
 			}),
-			z.object({ action: z.literal("discardImport"), token: z.string().uuid() }),
+			z.object({ action: z.literal("discardImport"), token: z.guid() }),
 			z.object({ action: z.literal("read"), id: ticketIdSchema }),
 			z.object({ action: z.literal("create"), input: createTicketSchema }),
 			z.object({ action: z.literal("update"), input: updateTicketSchema }),

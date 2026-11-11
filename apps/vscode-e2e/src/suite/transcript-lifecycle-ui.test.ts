@@ -7,6 +7,7 @@ import { SELECTION_LAYOUT_ROUNDS, selectionLayoutStage } from "../ui/renderedSel
 import { UNATTENDED_TRANSCRIPT_CASES, unattendedStage } from "../ui/renderedUnattendedLifecycle"
 import { TURN_DISCLOSURE_THEMES } from "../ui/renderedTranscriptLifecycle"
 import { waitFor } from "./utils"
+import { isDefaultCompactionRequest } from "./test-utils"
 
 interface TranscriptTask {
 	didComplete: boolean
@@ -60,12 +61,12 @@ class TranscriptLifecycleAI {
 		this.releaseUnattendedStream?.()
 	}
 
-	async *createMessage(systemPrompt: string, _messages: unknown[], metadata?: { attemptId?: string }) {
+	async *createMessage(_systemPrompt: string, messages: unknown[], metadata?: { attemptId?: string }) {
 		if (metadata?.attemptId === "title") {
 			yield { type: "text" as const, text: "Transcript lifecycle fixture" }
 			return
 		}
-		if (systemPrompt.includes("tasked with summarizing conversations")) {
+		if (isDefaultCompactionRequest(messages)) {
 			this.summaryRequests++
 			await new Promise<void>((resolve) => {
 				this.releaseSummary = resolve

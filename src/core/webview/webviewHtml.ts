@@ -71,7 +71,7 @@ async function tryHmrHtml(webview: vscode.Webview, extensionUri: vscode.Uri, vie
 		// Nonce + strict-dynamic is required: Chromium blocks ES module graph loads (Vite client,
 		// React, lazy TicketsView, mermaid) when a nonce is present without strict-dynamic.
 		`script-src 'unsafe-eval' 'wasm-unsafe-eval' ${webview.cspSource} http://${localServerUrl} 'nonce-${nonce}' 'strict-dynamic'`,
-		`connect-src ${webview.cspSource} https://* https://*.posthog.com ws://${localServerUrl} http://${localServerUrl}`,
+		`connect-src ${webview.cspSource} https://* ws://${localServerUrl} http://${localServerUrl}`,
 	]
 
 	return /*html*/ `

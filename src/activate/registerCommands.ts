@@ -2,7 +2,6 @@ import * as vscode from "vscode"
 import delay from "delay"
 
 import { editorChatStateSchema, type CommandId, type EditorChatState } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Package } from "../shared/package"
 import { getCommand } from "../utils/commands"
@@ -81,18 +80,15 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 	// Native view/title actions must keep their sidebar owner even while an editor Alpha view is focused.
 	// VS Code 1.125.0 forwards no reliable originating view identity through menu activation arguments.
 	sidebarNewChat: async () => {
-		TelemetryService.instance.captureTitleButtonClicked("plus")
 		await provider.focusInput()
 		// App owns the Settings unsaved-changes guard and the subsequent startBlankTask request.
 		await provider.postMessageToWebview({ type: "action", action: "newChatButtonClicked" })
 	},
 	sidebarSettings: () => {
-		TelemetryService.instance.captureTitleButtonClicked("settings")
 		provider.postMessageToWebview({ type: "action", action: "settingsButtonClicked" })
 		provider.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
 	},
 	sidebarScheduledTasks: () => {
-		TelemetryService.instance.captureTitleButtonClicked("scheduledTasks")
 		provider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
 	},
 	plusButtonClicked: async (surface?: string) => {
@@ -104,8 +100,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 			return
 		}
 
-		TelemetryService.instance.captureTitleButtonClicked("plus")
-
 		// Keyboard commands can run from Quick Input; focus the native owner before the UI starts a draft.
 		await visibleProvider.focusInput()
 		await visibleProvider.postMessageToWebview({
@@ -114,8 +108,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		})
 	},
 	popoutButtonClicked: () => {
-		TelemetryService.instance.captureTitleButtonClicked("popout")
-
 		return openAlphaInNewTab({ context, outputChannel })
 	},
 	openInNewTab: () => openAlphaInNewTab({ context, outputChannel }),
@@ -125,8 +117,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		if (!visibleProvider) {
 			return
 		}
-
-		TelemetryService.instance.captureTitleButtonClicked("settings")
 
 		visibleProvider.postMessageToWebview({ type: "action", action: "settingsButtonClicked" })
 		// Also explicitly post the visibility message to trigger scroll reliably
@@ -139,8 +129,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 			return
 		}
 
-		TelemetryService.instance.captureTitleButtonClicked("history")
-
 		visibleProvider.postMessageToWebview({ type: "action", action: "historyButtonClicked" })
 	},
 	scheduledTasksButtonClicked: () => {
@@ -149,8 +137,6 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		if (!visibleProvider) {
 			return
 		}
-
-		TelemetryService.instance.captureTitleButtonClicked("scheduledTasks")
 
 		visibleProvider.postMessageToWebview({ type: "action", action: "switchTab", tab: "scheduledTasks" })
 	},

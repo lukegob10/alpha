@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 
 import type { Worktree } from "@alpha-code/types"
 
@@ -20,12 +20,28 @@ export const DeleteWorktreeModal = ({ open, onClose, worktree, onSuccess }: Dele
 	const [isDeleting, setIsDeleting] = useState(false)
 	const [forceDeleteLocked, setForceDeleteLocked] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+	const pendingDelete = useRef<string>()
+
+	useEffect(() => {
+		pendingDelete.current = undefined
+		setIsDeleting(false)
+		setForceDeleteLocked(false)
+		setError(null)
+	}, [open, worktree.path])
 
 	useEffect(() => {
 		const handleMessage = (event: MessageEvent) => {
+			if (!open || !event.data || typeof event.data !== "object") return
 			const message = event.data
 
 			if (message.type === "worktreeResult") {
+				if (
+					!pendingDelete.current ||
+					message.requestId !== pendingDelete.current ||
+					typeof message.success !== "boolean"
+				)
+					return
+				pendingDelete.current = undefined
 				setIsDeleting(false)
 				if (message.success) {
 					onSuccess?.()
@@ -38,9 +54,12 @@ export const DeleteWorktreeModal = ({ open, onClose, worktree, onSuccess }: Dele
 
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
-	}, [onSuccess, onClose])
+	}, [open, onSuccess, onClose])
 
 	const handleDelete = useCallback(() => {
+		if (!open || pendingDelete.current) return
+		const requestId = crypto.randomUUID()
+		pendingDelete.current = requestId
 		setError(null)
 		setIsDeleting(true)
 
@@ -49,10 +68,11 @@ export const DeleteWorktreeModal = ({ open, onClose, worktree, onSuccess }: Dele
 
 		vscode.postMessage({
 			type: "deleteWorktree",
+			requestId,
 			worktreePath: worktree.path,
 			worktreeForce: shouldForce,
 		})
-	}, [worktree.path, worktree.isLocked, forceDeleteLocked])
+	}, [open, worktree.path, worktree.isLocked, forceDeleteLocked])
 
 	return (
 		<Dialog open={open} onOpenChange={(isOpen: boolean) => !isOpen && onClose()}>

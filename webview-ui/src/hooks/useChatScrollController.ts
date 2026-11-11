@@ -14,7 +14,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 
 export const CHAT_BOTTOM_EPSILON_PX = 1
-export const CHAT_BOTTOM_ATTACH_DISTANCE_PX = 12
 export const CHAT_USER_RELEASE_DISTANCE_PX = 24
 
 const GEOMETRY_EPSILON_PX = 0.5
@@ -345,13 +344,13 @@ export function useChatScrollController({
 
 			const remaining = distanceFromBottom(current)
 			const movedUp = current.scrollTop < previous.scrollTop - GEOMETRY_EPSILON_PX
-			const movedDown = current.scrollTop > previous.scrollTop + GEOMETRY_EPSILON_PX
 			const layoutChanged = dimensionsChanged(previous, current)
 
 			if (scrollModeRef.current === "BROWSING") {
-				// Reaching the real native bottom always reattaches. Unlike the former
-				// virtualized implementation, a simultaneous row resize cannot veto it.
-				if (remaining <= CHAT_BOTTOM_ATTACH_DISTANCE_PX && (movedDown || remaining <= CHAT_BOTTOM_EPSILON_PX)) {
+				// A nearby scrollIntoView position can still be a deliberate reading anchor.
+				// Reattach only at the real bottom, allowing fractional scrollTop rounding;
+				// a simultaneous row resize cannot veto reaching that boundary.
+				if (remaining <= CHAT_BOTTOM_EPSILON_PX) {
 					enterFollowMode()
 				}
 				return

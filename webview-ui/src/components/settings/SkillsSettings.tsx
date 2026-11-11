@@ -31,20 +31,29 @@ import { vscode } from "@/utils/vscode"
 import { buildDocLink } from "@/utils/docLinks"
 import { getUserFacingModeOptions } from "@/utils/modePresentation"
 
+import { useSectionGroup } from "./Section"
 import { SectionHeader } from "./SectionHeader"
 import { CreateSkillDialog } from "./CreateSkillDialog"
+import { SearchableSetting } from "./SearchableSetting"
+import { SettingsHelp } from "./SettingsHelp"
+import type { SettingsSectionId } from "./settingsNavigation"
 
 interface SkillsSettingsProps {
 	disabledBuiltinSkills?: string[]
 	onDisabledBuiltinSkillsChange?: (names: string[]) => void
+	embedded?: boolean
+	searchSectionId?: SettingsSectionId
 }
 
 export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 	disabledBuiltinSkills = [],
 	onDisabledBuiltinSkillsChange,
+	embedded = false,
+	searchSectionId = "tools",
 }) => {
 	const { t } = useAppTranslation()
-	const { cwd, skills: rawSkills, customModes } = useExtensionState()
+	const grouped = useSectionGroup()
+	const { cwd, skills: rawSkills, skillsError, customModes } = useExtensionState()
 	const skills = useMemo(() => rawSkills ?? [], [rawSkills])
 
 	const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -189,27 +198,26 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 	const renderSkillItem = useCallback(
 		(skill: SkillMetadata) => {
 			return (
-				<div key={skill.path} className="p-2.5 px-2 rounded-xl border border-transparent">
-					<div className="flex items-start justify-between gap-2 flex-col min-[400px]:flex-row overflow-hidden">
-						<div className="flex-1 min-w-0">
-							{/* Skill name */}
-							<div className="flex items-center gap-2 overflow-hidden">
-								<span className="font-medium truncate">{skill.name}</span>
-							</div>
-							{/* Skill description */}
-							{skill.description && (
-								<div className="text-xs text-vscode-descriptionForeground mt-1 line-clamp-3">
-									{skill.description}
-								</div>
-							)}
-						</div>
+				<div key={skill.path} className="rounded-xl border border-transparent px-2 py-1">
+					<div
+						role="group"
+						aria-label={skill.name}
+						className="settings-skill-row flex items-center justify-between gap-2">
+						<StandardTooltip content={skill.description} maxWidth="min(24rem, calc(100vw - 2rem))">
+							<span
+								tabIndex={0}
+								className="settings-skill-name min-w-0 flex-1 truncate font-medium focus-visible:outline focus-visible:outline-vscode-focusBorder">
+								{skill.name}
+							</span>
+						</StandardTooltip>
 
 						{/* Actions */}
-						<div className="flex items-center gap-1 px-0 ml-0 min-[400px]:ml-0 min-[400px]:mt-4 flex-shrink-0">
+						<div className="settings-skill-actions flex shrink-0 items-center gap-1">
 							{skill.source === "builtin" ? (
 								<>
 									<Checkbox
 										id={`builtin-${skill.name}`}
+										aria-label={`${skill.name} ${t("settings:skills.enabled")}`}
 										checked={!disabledBuiltinSkills.includes(skill.name)}
 										onCheckedChange={(checked) =>
 											onDisabledBuiltinSkillsChange?.(
@@ -219,34 +227,54 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 											)
 										}
 									/>
-									<label htmlFor={`builtin-${skill.name}`}>{t("settings:skills.enabled")}</label>
-									<Button variant="ghost" size="sm" onClick={() => handleEditClick(skill)}>
-										<BookOpen className="size-4" />
-										{t("settings:skills.inspectSkill")}
-									</Button>
+									<label className="sr-only" htmlFor={`builtin-${skill.name}`}>
+										{t("settings:skills.enabled")}
+									</label>
+									<StandardTooltip content={t("settings:skills.inspectSkill")}>
+										<Button
+											variant="ghost"
+											size="icon"
+											aria-label={t("settings:skills.inspectSkill")}
+											onClick={() => handleEditClick(skill)}>
+											<BookOpen className="size-4" />
+										</Button>
+									</StandardTooltip>
 								</>
 							) : (
 								<>
 									{/* Mode settings button (gear icon) */}
 									<StandardTooltip content={t("settings:skills.configureModes")}>
-										<Button variant="ghost" size="icon" onClick={() => handleOpenModeDialog(skill)}>
+										<Button
+											variant="ghost"
+											size="icon"
+											aria-label={t("settings:skills.configureModes")}
+											onClick={() => handleOpenModeDialog(skill)}>
 											<Settings className="size-4" />
 										</Button>
 									</StandardTooltip>
 
 									<StandardTooltip content={t("settings:skills.editSkill")}>
-										<Button variant="ghost" size="icon" onClick={() => handleEditClick(skill)}>
+										<Button
+											variant="ghost"
+											size="icon"
+											aria-label={t("settings:skills.editSkill")}
+											onClick={() => handleEditClick(skill)}>
 											<Edit />
 										</Button>
 									</StandardTooltip>
 
 									<StandardTooltip content={t("settings:skills.deleteSkill")}>
-										<Button variant="ghost" size="icon" onClick={() => handleDeleteClick(skill)}>
+										<Button
+											variant="ghost"
+											size="icon"
+											aria-label={t("settings:skills.deleteSkill")}
+											onClick={() => handleDeleteClick(skill)}>
 											<Trash2 className="text-destructive" />
 										</Button>
 									</StandardTooltip>
 								</>
 							)}
+							{skill.description && <SettingsHelp label={skill.name}>{skill.description}</SettingsHelp>}
 						</div>
 					</div>
 				</div>
@@ -261,29 +289,67 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 			onDisabledBuiltinSkillsChange,
 		],
 	)
+	const skillsHelp = (
+		<SettingsHelp label={t("settings:sections.skills")}>
+			<Trans
+				i18nKey="settings:skills.description"
+				components={{
+					DocsLink: (
+						<a
+							href={buildDocLink("features/skills", "skills_settings")}
+							target="_blank"
+							rel="noopener noreferrer"
+							className="text-vscode-textLink-foreground hover:underline">
+							Docs
+						</a>
+					),
+				}}
+			/>
+			<p>{t("settings:skills.appliesImmediately")}</p>
+			<p>{t("settings:skills.builtinDescription")}</p>
+		</SettingsHelp>
+	)
 
 	return (
-		<div className="flex flex-col h-full overflow-hidden">
+		<SearchableSetting
+			settingId="skills-management"
+			section={searchSectionId}
+			label={t("settings:sections.skills")}
+			className={
+				embedded
+					? grouped
+						? "flex min-w-0 flex-col gap-3"
+						: "surface-raised mx-5 mb-5 flex flex-col gap-3 rounded-2xl p-4"
+					: "flex flex-col h-full overflow-hidden"
+			}>
 			{/* Fixed Header */}
 			<div className="flex-shrink-0">
-				<SectionHeader>{t("settings:sections.skills")}</SectionHeader>
-				<div className="flex flex-col gap-2 px-5 py-2">
-					<p className="text-vscode-descriptionForeground text-sm m-0">
-						<Trans
-							i18nKey="settings:skills.description"
-							components={{
-								DocsLink: (
-									<a
-										href={buildDocLink("features/skills", "skills_settings")}
-										target="_blank"
-										rel="noopener noreferrer"
-										className="text-vscode-textLink-foreground hover:underline">
-										Docs
-									</a>
-								),
-							}}
-						/>
-					</p>
+				{embedded ? (
+					<div className="flex items-center justify-between gap-2">
+						<h4 className="m-0 text-base font-semibold text-vscode-foreground">
+							{t("settings:sections.skills")}
+						</h4>
+						{skillsHelp}
+					</div>
+				) : (
+					<SectionHeader>
+						<span className="flex items-center justify-between gap-2">
+							{t("settings:sections.skills")}
+							{skillsHelp}
+						</span>
+					</SectionHeader>
+				)}
+				<div className={embedded ? "flex flex-col gap-2 pt-2" : "flex flex-col gap-2 px-5 py-2"}>
+					{skillsError && (
+						<div role="alert" className="rounded-xl border border-vscode-inputValidation-warningBorder p-3">
+							<p className="m-0 text-sm text-vscode-descriptionForeground">
+								{t("settings:skills.catalogError")}
+							</p>
+							<Button variant="secondary" size="sm" className="mt-2" onClick={handleRefresh}>
+								{t("settings:skills.retry")}
+							</Button>
+						</div>
+					)}
 
 					{/* Add Skill button */}
 					<Button variant="secondary" className="py-1" onClick={() => setCreateDialogOpen(true)}>
@@ -294,49 +360,46 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 			</div>
 
 			{/* Scrollable List Area */}
-			<div className="flex-1 overflow-y-auto px-4 py-2 min-h-0">
+			<div className={embedded ? "min-w-0" : "flex-1 overflow-y-auto px-4 py-2 min-h-0"}>
 				<div className="flex flex-col gap-1">
 					{builtinSkills.length > 0 && (
 						<>
-							<div className="flex items-center gap-2 px-2 py-2 mt-2">
+							<div className="flex items-center gap-2 px-2 py-1 mt-1">
 								<BookOpen className="size-4 shrink-0" />
-								<span className="font-medium text-lg">{t("settings:skills.builtinSkills")}</span>
+								<span className="text-xs font-medium">{t("settings:skills.builtinSkills")}</span>
 							</div>
-							<p className="px-2 text-sm text-vscode-descriptionForeground">
-								{t("settings:skills.builtinDescription")}
-							</p>
 							{builtinSkills.map(renderSkillItem)}
 						</>
 					)}
 					{/* Project Skills Section - Only show if in a workspace */}
 					{hasWorkspace && (
 						<>
-							<div className="flex items-center gap-2 px-2 py-2 mt-2 cursor-default">
+							<div className="flex items-center gap-2 px-2 py-1 mt-1 cursor-default">
 								<Folder className="size-4 shrink-0" />
-								<span className="font-medium text-lg">{t("settings:skills.workspaceSkills")}</span>
+								<span className="text-xs font-medium">{t("settings:skills.workspaceSkills")}</span>
 							</div>
 							{projectSkills.length > 0 ? (
 								projectSkills.map(renderSkillItem)
-							) : (
+							) : !skillsError ? (
 								<div className="px-2 pb-4 text-sm text-vscode-descriptionForeground cursor-default">
 									{t("settings:skills.noWorkspaceSkills")}
 								</div>
-							)}
+							) : null}
 						</>
 					)}
 
 					{/* Global Skills Section */}
-					<div className="flex items-center gap-2 px-2 py-2 mt-2 cursor-default">
+					<div className="flex items-center gap-2 px-2 py-1 mt-1 cursor-default">
 						<Globe className="size-4 shrink-0" />
-						<span className="font-medium text-lg">{t("settings:skills.globalSkills")}</span>
+						<span className="text-xs font-medium">{t("settings:skills.globalSkills")}</span>
 					</div>
 					{globalSkills.length > 0 ? (
 						globalSkills.map(renderSkillItem)
-					) : (
+					) : !skillsError ? (
 						<div className="px-2 pb-4 text-sm text-vscode-descriptionForeground cursor-default">
 							{t("settings:skills.noGlobalSkills")}
 						</div>
-					)}
+					) : null}
 				</div>
 			</div>
 
@@ -422,6 +485,6 @@ export const SkillsSettings: React.FC<SkillsSettingsProps> = ({
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
-		</div>
+		</SearchableSetting>
 	)
 }

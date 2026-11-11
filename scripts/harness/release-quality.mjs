@@ -180,6 +180,39 @@ export async function readJson(file, limit = 64 * 1024) {
 	}
 }
 
+async function readSmokeRetentionFile(directory, name) {
+	try {
+		return (await readJson(path.join(directory, name))).value
+	} catch (error) {
+		if (error.code !== "ENOENT") throw new Error("Invalid live smoke retention evidence")
+		return undefined
+	}
+}
+
+async function requireCompleteSmokeRetention(directory, run, reuseRecorded) {
+	const [retention, failure] = await Promise.all([
+		readSmokeRetentionFile(directory, "retention-result.json"),
+		readSmokeRetentionFile(directory, "retention-error.json"),
+	])
+	if (failure !== undefined) throw new Error("Live smoke retention failed")
+	// A historical capture may predate retention sidecars. A current primary points to its required sidecar.
+	if (retention === undefined && reuseRecorded && !Object.hasOwn(run, "retentionResultPath")) return
+	if (
+		retention?.schemaVersion !== 1 ||
+		retention.runId !== run.runId ||
+		retention.status !== "complete" ||
+		retention.failure != null ||
+		!["pending-release", "held"].includes(retention.eligibility)
+	)
+		throw new Error("Live smoke requires complete retention evidence for this run")
+	if (retention.eligibility === "pending-release") {
+		// The standalone runner writes a complete report before publishing the final inactivity marker.
+		const inactive = await readSmokeRetentionFile(directory, ".retention-eligible.json")
+		if (inactive?.kind !== "alpha-vscode-e2e-inactive" || inactive.version !== 1 || inactive.runId !== run.runId)
+			throw new Error("Live smoke retention was not released for this run")
+	}
+}
+
 /** Project existing finalized host evidence; never relabel its observed host or unknown source revision. */
 async function captureLiveSmokeEvidence(directory, fixtureId, candidate, reuseRecorded) {
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/u.test(fixtureId ?? ""))
@@ -205,6 +238,14 @@ async function captureLiveSmokeEvidence(directory, fixtureId, candidate, reuseRe
 		(taskEntry ? taskEntry.sha256 !== task.digest : !reuseRecorded)
 	)
 		throw new Error("Live smoke task, model and finalized host artifacts do not match")
+	await requireCompleteSmokeRetention(directory, run.value, reuseRecorded)
+	// The live Copilot runner records Alpha's adapter name separately from the model vendor.
+	const observedCopilot =
+		run.value.providerMode === "live-copilot" &&
+		task.value.providerMode === "live-copilot" &&
+		task.value.provider === "vscode-lm" &&
+		task.value.model?.vendor === "copilot" &&
+		run.value.providerIdentity?.status === "unchanged"
 	return validateLiveSmokeEvidence(
 		{
 			schemaVersion: 1,
@@ -216,7 +257,7 @@ async function captureLiveSmokeEvidence(directory, fixtureId, candidate, reuseRe
 			capturedAt: metadata.finishedAt,
 			hostVersion: run.value.actualVSCodeVersion,
 			providerMode: run.value.providerMode,
-			provider: task.value.provider,
+			provider: observedCopilot ? "live-copilot" : task.value.provider,
 			modelId: task.value.model.id,
 			effort: task.value.effort,
 			status: run.value.status,

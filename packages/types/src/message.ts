@@ -1,4 +1,6 @@
 import { z } from "zod"
+import { commandExecutionStatusSchema } from "./terminal.js"
+import { mcpExecutionStatusSchema } from "./mcp.js"
 import { taskGoalUsageReceiptSchema } from "./task-goal.js"
 import { agentCanonicalPathSchema } from "./agent-control.js"
 
@@ -568,6 +570,13 @@ export const alphaMessageSchema = z
 		turn: alphaMessageTurnSchema.optional(),
 		/** Associates completed command output with its approval message when a batch runs concurrently. */
 		commandExecutionId: z.string().optional(),
+		/** Canonical call that owns a tool approval row, including serial preflight/replay. */
+		toolCallId: z.string().optional(),
+		/** Replayable tool presentation on its original approval; absence means an unknown legacy outcome. */
+		commandExecutionStatus: commandExecutionStatusSchema.optional(),
+		commandExecutionOutput: z.string().optional(),
+		mcpExecutionStatus: mcpExecutionStatusSchema.optional(),
+		mcpExecutionResponse: z.string().optional(),
 		/** Durable input identities represented by this transcript message. */
 		queuedMessageIds: z.array(z.string().min(1).max(256)).min(1).max(100).optional(),
 		/** Attributed input or host-control receipt; never a human input or approval receipt. */

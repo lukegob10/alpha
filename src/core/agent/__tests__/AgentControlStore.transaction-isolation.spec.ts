@@ -359,12 +359,12 @@ describe.each(["shared", "isolated"] as const)("AgentControlStore transaction is
 		const failure = await store.ensureRoot({ taskId: "root-2" }).catch((error: unknown) => error)
 		if (expected.success || !(failure instanceof ZodError))
 			throw new Error("Expected canonical validation failures")
-		const paths = (error: ZodError): unknown[] =>
-			error.issues.flatMap((issue) => [
+		const paths = (issues: ZodError["issues"]): unknown[] =>
+			issues.flatMap((issue) => [
 				issue.path,
-				...(issue.code === "invalid_union" ? issue.unionErrors.flatMap(paths) : []),
+				...(issue.code === "invalid_union" ? issue.errors.flatMap(paths) : []),
 			])
-		expect(paths(failure)).toEqual(paths(expected.error))
+		expect(paths(failure.issues)).toEqual(paths(expected.error.issues))
 		expect(store.getSnapshot()).toEqual(before)
 	})
 

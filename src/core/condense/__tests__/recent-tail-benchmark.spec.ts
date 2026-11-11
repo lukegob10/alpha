@@ -13,14 +13,6 @@ import {
 	type SummarizeConversationOptions,
 } from "../index"
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: { captureContextCondensed: vi.fn() },
-		hasInstance: vi.fn(() => true),
-		createInstance: vi.fn(),
-	},
-}))
-
 const SYSTEM_PROMPT = "You are a coding assistant."
 const SYNTHETIC_CONTEXT_WINDOW = 128_000
 const SYNTHETIC_OUTPUT_RESERVE = 5_000

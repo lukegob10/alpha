@@ -37,7 +37,7 @@ const holdoutSchema = z
 		safetyFailures: count,
 		costUsd: measurement,
 		p50DurationMs: measurement.nullable(),
-		segments: z.record(segmentSchema),
+		segments: z.record(z.string(), segmentSchema),
 	})
 	.strict()
 	.superRefine((holdout, context) => {

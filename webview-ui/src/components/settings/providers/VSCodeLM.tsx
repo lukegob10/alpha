@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react"
+import { useCallback, useId, useMemo } from "react"
 import type { LanguageModelChatSelector } from "vscode"
 
 import {
@@ -19,6 +19,7 @@ import { stringifyVsCodeLmModelSelector } from "../../../../../src/shared/vsCode
 
 import { ModelPicker } from "../ModelPicker"
 import { ThinkingBudget } from "../ThinkingBudget"
+import { SettingsHelp } from "../SettingsHelp"
 
 type VSCodeLMProps = {
 	apiConfiguration: ProviderSettings
@@ -55,6 +56,7 @@ function buildVsCodeLmModelInfo(model: LanguageModelChatSelector, configuredCont
 
 export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeLMProps) => {
 	const { t } = useAppTranslation()
+	const contextSizeLabelId = useId()
 	const modelsById = useMemo(
 		() =>
 			new Map<string, ReturnType<typeof getVscodeLlmCatalogModels>[number]>(
@@ -154,13 +156,18 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 			/>
 			{extendedContextSize && (
 				<div>
-					<label className="block font-medium mb-1">
-						{t("settings:providers.vscodeLmContextSize.label")}
-					</label>
+					<div className="flex items-center gap-1 mb-1">
+						<span id={contextSizeLabelId} className="font-medium">
+							{t("settings:providers.vscodeLmContextSize.label")}
+						</span>
+						<SettingsHelp label={t("settings:providers.vscodeLmContextSize.label")}>
+							{t("settings:providers.vscodeLmContextSize.description")}
+						</SettingsHelp>
+					</div>
 					<Select
 						value={selectedContextSizeValue}
 						onValueChange={(value) => setApiConfigurationField("vsCodeLmContextSize", Number(value))}>
-						<SelectTrigger className="w-full">
+						<SelectTrigger aria-labelledby={contextSizeLabelId} className="w-full">
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent>
@@ -178,9 +185,6 @@ export const VSCodeLM = ({ apiConfiguration, setApiConfigurationField }: VSCodeL
 							</SelectItem>
 						</SelectContent>
 					</Select>
-					<div className="text-sm text-vscode-descriptionForeground mt-1">
-						{t("settings:providers.vscodeLmContextSize.description")}
-					</div>
 				</div>
 			)}
 			<ThinkingBudget

@@ -29,6 +29,13 @@ describe("mode retirement", () => {
 		})
 	})
 
+	it("reads sparse usage without requiring other tools or admitting unknown tool names", () => {
+		const usage = { read_file: { attempts: 2, failures: 1 } }
+		expect(toolUsageSchema.parse({})).toEqual({})
+		expect(toolUsageSchema.parse(usage)).toEqual(usage)
+		expect(toolUsageSchema.safeParse({ unknown_tool: { attempts: 1, failures: 0 } }).success).toBe(false)
+	})
+
 	it("rejects removed GitHub groups in mode configuration", () => {
 		expect(toolGroups).not.toContain("github")
 		expect(DEFAULT_MODES.find((mode) => mode.slug === "code")?.groups).not.toContain("github")

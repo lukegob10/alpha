@@ -5,8 +5,7 @@ import { createHash } from "crypto"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 import type { ModelInfo, ParentVerificationObligation } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
-import { beforeEach, describe, expect, it } from "vitest"
+import { describe, expect, it } from "vitest"
 
 import type { ApiStream } from "../../../api/transform/stream"
 import { BaseProvider } from "../../../api/providers/base-provider"
@@ -224,10 +223,6 @@ async function compactAndReloadTranscript(fixture: Fixture) {
 }
 
 describe("Stage Three verification authority through compaction and recovery", () => {
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-	})
-
 	it.each(["pending", "failed"] as const)(
 		"reloads approved Worker %s evidence without inventing a required check or passing result",
 		async (status) => {

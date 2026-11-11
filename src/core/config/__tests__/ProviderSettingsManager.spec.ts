@@ -338,7 +338,13 @@ describe("ProviderSettingsManager", () => {
 			)
 
 			await expect(providerSettingsManager.listConfig()).resolves.toEqual([
-				{ name: "Copilot", id: "copilot-profile-id", apiProvider: "vscode-lm", modelId },
+				{
+					name: "Copilot",
+					id: "copilot-profile-id",
+					apiProvider: "vscode-lm",
+					modelId,
+					version: expect.any(String),
+				},
 			])
 			expect(mockSecrets.store).not.toHaveBeenCalled()
 		})
@@ -369,8 +375,8 @@ describe("ProviderSettingsManager", () => {
 
 			const configs = await providerSettingsManager.listConfig()
 			expect(configs).toEqual([
-				{ name: "default", id: "default", apiProvider: undefined },
-				{ name: "test", id: "test-id", apiProvider: "openai" },
+				{ name: "default", id: "default", apiProvider: undefined, version: expect.any(String) },
+				{ name: "test", id: "test-id", apiProvider: "openai", version: expect.any(String) },
 			])
 		})
 

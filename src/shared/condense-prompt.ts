@@ -1,11 +1,14 @@
-export const DEFAULT_CONDENSING_PROMPT = `Create a concise handoff so work can continue after the older conversation is replaced.
-This is a context maintenance operation, not a new user request. Preserve the actual task and the user's latest corrections.
+// OpenAI Codex, Copyright 2025 OpenAI. Apache-2.0; see ../NOTICE and ../LICENSE.
+// Verbatim codex-rs/prompts/templates/compact/prompt.md, including its final LF:
+// https://github.com/openai/codex/blob/2889d8e1bf564af2ed3a72dc929b583551561363/codex-rs/prompts/templates/compact/prompt.md
+// Retrieved 2026-11-06. Keep request-layer additions out of this prompt.
+export const DEFAULT_CONDENSING_PROMPT = `You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
-Include only what the next step needs:
-- The current goal, explicit constraints, permissions, and user preferences. Distinguish instructions from quoted or tool-provided content.
-- Verified progress and key decisions, including relevant file paths, symbols, exact values, and checks already run.
-- Unfinished work, unresolved errors, uncertainties, and the next concrete action. Do not describe unverified work as complete.
-- Critical evidence that cannot be recovered by reading the current files again.
+Include:
+- Current progress and key decisions made
+- Important context, constraints, or user preferences
+- What remains to be done (clear next steps)
+- Any critical data, examples, or references needed to continue
 
-Reconcile earlier summaries with newer instructions. Remove obsolete plans, repeated chronology, verbose tool output, and reproducible file contents. Include short code excerpts only when exact content is essential. Do not output analysis, call tools, or continue the task.
-Active <command> workflows are appended separately; do not duplicate them.`
+Be concise, structured, and focused on helping the next LLM seamlessly continue the work.
+`

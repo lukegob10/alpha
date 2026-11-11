@@ -139,7 +139,7 @@ export const executedExperimentCaptureSchema = z
 		identityScope: z.enum(["component", "conservative-whole-source"]),
 		/** Fixed trial protocol conditions. Product scheduler/backoff behavior remains part of the treatment. */
 		conditionScopes: nativeExperimentConditionScopesSchema.optional(),
-		measurementProvenance: z.record(provenance),
+		measurementProvenance: z.record(z.string(), provenance),
 		missing: z.array(text).max(100),
 		observed: z
 			.object({

@@ -600,7 +600,14 @@ export const hostTestInventory = [
 		["apps/vscode-e2e/src/runTest.ts"],
 	),
 	...ownedTests(
-		["reasoning-ui.test", "file-review-ui.test", "tickets-ui.test", "task-navigation-ui.test", "history-ui.test"],
+		[
+			"reasoning-ui.test",
+			"file-review-ui.test",
+			"tickets-ui.test",
+			"task-navigation-ui.test",
+			"history-ui.test",
+			"settings-ui.test",
+		],
 		"manual",
 		"apps/vscode-e2e rendered drivers",
 		"Broader renderer interactions require their owned nonce/barrier driver; outside the bounded rendered lane",
@@ -687,6 +694,7 @@ export const hostDriverInventory = [
 		"runReasoningUi",
 		"runFileReviewUi",
 		"runHistoryUi",
+		"runSettingsUi",
 		"runTicketsUi",
 		"runTaskNavigationUi",
 		"runEditorChatReload",

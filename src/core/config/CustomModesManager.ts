@@ -4,6 +4,7 @@ import * as fs from "fs/promises"
 
 import * as yaml from "yaml"
 import stripBom from "strip-bom"
+import { z } from "zod"
 
 import { type ModeConfig, type PromptComponent, customModesSettingsSchema, modeConfigSchema } from "@alpha-code/types"
 
@@ -21,6 +22,9 @@ import { atomicWriteText, withFileLock } from "../task-persistence/atomicWrite"
 import { t } from "../../i18n"
 
 const ALPHAMODES_FILENAME = ".alphamodes"
+const MAX_RULE_EXPORT_ENTRIES = 20_000
+const MAX_RULE_EXPORT_DEPTH = 32
+const MAX_RULE_EXPORT_BYTES = 8 * 1024 * 1024
 
 const hasErrorCode = (error: unknown, code: string): boolean =>
 	typeof error === "object" && error !== null && "code" in error && error.code === code
@@ -35,8 +39,54 @@ interface ExportedModeConfig extends ModeConfig {
 	rulesFiles?: RuleFile[]
 }
 
-interface ImportData {
-	customModes: ExportedModeConfig[]
+const importedModesDocumentSchema = z.object({ customModes: z.array(z.unknown()).min(1) })
+const importedModeSchema = modeConfigSchema
+	.extend({
+		rulesFiles: z.array(z.object({ relativePath: z.string(), content: z.string().optional() })).optional(),
+	})
+	.passthrough()
+
+const legacyRulesPathPrefix = /^rules-[^/]+\//
+
+function normalizeImportedRulePath(relativePath: string): string {
+	const portablePath = relativePath.replace(/\\/g, "/")
+	const isExplicitlyRelative = portablePath.startsWith("./")
+	const segments = (isExplicitlyRelative ? portablePath.slice(2) : portablePath).split("/")
+	if (
+		segments.some(
+			(segment) =>
+				!segment ||
+				Buffer.byteLength(segment) > 255 ||
+				// eslint-disable-next-line no-control-regex
+				/[\x00-\x1f:<>"|?*]/.test(segment) ||
+				/[. ]$/.test(segment) ||
+				/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(segment),
+		)
+	) {
+		throw new Error(t("common:customModes.errors.invalidRulePath", { relativePath }))
+	}
+	const normalized = segments.join("/")
+	// Old exports prefixed the rules folder even when the importer changed the mode's slug.
+	return isExplicitlyRelative ? normalized : normalized.replace(legacyRulesPathPrefix, "")
+}
+
+function prepareImportedRules(rules: readonly { relativePath: string; content?: string }[]): RuleFile[] {
+	const files = new Set<string>()
+	const directories = new Set<string>()
+	return rules.flatMap(({ relativePath, content }) => {
+		const normalized = normalizeImportedRulePath(relativePath)
+		if (content === undefined) return []
+		const key = normalized.toLowerCase()
+		if (files.has(key) || directories.has(key)) {
+			throw new Error(t("common:customModes.errors.invalidRulePath", { relativePath }))
+		}
+		for (let parent = path.posix.dirname(key); parent !== "."; parent = path.posix.dirname(parent)) {
+			if (files.has(parent)) throw new Error(t("common:customModes.errors.invalidRulePath", { relativePath }))
+			directories.add(parent)
+		}
+		files.add(key)
+		return [{ relativePath: normalized, content }]
+	})
 }
 
 interface ExportResult {
@@ -459,11 +509,11 @@ export class CustomModesManager {
 			// Validate the mode configuration before saving
 			const validationResult = modeConfigSchema.safeParse(config)
 			if (!validationResult.success) {
-				const errorMessages = validationResult.error.errors
+				const errorMessages = validationResult.error.issues
 					.map((err) => `${err.path.join(".")}: ${err.message}`)
 					.join(", ")
 				const errorMessage = `Invalid mode configuration: ${errorMessages}`
-				logger.error("Mode validation failed", { slug, errors: validationResult.error.errors })
+				logger.error("Mode validation failed", { slug, errors: validationResult.error.issues })
 				vscode.window.showErrorMessage(t("common:customModes.errors.updateFailed", { error: errorMessage }))
 				throw new Error(errorMessage)
 			}
@@ -766,6 +816,7 @@ export class CustomModesManager {
 	 */
 	public async exportModeWithRules(slug: string, customPrompts?: PromptComponent): Promise<ExportResult> {
 		try {
+			if (!modeConfigSchema.shape.slug.safeParse(slug).success) return { success: false, error: "Mode not found" }
 			// Import modes from shared to check built-in modes
 			const { modes: builtInModes } = await import("../../shared/modes")
 
@@ -826,32 +877,7 @@ export class CustomModesManager {
 				? path.join(baseDir, `rules-${slug}`)
 				: await getProjectConfigPathForRead(baseDir, `rules-${slug}`)
 
-			let rulesFiles: RuleFile[] = []
-			try {
-				const stats = await fs.stat(modeRulesDir)
-				if (stats.isDirectory()) {
-					// Extract content specific to this mode by looking for the mode-specific rules
-					const entries = await fs.readdir(modeRulesDir, { withFileTypes: true })
-
-					for (const entry of entries) {
-						if (entry.isFile()) {
-							// Use path.join with modeRulesDir and entry.name for compatibility
-							const filePath = path.join(modeRulesDir, entry.name)
-							const content = await fs.readFile(filePath, "utf-8")
-							if (content.trim()) {
-								// Calculate relative path from within the rules directory
-								// This excludes the rules-{slug} folder from the path
-								const relativePath = path.relative(modeRulesDir, filePath)
-								// Normalize path to use forward slashes for cross-platform compatibility
-								const normalizedRelativePath = relativePath.replace(/\\/g, "/")
-								rulesFiles.push({ relativePath: normalizedRelativePath, content: content.trim() })
-							}
-						}
-					}
-				}
-			} catch (error) {
-				// Directory doesn't exist, which is fine - mode might not have rules
-			}
+			const rulesFiles = await this.exportRulesFiles(modeRulesDir)
 
 			// Create an export mode with rules files preserved
 			const exportMode: ExportedModeConfig = {
@@ -888,85 +914,61 @@ export class CustomModesManager {
 		}
 	}
 
-	/**
-	 * Helper method to import rules files for a mode
-	 * @param importMode - The mode being imported
-	 * @param rulesFiles - The rules files to import
-	 * @param source - The import source ("global" or "project")
-	 */
-	private async importRulesFiles(
-		importMode: ExportedModeConfig,
-		rulesFiles: RuleFile[],
-		source: "global" | "project",
-	): Promise<void> {
-		// Determine base directory and rules folder path based on source
-		let baseDir: string
-		let rulesFolderPath: string
-
-		if (source === "global") {
-			baseDir = getGlobalConfigDirectory()
-			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
-		} else {
-			const workspacePath = getWorkspacePath()
-			baseDir = getProjectConfigDirectory(workspacePath)
-			rulesFolderPath = path.join(baseDir, `rules-${importMode.slug}`)
+	private async exportRulesFiles(rulesDirectory: string): Promise<RuleFile[]> {
+		try {
+			if (!(await fs.stat(rulesDirectory)).isDirectory()) return []
+		} catch (error) {
+			if (hasErrorCode(error, "ENOENT")) return []
+			throw error
 		}
-
-		const existingRulesFolders = [rulesFolderPath]
-		for (const existingRulesFolder of existingRulesFolders) {
-			try {
-				await fs.rm(existingRulesFolder, { recursive: true, force: true })
-				logger.info(`Removed existing ${source} rules folder for mode ${importMode.slug}`)
-			} catch (error) {
-				// It's okay if the folder doesn't exist
-				logger.debug(`No existing ${source} rules folder to remove for mode ${importMode.slug}`)
+		const canonicalParent = await fs.realpath(path.dirname(rulesDirectory))
+		const canonicalDirectory = path.join(canonicalParent, path.basename(rulesDirectory))
+		const ensureUnlinked = async (filePath: string) => {
+			if (path.relative(filePath, await fs.realpath(filePath))) {
+				throw new Error(t("common:customModes.errors.linkedRulePath", { path: filePath }))
 			}
 		}
-
-		// Only proceed with file creation if there are rules files to import
-		if (!rulesFiles || !Array.isArray(rulesFiles) || rulesFiles.length === 0) {
-			return
+		const limitExceeded = () => new Error(t("common:customModes.errors.ruleExportLimit"))
+		const rulesFiles: RuleFile[] = []
+		let scanned = 0
+		let bytes = 0
+		const walk = async (directory: string, segments: string[]): Promise<void> => {
+			if (segments.length > MAX_RULE_EXPORT_DEPTH) throw limitExceeded()
+			await ensureUnlinked(directory)
+			for await (const entry of await fs.opendir(directory)) {
+				if (++scanned > MAX_RULE_EXPORT_ENTRIES) throw limitExceeded()
+				const filePath = path.join(directory, entry.name)
+				const entrySegments = [...segments, entry.name]
+				if (entry.isFile()) {
+					await ensureUnlinked(filePath)
+					if (bytes + (await fs.stat(filePath)).size > MAX_RULE_EXPORT_BYTES) throw limitExceeded()
+					const content = await fs.readFile(filePath, "utf-8")
+					bytes += Buffer.byteLength(content)
+					if (bytes > MAX_RULE_EXPORT_BYTES) throw limitExceeded()
+					const relativePath = entrySegments.join("/")
+					if (relativePath.includes("\\")) {
+						throw new Error(t("common:customModes.errors.invalidRulePath", { relativePath }))
+					}
+					// Distinguish a real nested rules-* folder from the legacy export prefix.
+					const portablePath = legacyRulesPathPrefix.test(relativePath) ? "./" + relativePath : relativePath
+					rulesFiles.push({ relativePath: portablePath, content })
+				} else if (entry.isDirectory()) {
+					await walk(filePath, entrySegments)
+				}
+			}
 		}
+		await walk(canonicalDirectory, [])
+		// A successful export must also pass the importer's path and collision checks.
+		prepareImportedRules(rulesFiles)
+		return rulesFiles
+	}
 
-		// Import the new rules files with path validation
+	private async importRulesFiles(rulesFolderPath: string, rulesFiles: readonly RuleFile[]): Promise<void> {
+		await fs.rm(rulesFolderPath, { recursive: true, force: true })
 		for (const ruleFile of rulesFiles) {
-			if (ruleFile.relativePath && ruleFile.content) {
-				// Validate the relative path to prevent path traversal attacks
-				const normalizedRelativePath = path.normalize(ruleFile.relativePath)
-
-				// Ensure the path doesn't contain traversal sequences
-				if (normalizedRelativePath.includes("..") || path.isAbsolute(normalizedRelativePath)) {
-					logger.error(`Invalid file path detected: ${ruleFile.relativePath}`)
-					continue // Skip this file but continue with others
-				}
-
-				// Check if path starts with a rules-* folder (old export format)
-				let cleanedRelativePath = normalizedRelativePath
-				const rulesMatch = normalizedRelativePath.match(/^rules-[^\/\\]+[\/\\]/)
-				if (rulesMatch) {
-					// Strip the entire rules-* folder reference for backwards compatibility
-					cleanedRelativePath = normalizedRelativePath.substring(rulesMatch[0].length)
-					logger.info(`Detected old export format, stripping ${rulesMatch[0]} from path`)
-				}
-
-				// Use the rules folder path instead of base directory
-				const targetPath = path.join(rulesFolderPath, cleanedRelativePath)
-				const normalizedTargetPath = path.normalize(targetPath)
-				const expectedBasePath = path.normalize(rulesFolderPath)
-
-				// Ensure the resolved path stays within the rules folder
-				if (!normalizedTargetPath.startsWith(expectedBasePath)) {
-					logger.error(`Path traversal attempt detected: ${ruleFile.relativePath}`)
-					continue // Skip this file but continue with others
-				}
-
-				// Ensure directory exists
-				const targetDir = path.dirname(targetPath)
-				await fs.mkdir(targetDir, { recursive: true })
-
-				// Write the file
-				await fs.writeFile(targetPath, ruleFile.content, "utf-8")
-			}
+			const targetPath = path.join(rulesFolderPath, ruleFile.relativePath)
+			await fs.mkdir(path.dirname(targetPath), { recursive: true })
+			await fs.writeFile(targetPath, ruleFile.content, "utf-8")
 		}
 	}
 
@@ -981,70 +983,53 @@ export class CustomModesManager {
 		source: "global" | "project" = "project",
 	): Promise<ImportResult> {
 		try {
-			// Parse the YAML content with proper type validation
-			let importData: ImportData
+			let parsed: unknown
 			try {
-				const parsed = yaml.parse(yamlContent)
-
-				// Validate the structure
-				if (!parsed?.customModes || !Array.isArray(parsed.customModes) || parsed.customModes.length === 0) {
-					return { success: false, error: "Invalid import format: Expected 'customModes' array in YAML" }
-				}
-
-				importData = parsed as ImportData
-			} catch (parseError) {
+				parsed = yaml.parse(yamlContent)
+			} catch (error) {
 				return {
 					success: false,
-					error: `Invalid YAML format: ${parseError instanceof Error ? parseError.message : "Failed to parse YAML"}`,
+					error: `Invalid YAML format: ${error instanceof Error ? error.message : String(error)}`,
 				}
 			}
-
-			// Check workspace availability early if importing at project level
-			if (source === "project") {
-				const workspacePath = getWorkspacePath()
-				if (!workspacePath) {
-					return { success: false, error: "No workspace found" }
-				}
+			const document = importedModesDocumentSchema.safeParse(parsed)
+			if (!document.success) {
+				return { success: false, error: "Invalid import format: Expected 'customModes' array in YAML" }
 			}
 
-			// Process each mode in the import
-			for (const importMode of importData.customModes) {
-				const { rulesFiles, ...modeConfig } = importMode
-
-				// Validate the mode configuration
-				const validationResult = modeConfigSchema.safeParse(modeConfig)
-				if (!validationResult.success) {
-					logger.error(`Invalid mode configuration for ${modeConfig.slug}`, {
-						errors: validationResult.error.errors,
-					})
+			const workspacePath = source === "project" ? getWorkspacePath() : undefined
+			if (source === "project" && !workspacePath) return { success: false, error: "No workspace found" }
+			const baseDir = workspacePath ? getProjectConfigDirectory(workspacePath) : getGlobalConfigDirectory()
+			const importedSlugs = new Set<string>()
+			const preparedModes: { mode: ModeConfig; rulesFiles: RuleFile[] }[] = []
+			// Reject malformed entries anywhere in the document before replacing any saved modes or rules.
+			for (const rawMode of document.data.customModes) {
+				const validation = importedModeSchema.safeParse(rawMode)
+				if (!validation.success) {
+					const issues = validation.error.issues.map(({ path, message }) => `${path.join(".")}: ${message}`)
+					return { success: false, error: `Invalid mode configuration: ${issues.join(", ")}` }
+				}
+				const { rulesFiles, ...modeConfig } = validation.data
+				const slug = modeConfig.slug.toLowerCase()
+				if (importedSlugs.has(slug)) {
 					return {
 						success: false,
-						error: `Invalid mode configuration for ${modeConfig.slug}: ${validationResult.error.errors.map((e) => e.message).join(", ")}`,
+						error: t("common:customModes.errors.duplicateImportMode", { slug: modeConfig.slug }),
 					}
 				}
-
-				// Check for existing mode conflicts
-				const existingModes = await this.getCustomModes()
-				const existingMode = existingModes.find((m) => m.slug === importMode.slug)
-				if (existingMode) {
-					logger.info(`Overwriting existing mode: ${importMode.slug}`)
-				}
-
-				// Import the mode configuration with the specified source
-				await this.updateCustomMode(importMode.slug, {
-					...modeConfig,
-					source: source, // Use the provided source parameter
+				importedSlugs.add(slug)
+				preparedModes.push({
+					mode: { ...modeConfig, source },
+					rulesFiles: prepareImportedRules(rulesFiles ?? []),
 				})
-
-				// Import rules files (this also handles cleanup of existing rules folders)
-				await this.importRulesFiles(importMode, rulesFiles || [], source)
 			}
 
-			// Refresh the modes after import
+			for (const { mode, rulesFiles } of preparedModes) {
+				await this.updateCustomMode(mode.slug, mode)
+				await this.importRulesFiles(path.join(baseDir, `rules-${mode.slug}`), rulesFiles)
+			}
 			await this.refreshMergedState()
-
-			// Return the imported mode's slug so the UI can activate it
-			return { success: true, slug: importData.customModes[0]?.slug }
+			return { success: true, slug: preparedModes[0]?.mode.slug }
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			logger.error("Failed to import mode with rules", { error: errorMessage })

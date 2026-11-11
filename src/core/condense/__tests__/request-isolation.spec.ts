@@ -1,15 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk"
+import { createHash } from "node:crypto"
 
 import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ApiStreamChunk } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
 import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
 import { invalidateOpaqueProviderStateReplay } from "../../task-persistence/providerStateScope"
+import { DEFAULT_CONDENSING_PROMPT } from "../../../shared/condense-prompt"
 import { countContextTokens, getEffectiveApiHistory, getToolFreeMetadata, summarizeConversation } from "../index"
-
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: { instance: { captureContextCondensed: vi.fn() } },
-}))
 
 function fixture(chunks: ApiStreamChunk[]) {
 	const messages: ApiMessage[] = [
@@ -51,6 +49,54 @@ const completed: ApiStreamChunk = {
 }
 
 describe("isolated summary requests", () => {
+	it("uses the exact Codex default from 2889d8e1, including its final newline", () => {
+		expect(createHash("sha256").update(DEFAULT_CONDENSING_PROMPT, "utf8").digest("hex")).toBe(
+			"ab0c334d4faca17e3afbb9b16967c1b2fdcc7242a9a0880af57949fa236d6d07",
+		)
+	})
+
+	it.each([{ isAutomaticTrigger: false }, { isAutomaticTrigger: true }, { forceCompaction: true }])(
+		"sends the unchanged default as a final user message under task instructions (%j)",
+		async (trigger) => {
+			const { options, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
+			await summarizeConversation({ ...options, ...trigger })
+			const [instructions, request] = vi.mocked(handler.createMessage).mock.calls[0]
+			expect(instructions).toBe(options.systemPrompt)
+			expect(request.at(-1)).toEqual({ role: "user", content: DEFAULT_CONDENSING_PROMPT })
+		},
+	)
+
+	it.each(["", " \t\n"])("treats a blank override as the unchanged default (%j)", async (customCondensingPrompt) => {
+		const { options, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
+		await summarizeConversation({ ...options, customCondensingPrompt })
+		expect(vi.mocked(handler.createMessage).mock.calls[0][1].at(-1)).toEqual({
+			role: "user",
+			content: DEFAULT_CONDENSING_PROMPT,
+		})
+	})
+
+	it("keeps nonempty saved custom instructions byte-for-byte without adding a budget suffix", async () => {
+		const { options, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
+		const customCondensingPrompt = "  Keep the user's latest correction.\n\n"
+		await summarizeConversation({ ...options, customCondensingPrompt })
+		expect(vi.mocked(handler.createMessage).mock.calls[0][1].at(-1)).toEqual({
+			role: "user",
+			content: customCondensingPrompt,
+		})
+	})
+
+	it("budgets the captured instruction fragments used by the adapter instead of the fallback prompt", async () => {
+		const { handler } = fixture([])
+		const tokens = await countContextTokens([], handler, "Unused fallback instructions", {
+			taskId: "summary-task",
+			instructionFragments: [
+				{ role: "developer", content: "a".repeat(400) },
+				{ role: "user", content: "b".repeat(300) },
+			],
+		})
+		expect(tokens).toBe(700)
+	})
+
 	it("retries an oversized summary with fewer complete steps before falling back", async () => {
 		const { options, handler } = fixture([])
 		const createMessage = vi.mocked(handler.createMessage)
@@ -417,12 +463,15 @@ describe("isolated summary requests", () => {
 		expect(result.messages).toBe(messages)
 	})
 
-	it("replaces live instruction and continuation metadata while retaining caller controls", async () => {
+	it("preserves captured instruction roles while isolating continuation and tools", async () => {
 		const { options, handler } = fixture([{ type: "text", text: "Complete summary." }, completed])
 		const controller = new AbortController()
 		const metadata = Object.freeze<ApiHandlerCreateMessageMetadata>({
 			taskId: options.taskId,
-			instructionFragments: [{ role: "developer", content: "Continue executing the live task." }],
+			instructionFragments: [
+				{ role: "developer", content: "Continue executing the live task.", origin: "base" },
+				{ role: "user", content: "Do not deploy.", origin: "workspace" },
+			],
 			suppressPreviousResponseId: false,
 			signal: controller.signal,
 			deadline: Date.now() + 10_000,
@@ -435,7 +484,7 @@ describe("isolated summary requests", () => {
 		})
 
 		const isolated = getToolFreeMetadata(metadata)
-		expect(isolated).not.toHaveProperty("instructionFragments")
+		expect(isolated?.instructionFragments).toEqual(metadata.instructionFragments)
 		expect(isolated).toMatchObject({
 			taskId: options.taskId,
 			suppressPreviousResponseId: true,
@@ -453,11 +502,7 @@ describe("isolated summary requests", () => {
 		expect(metadata.suppressPreviousResponseId).toBe(false)
 
 		await summarizeConversation({ ...options, metadata })
-		expect(handler.createMessage).toHaveBeenCalledWith(
-			expect.stringContaining("summarization-only request"),
-			expect.any(Array),
-			isolated,
-		)
+		expect(handler.createMessage).toHaveBeenCalledWith(options.systemPrompt, expect.any(Array), isolated)
 	})
 
 	it("settles and closes at the terminal outcome without waiting for another stream read", async () => {

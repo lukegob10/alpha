@@ -67,18 +67,6 @@ vi.mock("../../integrations/terminal/TerminalRegistry", () => ({
 	},
 }))
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureTaskCreated: vi.fn(),
-			captureTaskRestarted: vi.fn(),
-			captureConversationMessage: vi.fn(),
-			captureLlmCompletion: vi.fn(),
-			captureConsecutiveMistakeError: vi.fn(),
-		},
-	},
-}))
-
 // Mock delay to prevent actual delays
 vi.mock("delay", () => ({
 	__esModule: true,

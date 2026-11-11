@@ -12,7 +12,6 @@ for (const [format, entrypoint] of [
 		"AlphaCodeEventName",
 		"alphaCodeEventsSchema",
 		"alphaCodeSettingsSchema",
-		"alphaCodeTelemetryEventSchema",
 		"alphaAskSchema",
 		"alphaSaySchema",
 		"alphaMessageSchema",

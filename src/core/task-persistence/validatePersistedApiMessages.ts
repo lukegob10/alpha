@@ -9,6 +9,7 @@ import { getToolCallId, getToolResultId, ToolHistoryError } from "../../utils/to
 import { isLifecycleHookTarget } from "../agent/LifecycleHookTargets"
 import type { CompletionHookPromptProvenance } from "../agent/CompletionHooks"
 import { providerStateScopeSchema } from "./providerStateScope"
+import { MAX_SAMPLED_AGENT_MAIL_IDS } from "./agentMailSampling"
 
 /**
  * Validate the stable provider-history protocol without discarding open-ended
@@ -52,6 +53,15 @@ export function invalidPersistedApiMessages(value: unknown): string | undefined 
 		}
 		if ("hook_prompt" in candidate && !isHookPromptProvenance(candidate.hook_prompt)) {
 			return `${location} has invalid hook prompt provenance`
+		}
+		if (
+			candidate.sampled_agent_message_ids !== undefined &&
+			(candidate.role !== "assistant" ||
+				!Array.isArray(candidate.sampled_agent_message_ids) ||
+				candidate.sampled_agent_message_ids.length > MAX_SAMPLED_AGENT_MAIL_IDS ||
+				candidate.sampled_agent_message_ids.some((id) => !hasNonemptyId(id) || id.length > 256))
+		) {
+			return `${location} has invalid agent mail sampling receipts`
 		}
 		if (
 			candidate.goal_usage_receipts !== undefined &&

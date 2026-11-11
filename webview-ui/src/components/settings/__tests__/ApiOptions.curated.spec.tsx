@@ -49,11 +49,10 @@ vi.mock("../ThinkingBudget", () => ({
 	},
 }))
 vi.mock("../ApiErrorMessage", () => ({ ApiErrorMessage: () => null }))
+vi.mock("../SettingsHelp", () => ({ SettingsHelp: () => null }))
 vi.mock("../Verbosity", () => ({ Verbosity: () => null }))
-vi.mock("../TodoListSettingsControl", () => ({ TodoListSettingsControl: () => null }))
 vi.mock("../TemperatureControl", () => ({ TemperatureControl: () => null }))
 vi.mock("../RateLimitSecondsControl", () => ({ RateLimitSecondsControl: () => null }))
-vi.mock("../ConsecutiveMistakeLimitControl", () => ({ ConsecutiveMistakeLimitControl: () => null }))
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage } }))
 vi.mock("react-use", () => ({ useDebounce: vi.fn() }))
 vi.mock("vscrui", () => ({
@@ -252,7 +251,9 @@ describe("curated provider settings", () => {
 				configuration={{ apiProvider: "anthropic", apiModelId: getProviderDefaultModelId("anthropic") }}
 			/>,
 		)
-		fireEvent.change(screen.getByRole("combobox", { name: "Provider" }), { target: { value: "openai-native" } })
+		fireEvent.change(screen.getByRole("combobox", { name: "settings:providers.apiProvider" }), {
+			target: { value: "openai-native" },
+		})
 		expect(pickerProps.at(-1)).toMatchObject({
 			apiConfiguration: { apiProvider: "openai-native", apiModelId: getProviderDefaultModelId("openai-native") },
 			allowCustomModel: false,
@@ -392,7 +393,9 @@ describe("curated provider settings", () => {
 			/>,
 		)
 		fireEvent.input(screen.getByTestId("curated-output-token-limit"), { target: { value: "invalid" } })
-		fireEvent.change(screen.getByRole("combobox", { name: "Provider" }), { target: { value: "openai-native" } })
+		fireEvent.change(screen.getByRole("combobox", { name: "settings:providers.apiProvider" }), {
+			target: { value: "openai-native" },
+		})
 		expect(pickerProps.at(-1)).toMatchObject({
 			apiConfiguration: { apiProvider: "openai-native", modelMaxTokens: undefined },
 		})

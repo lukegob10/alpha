@@ -112,6 +112,25 @@ describe("owned custom tool catalogs", () => {
 		`)
 	}, 60_000)
 
+	it("refreshes TypeScript tools when only a bundled sibling changes", async () => {
+		await runScenario(`
+			const directory = path.join(root, "tools")
+			await fs.mkdir(directory)
+			const helper = path.join(directory, "helper.ts")
+			await fs.writeFile(helper, 'export const value = "first"')
+			await fs.writeFile(path.join(directory, "tool.ts"),
+				'import { value } from "./helper"; export default { name: "bundled", description: "uses a helper", execute: async () => value }')
+			const before = await registry.loadFromDirectoriesIfStale([directory])
+			assert.deepEqual(before.failed, [])
+			assert.equal(await invoke(catalog(before), "bundled"), "first")
+			await fs.writeFile(helper, 'export const value = "second"')
+			const after = await registry.loadFromDirectoriesIfStale([directory])
+			assert.deepEqual(after.failed, [])
+			assert.equal(await invoke(catalog(after), "bundled"), "second")
+			assert.equal(await invoke(catalog(before), "bundled"), "first")
+		`)
+	}, 60_000)
+
 	it("refreshes CommonJS JavaScript definitions without retaining the require cache entry", async () => {
 		await runScenario(`
 			const directory = path.join(root, "tools")

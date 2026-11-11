@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { test } from "node:test"
@@ -9,46 +10,43 @@ const packageRoot =
 	process.env.ALPHA_TEST_ZOD_PACKAGE_ROOT ?? path.dirname(extensionRequire.resolve("zod/package.json"))
 const packageRequire = createRequire(path.join(packageRoot, "package.json"))
 
-// Backport of the upper-size gates in colinhacks/zod@a0ebf970f2d752e5f58527cd2942ff48be4f46bd
-// for GHSA-mrhx-c7xc-m3w5. Unbounded collections retain their existing issue reporting.
+// Upstream collection-size guards, inspected in Zod 4.6.7 on 2026-11-10.
+// Alpha and its MCP protocol schemas use v4; the bundled v3 compatibility parser is not an Alpha entrypoint.
+// Unbounded collections retain their existing issue reporting.
 const variants = []
 for (const dialect of ["cjs", "js"]) {
-	for (const version of [3, 4]) {
-		const entry = path.join(packageRoot, version === 3 ? "v3" : "v4", `index.${dialect}`)
-		const { z } = dialect === "cjs" ? packageRequire(entry) : await import(pathToFileURL(entry).href)
-		variants.push({ name: `v${version} ${dialect === "cjs" ? "CommonJS" : "ESM"}`, version, z })
-	}
+	const entry = path.join(packageRoot, "v4", `index.${dialect}`)
+	const { z } = dialect === "cjs" ? packageRequire(entry) : await import(pathToFileURL(entry).href)
+	variants.push({ name: `v4 ${dialect === "cjs" ? "CommonJS" : "ESM"}`, z })
 }
 
-function collectionCases(z, version) {
+function collectionCases(z) {
 	const cases = [
 		{ name: "array max", schema: (item) => z.array(item).max(2, "size cap"), input: ["A", "B", "C"] },
 		{ name: "array length", schema: (item) => z.array(item).length(2, "size cap"), input: ["A", "B", "C"] },
 		{ name: "set max", schema: (item) => z.set(item).max(2, "size cap"), input: new Set(["A", "B", "C"]) },
 		{ name: "set size", schema: (item) => z.set(item).size(2, "size cap"), input: new Set(["A", "B", "C"]) },
 	]
-	if (version === 4) {
-		for (const [name, check] of [
-			["map max", () => z.maxSize(2, { message: "size cap" })],
-			["map size", () => z.size(2, { message: "size cap" })],
-		]) {
-			cases.push({
-				name,
-				schema: (item) => z.map(item, item).check(check()),
-				input: new Map([
-					["A", "a"],
-					["B", "b"],
-					["C", "c"],
-				]),
-			})
-		}
+	for (const [name, check] of [
+		["map max", () => z.maxSize(2, { message: "size cap" })],
+		["map size", () => z.size(2, { message: "size cap" })],
+	]) {
+		cases.push({
+			name,
+			schema: (item) => z.map(item, item).check(check()),
+			input: new Map([
+				["A", "a"],
+				["B", "b"],
+				["C", "c"],
+			]),
+		})
 	}
 	return cases
 }
 
-for (const { name, version, z } of variants) {
+for (const { name, z } of variants) {
 	test(`${name} rejects oversized collections before synchronous element and collection refinements`, () => {
-		for (const fixture of collectionCases(z, version)) {
+		for (const fixture of collectionCases(z)) {
 			let elements = 0
 			let refinements = 0
 			const schema = fixture.schema(z.string().refine(() => ++elements > 0)).refine(() => ++refinements > 0)
@@ -63,7 +61,7 @@ for (const { name, version, z } of variants) {
 	})
 
 	test(`${name} rejects oversized collections before asynchronous element and collection refinements`, async () => {
-		for (const fixture of collectionCases(z, version)) {
+		for (const fixture of collectionCases(z)) {
 			let elements = 0
 			let refinements = 0
 			const schema = fixture
@@ -133,81 +131,117 @@ for (const { name, version, z } of variants) {
 		)
 	})
 
-	if (version === 4) {
-		test(`${name} preserves checks that may rewrite the collection before its bound`, () => {
-			const input = ["A", "B", "C"]
-			assert.deepEqual(
-				z
-					.array(z.string())
-					.overwrite((value) => value.slice(0, 2))
-					.max(2)
-					.parse(input),
-				["A", "B"],
-			)
-			assert.equal(
-				z
-					.array(z.string())
-					.max(2)
-					.overwrite((value) => value.slice(0, 2))
-					.safeParse(input).success,
-				false,
-			)
-			let elements = 0
-			const afterRefinement = z
-				.array(z.string().refine(() => ++elements > 0))
-				.refine(() => true)
+	test(`${name} preserves checks that may rewrite the collection before its bound`, () => {
+		const input = ["A", "B", "C"]
+		assert.deepEqual(
+			z
+				.array(z.string())
+				.overwrite((value) => value.slice(0, 2))
 				.max(2)
-			assert.equal(afterRefinement.safeParse(input).success, false)
-			assert.equal(elements, input.length)
-			const stricter = z.array(z.string()).check(z.maxLength(2), z.maxLength(1))
-			assert.equal(stricter.safeParse(["A", "B"]).error.issues.length, 1)
-		})
+				.parse(input),
+			["A", "B"],
+		)
+		assert.equal(
+			z
+				.array(z.string())
+				.max(2)
+				.overwrite((value) => value.slice(0, 2))
+				.safeParse(input).success,
+			false,
+		)
+		let elements = 0
+		const afterRefinement = z
+			.array(z.string().refine(() => ++elements > 0))
+			.refine(() => true)
+			.max(2)
+		assert.equal(afterRefinement.safeParse(input).success, false)
+		assert.equal(elements, input.length)
+		const stricter = z.array(z.string()).check(z.maxLength(2), z.maxLength(1))
+		assert.equal(stricter.safeParse(["A", "B"]).error.issues.length, 1)
+	})
 
-		test(`${name} applies the upstream raw upper-size bound before set and map transforms deduplicate entries`, () => {
-			let transformed = 0
-			const strings = z.string().transform((value) => {
-				transformed++
-				return value.toLowerCase()
-			})
-			assert.equal(
-				z
-					.set(strings)
-					.max(1)
-					.safeParse(new Set(["A", "a"])).success,
-				false,
-			)
-			assert.equal(
-				z
-					.map(strings, strings)
-					.check(z.maxSize(1))
-					.safeParse(
-						new Map([
-							["A", "x"],
-							["a", "y"],
-						]),
-					).success,
-				false,
-			)
-			assert.equal(transformed, 0)
-			assert.deepEqual(
-				z
-					.map(strings, strings)
-					.check(z.maxSize(2))
-					.parse(
-						new Map([
-							["A", "X"],
-							["a", "Y"],
-						]),
-					),
-				new Map([["a", "y"]]),
-			)
+	test(`${name} applies the upstream raw upper-size bound before set and map transforms deduplicate entries`, () => {
+		let transformed = 0
+		const strings = z.string().transform((value) => {
+			transformed++
+			return value.toLowerCase()
 		})
-	}
+		assert.equal(
+			z
+				.set(strings)
+				.max(1)
+				.safeParse(new Set(["A", "a"])).success,
+			false,
+		)
+		assert.equal(
+			z
+				.map(strings, strings)
+				.check(z.maxSize(1))
+				.safeParse(
+					new Map([
+						["A", "x"],
+						["a", "y"],
+					]),
+				).success,
+			false,
+		)
+		assert.equal(transformed, 0)
+		assert.deepEqual(
+			z
+				.map(strings, strings)
+				.check(z.maxSize(2))
+				.parse(
+					new Map([
+						["A", "X"],
+						["a", "Y"],
+					]),
+				),
+			new Map([["a", "y"]]),
+		)
+	})
 }
 
-test("the package root and v3 alias share the same parser in CommonJS and ESM", async () => {
+test("the package root and v4 alias share the same parser in CommonJS and ESM", async () => {
 	assert.equal(packageRequire(path.join(packageRoot, "index.cjs")).z, variants[0].z)
-	assert.equal((await import(pathToFileURL(path.join(packageRoot, "index.js")).href)).z, variants[2].z)
+	assert.equal((await import(pathToFileURL(path.join(packageRoot, "index.js")).href)).z, variants[1].z)
+})
+
+test("installed MCP protocol schemas use the supported v4 parser", () => {
+	const { ListToolsResultSchema } = extensionRequire("@modelcontextprotocol/sdk/types.js")
+	assert.ok(ListToolsResultSchema instanceof variants[0].z.ZodType)
+})
+
+test("webview validation works without attempting dynamic code generation", () => {
+	const result = spawnSync(
+		process.execPath,
+		[
+			"--disallow-code-generation-from-strings",
+			"--input-type=module",
+			"-e",
+			`
+import assert from "node:assert/strict"
+let attempts = 0
+globalThis.Function = function () {
+	attempts++
+	throw new EvalError("Dynamic code is blocked by the webview policy")
+}
+await import(process.argv[1])
+const { providerSettingsSchema } = await import(process.argv[2])
+assert.equal(providerSettingsSchema.safeParse({ apiProvider: "vscode-lm" }).success, true)
+const { z } = await import(process.argv[3])
+const schema = z.object({ items: z.array(z.string()).max(2) })
+assert.deepEqual(schema.parse({ items: ["valid"] }), { items: ["valid"] })
+assert.equal(schema.safeParse({ items: Array(128).fill(0) }).error.issues.length, 1)
+assert.equal(attempts, 0)
+`,
+			new URL("../webview-ui/src/zod-config.ts", import.meta.url).href,
+			new URL("../packages/types/dist/index.js", import.meta.url).href,
+			pathToFileURL(path.join(packageRoot, "index.js")).href,
+		],
+		{ encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 },
+	)
+	assert.ifError(result.error)
+	assert.equal(result.status, 0, result.stderr)
 })
 
 for (const dialect of ["cjs", "js"]) {

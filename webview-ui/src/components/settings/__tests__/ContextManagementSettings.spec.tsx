@@ -1,7 +1,8 @@
 // npx vitest src/components/settings/__tests__/ContextManagementSettings.spec.tsx
 
-import { render, screen, fireEvent, waitFor } from "@/utils/test-utils"
+import { render, screen, fireEvent, waitFor, within } from "@/utils/test-utils"
 import { ContextManagementSettings } from "../ContextManagementSettings"
+import { DEFAULT_CONDENSING_PROMPT } from "@alpha/condense-prompt"
 
 // Mock the translation hook
 vi.mock("@/i18n/TranslationContext", () => ({
@@ -97,6 +98,72 @@ describe("ContextManagementSettings", () => {
 		vi.clearAllMocks()
 	})
 
+	it("keeps the exact default folded until opened without saving it as a custom override", () => {
+		render(<ContextManagementSettings {...defaultProps} />)
+		const editor = screen.getByTestId("condense-prompt-textarea")
+		expect(editor).toHaveValue(DEFAULT_CONDENSING_PROMPT)
+		expect(editor).not.toBeVisible()
+		expect(screen.getByTestId("auto-condense-context-checkbox")).toBeVisible()
+		fireEvent.click(screen.getByText("prompts:supportPrompts.types.CONDENSE.label", { selector: "summary" }))
+		expect(editor).toBeVisible()
+		expect(screen.getByRole("button", { name: "prompts:supportPrompts.resetPrompt" })).toBeVisible()
+		expect(defaultProps.setCustomSupportPrompts).not.toHaveBeenCalled()
+		expect(defaultProps.setCachedStateField).not.toHaveBeenCalled()
+	})
+
+	it("buffers a saved customization and resets only that prompt", () => {
+		const setCustomSupportPrompts = vi.fn()
+		const customSupportPrompts = Object.freeze({ CONDENSE: "  Saved handoff instructions.\n", OTHER: "Keep me." })
+		render(
+			<ContextManagementSettings
+				{...defaultProps}
+				customSupportPrompts={customSupportPrompts}
+				setCustomSupportPrompts={setCustomSupportPrompts}
+			/>,
+		)
+		fireEvent.click(screen.getByText("prompts:supportPrompts.types.CONDENSE.label", { selector: "summary" }))
+		expect(screen.getByTestId("condense-prompt-textarea")).toHaveValue(customSupportPrompts.CONDENSE)
+		fireEvent.input(screen.getByTestId("condense-prompt-textarea"), { target: { value: "Revised instructions." } })
+		expect(setCustomSupportPrompts).toHaveBeenLastCalledWith({
+			CONDENSE: "Revised instructions.",
+			OTHER: "Keep me.",
+		})
+		fireEvent.click(screen.getByRole("button", { name: "prompts:supportPrompts.resetPrompt" }))
+		expect(setCustomSupportPrompts).toHaveBeenLastCalledWith({ OTHER: "Keep me." })
+		expect(customSupportPrompts.CONDENSE).toBe("  Saved handoff instructions.\n")
+	})
+
+	it("embeds the context group in Advanced and routes searchable controls there", () => {
+		const { container } = render(<ContextManagementSettings {...defaultProps} embedded section="advanced" />)
+
+		expect(
+			screen.getByRole("heading", { level: 4, name: "settings:sections.contextManagement" }),
+		).toBeInTheDocument()
+		expect(screen.queryByRole("heading", { level: 3 })).not.toBeInTheDocument()
+		expect(container.querySelector('[data-setting-id="context-open-tabs"]')).toHaveAttribute(
+			"data-setting-section",
+			"advanced",
+		)
+	})
+
+	it("offers only the effective runtime path limits without rewriting saved values on render", () => {
+		const setCachedStateField = vi.fn()
+		render(
+			<ContextManagementSettings
+				{...defaultProps}
+				maxOpenTabsContext={500}
+				maxWorkspaceFiles={500}
+				setCachedStateField={setCachedStateField}
+			/>,
+		)
+
+		for (const id of ["open-tabs-limit-slider", "workspace-files-limit-slider"]) {
+			expect(screen.getByTestId(id)).toHaveAttribute("max", "200")
+			expect(screen.getByTestId(id)).toHaveValue("200")
+		}
+		expect(setCachedStateField).not.toHaveBeenCalled()
+	})
+
 	it("renders diagnostic settings", () => {
 		render(<ContextManagementSettings {...defaultProps} />)
 
@@ -170,11 +237,12 @@ describe("ContextManagementSettings", () => {
 
 		expect(screen.getByText("25")).toBeInTheDocument()
 
-		// Update value - 100 should display as "Unlimited"
+		// A saved positive limit is still bounded, even at the slider's highest position.
 		rerender(<ContextManagementSettings {...defaultProps} maxDiagnosticMessages={100} />)
+		expect(screen.getByText("100")).toBeInTheDocument()
 		expect(
-			screen.getByText("settings:contextManagement.diagnostics.maxMessages.unlimitedLabel"),
-		).toBeInTheDocument()
+			screen.queryByText("settings:contextManagement.diagnostics.maxMessages.unlimitedLabel"),
+		).not.toBeInTheDocument()
 
 		// Test unlimited value (-1) displays as "Unlimited"
 		rerender(<ContextManagementSettings {...defaultProps} maxDiagnosticMessages={-1} />)
@@ -435,7 +503,7 @@ describe("ContextManagementSettings", () => {
 		expect(openTabsSlider).toHaveValue("0")
 
 		const workspaceFilesSlider = screen.getByTestId("workspace-files-limit-slider")
-		expect(workspaceFilesSlider).toHaveValue("500")
+		expect(workspaceFilesSlider).toHaveValue("200")
 
 		const gitStatusSlider = screen.getByTestId("max-git-status-files-slider")
 		expect(gitStatusSlider).toHaveValue("0")
@@ -470,18 +538,48 @@ describe("ContextManagementSettings", () => {
 	})
 
 	describe("Accessibility", () => {
-		it("has proper labels and descriptions", () => {
-			render(<ContextManagementSettings {...defaultProps} />)
+		it("keeps labels visible and explains each control on request", async () => {
+			const { container } = render(<ContextManagementSettings {...defaultProps} />)
 
 			// Check that labels are present
 			expect(screen.getByText("settings:contextManagement.openTabs.label")).toBeInTheDocument()
 			expect(screen.getByText("settings:contextManagement.workspaceFiles.label")).toBeInTheDocument()
 			expect(screen.getByText("settings:contextManagement.alphaignore.label")).toBeInTheDocument()
 
-			// Check that descriptions are present
-			expect(screen.getByText("settings:contextManagement.openTabs.description")).toBeInTheDocument()
-			expect(screen.getByText("settings:contextManagement.workspaceFiles.description")).toBeInTheDocument()
-			expect(screen.getByText("settings:contextManagement.alphaignore.description")).toBeInTheDocument()
+			expect(screen.queryByText("settings:contextManagement.openTabs.description")).not.toBeInTheDocument()
+			expect(screen.queryByText("settings:contextManagement.workspaceFiles.description")).not.toBeInTheDocument()
+			expect(screen.queryByText("settings:contextManagement.alphaignore.description")).not.toBeInTheDocument()
+
+			const setting = container.querySelector<HTMLElement>('[data-setting-id="context-open-tabs"]')!
+			fireEvent.click(within(setting).getByRole("button", { name: "settings:helpFor" }))
+
+			const help = await screen.findByRole("dialog", { name: "settings:helpFor" })
+			expect(within(help).getByText("settings:contextManagement.openTabs.description")).toBeVisible()
+			expect(defaultProps.setCachedStateField).not.toHaveBeenCalled()
+		})
+
+		it("reveals the custom prompt, named reset action and compaction help on demand", async () => {
+			const setCustomSupportPrompts = vi.fn()
+			const { container } = render(
+				<ContextManagementSettings
+					{...defaultProps}
+					customSupportPrompts={{ CONDENSE: "Keep the current objective and pending checks." }}
+					setCustomSupportPrompts={setCustomSupportPrompts}
+				/>,
+			)
+			fireEvent.click(screen.getByText("prompts:supportPrompts.types.CONDENSE.label", { selector: "summary" }))
+			expect(screen.getByRole("textbox", { name: "prompts:supportPrompts.types.CONDENSE.label" })).toHaveValue(
+				"Keep the current objective and pending checks.",
+			)
+			expect(screen.queryByText("settings:contextManagement.customPromptNotice")).not.toBeInTheDocument()
+			const setting = container.querySelector<HTMLElement>('[data-setting-id="context-condense-prompt"]')!
+			const trigger = within(setting).getByRole("button", { name: "settings:helpFor" })
+			fireEvent.click(trigger)
+			const help = await screen.findByRole("dialog", { name: "settings:helpFor" })
+			expect(within(help).getByText("settings:contextManagement.customPromptNotice")).toBeVisible()
+			fireEvent.click(trigger)
+			fireEvent.click(screen.getByRole("button", { name: "prompts:supportPrompts.resetPrompt" }))
+			expect(setCustomSupportPrompts).toHaveBeenCalledWith({})
 		})
 
 		it("has proper test ids for all interactive elements", () => {
@@ -499,7 +597,7 @@ describe("ContextManagementSettings", () => {
 
 			// Verify that translation keys are being used (mocked to return the key)
 			expect(screen.getByText("settings:sections.contextManagement")).toBeInTheDocument()
-			expect(screen.getByText("settings:contextManagement.description")).toBeInTheDocument()
+			expect(screen.queryByText("settings:contextManagement.description")).not.toBeInTheDocument()
 			expect(screen.getByText("settings:contextManagement.openTabs.label")).toBeInTheDocument()
 			expect(screen.getByText("settings:contextManagement.workspaceFiles.label")).toBeInTheDocument()
 			expect(screen.getByText("settings:contextManagement.alphaignore.label")).toBeInTheDocument()

@@ -182,7 +182,7 @@ const resultSchema = z.object({
 			mediaType: nonempty,
 			digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
 			byteLength: count,
-			metadata: z.record(z.unknown()).optional(),
+			metadata: z.record(z.string(), z.unknown()).optional(),
 		}),
 	),
 	error: nonempty.optional(),

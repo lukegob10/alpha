@@ -155,10 +155,18 @@ function createClient(label = "old") {
 		),
 	}
 	client.connect.mockImplementation(async (transport) => {
-		// The SDK owns transport callbacks after Protocol.connect; events flow through client handlers.
+		// Protocol.connect chains preexisting transport callbacks before its client callbacks.
 		const ownedTransport = transport as MockTransport
-		ownedTransport.onclose = () => client.onclose?.()
-		ownedTransport.onerror = (error) => client.onerror?.(error)
+		const onClose = ownedTransport.onclose
+		const onError = ownedTransport.onerror
+		ownedTransport.onclose = () => {
+			onClose?.()
+			return client.onclose?.()
+		}
+		ownedTransport.onerror = (error) => {
+			onError?.(error)
+			return client.onerror?.(error)
+		}
 	})
 	return client
 }
@@ -1107,6 +1115,44 @@ describe("McpHub complete paginated catalogs", () => {
 		expect(hub.connections).toEqual([])
 	})
 
+	it("bounds a stalled transport handshake and continues connecting other configured servers", async () => {
+		vi.useFakeTimers()
+		const stalled = createClient("stalled")
+		const handshake = deferred<void>()
+		const started = deferred<AbortSignal | undefined>()
+		stalled.connect.mockImplementationOnce(async (_transport, options) => {
+			started.resolve(options?.signal)
+			await handshake.promise
+		})
+		const healthy = createClient("healthy")
+		mocks.clients.push(stalled, healthy)
+		const servers = { shared: config, healthy: config }
+		mocks.files.set(settingsPath, JSON.stringify({ mcpServers: servers }))
+		let settled = false
+		const connecting = hub.updateServerConnections(servers).then(() => {
+			settled = true
+		})
+		const startupSignal = await started.promise
+		try {
+			await vi.advanceTimersByTimeAsync(60_000)
+			expect(settled).toBe(true)
+			expect(startupSignal?.aborted).toBe(true)
+			expect(mocks.transports[0].close).toHaveBeenCalled()
+			expect(hub.getAllServers()).toEqual([
+				expect.objectContaining({
+					name: "shared",
+					status: "disconnected",
+					error: expect.stringContaining("timed out"),
+				}),
+				expect.objectContaining({ name: "healthy", status: "connected" }),
+			])
+		} finally {
+			handshake.resolve()
+			await connecting
+		}
+		expect(stalled.request).not.toHaveBeenCalled()
+	})
+
 	it("lets a newer same-source attempt win before connection insertion and cleans up the stale startup", async () => {
 		const oldClient = createClient("stale")
 		const pendingStart = deferred<void>()
@@ -1148,6 +1194,101 @@ describe("McpHub complete paginated catalogs", () => {
 		expect(replacement.server.resources?.map((resource) => resource.name)).toEqual(["newer"])
 	})
 
+	it.each(["global", "project"] as const)(
+		"does not connect servers removed from the %s configuration while startup is pending",
+		async (source) => {
+			const client = createClient()
+			const started = deferred<void>()
+			const injected = deferred<TestConfig>()
+			mocks.clients.push(client, createClient("also removed"))
+			mocks.injectVariables.mockImplementationOnce(async () => {
+				started.resolve()
+				return injected.promise
+			})
+			const connecting = hub.updateServerConnections({ shared: config, later: config }, source)
+			await started.promise
+
+			if (source === "project") await hub["cleanupProjectMcpServers"]()
+			else await hub.updateServerConnections({}, source)
+			injected.resolve(config)
+			await connecting
+
+			expect(client.connect).not.toHaveBeenCalled()
+			expect(client.close).toHaveBeenCalled()
+			expect(mocks.transports).toEqual([])
+			expect(hub.getAllServers()).toEqual([])
+		},
+	)
+
+	it("ignores an obsolete project file read after a newer configuration removal", async () => {
+		const readStarted = deferred<void>()
+		const read = deferred<string>()
+		mocks.readFile.mockImplementationOnce(async () => {
+			readStarted.resolve()
+			return read.promise
+		})
+		const client = createClient()
+		mocks.clients.push(client)
+		const loading = hub["handleConfigFileChange"](projectSettingsPath, "project")
+		await readStarted.promise
+		await hub["cleanupProjectMcpServers"]()
+		read.resolve(JSON.stringify({ mcpServers: { shared: config } }))
+		await loading
+		expect(client.connect).not.toHaveBeenCalled()
+		expect(hub.getAllServers()).toEqual([])
+	})
+
+	it("revokes all MCP dispatch and startup before waiting for the first transport to close", async () => {
+		await connect(createClient(), "global")
+		const projectClient = createClient()
+		await connect(projectClient, "project")
+		const closing = deferred<void>()
+		const closeStarted = deferred<void>()
+		mocks.transports[0].close.mockImplementationOnce(async () => {
+			closeStarted.resolve()
+			await closing.promise
+		})
+		const pending = deferred<CatalogResult>()
+		const requestStarted = deferred<AbortSignal | undefined>()
+		projectClient.request.mockImplementationOnce(async (_request, _schema, options) => {
+			requestStarted.resolve(options?.signal)
+			return pending.promise
+		})
+		const running = hub.callTool("shared", "fixture", {}, "project").catch((error: unknown) => error)
+		const requestSignal = await requestStarted.promise
+		const startupClient = createClient("starting")
+		const injectionStarted = deferred<void>()
+		const injected = deferred<TestConfig>()
+		mocks.clients.push(startupClient)
+		mocks.injectVariables.mockImplementationOnce(async () => {
+			injectionStarted.resolve()
+			return injected.promise
+		})
+		const startup = hub.updateServerConnections({ shared: config, starting: config }, "global")
+		await injectionStarted.promise
+		mocks.getState.mockResolvedValue({ mcpEnabled: false })
+		const disabled = hub.handleMcpEnabledChange(false)
+		try {
+			await closeStarted.promise
+			expect(requestSignal?.aborted).toBe(true)
+			expect(hub.getServers()).toEqual([])
+			await expect(hub.callTool("shared", "fixture", {}, "project")).rejects.toThrow()
+			await expect(hub.readResource("shared", "fixture://read", "project")).rejects.toThrow()
+			await expect(hub.listResources("shared", undefined, "project")).rejects.toThrow()
+			await expect(hub.listResourceTemplates("shared", undefined, "project")).rejects.toThrow()
+			injected.resolve(config)
+			await startup
+			expect(startupClient.connect).not.toHaveBeenCalled()
+			expect(await running).toMatchObject({ name: "AbortError" })
+		} finally {
+			injected.resolve(config)
+			closing.resolve()
+			pending.resolve({})
+			await Promise.all([disabled, startup, running])
+		}
+		expect(hub.getAllServers().map((server) => server.status)).toEqual(["disconnected", "disconnected"])
+	})
+
 	it("keeps a replacement connection healthy when an old refresh or old transport events settle later", async () => {
 		const client = createClient()
 		await connect(client)
@@ -1180,7 +1321,7 @@ describe("McpHub complete paginated catalogs", () => {
 		expect(replacement.server.resourceTemplates?.map((template) => template.name)).toEqual(["replacement"])
 	})
 
-	it("cancels active pagination when a real transport error reaches the composed SDK and fatal handlers", async () => {
+	it("cancels active pagination when the transport closes", async () => {
 		const client = createClient()
 		const connection = await connect(client)
 		const pendingPage = deferred<CatalogResult>()
@@ -1193,14 +1334,35 @@ describe("McpHub complete paginated catalogs", () => {
 		const rejected = expect(refreshing).rejects.toThrow()
 		const signal = await started.promise
 
-		await mocks.transports[0].onerror?.(new Error("active transport failure"))
+		await mocks.transports[0].onclose?.()
 		await rejected
 		expect(signal?.aborted).toBe(true)
 		expect(connection.server.status).toBe("disconnected")
-		expect(connection.server.error).toContain("active transport failure")
 		pendingPage.resolve(catalogPage("tools/list", "late"))
 		await pendingPage.promise
 		expect(connection.server.tools?.map((tool) => tool.name)).toEqual(["old"])
+	})
+
+	it("keeps requests and the connection available after a recoverable transport error", async () => {
+		const client = createClient()
+		const connection = await connect(client)
+		const pendingPage = deferred<CatalogResult>()
+		const started = deferred<AbortSignal | undefined>()
+		client.request.mockImplementationOnce(async (_request, _schema, options) => {
+			started.resolve(options?.signal)
+			return pendingPage.promise
+		})
+		const running = hub.listResources("shared", undefined, "global").catch((error: unknown) => error)
+		const signal = await started.promise
+		const error = new Error("malformed unsolicited message")
+		await mocks.transports[0].onerror?.(error)
+		pendingPage.resolve(catalogPage("resources/list", "healthy"))
+
+		expect(await running).toMatchObject({ resources: [{ name: "healthy" }] })
+		expect(signal?.aborted).toBe(false)
+		expect(connection.server.status).toBe("connected")
+		expect(connection.server.errorHistory?.filter((entry) => entry.message === error.message)).toHaveLength(1)
+		await expect(hub.listResources("shared", undefined, "global")).resolves.toHaveProperty("resources")
 	})
 
 	it("keeps an unrelated pending catalog healthy after a late SDK unknown-response diagnostic", async () => {

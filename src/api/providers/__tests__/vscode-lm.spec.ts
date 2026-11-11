@@ -120,7 +120,6 @@ import type { Anthropic } from "@anthropic-ai/sdk"
 import { createReadFileTool } from "../../../core/prompts/tools/native-tools/read_file"
 import { ApiStreamDeadlineError, iterateApiStreamWithAbort } from "../../transform/stream"
 import { ApiRequestTimeoutError } from "../utils/timeout-config"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { countContextTokens, getEffectiveApiHistory, summarizeConversation } from "../../../core/condense"
 import { getContextLimits, manageContext } from "../../../core/context-management"
 import type { ApiMessage } from "../../../core/task-persistence/apiMessages"
@@ -227,7 +226,6 @@ describe("VsCodeLmHandler", () => {
 		}
 
 		async function prepareSmallWindow() {
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			handler.dispose()
 			const model = {
 				...mockLanguageModelChat,

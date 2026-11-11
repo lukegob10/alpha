@@ -16,7 +16,6 @@ import {
 	type VertexModelId,
 	vertexDefaultModelId,
 	vertexModels,
-	ApiProviderError,
 	resolveModelParameterApplicability,
 	validateOptionalOutputTokenLimit,
 	snapshotGeminiResponse,
@@ -25,7 +24,6 @@ import {
 	type GeminiResponse,
 } from "@alpha-code/types"
 import { safeJsonParse } from "@alpha-code/core"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { DEFAULT_HYBRID_REASONING_MODEL_MAX_TOKENS, type ApiHandlerOptions } from "../../shared/api"
 
@@ -280,14 +278,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 		}
 
 		return undefined
-	}
-
-	private captureProviderException(error: ApiProviderError): void {
-		try {
-			TelemetryService.instance.captureException(error)
-		} catch (telemetryError) {
-			console.warn("Gemini telemetry capture failed:", telemetryError)
-		}
 	}
 
 	private formatProviderError(translationKey: string, fallbackPrefix: string, errorMessage: string): string {
@@ -850,15 +840,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 				if (error instanceof ApiStreamDeadlineError || error instanceof ApiRequestTimeoutError) throw error
 
-				const errorMessage = error instanceof Error ? error.message : String(error)
-				const apiError = new ApiProviderError(
-					errorMessage,
-					this.providerName,
-					requestContext.model,
-					"createMessage",
-				)
-				this.captureProviderException(apiError)
-
 				if (error instanceof Error) {
 					throw this.wrapProviderError(error, "common:errors.gemini.generate_stream", "Gemini stream error")
 				}
@@ -866,6 +847,8 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				throw error
 			} finally {
 				if (resultIterator && !streamIteratorCompleted) {
+					// GenAI 1.47.0 releases its reader lock on return without cancelling the SSE body.
+					requestAbortController.abort()
 					try {
 						void Promise.resolve(resultIterator.return?.()).catch(() => undefined)
 					} catch {
@@ -1016,15 +999,6 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				return text
 			} catch (error) {
 				throwIfSingleCompletionAborted(metadata)
-
-				const errorMessage = error instanceof Error ? error.message : String(error)
-				const apiError = new ApiProviderError(
-					errorMessage,
-					this.providerName,
-					requestContext.model,
-					"completePrompt",
-				)
-				this.captureProviderException(apiError)
 
 				if (error instanceof Error) {
 					throw this.wrapProviderError(

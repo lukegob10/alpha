@@ -5,6 +5,7 @@ import * as path from "node:path"
 import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { renderedAgentSettingsControls } from "./agentSettingsContract"
+import { dismissRenderedReleaseAnnouncement } from "./renderedReleaseAnnouncement"
 import {
 	dismissRenderedDialogAndRestoreFocus,
 	dialogKeyTraceExpression,
@@ -233,6 +234,25 @@ export async function exerciseRenderedAcceptance(
 		retainFailure(expression, () => controls.check(expression, deadline))
 	const click = (element: string, deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS) =>
 		retainFailure(element, () => controls.click(element, deadline))
+	const revealDetailsFor = async (element: string) => {
+		await check(`!!(${element})`)
+		const closed = `[...d.querySelectorAll('details:not([open])')].find(e=>e.contains(${element}))`
+		for (let depth = 0; depth < 8 && (await evaluate<boolean>(`!!(${closed})`)); depth++) {
+			await click(`(${closed}).querySelector('summary')`)
+		}
+		await check(`!(${closed})`)
+	}
+	const showSettingsPage = async (section: string) => {
+		await activate(`[data-testid="settings-tab-list"] [data-testid="tab-${section}"]`)
+		await check(`d.querySelector('[data-testid="tab-${section}"]').getAttribute('aria-selected')==='true'`)
+		await check(`d.querySelector('[data-settings-section="${section}"]').getClientRects().length>0`)
+		if (section === "tools") await check("!!d.querySelector('[data-setting-id=agents-enabled]')")
+		if (section === "providers") await check("!!d.querySelector('[data-testid=select-component]')")
+		await evaluate(
+			"new Promise(resolve=>d.defaultView.requestAnimationFrame(()=>d.defaultView.requestAnimationFrame(()=>resolve(true))))",
+		)
+		await evaluate("(d.querySelector('[data-testid=settings-content]').scrollTop=0,true)")
+	}
 	const dialogKeyTraces: unknown[] = []
 	const dialogDriver = {
 		evaluate,
@@ -259,8 +279,7 @@ export async function exerciseRenderedAcceptance(
 			if (dispatchFailure) throw dispatchFailure.error
 		},
 	}
-	const outputPreview =
-		"d.querySelector('[data-testid=settings-content] [data-testid=terminal-output-preview-size-dropdown]')"
+	const totalCapacity = "d.querySelector('[data-testid=settings-content] [data-testid=agents-total-capacity]')"
 	const activate = async (selector: string, label?: string, prefix = false) => {
 		const find = `[...d.querySelectorAll(${javascriptLiteral(selector)})].find(e=>e.getBoundingClientRect().width>0&&!e.disabled&&e.getAttribute('aria-disabled')!=='true'${label === undefined ? "" : `&&(e.getAttribute('aria-label')??e.textContent).trim().${prefix ? "startsWith" : "includes"}(${javascriptLiteral(label)})`})`
 		const deadline = Date.now() + RENDERED_CONTROL_TIMEOUT_MS
@@ -358,32 +377,37 @@ export async function exerciseRenderedAcceptance(
 			const originalTab = await evaluate<string>(
 				"d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]').getAttribute('data-testid')",
 			)
+			const originalScroll = await evaluate<number>("d.querySelector('[data-testid=settings-content]').scrollTop")
 			const originalSaveDisabled = await evaluate<boolean>(
 				"d.querySelector('[data-testid=save-button]').disabled",
 			)
 			try {
-				await check("!d.querySelector('[data-testid=tab-modes]')")
-				for (const section of ["providers", "autoApprove", "agents", "mcp"]) {
-					await activate(`[data-testid="settings-tab-list"] [data-testid="tab-${section}"]`)
-					await check(
-						`d.querySelector('[data-testid="tab-${section}"]').getAttribute('aria-selected')==='true'`,
-					)
-					await evaluate("(d.querySelector('[data-testid=settings-content]').scrollTop=0,true)")
-					const spacing = await evaluate<{ top: number; left: number; right: number }>(`(()=>{
+				for (const section of ["providers", "tools", "preferences", "advanced"]) {
+					await showSettingsPage(section)
+					const bounds = await evaluate<{
+						left: number
+						right: number
+						width: number
+						available: number
+					}>(`(()=>{
 						const content=d.querySelector('[data-testid=settings-content]');
-						const header=content.querySelector('h3').parentElement.getBoundingClientRect();
-						const card=content.querySelector('.surface-raised').getBoundingClientRect();
-						const bounds=content.getBoundingClientRect();
-						return {top:card.top-header.bottom,left:card.left-bounds.left,right:bounds.right-card.right};
+						const area=content.querySelector('[data-settings-section="${section}"]').getBoundingClientRect();
+						const r=content.getBoundingClientRect();
+						return {left:area.left-r.left,right:r.right-area.right,width:area.width,available:r.width};
 					})()`)
 					await capture(`settings-${section}`)
 					assert.ok(
-						spacing.top >= 16,
-						`${section}: the first card needs space below the section divider (was ${spacing.top}px)`,
+						bounds.width > 0 &&
+							bounds.left >= -1 &&
+							bounds.right >= -1 &&
+							bounds.width <= bounds.available + 1,
+						`${section}: the selected page must fit inside the settings content`,
 					)
-					assert.ok(spacing.left >= 16 && spacing.right >= 16, `${section}: card edges need an inset`)
 				}
-				await activate('[data-testid="settings-tab-list"] [data-testid="tab-agents"]')
+				await showSettingsPage("tools")
+				for (const [id] of renderedAgentSettingsControls) {
+					await revealDetailsFor(`d.getElementById(${javascriptLiteral(id)})`)
+				}
 				await check(
 					`(${javascriptLiteral(renderedAgentSettingsControls)}).every(([id,tag,label])=>{const e=d.querySelector('[data-testid=settings-content] '+tag+'[id="'+id+'"]');return e?.getBoundingClientRect().width>0&&[...e.labels].some(l=>l.textContent.trim()===label)})`,
 				)
@@ -408,21 +432,36 @@ export async function exerciseRenderedAcceptance(
 				await capture("settings-agents-custom")
 			} finally {
 				await activate(`[data-testid="settings-tab-list"] [data-testid=${javascriptLiteral(originalTab)}]`)
+				await evaluate(`(d.querySelector('[data-testid=settings-content]').scrollTop=${originalScroll},true)`)
 			}
 			await check(
 				`d.querySelector('[data-testid=settings-tab-list] [role=tab][aria-selected=true]')?.getAttribute('data-testid')===${javascriptLiteral(originalTab)}&&d.querySelector('[data-testid=save-button]').disabled===${originalSaveDisabled}`,
 			)
-			await activate('[data-testid="tab-terminal"]')
-			await check(`${outputPreview}?.textContent?.includes('Medium (10KB)')`)
-			await click(outputPreview)
-			await activate('[role="option"]', "Large (20KB)")
-			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
+			await showSettingsPage("tools")
+			await check(`${totalCapacity}?.value==='6'`)
+			await click(totalCapacity)
+			await check(`d.activeElement===(${totalCapacity})`)
+			for (const type of ["keyDown", "keyUp"]) {
+				await cdp.request(
+					"Input.dispatchKeyEvent",
+					{
+						type,
+						key: "a",
+						code: "KeyA",
+						windowsVirtualKeyCode: 65,
+						modifiers: process.platform === "darwin" ? 4 : 2,
+					},
+					sessionId,
+				)
+			}
+			await cdp.request("Input.insertText", { text: "8" }, sessionId)
+			await check(`${totalCapacity}?.value==='8'&&!d.querySelector('[data-testid=save-button]').disabled`)
 			await evaluate(
 				"(()=>{const w=d.defaultView;w.__alphaUiRefreshSequences=[];w.__alphaUiRefreshObserver=e=>{const seq=e.data?.state?.taskStateSeq;if(e.data?.type==='state'&&Number.isInteger(seq)&&!w.__alphaUiRefreshSequences.includes(seq)&&w.__alphaUiRefreshSequences.length<8)w.__alphaUiRefreshSequences.push(seq)};w.addEventListener('message',w.__alphaUiRefreshObserver);return true})()",
 			)
 		} else if (stage === "settings-refresh-discard") {
 			await check("d.defaultView.__alphaUiRefreshSequences.length>=2")
-			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
+			await check(`${totalCapacity}?.value==='8'`)
 			const sequences = await evaluate<number[]>("d.defaultView.__alphaUiRefreshSequences")
 			await fs.writeFile(
 				path.join(directory, "ui-settings-refresh-count.json"),
@@ -436,16 +475,16 @@ export async function exerciseRenderedAcceptance(
 			await verifyRenderedDialogFocus(dialogDriver, '[role="alertdialog"]', "Unsaved Changes")
 			const done = "[...d.querySelectorAll('button')].find(e=>e.textContent.trim()==='Done')"
 			await dismissRenderedDialogAndRestoreFocus(dialogDriver, '[role="alertdialog"]', done)
-			await check(`${outputPreview}?.textContent?.includes('Large (20KB)')`)
+			await check(`${totalCapacity}?.value==='8'`)
 			await activate("button", "Done")
 			await activate('[role="alertdialog"] button', "Cancel")
-			await check(
-				`!d.querySelector('[role=alertdialog]')&&${outputPreview}?.textContent?.includes('Large (20KB)')`,
-			)
+			await check(`!d.querySelector('[role=alertdialog]')&&${totalCapacity}?.value==='8'`)
 			await check(`d.activeElement===(${done})`)
 			await activate("button", "Done")
 			await activate('[role="alertdialog"] button', "Discard changes")
-			await check(`!(${outputPreview})`)
+			await check(`!(${totalCapacity})`)
+			await check("!!d.querySelector('.new-task-composer textarea')")
+			await dismissRenderedReleaseAnnouncement(cdp, sessionId, workbenchSession, directory, "managed", signal)
 		} else if (stage.endsWith("-apply") || stage === "discard-discard") {
 			assert.ok(detail?.nickname)
 			const action = await revealRenderedReviewActions({ evaluate, check, click }, detail.nickname)

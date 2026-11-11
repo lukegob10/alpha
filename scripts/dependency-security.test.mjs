@@ -1,13 +1,14 @@
 import assert from "node:assert/strict"
+import { spawnSync } from "node:child_process"
+import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { test } from "node:test"
 
 const require = createRequire(import.meta.url)
 const lintRequire = createRequire(require.resolve("lint-staged"))
-const braces = createRequire(lintRequire.resolve("micromatch"))("braces")
+const picomatch = lintRequire("picomatch")
 const extensionRequire = createRequire(new URL("../src/package.json", import.meta.url))
-const loggerRequire = createRequire(extensionRequire.resolve("global-agent"))
-const sprintf = createRequire(loggerRequire.resolve("roarr"))("sprintf-js").sprintf
+const { parse } = extensionRequire("yaml")
 const sdkRequire = createRequire(extensionRequire.resolve("@modelcontextprotocol/sdk/server/index.js"))
 const qs = createRequire(sdkRequire.resolve("express"))("qs")
 
@@ -21,54 +22,68 @@ test("query serialization handles hostile comma-array elements without throwing"
 	assert.equal(qs.stringify({ a: ["one", "two"] }, { arrayFormat: "comma" }), "a=one%2Ctwo")
 })
 
-test("patched braces rejects deeply nested patterns before recursive processing", () => {
-	for (const [open, close] of [
-		["{", "}"],
-		["(", ")"],
-	]) {
-		const pattern = open.repeat(4_000) + "a,b" + close.repeat(4_000)
-		for (const method of [braces.parse, braces.compile, braces.expand, braces.stringify]) {
-			assert.throws(() => method(pattern), { name: "SyntaxError", message: /maximum depth/ })
-		}
+test("the frozen dependency graph cannot restore the retired vulnerable libraries or local patches", () => {
+	const workspace = parse(readFileSync(new URL("../pnpm-workspace.yaml", import.meta.url), "utf8"))
+	const lockfile = parse(readFileSync(new URL("../pnpm-lock.yaml", import.meta.url), "utf8"))
+	assert.equal(workspace.patchedDependencies, undefined)
+	assert.equal(lockfile.patchedDependencies, undefined)
+	assert.deepEqual(
+		Object.keys(lockfile.packages).filter((name) =>
+			/^(?:(?:braces|micromatch|sprintf-js|roarr)@|zod@3\.)/.test(name),
+		),
+		[],
+	)
+})
+
+test("the installed glob matcher handles hostile nesting within a bounded process", () => {
+	const result = spawnSync(
+		process.execPath,
+		[
+			"-e",
+			`
+const assert = require("node:assert/strict")
+const picomatch = require(process.argv[1])
+for (const [open, close] of [["{", "}"], ["(", ")"]]) {
+	const pattern = open.repeat(4000) + "a,b" + close.repeat(4000)
+	assert.equal(typeof picomatch.parse(pattern).output, "string")
+	assert.ok(picomatch.makeRe(pattern) instanceof RegExp)
+	assert.equal(typeof picomatch(pattern)("a,b"), "boolean")
+}
+`,
+			lintRequire.resolve("picomatch"),
+		],
+		{ encoding: "utf8", timeout: 30_000, maxBuffer: 64 * 1024 },
+	)
+	assert.ifError(result.error)
+	assert.equal(result.status, 0, result.stderr)
+})
+
+test("the installed glob matcher bounds input length and retains workspace glob behavior", () => {
+	const oversized = "a".repeat(65_537)
+	for (const method of [picomatch.parse, picomatch.makeRe, picomatch]) {
+		assert.throws(() => method(oversized), { name: "SyntaxError", message: /maximum allowed length/ })
 	}
+	const matches = picomatch("src/{core,{api,utils}}/*.ts")
+	for (const file of ["src/core/a.ts", "src/api/b.ts", "src/utils/c.ts"]) assert.equal(matches(file), true)
+	for (const file of ["src/core/.hidden.ts", "src/other/a.ts", "src/api/b.js"]) assert.equal(matches(file), false)
+	assert.equal(picomatch("!*.js")("file.ts"), true)
+	assert.equal(picomatch("!*.js")("file.js"), false)
+	const repeated = picomatch("+(*(a)|*(b))")
+	for (const value of ["aaaa", "bbbb", "aabb"]) assert.equal(repeated(value), true)
+	assert.equal(repeated("aabb!"), false)
 })
 
-test("patched braces also bounds directly supplied ASTs", () => {
-	for (const method of [braces.compile, braces.expand, braces.stringify]) {
-		const ast = { type: "root", nodes: [] }
-		let parent = ast
-		for (let depth = 0; depth < 200; depth++) {
-			const child = { type: "paren", nodes: [], parent }
-			parent.nodes.push(child)
-			parent = child
-		}
-		assert.throws(() => method(ast), { name: "SyntaxError", message: /maximum depth/ })
-	}
-})
-
-test("patched braces retains ordinary workspace glob behavior", () => {
-	assert.equal(braces.compile("src/{core,{api,utils}}/*.ts"), "src/(core|(api|utils))/*.ts")
-	assert.deepEqual(braces.expand("src/{core,{api,utils}}/*.ts"), ["src/core/*.ts", "src/api/*.ts", "src/utils/*.ts"])
-	assert.equal(braces.stringify("a/{b,c}/d"), "a/{b,c}/d")
-})
-
-test("patched sprintf bounds numeric precision and preserves normal formats", () => {
-	for (const digits of ["1000000", "9".repeat(400)]) {
-		assert.equal(sprintf(`%.${digits}f`, 1.25), (1.25).toFixed(100))
-		assert.equal(sprintf(`%.${digits}e`, 1.25), (1.25).toExponential(100))
-		assert.equal(sprintf(`%.${digits}g`, 1.25), "1.25")
-	}
-	assert.equal(sprintf("%.0g", 1.25), "1")
-	assert.equal(sprintf("%.0f", 1.25), "1")
-	assert.equal(sprintf("%.2f %s", 1.25, "ticket"), "1.25 ticket")
-	assert.equal(sprintf("%.2e", 1.25), "1.25e+0")
-})
-
-test("production document parsers resolve the same patched formatter", () => {
+test("legacy document parser CLIs retain their argument API without sprintf-js", () => {
 	for (const dependency of ["gray-matter", "mammoth"]) {
 		let parent = createRequire(extensionRequire.resolve(dependency))
 		if (dependency === "gray-matter") parent = createRequire(parent.resolve("js-yaml"))
-		const argparseRequire = createRequire(parent.resolve("argparse"))
-		assert.equal(argparseRequire("sprintf-js").sprintf("%.1000000f", 1.25), (1.25).toFixed(100))
+		const { ArgumentParser } = parent("argparse")
+		const parser = new ArgumentParser({ addHelp: false, version: "1" })
+		parser.addArgument(["file"], { type: "string", defaultValue: "default.docx", nargs: "?" })
+		parser.addArgument(["--compact"], { action: "storeTrue" })
+		assert.equal(parser.parseArgs([]).file, "default.docx")
+		const args = parser.parseArgs(["sample.docx", "--compact"])
+		assert.equal(args.file, "sample.docx")
+		assert.equal(args.compact, true)
 	}
 })

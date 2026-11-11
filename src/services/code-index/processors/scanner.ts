@@ -26,9 +26,6 @@ import {
 	MAX_PENDING_BATCHES,
 } from "../constants"
 import { isPathInIgnoredDirectory } from "../../glob/ignore-utils"
-import { TelemetryService } from "@alpha-code/telemetry"
-import { TelemetryEventName } from "@alpha-code/types"
-import { sanitizeErrorMessage } from "../shared/validation-helpers"
 import { Package } from "../../../shared/package"
 import { EmbeddingRateLimiter, waitForEmbeddingDelay } from "../shared/embedding-rate-limiter"
 import { EmbeddingRequestError } from "../shared/embedding-retry"
@@ -277,11 +274,6 @@ export class DirectoryScanner implements IDirectoryScanner {
 						throw error
 					}
 					console.error(`Error processing file ${filePath} in workspace ${scanWorkspace}:`, error)
-					TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-						error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-						stack: error instanceof Error ? sanitizeErrorMessage(error.stack || "") : undefined,
-						location: "scanDirectory:processFile",
-					})
 					if (onError) {
 						onError(
 							error instanceof Error
@@ -354,20 +346,10 @@ export class DirectoryScanner implements IDirectoryScanner {
 						await this.qdrantClient.deletePointsByFilePath(cachedFilePath)
 						await this.cacheManager.deleteHash(cachedFilePath)
 					} catch (error: any) {
-						const errorStatus = error?.status || error?.response?.status || error?.statusCode
-						const errorMessage = error instanceof Error ? error.message : String(error)
-
 						console.error(
 							`[DirectoryScanner] Failed to delete points for ${cachedFilePath} in workspace ${scanWorkspace}:`,
 							error,
 						)
-
-						TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-							error: sanitizeErrorMessage(errorMessage),
-							stack: error instanceof Error ? sanitizeErrorMessage(error.stack || "") : undefined,
-							location: "scanDirectory:deleteRemovedFiles",
-							errorStatus: errorStatus,
-						})
 
 						if (onError) {
 							// Report error to error handler
@@ -449,13 +431,6 @@ export class DirectoryScanner implements IDirectoryScanner {
 					`[DirectoryScanner] Error processing batch (attempt ${attempts}) in workspace ${scanWorkspace}:`,
 					error,
 				)
-				TelemetryService.instance.captureEvent(TelemetryEventName.CODE_INDEX_ERROR, {
-					error: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-					stack: error instanceof Error ? sanitizeErrorMessage(error.stack || "") : undefined,
-					location: "processBatch:retry",
-					attemptNumber: attempts,
-					batchSize: batchBlocks.length,
-				})
 
 				if (error instanceof EmbeddingRequestError) break
 				if (attempts < MAX_BATCH_RETRIES) {

@@ -3,11 +3,6 @@ const execFileMock = vitest.hoisted(() => vitest.fn())
 
 vitest.mock("execa", () => ({ execa: execaMock, ExecaError: class extends Error {} }))
 vitest.mock("node:child_process", () => ({ execFile: execFileMock }))
-vitest.mock("ps-tree", () => ({
-	default: vitest.fn(function (_pid, callback) {
-		return callback(null, [])
-	}),
-}))
 
 import { ExecaError } from "execa"
 import { EventEmitter, captureRejectionSymbol } from "node:events"

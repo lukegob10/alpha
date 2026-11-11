@@ -1,5 +1,4 @@
 import { EventEmitter } from "node:events"
-import { TelemetryService } from "@alpha-code/telemetry"
 import type { AlphaMessage } from "@alpha-code/types"
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
@@ -153,6 +152,13 @@ function commandFixture(
 			},
 		),
 		failCommandExecution: Task.prototype.failCommandExecution,
+		recordCommandExecutionStatus: Task.prototype.recordCommandExecutionStatus,
+		publishExecutionStatus: Task.prototype["publishExecutionStatus"],
+		requireAlphaMessagesSaved: Task.prototype["requireAlphaMessagesSaved"],
+		updateAlphaMessage: Task.prototype["updateAlphaMessage"],
+		findCurrentAlphaMessage: Task.prototype["findCurrentAlphaMessage"],
+		findMessageByTimestamp: Task.prototype["findMessageByTimestamp"],
+		emit: vi.fn(),
 		getCommandExecutionEvidence: Task.prototype.getCommandExecutionEvidence,
 		markCommandExecutionBackgrounded: Task.prototype.markCommandExecutionBackgrounded,
 		publishParentVerificationEvidence: vi.fn(),
@@ -483,6 +489,13 @@ describe("native command transaction consistency", () => {
 		const outcome = await fixture.run("poll", "write_stdin", { session_id: sessionId })
 
 		expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: cause })
+		expect(
+			fixture.task.alphaMessages.find((message) => message.ask === "command")?.commandExecutionStatus,
+		).toMatchObject({
+			status: cause === "timed_out" ? "timeout" : cause === "cancelled" ? "cancelled" : "error",
+			toolCallId: "start",
+			taskId: fixture.task.taskId,
+		})
 		expect(outcome.results[0]).toMatchObject(expected)
 		expect(outcome.results[0].commandResult).not.toHaveProperty("exit_code")
 		expect(fixture.host.userMessageContent.at(-1)).toMatchObject({ type: "tool_result", is_error: true })
@@ -1023,7 +1036,6 @@ describe("command-session publication is possible before effects", () => {
 
 	it("publishes one usable handle after configured shell integration falls back to Execa", async () => {
 		vi.useFakeTimers()
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 		const fixture = commandFixture()
 		fixture.terminalSettings.terminalShellIntegrationDisabled = false
 		const fallback = await TerminalRegistry.getOrCreateTerminal(fixture.task.cwd, fixture.task.taskId, "execa")
@@ -1035,6 +1047,13 @@ describe("command-session publication is possible before effects", () => {
 			isSettled: true,
 			hasSubmittedCommand: false,
 		})
+		let firstCallbacks!: AlphaTerminalCallbacks
+		const runFallback = fallback.runCommand.bind(fallback)
+		fallback.runCommand = (command, callbacks) => {
+			const process = runFallback(command, callbacks)
+			callbacks.onShellExecutionStarted(42, process)
+			return process
+		}
 		const first = {
 			provider: "vscode",
 			id: 99,
@@ -1044,6 +1063,7 @@ describe("command-session publication is possible before effects", () => {
 			process: firstProcess,
 			getCurrentWorkingDirectory: () => fixture.task.cwd,
 			runCommand: (_command: string, callbacks: AlphaTerminalCallbacks) => {
+				firstCallbacks = callbacks
 				callbacks.onNoShellIntegration!(
 					"shell integration unavailable",
 					firstProcess as unknown as AlphaTerminalProcess,
@@ -1081,6 +1101,15 @@ describe("command-session publication is possible before effects", () => {
 			])
 			expect(outcome.results).toHaveLength(1)
 			expect(outcome.results[0]).toMatchObject({ status: "success", executionStatus: "running" })
+			firstCallbacks.onShellExecutionStarted(99, firstProcess as unknown as AlphaTerminalProcess)
+			fixture.task.failCommandExecution(
+				"fallback",
+				"failed",
+				(firstProcess as unknown as AlphaTerminalProcess).executionId,
+			)
+			expect(
+				fixture.task.alphaMessages.find((message) => message.ask === "command")?.commandExecutionStatus,
+			).toMatchObject({ status: "started", pid: 42 })
 			const publishedHandle = String(outcome.results[0].content).match(
 				/^Process running with session ID ([1-9]\d*)\n/,
 			)
@@ -1094,6 +1123,17 @@ describe("command-session publication is possible before effects", () => {
 			await fixture.finish(0)
 			commandSessionRegistry.releaseForTask(fixture.task)
 		}
+		firstCallbacks.onShellExecutionStarted(99, firstProcess as unknown as AlphaTerminalProcess)
+		const approval = fixture.task.alphaMessages.find((message) => message.ask === "command")!
+		await fixture.task.recordCommandExecutionStatus({
+			executionId: approval.ts.toString(),
+			toolCallId: "fallback",
+			status: "error",
+			error: "Late transport error",
+		})
+		expect(
+			fixture.task.alphaMessages.find((message) => message.ask === "command")?.commandExecutionStatus,
+		).toMatchObject({ status: "exited", exitCode: 0 })
 	})
 
 	it.each([
@@ -1104,7 +1144,6 @@ describe("command-session publication is possible before effects", () => {
 		"does not replay a command after shell observation fails (submitted: $submitted, exit: $exitCode)",
 		async ({ submitted, exitCode }) => {
 			vi.useFakeTimers()
-			if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
 			const fixture = commandFixture()
 			fixture.terminalSettings.terminalShellIntegrationDisabled = false
 			const fallback = await TerminalRegistry.getOrCreateTerminal(fixture.task.cwd, fixture.task.taskId, "execa")

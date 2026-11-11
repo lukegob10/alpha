@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor, act } from "@/utils/test-utils"
 import { vi, describe, it, expect, beforeEach } from "vitest"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import React from "react"
@@ -11,6 +11,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 // Import the actual component
 import SettingsView from "../SettingsView"
+import { NotificationSettings } from "../NotificationSettings"
 import { useExtensionState } from "@src/context/ExtensionStateContext"
 
 // Mock the extension state context
@@ -167,12 +168,11 @@ vi.mock("@src/components/mcp/McpView", () => ({
 }))
 
 // Mock Tab components
-vi.mock("../common/Tab", () => ({
+vi.mock("../../common/Tab", async () => ({
+	...(await vi.importActual<typeof import("../../common/Tab")>("../../common/Tab")),
 	Tab: ({ children }: any) => <div>{children}</div>,
 	TabContent: React.forwardRef<HTMLDivElement, any>(({ children }, ref) => <div ref={ref}>{children}</div>),
 	TabHeader: ({ children }: any) => <div>{children}</div>,
-	TabList: ({ children }: any) => <div>{children}</div>,
-	TabTrigger: React.forwardRef<HTMLButtonElement, any>(({ children }, ref) => <button ref={ref}>{children}</button>),
 }))
 
 // Mock all child components to isolate the test
@@ -205,28 +205,15 @@ vi.mock("../SectionHeader", () => ({
 	SectionHeader: ({ children }: any) => <div>{children}</div>,
 }))
 
-vi.mock("../Section", () => ({
-	Section: ({ children }: any) => <div>{children}</div>,
-}))
-
 // Mock all settings components
 vi.mock("../CheckpointSettings", () => ({
 	CheckpointSettings: () => null,
 }))
 vi.mock("../NotificationSettings", () => ({
-	NotificationSettings: () => null,
+	NotificationSettings: vi.fn(() => null),
 }))
 vi.mock("../ContextManagementSettings", () => ({
 	ContextManagementSettings: () => null,
-}))
-vi.mock("../TerminalSettings", () => ({
-	TerminalSettings: () => null,
-}))
-vi.mock("../ExperimentalSettings", () => ({
-	ExperimentalSettings: () => null,
-}))
-vi.mock("../LanguageSettings", () => ({
-	LanguageSettings: () => null,
 }))
 vi.mock("../About", () => ({
 	About: () => null,
@@ -265,7 +252,7 @@ describe("SettingsView - Change Detection Fix", () => {
 		uriScheme: "vscode",
 		settingsImportedAt: undefined,
 		apiConfiguration: {
-			apiProvider: "openai",
+			apiProvider: "openai" as const,
 			apiModelId: "", // Empty string initially
 		},
 		alwaysAllowReadOnly: false,
@@ -274,7 +261,7 @@ describe("SettingsView - Change Detection Fix", () => {
 		deniedCommands: [],
 		allowedMaxRequests: undefined,
 		allowedMaxCost: undefined,
-		language: "en",
+		language: "en" as const,
 		alwaysAllowExecute: false,
 		alwaysAllowMcp: false,
 		alwaysAllowModeSwitch: false,
@@ -291,7 +278,6 @@ describe("SettingsView - Change Detection Fix", () => {
 		mcpEnabled: false,
 		soundEnabled: false,
 		soundVolume: 0.5,
-		telemetrySetting: "unset" as const,
 		terminalOutputLineLimit: 500,
 		terminalOutputCharacterLimit: 50000,
 		terminalShellIntegrationTimeout: 3000,
@@ -323,6 +309,7 @@ describe("SettingsView - Change Detection Fix", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
+		vi.mocked(NotificationSettings).mockImplementation(() => <></>)
 		queryClient = new QueryClient({
 			defaultOptions: {
 				queries: { retry: false },
@@ -512,5 +499,183 @@ describe("SettingsView - Change Detection Fix", () => {
 		expect(updateSettings.updatedSettings).not.toHaveProperty("customModePrompts")
 		expect(updateSettings.updatedSettings).not.toHaveProperty("customInstructions")
 		expect(liveState).toMatchObject(promptSettings)
+	})
+
+	it("preserves saved confirmation limits when an unrelated preference is saved", () => {
+		const savedLimits = { allowedMaxRequests: 12, allowedMaxCost: 2.5 }
+		const liveState = {
+			...createExtensionState({ didHydrateState: true, autoSteer: false }),
+			...savedLimits,
+		}
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue(liveState)
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="preferences" />
+			</QueryClientProvider>,
+		)
+		expect(screen.getByTestId("save-button")).toBeDisabled()
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const updates = mockPostMessage.mock.calls.filter(([message]) => message.type === "updateSettings")
+		expect(updates).toHaveLength(1)
+		const update = updates[0][0]
+		expect(update.updatedSettings).toEqual({ autoSteer: true })
+		expect(update.settingsSave.expectedSettings).toEqual({ autoSteer: false })
+		for (const key of Object.keys(savedLimits)) {
+			expect(update.updatedSettings).not.toHaveProperty(key)
+			expect(update.settingsSave.expectedSettings).not.toHaveProperty(key)
+		}
+		expect(liveState).toMatchObject(savedLimits)
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
+	})
+
+	it("saves only an edited preference after permissions change in another view", () => {
+		const liveState = {
+			...createExtensionState({ didHydrateState: true, autoSteer: false }),
+			approvalMode: "auto" as const,
+			allowedCommands: ["git status", "workspace-only-command"],
+			commandRuleSettings: {
+				allowedCommands: ["git status"],
+				deniedCommands: [],
+				inherited: [
+					{ source: "workspace" as const, allowedCommands: ["workspace-only-command"], deniedCommands: [] },
+				],
+			},
+		}
+		vi.mocked(useExtensionState, { partial: true }).mockImplementation(() => liveState)
+		const view = () => (
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="preferences" />
+			</QueryClientProvider>
+		)
+		const { rerender } = render(view())
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		const refreshedState = { ...liveState, approvalMode: "ask" as const, allowedCommands: ["new-global-command"] }
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue(refreshedState)
+		rerender(view())
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(update).toMatchObject({
+			updatedSettings: { autoSteer: true },
+			settingsSave: { requestId: expect.any(String), expectedSettings: { autoSteer: false } },
+		})
+		expect(update.updatedSettings).toEqual({ autoSteer: true })
+		expect(update.settingsSave.expectedSettings).toEqual({ autoSteer: false })
+		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "upsertApiConfiguration" }))
+		expect(refreshedState.approvalMode).toBe("ask")
+	})
+
+	it("retains a conflicting preferences draft until it is explicitly discarded", () => {
+		const onDone = vi.fn()
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue(
+			createExtensionState({ didHydrateState: true, autoSteer: false }),
+		)
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} targetSection="preferences" />
+			</QueryClientProvider>,
+		)
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "settingsSaved",
+						settingsSaveResult: {
+							requestId: update.settingsSave.requestId,
+							status: "error",
+							error: "conflict",
+							conflictingKeys: ["autoSteer"],
+						},
+					},
+				}),
+			)
+		})
+		expect(screen.getByTestId("auto-steer-checkbox")).toBeChecked()
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		expect(screen.getByRole("alert")).toHaveTextContent("settings:common.saveErrors.conflict")
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+		expect(onDone).toHaveBeenCalledOnce()
+		expect(screen.getByTestId("auto-steer-checkbox")).not.toBeChecked()
+	})
+
+	it("clears a preferences-only save only after its matching global acknowledgement", () => {
+		const onDone = vi.fn()
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue(
+			createExtensionState({ didHydrateState: true, autoSteer: false }),
+		)
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={onDone} targetSection="preferences" />
+			</QueryClientProvider>,
+		)
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const update = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		const acknowledge = (requestId: string) =>
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "settingsSaved", settingsSaveResult: { requestId, status: "success" } },
+					}),
+				)
+			})
+		acknowledge("another-settings-view")
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(onDone).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByText("settings:unsavedChangesDialog.cancelButton"))
+		acknowledge(update.settingsSave.requestId)
+		fireEvent.click(screen.getByText("settings:common.done"))
+		expect(onDone).toHaveBeenCalledOnce()
+	})
+
+	it("uses the committed partial-save baseline when the user reverts a failed preferences draft", () => {
+		vi.mocked(useExtensionState, { partial: true }).mockReturnValue(
+			createExtensionState({ didHydrateState: true, autoSteer: false }),
+		)
+		vi.mocked(NotificationSettings).mockImplementation(({ soundEnabled, setCachedStateField }) => (
+			<button data-testid="sound-toggle" onClick={() => setCachedStateField("soundEnabled", !soundEnabled)}>
+				Toggle sound
+			</button>
+		))
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="preferences" />
+			</QueryClientProvider>,
+		)
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("sound-toggle"))
+		fireEvent.click(screen.getByTestId("save-button"))
+		const request = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(request.updatedSettings).toEqual({ autoSteer: true, soundEnabled: true })
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "settingsSaved",
+						settingsSaveResult: {
+							requestId: request.settingsSave.requestId,
+							status: "error",
+							error: "saveFailed",
+							appliedKeys: ["soundEnabled"],
+						},
+					},
+				}),
+			)
+		})
+		expect(screen.getByTestId("save-button")).toBeEnabled()
+		fireEvent.click(screen.getByTestId("auto-steer-checkbox"))
+		fireEvent.click(screen.getByTestId("sound-toggle"))
+		mockPostMessage.mockClear()
+		fireEvent.click(screen.getByTestId("save-button"))
+		const retry = mockPostMessage.mock.calls.find(([message]) => message.type === "updateSettings")?.[0]
+		expect(retry.updatedSettings).toEqual({ soundEnabled: false })
+		expect(retry.settingsSave.expectedSettings).toEqual({ soundEnabled: true })
 	})
 })

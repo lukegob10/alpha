@@ -105,7 +105,7 @@ export async function handleListWorktrees(provider: AlphaProvider): Promise<Work
 	}
 
 	try {
-		const worktrees = await worktreeService.listWorktrees(cwd)
+		const worktrees = await worktreeService.listWorktrees(cwd, { throwOnError: true })
 
 		return {
 			worktrees,

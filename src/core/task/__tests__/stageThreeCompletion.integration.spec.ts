@@ -5,7 +5,6 @@ import * as vscode from "vscode"
 
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { AlphaCodeEventName, agentControlStateSchema, type TaskWorkPlan } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminal } from "../../../integrations/terminal/types"
 
@@ -57,7 +56,7 @@ async function createHarness() {
 	})
 	const events: AgentTurnEvent[] = []
 	const requests: UserContent[] = []
-	const emit = vi.fn()
+	const completed = vi.fn()
 	const say = vi.fn<Task["say"]>(async () => undefined)
 	const cancellation = new AbortController()
 	let task!: Task
@@ -123,7 +122,6 @@ async function createHarness() {
 		toolRepetitionDetector: new ToolRepetitionDetector(3),
 		toolUsage: {},
 		providerRef: { deref: () => provider },
-		emit,
 		say,
 		ask,
 		presentCompletionResult,
@@ -139,6 +137,7 @@ async function createHarness() {
 		}),
 		flushAgentTurnEvents: vi.fn(async () => undefined),
 	}) as Task
+	task.on(AlphaCodeEventName.TaskCompleted, completed)
 	// This integration fixture manually registers historical read calls to test
 	// completion bookkeeping. Production Task registries do not register them.
 	const builtIns = new ToolRegistry()
@@ -341,7 +340,7 @@ async function createHarness() {
 
 	const assertNotCompleted = () => {
 		expect(Reflect.get(task, "didComplete")).toBe(false)
-		expect(emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(0)
+		expect(completed).not.toHaveBeenCalled()
 		expect(events.filter((event) => event.type === "task_completed" && event.status === "completed")).toHaveLength(
 			0,
 		)
@@ -393,7 +392,7 @@ async function createHarness() {
 		persistence,
 		events,
 		requests,
-		emit,
+		completed,
 		ask,
 		flush,
 		provider,
@@ -423,10 +422,6 @@ async function createHarness() {
 
 describe("Stage Three durable completion integration", () => {
 	const harnesses: Awaited<ReturnType<typeof createHarness>>[] = []
-
-	beforeEach(() => {
-		if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-	})
 
 	afterEach(async () => {
 		await Promise.all(harnesses.splice(0).map((harness) => harness.dispose()))
@@ -469,7 +464,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.requests).toHaveLength(2)
 		expect(JSON.stringify(harness.requests[1])).toContain("Check the final result again.")
 		expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it("continues configured hook repair until cancellation without promoting completion", async () => {
@@ -498,7 +493,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.requests).toHaveLength(6)
 		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
 		expect(harness.presentCompletionResult).not.toHaveBeenCalled()
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(0)
+		expect(harness.completed).not.toHaveBeenCalled()
 	})
 
 	it("selects SubagentStop only for a managed child", async () => {
@@ -564,7 +559,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.requests).toHaveLength(2)
 		expect(JSON.stringify(harness.requests[1])).toContain("Child needs another pass.")
 		expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it("resets the hook active flag when new human guidance is delivered", async () => {
@@ -673,7 +668,7 @@ describe("Stage Three durable completion integration", () => {
 			harness.events.filter((event) => event.type === "tool_result" && event.name === "exec_command"),
 		).toHaveLength(16)
 		expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(Reflect.get(task, "didComplete")).toBe(true)
 	})
 
@@ -685,7 +680,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(
 			harness.events.filter((event) => event.type === "tool_result" && event.name === "exec_command"),
 		).toHaveLength(0)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.store.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 	})
 
@@ -722,7 +717,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.task.workContext?.receipts[0].status).toBe("passed")
 		expect(harness.task.getCompletionStageMetrics()).toMatchObject({ candidateCount: 1, rejectionCount: 0 })
 		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it("allows text completion with a real durable advisory Worker receipt", async () => {
@@ -734,7 +729,7 @@ describe("Stage Three durable completion integration", () => {
 		await harness.run()
 
 		expect(harness.requests).toHaveLength(1)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		await harness.assertDurableObligationPending(obligationKind)
 	})
 
@@ -797,7 +792,7 @@ describe("Stage Three durable completion integration", () => {
 		}
 		expect(harness.requests).toHaveLength(1)
 		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
 		const metrics = harness.task.getCompletionStageMetrics()
 		expect(metrics).toMatchObject({
@@ -838,7 +833,7 @@ describe("Stage Three durable completion integration", () => {
 		}
 		expect(harness.requests).toHaveLength(1)
 		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 	})
 
@@ -868,7 +863,7 @@ describe("Stage Three durable completion integration", () => {
 			await running
 		}
 		expect(harness.requests).toHaveLength(1)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it("waits for a healthy command beyond the observation window and completes after its receipt settles", async () => {
@@ -894,7 +889,7 @@ describe("Stage Three durable completion integration", () => {
 			await vi.advanceTimersByTimeAsync(1_000)
 			await running
 		}
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.requests).toHaveLength(1)
 	})
 
@@ -991,9 +986,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(Reflect.get(harness.task, "pendingSteerMessage")).toBeUndefined()
 			expect(Reflect.get(harness.task, "steerMessageAwaitingPersistence")).toBe(false)
 			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-			expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(
-				1,
-			)
+			expect(harness.completed).toHaveBeenCalledOnce()
 		} finally {
 			harness.cancel()
 			harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
@@ -1040,9 +1033,7 @@ describe("Stage Three durable completion integration", () => {
 			await running
 			expect(harness.requests).toHaveLength(1)
 			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
-			expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(
-				1,
-			)
+			expect(harness.completed).toHaveBeenCalledOnce()
 			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 		} finally {
 			release.resolve()
@@ -1068,7 +1059,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(
 			harness.events.filter((event) => event.type === "tool_result" && event.name === "exec_command"),
 		).toHaveLength(0)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		await harness.assertDurableObligationPending("worker")
 	})
 
@@ -1089,7 +1080,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(
 			harness.events.filter((event) => event.type === "tool_result" && event.name === "exec_command"),
 		).toHaveLength(0)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it.each(["active descendant", "unconsumed result"] as const)(
@@ -1141,9 +1132,7 @@ describe("Stage Three durable completion integration", () => {
 					await running
 				}
 				expect(harness.requests).toHaveLength(1)
-				expect(
-					harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted),
-				).toHaveLength(1)
+				expect(harness.completed).toHaveBeenCalledOnce()
 				return
 			} else {
 				await harness.run()
@@ -1174,7 +1163,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.guardTriggered()).toBe(false)
 		expect(harness.requests).toHaveLength(1)
 		expect(Reflect.get(harness.task, "didComplete")).toBe(true)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(
 			harness.events.filter((event) => event.type === "task_completed" && event.status === "completed"),
 		).toHaveLength(1)
@@ -1208,7 +1197,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.requests).toHaveLength(1)
 		expect(Reflect.get(harness.task, "didComplete")).toBe(true)
 		expect(harness.ask).not.toHaveBeenCalled()
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toEqual([])
 		expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
 	})
@@ -1249,7 +1238,7 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
 		expect(harness.task.messageQueueService.isEmpty()).toBe(true)
 		expect(Reflect.get(harness.task, "didComplete")).toBe(true)
-		expect(harness.emit.mock.calls.filter(([name]) => name === AlphaCodeEventName.TaskCompleted)).toHaveLength(1)
+		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
 	it("does not complete a cancelled text candidate", async () => {

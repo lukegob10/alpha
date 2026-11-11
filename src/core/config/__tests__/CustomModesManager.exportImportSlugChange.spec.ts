@@ -34,6 +34,11 @@ vi.mock("fs/promises", () => ({
 	writeFile: vi.fn(),
 	stat: vi.fn(),
 	readdir: vi.fn(),
+	opendir: vi.fn(async (directory: string) => ({
+		async *[Symbol.asyncIterator]() {
+			yield* await fs.readdir(directory, { withFileTypes: true })
+		},
+	})),
 	rm: vi.fn(),
 	realpath: vi.fn(async (value) => value.toString()),
 }))
@@ -129,10 +134,14 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 				throw Object.assign(new Error("File not found"), { code: "ENOENT" })
 			})
 			;(fs.stat as Mock).mockResolvedValue({ isDirectory: () => true })
-			;(fs.readdir as Mock).mockResolvedValue([
-				{ name: "rule1.md", isFile: () => true },
-				{ name: "subfolder", isFile: () => false, isDirectory: () => true },
-			])
+			;(fs.readdir as Mock).mockImplementation(async (directory: string) =>
+				directory.endsWith("subfolder")
+					? [{ name: "rule2.md", isFile: () => true }]
+					: [
+							{ name: "rule1.md", isFile: () => true },
+							{ name: "subfolder", isFile: () => false, isDirectory: () => true },
+						],
+			)
 
 			const result = await manager.exportModeWithRules("test-mode")
 
@@ -151,7 +160,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 
 			// Verify the actual paths are just the file names (without rules folder)
 			const paths = rulesFiles.map((f: any) => f.relativePath)
-			expect(paths).toContain("rule1.md")
+			expect(paths).toEqual(["rule1.md", "subfolder/rule2.md"])
 		})
 
 		it("should handle files at root level correctly", async () => {
@@ -185,7 +194,7 @@ describe("CustomModesManager - Export/Import with Slug Changes", () => {
 			;(fs.readdir as Mock).mockResolvedValue([
 				{ name: "file1.md", isFile: () => true },
 				{ name: "file2.md", isFile: () => true },
-				{ name: "subfolder", isFile: () => false }, // This will be ignored by current implementation
+				{ name: "link", isFile: () => false, isDirectory: () => false },
 			])
 
 			const result = await manager.exportModeWithRules("root-mode")

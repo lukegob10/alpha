@@ -61,6 +61,19 @@ describe("lifecycle response projection", () => {
 		]
 		expect([...lifecycleResponseItems(items, "step")].map((item) => item.responseItem)).toEqual(items)
 	})
+	it("retains the memory citation attached to the last fragment of a grouped message", () => {
+		const memoryCitation = { entries: [], rolloutIds: ["source-1"] }
+		const items: AgentResponseItem[] = [
+			{ type: "text", id: "answer", text: "The result " },
+			{ type: "text", id: "answer", text: "uses prior context.", memoryCitation },
+		]
+		expect([...lifecycleResponseItems(items, "step")]).toEqual([
+			{
+				itemId: "step:items-0-1",
+				responseItem: { type: "text", id: "answer", text: "The result uses prior context.", memoryCitation },
+			},
+		])
+	})
 	it.each([
 		[{ id: "first" }, { id: "second" }],
 		[{ outputIndex: 0 }, { outputIndex: 1 }],

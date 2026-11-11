@@ -99,7 +99,13 @@ describe("curated provider profile continuity", () => {
 			await manager.initialize()
 			expect(await manager.getAvailableProfile("selected")).toEqual(settings)
 			expect(await manager.listConfig()).toEqual([
-				{ name: "selected", id: "saved-profile-id", apiProvider, modelId: expect.any(String) },
+				{
+					name: "selected",
+					id: "saved-profile-id",
+					apiProvider,
+					modelId: expect.any(String),
+					version: expect.any(String),
+				},
 			])
 
 			await manager.saveConfig({ id: "saved-profile-id" }, { ...settings, openAiApiKey: "other-provider-secret" })
@@ -258,7 +264,13 @@ describe("curated provider profile continuity", () => {
 		const manager = new ProviderSettingsManager(saved.context)
 		await manager.initialize()
 		expect(await manager.listConfig()).toEqual([
-			{ name: "selected", id: "saved-profile-id", apiProvider: "openrouter", modelId: "historical-model-id" },
+			{
+				name: "selected",
+				id: "saved-profile-id",
+				apiProvider: "openrouter",
+				modelId: "historical-model-id",
+				version: expect.any(String),
+			},
 		])
 		await manager.saveConfig({ id: "saved-profile-id" }, settings)
 		expect(saved.read().apiConfigs.selected).toEqual({ id: "saved-profile-id", ...settings })

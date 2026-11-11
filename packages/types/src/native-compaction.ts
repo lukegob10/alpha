@@ -10,7 +10,7 @@ const checkpointShape = z
 		provider: z.literal("openai-native"),
 		modelId: z.string().min(1).max(1_024),
 		responseId: z.string().min(1).max(1_024),
-		output: z.array(z.record(z.unknown())).min(1).max(MAX_NATIVE_COMPACTION_ITEMS),
+		output: z.array(z.record(z.string(), z.unknown())).min(1).max(MAX_NATIVE_COMPACTION_ITEMS),
 	})
 	.strict()
 	.superRefine((checkpoint, context) => {

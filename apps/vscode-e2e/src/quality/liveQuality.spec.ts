@@ -461,6 +461,13 @@ test("configuration identity ignores changing task history, UI markers and provi
 	})
 	assert.equal(before, after)
 	assert.equal(before, qualityConfigurationDigest(settings))
+	for (const terminalOutputPreviewSize of ["small", "medium", "large", "corrupt"]) {
+		assert.equal(
+			qualityConfigurationDigest({ ...settings, terminalOutputPreviewSize }),
+			before,
+			"Retired preview preferences cannot change the effective command output policy",
+		)
+	}
 })
 
 test("configuration identity retains provider route, generation, instructions, reasoning and execution policy", () => {

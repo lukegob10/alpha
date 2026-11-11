@@ -16,11 +16,7 @@ export interface ManagedAgentSettings {
 	subagentInterruptMessage: boolean
 }
 
-export type SettingsCachedState = ExtensionStateContextType &
-	ManagedAgentSettings & {
-		/** Buffered until Settings Save. */
-		terminalInheritEnv?: boolean
-	}
+export type SettingsCachedState = ExtensionStateContextType & ManagedAgentSettings
 export type SetSettingsCachedStateField = <K extends keyof SettingsCachedState>(
 	field: K,
 	value: SettingsCachedState[K],

@@ -3,7 +3,6 @@ import settingsLocale from "@/i18n/locales/en/settings.json"
 
 import { NotificationSettings } from "../NotificationSettings"
 import { RateLimitSecondsControl } from "../RateLimitSecondsControl"
-import { ConsecutiveMistakeLimitControl } from "../ConsecutiveMistakeLimitControl"
 
 function translateSetting(key: string) {
 	let translation: unknown = settingsLocale
@@ -36,17 +35,5 @@ describe("settings slider accessibility", () => {
 		})
 
 		expect(onChange).toHaveBeenCalledWith(6)
-	})
-
-	it("names the mistake limit slider and preserves keyboard editing", () => {
-		const onChange = vi.fn()
-		render(<ConsecutiveMistakeLimitControl value={3} onChange={onChange} />)
-
-		fireEvent.keyDown(
-			screen.getByRole("slider", { name: settingsLocale.providers.consecutiveMistakeLimit.label }),
-			{ key: "ArrowRight" },
-		)
-
-		expect(onChange).toHaveBeenCalledWith(4)
 	})
 })

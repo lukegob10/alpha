@@ -122,10 +122,11 @@ export class WorkspaceMutationGate {
 				if (next.isCancelled?.()) throw new WorkspaceMutationCancelledError(next.taskId, next.label)
 				return next.run()
 			})
-			.then(next.resolve, next.reject)
 			.finally(() => {
 				this.active = false
 				this.drain()
 			})
+			// Callers observing settlement must also observe the released lock.
+			.then(next.resolve, next.reject)
 	}
 }

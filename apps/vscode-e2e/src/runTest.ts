@@ -378,6 +378,7 @@ export async function runExtensionTests(
 			![
 				"rendered-ui-probe.test",
 				"composer-ui.test",
+				"settings-ui.test",
 				"request-user-input-ui.test",
 				"transcript-lifecycle-ui.test",
 				"file-review-ui.test",

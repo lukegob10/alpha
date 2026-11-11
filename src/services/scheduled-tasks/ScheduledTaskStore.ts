@@ -107,19 +107,42 @@ export class ScheduledTaskStore {
 		return this.getState().runs.filter((run) => run.taskId === taskId)
 	}
 
+	async createTask(task: ScheduledTask): Promise<ScheduledTask> {
+		return this.withLock(async () => {
+			const normalizedTask = this.normalizeTask(task)
+			this.assertWritableTask(normalizedTask)
+			if (normalizedTask.creationRequestId) {
+				const existing = Array.from(this.tasks.values()).find(
+					(candidate) => candidate.creationRequestId === normalizedTask.creationRequestId,
+				)
+				if (existing) {
+					this.assertWritableTask(existing)
+					return existing
+				}
+			}
+			if (this.tasks.has(normalizedTask.id)) throw new Error("Scheduled task ID already exists")
+			await this.writeTask(normalizedTask)
+			return normalizedTask
+		})
+	}
+
+	private async writeTask(task: ScheduledTask): Promise<void> {
+		const candidate = new Map(this.tasks)
+		candidate.set(task.id, task)
+		try {
+			await this.writeTasks(candidate)
+		} catch (error) {
+			await this.writeTasks(this.tasks).catch(() => undefined)
+			throw error
+		}
+		this.tasks = candidate
+	}
+
 	async upsertTask(task: ScheduledTask): Promise<ScheduledTaskState> {
 		return this.withLock(async () => {
 			const normalizedTask = this.normalizeTask(task)
 			this.assertWritableTask(normalizedTask)
-			const candidate = new Map(this.tasks)
-			candidate.set(normalizedTask.id, normalizedTask)
-			try {
-				await this.writeTasks(candidate)
-			} catch (error) {
-				await this.writeTasks(this.tasks).catch(() => undefined)
-				throw error
-			}
-			this.tasks = candidate
+			await this.writeTask(normalizedTask)
 			return this.getState()
 		})
 	}
@@ -229,8 +252,18 @@ export class ScheduledTaskStore {
 		return this.withLock(async () => {
 			const currentRun = this.runs.get(run.id)
 			let task = currentRun && this.getTaskForRun(currentRun)
-			if (!task && currentRun?.status === "running" && currentRun.ownerId && currentRun.ownerId === run.ownerId) {
-				// Closing a workspace revokes admission, but its running owner must still settle durable history.
+			const failedCommandAdmission =
+				currentRun?.execution?.type === "command" &&
+				(currentRun.status === "queued" || currentRun.status === "waiting_for_approval") &&
+				(run.status === "failed" || run.status === "canceled")
+			if (
+				!task &&
+				currentRun?.ownerId &&
+				currentRun.ownerId === run.ownerId &&
+				(currentRun.status === "running" || failedCommandAdmission)
+			) {
+				// Closing a workspace revokes admission. Its owner can still record a running outcome
+				// or the failure of a command that was queued or awaiting approval.
 				task = this.tasks.get(currentRun.taskId)
 			}
 			if (
@@ -262,13 +295,14 @@ export class ScheduledTaskStore {
 		})
 	}
 
-	async projectRunStatus(run: ScheduledTaskRun): Promise<boolean> {
+	async projectRunStatus(run: ScheduledTaskRun, expectedStatus?: ScheduledTaskRun["status"]): Promise<boolean> {
 		return this.withLock(async () => {
 			const currentRun = this.runs.get(run.id)
 			const task = currentRun && this.getTaskForRun(currentRun)
 			if (
 				!currentRun ||
 				!task ||
+				(expectedStatus !== undefined && currentRun.status !== expectedStatus) ||
 				!["pending", "queued", "running", "waiting_for_approval"].includes(currentRun.status)
 			) {
 				return false

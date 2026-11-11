@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { AsyncLocalStorage } from "node:async_hooks"
 import type { AlphaMessage, ToolApprovalRequest, ToolProgressStatus } from "@alpha-code/types"
 import { consolidateCommands } from "@alpha-code/core"
 
@@ -147,6 +148,42 @@ function commandApproval(taskId: string): ToolApprovalRequest {
 		availableDecisions: ["approve_once", "deny", "abort"],
 	}
 }
+
+it("keeps identical partial MCP approvals separate by canonical call and stamps the completed row", async () => {
+	const fixture = createTask()
+	const context = new AsyncLocalStorage<{ toolCallId: string }>()
+	Reflect.set(fixture.task, "toolInputContext", context)
+	const partial = (toolCallId: string) =>
+		context.run({ toolCallId }, () => fixture.task.ask("use_mcp_server", "same", true))
+	await expect(partial("one")).rejects.toThrow()
+	await expect(partial("one")).rejects.toThrow()
+	await expect(partial("two")).rejects.toThrow()
+	expect(fixture.messages.map((message) => message.toolCallId)).toEqual(["one", "two"])
+	const timestamp = fixture.messages[1].ts
+	fixture.updateAlphaMessage.mockImplementationOnce(async (message) => {
+		expect(
+			fixture.task.handleWebviewAskResponse("yesButtonClicked", undefined, undefined, undefined, message.ts),
+		).toBe(true)
+	})
+	await context.run({ toolCallId: "two" }, () => fixture.task.ask("use_mcp_server", "same", false))
+	expect(fixture.messages[1]).toMatchObject({ ts: timestamp, toolCallId: "two", partial: false })
+	expect(fixture.messages).toHaveLength(2)
+})
+
+it("persists MCP response call identity through the existing say path", async () => {
+	const fixture = createTask()
+	const context = new AsyncLocalStorage<{ toolCallId: string }>()
+	Reflect.set(fixture.task, "toolInputContext", context)
+	await context.run({ toolCallId: "mcp-call" }, () =>
+		Task.prototype.say.call(fixture.task, "mcp_server_response", "Full response"),
+	)
+	expect(fixture.messages[0]).toMatchObject({
+		say: "mcp_server_response",
+		text: "Full response",
+		toolCallId: "mcp-call",
+	})
+	expect(fixture.persisted.at(-1)?.[0].toolCallId).toBe("mcp-call")
+})
 
 afterEach(() => {
 	vi.restoreAllMocks()

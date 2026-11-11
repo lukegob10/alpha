@@ -326,6 +326,12 @@ export function createExtensionCampaignOperations(
 				}
 				context.phases.push(record)
 				recordedPhases.push(record)
+				// VS Code 1.141.0 storageMainService.ts uses in-memory storage under extensionTestsPath.
+				// Isolate independent scripted scenarios; continuation phases and live sign-ins retain their profile.
+				const profileDirectory =
+					request.provider.mode === "scripted"
+						? path.join(options.profileRoot, request.attemptId)
+						: options.profileRoot
 				const args = [
 					runnerPath,
 					"--provider",
@@ -335,7 +341,7 @@ export function createExtensionCampaignOperations(
 					"--workspace",
 					context.workspace,
 					"--profile-dir",
-					options.profileRoot,
+					profileDirectory,
 					"--init-profile",
 					"--artifacts-dir",
 					artifactsRoot,

@@ -358,7 +358,10 @@ function createProvider(options: {
 					diagnosticsEnabled: false,
 					includeDiagnosticMessages: true,
 					maxDiagnosticMessages: 50,
-					experiments: { preventFocusDisruption: options.preventFocusDisruption ?? false },
+					experiments:
+						options.preventFocusDisruption === undefined
+							? {}
+							: { preventFocusDisruption: options.preventFocusDisruption },
 				}),
 			}),
 		},
@@ -376,8 +379,8 @@ function createProvider(options: {
 	task.diffViewProvider = provider
 	const previewEditor = createPreviewEditor(previewDocument)
 
-	// Keep the preview editor independent from the source document. The default
-	// diff path must never use the user's dirty source buffer as its modified side.
+	// Keep an explicitly opened preview independent from the source document.
+	// The diff must never use the user's dirty source buffer as its modified side.
 	vi.spyOn(provider as any, "openDiffEditor").mockImplementation(async () => {
 		// The real opener records the preview revision before awaiting the diff
 		// command. Mirror that boundary when replacing the UI opener in this test.
@@ -394,7 +397,7 @@ async function openAndUpdate(provider: DiffViewProvider, content: string): Promi
 	await provider.update(content, true)
 }
 
-describe("DiffViewProvider ownership at the default diff editor boundary", () => {
+describe("DiffViewProvider source and preview ownership", () => {
 	beforeEach(() => {
 		vi.clearAllMocks()
 		;(vscode.workspace as any).textDocuments = []
@@ -450,124 +453,168 @@ describe("DiffViewProvider ownership at the default diff editor boundary", () =>
 		expect(testState.diskContent).toBe("external edit\n")
 	})
 
-	it("runs the approved default edit path through EditTool without saving the source buffer", async () => {
-		const { provider, sourceDocument, task } = createProvider({
-			diskContent: "disk old\n",
-			sourceContent: "disk old\n",
-			sourceDirty: false,
-		})
-		const askApproval = vi.fn().mockResolvedValue(true)
-		const callbacks = {
-			askApproval: askApproval,
-			handleError: vi.fn(),
-			pushToolResult: vi.fn(),
-		}
-		task.diffViewProvider = provider
+	it.each([undefined, false, true])(
+		"runs approved inline edits without opening a preview (legacy flag=%s)",
+		async (legacyFlag) => {
+			const { provider, sourceDocument, task } = createProvider({
+				diskContent: "disk old\n",
+				sourceContent: "disk old\n",
+				sourceDirty: false,
+				preventFocusDisruption: legacyFlag,
+			})
+			const openPreview = vi.spyOn(provider, "open")
+			const askApproval = vi.fn().mockResolvedValue(true)
+			const callbacks = {
+				askApproval: askApproval,
+				handleError: vi.fn(),
+				pushToolResult: vi.fn(),
+			}
+			task.diffViewProvider = provider
 
-		await editTool.execute(
-			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
-			task as any,
-			callbacks,
-		)
-		expect(callbacks.handleError).not.toHaveBeenCalled()
-		expect(fileExistsAtPath).toHaveBeenCalled()
-		expect(fs.readFile).toHaveBeenCalled()
-		expect(canonicalPath(vi.mocked(fs.readFile).mock.calls[0]?.[0])).toBe(targetPath)
-		expect(callbacks.pushToolResult).toHaveBeenCalled()
-		expect(askApproval).toHaveBeenCalledTimes(1)
-		expect(sourceDocument.save).not.toHaveBeenCalled()
-		expect(testState.diskContent).toBe("alpha replacement\n")
-		expect(task.didEditFile).toBe(true)
-	})
+			await editTool.execute(
+				{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+				task as any,
+				callbacks,
+			)
+			expect(callbacks.handleError).not.toHaveBeenCalled()
+			expect(fileExistsAtPath).toHaveBeenCalled()
+			expect(fs.readFile).toHaveBeenCalled()
+			expect(canonicalPath(vi.mocked(fs.readFile).mock.calls[0]?.[0])).toBe(targetPath)
+			expect(callbacks.pushToolResult).toHaveBeenCalled()
+			expect(askApproval).toHaveBeenCalledTimes(1)
+			expect(openPreview).not.toHaveBeenCalled()
+			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
+			expect(sourceDocument.save).not.toHaveBeenCalled()
+			expect(testState.diskContent).toBe("alpha replacement\n")
+			expect(task.didEditFile).toBe(true)
+		},
+	)
 
-	it.each([false, true])("rejects access revoked during edit approval (background=%s)", async (background) => {
-		const diskContent = "disk old\n"
-		const { sourceDocument, task } = createProvider({
-			diskContent,
-			sourceContent: diskContent,
-			sourceDirty: false,
-			preventFocusDisruption: background,
-		})
-		const callbacks = {
-			askApproval: vi.fn(async () => {
-				task.alphaIgnoreController.validateAccess.mockReturnValue(false)
-				return true
-			}),
-			handleError: vi.fn(),
-			pushToolResult: vi.fn(),
-		}
+	it.each([undefined, false, true])(
+		"rejects access revoked during edit approval (legacy flag=%s)",
+		async (legacyFlag) => {
+			const diskContent = "disk old\n"
+			const { sourceDocument, task } = createProvider({
+				diskContent,
+				sourceContent: diskContent,
+				sourceDirty: false,
+				preventFocusDisruption: legacyFlag,
+			})
+			const callbacks = {
+				askApproval: vi.fn(async () => {
+					task.alphaIgnoreController.validateAccess.mockReturnValue(false)
+					return true
+				}),
+				handleError: vi.fn(),
+				pushToolResult: vi.fn(),
+			}
 
-		await editTool.execute(
-			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
-			task as any,
-			callbacks,
-		)
+			await editTool.execute(
+				{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+				task as any,
+				callbacks,
+			)
 
-		expect(callbacks.askApproval).toHaveBeenCalledOnce()
-		expect(callbacks.handleError).toHaveBeenCalledWith(
-			"edit",
-			expect.objectContaining({ message: expect.stringContaining(".alphaignore") }),
-		)
-		expect(targetWriteCalls()).toHaveLength(0)
-		expect(sourceDocument.save).not.toHaveBeenCalled()
-		expect(testState.diskContent).toBe(diskContent)
-		expect(task.didEditFile).toBe(false)
-	})
+			expect(callbacks.askApproval).toHaveBeenCalledOnce()
+			expect(callbacks.handleError).toHaveBeenCalledWith(
+				"edit",
+				expect.objectContaining({ message: expect.stringContaining(".alphaignore") }),
+			)
+			expect(targetWriteCalls()).toHaveLength(0)
+			expect(sourceDocument.save).not.toHaveBeenCalled()
+			expect(testState.diskContent).toBe(diskContent)
+			expect(task.didEditFile).toBe(false)
+		},
+	)
 
-	it.each([false, true])("retains explicit protected edit approval (background=%s)", async (background) => {
-		const { task } = createProvider({
-			diskContent: "disk old\n",
-			sourceContent: "disk old\n",
-			sourceDirty: false,
-			preventFocusDisruption: background,
-		})
-		task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
-		const callbacks = {
-			askApproval: vi.fn().mockResolvedValue(true),
-			handleError: vi.fn(),
-			pushToolResult: vi.fn(),
-		}
+	it.each([undefined, false, true])(
+		"retains explicit protected edit approval (legacy flag=%s)",
+		async (legacyFlag) => {
+			const { task } = createProvider({
+				diskContent: "disk old\n",
+				sourceContent: "disk old\n",
+				sourceDirty: false,
+				preventFocusDisruption: legacyFlag,
+			})
+			task.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+			const callbacks = {
+				askApproval: vi.fn().mockResolvedValue(true),
+				handleError: vi.fn(),
+				pushToolResult: vi.fn(),
+			}
 
-		await editTool.execute(
-			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
-			task as any,
-			callbacks,
-		)
+			await editTool.execute(
+				{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+				task as any,
+				callbacks,
+			)
 
-		expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
-		expect(callbacks.handleError).not.toHaveBeenCalled()
-		expect(targetWriteCalls()).toHaveLength(1)
-		expect(testState.diskContent).toBe("alpha replacement\n")
-	})
+			expect(callbacks.askApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
+			expect(callbacks.handleError).not.toHaveBeenCalled()
+			expect(targetWriteCalls()).toHaveLength(1)
+			expect(testState.diskContent).toBe("alpha replacement\n")
+		},
+	)
 
-	it("reports an initially dirty source through EditTool without saving or replacing it", async () => {
-		const diskContent = "disk old\n"
-		const userBuffer = "user unsaved\n"
-		const { sourceDocument, task } = createProvider({
-			diskContent,
-			sourceContent: userBuffer,
-			sourceDirty: true,
-		})
-		const callbacks = {
-			askApproval: vi.fn().mockResolvedValue(true),
-			handleError: vi.fn(),
-			pushToolResult: vi.fn(),
-		}
+	it.each([undefined, false, true])(
+		"rejects an initially dirty source at the inline commit boundary (legacy flag=%s)",
+		async (legacyFlag) => {
+			const diskContent = "disk old\n"
+			const userBuffer = "user unsaved\n"
+			const { provider, sourceDocument, previewDocument, task } = createProvider({
+				diskContent,
+				sourceContent: userBuffer,
+				sourceDirty: true,
+				preventFocusDisruption: legacyFlag,
+			})
+			const openPreview = vi.spyOn(provider, "open")
+			const approval = deferred<boolean>()
+			const approvalStarted = deferred<void>()
+			const callbacks = {
+				askApproval: vi.fn(() => {
+					approvalStarted.resolve(undefined)
+					return approval.promise
+				}),
+				handleError: vi.fn(),
+				pushToolResult: vi.fn(),
+			}
 
-		await editTool.execute(
-			{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
-			task as any,
-			callbacks as any,
-		)
+			const editing = editTool.execute(
+				{ file_path: "test.txt", old_string: "disk old", new_string: "alpha replacement" },
+				task as any,
+				callbacks as any,
+			)
+			await approvalStarted.promise
 
-		expect(callbacks.askApproval).not.toHaveBeenCalled()
-		expect(callbacks.handleError).toHaveBeenCalledWith("edit", expect.any(Error))
-		expect(sourceDocument.save).not.toHaveBeenCalled()
-		expect(sourceDocument.isDirty).toBe(true)
-		expect(sourceDocument.getText()).toBe(userBuffer)
-		expect(testState.diskContent).toBe(diskContent)
-		expect(task.didEditFile).toBe(false)
-	})
+			// Inline approval is independent of the user's editor. The shared save
+			// boundary rejects dirty content after approval without touching its buffer.
+			expect(callbacks.askApproval).toHaveBeenCalledOnce()
+			expect(callbacks.handleError).not.toHaveBeenCalled()
+			expect(openPreview).not.toHaveBeenCalled()
+			expect(targetWriteCalls()).toHaveLength(0)
+			expect(sourceDocument.save).not.toHaveBeenCalled()
+			expect(sourceDocument.isDirty).toBe(true)
+			expect(sourceDocument.getText()).toBe(userBuffer)
+			expect(testState.diskContent).toBe(diskContent)
+
+			approval.resolve(true)
+			await editing
+
+			expect(callbacks.askApproval).toHaveBeenCalledOnce()
+			expect(callbacks.handleError).toHaveBeenCalledWith(
+				"edit",
+				expect.objectContaining({ message: expect.stringMatching(/unsaved changes|user buffer|conflict/i) }),
+			)
+			expect(callbacks.pushToolResult).not.toHaveBeenCalled()
+			expect(targetWriteCalls()).toHaveLength(0)
+			expect(sourceDocument.save).not.toHaveBeenCalled()
+			expect(previewDocument.save).not.toHaveBeenCalled()
+			expect(sourceDocument.isDirty).toBe(true)
+			expect(sourceDocument.getText()).toBe(userBuffer)
+			expect(testState.diskContent).toBe(diskContent)
+			expect(task.didEditFile).toBe(false)
+		},
+	)
 
 	it("rejects a user buffer change made while approval is pending", async () => {
 		const diskContent = "disk old\n"

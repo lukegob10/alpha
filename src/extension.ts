@@ -6,7 +6,6 @@ import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as path from "path"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import { customToolRegistry } from "@alpha-code/core"
 
 import "./utils/path" // Necessary to have access to String.prototype.toPosix.
@@ -40,8 +39,24 @@ import { initializeI18n } from "./i18n"
  *  - https://github.com/microsoft/vscode-webview-ui-toolkit-samples/tree/main/frameworks/hello-world-react-cra
  */
 
-let outputChannel: vscode.OutputChannel
-let extensionContext: vscode.ExtensionContext
+type ExtensionLifecycle = {
+	context: vscode.ExtensionContext
+	outputChannel?: vscode.OutputChannel
+	stopChatGptAuth?: () => Promise<void>
+	terminalStarted?: boolean
+	providerStarted?: boolean
+	shutdown?: Promise<void>
+}
+
+let extensionLifecycle: ExtensionLifecycle | undefined
+
+function logLifecycle(lifecycle: ExtensionLifecycle, message: string): void {
+	try {
+		lifecycle.outputChannel?.appendLine(message)
+	} catch {
+		// The host may close its output channel before asynchronous cleanup finishes.
+	}
+}
 
 /**
  * Check if we should auto-open the Alpha sidebar after switching to a worktree.
@@ -95,7 +110,10 @@ async function checkWorktreeAutoOpen(
 
 // This method is called when your extension is activated.
 // Your extension is activated the very first time the command is executed.
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
+	const lifecycle: ExtensionLifecycle = { context }
+	extensionLifecycle = lifecycle
+	const subscriptionStart = context.subscriptions.length
 	let completeStartupConfiguration!: () => void
 	let failStartupConfiguration!: (error: unknown) => void
 	const startupConfigurationReady = new Promise<void>((resolve, reject) => {
@@ -104,25 +122,32 @@ export function activate(context: vscode.ExtensionContext) {
 	})
 	// Own rejection even if activation fails before the provider can subscribe to readiness.
 	void startupConfigurationReady.catch(() => undefined)
-	return activateExtension(context, startupConfigurationReady).then(
-		(api) => {
-			completeStartupConfiguration()
-			return api
-		},
-		(error: unknown) => {
-			failStartupConfiguration(error)
-			throw error
-		},
-	)
+	try {
+		const api = await activateExtension(lifecycle, startupConfigurationReady)
+		completeStartupConfiguration()
+		// Allows other extensions to activate once Alpha is ready.
+		void Promise.resolve()
+			.then(() => vscode.commands.executeCommand(`${Package.name}.activationCompleted`))
+			.catch(() => logLifecycle(lifecycle, "Failed to notify extensions that Alpha is ready"))
+		return api
+	} catch (error) {
+		failStartupConfiguration(error)
+		// VS Code 1.125.0 and 1.141.0 only attach subscription disposal after successful activation.
+		await stopExtension(lifecycle, context.subscriptions.splice(subscriptionStart)).catch(() =>
+			logLifecycle(lifecycle, "Failed to finish activation cleanup"),
+		)
+		throw error
+	}
 }
 
-async function activateExtension(context: vscode.ExtensionContext, startupConfigurationReady: Promise<void>) {
+async function activateExtension(lifecycle: ExtensionLifecycle, startupConfigurationReady: Promise<void>) {
+	const { context } = lifecycle
 	const activationStartedAt = performance.now()
 	await loadExtensionEnvironment(path.join(__dirname, "..", ".env"))
 	const performanceObservabilityEnabled = process.env.ALPHA_TASK_OBSERVABILITY === "1"
 	context.subscriptions.push(registerBuiltinSkillInspection(context.extensionUri))
-	extensionContext = context
-	outputChannel = createLifecycleSafeOutputChannel(vscode.window.createOutputChannel(Package.outputChannel))
+	const outputChannel = createLifecycleSafeOutputChannel(vscode.window.createOutputChannel(Package.outputChannel))
+	lifecycle.outputChannel = outputChannel
 	context.subscriptions.push(outputChannel)
 	outputChannel.appendLine(`${Package.name} extension activated - ${JSON.stringify(Package)}`)
 
@@ -136,8 +161,16 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 		storagePath: path.join(context.globalStorageUri.fsPath, "chatgpt-auth.lock"),
 		openExternal: (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
 	})
+	let authDisposal: Promise<void> | undefined
+	const stopChatGptAuth = () => {
+		authDisposal ??= chatGptAuth
+			.dispose()
+			.catch(() => logLifecycle(lifecycle, "Failed to close ChatGPT authentication services"))
+		return authDisposal
+	}
+	lifecycle.stopChatGptAuth = stopChatGptAuth
+	context.subscriptions.push({ dispose: stopChatGptAuth })
 	context.subscriptions.push(
-		chatGptAuth,
 		chatGptAuth.onDidChangeStatus((status) => {
 			void AlphaProvider.publishChatGptAuthStatus(status)
 		}),
@@ -149,13 +182,11 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	// Migrate old settings to new
 	await migrateSettings(context, outputChannel)
 
-	// Initialize telemetry service.
-	TelemetryService.createInstance()
-
 	// Initialize i18n for internationalization support.
 	initializeI18n(context.globalState.get("language") ?? formatLanguage(vscode.env.language))
 
 	// Initialize terminal shell execution handlers.
+	lifecycle.terminalStarted = true
 	TerminalRegistry.initialize()
 
 	// Get default commands from configuration.
@@ -167,6 +198,7 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	}
 
 	const contextProxy = await ContextProxy.getInstance(context)
+	lifecycle.providerStarted = true
 	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy, startupConfigurationReady)
 
 	// Settle imported provider and approval settings before indexing, schedules, or task surfaces admit work.
@@ -188,6 +220,7 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 			const manager = CodeIndexManager.getInstance(context, folder.uri.fsPath)
 
 			if (manager) {
+				context.subscriptions.push(manager)
 				// Initialize in background; do not block extension activation
 				void manager.initialize(contextProxy, { refreshSecrets: false }).catch((error) => {
 					const message = error instanceof Error ? error.message : String(error)
@@ -195,32 +228,26 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 						`[CodeIndexManager] Error during background CodeIndexManager configuration/indexing for ${folder.uri.fsPath}: ${message}`,
 					)
 				})
-
-				context.subscriptions.push(manager)
 			}
 		}
 	}
 
 	const ticketPanel = new TicketPanel(context, provider)
+	context.subscriptions.push(ticketPanel, { dispose: () => TicketStore.disposeSearchCaches() })
 	const incidentPanel = new IncidentPanel(context, provider)
+	context.subscriptions.push(incidentPanel)
 	context.subscriptions.push(
-		ticketPanel,
-		{ dispose: () => TicketStore.disposeSearchCaches() },
 		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
-		incidentPanel,
-		vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()),
 	)
+	context.subscriptions.push(vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()))
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
-	provider.setScheduledTaskService(scheduledTaskService)
 	context.subscriptions.push(scheduledTaskService)
+	provider.setScheduledTaskService(scheduledTaskService)
 	void scheduledTaskService.initialize().catch((error) => {
 		outputChannel.appendLine(
 			`[ScheduledTaskService] Error during initialization: ${error instanceof Error ? error.message : String(error)}`,
 		)
 	})
-
-	// Finish initializing the provider.
-	TelemetryService.instance.setProvider(provider)
 
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider(AlphaProvider.sideBarId, provider, {
@@ -259,9 +286,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	context.subscriptions.push(
 		vscode.workspace.registerTextDocumentContentProvider(DIFF_VIEW_URI_SCHEME, diffContentProvider),
 	)
-	// Allows other extensions to activate once Alpha is ready.
-	vscode.commands.executeCommand(`${Package.name}.activationCompleted`)
-
 	// Implements the `AlphaCodeAPI` interface.
 	const socketPath = process.env.ALPHA_CODE_IPC_SOCKET_PATH
 	const enableLogging = typeof socketPath === "string"
@@ -271,7 +295,6 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 		const watchPaths = [
 			{ path: context.extensionPath, pattern: "**/*.ts" },
 			{ path: path.join(context.extensionPath, "../packages/types"), pattern: "**/*.ts" },
-			{ path: path.join(context.extensionPath, "../packages/telemetry"), pattern: "**/*.ts" },
 		]
 
 		console.log(
@@ -295,25 +318,16 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 			}, DEBOUNCE_DELAY)
 		}
 
+		context.subscriptions.push({ dispose: () => clearTimeout(reloadTimeout) })
 		watchPaths.forEach(({ path: watchPath, pattern }) => {
 			const relPattern = new vscode.RelativePattern(vscode.Uri.file(watchPath), pattern)
 			const watcher = vscode.workspace.createFileSystemWatcher(relPattern, false, false, false)
+			context.subscriptions.push(watcher)
 
 			// Listen to all change types to ensure symlinked file updates trigger reloads.
 			watcher.onDidChange(debouncedReload)
 			watcher.onDidCreate(debouncedReload)
 			watcher.onDidDelete(debouncedReload)
-
-			context.subscriptions.push(watcher)
-		})
-
-		// Clean up the timeout on deactivation
-		context.subscriptions.push({
-			dispose: () => {
-				if (reloadTimeout) {
-					clearTimeout(reloadTimeout)
-				}
-			},
 		})
 	}
 
@@ -325,43 +339,65 @@ async function activateExtension(context: vscode.ExtensionContext, startupConfig
 	return new API(outputChannel, provider, socketPath, enableLogging)
 }
 
-// This method is called when your extension is deactivated.
-export async function deactivate() {
-	// Stop browser authorization before joining view operations during shutdown.
-	ChatGptAuthService.tryGetInstance()?.cancelSignIn()
-	const log = (message: string) => {
+export function deactivate(): Promise<void> {
+	return extensionLifecycle ? stopExtension(extensionLifecycle) : Promise.resolve()
+}
+
+function stopExtension(lifecycle: ExtensionLifecycle, rollbackSubscriptions?: vscode.Disposable[]): Promise<void> {
+	return (lifecycle.shutdown ??= shutdownExtension(lifecycle, rollbackSubscriptions).finally(() => {
+		if (extensionLifecycle === lifecycle) extensionLifecycle = undefined
+	}))
+}
+
+async function shutdownExtension(lifecycle: ExtensionLifecycle, rollbackSubscriptions?: vscode.Disposable[]) {
+	const { context, outputChannel } = lifecycle
+	const log = (message: string) => logLifecycle(lifecycle, message)
+	const dispose = async (subscription: vscode.Disposable) => {
 		try {
-			outputChannel.appendLine(message)
+			await subscription.dispose()
 		} catch {
-			// The host may close its output channel before asynchronous deactivation finishes.
+			log("Failed to dispose an extension subscription")
 		}
 	}
-	log(`${Package.name} extension deactivated`)
-	const chatGptAuthStopped = ChatGptAuthService.tryGetInstance()
-		?.dispose()
-		.catch(() => log("Failed to close ChatGPT authentication services"))
 
-	try {
-		await AlphaProvider.disposeAll()
-	} catch {
-		log("Failed to dispose task providers")
+	log(rollbackSubscriptions ? `${Package.name} activation failed` : `${Package.name} extension deactivated`)
+	// Stop browser authorization and close rollback registrations before joining view operations.
+	const chatGptAuthStopped = lifecycle.stopChatGptAuth?.()
+	const subscriptionsStopped = rollbackSubscriptions
+		?.reverse()
+		.filter((subscription) => subscription !== outputChannel)
+		.map(dispose)
+
+	if (lifecycle.providerStarted) {
+		try {
+			await AlphaProvider.disposeAll()
+		} catch {
+			log("Failed to dispose task providers")
+		}
 	}
 	await chatGptAuthStopped
+	if (subscriptionsStopped) await Promise.all(subscriptionsStopped)
 
-	try {
-		await AgentControlStore.shutdownGlobalStores()
-	} catch {
-		log("Failed to release managed-agent runtime ownership")
+	if (lifecycle.providerStarted) {
+		try {
+			await AgentControlStore.shutdownGlobalStores()
+		} catch {
+			log("Failed to release managed-agent runtime ownership")
+		}
+		try {
+			await McpServerManager.cleanup(context)
+		} catch {
+			log("Failed to shut down MCP services")
+		}
 	}
-	try {
-		await McpServerManager.cleanup(extensionContext)
-	} catch {
-		log("Failed to shut down MCP services")
+
+	if (lifecycle.terminalStarted) {
+		try {
+			TerminalRegistry.cleanup()
+		} catch {
+			log("Failed to shut down terminal services")
+		}
 	}
-	try {
-		await TelemetryService.instance.shutdown()
-	} catch {
-		log("Failed to shut down telemetry clients")
-	}
-	TerminalRegistry.cleanup()
+
+	if (rollbackSubscriptions && outputChannel) await dispose(outputChannel)
 }

@@ -664,6 +664,40 @@ describe("AlphaProvider host ownership", () => {
 		expect(await provider.createTaskWithHistoryItem(history, { preserveExisting: true })).toBe(task)
 	})
 
+	it("rejects a cold restore when its provider closes during profile lookup", async () => {
+		const provider = makeProvider(storage())
+		const entered = barrier()
+		const release = barrier()
+		vi.spyOn(provider.providerSettingsManager, "listConfig").mockImplementationOnce(async () => {
+			entered.resolve()
+			await release.promise
+			return [{ id: "default-profile", name: "default", apiProvider: "openai" }]
+		})
+		const task = makeTask(history.id)
+		const constructed = vi.fn()
+		vi.mocked(Task).mockImplementationOnce(function (options) {
+			constructed()
+			options.onCreated?.(task)
+			return task
+		})
+		const restoring = Promise.allSettled([provider.createTaskWithHistoryItem(history, { preserveExisting: true })])
+		await entered.promise
+		try {
+			await provider.dispose()
+		} finally {
+			release.resolve()
+			await restoring
+			vi.mocked(Task).mockReset()
+		}
+
+		expect(await restoring).toEqual([
+			{ status: "rejected", reason: new Error("Cannot restore a task in a disposed provider") },
+		])
+		expect(constructed).not.toHaveBeenCalled()
+		expect(provider.getLiveTask(history.id)).toBeUndefined()
+		expect(provider.postTaskStateToWebview).not.toHaveBeenCalled()
+	})
+
 	it.each(["allowedMaxCost", "allowedMaxRequests"] as const)(
 		"suppresses optional presentation calls before restoring a task with finite positive %s",
 		async (budget) => {

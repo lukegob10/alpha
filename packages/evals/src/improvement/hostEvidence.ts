@@ -417,7 +417,7 @@ const runnerSchema = z.object({
 	extensionHostParentPid: z.number().int().positive(),
 	launchedHostPid: z.number().int().positive(),
 	profileDir: z.string().min(1).max(4096),
-	providerIdentity: z.unknown(),
+	providerIdentity: z.unknown().optional(),
 })
 
 function assertRelativeFile(value: string): void {
@@ -483,7 +483,7 @@ function validateProjectionJoins(taskIds: string[], artifacts: Map<string, unkno
 		const left = journal.parse(lifecycle).projection
 		const right = journal.parse(events).projection
 		for (const event of [...left.events, ...right.events]) {
-			const row = z.record(z.unknown()).parse(event)
+			const row = z.record(z.string(), z.unknown()).parse(event)
 			if (row.taskIdSha256 !== undefined && row.taskIdSha256 !== sha256(taskId).slice(7))
 				throw new Error("Host projection contains a different task identity")
 		}

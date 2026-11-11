@@ -104,7 +104,9 @@ describe("saved provider namespace compatibility", () => {
 		expect(data.stored.has(legacyKey)).toBe(false)
 		const reopened = new ProviderSettingsManager(data.context)
 		await reopened.initialize()
-		expect(await reopened.listConfig()).toEqual([{ id: "default", name: "default", apiProvider: undefined }])
+		expect(await reopened.listConfig()).toEqual([
+			{ id: "default", name: "default", apiProvider: undefined, version: expect.any(String) },
+		])
 	})
 
 	it("keeps canonical data if removing legacy data during reset fails", async () => {

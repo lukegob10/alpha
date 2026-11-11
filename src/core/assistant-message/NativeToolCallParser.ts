@@ -772,9 +772,6 @@ export class NativeToolCallParser {
 		let nativeArgs: any =
 			this.isVSCodeBrowserToolName(name) && this.isArgumentObject(partialArgs) ? partialArgs : undefined
 
-		// Track if legacy format was used (for telemetry)
-		let usedLegacyFormat = false
-
 		switch (name) {
 			case "read_file":
 				// Check for legacy format first: { files: [...] }
@@ -797,7 +794,6 @@ export class NativeToolCallParser {
 					}
 
 					if (filesArray && filesArray.length > 0) {
-						usedLegacyFormat = true
 						nativeArgs = {
 							files: this.convertFileEntries(filesArray),
 							_legacyFormat: true as const,
@@ -1265,11 +1261,6 @@ export class NativeToolCallParser {
 			result.originalName = originalName
 		}
 
-		// Track legacy format usage for telemetry
-		if (usedLegacyFormat) {
-			result.usedLegacyFormat = true
-		}
-
 		return result
 	}
 
@@ -1339,9 +1330,6 @@ export class NativeToolCallParser {
 					? (args as NativeArgsFor<TName>)
 					: undefined
 
-			// Track if legacy format was used (for telemetry)
-			let usedLegacyFormat = false
-
 			switch (resolvedName) {
 				case "read_file":
 					// Check for legacy format first: { files: [...] }
@@ -1364,7 +1352,6 @@ export class NativeToolCallParser {
 						}
 
 						if (filesArray && filesArray.length > 0) {
-							usedLegacyFormat = true
 							nativeArgs = {
 								files: this.convertFileEntries(filesArray),
 								mode: args.mode,
@@ -1916,11 +1903,6 @@ export class NativeToolCallParser {
 			// Preserve original name for API history when an alias was used
 			if (toolCall.name !== resolvedName) {
 				result.originalName = toolCall.name
-			}
-
-			// Track legacy format usage for telemetry
-			if (usedLegacyFormat) {
-				result.usedLegacyFormat = true
 			}
 
 			return result

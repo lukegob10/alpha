@@ -12,7 +12,7 @@ import {
 	type ExtensionState,
 } from "@alpha-code/types"
 
-import { setDefaultSuiteTimeout } from "./test-utils"
+import { isDefaultCompactionRequest, setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
 
 const TOOL_CALL_ID = "compaction-acceptance-read"
@@ -41,7 +41,7 @@ class CompactionScriptedAI {
 	removeFromCache?: () => void
 
 	async *createMessage(
-		systemPrompt: string,
+		_systemPrompt: string,
 		messages: unknown[],
 		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
 	) {
@@ -50,7 +50,7 @@ class CompactionScriptedAI {
 			yield { type: "text" as const, text: "Check context recovery" }
 			return
 		}
-		if (systemPrompt.includes("tasked with summarizing conversations")) {
+		if (isDefaultCompactionRequest(messages)) {
 			this.summaryRequests++
 			assert.equal(this.summaryRequests, 1, "The fixture permits one compaction request")
 			assert.equal(metadata.tools?.length ?? 0, 0, "The summary request must not expose task tools")
@@ -130,7 +130,7 @@ class OverflowCompactionScriptedAI {
 	}
 
 	async *createMessage(
-		systemPrompt: string,
+		_systemPrompt: string,
 		messages: unknown[],
 		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
 	) {
@@ -139,7 +139,7 @@ class OverflowCompactionScriptedAI {
 			yield { type: "text" as const, text: "Check context recovery" }
 			return
 		}
-		if (systemPrompt.includes("tasked with summarizing conversations")) {
+		if (isDefaultCompactionRequest(messages)) {
 			this.summaryRequests.push(structuredClone(messages))
 			assert.equal(metadata.tools?.length ?? 0, 0, "The summary request must not expose task tools")
 			await this.summaryGate
@@ -229,7 +229,7 @@ class RetainedFollowupScriptedAI {
 	private rejected = false
 
 	async *createMessage(
-		systemPrompt: string,
+		_systemPrompt: string,
 		messages: unknown[],
 		metadata?: { taskId?: string; tools?: unknown[]; attemptId?: string },
 	) {
@@ -238,7 +238,7 @@ class RetainedFollowupScriptedAI {
 			yield { type: "text" as const, text: "Check context recovery" }
 			return
 		}
-		if (systemPrompt.includes("tasked with summarizing conversations")) {
+		if (isDefaultCompactionRequest(messages)) {
 			this.summaryRequests.push(structuredClone(messages))
 			assert.equal(this.summaryRequests.length, 1, "One context rejection must cause one bounded compaction")
 			assert.equal(metadata.tools?.length ?? 0, 0, "Compaction must not expose task tools")
@@ -363,7 +363,7 @@ class SmallWindowExhaustionScriptedAI {
 			yield { type: "text" as const, text: "Check small-window overflow" }
 			return
 		}
-		const summary = systemPrompt.includes("tasked with summarizing conversations")
+		const summary = isDefaultCompactionRequest(messages)
 		const tokens = Math.ceil(
 			(systemPrompt.length + JSON.stringify(messages).length + JSON.stringify(metadata?.tools ?? []).length) / 4,
 		)

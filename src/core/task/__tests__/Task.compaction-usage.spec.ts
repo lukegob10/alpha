@@ -6,8 +6,6 @@ import type { GoalStepAccounting } from "../../agent/GoalStepAccounting"
 import type { GoalStateStore, TaskGoalEnvelope } from "../../task-persistence/TaskGoalStore"
 import type { AlphaMessage } from "@alpha-code/types"
 
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureContextCondensed: vi.fn() } } }))
-
 class MemoryStore implements GoalStateStore {
 	state: TaskGoalEnvelope = { schemaVersion: 1, taskId: "usage-task", usageReceipts: [] }
 	async read() {

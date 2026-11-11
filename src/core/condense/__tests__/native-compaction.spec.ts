@@ -3,8 +3,10 @@ import type { NativeCompactionCheckpoint } from "@alpha-code/types"
 import type { ApiHandler, ApiNativeCompactionCapability } from "../../../api"
 import { NativeCompactionUnavailableError } from "../../../api/native-compaction"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import { DEFAULT_CONDENSING_PROMPT } from "../../../shared/condense-prompt"
 import { invalidateOpaqueProviderStateReplay } from "../../task-persistence/providerStateScope"
 import { invalidPersistedApiMessages } from "../../task-persistence/validatePersistedApiMessages"
+import { getPendingAgentMailIds } from "../../task-persistence/agentMailSampling"
 import { manageContext } from "../../context-management"
 import {
 	getEffectiveApiHistory,
@@ -12,8 +14,6 @@ import {
 	summarizeConversation,
 	type CompactionUsageObserver,
 } from "../index"
-
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureContextCondensed: vi.fn() } } }))
 
 function fixture() {
 	const checkpoint: NativeCompactionCheckpoint = {
@@ -95,6 +95,124 @@ function fixture() {
 const semantics = (messages: ApiMessage[]) => messages.map(({ role, content }) => ({ role, content }))
 
 describe("native compaction at the shared compactor", () => {
+	it.each(["local", "native"] as const)(
+		"does not let legacy mail hidden by a %s summary disable native compaction",
+		async (kind) => {
+			const { options, compact } = fixture()
+			const prior = kind === "native" ? await summarizeConversation(options) : undefined
+			const oldId = prior?.condenseId ?? "legacy-summary"
+			const legacyMail: ApiMessage = {
+				role: "user",
+				input_origin: "agent",
+				agent_message_id: "legacy-mail",
+				content: "Old child finding",
+				condenseParent: oldId,
+			}
+			const messages: ApiMessage[] = prior
+				? [legacyMail, ...prior.messages]
+				: [
+						legacyMail,
+						{ role: "user", content: "Old summary. ".repeat(500), isSummary: true, condenseId: oldId },
+					]
+			messages.push({ role: "user", content: "Continue investigation. ".repeat(100) })
+			const restored: ApiMessage[] = JSON.parse(JSON.stringify(messages))
+			compact.mockClear()
+			const result = await summarizeConversation({ ...options, messages: restored })
+			expect(result.status).toBe("reduced")
+			expect(compact).toHaveBeenCalledOnce()
+			expect([...getPendingAgentMailIds(result.messages)]).toEqual(["legacy-mail"])
+			expect(
+				getEffectiveApiHistory(result.messages).some((message) => message.agent_message_id === "legacy-mail"),
+			).toBe(false)
+		},
+	)
+
+	it("retains fresh unread mail after a reloaded native checkpoint with hidden legacy mail", async () => {
+		const { options, compact } = fixture()
+		const prior = await summarizeConversation(options)
+		const legacyMail: ApiMessage = {
+			role: "user",
+			input_origin: "agent",
+			agent_message_id: "legacy-mail",
+			content: "Old finding",
+			condenseParent: prior.condenseId,
+		}
+		const freshMail: ApiMessage = {
+			role: "user",
+			input_origin: "agent",
+			agent_message_id: "fresh-mail",
+			content: "<agent_message>Fresh exact finding</agent_message>",
+		}
+		const messages: ApiMessage[] = JSON.parse(JSON.stringify([legacyMail, ...prior.messages, freshMail]))
+		compact.mockClear()
+		const result = await summarizeConversation({ ...options, messages })
+		expect(result.status).toBe("reduced")
+		expect(compact).not.toHaveBeenCalled()
+		expect(
+			getEffectiveApiHistory(result.messages).find((message) => message.agent_message_id === "fresh-mail"),
+		).toMatchObject(freshMail)
+		expect([...getPendingAgentMailIds(result.messages)]).toContain("fresh-mail")
+	})
+
+	it("uses local compaction to retain unsampled mail without trusting an opaque native checkpoint", async () => {
+		const { options, compact } = fixture()
+		options.messages.push({
+			role: "user",
+			input_origin: "agent",
+			agent_message_id: "mail",
+			content: "<agent_message>Exact finding</agent_message>",
+		})
+		const result = await summarizeConversation(options)
+		expect(result.status).toBe("reduced")
+		expect(compact).not.toHaveBeenCalled()
+		expect(
+			getEffectiveApiHistory(result.messages).find((message) => message.agent_message_id === "mail"),
+		).toMatchObject({
+			input_origin: "agent",
+			content: "<agent_message>Exact finding</agent_message>",
+		})
+	})
+
+	it.each(["", " \t\n"])(
+		"allows native compaction for an empty saved prompt (%j)",
+		async (customCondensingPrompt) => {
+			const { options, compact, createMessage } = fixture()
+			const result = await summarizeConversation({ ...options, customCondensingPrompt })
+			expect(result.status).toBe("reduced")
+			expect(compact).toHaveBeenCalledOnce()
+			expect(createMessage).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each(["Keep the latest correction.", DEFAULT_CONDENSING_PROMPT])(
+		"preserves a saved nonempty override as a text request (%j)",
+		async (customCondensingPrompt) => {
+			const { options, compact, createMessage } = fixture()
+			const result = await summarizeConversation({ ...options, customCondensingPrompt })
+			expect(result.status).toBe("reduced")
+			expect(compact).not.toHaveBeenCalled()
+			expect(createMessage).toHaveBeenCalledOnce()
+			expect(createMessage.mock.calls[0][1].at(-1)).toEqual({ role: "user", content: customCondensingPrompt })
+		},
+	)
+
+	it("recovers native overflow from archived plaintext without disabling later native attempts", async () => {
+		const { options, handler, compact, createMessage, messages } = fixture()
+		const first = await summarizeConversation(options)
+		compact.mockRejectedValueOnce(Object.assign(new Error("maximum context length exceeded"), { status: 400 }))
+		const before = structuredClone(first.messages)
+		const recovered = await summarizeConversation({ ...options, messages: first.messages, forceCompaction: true })
+		expect(recovered.status).toBe("reduced")
+		expect(createMessage).toHaveBeenCalledOnce()
+		const request = JSON.stringify(createMessage.mock.calls[0][1])
+		expect(request).toContain("Approved requirement")
+		expect(request).toContain("Configuration evidence")
+		expect(request).not.toContain("opaque-native-window")
+		expect(handler.nativeCompaction).toBeDefined()
+		expect(first.messages).toEqual(before)
+		expect(semantics(recovered.messages.slice(0, messages.length))).toEqual(semantics(messages))
+	})
+
 	it("persists a complete native window while retaining original transactions for rewind and fallback", async () => {
 		const { options, compact, createMessage, messages } = fixture()
 		const before = structuredClone(messages)

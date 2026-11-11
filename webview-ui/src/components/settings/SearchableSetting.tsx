@@ -2,20 +2,20 @@ import { HTMLAttributes, useEffect } from "react"
 
 import { cn } from "@/lib/utils"
 
-import { SectionName } from "./SettingsView"
+import { normalizeSettingsSection, type SettingsSectionId } from "./settingsNavigation"
 import { useSearchIndexContext } from "./useSettingsSearch"
 
 interface SearchableSettingProps extends HTMLAttributes<HTMLDivElement> {
 	/**
 	 * Unique identifier for this setting.
-	 * Used for finding the element after tab navigation.
+	 * Used for finding the element after expanding its settings group.
 	 */
 	settingId: string
 	/**
-	 * The section/tab this setting belongs to.
+	 * The settings group this setting belongs to.
 	 * Used for navigation when the setting is selected from search results.
 	 */
-	section: SectionName
+	section: SettingsSectionId
 	/**
 	 * The label text for this setting, used for search matching.
 	 * This should be the translated label text.
@@ -33,15 +33,15 @@ interface SearchableSettingProps extends HTMLAttributes<HTMLDivElement> {
  * @example
  * ```tsx
  * <SearchableSetting
- *   settingId="browser-enable"
- *   section="browser"
- *   label={t("settings:browser.enable.label")}
+ *   settingId="notifications-sound"
+ *   section="preferences"
+ *   label={t("settings:notifications.sound.label")}
  * >
  *   <VSCodeCheckbox>
- *     <span className="font-medium">{t("settings:browser.enable.label")}</span>
+ *     <span className="font-medium">{t("settings:notifications.sound.label")}</span>
  *   </VSCodeCheckbox>
  *   <div className="text-vscode-descriptionForeground text-sm">
- *     {t("settings:browser.enable.description")}
+ *     {t("settings:notifications.sound.description")}
  *   </div>
  * </SearchableSetting>
  * ```
@@ -57,8 +57,8 @@ export function SearchableSetting({
 	const searchContext = useSearchIndexContext()
 
 	// Register this setting with the search index on mount
-	// Note: We don't unregister on unmount because settings are indexed once
-	// during the initial tab cycling phase and remain in the index
+	// Retain registrations when a collapsed resource group unmounts, so searching
+	// for its controls can reveal the group again without triggering discovery.
 	useEffect(() => {
 		if (searchContext) {
 			searchContext.registerSetting({ settingId, section, label })
@@ -69,7 +69,7 @@ export function SearchableSetting({
 		<div
 			data-searchable
 			data-setting-id={settingId}
-			data-setting-section={section}
+			data-setting-section={normalizeSettingsSection(section) ?? section}
 			data-setting-label={label}
 			className={cn(className)}
 			{...props}>

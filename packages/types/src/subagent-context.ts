@@ -103,6 +103,11 @@ export const subagentContextSkillSchema = z
 		description: z
 			.string()
 			.max(SUBAGENT_SKILL_DESCRIPTION_MAX_LENGTH)
+			// Frozen metadata limits use UTF-16 units; Zod 4 measures Unicode code points.
+			.refine(
+				(value) => value.length <= SUBAGENT_SKILL_DESCRIPTION_MAX_LENGTH,
+				"Captured skill description exceeds the metadata length limit",
+			)
 			.refine((value) => value.trim().length > 0, "Captured skill description must not be blank")
 			.optional(),
 		/** Captured discovery policy; omission keeps legacy implicit invocation enabled. */

@@ -14,10 +14,15 @@ const fixtures = vi.hoisted(() => ({
 	writeJson: vi.fn(),
 }))
 
-vi.mock("fs/promises", async (importOriginal) => ({
-	...(await importOriginal<typeof import("fs/promises")>()),
-	readFile: fixtures.readFile,
-}))
+vi.mock("fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("fs/promises")>()
+	return {
+		...actual,
+		lstat: async (file: string) =>
+			fixtures.files.has(file) ? { isFile: () => true, isSymbolicLink: () => false } : actual.lstat(file),
+		readFile: fixtures.readFile,
+	}
+})
 vi.mock("fs", async (importOriginal) => ({
 	...(await importOriginal<typeof import("fs")>()),
 	watch: fixtures.watch,

@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
+import { DEFAULT_REQUEST_TIMEOUT_MSEC } from "@modelcontextprotocol/sdk/shared/protocol.js"
 import { createMcpOAuthFetch } from "./McpOAuth"
 import ReconnectingEventSource from "reconnecting-eventsource"
 import {
@@ -144,7 +145,7 @@ const createServerTypeSchema = () => {
 			command: z.string().min(1, "Command cannot be empty"),
 			args: z.array(z.string()).optional(),
 			cwd: z.string().default(() => vscode.workspace.workspaceFolders?.at(0)?.uri.fsPath ?? process.cwd()),
-			env: z.record(z.string()).optional(),
+			env: z.record(z.string(), z.string()).optional(),
 			// Ensure no SSE fields are present
 			url: z.undefined().optional(),
 			headers: z.undefined().optional(),
@@ -158,7 +159,7 @@ const createServerTypeSchema = () => {
 		BaseConfigSchema.extend({
 			type: z.enum(["sse"]).optional(),
 			url: z.string().url("URL must be a valid URL format"),
-			headers: z.record(z.string()).optional(),
+			headers: z.record(z.string(), z.string()).optional(),
 			// Ensure no stdio fields are present
 			command: z.undefined().optional(),
 			args: z.undefined().optional(),
@@ -173,7 +174,7 @@ const createServerTypeSchema = () => {
 		BaseConfigSchema.extend({
 			type: z.enum(["streamable-http"]).optional(),
 			url: z.string().url("URL must be a valid URL format"),
-			headers: z.record(z.string()).optional(),
+			headers: z.record(z.string(), z.string()).optional(),
 			// Ensure no stdio fields are present
 			command: z.undefined().optional(),
 			args: z.undefined().optional(),
@@ -194,11 +195,11 @@ export const ServerConfigSchema = createServerTypeSchema()
 
 // Settings schema
 const McpSettingsSchema = z.object({
-	mcpServers: z.record(ServerConfigSchema),
+	mcpServers: z.record(z.string(), ServerConfigSchema),
 })
 
 // Preserve unrelated settings and validate only the server changed by a locked mutation.
-const McpSettingsFileSchema = McpSettingsSchema.extend({ mcpServers: z.record(z.unknown()) }).passthrough()
+const McpSettingsFileSchema = McpSettingsSchema.extend({ mcpServers: z.record(z.string(), z.unknown()) }).passthrough()
 
 export interface McpHubOptions {
 	getProvider?: () => AlphaProvider | undefined
@@ -228,6 +229,8 @@ export class McpHub {
 		{ controller: AbortController; full: boolean }
 	>()
 	private connectionAttempts = new Map<string, AbortController>()
+	private readonly configRevisions = { global: 0, project: 0 }
+	private mcpEnablement?: { enabled: boolean; teardown: Promise<void> }
 	private readonly elicitationRouters = new WeakMap<Client, McpElicitationRouter>()
 	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
@@ -261,7 +264,6 @@ export class McpHub {
 
 	/**
 	 * Waits until all MCP servers have finished their initial connection attempts.
-	 * Each server individually handles its own timeout, so this will not block indefinitely.
 	 */
 	async waitUntilReady(): Promise<void> {
 		await this.initializationPromise
@@ -272,6 +274,7 @@ export class McpHub {
 		const connection = this.connections.find((entry) => entry.server === server)
 		if (
 			this.isDisposed ||
+			this.isMcpDisabled() ||
 			connection?.type !== "connected" ||
 			server.disabled ||
 			server.status !== "connected" ||
@@ -289,6 +292,7 @@ export class McpHub {
 			while (true) {
 				if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
 				signal?.throwIfAborted()
+				if (this.isMcpDisabled()) return
 				const connections = this.connections.filter(
 					(connection): connection is ConnectedMcpConnection =>
 						connection.type === "connected" &&
@@ -411,7 +415,7 @@ export class McpHub {
 		} catch (validationError) {
 			if (validationError instanceof z.ZodError) {
 				// Extract and format validation errors
-				const errorMessages = validationError.errors
+				const errorMessages = validationError.issues
 					.map((err) => `${err.path.join(".")}: ${err.message}`)
 					.join("; ")
 				throw new Error(
@@ -480,8 +484,10 @@ export class McpHub {
 	}
 
 	private async handleConfigFileChange(filePath: string, source: "global" | "project"): Promise<void> {
+		const revision = ++this.configRevisions[source]
 		try {
 			const content = await fs.readFile(filePath, "utf-8")
+			if (revision !== this.configRevisions[source] || this.isDisposed) return
 			let config: any
 
 			try {
@@ -496,15 +502,16 @@ export class McpHub {
 			const result = McpSettingsSchema.safeParse(config)
 
 			if (!result.success) {
-				const errorMessages = result.error.errors
+				const errorMessages = result.error.issues
 					.map((err) => `${err.path.join(".")}: ${err.message}`)
 					.join("\n")
 				vscode.window.showErrorMessage(t("mcp:errors.invalid_settings_validation", { errorMessages }))
 				return
 			}
 
-			await this.updateServerConnections(result.data.mcpServers || {}, source)
+			await this.updateServerConnections(result.data.mcpServers || {}, source, true, revision)
 		} catch (error) {
+			if (revision !== this.configRevisions[source] || this.isDisposed) return
 			// Check if the error is because the file doesn't exist
 			if (error.code === "ENOENT" && source === "project") {
 				// File was deleted, clean up project MCP servers
@@ -563,11 +570,17 @@ export class McpHub {
 	}
 
 	private async updateProjectMcpServers(): Promise<void> {
+		const revision = ++this.configRevisions.project
 		try {
 			const projectMcpPath = await this.getProjectMcpPath()
-			if (!projectMcpPath) return
+			if (revision !== this.configRevisions.project || this.isDisposed) return
+			if (!projectMcpPath) {
+				await this.cleanupProjectMcpServers()
+				return
+			}
 
 			const content = await fs.readFile(projectMcpPath, "utf-8")
+			if (revision !== this.configRevisions.project || this.isDisposed) return
 			let config: any
 
 			try {
@@ -582,10 +595,10 @@ export class McpHub {
 			// Validate configuration structure
 			const result = McpSettingsSchema.safeParse(config)
 			if (result.success) {
-				await this.updateServerConnections(result.data.mcpServers || {}, "project")
+				await this.updateServerConnections(result.data.mcpServers || {}, "project", true, revision)
 			} else {
 				// Format validation errors for better user feedback
-				const errorMessages = result.error.errors
+				const errorMessages = result.error.issues
 					.map((err) => `${err.path.join(".")}: ${err.message}`)
 					.join("\n")
 				console.error("Invalid project MCP settings format:", errorMessages)
@@ -597,18 +610,11 @@ export class McpHub {
 	}
 
 	private async cleanupProjectMcpServers(): Promise<void> {
-		// Disconnect and remove all project MCP servers
-		const projectConnections = this.connections.filter((conn) => conn.server.source === "project")
-
-		for (const conn of projectConnections) {
-			await this.deleteConnection(conn.server.name, "project")
-		}
-
-		// Clear project servers from the connections list
 		await this.updateServerConnections({}, "project", false)
 	}
 
 	getServers(): McpServer[] {
+		if (this.isMcpDisabled()) return []
 		// Only return enabled servers, deduplicating by name with project servers taking priority
 		const enabledConnections = this.connections.filter((conn) => !conn.server.disabled)
 
@@ -703,6 +709,7 @@ export class McpHub {
 	}
 
 	private async initializeMcpServers(source: "global" | "project"): Promise<void> {
+		const revision = ++this.configRevisions[source]
 		try {
 			const configPath =
 				source === "global" ? await this.getMcpSettingsFilePath() : await this.getProjectMcpPath()
@@ -712,14 +719,15 @@ export class McpHub {
 			}
 
 			const content = await fs.readFile(configPath, "utf-8")
+			if (revision !== this.configRevisions[source] || this.isDisposed) return
 			const config = JSON.parse(content)
 			const result = McpSettingsSchema.safeParse(config)
 
 			if (result.success) {
 				// Pass all servers including disabled ones - they'll be handled in updateServerConnections
-				await this.updateServerConnections(result.data.mcpServers || {}, source, false)
+				await this.updateServerConnections(result.data.mcpServers || {}, source, false, revision)
 			} else {
-				const errorMessages = result.error.errors
+				const errorMessages = result.error.issues
 					.map((err) => `${err.path.join(".")}: ${err.message}`)
 					.join("\n")
 				console.error(`Invalid ${source} MCP settings format:`, errorMessages)
@@ -728,7 +736,7 @@ export class McpHub {
 				if (source === "global") {
 					// Still try to connect with the raw config, but show warnings
 					try {
-						await this.updateServerConnections(config.mcpServers || {}, source, false)
+						await this.updateServerConnections(config.mcpServers || {}, source, false, revision)
 					} catch (error) {
 						this.showErrorMessage(`Failed to initialize ${source} MCP servers with raw config`, error)
 					}
@@ -796,6 +804,7 @@ export class McpHub {
 			transport: null,
 		}
 		this.declaredServerConfigs.set(connection, config)
+		this.sanitizedNameRegistry.set(sanitizeMcpName(name), name)
 		return connection
 	}
 
@@ -803,13 +812,20 @@ export class McpHub {
 	 * Checks if MCP is globally enabled
 	 * @returns Promise<boolean> indicating if MCP is enabled
 	 */
+	private isMcpDisabled(): boolean {
+		// ContextProxy updates its cached value before the settings write and teardown finish.
+		return this.mcpEnablement?.enabled === false || this.getProvider()?.getValue?.("mcpEnabled") === false
+	}
+
 	private async isMcpEnabled(): Promise<boolean> {
+		if (this.isMcpDisabled()) return false
+		if (this.mcpEnablement?.enabled) return true
 		const provider = this.getProvider()
 		if (!provider) {
 			return true // Default to enabled if provider is not available
 		}
 		const state = await provider.getState()
-		return state.mcpEnabled ?? true
+		return !this.isMcpDisabled() && (state.mcpEnabled ?? true)
 	}
 
 	private beginConnectionAttempt(name: string, source: "global" | "project"): AbortController {
@@ -834,7 +850,10 @@ export class McpHub {
 			controller.signal.throwIfAborted()
 			if (this.connectionAttempts.get(key) !== controller)
 				throw new DOMException("MCP connection attempt was superseded", "AbortError")
-			await this.disconnectConnections(name, source)
+			this.removeFileWatchersForServer(name, source)
+			await this.disconnectConnections(
+				(connection) => connection.server.name === name && (connection.server.source ?? "global") === source,
+			)
 			controller.signal.throwIfAborted()
 			await this.connectServerAttempt(name, config, source, controller.signal)
 		} finally {
@@ -848,10 +867,6 @@ export class McpHub {
 		source: "global" | "project",
 		signal: AbortSignal,
 	): Promise<void> {
-		// Register the sanitized name for O(1) lookup
-		const sanitizedName = sanitizeMcpName(name)
-		this.sanitizedNameRegistry.set(sanitizedName, name)
-
 		// Check if MCP is globally enabled
 		const mcpEnabled = await requestWithAbort(() => this.isMcpEnabled(), signal)
 		signal.throwIfAborted()
@@ -879,6 +894,13 @@ export class McpHub {
 		let provisionalTransport: ConnectedMcpConnection["transport"] | undefined
 		const lifecycleController = new AbortController()
 		const connectionSignal = AbortSignal.any([signal, lifecycleController.signal])
+		const startupController = new AbortController()
+		const startupSignal = AbortSignal.any([connectionSignal, startupController.signal])
+		// Client.connect's SDK request timer starts after transport.start. Apply the same
+		// startup budget to transport setup and initialization, separately from tool calls.
+		const startupTimer = setTimeout(() => {
+			startupController.abort(new Error(`MCP startup timed out after ${DEFAULT_REQUEST_TIMEOUT_MSEC}ms`))
+		}, DEFAULT_REQUEST_TIMEOUT_MSEC)
 		try {
 			const client = new Client(
 				{
@@ -905,9 +927,10 @@ export class McpHub {
 						env: process.env,
 						workspaceFolder: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? "",
 					}),
-				signal,
+				startupSignal,
 			)) as typeof config
-			signal.throwIfAborted()
+			startupSignal.throwIfAborted()
+			if (this.isMcpDisabled()) throw new DOMException("MCP is disabled", "AbortError")
 
 			if (configInjected.type === "stdio") {
 				// On Windows, wrap commands with cmd.exe to handle non-exe executables like npx.ps1
@@ -938,39 +961,18 @@ export class McpHub {
 				})
 				provisionalTransport = transport
 
-				// Set up stdio specific error handling
-				transport.onerror = async (error) => {
-					console.error(`Transport error for "${name}":`, error)
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
-
-				transport.onclose = async () => {
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
-
 				// transport.stderr is only available after the process has been started. However we can't start it separately from the .connect() call because it also starts the transport. And we can't place this after the connect call since we need to capture the stderr stream before the connection is established, in order to capture errors during the connection process.
 				// As a workaround, we start the transport ourselves, and then monkey-patch the start method to no-op so that .connect() doesn't try to start it again.
 				const startingTransport = transport
 				const started = startingTransport.start()
 				void started
 					.then(
-						() => (signal.aborted ? startingTransport.close() : undefined),
+						() => (startupSignal.aborted ? startingTransport.close() : undefined),
 						() => undefined,
 					)
 					.catch((error) => console.error(`Failed to close cancelled MCP transport for ${name}:`, error))
-				await requestWithAbort(() => started, signal)
-				signal.throwIfAborted()
+				await requestWithAbort(() => started, startupSignal)
+				startupSignal.throwIfAborted()
 				const stderrStream = transport.stderr
 				if (stderrStream) {
 					stderrStream.on("data", async (data: Buffer) => {
@@ -1020,27 +1022,6 @@ export class McpHub {
 					},
 				})
 				provisionalTransport = transport
-
-				// Set up Streamable HTTP specific error handling
-				transport.onerror = async (error) => {
-					console.error(`Transport error for "${name}" (streamable-http):`, error)
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
-
-				transport.onclose = async () => {
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
 			} else if (configInjected.type === "sse") {
 				// SSE connection
 				const sseOptions = {
@@ -1066,27 +1047,6 @@ export class McpHub {
 					eventSourceInit: reconnectingEventSourceOptions,
 				})
 				provisionalTransport = transport
-
-				// Set up SSE specific error handling
-				transport.onerror = async (error) => {
-					console.error(`Transport error for "${name}":`, error)
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						this.appendErrorMessage(connection, error instanceof Error ? error.message : `${error}`)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
-
-				transport.onclose = async () => {
-					const connection = this.findConnection(name, source)
-					if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
-						connection.server.status = "disconnected"
-						this.cancelConnectionRequests(connection)
-						await this.notifyWebviewOfServerChanges()
-					}
-				}
 			} else {
 				// Should not happen if validateServerConfig is correct
 				throw new Error(`Unsupported MCP server type: ${(configInjected as any).type}`)
@@ -1098,7 +1058,8 @@ export class McpHub {
 			}
 
 			// Create a connected connection
-			signal.throwIfAborted()
+			startupSignal.throwIfAborted()
+			if (this.isMcpDisabled()) throw new DOMException("MCP is disabled", "AbortError")
 			if (this.isDisposed) throw new DOMException("MCP hub is disposed", "AbortError")
 			const connection: ConnectedMcpConnection = {
 				type: "connected",
@@ -1116,17 +1077,36 @@ export class McpHub {
 			}
 			this.connections.push(connection)
 			this.declaredServerConfigs.set(connection, config)
+			this.sanitizedNameRegistry.set(sanitizeMcpName(name), name)
 			connectingConnection = connection
 			this.connectionControllers.set(connection, lifecycleController)
-			// The SDK owns transport callbacks after connect; forward lifecycle events through the client.
-			client.onclose = transport.onclose
+			const isCurrent = () => !this.isDisposed && this.connections.includes(connection)
+			const publishTransportStatus = () => {
+				void this.notifyWebviewOfServerChanges().catch((error) => {
+					console.error(`Failed to publish MCP server status for ${name}:`, error)
+				})
+			}
+			// MCP SDK 1.32 chains existing transport callbacks in Protocol.connect. Transport
+			// onerror can report recoverable I/O or parsing failures. Only onclose revokes the connection.
+			transport.onerror = (error) => {
+				if (isCurrent()) {
+					this.appendErrorMessage(connection, error.message, "warn")
+					publishTransportStatus()
+				}
+			}
+			client.onclose = () => {
+				if (isCurrent() && connection.server.status !== "disconnected") {
+					connection.server.status = "disconnected"
+					this.cancelConnectionRequests(connection)
+					publishTransportStatus()
+				}
+			}
 			client.onerror = (error) => {
 				// Protocol diagnostics include late responses to cancelled requests and are nonfatal.
-				if (!this.isDisposed && this.connections.includes(connection)) {
+				if (isCurrent()) {
 					console.error(`MCP protocol error for ${name}:`, error)
 				}
 			}
-			const onTransportError = transport.onerror
 			client.setNotificationHandler?.(ToolListChangedNotificationSchema, () =>
 				this.queueCatalogRefresh(connection),
 			)
@@ -1135,15 +1115,8 @@ export class McpHub {
 			)
 
 			// Connect (this will automatically start the transport)
-			await requestWithAbort(() => {
-				const connecting = client.connect(transport, { signal: connectionSignal })
-				const onProtocolTransportError = transport.onerror
-				transport.onerror = async (error) => {
-					onProtocolTransportError?.(error)
-					await onTransportError?.(error)
-				}
-				return connecting
-			}, connectionSignal)
+			await requestWithAbort(() => client.connect(transport, { signal: startupSignal }), startupSignal)
+			clearTimeout(startupTimer)
 			this.assertConnectionCurrent(connection, connectionSignal)
 			await this.waitForCurrentCatalog(connection, this.refreshServerCatalog(connection))
 			this.assertConnectionCurrent(connection, connectionSignal)
@@ -1167,6 +1140,8 @@ export class McpHub {
 			}
 			await Promise.allSettled([provisionalClient?.close(), provisionalTransport?.close()])
 			throw error
+		} finally {
+			clearTimeout(startupTimer)
 		}
 	}
 
@@ -1256,6 +1231,7 @@ export class McpHub {
 		signal?.throwIfAborted()
 		if (
 			this.isDisposed ||
+			this.isMcpDisabled() ||
 			!this.connections.includes(connection) ||
 			connection.server.disabled ||
 			connection.server.status === "disconnected"
@@ -1509,27 +1485,37 @@ export class McpHub {
 
 	async deleteConnection(name: string, source?: "global" | "project"): Promise<void> {
 		for (const candidateSource of source ? [source] : ["global", "project"]) {
-			const key = `${candidateSource}:${name}`
-			this.connectionAttempts.get(key)?.abort()
-			this.connectionAttempts.delete(key)
+			this.cancelConnectionAttempt(`${candidateSource}:${name}`)
 		}
-		await this.disconnectConnections(name, source)
+		this.removeFileWatchersForServer(name, source)
+		await this.disconnectConnections(
+			(connection) =>
+				connection.server.name === name &&
+				(source === undefined || (connection.server.source ?? "global") === source),
+		)
 	}
 
-	private async disconnectConnections(name: string, source?: "global" | "project"): Promise<void> {
-		// Clean up file watchers for this server
-		this.removeFileWatchersForServer(name, source)
+	private cancelConnectionAttempt(key: string): void {
+		const attempt = this.connectionAttempts.get(key)
+		this.connectionAttempts.delete(key)
+		attempt?.abort()
+	}
 
-		// If source is provided, only delete connections from that source
-		const connections = source
-			? this.connections.filter((conn) => conn.server.name === name && conn.server.source === source)
-			: this.connections.filter((conn) => conn.server.name === name)
-
+	private async disconnectConnections(matches: (connection: McpConnection) => boolean): Promise<void> {
 		// Detach before awaiting transport teardown so late callbacks cannot target a replacement.
+		const connections = this.connections.filter(matches)
 		const removed = new Set(connections)
 		this.connections = this.connections.filter((connection) => !removed.has(connection))
+		const remainingNames = new Set(this.connections.map(({ server }) => server.name))
 		for (const connection of connections) {
+			const { name, source = "global" } = connection.server
+			this.removeFileWatchersForServer(name, source)
 			if (connection.type === "connected") this.cancelConnectionRequests(connection)
+			if (!remainingNames.has(name)) {
+				const sanitizedName = sanitizeMcpName(name)
+				if (this.sanitizedNameRegistry.get(sanitizedName) === name)
+					this.sanitizedNameRegistry.delete(sanitizedName)
+			}
 		}
 
 		for (const connection of connections) {
@@ -1539,15 +1525,8 @@ export class McpHub {
 					await connection.client.close()
 				}
 			} catch (error) {
-				console.error(`Failed to close transport for ${name}:`, error)
+				console.error(`Failed to close transport for ${connection.server.name}:`, error)
 			}
-		}
-
-		// Remove from sanitized name registry if no more connections with this name exist
-		const remainingConnections = this.connections.filter((conn) => conn.server.name === name)
-		if (remainingConnections.length === 0) {
-			const sanitizedName = sanitizeMcpName(name)
-			this.sanitizedNameRegistry.delete(sanitizedName)
 		}
 	}
 
@@ -1555,64 +1534,56 @@ export class McpHub {
 		newServers: Record<string, any>,
 		source: "global" | "project" = "global",
 		manageConnectingState: boolean = true,
+		revision = ++this.configRevisions[source],
 	): Promise<void> {
+		const isCurrent = () => !this.isDisposed && revision === this.configRevisions[source]
+		if (!isCurrent()) return
 		if (manageConnectingState) {
 			this.isConnecting = true
 		}
-		// Filter connections by source
-		const currentConnections = this.connections.filter(
-			(conn) => conn.server.source === source || (!conn.server.source && source === "global"),
-		)
-		const currentNames = new Set(currentConnections.map((conn) => conn.server.name))
 		const newNames = new Set(Object.keys(newServers))
-
-		// Delete removed servers
-		for (const name of currentNames) {
-			if (!newNames.has(name)) {
-				await this.deleteConnection(name, source)
+		const prefix = `${source}:`
+		try {
+			// Pending startup owns resources before a connection appears in the catalog.
+			for (const key of this.connectionAttempts.keys()) {
+				if (key.startsWith(prefix) && !newNames.has(key.slice(prefix.length))) {
+					this.cancelConnectionAttempt(key)
+					this.removeFileWatchersForServer(key.slice(prefix.length), source)
+				}
 			}
-		}
+			await this.disconnectConnections(
+				({ server }) => (server.source ?? "global") === source && !newNames.has(server.name),
+			)
 
-		// Update or add servers
-		for (const [name, config] of Object.entries(newServers)) {
-			// Only consider connections that match the current source
-			const currentConnection = this.findConnection(name, source)
-
-			// Validate and transform the config
-			let validatedConfig: z.infer<typeof ServerConfigSchema>
-			try {
-				validatedConfig = this.validateServerConfig(config, name)
-			} catch (error) {
-				this.showErrorMessage(`Invalid configuration for MCP server "${name}"`, error)
-				continue
-			}
-
-			if (!currentConnection) {
-				// New server
+			for (const [name, config] of Object.entries(newServers)) {
+				if (!isCurrent()) return
+				const currentConnection = this.findConnection(name, source)
+				let validatedConfig: z.infer<typeof ServerConfigSchema>
+				try {
+					validatedConfig = this.validateServerConfig(config, name)
+				} catch (error) {
+					this.showErrorMessage(`Invalid configuration for MCP server "${name}"`, error)
+					continue
+				}
+				if (
+					currentConnection &&
+					deepEqual(
+						this.declaredServerConfigs.get(currentConnection) ??
+							JSON.parse(currentConnection.server.config),
+						validatedConfig,
+					)
+				) {
+					continue
+				}
 				try {
 					await this.connectToServer(name, validatedConfig, source)
 				} catch (error) {
-					this.showErrorMessage(`Failed to connect to new MCP server ${name}`, error)
-				}
-			} else if (
-				!deepEqual(
-					this.declaredServerConfigs.get(currentConnection) ?? JSON.parse(currentConnection.server.config),
-					validatedConfig,
-				)
-			) {
-				// Existing server with changed config
-				try {
-					await this.deleteConnection(name, source)
-					await this.connectToServer(name, validatedConfig, source)
-				} catch (error) {
-					this.showErrorMessage(`Failed to reconnect MCP server ${name}`, error)
+					if (isCurrent()) this.showErrorMessage(`Failed to connect to MCP server ${name}`, error)
 				}
 			}
-			// If server exists with same config, do nothing
-		}
-		await this.notifyWebviewOfServerChanges()
-		if (manageConnectingState) {
-			this.isConnecting = false
+			if (isCurrent()) await this.notifyWebviewOfServerChanges()
+		} finally {
+			if (manageConnectingState) this.isConnecting = false
 		}
 	}
 
@@ -2383,50 +2354,25 @@ export class McpHub {
 	 * @returns Promise<void>
 	 */
 	async handleMcpEnabledChange(enabled: boolean): Promise<void> {
-		if (!enabled) {
-			// If MCP is being disabled, disconnect all servers with error handling
-			const existingConnections = [...this.connections]
-			const disconnectionErrors: Array<{ serverName: string; error: string }> = []
-
-			for (const conn of existingConnections) {
-				try {
-					await this.deleteConnection(conn.server.name, conn.server.source)
-				} catch (error) {
-					const errorMessage = error instanceof Error ? error.message : String(error)
-					disconnectionErrors.push({
-						serverName: conn.server.name,
-						error: errorMessage,
-					})
-					console.error(`Failed to disconnect MCP server ${conn.server.name}: ${errorMessage}`)
-				}
-			}
-
-			// If there were errors, notify the user
-			if (disconnectionErrors.length > 0) {
-				const errorSummary = disconnectionErrors.map((e) => `${e.serverName}: ${e.error}`).join("\n")
-				vscode.window.showWarningMessage(
-					t("mcp:errors.disconnect_servers_partial", {
-						count: disconnectionErrors.length,
-						errors: errorSummary,
-					}),
-				)
-			}
-
-			// Re-initialize servers to track them in disconnected state
-			try {
-				await this.refreshAllConnections()
-			} catch (error) {
-				console.error(`Failed to refresh MCP connections after disabling: ${error}`)
-				vscode.window.showErrorMessage(t("mcp:errors.refresh_after_disable"))
-			}
-		} else {
-			// If MCP is being enabled, reconnect all servers
-			try {
-				await this.refreshAllConnections()
-			} catch (error) {
-				console.error(`Failed to refresh MCP connections after enabling: ${error}`)
-				vscode.window.showErrorMessage(t("mcp:errors.refresh_after_enable"))
-			}
+		if (this.isDisposed) return
+		const previousTeardown = this.mcpEnablement?.teardown
+		const transition = { enabled, teardown: Promise.resolve() }
+		this.mcpEnablement = transition
+		this.configRevisions.global++
+		this.configRevisions.project++
+		// Revoke dispatch, unpublished startup, and in-flight requests before the first close can block.
+		for (const key of this.connectionAttempts.keys()) this.cancelConnectionAttempt(key)
+		this.removeAllFileWatchers()
+		transition.teardown = Promise.all([previousTeardown, this.disconnectConnections(() => true)]).then(() => {})
+		try {
+			await transition.teardown
+			if (this.isDisposed || this.mcpEnablement !== transition) return
+			await Promise.all([this.initializeGlobalMcpServers(), this.initializeProjectMcpServers()])
+		} catch (error) {
+			console.error("Failed to refresh MCP connections after settings change:", error)
+			vscode.window.showErrorMessage(
+				t(enabled ? "mcp:errors.refresh_after_enable" : "mcp:errors.refresh_after_disable"),
+			)
 		}
 	}
 
@@ -2437,8 +2383,7 @@ export class McpHub {
 		}
 
 		this.isDisposed = true
-		for (const attempt of this.connectionAttempts.values()) attempt.abort()
-		this.connectionAttempts.clear()
+		for (const key of this.connectionAttempts.keys()) this.cancelConnectionAttempt(key)
 		for (const connection of this.connectionControllers.keys()) {
 			this.cancelConnectionRequests(connection)
 		}

@@ -75,7 +75,14 @@ describe("scheduled terminal result durability", () => {
 			}),
 			providerSettingsManager: { getProfile: vi.fn(async () => profile) },
 			postMessageToWebview: vi.fn(async (_message: ExtensionMessage) => undefined),
-			getState: vi.fn(async () => ({ approvalMode: "bypass", allowedCommands: [], deniedCommands: [] })),
+			getState: vi.fn(
+				async (): Promise<
+					Pick<
+						Awaited<ReturnType<AlphaProvider["getState"]>>,
+						"approvalMode" | "allowedCommands" | "deniedCommands"
+					>
+				> => ({ approvalMode: "bypass", allowedCommands: [], deniedCommands: [] }),
+			),
 		})
 	}
 
@@ -111,6 +118,25 @@ describe("scheduled terminal result durability", () => {
 		await vi.advanceTimersByTimeAsync(TICK_MS)
 		expect(tick).toHaveBeenCalledTimes(previousCount + 1)
 		await tick.mock.results[previousCount].value
+	}
+
+	function holdCommandApproval() {
+		const entered = deferred()
+		const approved = deferred<boolean>()
+		vi.spyOn(vscode.window, "showWarningMessage").mockImplementationOnce(
+			async <T extends string | vscode.MessageItem>(
+				_message: string,
+				...items: Array<T | vscode.MessageOptions>
+			): Promise<T | undefined> => {
+				entered.resolve()
+				return (await approved.promise) ? items.find((item): item is T => item === "Run once") : undefined
+			},
+		)
+		const continuation = vi.spyOn(
+			service as unknown as { awaitCommandApproval(...args: unknown[]): Promise<void> },
+			"awaitCommandApproval",
+		)
+		return { entered, approved, continuation }
 	}
 
 	beforeEach(async () => {
@@ -357,6 +383,85 @@ describe("scheduled terminal result durability", () => {
 			await runningTick
 			await nextStarted.promise
 		}
+	})
+
+	it.each(["queued", "waiting_for_approval"] as const)(
+		"settles a %s command after its captured workspace closes",
+		async (status) => {
+			const otherWorkspace = path.join(tmpDir, "other-workspace")
+			const originalRoot = { uri: vscode.Uri.file(workspace) }
+			const otherRoot = { uri: vscode.Uri.file(otherWorkspace) }
+			Object.assign(vscode.workspace, { workspaceFolders: [originalRoot, otherRoot] })
+			const execution = { type: "command", command: "echo scheduled" } as const
+			const task = await service.createTask(
+				payload({ execution, autoApproval: { approvalMode: status === "queued" ? "bypass" : "ask" } }),
+			)
+			const blocker = deferred<{ stdout: string; stderr: string }>()
+			const blockerStarted = deferred()
+			const approval = holdCommandApproval()
+			const processQueue = vi.spyOn(service as unknown as { processQueue: () => Promise<void> }, "processQueue")
+			try {
+				if (status === "queued") {
+					const first = await service.createTask(
+						payload({
+							workspace: otherWorkspace,
+							execution: { ...execution, command: "echo blocker" },
+							autoApproval: { approvalMode: "bypass" },
+						}),
+					)
+					commandRunner.mockImplementationOnce(() => {
+						blockerStarted.resolve()
+						return blocker.promise
+					})
+					await service.runNow(first.id)
+					await blockerStarted.promise
+				}
+				await service.runNow(task.id)
+				if (status === "waiting_for_approval") await approval.entered.promise
+				const run = service.getState().runs.find((candidate) => candidate.taskId === task.id)
+				expect(run?.status).toBe(status)
+				// Keep the queued schedule visible through its new workspace. Keep the waiting
+				// schedule hidden to verify that it can still record a terminal result.
+				if (status === "queued") await service.updateTask(task.id, { workspace: otherWorkspace })
+				Object.assign(vscode.workspace, { workspaceFolders: [otherRoot] })
+			} finally {
+				blocker.resolve({ stdout: "", stderr: "" })
+				approval.approved.resolve(true)
+				await Promise.all(
+					[...processQueue.mock.results, ...approval.continuation.mock.results].map(({ value }) => value),
+				)
+			}
+			const reloaded = new ScheduledTaskStore(tmpDir)
+			await reloaded.initialize()
+			expect(reloaded.getRunsForTask(task.id)).toMatchObject([
+				{ status: "failed", workspace, error: "scheduledTasks:workspaceInvalid" },
+			])
+			expect(commandRunner.mock.calls.map(([command]) => command)).toEqual(
+				status === "queued" ? ["echo blocker"] : [],
+			)
+		},
+	)
+
+	it("enforces a deny rule added while command approval is pending", async () => {
+		const execution = { type: "command", command: "echo scheduled" } as const
+		const task = await service.createTask(payload({ execution, autoApproval: { approvalMode: "ask" } }))
+		const approval = holdCommandApproval()
+		try {
+			await service.runNow(task.id)
+			await approval.entered.promise
+			provider.getState.mockResolvedValue({
+				approvalMode: "bypass",
+				allowedCommands: [],
+				deniedCommands: ["echo"],
+			})
+		} finally {
+			approval.approved.resolve(true)
+			await approval.continuation.mock.results[0]?.value
+		}
+		expect(service.getState().runs).toMatchObject([
+			{ status: "failed", error: "Command is blocked by an explicit deny rule." },
+		])
+		expect(commandRunner).not.toHaveBeenCalled()
 	})
 
 	it("keeps command success when its completion notification rejects", async () => {

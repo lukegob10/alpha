@@ -932,7 +932,9 @@ describe("SYSTEM_PROMPT", () => {
 		// Codex-compatible patch routing guidance adds 48 local tokens to the captured Code prompt.
 		// Direct native batching guidance adds 67 tokens; no wrapper tool or duplicate model prompt is needed.
 		// Ticket filtering/deletion guidance adds 97 tokens in this same fixture.
-		expect(newTokenCount).toBe(4391)
+		// Requirement-based acceptance guidance adds 346 local tokens; model calls remain agent-selected.
+		// Clarifying expected behavior before substantial implementation adds another 29 tokens in this fixture.
+		expect(newTokenCount).toBe(4766)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

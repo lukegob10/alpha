@@ -13,15 +13,6 @@ vi.mock("../../shared/get-relative-path", async (importOriginal) => ({
 	resolveIndexFilePath: vi.fn(async (filePath: string) => ({ absolutePath: filePath, relativePath: filePath })),
 }))
 
-// Mock TelemetryService
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureEvent: vi.fn(),
-		},
-	},
-}))
-
 vi.mock("fs/promises", () => ({
 	default: {
 		readFile: vi.fn(),

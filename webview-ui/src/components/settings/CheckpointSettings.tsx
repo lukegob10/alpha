@@ -1,14 +1,14 @@
 import { HTMLAttributes } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
-import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
-import { Trans } from "react-i18next"
-import { buildDocLink } from "@src/utils/docLinks"
+import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import { Slider } from "@/components/ui"
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
-import { Section } from "./Section"
+import { Section, useSectionGroup } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
+import { SettingsHelp } from "./SettingsHelp"
+import type { SettingsSectionId } from "./settingsNavigation"
 import {
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	MAX_CHECKPOINT_TIMEOUT_SECONDS,
@@ -18,58 +18,65 @@ import {
 type CheckpointSettingsProps = HTMLAttributes<HTMLDivElement> & {
 	enableCheckpoints?: boolean
 	checkpointTimeout?: number
+	embedded?: boolean
+	searchSection?: SettingsSectionId
 	setCachedStateField: SetCachedStateField<"enableCheckpoints" | "checkpointTimeout">
 }
 
 export const CheckpointSettings = ({
-	enableCheckpoints,
+	enableCheckpoints = true,
 	checkpointTimeout,
+	embedded = false,
+	searchSection = "checkpoints",
 	setCachedStateField,
 	...props
 }: CheckpointSettingsProps) => {
 	const { t } = useAppTranslation()
+	const grouped = useSectionGroup()
 	return (
 		<div {...props}>
-			<SectionHeader>{t("settings:sections.checkpoints")}</SectionHeader>
+			{!embedded && <SectionHeader>{t("settings:sections.checkpoints")}</SectionHeader>}
 
 			<Section>
+				{embedded && !grouped && (
+					<h4 className="m-0 text-base font-semibold">{t("settings:checkpoints.recoveryTitle")}</h4>
+				)}
 				<SearchableSetting
 					settingId="checkpoints-enable"
-					section="checkpoints"
+					section={searchSection}
 					label={t("settings:checkpoints.enable.label")}>
-					<VSCodeCheckbox
-						checked={enableCheckpoints}
-						onChange={(e: any) => {
-							setCachedStateField("enableCheckpoints", e.target.checked)
-						}}>
-						<span className="font-medium">{t("settings:checkpoints.enable.label")}</span>
-					</VSCodeCheckbox>
-					<div className="text-vscode-descriptionForeground text-sm mt-1">
-						<Trans i18nKey="settings:checkpoints.enable.description">
-							<VSCodeLink
-								href={buildDocLink("features/checkpoints", "settings_checkpoints")}
-								style={{ display: "inline" }}>
-								{" "}
-							</VSCodeLink>
-						</Trans>
+					<div className="flex items-center gap-1">
+						<VSCodeCheckbox
+							checked={enableCheckpoints}
+							onChange={(e: any) => {
+								setCachedStateField("enableCheckpoints", e.target.checked)
+							}}>
+							<span className="font-medium">{t("settings:checkpoints.enable.label")}</span>
+						</VSCodeCheckbox>
+						<SettingsHelp label={t("settings:checkpoints.enable.label")}>
+							{t("settings:checkpoints.enable.description")}
+						</SettingsHelp>
 					</div>
 				</SearchableSetting>
 
 				{enableCheckpoints && (
 					<SearchableSetting
 						settingId="checkpoints-timeout"
-						section="checkpoints"
-						label={t("settings:checkpoints.timeout.label")}
-						className="mt-4">
-						<label className="block text-sm font-medium mb-2">
-							{t("settings:checkpoints.timeout.label")}
-						</label>
+						section={searchSection}
+						label={t("settings:checkpoints.timeout.label")}>
+						<div className="mb-2 flex items-center gap-1">
+							<span className="text-sm font-medium">{t("settings:checkpoints.timeout.label")}</span>
+							<SettingsHelp label={t("settings:checkpoints.timeout.label")}>
+								{t("settings:checkpoints.timeout.description")}
+							</SettingsHelp>
+						</div>
 						<div className="flex items-center gap-2">
 							<Slider
 								min={MIN_CHECKPOINT_TIMEOUT_SECONDS}
 								max={MAX_CHECKPOINT_TIMEOUT_SECONDS}
 								step={1}
-								defaultValue={[checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS]}
+								value={[checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS]}
+								aria-label={t("settings:checkpoints.timeout.label")}
 								onValueChange={([value]) => {
 									setCachedStateField("checkpointTimeout", value)
 								}}
@@ -79,9 +86,6 @@ export const CheckpointSettings = ({
 							<span className="w-12 text-center">
 								{checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS}
 							</span>
-						</div>
-						<div className="text-vscode-descriptionForeground text-sm mt-1">
-							{t("settings:checkpoints.timeout.description")}
 						</div>
 					</SearchableSetting>
 				)}

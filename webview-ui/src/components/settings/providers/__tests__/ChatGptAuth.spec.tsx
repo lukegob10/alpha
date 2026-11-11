@@ -65,6 +65,28 @@ describe("ChatGPT account controls", () => {
 		expect(screen.getByRole("button", { name: "settings:providers.chatGpt.signIn" })).toBeEnabled()
 	})
 
+	it("keeps routine account details in help while leaving sign-in status and account controls visible", () => {
+		render(<ChatGptAuth />)
+		expect(screen.getByRole("status")).toHaveTextContent("settings:providers.chatGpt.disconnected")
+		expect(screen.queryByText("settings:providers.chatGpt.description")).not.toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "settings:helpFor" })).toBeVisible()
+		publish({
+			connected: true,
+			connecting: false,
+			accountId: "saved",
+			email: "person@example.com",
+			accounts: [{ id: "saved", email: "person@example.com", connected: true }],
+		})
+		expect(screen.getByRole("status")).toHaveTextContent("person@example.com")
+		expect(screen.getByRole("combobox", { name: "settings:providers.chatGpt.account" })).toBeVisible()
+		expect(screen.queryByText("settings:providers.chatGpt.description")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "settings:helpFor" }))
+		expect(screen.getByText("settings:providers.chatGpt.description")).toBeVisible()
+		expect(screen.getByRole("button", { name: "settings:providers.chatGpt.signOut" })).toBeEnabled()
+		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
+		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "chatGptAuthStatus" })
+	})
+
 	it("prevents duplicate sign-in and supports cancelling the pending sign-in", () => {
 		render(<ChatGptAuth />)
 		const signIn = screen.getByRole("button", { name: "settings:providers.chatGpt.signIn" })

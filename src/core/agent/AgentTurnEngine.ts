@@ -624,10 +624,11 @@ export class AgentTurnEngine<TInput, TStep = unknown> {
 					}
 				}
 
-				// Cleanup is part of the step boundary and can yield to a late Stop.
-				// Do not publish the completion candidate captured before that drain.
-				if (outcome?.status === "completed" && this.host.shouldAbort()) {
-					return terminalOutcome("aborted", steps, sample.response, reason)
+				// Codex df769889 (2026-11-06), session/turn.rs:3810: cancellation
+				// wins after cleanup drains, including non-success terminal candidates.
+				if (outcome?.status !== "aborted" && this.host.shouldAbort()) {
+					const terminalReason = outcome && "reason" in outcome ? outcome.reason : reason
+					return terminalOutcome("aborted", steps, sample.response, terminalReason)
 				}
 				if (recoveryEligible && (outcome?.status === "failed" || outcome?.status === "incomplete")) {
 					if (this.host.shouldAbort()) return terminalOutcome("aborted", steps, sample.response, reason)

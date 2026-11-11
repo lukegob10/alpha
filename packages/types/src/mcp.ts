@@ -43,24 +43,38 @@ export interface McpToolAnnotations {
 export const mcpExecutionStatusSchema = z.discriminatedUnion("status", [
 	z.object({
 		executionId: z.string(),
+		taskId: z.string().optional(),
+		toolCallId: z.string().optional(),
 		status: z.literal("started"),
 		serverName: z.string(),
 		toolName: z.string(),
 	}),
 	z.object({
 		executionId: z.string(),
+		taskId: z.string().optional(),
+		toolCallId: z.string().optional(),
 		status: z.literal("output"),
 		response: z.string(),
 	}),
 	z.object({
 		executionId: z.string(),
+		taskId: z.string().optional(),
+		toolCallId: z.string().optional(),
 		status: z.literal("completed"),
 		response: z.string().optional(),
 	}),
 	z.object({
 		executionId: z.string(),
+		taskId: z.string().optional(),
+		toolCallId: z.string().optional(),
 		status: z.literal("error"),
 		error: z.string().optional(),
+	}),
+	z.object({
+		executionId: z.string(),
+		taskId: z.string().optional(),
+		toolCallId: z.string().optional(),
+		status: z.literal("cancelled"),
 	}),
 ])
 

@@ -15,9 +15,23 @@ import {
 	ticketSearchRequestSchema,
 	ticketSearchResponseSchema,
 	ticketTargetSchema,
+	ticketIdSchema,
 } from "../ticket.js"
 
 describe("ticket wire contracts", () => {
+	it("keeps historical UUID-like ticket identities readable without accepting arbitrary paths", () => {
+		const legacyId = "12345678-1234-1234-1234-123456789abc"
+		expect(ticketIdSchema.parse(legacyId)).toBe(legacyId)
+		expect(createTicketSchema.parse({ name: "Legacy child", parentId: legacyId }).parentId).toBe(legacyId)
+		expect(ticketTargetSchema.parse({ project: "project", id: legacyId }).id).toBe(legacyId)
+		for (const invalid of [
+			"../ticket",
+			"12345678-1234-1234-1234-123456789ab",
+			"z2345678-1234-1234-1234-123456789abc",
+		])
+			expect(ticketIdSchema.safeParse(invalid).success).toBe(false)
+	})
+
 	it.each([
 		["42", 42],
 		["#001", 1],

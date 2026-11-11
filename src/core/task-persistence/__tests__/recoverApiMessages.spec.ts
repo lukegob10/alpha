@@ -154,3 +154,23 @@ it("rejects stale inspection without touching concurrent edits", async () => {
 	).rejects.toMatchObject({ code: "digest_mismatch" })
 	expect(await fs.readFile(filePath, "utf8")).toBe("concurrent edit")
 })
+
+it("preserves an external edit made while verifying the recovery archive", async () => {
+	const source = JSON.stringify([{ role: "user", content: "hello" }, null])
+	const concurrentEdit = source.replace("hello", "world")
+	const digest = crypto.createHash("sha256").update(source).digest("hex")
+	const archivePath = path.join(path.dirname(filePath), `api_conversation_history.recovery-${digest}.json`)
+	const realFs = await vi.importActual<typeof fs>("fs/promises")
+	const lstat = vi.mocked(fs.lstat).mockImplementationOnce(async (candidate) => {
+		expect(candidate).toBe(archivePath)
+		await fs.writeFile(filePath, concurrentEdit)
+		return realFs.lstat(archivePath, { bigint: true })
+	})
+	try {
+		await expect(recover(source)).rejects.toMatchObject({ code: "digest_mismatch" })
+		expect(await fs.readFile(filePath, "utf8")).toBe(concurrentEdit)
+		expect(await fs.readFile(archivePath, "utf8")).toBe(source)
+	} finally {
+		lstat.mockRestore()
+	}
+})

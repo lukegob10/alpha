@@ -2,7 +2,6 @@
 
 import * as vscode from "vscode"
 import fs from "fs/promises"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { AlphaProvider } from "../AlphaProvider"
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import { ContextProxy } from "../../config/ContextProxy"
@@ -167,10 +166,22 @@ vi.mock("p-wait-for", () => ({
 	default: vi.fn().mockImplementation(async () => Promise.resolve()),
 }))
 
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
+	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
+	const fenceHandle = (filePath: string) => ({
+		writeFile: vi.fn(async (data: unknown) => {
+			transactionFiles.set(fenceKey(filePath), String(data))
+		}),
+		sync: vi.fn(),
+		close: vi.fn(),
+	})
 	const mocked = {
+		lstat,
+		realpath,
+		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -178,6 +189,12 @@ vi.mock("fs/promises", () => {
 			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
 		}),
 		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				return data === undefined
+					? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+					: Promise.resolve(data)
+			}
 			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
 			if (filePath.includes(".transaction.lock")) {
 				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
@@ -188,12 +205,24 @@ vi.mock("fs/promises", () => {
 		}),
 		readdir: vi.fn().mockResolvedValue([]),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				return { isFile: () => true, isDirectory: () => false, size: Buffer.byteLength(data) }
+			}
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
 			}
 			return { isDirectory: () => true }
 		}),
 		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			if (sourcePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(sourcePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				transactionFiles.delete(fenceKey(sourcePath))
+				transactionFiles.set(fenceKey(destinationPath), data)
+				return
+			}
 			if (transactionDirectories.has(destinationPath)) {
 				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
 			}
@@ -208,13 +237,16 @@ vi.mock("fs/promises", () => {
 			}
 		}),
 		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
 			transactionFiles.delete(filePath)
 		}),
 		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
 			transactionDirectories.delete(filePath)
 		}),
 		access: vi.fn().mockResolvedValue(undefined),
-		rm: vi.fn().mockResolvedValue(undefined),
+		rm: vi.fn(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
+		}),
 	}
 	return { ...mocked, default: mocked }
 })
@@ -234,21 +266,6 @@ vi.mock("../../../utils/storage", async (importOriginal) => {
 	}
 })
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		hasInstance: vi.fn().mockReturnValue(true),
-		createInstance: vi.fn(),
-		get instance() {
-			return {
-				trackEvent: vi.fn(),
-				trackError: vi.fn(),
-				setProvider: vi.fn(),
-				captureModeSwitch: vi.fn(),
-			}
-		},
-	},
-}))
-
 let storageFixtureCounter = 0
 
 describe("AlphaProvider - Sticky Provider Profile", () => {
@@ -261,6 +278,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
+		await fs.unlink("provider-profiles")
 		// Provider-profile tests mock storage; the OS mutex requires a real host
 		// filesystem, exercised separately by persistence and extension tests.
 		vi.spyOn(AgentControlStore, "forGlobalStorage").mockImplementation(
@@ -269,10 +287,6 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 		taskIdCounter = 0
 		originalAlphaCliRuntimeEnv = process.env.ALPHA_CLI_RUNTIME
 		delete process.env.ALPHA_CLI_RUNTIME
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		const globalState: Record<string, string | undefined> = {
 			mode: "code",
@@ -875,7 +889,7 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			})
 		})
 
-		it("reports failed Save completion after a committed write and retries the same renamed ID without creating another profile", async () => {
+		it("keeps committed Save successful through projection failure and later saves the same renamed ID", async () => {
 			await provider.renameProviderProfile({ id: "saved-id" }, "renamed")
 			const before = await provider.providerSettingsManager.listConfig()
 			const draft = { ...savedSettings, openAiModelId: "committed-model" }
@@ -897,8 +911,9 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 				type: "apiConfigurationSaved",
 				apiConfigurationSaveResult: {
 					requestId: "failed-save-completion",
-					status: "error",
-					error: "saveFailed",
+					status: "success",
+					id: "saved-id",
+					name: "renamed",
 				},
 			})
 
@@ -1144,6 +1159,8 @@ describe("AlphaProvider - Sticky Provider Profile", () => {
 			const persisted = JSON.parse((await mockContext.secrets.get(profilesKey))!)
 			persisted.apiConfigs.saved.name = "legacy-profile-field"
 			await mockContext.secrets.store(profilesKey, JSON.stringify(persisted))
+			// Install this historical fixture before bootstrapping its synchronization receipt.
+			await fs.unlink("provider-profiles")
 			const task = taskFixture("foreground")
 			await provider.addTaskToStack(task as unknown as Task)
 			await provider.taskHistoryStore.upsert(history(task.taskId))

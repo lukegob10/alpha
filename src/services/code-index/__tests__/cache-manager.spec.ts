@@ -33,15 +33,6 @@ vitest.mock("lodash.debounce", () => ({
 	}),
 }))
 
-// Mock TelemetryService
-vitest.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureEvent: vitest.fn(),
-		},
-	},
-}))
-
 describe("CacheManager", () => {
 	let mockContext: vscode.ExtensionContext
 	let mockWorkspacePath: string

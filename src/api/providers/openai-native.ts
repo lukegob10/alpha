@@ -14,6 +14,7 @@ import { buildOpenAiResponsesInput } from "./openai-responses"
 import { calculateApiCostOpenAI } from "../../shared/cost"
 import { getApiRequestTimeout } from "./utils/timeout-config"
 import { NativeCompactionInvalidResultError, NativeCompactionUnavailableError } from "../native-compaction"
+import { checkContextWindowExceededError } from "../../core/context/context-management/context-error-handling"
 
 // Public GPT-6 guidance confirms inherited GPT-5.6 compaction support (2026-11-03):
 // https://developers.openai.com/api/docs/guides/latest-model
@@ -137,6 +138,9 @@ export class OpenAiNativeHandler extends OpenAiHandler {
 					return checkpoint
 				} catch (error) {
 					control.signal.throwIfAborted()
+					// The public endpoint requires fitting input. A size rejection is
+					// recoverable through text compaction, not a permanent capability refusal.
+					if (checkContextWindowExceededError(error)) throw error
 					const source =
 						typeof error === "object" && error !== null ? (error as Record<string, unknown>) : undefined
 					if (source && [400, 404, 405, 422, 501].includes(Number(source.status))) {

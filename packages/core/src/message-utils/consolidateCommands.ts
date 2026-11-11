@@ -65,7 +65,13 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 	const consolidatedMessages = new Map<number, AlphaMessage>()
 	const processedIndices = new Set<number>()
 	const commandOutputs = new Map<string, Array<{ index: number; message: AlphaMessage }>>()
+	const mcpResponses = new Map<string, Array<{ index: number; message: AlphaMessage }>>()
 	for (const [index, message] of messages.entries()) {
+		if (message?.toolCallId && message.say === "mcp_server_response") {
+			const responses = mcpResponses.get(message.toolCallId) ?? []
+			responses.push({ index, message })
+			mcpResponses.set(message.toolCallId, responses)
+		}
 		if (message?.commandExecutionId && (message.say === "command_output" || message.ask === "command_output")) {
 			const outputs = commandOutputs.get(message.commandExecutionId) ?? []
 			outputs.push({ index, message })
@@ -84,6 +90,14 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 			const responses: string[] = []
 			let hasPartialOutput = false
 			let j = i + 1
+			if (msg.toolCallId) {
+				for (const { index, message } of mcpResponses.get(msg.toolCallId) ?? []) {
+					responses.push(message.text || "")
+					hasPartialOutput ||= message.partial === true
+					processedIndices.add(index)
+				}
+				j = messages.length
+			}
 
 			while (j < messages.length) {
 				const nextMsg = messages[j]
@@ -91,7 +105,7 @@ export function consolidateCommands(messages: AlphaMessage[]): AlphaMessage[] {
 					j++
 					continue
 				}
-				if (nextMsg.say === "mcp_server_response") {
+				if (nextMsg.say === "mcp_server_response" && !nextMsg.toolCallId) {
 					responses.push(nextMsg.text || "")
 					hasPartialOutput ||= nextMsg.partial === true
 					processedIndices.add(j)

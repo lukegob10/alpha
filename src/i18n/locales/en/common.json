@@ -61,6 +61,13 @@
 	"subagentContext": {
 		"skillDescriptionLimit": "Captured skill descriptions exceed {{maxBytes}} bytes. Reduce the available skill catalog before starting another child."
 	},
+	"subagentMode": {
+		"busy": "Cannot enter Plan mode while a workspace mutation, command, or agent admission is active or queued. Let it finish or cancel it, then retry.",
+		"active": "Cannot enter Plan mode while agents with Code authority are active: {{targets}}. Wait for or cancel them, then retry.",
+		"launch": "Plan mode cannot launch or relaunch an agent with Code authority; switch to Code before starting it.",
+		"steer": "Plan mode cannot steer an agent with Code authority. Switch to Code to advance it.",
+		"advance": "Plan mode cannot {{action}} agent {{path}} with Code authority; switch to Code to advance it."
+	},
 	"lifecycleHooks": {
 		"handlerLimit": "{{event}} hook configuration exceeds the limit of {{limit}} handlers. Reduce the configuration before continuing; no partial event configuration was installed.",
 		"forkStartPersistenceFailed": "Unable to save the fork's first session start. Check task storage and reopen the task.",
@@ -148,6 +155,7 @@
 		"delete_custom_mode_with_rules": "Are you sure you want to delete this {scope} mode?\n\nThis will also delete the associated rules folder at:\n{rulesFolderPath}"
 	},
 	"errors": {
+		"custom_tools_disabled": "Enable custom tools and save settings before loading them.",
 		"completion_evidence_read_timeout": "Completion evidence could not be read within 30 seconds. Resume after the existing operation settles.",
 		"completion_evidence_read_interrupted": "Completion was interrupted; pending user guidance and unresolved evidence are preserved.",
 		"completion_review_pending": "Worker proposals still await review. Apply or discard the pending proposals before completing; you can send guidance to continue investigating.",
@@ -222,6 +230,7 @@
 		"command_output_archive_interrupted": "Output artifact was interrupted and is incomplete.",
 		"command_terminal_closed": "The command terminal closed before the command exit was reported. Its outcome is unknown.",
 		"command_terminal_closed_output": "The command terminal closed before its output could be finalized.",
+		"command_shell_integration_timeout": "VS Code shell integration did not become available within {{seconds}}s. The command was not started. Check terminal.integrated.shellIntegration.enabled and your shell profile. On Windows, use PowerShell 7 or Git Bash; Command Prompt does not support shell integration.",
 		"command_capacity_exceeded": "The active command limit ({{limit}}) has been reached. Wait for a running command to finish or stop an existing command before starting another. Existing commands remain running.",
 		"share_task_failed": "Failed to share task. Please try again.",
 		"share_no_active_task": "No active task to share",
@@ -359,6 +368,10 @@
 			"resetFailed": "Failed to reset custom modes: {{error}}",
 			"modeNotFound": "Write error: Mode not found",
 			"noWorkspaceForProject": "No workspace folder found for project-specific mode",
+			"invalidRulePath": "The rule path is unsafe or conflicts with another rule: {{relativePath}}",
+			"duplicateImportMode": "The import contains more than one mode with the slug {{slug}}.",
+			"linkedRulePath": "Cannot export rules from a linked path at {{path}}.",
+			"ruleExportLimit": "The rules directory exceeds the size or depth limit for a mode export.",
 			"rulesCleanupFailed": "Mode deleted successfully, but failed to delete rules folder at {{rulesFolderPath}}. You may need to delete it manually."
 		},
 		"scope": {

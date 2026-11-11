@@ -9,6 +9,7 @@ import {
 	isApprovalMode,
 	migrateApprovalMode,
 	type ApprovalMode,
+	scheduledTaskCreationRequestIdSchema,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
 	taskReasoningPreferenceSchema,
@@ -311,12 +312,14 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async createTask(payload: CreateScheduledTaskPayload): Promise<ScheduledTask> {
+		if (this.disposed) throw new Error("Scheduled task service is disposed")
 		this.validateSetup(payload)
 		const now = Date.now()
 		const execution = normalizeExecution(payload.execution)
 		const autoApproval = normalizeAutoApproval(payload.autoApproval, "auto")
 		const task: ScheduledTask = {
 			id: crypto.randomUUID(),
+			creationRequestId: scheduledTaskCreationRequestIdSchema.optional().parse(payload.creationRequestId),
 			name: payload.name.trim(),
 			prompt: payload.prompt.trim(),
 			apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig),
@@ -334,10 +337,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 			nextRunAt: getNextRunAt(payload.schedule, now - 1),
 		}
 
-		await this.store.upsertTask(task)
+		const created = await this.store.createTask(task)
 		await this.broadcast()
 		this.scheduleTick()
-		return task
+		return created
 	}
 
 	async updateTask(taskId: string, payload: UpdateScheduledTaskPayload): Promise<void> {
@@ -351,6 +354,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 				...existing,
 				...payload,
 				id: existing.id,
+				creationRequestId: existing.creationRequestId,
 				name: payload.name?.trim() ?? existing.name,
 				prompt: payload.prompt?.trim() ?? existing.prompt,
 				apiConfig: scheduledTaskProfileSchema.optional().parse(payload.apiConfig ?? existing.apiConfig),
@@ -590,7 +594,11 @@ export class ScheduledTaskService implements vscode.Disposable {
 			autoApproval,
 			mode: task.mode,
 		}
-		if (!(await this.store.projectRunStatus(startedRun))) return
+		const projected =
+			execution.type === "command"
+				? await this.projectCommandRunStatus(startedRun)
+				: await this.store.projectRunStatus(startedRun)
+		if (!projected) return
 		await this.broadcast()
 		// Informational toasts settle on dismissal; admission must not wait for them.
 		void this.notifyBeforeRun(task, startedRun).catch((error) => {
@@ -686,28 +694,9 @@ export class ScheduledTaskService implements vscode.Disposable {
 			return
 		}
 		try {
-			const state = await this.provider.getState()
-			const approval = await checkAutoApproval({
-				state: {
-					...state,
-					approvalMode: migrateApprovalMode(task.autoApproval),
-					deniedCommands: [...(state.deniedCommands ?? []), ...(task.autoApproval?.deniedCommands ?? [])],
-				},
-				ask: "command",
-				text: execution.command,
-			})
-			if (approval.decision === "deny") {
-				await this.finishRun(task, {
-					...run,
-					status: "failed",
-					finishedAt: Date.now(),
-					error: "Command is blocked by an explicit deny rule.",
-				})
-				return
-			}
-			if (approval.decision !== "approve") {
+			if ((await this.checkCommandApproval(task, execution.command)) !== "approve") {
 				const waitingRun: ScheduledTaskRun = { ...run, status: "waiting_for_approval" }
-				if (!(await this.store.projectRunStatus(waitingRun))) return
+				if (!(await this.projectCommandRunStatus(waitingRun))) return
 				await this.broadcast()
 				// Keep the scheduler queue moving while the user considers this run.
 				void this.awaitCommandApproval(task, waitingRun, execution)
@@ -725,6 +714,39 @@ export class ScheduledTaskService implements vscode.Disposable {
 		await this.executeCommandRun(task, run, execution)
 	}
 
+	private async checkCommandApproval(task: ScheduledTask, command: string) {
+		const state = await this.provider.getState()
+		const approval = await checkAutoApproval({
+			state: {
+				...state,
+				approvalMode: migrateApprovalMode(task.autoApproval),
+				deniedCommands: [...(state.deniedCommands ?? []), ...(task.autoApproval?.deniedCommands ?? [])],
+			},
+			ask: "command",
+			text: command,
+		})
+		if (approval.decision === "deny") throw new Error("Command is blocked by an explicit deny rule.")
+		return approval.decision
+	}
+
+	private requireOpenCommandWorkspace(run: ScheduledTaskRun): string {
+		const workspace = run.workspace
+		if (
+			!workspace ||
+			!vscode.workspace.workspaceFolders?.some((folder) => arePathsEqual(folder.uri.fsPath, workspace))
+		) {
+			throw new Error(t("scheduledTasks:workspaceInvalid"))
+		}
+		return workspace
+	}
+
+	private async projectCommandRunStatus(run: ScheduledTaskRun, expectedStatus?: ScheduledTaskRun["status"]) {
+		this.requireOpenCommandWorkspace(run)
+		const projected = await this.store.projectRunStatus(run, expectedStatus)
+		this.requireOpenCommandWorkspace(run)
+		return projected
+	}
+
 	private async awaitCommandApproval(
 		task: ScheduledTask,
 		run: ScheduledTaskRun,
@@ -736,13 +758,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 				{ modal: true },
 				"Run once",
 			)
-			if (
-				this.disposed ||
-				this.store.getState().runs.find((candidate) => candidate.id === run.id)?.status !==
-					"waiting_for_approval"
-			) {
-				return
-			}
+			if (this.disposed) return
+			this.requireOpenCommandWorkspace(run)
 			if (response !== "Run once") {
 				await this.finishRun(task, {
 					...run,
@@ -753,8 +770,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 				return
 			}
 			const resumedRun: ScheduledTaskRun = { ...run, status: "running" }
-			if (!(await this.store.projectRunStatus(resumedRun))) return
+			if (!(await this.projectCommandRunStatus(resumedRun, "waiting_for_approval"))) return
 			await this.broadcast()
+			// Run once grants the reviewed command, subject to current explicit deny rules.
+			await this.checkCommandApproval(task, execution.command)
 			await this.executeCommandRun(task, resumedRun, execution)
 		} catch (error) {
 			if (!this.disposed) {
@@ -774,6 +793,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		execution: Extract<ScheduledTaskExecution, { type: "command" }>,
 	): Promise<void> {
 		if (this.disposed) return
+		const cwd = this.requireOpenCommandWorkspace(run)
 		const controller = new AbortController()
 		this.commandControllers.add(controller)
 		let complete!: () => void
@@ -788,7 +808,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		this.commandCompletions.set(controller, completion)
 		try {
 			const result = await runScheduledCommand(execution.command, {
-				cwd: task.workspace || getWorkspacePath(),
+				cwd,
 				signal: controller.signal,
 				timeoutMs: execution.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
 			})

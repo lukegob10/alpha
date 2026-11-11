@@ -11,17 +11,6 @@ vi.mock("../../prompts/responses", () => ({
 	},
 }))
 
-const { mockCaptureTaskCompleted } = vi.hoisted(() => ({
-	mockCaptureTaskCompleted: vi.fn(),
-}))
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: {
-		instance: {
-			captureTaskCompleted: mockCaptureTaskCompleted,
-		},
-	},
-}))
-
 // Mock vscode module
 vi.mock("vscode", () => ({
 	workspace: {
@@ -53,7 +42,6 @@ describe("attemptCompletionTool", () => {
 	let mockGetParentCompletionDecision: import("vitest").Mock
 
 	beforeEach(() => {
-		mockCaptureTaskCompleted.mockReset()
 		mockPushToolResult = vi.fn()
 		mockAskApproval = vi.fn()
 		mockHandleError = vi.fn()
@@ -144,7 +132,6 @@ describe("attemptCompletionTool", () => {
 		mockTask.finalizeTaskCompletion = vi.fn().mockImplementation(async () => {
 			mockTask.markCompleted?.()
 			mockTask.emitFinalTokenUsageUpdate?.()
-			mockCaptureTaskCompleted("task_1")
 			;(mockTask.emit as any)?.(
 				AlphaCodeEventName.TaskCompleted,
 				"task_1",
@@ -979,7 +966,6 @@ describe("attemptCompletionTool", () => {
 					(mockTask.finalizeTaskCompletion as import("vitest").Mock).mock.invocationCallOrder[0],
 				).toBeLessThan(mockPushToolResult.mock.invocationCallOrder[0])
 				expect(mockTask.markCompleted).toHaveBeenCalled()
-				expect(mockCaptureTaskCompleted).toHaveBeenCalledWith("task_1")
 				expect(mockTask.emit).toHaveBeenCalledWith(
 					AlphaCodeEventName.TaskCompleted,
 					"task_1",
@@ -1031,7 +1017,6 @@ describe("attemptCompletionTool", () => {
 					await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
 					expect(mockHandleError).not.toHaveBeenCalled()
-					expect(mockCaptureTaskCompleted).not.toHaveBeenCalled()
 					expect(mockTask.emit).not.toHaveBeenCalledWith(
 						AlphaCodeEventName.TaskCompleted,
 						expect.anything(),

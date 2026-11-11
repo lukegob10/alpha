@@ -295,17 +295,24 @@ test("smoke export binds existing host artifacts, strips task contents and rejec
 		requests: 2,
 		elapsedMs: 1000,
 		hostVersion: smoke.hostVersion,
-		provider: smoke.provider,
-		model: { id: smoke.modelId },
+		provider: "vscode-lm",
+		providerMode: smoke.providerMode,
+		model: { id: smoke.modelId, vendor: "copilot" },
 		effort: smoke.effort,
 		rawPrompt: "private-task-content",
 	}
 	const taskBytes = JSON.stringify(task)
 	await fs.writeFile(path.join(root, "supported-total.json"), taskBytes)
-	await fs.writeFile(
-		path.join(root, "run-result.json"),
-		JSON.stringify({ ...smoke, actualVSCodeVersion: smoke.hostVersion }),
-	)
+	const primaryPath = path.join(root, "run-result.json")
+	const retentionPath = path.join(root, "retention-result.json")
+	const inactivePath = path.join(root, ".retention-eligible.json")
+	const primary = { ...smoke, actualVSCodeVersion: smoke.hostVersion, providerIdentity: { status: "unchanged" } }
+	const retention = { schemaVersion: 1, runId: smoke.runId, status: "complete", eligibility: "pending-release" }
+	const inactive = { kind: "alpha-vscode-e2e-inactive", version: 1, runId: smoke.runId }
+	const retainedPrimary = { ...primary, retentionResultPath: retentionPath }
+	await fs.writeFile(primaryPath, JSON.stringify(retainedPrimary))
+	await fs.writeFile(retentionPath, JSON.stringify(retention))
+	await fs.writeFile(inactivePath, JSON.stringify(inactive))
 	await fs.writeFile(
 		path.join(root, "manifest.json"),
 		JSON.stringify({
@@ -328,9 +335,71 @@ test("smoke export binds existing host artifacts, strips task contents and rejec
 	const dispatch = path.join(root, "dispatch.json")
 	const args = ["verify-smoke", "--candidate", candidate, "--run-dir", root, "--fixture", "supported-total"]
 	const result = await releaseQualityCli([...args, "--output", output, "--dispatch-input", dispatch])
+	assert.equal(result.provider, "live-copilot")
 	assert.equal(result.artifactBinding, "manifest-inventory")
 	assert.doesNotMatch(await fs.readFile(dispatch, "utf8"), /private-task-content|rawPrompt/u)
 	assert.deepEqual(JSON.parse(JSON.parse(await fs.readFile(dispatch, "utf8")).reports), result)
+	await t.test("requires a stable Copilot provider identity for a VS Code model receipt", async () => {
+		await fs.writeFile(primaryPath, JSON.stringify({ ...retainedPrimary, providerIdentity: { status: "changed" } }))
+		try {
+			await assert.rejects(
+				releaseQualityCli([...args, "--output", path.join(root, "changed-provider.json")]),
+				/host, provider, model, time and artifact identities/u,
+			)
+		} finally {
+			await fs.writeFile(primaryPath, JSON.stringify(retainedPrimary))
+		}
+	})
+	await t.test("refuses a passing primary when retention is blocked or failed", async () => {
+		for (const status of ["blocked", "failed"]) {
+			await fs.writeFile(retentionPath, JSON.stringify({ ...retention, status }))
+			await assert.rejects(
+				releaseQualityCli([...args, "--output", path.join(root, `${status}.json`)]),
+				/retention/u,
+			)
+		}
+	})
+	await t.test("refuses a retention error after a complete report", async () => {
+		await fs.writeFile(retentionPath, JSON.stringify(retention))
+		const failure = path.join(root, "retention-error.json")
+		await fs.writeFile(failure, JSON.stringify({ schemaVersion: 1, runId: smoke.runId, status: "failed" }))
+		try {
+			await assert.rejects(
+				releaseQualityCli([...args, "--reuse-recorded", "true", "--output", path.join(root, "failure.json")]),
+				/retention/u,
+			)
+		} finally {
+			await fs.unlink(failure)
+		}
+	})
+	await t.test("requires matching retention and the completed release marker for a standalone run", async () => {
+		await fs.writeFile(retentionPath, JSON.stringify({ ...retention, runId: "other-run" }))
+		await assert.rejects(releaseQualityCli([...args, "--output", path.join(root, "wrong-run.json")]), /retention/u)
+		await fs.writeFile(retentionPath, JSON.stringify(retention))
+		await fs.unlink(inactivePath)
+		await assert.rejects(
+			releaseQualityCli([...args, "--output", path.join(root, "no-release-marker.json")]),
+			/retention/u,
+		)
+	})
+	await t.test("allows absent retention only for explicitly reused historical captures", async () => {
+		await fs.unlink(retentionPath)
+		await assert.rejects(
+			releaseQualityCli([...args, "--reuse-recorded", "true", "--output", path.join(root, "incomplete.json")]),
+			/retention/u,
+		)
+		await fs.writeFile(primaryPath, JSON.stringify(primary))
+		await assert.rejects(releaseQualityCli([...args, "--output", path.join(root, "unreviewed.json")]), /retention/u)
+		const reused = await releaseQualityCli([
+			...args,
+			"--reuse-recorded",
+			"true",
+			"--output",
+			path.join(root, "reused.json"),
+		])
+		assert.equal(reused.reuseRecorded, true)
+		assert.equal(reused.observedSourceRevision, null)
+	})
 	await fs.writeFile(path.join(root, "supported-total.json"), JSON.stringify({ ...task, passed: false }))
 	await assert.rejects(
 		releaseQualityCli([...args, "--reuse-recorded", "true", "--output", path.join(root, "invalid.json")]),

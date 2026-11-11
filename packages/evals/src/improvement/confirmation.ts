@@ -183,7 +183,7 @@ const receiptSchema = z
 		campaigns: z
 			.object({ control: campaignExportSchema.nullable(), candidate: campaignExportSchema.nullable() })
 			.strict(),
-		pairedReport: z.unknown().nullable(),
+		pairedReport: z.unknown().nullable().optional(),
 		promotion: z
 			.object({ allowed: z.boolean(), reasons: z.array(z.string()) })
 			.strict()

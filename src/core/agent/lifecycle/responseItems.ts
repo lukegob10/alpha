@@ -64,6 +64,9 @@ export function* lifecycleResponseItems(
 					break
 				if (responseItem.text.length + next.text.length > MAX_FRAGMENT_TEXT) break
 				responseItem = { ...responseItem, text: responseItem.text + next.text }
+				if (responseItem.type === "text" && next.type === "text" && next.memoryCitation) {
+					responseItem.memoryCitation = next.memoryCitation
+				}
 				index++
 			}
 		}

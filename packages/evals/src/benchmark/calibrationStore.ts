@@ -38,7 +38,7 @@ export class CalibrationReportValidationError extends Error {
 	readonly code = "CALIBRATION_REPORT_INVALID"
 	readonly issues: Array<{ message: string }>
 
-	constructor(issues: Array<{ code: string; path: Array<string | number> }>) {
+	constructor(issues: Array<{ code: string; path: PropertyKey[] }>) {
 		super("Calibration report does not satisfy its schema")
 		this.name = "CalibrationReportValidationError"
 		// Schema locations are sufficient for repair; received values can contain private material.

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect, createContext, useContext } from "react"
 import { Fzf } from "fzf"
 
-import type { SectionName } from "./SettingsView"
+import { normalizeSettingsSection, type SectionName, type SettingsSectionId } from "./settingsNavigation"
 
 export interface SearchableSettingData {
 	settingId: string
@@ -21,10 +21,11 @@ export interface SearchResult {
 
 /**
  * Context for collecting searchable settings as they mount.
- * This allows building the search index without rendering all sections.
+ * Static metadata and mounted controls share an index, so unopened resource
+ * groups do not need to render just to make their controls discoverable.
  */
 interface SearchIndexContextValue {
-	registerSetting: (setting: Omit<SearchableSettingData, "sectionLabel">) => void
+	registerSetting: (setting: { settingId: string; section: SettingsSectionId; label: string }) => void
 }
 
 const SearchIndexContext = createContext<SearchIndexContextValue | null>(null)
@@ -81,10 +82,13 @@ export function useSearchIndexRegistry(getSectionLabel: (section: SectionName) =
 	const contextValue = useMemo<SearchIndexContextValue>(
 		() => ({
 			registerSetting: (setting) => {
+				const section = normalizeSettingsSection(setting.section)
+				// Auxiliary managers have their own routes, outside the four settings groups.
+				if (!section) return
 				const previous = settingsRef.current.get(setting.settingId)
-				// Tabs remount after indexing; identical registrations must retain the index and fuzzy matcher.
-				if (previous?.section === setting.section && previous.label === setting.label) return
-				settingsRef.current.set(setting.settingId, { ...setting })
+				// Groups can remount; identical registrations retain the index and fuzzy matcher.
+				if (previous?.section === section && previous.label === setting.label) return
+				settingsRef.current.set(setting.settingId, { ...setting, section })
 				scheduleUpdate()
 			},
 		}),

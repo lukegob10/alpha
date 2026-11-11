@@ -1,6 +1,7 @@
 import { createHash } from "crypto"
 import { describe, expect, it } from "vitest"
 import {
+	browserToolNames,
 	deriveAutoApprovalFlags,
 	disabledSubagentAutoApprovalPolicy,
 	subagentAutoApprovalPolicySchema,
@@ -38,6 +39,59 @@ const readInside = JSON.stringify({ tool: "readFile", path: "src/foo.ts", isOuts
 const readOutside = JSON.stringify({ tool: "readFile", path: "../code.ts", isOutsideWorkspace: true })
 
 describe("checkAutoApproval", () => {
+	it.each(["auto", "bypass"] as const)("approves registered browser actions in %s", async (approvalMode) => {
+		for (const action of browserToolNames) {
+			await expect(
+				checkAutoApproval({
+					state: { approvalMode },
+					ask: "tool",
+					text: JSON.stringify({ tool: "browserAction", action }),
+				}),
+			).resolves.toEqual({ decision: "approve" })
+		}
+	})
+
+	it.each([
+		{ approvalMode: "ask", action: "open_browser_page" },
+		{ approvalMode: "auto", action: "unknown_browser_tool" },
+		{ approvalMode: "bypass", action: undefined },
+		{ approvalMode: "auto", action: "run_playwright_code", requiresExplicitApproval: true },
+		{ approvalMode: "bypass", action: "run_playwright_code", requiresExplicitApproval: true },
+	] as const)("retains review for browser actions without a matching grant (%j)", async (input) => {
+		await expect(
+			checkAutoApproval({
+				state: { approvalMode: input.approvalMode },
+				ask: "tool",
+				text: JSON.stringify({ tool: "browserAction", action: input.action }),
+				requiresExplicitApproval: "requiresExplicitApproval" in input && input.requiresExplicitApproval,
+			}),
+		).resolves.toEqual({ decision: "ask" })
+	})
+
+	it.each([
+		{ live: "auto", inherited: "auto", decision: "approve" },
+		{ live: "bypass", inherited: "bypass", decision: "approve" },
+		{ live: "auto", inherited: "ask", decision: "ask" },
+		{ live: "bypass", inherited: "ask", decision: "ask" },
+		{ live: "ask", inherited: "bypass", decision: "ask" },
+	] as const)("applies both approval boundaries to a child's browser action (%j)", async (input) => {
+		await expect(
+			checkAutoApprovalWithInheritedPolicy({
+				state: { approvalMode: input.live },
+				inheritedState: {
+					...disabledSubagentAutoApprovalPolicy,
+					...deriveAutoApprovalFlags(input.inherited),
+					commandApproval: {
+						...disabledSubagentAutoApprovalPolicy.commandApproval,
+						allowAll: input.inherited !== "ask",
+					},
+				},
+				ask: "tool",
+				text: JSON.stringify({ tool: "browserAction", action: "click_element" }),
+			}),
+		).resolves.toEqual({ decision: input.decision })
+	})
+
 	it.each([undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])(
 		"waits for a human answer in Full Access with question timeout %s",
 		async (followupAutoApproveTimeoutMs) => {

@@ -22,6 +22,9 @@ import { Markdown } from "./Markdown"
 
 interface McpExecutionProps {
 	executionId: string
+	taskId?: string
+	executionStatus?: McpExecutionStatus
+	executionResponse?: string
 	text?: string
 	serverName?: string
 	toolName?: string
@@ -42,6 +45,9 @@ interface McpExecutionProps {
 
 export const McpExecution = ({
 	executionId,
+	taskId,
+	executionStatus,
+	executionResponse,
 	text,
 	serverName: initialServerName,
 	toolName: initialToolName,
@@ -55,8 +61,15 @@ export const McpExecution = ({
 	const { t } = useTranslation("mcp")
 
 	// State for tracking MCP response status
-	const [status, setStatus] = useState<McpExecutionStatus | null>(null)
-	const [responseText, setResponseText] = useState(text || "")
+	const [streamedStatus, setStatus] = useState<McpExecutionStatus | null>(null)
+	const status = executionStatus ?? streamedStatus
+	// Invocation text must not become a response or prefix the first output chunk.
+	const [streamedResponseText, setResponseText] = useState(useMcpServer?.response ?? (isArguments ? "" : text || ""))
+	const responseText =
+		useMcpServer?.response ??
+		executionResponse ??
+		(status?.status === "completed" ? status.response : undefined) ??
+		streamedResponseText
 	const [argumentsText, setArgumentsText] = useState(text || "")
 	const [serverName, setServerName] = useState(initialServerName)
 	const [toolName, setToolName] = useState(initialToolName)
@@ -151,7 +164,7 @@ export const McpExecution = ({
 						const data = result.data
 
 						// Only update if this message is for our response
-						if (data.executionId === executionId) {
+						if (data.executionId === executionId && (!data.taskId || data.taskId === taskId)) {
 							setStatus(data)
 
 							if (data.status === "output" && data.response) {
@@ -166,7 +179,7 @@ export const McpExecution = ({
 				}
 			}
 		},
-		[executionId],
+		[executionId, taskId],
 	)
 
 	useEvent("message", onMessage)
@@ -211,7 +224,7 @@ export const McpExecution = ({
 											status.status === "started" ||
 											status.status === "output" ||
 											status.status === "completed",
-										"bg-red-400": status.status === "error",
+										"bg-red-400": status.status === "error" || status.status === "cancelled",
 									})}
 								/>
 								<div
@@ -220,13 +233,16 @@ export const McpExecution = ({
 											status.status === "started" ||
 											status.status === "output" ||
 											status.status === "completed",
-										"text-vscode-errorForeground": status.status === "error",
+										"text-vscode-errorForeground":
+											status.status === "error" || status.status === "cancelled",
 									})}>
 									{status.status === "started" || status.status === "output"
 										? t("execution.running")
 										: status.status === "completed"
 											? t("execution.completed")
-											: t("execution.error")}
+											: status.status === "cancelled"
+												? t("execution.cancelled")
+												: t("execution.error")}
 								</div>
 								{status.status === "error" && "error" in status && status.error && (
 									<div className="whitespace-nowrap">({status.error})</div>
@@ -309,7 +325,7 @@ export const McpExecution = ({
 					response={formattedResponseText}
 					isJson={responseIsJson}
 					hasArguments={!!(isArguments || useMcpServer?.arguments || argumentsText)}
-					isPartial={status ? status.status !== "completed" : false}
+					isPartial={status?.status === "started" || status?.status === "output"}
 				/>
 			</div>
 		</>

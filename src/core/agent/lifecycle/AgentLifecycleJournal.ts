@@ -299,6 +299,9 @@ export class AgentLifecycleJournal {
 							{ sequence: event.sequence, eventId: event.eventId },
 						)
 					}
+					if (options.durable === true) {
+						await this.persistEvent(paths.eventsPath, existingEvent, { durable: true, replayed: true })
+					}
 					return {
 						event: cloneEvent(existingEvent),
 						snapshot: cloneSnapshot(loaded.snapshot ?? snapshotFromEvent(existingEvent)),
@@ -338,21 +341,7 @@ export class AgentLifecycleJournal {
 					throw wrapRecoveryError(error, this.taskId, event)
 				}
 
-				try {
-					await appendLifecycleEventLine(
-						paths.eventsPath,
-						`${JSON.stringify(event)}\n`,
-						options.durable === true,
-					)
-				} catch (error) {
-					throw new AgentLifecycleRecoveryError(
-						"write_failed",
-						`Failed to append lifecycle event for task ${this.taskId}: ${error instanceof Error ? error.message : String(error)}`,
-						this.taskId,
-						{ eventId: event.eventId, sequence: event.sequence, filePath: paths.eventsPath },
-						error,
-					)
-				}
+				await this.persistEvent(paths.eventsPath, event, { durable: options.durable })
 
 				this.currentSnapshot = next
 				const snapshotWritten = await this.shouldWriteSnapshot(paths)
@@ -371,6 +360,31 @@ export class AgentLifecycleJournal {
 
 	appendEvent(input: AgentLifecycleEventInput): Promise<AgentLifecycleAppendReceipt> {
 		return this.append(input)
+	}
+
+	private async persistEvent(
+		filePath: string,
+		event: AgentLifecycleEvent,
+		options: AgentLifecycleAppendOptions & { replayed?: boolean },
+	): Promise<void> {
+		try {
+			if (options.replayed) {
+				// A readable record may still be unsynced after a failed append.
+				await syncLifecycleEventFile(filePath)
+				await syncLifecycleDirectory(path.dirname(filePath))
+			} else {
+				await appendLifecycleEventLine(filePath, `${JSON.stringify(event)}\n`, options.durable === true)
+			}
+		} catch (error) {
+			const action = options.replayed ? "sync" : "append"
+			throw new AgentLifecycleRecoveryError(
+				"write_failed",
+				`Failed to ${action} lifecycle event for task ${this.taskId}: ${error instanceof Error ? error.message : String(error)}`,
+				this.taskId,
+				{ eventId: event.eventId, sequence: event.sequence, filePath },
+				error,
+			)
+		}
 	}
 
 	/** Write the current snapshot immediately, even when periodic snapshots are disabled. */
@@ -628,14 +642,19 @@ async function appendLifecycleEventLine(filePath: string, line: string, durable:
 		fileExisted = false
 	}
 
-	const handle = await fs.open(filePath, "a")
+	await syncLifecycleEventFile(filePath, line)
+	if (!fileExisted) await syncLifecycleDirectory(path.dirname(filePath))
+}
+
+async function syncLifecycleEventFile(filePath: string, line?: string): Promise<void> {
+	// Open existing files without O_CREAT when acknowledging a replay.
+	const handle = await fs.open(filePath, line === undefined ? "r+" : "a")
 	try {
-		await handle.writeFile(line, "utf8")
+		if (line !== undefined) await handle.writeFile(line, "utf8")
 		await handle.sync()
 	} finally {
 		await handle.close()
 	}
-	if (!fileExisted) await syncLifecycleDirectory(path.dirname(filePath))
 }
 
 /** Read and validate only the new lifecycle journal file. */

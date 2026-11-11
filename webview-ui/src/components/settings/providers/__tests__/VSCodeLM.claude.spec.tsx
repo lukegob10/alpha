@@ -7,7 +7,10 @@ import { vscode } from "@src/utils/vscode"
 
 vi.mock("../../ThinkingBudget", () => ({ ThinkingBudget: () => null }))
 vi.mock("@src/i18n/TranslationContext", () => ({
-	useAppTranslation: () => ({ t: (key: string) => key }),
+	useAppTranslation: () => ({
+		t: (key: string, options?: { label?: string }) =>
+			key === "settings:helpFor" ? `Help for ${options?.label}` : key,
+	}),
 }))
 vi.mock("@src/utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
 
@@ -38,7 +41,9 @@ describe("VSCodeLM saved selection with the real picker", () => {
 		const update = renderProvider(claude)
 
 		expect(screen.getByTestId("model-picker-button")).toHaveTextContent("Claude Opus 5.5")
-		expect(screen.getByText("settings:modelInfo.contextWindow")).toBeInTheDocument()
+		expect(screen.queryByText("settings:modelInfo.contextWindow")).not.toBeInTheDocument()
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:modelPicker.label" }))
+		expect(screen.getByText("settings:modelInfo.contextWindow")).toBeVisible()
 		expect(update).not.toHaveBeenCalled()
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		expect(claude).toEqual(original)
@@ -48,6 +53,17 @@ describe("VSCodeLM saved selection with the real picker", () => {
 		})
 		expect(screen.getByTestId("model-picker-button")).toHaveTextContent("Claude Opus 5.5")
 		expect(update).not.toHaveBeenCalled()
+	})
+
+	it("names the context selector and keeps its optional explanation in help without editing the saved route", () => {
+		const update = renderProvider(claude)
+		expect(screen.getByRole("combobox", { name: "settings:providers.vscodeLmContextSize.label" })).toBeVisible()
+		expect(screen.queryByText("settings:providers.vscodeLmContextSize.description")).not.toBeInTheDocument()
+		expect(screen.getByText("settings:providers.vscodeLmWarning")).toBeVisible()
+		fireEvent.click(screen.getByRole("button", { name: "Help for settings:providers.vscodeLmContextSize.label" }))
+		expect(screen.getByText("settings:providers.vscodeLmContextSize.description")).toBeVisible()
+		expect(update).not.toHaveBeenCalled()
+		expect(claude.id).toBe("opaque-saved-claude-route")
 	})
 
 	it("keeps a historical decorated exact ID usable in settings despite an opaque family", () => {

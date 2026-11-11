@@ -415,15 +415,30 @@ describe("editFileTool", () => {
 			expect(mockAskApproval).toHaveBeenCalled()
 		})
 
-		it("passes the raw baseline to the diff preview", async () => {
+		it("preserves the raw approval baseline when a background save reports an external change", async () => {
 			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
+			const staleError = new Error("File changed after approval")
+			mockAskApproval.mockImplementationOnce(async () => {
+				mockedFsReadFile.mockResolvedValue("external changes")
+				return true
+			})
+			mockTask.diffViewProvider.saveDirectly.mockRejectedValueOnce(staleError)
 
 			await executeEditFileTool({ old_string: "Line 2", new_string: "Changed" }, { fileContent: rawBaseline })
 
-			expect(mockTask.diffViewProvider.open).toHaveBeenCalledWith(testFilePath, {
-				exists: true,
-				content: rawBaseline,
-			})
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+				testFilePath,
+				"Line 1\r\nChanged\r\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: rawBaseline },
+			)
+			expect(mockedFsReadFile).toHaveBeenCalledOnce()
+			expect(mockHandleError).toHaveBeenCalledWith("edit_file", staleError)
+			expect(mockTask.diffViewProvider.reset).toHaveBeenCalledOnce()
+			expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockTask.didEditFile).toBe(false)
 		})
 
 		it("defaults expected_replacements to 1", async () => {
@@ -555,24 +570,100 @@ describe("editFileTool", () => {
 	})
 
 	describe("approval workflow", () => {
+		it.each([undefined, false, true])(
+			"keeps edits in the background after approval with saved focus preference=%s",
+			async (savedPreference) => {
+				mockTask.providerRef.deref.mockReturnValue({
+					getState: vi.fn().mockResolvedValue({
+						diagnosticsEnabled: true,
+						writeDelayMs: 1000,
+						...(savedPreference === undefined
+							? {}
+							: { experiments: { preventFocusDisruption: savedPreference } }),
+					}),
+				})
+				mockTask.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+				let approve!: (approved: boolean) => void
+				const approval = new Promise<boolean>((resolve) => {
+					approve = resolve
+				})
+				let reachedApproval!: () => void
+				const approvalStarted = new Promise<void>((resolve) => {
+					reachedApproval = resolve
+				})
+				mockAskApproval.mockImplementationOnce(() => {
+					reachedApproval()
+					return approval
+				})
+				const execution = executeEditFileTool()
+				await approvalStarted
+
+				expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+				expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+				expect(mockTask.diffViewProvider.update).not.toHaveBeenCalled()
+				expect(mockTask.diffViewProvider.scrollToFirstDiff).not.toHaveBeenCalled()
+				expect(mockAskApproval).toHaveBeenCalledWith("tool", expect.any(String), undefined, true)
+				expect(JSON.parse(mockAskApproval.mock.calls[0][1])).toMatchObject({
+					originalContent: testFileContent,
+					finalContent: "Line 1\nModified Line 2\nLine 3\nLine 4",
+					content: "mock-diff",
+					isProtected: true,
+				})
+
+				approve(true)
+				await execution
+
+				expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+					testFilePath,
+					"Line 1\nModified Line 2\nLine 3\nLine 4",
+					false,
+					true,
+					1000,
+					{ exists: true, content: testFileContent },
+				)
+				expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+				expect(mockTask.diffViewProvider.reset).toHaveBeenCalledOnce()
+			},
+		)
+
 		it("saves changes when user approves", async () => {
 			mockAskApproval.mockResolvedValue(true)
 
 			await executeEditFileTool()
 
-			expect(mockTask.diffViewProvider.saveChanges).toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalled()
 			expect(mockTask.didEditFile).toBe(true)
 			expect(mockTask.recordToolUsage).toHaveBeenCalledWith("edit_file")
 		})
 
-		it("reverts changes when user rejects", async () => {
+		it("does not write or claim edits when user rejects", async () => {
 			mockAskApproval.mockResolvedValue(false)
 
 			const result = await executeEditFileTool()
 
-			expect(mockTask.diffViewProvider.revertChanges).toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.revertChanges).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 			expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.reset).toHaveBeenCalledOnce()
+			expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockTask.didEditFile).toBe(false)
 			expect(result).toContain("rejected")
+		})
+
+		it("does not save when approval is cancelled", async () => {
+			const cancellation = new Error("Approval cancelled")
+			mockAskApproval.mockRejectedValueOnce(cancellation)
+
+			await executeEditFileTool()
+
+			expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.reset).toHaveBeenCalledOnce()
+			expect(mockTask.fileContextTracker.trackFileContext).not.toHaveBeenCalled()
+			expect(mockTask.didEditFile).toBe(false)
+			expect(mockHandleError).toHaveBeenCalledWith("edit_file", cancellation)
 		})
 	})
 
@@ -670,7 +761,7 @@ describe("editFileTool", () => {
 		})
 
 		it("handles general errors and resets diff view", async () => {
-			mockTask.diffViewProvider.open.mockRejectedValueOnce(new Error("General error"))
+			mockTask.diffViewProvider.saveDirectly.mockRejectedValueOnce(new Error("General error"))
 
 			await executeEditFileTool()
 
@@ -692,9 +783,13 @@ describe("editFileTool", () => {
 			{ old_string: "Line 1\nLine 2", new_string: "$& $$ $' &amp;\nchanged" },
 			{ fileContent: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
 		)
-		expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+		expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+			testFilePath,
 			`\uFEFF$& $$ $' &amp;${eol}changed${eol}Line 3`,
+			false,
 			true,
+			1000,
+			{ exists: true, content: `\uFEFFLine 1${eol}Line 2${eol}Line 3` },
 		)
 	})
 
@@ -703,29 +798,35 @@ describe("editFileTool", () => {
 		expect(result).toMatch(/mixed line endings/i)
 		expect(mockAskApproval).not.toHaveBeenCalled()
 		expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
+		expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
 	})
 
-	it("keeps newly created files out of editor tabs during background editing", async () => {
-		mockTask.providerRef.deref.mockReturnValue({
-			getState: vi.fn().mockResolvedValue({
-				diagnosticsEnabled: false,
-				writeDelayMs: 0,
-				experiments: { preventFocusDisruption: true },
-			}),
-		})
+	it.each([undefined, false, true])(
+		"keeps new files out of editor tabs with saved focus preference=%s",
+		async (savedPreference) => {
+			mockTask.providerRef.deref.mockReturnValue({
+				getState: vi.fn().mockResolvedValue({
+					diagnosticsEnabled: false,
+					writeDelayMs: 0,
+					...(savedPreference === undefined
+						? {}
+						: { experiments: { preventFocusDisruption: savedPreference } }),
+				}),
+			})
 
-		await executeEditFileTool({ old_string: "", new_string: "new content" }, { fileExists: false })
+			await executeEditFileTool({ old_string: "", new_string: "new content" }, { fileExists: false })
 
-		expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
-		expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
-			testFilePath,
-			"new content",
-			false,
-			false,
-			0,
-			{ exists: false },
-		)
-	})
+			expect(mockTask.diffViewProvider.open).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledExactlyOnceWith(
+				testFilePath,
+				"new content",
+				false,
+				false,
+				0,
+				{ exists: false },
+			)
+		},
+	)
 
 	describe("CRLF normalization", () => {
 		it("preserves CRLF line endings on output", async () => {
@@ -738,7 +839,14 @@ describe("editFileTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\r\nModified Line 2\r\nLine 3", true)
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\r\nModified Line 2\r\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: contentWithCRLF },
+			)
 		})
 
 		it("passes the raw CRLF baseline to a direct save", async () => {
@@ -777,7 +885,14 @@ describe("editFileTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\nModified Line 2\nLine 3", true)
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\nModified Line 2\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: "Line 1\nLine 2\nLine 3" },
+			)
 		})
 	})
 
@@ -793,9 +908,13 @@ describe("editFileTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith(
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
 				"start\nif (true) {\n    return 2\n}\nend",
+				false,
 				true,
+				1000,
+				{ exists: true, content: "start\nif (true) {\n\treturn 1\n}\nend" },
 			)
 		})
 
@@ -810,7 +929,14 @@ describe("editFileTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\n    Cost: $100\nLine 3", true)
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\n    Cost: $100\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: "Line 1\n\tLine 2\nLine 3" },
+			)
 		})
 
 		it("falls back to token-based regex when whitespace-tolerant regex cannot match", async () => {
@@ -824,7 +950,14 @@ describe("editFileTool", () => {
 
 			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockAskApproval).toHaveBeenCalled()
-			expect(mockTask.diffViewProvider.update).toHaveBeenCalledWith("Line 1\nRow 2\nLine 3", true)
+			expect(mockTask.diffViewProvider.saveDirectly).toHaveBeenCalledWith(
+				testFilePath,
+				"Line 1\nRow 2\nLine 3",
+				false,
+				true,
+				1000,
+				{ exists: true, content: "Line 1\nLine 2\nLine 3" },
+			)
 		})
 	})
 

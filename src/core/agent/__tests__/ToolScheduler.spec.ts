@@ -309,7 +309,7 @@ describe("ToolScheduler", () => {
 		controller.abort(new Error("cancelled"))
 		const outcome = await run
 		expect(outcome.results[0].status).toBe("cancelled")
-		expect(statuses).toEqual(["started", "error"])
+		expect(statuses).toEqual(["started", "cancelled"])
 		expect(task.userMessageContent).toContainEqual(
 			expect.objectContaining({ type: "tool_result", tool_use_id: "mcp-cancelled", is_error: true }),
 		)

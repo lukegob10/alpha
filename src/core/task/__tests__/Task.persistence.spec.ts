@@ -14,7 +14,6 @@ import {
 	type ProviderSettings,
 	type SubagentGroupState,
 } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import { Task } from "../Task"
 import { buildOpenAiResponsesInput } from "../../../api/providers/openai-responses"
@@ -372,10 +371,6 @@ describe("Task persistence", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		const storageUri = { fsPath: path.join(os.tmpdir(), "test-storage") }
 

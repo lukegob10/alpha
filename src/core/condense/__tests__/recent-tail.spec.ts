@@ -1,8 +1,9 @@
 import type Anthropic from "@anthropic-ai/sdk"
-import { TelemetryService } from "@alpha-code/telemetry"
 import { BaseProvider } from "../../../api/providers/base-provider"
 import type { ApiStream } from "../../../api/transform/stream"
 import type { ApiMessage } from "../../task-persistence/apiMessages"
+import { getPendingAgentMailIds } from "../../task-persistence/agentMailSampling"
+import { getPersistedAgentNotificationIds } from "../../task-persistence/agentNotifications"
 import { manageContext } from "../../context-management"
 import {
 	cleanupAfterTruncation,
@@ -76,11 +77,114 @@ const options = (messages: ApiMessage[], apiHandler = new SummaryProvider()) => 
 	recentTailTokenBudget: 1000,
 })
 
-beforeEach(() => {
-	if (!TelemetryService.hasInstance()) TelemetryService.createInstance([])
-})
-
 describe("exact recent working set", () => {
+	it("retains unread mail once across repeated compaction, reload, and mailbox ACK recovery", async () => {
+		const mail: ApiMessage = {
+			role: "user",
+			input_origin: "agent",
+			agent_message_id: "durable-mail",
+			content: "<agent_message>Child's exact finding</agent_message>",
+		}
+		let messages: ApiMessage[] = [...history(), { role: "assistant", content: "Done" }, mail]
+		for (let round = 0; round < 3; round++) {
+			messages.push({ role: "assistant", content: "More investigation. ".repeat(1000) })
+			const compacted = await summarizeConversation({ ...options(messages), recentTailTokenBudget: 0 })
+			expect(compacted.status).toBe("reduced")
+			messages = JSON.parse(JSON.stringify(compacted.messages))
+			const active = getEffectiveApiHistory(messages)
+			expect(active.filter((message) => message.agent_message_id === mail.agent_message_id)).toHaveLength(1)
+			expect(active.find((message) => message.agent_message_id === mail.agent_message_id)).toMatchObject(mail)
+			expect([...getPendingAgentMailIds(messages)]).toEqual(["durable-mail"])
+			expect([...getPersistedAgentNotificationIds(messages)]).toEqual(["durable-mail"])
+			expect(compacted.newContextTokens).toBeLessThanOrEqual(3000)
+		}
+		messages.push({
+			role: "assistant",
+			content: "Successful regular response. ".repeat(1000),
+			sampled_agent_message_ids: ["durable-mail"],
+		})
+		const compacted = await summarizeConversation({ ...options(messages), recentTailTokenBudget: 0 })
+		expect(compacted.status).toBe("reduced")
+		expect(getEffectiveApiHistory(compacted.messages).some((message) => message.agent_message_id)).toBe(false)
+		expect([...getPendingAgentMailIds(compacted.messages)]).toEqual([])
+	})
+
+	it("preserves caller correction ordering after pending agent mail", async () => {
+		const messages: ApiMessage[] = [
+			...history(),
+			{ role: "assistant", content: "Done" },
+			{
+				role: "user",
+				input_origin: "agent",
+				agent_message_id: "mail",
+				content: "<agent_message>Use A</agent_message>",
+			},
+			{ role: "user", input_origin: "human", content: "<user_message>Use B instead.</user_message>" },
+			{ role: "user", content: "Large environment. ".repeat(1000) },
+		]
+		const result = await summarizeConversation({ ...options(messages), recentTailTokenBudget: 0 })
+		const active = getEffectiveApiHistory(result.messages)
+		expect(result.status).toBe("reduced")
+		expect(active.slice(1).map((message) => message.input_origin)).toEqual(["agent", "human"])
+	})
+
+	it("leaves history intact when unread mail cannot fit the compaction budget", async () => {
+		const provider = new SummaryProvider()
+		const messages: ApiMessage[] = [
+			...history(),
+			{ role: "assistant", content: "Done" },
+			{ role: "user", input_origin: "agent", agent_message_id: "large-mail", content: "Evidence. ".repeat(2000) },
+		]
+		const result = await summarizeConversation({
+			...options(messages, provider),
+			recentTailTokenBudget: 0,
+			maxContextTokens: 500,
+		})
+		expect(result.status).toBe("no_progress")
+		expect(result.messages).toBe(messages)
+		expect(provider.requests).toEqual([])
+	})
+
+	it("allows a regular request when unread mail exceeds the preferred summary target but raw input fits", async () => {
+		const provider = new SummaryProvider()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original task" },
+			{ role: "assistant", content: "Investigating" },
+			{ role: "user", input_origin: "agent", agent_message_id: "mail", content: "Evidence. ".repeat(500) },
+		]
+		const result = await manageContext({
+			...options(messages, provider),
+			totalTokens: 19000,
+			contextWindow: 20000,
+			maxTokens: 2000,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 20,
+			recentTailTokenBudget: 0,
+		})
+		expect(result.status).toBe("unchanged")
+		expect(result.messages).toBe(messages)
+		expect(provider.requests).toEqual([])
+	})
+
+	it("keeps unsampled agent mail exact when the newest step exceeds the tail budget", async () => {
+		const mail: ApiMessage = {
+			role: "user",
+			input_origin: "agent",
+			agent_message_id: "unread-mail",
+			content: "<agent_message>Exact finding: migration 41 has a destructive down path.</agent_message>",
+		}
+		const messages: ApiMessage[] = [
+			...history(),
+			{ role: "assistant", content: "Investigation continues." },
+			mail,
+			{ role: "user", content: "Large environment context. ".repeat(1000) },
+		]
+		const result = await summarizeConversation({ ...options(messages), recentTailTokenBudget: 1 })
+		expect(result.status).toBe("reduced")
+		const active = getEffectiveApiHistory(result.messages)
+		expect(active.find((message) => message.agent_message_id === mail.agent_message_id)).toMatchObject(mail)
+	})
+
 	it("keeps closed occurrences of a reused provider call ID as independent steps", () => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Original task" },
@@ -656,6 +760,37 @@ describe("exact recent working set", () => {
 })
 
 describe("budgeted truncation and cancellation", () => {
+	it("retains unread mail outside the newest tail during token-budget truncation", async () => {
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Original task" },
+			{ role: "assistant", content: "Acknowledged" },
+			{
+				role: "user",
+				input_origin: "agent",
+				agent_message_id: "mail",
+				content: "<agent_message>Exact evidence</agent_message>",
+			},
+			{ role: "user", content: "Old generated context. ".repeat(2000) },
+			{ role: "assistant", content: "Older investigation" },
+			{ role: "user", content: "Continue" },
+			{ role: "assistant", content: [{ type: "tool_use", id: "read", name: "read_file", input: {} }] },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "read", content: "Current result" }] },
+		]
+		const result = await manageContext({
+			...options(messages),
+			totalTokens: 19000,
+			contextWindow: 3000,
+			maxTokens: 1000,
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 50,
+		})
+		expect(result.status).toBe("reduced")
+		const active = getEffectiveApiHistory(result.messages)
+		expect(active.find((message) => message.agent_message_id === "mail")).toEqual(messages[2])
+		expect(hasToolCallResultIntegrity(active)).toBe(true)
+		expect(result.newContextTokensAfterTruncation).toBeLessThanOrEqual(result.targetContextTokens!)
+	})
+
 	it("fits an exact recent transaction when the provider reused an older closed call ID", async () => {
 		const provider = new SummaryProvider()
 		const messages: ApiMessage[] = [

@@ -12,10 +12,9 @@ import React, {
 import DynamicTextArea from "react-textarea-autosize"
 import { SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
-import { restoreTaskMode, type AlphaMessage, type ApprovalMode } from "@alpha-code/types"
+import { restoreTaskMode, type AlphaMessage, type ApprovalMode, type ExtensionMessage } from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
-import { WebviewMessage } from "@alpha/WebviewMessage"
 import { Mode, codeModeSlug, getAllModes, planModeSlug } from "@alpha/modes"
 
 import { vscode } from "@src/utils/vscode"
@@ -24,6 +23,7 @@ import { useShellState } from "@src/context/ExtensionStateContext"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import {
 	ContextMenuOptionType,
+	type ContextMenuQueryItem,
 	getContextMenuOptions,
 	insertMention,
 	removeMention,
@@ -135,6 +135,7 @@ export const ChatTextArea = memo(
 				taskReasoning,
 				currentTaskId,
 			} = useShellState()
+			const taskId = conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId
 			const [reasoningProfileLoading, setReasoningProfileLoading] = useState(false)
 			useEffect(() => setReasoningProfileLoading(false), [taskReasoning, currentTaskId, currentApiConfigName])
 
@@ -147,7 +148,12 @@ export const ChatTextArea = memo(
 				}
 			}, [listApiConfigMeta, currentApiConfigName])
 
-			const [gitCommits, setGitCommits] = useState<any[]>([])
+			const [commitSearchResult, setCommitSearchResult] = useState<{
+				taskId?: string
+				cwd?: string
+				query: string
+				items: ContextMenuQueryItem[]
+			}>()
 			const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
 			const searchRequestIdRef = useRef("")
 			// Handle inserted text and search results.
@@ -185,16 +191,6 @@ export const ChatTextArea = memo(
 								}
 							}, 0)
 						}
-					} else if (message.type === "commitSearchResults") {
-						const commits = message.commits.map((commit: any) => ({
-							type: ContextMenuOptionType.Git,
-							value: commit.hash,
-							label: commit.subject,
-							description: `${commit.shortHash} by ${commit.author} on ${commit.date}`,
-							icon: "$(git-commit)",
-						}))
-
-						setGitCommits(commits)
 					} else if (message.type === "fileSearchResults") {
 						if (message.requestId === searchRequestIdRef.current) {
 							setFileSearchResults(message.results || [])
@@ -233,7 +229,7 @@ export const ChatTextArea = memo(
 						(selectedType === null && /^[a-z]{2,4}$/i.test(searchQuery))),
 				searchQuery,
 				cwd ?? "",
-				conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId,
+				taskId,
 			)
 			const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
 			const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
@@ -243,7 +239,7 @@ export const ChatTextArea = memo(
 
 			// Use custom hook for prompt history navigation
 			const { handleHistoryNavigation, resetHistoryNavigation, resetOnInputChange } = usePromptHistory({
-				taskId: conversationAlphaMessages !== undefined ? conversationTaskId : currentTaskId,
+				taskId,
 				alphaMessages: conversationAlphaMessages ?? alphaMessages,
 				taskHistory,
 				cwd,
@@ -253,19 +249,48 @@ export const ChatTextArea = memo(
 				onRestoreHistoryDraft,
 			})
 
-			// Fetch git commits when Git is selected or when typing a hash.
+			const commitSearchActive =
+				showContextMenu &&
+				(selectedType === ContextMenuOptionType.Git ||
+					(selectedType !== ContextMenuOptionType.Ticket && /^[a-f0-9]+$/i.test(searchQuery)))
 			useEffect(() => {
-				if (
-					selectedType === ContextMenuOptionType.Git ||
-					(selectedType !== ContextMenuOptionType.Ticket && /^[a-f0-9]+$/i.test(searchQuery))
-				) {
-					const message: WebviewMessage = {
-						type: "searchCommits",
-						query: searchQuery || "",
-					} as const
-					vscode.postMessage(message)
+				setCommitSearchResult(undefined)
+				if (!commitSearchActive) return
+
+				const requestId = crypto.randomUUID()
+				const receive = ({ data }: MessageEvent<ExtensionMessage>) => {
+					if (
+						data?.type !== "commitSearchResults" ||
+						data.requestId !== requestId ||
+						data.taskId !== taskId ||
+						!Array.isArray(data.commits)
+					) {
+						return
+					}
+					setCommitSearchResult({
+						taskId,
+						cwd,
+						query: searchQuery,
+						items: data.commits.map((commit) => ({
+							type: ContextMenuOptionType.Git,
+							value: commit.hash,
+							label: commit.subject,
+							description: `${commit.shortHash} by ${commit.author} on ${commit.date}`,
+							icon: "$(git-commit)",
+						})),
+					})
 				}
-			}, [selectedType, searchQuery])
+				window.addEventListener("message", receive)
+				vscode.postMessage({ type: "searchCommits", query: searchQuery, requestId, taskId })
+				return () => window.removeEventListener("message", receive)
+			}, [commitSearchActive, searchQuery, taskId, cwd])
+			const gitCommits =
+				commitSearchActive &&
+				commitSearchResult?.taskId === taskId &&
+				commitSearchResult?.cwd === cwd &&
+				commitSearchResult?.query === searchQuery
+					? commitSearchResult.items
+					: undefined
 
 			const handleSend = useCallback(() => {
 				resetHistoryNavigation()
@@ -317,7 +342,7 @@ export const ChatTextArea = memo(
 				return [
 					{ type: ContextMenuOptionType.Problems, value: "problems" },
 					{ type: ContextMenuOptionType.Terminal, value: "terminal" },
-					...gitCommits,
+					...(gitCommits ?? []),
 					...openedTabs
 						.filter((tab) => tab.path)
 						.map((tab) => ({

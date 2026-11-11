@@ -6,7 +6,6 @@ import * as path from "path"
 import * as vscode from "vscode"
 
 import type { ProviderName } from "@alpha-code/types"
-import { TelemetryService } from "@alpha-code/telemetry"
 
 import {
 	importSettings,
@@ -108,10 +107,6 @@ describe("importExport", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
 
 		mockProviderSettingsManager = {
 			export: vi.fn(),
@@ -498,7 +493,11 @@ describe("importExport", () => {
 				customModesManager: mockCustomModesManager,
 			})
 
-			expect(result).toEqual({ success: false, error: "[providerProfiles.currentApiConfigName]: Required" })
+			// Zod 4 includes the expected type in missing-field diagnostics.
+			expect(result).toEqual({
+				success: false,
+				error: "[providerProfiles.currentApiConfigName]: Invalid input: expected string, received undefined",
+			})
 			expect(fs.readFile).toHaveBeenCalledWith("/mock/path/settings.json", "utf-8")
 			expect(mockProviderSettingsManager.import).not.toHaveBeenCalled()
 			expect(mockContextProxy.setValues).not.toHaveBeenCalled()

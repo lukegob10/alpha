@@ -1,8 +1,8 @@
 // npx vitest core/webview/__tests__/AlphaProvider.apiHandlerRebuild.spec.ts
 
 import * as vscode from "vscode"
+import * as fs from "fs/promises"
 
-import { TelemetryService } from "@alpha-code/telemetry"
 import { getModelId } from "@alpha-code/types"
 
 import { ContextProxy } from "../../config/ContextProxy"
@@ -10,10 +10,22 @@ import { Task, TaskOptions } from "../../task/Task"
 import { AlphaProvider } from "../AlphaProvider"
 
 // Mock setup
-vi.mock("fs/promises", () => {
+vi.mock("fs/promises", async (importOriginal) => {
+	const { lstat, realpath } = await importOriginal<typeof import("fs/promises")>()
 	const transactionFiles = new Map<string, string>()
 	const transactionDirectories = new Set<string>()
+	const fenceKey = (filePath: string) => filePath.split(/[\\/]/).at(-1)!
+	const fenceHandle = (filePath: string) => ({
+		writeFile: vi.fn(async (data: unknown) => {
+			transactionFiles.set(fenceKey(filePath), String(data))
+		}),
+		sync: vi.fn(),
+		close: vi.fn(),
+	})
 	return {
+		lstat,
+		realpath,
+		open: vi.fn(async (filePath: string) => fenceHandle(filePath)),
 		mkdir: vi.fn().mockImplementation(async (filePath: string) => {
 			if (filePath.includes(".transaction.lock")) transactionDirectories.add(filePath)
 		}),
@@ -21,6 +33,12 @@ vi.mock("fs/promises", () => {
 			if (filePath.includes(".transaction.lock")) transactionFiles.set(filePath, String(data))
 		}),
 		readFile: vi.fn().mockImplementation((filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				return data === undefined
+					? Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
+					: Promise.resolve(data)
+			}
 			if (transactionFiles.has(filePath)) return Promise.resolve(transactionFiles.get(filePath))
 			if (filePath.includes(".transaction.lock")) {
 				return Promise.reject(Object.assign(new Error("not found"), { code: "ENOENT" }))
@@ -30,12 +48,24 @@ vi.mock("fs/promises", () => {
 				: Promise.resolve("")
 		}),
 		stat: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(filePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				return { isFile: () => true, isDirectory: () => false, size: Buffer.byteLength(data) }
+			}
 			if (!transactionDirectories.has(filePath)) {
 				throw Object.assign(new Error("not found"), { code: "ENOENT" })
 			}
 			return { isDirectory: () => true }
 		}),
 		rename: vi.fn().mockImplementation(async (sourcePath: string, destinationPath: string) => {
+			if (sourcePath.includes("provider-profiles")) {
+				const data = transactionFiles.get(fenceKey(sourcePath))
+				if (data === undefined) throw Object.assign(new Error("not found"), { code: "ENOENT" })
+				transactionFiles.delete(fenceKey(sourcePath))
+				transactionFiles.set(fenceKey(destinationPath), data)
+				return
+			}
 			if (transactionDirectories.has(destinationPath)) {
 				throw Object.assign(new Error("not empty"), { code: "ENOTEMPTY" })
 			}
@@ -49,7 +79,11 @@ vi.mock("fs/promises", () => {
 				transactionFiles.set(`${destinationPath}${filePath.slice(sourcePath.length)}`, data)
 			}
 		}),
+		rm: vi.fn(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
+		}),
 		unlink: vi.fn().mockImplementation(async (filePath: string) => {
+			if (filePath.includes("provider-profiles")) transactionFiles.delete(fenceKey(filePath))
 			transactionFiles.delete(filePath)
 		}),
 		rmdir: vi.fn().mockImplementation(async (filePath: string) => {
@@ -64,8 +98,7 @@ vi.mock("proper-lockfile", () => ({
 }))
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
-	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
-		.resolveTaskDirectoryPath,
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: vi.fn(async (defaultPath: string) => defaultPath),
 	getSettingsDirectoryPath: vi.fn().mockResolvedValue("/test/settings/path"),
 	getTaskDirectoryPath: vi.fn().mockResolvedValue("/test/task/path"),
@@ -178,10 +211,7 @@ describe("AlphaProvider - API Handler Rebuild Guard", () => {
 
 	beforeEach(async () => {
 		vi.clearAllMocks()
-
-		if (!TelemetryService.hasInstance()) {
-			TelemetryService.createInstance([])
-		}
+		await fs.unlink("provider-profiles")
 
 		const globalState: Record<string, any> = {
 			mode: "code",

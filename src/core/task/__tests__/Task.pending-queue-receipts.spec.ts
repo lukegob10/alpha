@@ -13,7 +13,6 @@ vi.mock("../../environment/getEnvironmentDetails", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../environment/getEnvironmentDetails")>()),
 	captureEnvironmentDetails: vi.fn(),
 }))
-vi.mock("@alpha-code/telemetry", () => ({ TelemetryService: { instance: { captureConversationMessage: vi.fn() } } }))
 
 type Content = Anthropic.Messages.ContentBlockParam[]
 const stopBeforeProvider = new Error("fixture: stop before provider request")

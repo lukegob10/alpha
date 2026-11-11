@@ -17,6 +17,7 @@ export type ExperimentId = z.infer<typeof experimentIdsSchema>
  */
 
 export const experimentsSchema = z.object({
+	// Import compatibility only: background editing remains enabled even when this is false.
 	preventFocusDisruption: z.boolean().optional(),
 	customTools: z.boolean().optional(),
 })

@@ -1,5 +1,4 @@
 import React, { Component } from "react"
-import { telemetryClient } from "@src/utils/TelemetryClient"
 import { reportWebviewError } from "@src/utils/webviewErrors"
 import { withTranslation, WithTranslation } from "react-i18next"
 
@@ -11,7 +10,6 @@ type ErrorState = {
 	hasError: boolean
 	error?: string
 	componentStack?: string | null
-	timestamp?: number
 }
 
 class ErrorBoundary extends Component<ErrorProps, ErrorState> {
@@ -32,7 +30,6 @@ class ErrorBoundary extends Component<ErrorProps, ErrorState> {
 		return {
 			hasError: true,
 			error: errorMessage,
-			timestamp: Date.now(),
 		}
 	}
 
@@ -40,29 +37,21 @@ class ErrorBoundary extends Component<ErrorProps, ErrorState> {
 		reportWebviewError("render", error)
 		const componentStack = errorInfo.componentStack || ""
 		this.setState({ componentStack })
-		void this.reportError(error, componentStack)
+		void this.enhanceErrorDiagnostics(error, componentStack)
 	}
 
-	private async reportError(error: unknown, componentStack: string) {
+	private async enhanceErrorDiagnostics(error: unknown, componentStack: string) {
 		try {
-			const errorToReport = error instanceof Error ? error : new Error(String(error))
-			if (!(error instanceof Error)) errorToReport.stack = undefined
+			const errorToEnhance = error instanceof Error ? error : new Error(String(error))
+			if (!(error instanceof Error)) errorToEnhance.stack = undefined
 			const { enhanceErrorWithSourceMaps } = await import("@src/utils/sourceMapUtils")
-			const enhancedError = await enhanceErrorWithSourceMaps(errorToReport, componentStack)
+			const enhancedError = await enhanceErrorWithSourceMaps(errorToEnhance, componentStack)
 
 			// Diagnostics may be incomplete; they must never clear the captured failure or retry its children.
 			this.setState((state) => ({
 				error: enhancedError.sourceMappedStack || enhancedError.stack || state.error,
 				componentStack: enhancedError.sourceMappedComponentStack || componentStack,
 			}))
-
-			telemetryClient.capture("error_boundary_caught_error", {
-				error: enhancedError.message,
-				stack: enhancedError.sourceMappedStack || enhancedError.stack,
-				componentStack: enhancedError.sourceMappedComponentStack || componentStack,
-				timestamp: Date.now(),
-				errorType: enhancedError.name,
-			})
 		} catch {
 			console.error("[ErrorBoundary] Failed to enhance render error diagnostics")
 		}

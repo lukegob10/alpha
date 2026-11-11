@@ -4,7 +4,7 @@
 		"types": {
 			"CONDENSE": {
 				"label": "Context Condensing",
-				"description": "Configure how conversation context is condensed to manage token limits. This prompt is used for both manual and automatic context condensing operations."
+				"description": "Instructions sent as a user message when manual or automatic compaction uses a text summary. Task instructions remain in effect."
 			}
 		}
 	}

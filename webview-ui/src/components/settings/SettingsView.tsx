@@ -1,47 +1,31 @@
-import React, {
+import {
+	type KeyboardEvent,
 	forwardRef,
 	memo,
 	useCallback,
 	useEffect,
 	useImperativeHandle,
+	useId,
 	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 } from "react"
-import {
-	CheckCheck,
-	GitBranch,
-	Bell,
-	Database,
-	SquareTerminal,
-	FlaskConical,
-	AlertTriangle,
-	Globe,
-	Info,
-	LucideIcon,
-	Glasses,
-	Plug,
-	Server,
-	ArrowLeft,
-	GitCommitVertical,
-	GraduationCap,
-	Bot,
-} from "lucide-react"
+import { AlertTriangle, Info, Glasses, Plug, Settings2, ArrowLeft, Bot } from "lucide-react"
 
 import {
+	type GlobalSettings,
 	type ProviderSettings,
 	type ExperimentId,
-	type TelemetrySetting,
 	type ProviderProfileRenameRequest,
 	type ProviderProfileRenameResult,
-	type ProviderProfileSaveRequest,
 	providerProfileRenameResultSchema,
 	providerProfileSaveResultSchema,
-	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
+	settingsSaveResultSchema,
 	memorySettingsSchema,
-	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
 } from "@alpha-code/types"
+import deepEqual from "fast-deep-equal"
+import { EXPERIMENT_IDS } from "@alpha/experiments"
 
 import { vscode } from "@src/utils/vscode"
 import { cn } from "@src/lib/utils"
@@ -57,71 +41,47 @@ import {
 	AlertDialogHeader,
 	AlertDialogFooter,
 	Button,
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
 	StandardTooltip,
 } from "@src/components/ui"
 
-import { Tab, TabContent, TabHeader, TabList, TabTrigger } from "../common/Tab"
+import { Tab, TabContent, TabHeader, TabTrigger } from "../common/Tab"
 import { SetExperimentEnabled } from "./types"
-import { SectionHeader } from "./SectionHeader"
 import ApiConfigManager from "./ApiConfigManager"
 import ApiOptions from "./ApiOptions"
-import { AutoApproveSettings } from "./AutoApproveSettings"
-import { AgentsSettings } from "./AgentsSettings"
 import { getManagedAgentSettingsError } from "./agents-settings-validation"
-import { CheckpointSettings } from "./CheckpointSettings"
-import { NotificationSettings } from "./NotificationSettings"
-import { ContextManagementSettings } from "./ContextManagementSettings"
-import { MemorySettings } from "./MemorySettings"
-import { TerminalSettings } from "./TerminalSettings"
-import { ExperimentalSettings } from "./ExperimentalSettings"
-import { LanguageSettings } from "./LanguageSettings"
-import { About } from "./About"
 import { Section } from "./Section"
-import { SkillsSettings } from "./SkillsSettings"
-import { UISettings } from "./UISettings"
-import McpView from "../mcp/McpView"
-import { WorktreesView } from "../worktrees/WorktreesView"
+import { ToolsAgentsSettings } from "./ToolsAgentsSettings"
+import { PreferencesSettings } from "./PreferencesSettings"
+import { AdvancedSettings } from "./AdvancedSettings"
 import { SettingsSearch } from "./SettingsSearch"
+import { SettingsHelp } from "./SettingsHelp"
+import { SectionHeader } from "./SectionHeader"
 import { useSearchIndexRegistry, SearchIndexProvider } from "./useSettingsSearch"
+import { type SettingsCachedState } from "./managed-agent-settings"
 import {
-	toManagedAgentSettingsSavePayload,
-	type SettingsCachedState,
-	withManagedAgentSettingsDefaults,
-} from "./managed-agent-settings"
-
-export const settingsTabsContainer = "flex min-h-0 flex-1 overflow-hidden [&.narrow_.tab-label]:hidden"
-export const settingsTabList =
-	"w-48 data-[compact=true]:w-14 flex-shrink-0 flex flex-col gap-1 overflow-y-auto overflow-x-hidden border-r border-[var(--border-subtle)] bg-vscode-editor-background p-2"
-export const settingsTabTrigger =
-	"whitespace-nowrap overflow-hidden min-w-0 h-9 px-3 box-border flex items-center gap-2 rounded-lg text-vscode-foreground opacity-70 transition-[color,background-color,opacity] hover:bg-vscode-list-hoverBackground hover:opacity-100 data-[compact=true]:w-10 data-[compact=true]:justify-center data-[compact=true]:px-0"
-export const settingsTabTriggerActive = "bg-vscode-list-hoverBackground text-vscode-foreground opacity-100"
+	settingsSectionNames,
+	getSettingsSectionTarget,
+	revealSettingDetails,
+	lazyToolsSearchSettings,
+	type SectionName,
+} from "./settingsNavigation"
+import {
+	acknowledgeSettingsSave,
+	applyAcknowledgedSettings,
+	createSettingsPatch,
+	createSettingsSaveProgress,
+	getEditableSettingsState,
+	getSettingsSavePayload,
+	getSettingsSaveStatus,
+	type SettingsSaveProgress,
+} from "./settingsSave"
 
 export interface SettingsViewRef {
 	checkUnsaveChanges: (then: () => void) => void
 }
 
-export const sectionNames = [
-	"providers",
-	"autoApprove",
-	"agents",
-	"skills",
-	"checkpoints",
-	"notifications",
-	"contextManagement",
-	"terminal",
-	"mcp",
-	"worktrees",
-	"ui",
-	"experimental",
-	"language",
-	"about",
-] as const
-
-export type SectionName = (typeof sectionNames)[number]
+export const sectionNames = settingsSectionNames
+export type { SectionName } from "./settingsNavigation"
 
 type SettingsViewProps = {
 	onDone: () => void
@@ -134,11 +94,22 @@ type ConfirmedProfileRename = Pick<
 > & { requestedName?: string }
 
 const profileSaveTimeoutMs = 30_000
+const profileRenameTimeoutMs = 30_000
 
-function getCurrentProfileId(
-	state: Pick<SettingsCachedState, "currentApiConfigName" | "listApiConfigMeta">,
-	rename?: ConfirmedProfileRename,
-): string | undefined {
+type ProfileSelectionState = Pick<
+	SettingsCachedState,
+	"currentApiConfigName" | "listApiConfigMeta" | "settingsProviderProfile"
+>
+
+function getPairedSettingsProfile(state: ProfileSelectionState) {
+	const snapshot = state.settingsProviderProfile
+	// Task-only projections can change selection before the next full saved-profile snapshot arrives.
+	return snapshot && snapshot.name !== state.currentApiConfigName ? null : snapshot
+}
+
+function getCurrentProfileId(state: ProfileSelectionState, rename?: ConfirmedProfileRename): string | undefined {
+	const snapshot = getPairedSettingsProfile(state)
+	if (snapshot) return snapshot.id
 	const profile = state.listApiConfigMeta?.find(({ name }) => name === state.currentApiConfigName)
 	if (profile) return profile.id
 
@@ -155,16 +126,31 @@ function getCurrentProfileId(
 	return undefined
 }
 
-function captureProfileIdentity(
-	state: Pick<SettingsCachedState, "currentApiConfigName" | "listApiConfigMeta">,
-	requiresId = false,
-) {
+function captureProfileIdentity(state: ProfileSelectionState, requiresId = false) {
 	const id = getCurrentProfileId(state)
-	return { id, name: state.currentApiConfigName, requiresId: requiresId || id !== undefined }
+	const snapshot = getPairedSettingsProfile(state)
+	const version =
+		snapshot?.version ??
+		(snapshot === undefined ? state.listApiConfigMeta?.find((profile) => profile.id === id)?.version : undefined)
+	return {
+		id,
+		name: state.currentApiConfigName,
+		version,
+		requiresId: requiresId || id !== undefined,
+		snapshotUnavailable: snapshot === null && (id !== undefined || state.settingsProviderProfile !== null),
+	}
+}
+
+function getSettingsEditState(state: Parameters<typeof getEditableSettingsState>[0]) {
+	return getEditableSettingsState({
+		...state,
+		apiConfiguration: getPairedSettingsProfile(state)?.configuration ?? state.apiConfiguration,
+	})
 }
 
 const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, targetSection }, ref) => {
 	const { t } = useAppTranslation()
+	const settingsId = useId()
 
 	const extensionState = useExtensionState()
 	const { currentApiConfigName, listApiConfigMeta, uriScheme, settingsImportedAt, didHydrateState } = extensionState
@@ -178,109 +164,63 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const [isProfileSaving, setProfileSaving] = useState(false)
 	const [profileSaveError, setProfileSaveError] = useState<string>()
 	const [errorMessage, setErrorMessage] = useState<string | undefined>(undefined)
-	const [activeTab, setActiveTab] = useState<SectionName>(
-		targetSection && sectionNames.includes(targetSection as SectionName)
-			? (targetSection as SectionName)
-			: "providers",
-	)
-
-	const scrollPositions = useRef<Record<SectionName, number>>(
-		Object.fromEntries(sectionNames.map((s) => [s, 0])) as Record<SectionName, number>,
-	)
 	const contentRef = useRef<HTMLDivElement | null>(null)
+	const [activeSection, setActiveSection] = useState<SectionName>(
+		getSettingsSectionTarget(targetSection)?.section ?? "providers",
+	)
+	const activeSectionRef = useRef(activeSection)
+	const scrollPositions = useRef<Partial<Record<SectionName, number>>>({})
+	const tabRefs = useRef<Partial<Record<SectionName, HTMLButtonElement | null>>>({})
 
 	const prevApiConfigName = useRef(currentApiConfigName)
 	const pendingProfileRename = useRef<
-		ProviderProfileRenameRequest & { oldName: string; resolve: (error?: string) => void }
-	>()
-	const pendingProfileSave = useRef<
-		ProviderProfileSaveRequest & {
-			generation: SettingsCachedState
+		ProviderProfileRenameRequest & {
+			oldName: string
+			resolve: (error?: string) => void
 			timeout: ReturnType<typeof setTimeout>
 		}
 	>()
+	const pendingProfileSave = useRef<{
+		requestId: string
+		id?: string
+		generation: SettingsCachedState
+		patch: ReturnType<typeof createSettingsPatch>
+		debugChanged: boolean
+		progress: SettingsSaveProgress
+		timeout: ReturnType<typeof setTimeout>
+	}>()
 	const prevSettingsImportedAt = useRef(settingsImportedAt)
 	const initializedFromHydration = useRef(didHydrateState)
 	const latestExtensionState = useRef(extensionState)
 	latestExtensionState.current = extensionState
+	const requestedSettingsState = useRef(false)
+	const pendingSettingsRefresh = useRef<{ snapshot: typeof extensionState.settingsProviderProfile }>()
+	const requestSettingsRefresh = useCallback(() => {
+		pendingSettingsRefresh.current = { snapshot: latestExtensionState.current.settingsProviderProfile }
+		vscode.postMessage({ type: "requestState" })
+	}, [])
+	useEffect(() => {
+		if (requestedSettingsState.current) return
+		requestedSettingsState.current = true
+		requestSettingsRefresh()
+	}, [requestSettingsRefresh])
 	const confirmDialogHandler = useRef<() => void>()
 	const discardDialogOpenerRef = useRef<HTMLElement | null>(null)
-	const terminalInheritEnvInitial = useRef<boolean>()
-
-	const [cachedState, setCachedState] = useState<SettingsCachedState>(() => ({
-		...withManagedAgentSettingsDefaults(extensionState),
-		terminalInheritEnv: terminalInheritEnvInitial.current,
-	}))
+	const [cachedState, setCachedState] = useState<SettingsCachedState>(() => getSettingsEditState(extensionState))
+	const savedState = useRef(cachedState)
+	const savedProjection = useRef(extensionState)
 	const latestCommittedApiConfigId = useRef(cachedApiConfigIdentity.id)
 	useLayoutEffect(() => {
 		latestCommittedApiConfigId.current = cachedApiConfigIdentity.id
 	}, [cachedApiConfigIdentity.id])
 
-	const {
-		alwaysAllowReadOnly,
-		alwaysAllowReadOnlyOutsideWorkspace,
-		allowedCommands,
-		deniedCommands,
-		allowedMaxRequests,
-		allowedMaxCost,
-		language,
-		alwaysAllowExecute,
-		alwaysAllowMcp,
-		alwaysAllowSubtasks,
-		alwaysAllowSubagents,
-		alwaysAllowTickets = false,
-		alwaysAllowWrite,
-		alwaysAllowWriteOutsideWorkspace,
-		alwaysAllowWriteProtected,
-		autoCondenseContext,
-		autoCondenseContextPercent = 100,
-		autoCondenseContextScope = "full-context",
-		postTurnCondenseContextPercent = DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
-		memorySettings,
-		enableCheckpoints,
-		checkpointTimeout,
-		experiments,
-		maxOpenTabsContext,
-		maxWorkspaceFiles,
-		mcpEnabled,
-		soundEnabled,
-		soundVolume,
-		telemetrySetting,
-		terminalOutputPreviewSize,
-		terminalShellIntegrationTimeout,
-		terminalShellIntegrationDisabled, // Added from upstream
-		terminalCommandDelay,
-		terminalPowershellCounter,
-		terminalZshClearEolMark,
-		terminalZshOhMy,
-		terminalZshP10k,
-		terminalZdotdir,
-		terminalInheritEnv,
-		showWorktreesInHomeScreen,
-		writeDelayMs,
-		showAlphaIgnoredFiles,
-		enableSubfolderRules,
-		maxImageFileSize,
-		maxTotalImageSize,
-		customSupportPrompts,
-		autoApprovalEnabled,
-		approvalMode,
-		approvalModeBypassAcknowledged,
-		alwaysAllowFollowupQuestions,
-		followupAutoApproveTimeoutMs,
-		includeDiagnosticMessages,
-		maxDiagnosticMessages,
-		reasoningBlockCollapsed,
-		enterBehavior,
-		autoSteer,
-		maxConcurrentTasks,
-		subagentAgentTypes,
-		includeCurrentTime,
-		includeCurrentCost,
-		maxGitStatusFiles,
-	} = cachedState
+	const { memorySettings } = cachedState
 
 	const apiConfiguration = useMemo(() => cachedState.apiConfiguration ?? {}, [cachedState.apiConfiguration])
+	const [mountedGroups, setMountedGroups] = useState(() => ({
+		providers: activeSection === "providers",
+		tools: activeSection === "tools",
+	}))
 	const currentApiConfigId = getCurrentProfileId(
 		extensionState,
 		pendingProfileRename.current ?? confirmedProfileRename,
@@ -310,10 +250,18 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				listApiConfigMeta?.find(({ id }) => id === currentApiConfigId)?.name !== effectiveApiConfigName),
 	)
 	const areProfileActionsDisabled = isProfileRenaming || isProfileSaving || isProfileNameAwaitingRefresh
-	const isProfileIdentityPending = cachedApiConfigIdentity.requiresId && cachedApiConfigIdentity.id === undefined
+	const isProfileIdentityPending =
+		(cachedApiConfigIdentity.requiresId && cachedApiConfigIdentity.id === undefined) ||
+		cachedApiConfigIdentity.snapshotUnavailable
+	const profileIdentityPendingMessage = t(
+		cachedApiConfigIdentity.snapshotUnavailable
+			? "settings:providers.profileSnapshotUnavailable"
+			: "settings:providers.profileIdentityPending",
+	)
 
 	const cancelPendingProfileRename = useCallback((error: string) => {
 		const pending = pendingProfileRename.current
+		clearTimeout(pending?.timeout)
 		pendingProfileRename.current = undefined
 		setProfileRenaming(false)
 		pending?.resolve(error)
@@ -327,27 +275,88 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	useEffect(() => {
 		const receive = (event: MessageEvent) => {
-			if (event.data?.type !== "apiConfigurationSaved") return
-			const response = providerProfileSaveResultSchema.safeParse(event.data.apiConfigurationSaveResult)
 			const pending = pendingProfileSave.current
-			if (
-				!response.success ||
-				!pending ||
-				response.data.requestId !== pending.requestId ||
-				latestCommittedApiConfigId.current !== pending.id ||
-				(response.data.status === "success" && response.data.id !== pending.id)
-			) {
-				return
+			if (!pending) return
+			let progress = pending.progress
+			if (event.data?.type === "settingsSaved") {
+				const response = settingsSaveResultSchema.safeParse(event.data.settingsSaveResult)
+				if (!response.success) return
+				progress = acknowledgeSettingsSave(progress, { part: "settings", result: response.data })
+				if (progress !== pending.progress) {
+					const appliedKeys =
+						response.data.status === "success"
+							? (Object.keys(pending.patch.updatedSettings) as Array<keyof GlobalSettings>)
+							: (response.data.appliedKeys ?? [])
+					const savedKeys = appliedKeys.filter((key) => Object.hasOwn(pending.patch.updatedSettings, key))
+					const debugApplied =
+						pending.debugChanged && (response.data.status === "success" || response.data.debugApplied)
+					const acknowledged = Object.fromEntries(
+						savedKeys.map((key) => [key, Reflect.get(pending.generation, key)]),
+					)
+					savedState.current = applyAcknowledgedSettings(savedState.current, acknowledged, savedKeys)
+					savedProjection.current = applyAcknowledgedSettings(
+						savedProjection.current,
+						pending.patch.updatedSettings,
+						savedKeys,
+					)
+					if (debugApplied) {
+						savedState.current = { ...savedState.current, debug: pending.generation.debug }
+						savedProjection.current = { ...savedProjection.current, debug: pending.generation.debug }
+					}
+				}
+			} else if (event.data?.type === "apiConfigurationSaved") {
+				const response = providerProfileSaveResultSchema.safeParse(event.data.apiConfigurationSaveResult)
+				if (
+					!response.success ||
+					(pending.id !== undefined && latestCommittedApiConfigId.current !== pending.id)
+				)
+					return
+				const receipt =
+					response.data.status === "success"
+						? response.data
+						: response.data.error === "applyFailed"
+							? response.data.saved
+							: undefined
+				if (receipt && pending.id !== undefined && receipt.id !== pending.id) return
+				progress = acknowledgeSettingsSave(progress, { part: "profile", result: response.data })
+				if (progress !== pending.progress && response.data.status === "success") {
+					savedState.current = {
+						...savedState.current,
+						apiConfiguration: pending.generation.apiConfiguration,
+					}
+				}
+				// An apply failure still committed this base; keep the draft dirty and retry by that identity.
+				if (progress !== pending.progress && receipt?.version !== undefined) {
+					setCachedApiConfigIdentity((identity) =>
+						identity.id === receipt.id || pending.id === undefined
+							? {
+									...identity,
+									id: receipt.id,
+									version: receipt.version,
+									requiresId: true,
+									snapshotUnavailable: false,
+								}
+							: identity,
+					)
+				}
+			} else return
+			if (progress === pending.progress) return
+			pending.progress = progress
+			if (progress.failure) {
+				const failure = progress.failure
+				setProfileSaveError(
+					t(
+						failure.part === "settings"
+							? `settings:common.saveErrors.${failure.result.error}`
+							: `settings:providers.saveErrors.${failure.result.error}`,
+					),
+				)
 			}
-
+			if (progress.settingsPending || progress.profilePending) return
 			clearTimeout(pending.timeout)
 			pendingProfileSave.current = undefined
 			setProfileSaving(false)
-			if (response.data.status === "error") {
-				setProfileSaveError(t(`settings:providers.saveErrors.${response.data.error}`))
-				return
-			}
-
+			if (getSettingsSaveStatus(progress) !== "success") return
 			setProfileSaveError(undefined)
 			// Compare in the state queue so edits queued before this response also retain dirty state.
 			setCachedState((state) => {
@@ -366,6 +375,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			const pending = pendingProfileRename.current
 			if (!response.success || !pending || response.data.requestId !== pending.requestId) return
 
+			clearTimeout(pending.timeout)
 			pendingProfileRename.current = undefined
 			setProfileRenaming(false)
 			if (response.data.status === "error") {
@@ -412,6 +422,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 
 	useEffect(
 		() => () => {
+			clearTimeout(pendingProfileRename.current?.timeout)
 			pendingProfileRename.current?.resolve()
 			pendingProfileRename.current = undefined
 			clearTimeout(pendingProfileSave.current?.timeout)
@@ -430,10 +441,15 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		const request: ProviderProfileRenameRequest = { requestId: crypto.randomUUID(), id, newName }
 		setProfileRenaming(true)
 		return new Promise((resolve) => {
+			const timeout = setTimeout(() => {
+				if (pendingProfileRename.current?.requestId !== request.requestId) return
+				cancelPendingProfileRename(t("settings:providers.renameErrors.timeout"))
+			}, profileRenameTimeoutMs)
 			pendingProfileRename.current = {
 				...request,
 				oldName: latestExtensionState.current.currentApiConfigName ?? oldName,
 				resolve,
+				timeout,
 			}
 			try {
 				vscode.postMessage({ type: "renameApiConfiguration", apiConfigurationRename: request })
@@ -450,10 +466,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			return
 		}
 
-		setCachedState({
-			...withManagedAgentSettingsDefaults(latestExtensionState.current),
-			terminalInheritEnv: terminalInheritEnvInitial.current,
-		})
+		const nextState = getSettingsEditState(latestExtensionState.current)
+		savedState.current = nextState
+		savedProjection.current = latestExtensionState.current
+		setCachedState(nextState)
 		prevApiConfigName.current = latestExtensionState.current.currentApiConfigName
 		setCachedApiConfigIdentity(
 			captureProfileIdentity(latestExtensionState.current, cachedApiConfigIdentity.requiresId),
@@ -473,6 +489,24 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				: sameName
 		prevApiConfigName.current = currentApiConfigName
 		if (sameProfile) {
+			const refresh = pendingSettingsRefresh.current
+			const refreshed = refresh !== undefined && extensionState.settingsProviderProfile !== refresh.snapshot
+			if (
+				(cachedApiConfigIdentity.snapshotUnavailable || refreshed) &&
+				(!refresh || refreshed) &&
+				!isChangeDetected &&
+				getPairedSettingsProfile(latestExtensionState.current)
+			) {
+				pendingSettingsRefresh.current = undefined
+				const nextState = getSettingsEditState(latestExtensionState.current)
+				savedState.current = nextState
+				savedProjection.current = latestExtensionState.current
+				setCachedState(nextState)
+				setCachedApiConfigIdentity(
+					captureProfileIdentity(latestExtensionState.current, cachedApiConfigIdentity.requiresId),
+				)
+				return
+			}
 			// A partial metadata push cannot replace a known target with name-based creation.
 			if (
 				currentApiConfigId !== undefined &&
@@ -480,28 +514,42 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					cachedApiConfigIdentity.id !== currentApiConfigId ||
 					cachedApiConfigIdentity.name !== currentApiConfigName)
 			) {
-				setCachedApiConfigIdentity({ id: currentApiConfigId, name: currentApiConfigName, requiresId: true })
+				setCachedApiConfigIdentity({
+					id: currentApiConfigId,
+					name: currentApiConfigName,
+					version:
+						cachedApiConfigIdentity.id === undefined
+							? cachedState.settingsProviderProfile === undefined
+								? listApiConfigMeta?.find(({ id }) => id === currentApiConfigId)?.version
+								: undefined
+							: cachedApiConfigIdentity.version,
+					requiresId: true,
+					snapshotUnavailable:
+						cachedApiConfigIdentity.snapshotUnavailable || cachedState.settingsProviderProfile === null,
+				})
 			}
 			return
 		}
 
 		setCachedApiConfigIdentity({
-			id: currentApiConfigId,
-			name: currentApiConfigName,
-			requiresId: cachedApiConfigIdentity.requiresId || currentApiConfigId !== undefined,
+			...captureProfileIdentity(latestExtensionState.current, cachedApiConfigIdentity.requiresId),
 		})
 		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
 		cancelPendingProfileSave()
 		setConfirmedProfileRename(undefined)
-		setCachedState({
-			...withManagedAgentSettingsDefaults(latestExtensionState.current),
-			terminalInheritEnv: terminalInheritEnvInitial.current,
-		})
+		const nextState = getSettingsEditState(latestExtensionState.current)
+		savedState.current = nextState
+		savedProjection.current = latestExtensionState.current
+		setCachedState(nextState)
 		setChangeDetected(false)
 	}, [
 		currentApiConfigName,
 		currentApiConfigId,
+		listApiConfigMeta,
+		extensionState.settingsProviderProfile,
+		isChangeDetected,
 		cachedApiConfigIdentity,
+		cachedState.settingsProviderProfile,
 		cancelPendingProfileRename,
 		cancelPendingProfileSave,
 		t,
@@ -520,10 +568,10 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		cancelPendingProfileRename(t("settings:providers.renameErrors.cancelled"))
 		cancelPendingProfileSave()
 		setConfirmedProfileRename(undefined)
-		setCachedState({
-			...withManagedAgentSettingsDefaults(latestExtensionState.current),
-			terminalInheritEnv: terminalInheritEnvInitial.current,
-		})
+		const nextState = getSettingsEditState(latestExtensionState.current)
+		savedState.current = nextState
+		savedProjection.current = latestExtensionState.current
+		setCachedState(nextState)
 		setChangeDetected(false)
 	}, [
 		settingsImportedAt,
@@ -546,17 +594,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		},
 		[],
 	)
-
-	const handleTerminalInheritEnvLoaded = useCallback((value: boolean) => {
-		if (terminalInheritEnvInitial.current !== undefined) {
-			return
-		}
-
-		terminalInheritEnvInitial.current = value
-		setCachedState((previous) =>
-			previous.terminalInheritEnv === undefined ? { ...previous, terminalInheritEnv: value } : previous,
-		)
-	}, [])
 
 	const setApiConfigurationField = useCallback(
 		<K extends keyof ProviderSettings>(field: K, value: ProviderSettings[K], isUserAction: boolean = true) => {
@@ -610,17 +647,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const setTelemetrySetting = useCallback((setting: TelemetrySetting) => {
-		setCachedState((prevState) => {
-			if (prevState.telemetrySetting === setting) {
-				return prevState
-			}
-
-			setChangeDetected(true)
-			return { ...prevState, telemetrySetting: setting }
-		})
-	}, [])
-
 	const setDebug = useCallback((debug: boolean) => {
 		setCachedState((prevState) => {
 			if (prevState.debug === debug) {
@@ -655,127 +681,92 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	const isSettingValid = !settingsErrorMessage
 
 	const handleSubmit = () => {
-		if (
-			isSettingValid &&
-			!pendingProfileRename.current &&
-			!pendingProfileSave.current &&
-			!isProfileIdentityPending
-		) {
-			vscode.postMessage({
-				type: "updateSettings",
-				updatedSettings: {
-					language,
-					alwaysAllowReadOnly: alwaysAllowReadOnly ?? undefined,
-					alwaysAllowReadOnlyOutsideWorkspace: alwaysAllowReadOnlyOutsideWorkspace ?? undefined,
-					alwaysAllowWrite: alwaysAllowWrite ?? undefined,
-					alwaysAllowWriteOutsideWorkspace: alwaysAllowWriteOutsideWorkspace ?? undefined,
-					alwaysAllowWriteProtected: alwaysAllowWriteProtected ?? undefined,
-					alwaysAllowExecute: alwaysAllowExecute ?? undefined,
-					approvalMode,
-					approvalModeBypassAcknowledged: approvalModeBypassAcknowledged === true,
-					autoApprovalEnabled: autoApprovalEnabled ?? false,
-					disabledBuiltinSkills: cachedState.disabledBuiltinSkills ?? [],
-					alwaysAllowMcp,
-					allowedCommands: allowedCommands ?? [],
-					deniedCommands: deniedCommands ?? [],
-					// Note that we use `null` instead of `undefined` since `JSON.stringify`
-					// will omit `undefined` when serializing the object and passing it to the
-					// extension host. We may need to do the same for other nullable fields.
-					allowedMaxRequests: allowedMaxRequests ?? null,
-					allowedMaxCost: allowedMaxCost ?? null,
-					autoCondenseContext,
-					autoCondenseContextPercent,
-					autoCondenseContextScope,
-					postTurnCondenseContextPercent,
-					memorySettings,
-					maxConcurrentTasks: Math.min(Math.max(1, maxConcurrentTasks ?? 3), 50),
-					...(subagentAgentTypes !== undefined ? { subagentAgentTypes } : {}),
-					...toManagedAgentSettingsSavePayload(cachedState),
-					soundEnabled: soundEnabled ?? true,
-					soundVolume: soundVolume ?? 0.5,
-					enableCheckpoints: enableCheckpoints ?? false,
-					checkpointTimeout: checkpointTimeout ?? DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
-					writeDelayMs,
-					terminalShellIntegrationTimeout: terminalShellIntegrationTimeout ?? 30_000,
-					terminalShellIntegrationDisabled,
-					terminalCommandDelay,
-					terminalPowershellCounter,
-					terminalZshClearEolMark,
-					terminalZshOhMy,
-					terminalZshP10k,
-					terminalZdotdir,
-					terminalOutputPreviewSize: terminalOutputPreviewSize ?? "medium",
-					mcpEnabled,
-					maxOpenTabsContext: Math.min(Math.max(0, maxOpenTabsContext ?? 20), 500),
-					maxWorkspaceFiles: Math.min(Math.max(0, maxWorkspaceFiles ?? 200), 500),
-					showAlphaIgnoredFiles: showAlphaIgnoredFiles ?? true,
-					enableSubfolderRules: enableSubfolderRules ?? false,
-					maxImageFileSize: maxImageFileSize ?? 5,
-					maxTotalImageSize: maxTotalImageSize ?? 20,
-					includeDiagnosticMessages:
-						includeDiagnosticMessages !== undefined ? includeDiagnosticMessages : true,
-					maxDiagnosticMessages: maxDiagnosticMessages ?? 50,
-					alwaysAllowSubtasks,
-					alwaysAllowSubagents,
-					alwaysAllowTickets,
-					alwaysAllowFollowupQuestions: alwaysAllowFollowupQuestions ?? false,
-					followupAutoApproveTimeoutMs,
-					reasoningBlockCollapsed: reasoningBlockCollapsed ?? true,
-					enterBehavior: enterBehavior ?? "send",
-					autoSteer: autoSteer === true,
-					includeCurrentTime: includeCurrentTime ?? true,
-					includeCurrentCost: includeCurrentCost ?? true,
-					maxGitStatusFiles: maxGitStatusFiles ?? 0,
-					showWorktreesInHomeScreen,
-					experiments,
-					customSupportPrompts,
-				},
-			})
-
-			// These have more complex logic so they aren't (yet) handled
-			// by the `updateSettings` message.
-			if (cachedApiConfigIdentity.id !== undefined) {
-				const request: ProviderProfileSaveRequest = {
-					requestId: crypto.randomUUID(),
-					id: cachedApiConfigIdentity.id,
-				}
-				const timeout = setTimeout(() => {
-					if (pendingProfileSave.current?.requestId !== request.requestId) return
-					pendingProfileSave.current = undefined
-					setProfileSaving(false)
-					setProfileSaveError(t("settings:providers.saveErrors.timeout"))
-				}, profileSaveTimeoutMs)
-				pendingProfileSave.current = { ...request, generation: cachedState, timeout }
-				setProfileSaving(true)
-				setProfileSaveError(undefined)
-				try {
-					vscode.postMessage({
-						type: "upsertApiConfiguration",
-						requestId: request.requestId,
-						apiConfigurationId: request.id,
-						text: effectiveApiConfigName,
-						apiConfiguration,
-					})
-				} catch {
-					clearTimeout(timeout)
-					pendingProfileSave.current = undefined
-					setProfileSaving(false)
-					setProfileSaveError(t("settings:providers.saveErrors.saveFailed"))
-				}
-			} else {
-				vscode.postMessage({ type: "upsertApiConfiguration", text: effectiveApiConfigName, apiConfiguration })
-				setChangeDetected(false)
-			}
-			vscode.postMessage({ type: "telemetrySetting", text: telemetrySetting })
-			vscode.postMessage({ type: "debugSetting", bool: cachedState.debug })
-			if (terminalInheritEnv !== undefined && terminalInheritEnv !== terminalInheritEnvInitial.current) {
+		if (!isSettingValid || pendingProfileRename.current || pendingProfileSave.current || isProfileIdentityPending)
+			return
+		const patch = createSettingsPatch(
+			getSettingsSavePayload(savedState.current),
+			getSettingsSavePayload(cachedState),
+			{
+				...savedProjection.current,
+				allowedCommands: savedState.current.allowedCommands,
+				deniedCommands: savedState.current.deniedCommands,
+			},
+		)
+		const debugChanged = (cachedState.debug ?? false) !== (savedState.current.debug ?? false)
+		const settingsChanged = Object.keys(patch.updatedSettings).length > 0 || debugChanged
+		const profileChanged = !deepEqual(apiConfiguration, savedState.current.apiConfiguration ?? {})
+		if (!settingsChanged && !profileChanged) {
+			setChangeDetected(false)
+			return
+		}
+		const requestId = crypto.randomUUID()
+		const timeout = setTimeout(() => {
+			if (pendingProfileSave.current?.requestId !== requestId) return
+			pendingProfileSave.current = undefined
+			setProfileSaving(false)
+			setProfileSaveError(t("settings:providers.saveErrors.timeout"))
+		}, profileSaveTimeoutMs)
+		pendingProfileSave.current = {
+			requestId,
+			id: cachedApiConfigIdentity.id,
+			generation: cachedState,
+			patch,
+			debugChanged,
+			progress: createSettingsSaveProgress(requestId, {
+				settings: settingsChanged,
+				profile: profileChanged,
+				...(profileChanged && cachedApiConfigIdentity.id !== undefined
+					? { profileId: cachedApiConfigIdentity.id }
+					: {}),
+			}),
+			timeout,
+		}
+		setProfileSaving(true)
+		setProfileSaveError(undefined)
+		try {
+			if (settingsChanged) {
 				vscode.postMessage({
-					type: "updateVSCodeSetting",
-					setting: "terminal.integrated.inheritEnv",
-					value: terminalInheritEnv,
+					type: "updateSettings",
+					updatedSettings: patch.updatedSettings,
+					settingsSave: {
+						requestId,
+						expectedSettings: patch.expectedSettings,
+						...(debugChanged
+							? {
+									debug: {
+										expected: savedProjection.current.debug ?? false,
+										value: cachedState.debug ?? false,
+									},
+								}
+							: {}),
+					},
 				})
-				terminalInheritEnvInitial.current = terminalInheritEnv
 			}
+			if (profileChanged && cachedApiConfigIdentity.id !== undefined) {
+				vscode.postMessage({
+					type: "upsertApiConfiguration",
+					requestId,
+					apiConfigurationId: cachedApiConfigIdentity.id,
+					...(cachedApiConfigIdentity.version !== undefined
+						? { apiConfigurationExpectedVersion: cachedApiConfigIdentity.version }
+						: {}),
+					text: effectiveApiConfigName,
+					apiConfiguration,
+				})
+			} else if (profileChanged) {
+				vscode.postMessage({
+					type: "upsertApiConfiguration",
+					requestId,
+					apiConfigurationReturnVersion: true,
+					text: effectiveApiConfigName ?? "default",
+					apiConfiguration,
+				})
+			}
+		} catch {
+			clearTimeout(timeout)
+			pendingProfileSave.current = undefined
+			setProfileSaving(false)
+			setProfileSaveError(t("settings:common.saveErrors.saveFailed"))
 		}
 	}
 
@@ -810,15 +801,24 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				setCachedApiConfigIdentity({
 					id,
 					name: currentApiConfigName,
+					version:
+						captureProfileIdentity(extensionState).version ??
+						(extensionState.settingsProviderProfile === undefined && id === cachedApiConfigIdentity.id
+							? cachedApiConfigIdentity.version
+							: undefined),
 					requiresId: cachedApiConfigIdentity.requiresId || id !== undefined,
+					snapshotUnavailable:
+						captureProfileIdentity(extensionState).snapshotUnavailable ||
+						(extensionState.settingsProviderProfile === null && id !== undefined),
 				})
+				if (captureProfileIdentity(extensionState).snapshotUnavailable) requestSettingsRefresh()
 				cancelPendingProfileSave()
-				setCachedState({
-					...withManagedAgentSettingsDefaults(extensionState),
-					terminalInheritEnv: terminalInheritEnvInitial.current,
-				}) // Revert to original state
+				const nextState = getSettingsEditState(extensionState)
+				savedState.current = nextState
+				savedProjection.current = extensionState
+				setCachedState(nextState)
 				setChangeDetected(false) // Reset change flag
-				confirmDialogHandler.current?.() // Execute the pending action (e.g., tab switch)
+				confirmDialogHandler.current?.() // Execute the pending navigation
 			}
 			// If confirm is false (Cancel), do nothing, dialog closes automatically
 		},
@@ -828,190 +828,130 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			confirmedProfileRename,
 			cachedApiConfigIdentity,
 			cancelPendingProfileSave,
+			requestSettingsRefresh,
 		],
 	)
 
-	// Handle tab changes with unsaved changes check
-	const handleTabChange = useCallback(
-		(newTab: SectionName) => {
-			if (contentRef.current) {
-				scrollPositions.current[activeTab] = contentRef.current.scrollTop
-			}
-			setActiveTab(newTab)
-		},
-		[activeTab],
+	const sections = useMemo(
+		() => [
+			{ id: "providers" as const, icon: Plug },
+			{ id: "tools" as const, icon: Bot },
+			{ id: "preferences" as const, icon: Glasses },
+			{ id: "advanced" as const, icon: Settings2 },
+		],
+		[],
 	)
-
-	useLayoutEffect(() => {
-		if (contentRef.current) {
-			contentRef.current.scrollTop = scrollPositions.current[activeTab] ?? 0
-		}
-	}, [activeTab])
-
-	// Store direct DOM element refs for each tab
-	const tabRefs = useRef<Record<SectionName, HTMLButtonElement | null>>(
-		Object.fromEntries(sectionNames.map((name) => [name, null])) as Record<SectionName, HTMLButtonElement | null>,
-	)
-
-	// Track whether we're in compact mode
-	const [isCompactMode, setIsCompactMode] = useState(false)
+	const [navigationTarget, setNavigationTarget] = useState(getSettingsSectionTarget(targetSection))
+	const [searchRequest, setSearchRequest] = useState(0)
+	const [isCompactMode, setCompactMode] = useState(false)
+	const [isStackedLayout, setStackedLayout] = useState(false)
 	const containerRef = useRef<HTMLDivElement>(null)
 
-	// Setup resize observer to detect when we should switch to compact mode
 	useEffect(() => {
 		if (!containerRef.current) return
-
 		const observer = new ResizeObserver((entries) => {
 			for (const entry of entries) {
-				// If container width is less than 500px, switch to compact mode
-				setIsCompactMode(entry.contentRect.width < 500)
+				setCompactMode(entry.contentRect.width < 500)
+				setStackedLayout(entry.contentRect.width < 300)
 			}
 		})
-
 		observer.observe(containerRef.current)
+		return () => observer.disconnect()
+	}, [])
 
-		return () => {
-			observer?.disconnect()
+	const activateSection = useCallback((section: SectionName) => {
+		if (contentRef.current && activeSectionRef.current !== section) {
+			scrollPositions.current[activeSectionRef.current] = contentRef.current.scrollTop
+		}
+		activeSectionRef.current = section
+		setActiveSection(section)
+		// Load resource managers on first visit, then retain drafts and validation between pages.
+		if (section === "providers" || section === "tools") {
+			setMountedGroups((previous) => (previous[section] ? previous : { ...previous, [section]: true }))
 		}
 	}, [])
 
-	const sections: { id: SectionName; icon: LucideIcon; hasSearchableSettings: boolean }[] = useMemo(
-		() => [
-			{ id: "providers", icon: Plug, hasSearchableSettings: false },
-			{ id: "skills", icon: GraduationCap, hasSearchableSettings: false },
-			{ id: "autoApprove", icon: CheckCheck, hasSearchableSettings: true },
-			{ id: "agents", icon: Bot, hasSearchableSettings: true },
-			{ id: "mcp", icon: Server, hasSearchableSettings: false },
-			{ id: "checkpoints", icon: GitCommitVertical, hasSearchableSettings: true },
-			{ id: "notifications", icon: Bell, hasSearchableSettings: true },
-			{ id: "contextManagement", icon: Database, hasSearchableSettings: true },
-			{ id: "terminal", icon: SquareTerminal, hasSearchableSettings: true },
-			{ id: "worktrees", icon: GitBranch, hasSearchableSettings: false },
-			{ id: "ui", icon: Glasses, hasSearchableSettings: true },
-			{ id: "experimental", icon: FlaskConical, hasSearchableSettings: true },
-			{ id: "language", icon: Globe, hasSearchableSettings: true },
-			{ id: "about", icon: Info, hasSearchableSettings: true },
-		],
-		[], // No dependencies needed now
-	)
-	// Tabs without SearchableSetting controls only need their title registered. Mounting them
-	// for indexing would start unrelated model, skill, command, and worktree requests.
-	const searchableSections = useMemo(
-		() => sections.filter(({ hasSearchableSettings }) => hasSearchableSettings),
-		[sections],
-	)
-
-	// Update target section logic to set active tab
-	useEffect(() => {
-		if (targetSection && sectionNames.includes(targetSection as SectionName)) {
-			setActiveTab(targetSection as SectionName)
-		}
-	}, [targetSection])
-
-	// Function to scroll the active tab into view for vertical layout
-	const scrollToActiveTab = useCallback(() => {
-		const activeTabElement = tabRefs.current[activeTab]
-
-		if (activeTabElement) {
-			activeTabElement.scrollIntoView({
-				behavior: "auto",
-				block: "nearest",
-			})
-		}
-	}, [activeTab])
-
-	// Effect to scroll when the active tab changes
-	useEffect(() => {
-		scrollToActiveTab()
-	}, [activeTab, scrollToActiveTab])
-
-	// Effect to scroll when the webview becomes visible
 	useLayoutEffect(() => {
-		const handleMessage = (event: MessageEvent) => {
-			const message = event.data
-			if (message.type === "action" && message.action === "didBecomeVisible") {
-				scrollToActiveTab()
-			}
-		}
+		if (contentRef.current) contentRef.current.scrollTop = scrollPositions.current[activeSection] ?? 0
+		tabRefs.current[activeSection]?.scrollIntoView({ block: "nearest" })
+	}, [activeSection])
 
-		window.addEventListener("message", handleMessage)
+	useEffect(() => {
+		const target = getSettingsSectionTarget(targetSection)
+		if (!target) return
+		activateSection(target.section)
+		setNavigationTarget(target)
+		setSearchRequest((request) => request + 1)
+	}, [targetSection, activateSection])
 
-		return () => {
-			window.removeEventListener("message", handleMessage)
-		}
-	}, [scrollToActiveTab])
+	const handleTabKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+		if (!(event.target instanceof Element) || !event.target.closest('[role="tab"]')) return
+		const current = sectionNames.indexOf(activeSection)
+		const next =
+			event.key === "Home"
+				? 0
+				: event.key === "End"
+					? sectionNames.length - 1
+					: event.key === "ArrowDown" || event.key === "ArrowRight"
+						? (current + 1) % sectionNames.length
+						: event.key === "ArrowUp" || event.key === "ArrowLeft"
+							? (current - 1 + sectionNames.length) % sectionNames.length
+							: undefined
+		if (next === undefined) return
+		event.preventDefault()
+		const section = sectionNames[next]
+		activateSection(section)
+		setNavigationTarget(undefined)
+		tabRefs.current[section]?.focus()
+	}
 
-	// Search index registry - settings register themselves on mount
 	const getSectionLabel = useCallback((section: SectionName) => t(`settings:sections.${section}`), [t])
 	const { contextValue: searchContextValue, index: searchIndex } = useSearchIndexRegistry(getSectionLabel)
 
-	// Track which tabs have been indexed (visited at least once)
-	const [indexingTabIndex, setIndexingTabIndex] = useState(0)
-	const isIndexing = indexingTabIndex < searchableSections.length
-	const isIndexingComplete = !isIndexing
-	const tabTitlesRegistered = useRef(false)
-
-	// Index searchable controls in the background so the selected tab can paint immediately
 	useEffect(() => {
-		if (indexingTabIndex >= searchableSections.length) {
-			// All tabs indexed, now register tab titles as searchable items
-			if (!tabTitlesRegistered.current && searchContextValue) {
-				sections.forEach(({ id }) => {
-					const tabTitle = t(`settings:sections.${id}`)
-					// Register each tab title as a searchable item
-					// Using a special naming convention for tab titles: "tab-{sectionName}"
-					searchContextValue.registerSetting({
-						settingId: `tab-${id}`,
-						section: id,
-						label: tabTitle,
-					})
-				})
-				tabTitlesRegistered.current = true
-			}
-			return
+		for (const { id } of sections) {
+			searchContextValue.registerSetting({
+				settingId: `section-${id}`,
+				section: id,
+				label: getSectionLabel(id),
+			})
 		}
+		for (const { settingId, labelKey } of lazyToolsSearchSettings) {
+			searchContextValue.registerSetting({ settingId, section: "tools", label: t(labelKey) })
+		}
+	}, [searchContextValue, sections, getSectionLabel, t])
 
-		// Give the selected tab a frame to paint before mounting the next indexing tab.
-		const frameId = requestAnimationFrame(() => setIndexingTabIndex((prev) => prev + 1))
-		return () => cancelAnimationFrame(frameId)
-	}, [indexingTabIndex, searchContextValue, searchableSections, sections, t])
-
-	const indexingSection = isIndexing ? searchableSections[indexingTabIndex].id : undefined
-
-	// Handle search navigation - switch to the correct tab and scroll to the element
 	const handleSearchNavigate = useCallback(
 		(section: SectionName, settingId: string) => {
-			// Switch to the correct tab
-			handleTabChange(section)
-
-			// Wait for the tab to render, then find element by settingId and scroll to it
-			requestAnimationFrame(() => {
-				setTimeout(() => {
-					const element = document.querySelector(`[data-setting-id="${settingId}"]`)
-					if (element) {
-						const advancedSettings = element.closest<HTMLDetailsElement>("details[data-agents-advanced]")
-						if (advancedSettings) advancedSettings.open = true
-						element.scrollIntoView({ behavior: "smooth", block: "center" })
-
-						// Add highlight animation
-						element.classList.add("settings-highlight")
-						setTimeout(() => {
-							element.classList.remove("settings-highlight")
-						}, 1500)
-					}
-				}, 100) // Small delay to ensure tab content is rendered
-			})
+			activateSection(section)
+			setNavigationTarget({ section, settingId })
+			setSearchRequest((request) => request + 1)
 		},
-		[handleTabChange],
+		[activateSection],
 	)
+
+	useLayoutEffect(() => {
+		if (!navigationTarget) return
+		const settingId = navigationTarget.settingId ?? `section-${navigationTarget.section}`
+		const elements = Array.from(contentRef.current?.querySelectorAll<HTMLElement>("[data-setting-id]") ?? [])
+		const element =
+			elements.find((candidate) => candidate.dataset.settingId === settingId) ??
+			elements.find((candidate) => candidate.dataset.settingId === `section-${navigationTarget.section}`)
+		if (!element) return
+		revealSettingDetails(element)
+		element.scrollIntoView({ behavior: "auto", block: "center" })
+		element.classList.add("settings-highlight")
+		const timer = setTimeout(() => element.classList.remove("settings-highlight"), 1500)
+		return () => {
+			clearTimeout(timer)
+			element.classList.remove("settings-highlight")
+		}
+	}, [activeSection, navigationTarget, searchRequest, mountedGroups])
 
 	const renderSettingsSection = (section: SectionName) => (
 		<>
-			{/* Providers Section */}
 			{section === "providers" && (
 				<div>
-					<SectionHeader>{t("settings:sections.providers")}</SectionHeader>
-
 					<Section>
 						<ApiConfigManager
 							currentApiConfigName={effectiveApiConfigName}
@@ -1069,12 +1009,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						)}
 						{isProfileIdentityPending && (
 							<p role="status" className="text-vscode-descriptionForeground text-sm">
-								{t("settings:providers.profileIdentityPending")}
-							</p>
-						)}
-						{profileSaveError && (
-							<p role="alert" className="text-vscode-errorForeground text-sm">
-								{profileSaveError}
+								{profileIdentityPendingMessage}
 							</p>
 						)}
 						<ApiOptions
@@ -1088,158 +1023,30 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					</Section>
 				</div>
 			)}
-
-			{/* Auto-Approve Section */}
-			{section === "autoApprove" && (
-				<AutoApproveSettings
-					approvalMode={approvalMode}
-					approvalModeBypassAcknowledged={approvalModeBypassAcknowledged}
-					alwaysAllowReadOnly={alwaysAllowReadOnly}
-					alwaysAllowReadOnlyOutsideWorkspace={alwaysAllowReadOnlyOutsideWorkspace}
-					alwaysAllowWrite={alwaysAllowWrite}
-					alwaysAllowWriteOutsideWorkspace={alwaysAllowWriteOutsideWorkspace}
-					alwaysAllowWriteProtected={alwaysAllowWriteProtected}
-					alwaysAllowMcp={alwaysAllowMcp}
-					alwaysAllowSubagents={alwaysAllowSubagents}
-					alwaysAllowTickets={alwaysAllowTickets}
-					alwaysAllowExecute={alwaysAllowExecute}
-					autoApprovalEnabled={autoApprovalEnabled}
-					followupAutoApproveTimeoutMs={followupAutoApproveTimeoutMs}
-					allowedCommands={allowedCommands}
-					allowedMaxRequests={allowedMaxRequests ?? undefined}
-					allowedMaxCost={allowedMaxCost ?? undefined}
-					deniedCommands={deniedCommands}
+			{section === "tools" && (
+				<ToolsAgentsSettings
+					embedded
+					values={cachedState}
 					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
-			{/* Agents Section */}
-			{section === "agents" && <AgentsSettings values={cachedState} setCachedStateField={setCachedStateField} />}
-
-			{/* Skills Section */}
-			{section === "skills" && (
-				<SkillsSettings
-					disabledBuiltinSkills={cachedState.disabledBuiltinSkills ?? []}
-					onDisabledBuiltinSkillsChange={(value) => setCachedStateField("disabledBuiltinSkills", value)}
-				/>
-			)}
-
-			{/* Checkpoints Section */}
-			{section === "checkpoints" && (
-				<CheckpointSettings
-					enableCheckpoints={enableCheckpoints}
-					checkpointTimeout={checkpointTimeout}
-					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
-			{/* Notifications Section */}
-			{section === "notifications" && (
-				<NotificationSettings
-					soundEnabled={soundEnabled}
-					soundVolume={soundVolume}
-					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
-			{/* Context Management Section */}
-			{section === "contextManagement" && (
-				<>
-					<MemorySettings
-						memorySettings={memorySettings}
-						onChange={(value) => setCachedStateField("memorySettings", value)}
-					/>
-					<ContextManagementSettings
-						autoCondenseContext={autoCondenseContext}
-						autoCondenseContextPercent={autoCondenseContextPercent}
-						autoCondenseContextScope={autoCondenseContextScope}
-						postTurnCondenseContextPercent={postTurnCondenseContextPercent}
-						maxOpenTabsContext={maxOpenTabsContext}
-						maxWorkspaceFiles={maxWorkspaceFiles ?? 200}
-						showAlphaIgnoredFiles={showAlphaIgnoredFiles}
-						enableSubfolderRules={enableSubfolderRules}
-						maxImageFileSize={maxImageFileSize}
-						maxTotalImageSize={maxTotalImageSize}
-						includeDiagnosticMessages={includeDiagnosticMessages}
-						maxDiagnosticMessages={maxDiagnosticMessages}
-						writeDelayMs={writeDelayMs}
-						includeCurrentTime={includeCurrentTime}
-						includeCurrentCost={includeCurrentCost}
-						maxGitStatusFiles={maxGitStatusFiles}
-						customSupportPrompts={customSupportPrompts || {}}
-						setCustomSupportPrompts={setCustomSupportPromptsField}
-						setCachedStateField={setCachedStateField}
-					/>
-				</>
-			)}
-
-			{/* Terminal Section */}
-			{section === "terminal" && (
-				<TerminalSettings
-					terminalOutputPreviewSize={terminalOutputPreviewSize}
-					terminalShellIntegrationTimeout={terminalShellIntegrationTimeout}
-					terminalShellIntegrationDisabled={terminalShellIntegrationDisabled}
-					terminalCommandDelay={terminalCommandDelay}
-					terminalPowershellCounter={terminalPowershellCounter}
-					terminalZshClearEolMark={terminalZshClearEolMark}
-					terminalZshOhMy={terminalZshOhMy}
-					terminalZshP10k={terminalZshP10k}
-					terminalZdotdir={terminalZdotdir}
-					terminalInheritEnv={terminalInheritEnv}
-					onTerminalInheritEnvLoaded={handleTerminalInheritEnvLoaded}
-					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
-			{/* MCP Section */}
-			{section === "mcp" && (
-				<McpView
-					mcpEnabled={mcpEnabled}
-					onMcpEnabledChange={(value) => setCachedStateField("mcpEnabled", value)}
-				/>
-			)}
-
-			{/* Worktrees Section */}
-			{section === "worktrees" && (
-				<WorktreesView
-					showWorktreesInHomeScreen={showWorktreesInHomeScreen}
-					onShowWorktreesInHomeScreenChange={(value) =>
-						setCachedStateField("showWorktreesInHomeScreen", value)
-					}
-				/>
-			)}
-
-			{/* UI Section */}
-			{section === "ui" && (
-				<UISettings
-					reasoningBlockCollapsed={reasoningBlockCollapsed ?? true}
-					enterBehavior={enterBehavior ?? "send"}
-					autoSteer={autoSteer === true}
-					maxConcurrentTasks={maxConcurrentTasks ?? 3}
-					setCachedStateField={setCachedStateField}
-				/>
-			)}
-
-			{/* Experimental Section */}
-			{section === "experimental" && (
-				<ExperimentalSettings
 					setExperimentEnabled={setExperimentEnabled}
-					experiments={experiments}
-					isActive={activeTab === "experimental"}
+					isActive={activeSection === "tools"}
+					committedCustomToolsEnabled={extensionState.experiments?.[EXPERIMENT_IDS.CUSTOM_TOOLS] === true}
 				/>
 			)}
-
-			{/* Language Section */}
-			{section === "language" && (
-				<LanguageSettings language={language || "en"} setCachedStateField={setCachedStateField} />
+			{section === "preferences" && (
+				<PreferencesSettings
+					embedded
+					values={cachedState}
+					setCachedStateField={setCachedStateField}
+					inheritedCommandRules={cachedState.commandRuleSettings?.inherited}
+				/>
 			)}
-
-			{/* About Section */}
-			{section === "about" && (
-				<About
-					telemetrySetting={telemetrySetting}
-					setTelemetrySetting={setTelemetrySetting}
-					debug={cachedState.debug}
+			{section === "advanced" && (
+				<AdvancedSettings
+					embedded
+					values={cachedState}
+					setCachedStateField={setCachedStateField}
+					setCustomSupportPrompts={setCustomSupportPromptsField}
 					setDebug={setDebug}
 				/>
 			)}
@@ -1247,9 +1054,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 	)
 
 	return (
-		<Tab>
-			<TabHeader className="flex justify-between items-center gap-2">
-				<div className="flex items-center gap-2 grow">
+		<Tab className="settings-shell" data-settings-compact={isCompactMode} data-settings-stacked={isStackedLayout}>
+			<TabHeader className="settings-header z-20 flex min-w-0 flex-wrap justify-between items-center gap-2">
+				<div className="flex min-w-0 flex-1 basis-32 items-center gap-2">
 					<StandardTooltip content={t("settings:header.doneButtonTooltip")}>
 						<Button variant="ghost" className="px-1.5 -ml-2" onClick={() => checkUnsaveChanges(onDone)}>
 							<ArrowLeft />
@@ -1258,10 +1065,8 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					</StandardTooltip>
 					<h3 className="text-vscode-foreground m-0 flex-shrink-0">{t("settings:header.title")}</h3>
 				</div>
-				<div className="flex items-center gap-2 shrink-0">
-					{isIndexingComplete && (
-						<SettingsSearch index={searchIndex} onNavigate={handleSearchNavigate} sections={sections} />
-					)}
+				<div className="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+					<SettingsSearch index={searchIndex} onNavigate={handleSearchNavigate} sections={sections} />
 					<StandardTooltip
 						content={
 							isProfileRenaming
@@ -1269,7 +1074,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								: isProfileSaving
 									? t("settings:providers.profileSavePending")
 									: isProfileIdentityPending
-										? t("settings:providers.profileIdentityPending")
+										? profileIdentityPendingMessage
 										: !isSettingValid
 											? settingsErrorMessage
 											: isChangeDetected
@@ -1287,89 +1092,147 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								isProfileSaving ||
 								isProfileIdentityPending
 							}
-							data-testid="save-button">
+							data-testid="save-button"
+							aria-describedby={settingsErrorMessage ? settingsId + "-validation" : undefined}
+							aria-busy={isProfileSaving}>
 							{t("settings:common.save")}
 						</Button>
 					</StandardTooltip>
 				</div>
 			</TabHeader>
+			{settingsErrorMessage && (
+				<p
+					id={settingsId + "-validation"}
+					role="alert"
+					className="m-0 border-b border-vscode-inputValidation-errorBorder bg-vscode-inputValidation-errorBackground px-5 py-3 text-sm text-vscode-errorForeground">
+					{settingsErrorMessage}
+				</p>
+			)}
+			{profileSaveError && (
+				<div
+					role="alert"
+					className="flex flex-wrap items-center justify-between gap-3 border-b border-vscode-inputValidation-errorBorder bg-vscode-inputValidation-errorBackground px-5 py-3 text-sm text-vscode-errorForeground">
+					<span>{profileSaveError}</span>
+					<Button
+						variant="secondary"
+						className="h-auto max-w-full whitespace-normal"
+						onClick={() =>
+							checkUnsaveChanges(() => {
+								const next = getSettingsEditState(latestExtensionState.current)
+								savedState.current = next
+								savedProjection.current = latestExtensionState.current
+								setCachedState(next)
+								setCachedApiConfigIdentity({
+									...captureProfileIdentity(
+										latestExtensionState.current,
+										cachedApiConfigIdentity.requiresId,
+									),
+									snapshotUnavailable:
+										getCurrentProfileId(latestExtensionState.current) !== undefined,
+								})
+								requestSettingsRefresh()
+								setChangeDetected(false)
+								setProfileSaveError(undefined)
+							})
+						}>
+						{t("settings:common.reloadSettings")}
+					</Button>
+				</div>
+			)}
 
-			{/* Vertical tabs layout */}
-			<div ref={containerRef} className={cn(settingsTabsContainer, isCompactMode && "narrow")}>
-				{/* Tab sidebar */}
-				<TabList
-					value={activeTab}
-					onValueChange={(value) => handleTabChange(value as SectionName)}
-					className={cn(settingsTabList)}
+			<div
+				ref={containerRef}
+				className={cn("flex min-h-0 min-w-0 flex-1 overflow-hidden", isStackedLayout && "flex-col")}>
+				<div
+					role="tablist"
+					aria-label={t("settings:header.title")}
+					aria-orientation={isStackedLayout ? "horizontal" : "vertical"}
+					onKeyDown={handleTabKeyDown}
+					data-testid="settings-tab-list"
 					data-compact={isCompactMode}
-					data-testid="settings-tab-list">
-					{sections.map(({ id, icon: Icon }) => {
-						const isSelected = id === activeTab
-						const onSelect = () => handleTabChange(id)
-
-						// Base TabTrigger component definition
-						// We pass isSelected manually for styling, but onSelect is handled conditionally
-						const triggerComponent = (
+					className={cn(
+						"flex shrink-0 gap-1 border-[var(--border-subtle)] bg-vscode-editor-background p-2",
+						isStackedLayout
+							? "w-full flex-row overflow-x-auto border-b p-1"
+							: "flex-col overflow-y-auto overflow-x-hidden border-r",
+						!isStackedLayout && (isCompactMode ? "w-14" : "w-48"),
+					)}>
+					{sections.map(({ id, icon: Icon }) => (
+						<StandardTooltip
+							key={id}
+							content={getSectionLabel(id)}
+							side={isStackedLayout ? "bottom" : "right"}>
 							<TabTrigger
-								ref={(element) => (tabRefs.current[id] = element)}
+								ref={(element) => {
+									tabRefs.current[id] = element
+								}}
 								value={id}
-								isSelected={isSelected} // Pass manually for styling state
-								className={cn(
-									isSelected // Use manual isSelected for styling
-										? `${settingsTabTrigger} ${settingsTabTriggerActive}`
-										: settingsTabTrigger,
-									"cursor-pointer focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
-								)}
+								id={settingsId + "-tab-" + id}
+								aria-label={getSectionLabel(id)}
+								aria-controls={settingsId + "-panel-" + id}
+								isSelected={activeSection === id}
+								onClick={() => {
+									activateSection(id)
+									setNavigationTarget(undefined)
+								}}
 								data-testid={`tab-${id}`}
-								data-compact={isCompactMode}>
-								<div className={cn("flex items-center gap-2", isCompactMode && "justify-center")}>
-									<Icon className="w-4 h-4" />
-									<span className="tab-label">{t(`settings:sections.${id}`)}</span>
-								</div>
+								className={cn(
+									"box-border flex h-9 min-w-0 cursor-pointer items-center gap-2 overflow-hidden rounded-lg px-3 text-vscode-foreground opacity-70 hover:bg-vscode-list-hoverBackground hover:opacity-100",
+									activeSection === id && "bg-vscode-list-hoverBackground opacity-100",
+									isCompactMode && "w-10 justify-center px-0",
+									isStackedLayout && "h-8 w-7 shrink-0",
+								)}>
+								<Icon className="size-4 shrink-0" aria-hidden="true" />
+								<span className={isCompactMode ? "sr-only" : "truncate"}>{getSectionLabel(id)}</span>
 							</TabTrigger>
-						)
-
-						if (isCompactMode) {
-							// Wrap in Tooltip and manually add onClick to the trigger
-							return (
-								<TooltipProvider key={id} delayDuration={300}>
-									<Tooltip>
-										<TooltipTrigger asChild onClick={onSelect}>
-											{/* Clone to avoid ref issues if triggerComponent itself had a key */}
-											{React.cloneElement(triggerComponent)}
-										</TooltipTrigger>
-										<TooltipContent side="right" className="text-base">
-											<p className="m-0">{t(`settings:sections.${id}`)}</p>
-										</TooltipContent>
-									</Tooltip>
-								</TooltipProvider>
-							)
-						} else {
-							// Render trigger directly; TabList will inject onSelect via cloning
-							// Ensure the element passed to TabList has the key
-							return React.cloneElement(triggerComponent, { key: id })
-						}
-					})}
-				</TabList>
-
-				{/* Content area - renders the active tab while indexing runs in a hidden container */}
+						</StandardTooltip>
+					))}
+				</div>
 				<SearchIndexProvider value={searchContextValue}>
 					<TabContent
 						ref={contentRef}
-						className="p-0 min-h-0 flex-1 overflow-auto"
+						className="p-0 min-h-0 min-w-0 flex-1 overflow-auto"
 						data-testid="settings-content">
-						{renderSettingsSection(activeTab)}
+						{sections.map(({ id }) => (
+							<div
+								key={id}
+								role="tabpanel"
+								id={settingsId + "-panel-" + id}
+								aria-labelledby={settingsId + "-tab-" + id}
+								data-settings-section={id}
+								data-setting-id={`section-${id}`}
+								hidden={activeSection !== id}
+								tabIndex={0}>
+								<SectionHeader>
+									<span className="flex min-w-0 items-center gap-2">
+										{getSectionLabel(id)}
+										{id === "tools" && (
+											<SettingsHelp label={getSectionLabel(id)}>
+												<p className="m-0">{t("settings:tools.managementDescription")}</p>
+											</SettingsHelp>
+										)}
+									</span>
+								</SectionHeader>
+								{((id !== "providers" && id !== "tools") || mountedGroups[id]) &&
+									renderSettingsSection(id)}
+							</div>
+						))}
 					</TabContent>
-					{isIndexing && indexingSection && indexingSection !== activeTab && (
-						<div aria-hidden="true" className="hidden" data-testid="settings-indexing-content">
-							{renderSettingsSection(indexingSection)}
-						</div>
-					)}
 				</SearchIndexProvider>
 			</div>
 
+			<div className="flex shrink-0 justify-end border-t border-[var(--border-subtle)] px-5 py-2">
+				<Button
+					variant="ghost"
+					data-testid="settings-about-button"
+					onClick={() => checkUnsaveChanges(() => vscode.postMessage({ type: "switchTab", tab: "about" }))}>
+					<Info className="mr-2 h-4 w-4" aria-hidden="true" />
+					{t("settings:sections.about")}
+				</Button>
+			</div>
 			<AlertDialog open={isDiscardDialogShow} onOpenChange={setDiscardDialogShow}>
 				<AlertDialogContent
+					className="settings-discard-dialog max-h-[calc(100%-1rem)] min-w-0 overflow-y-auto"
 					onOpenAutoFocus={() => {
 						const activeElement = contentRef.current?.ownerDocument.activeElement
 						discardDialogOpenerRef.current = activeElement instanceof HTMLElement ? activeElement : null
@@ -1382,14 +1245,14 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					}}>
 					<AlertDialogHeader>
 						<AlertDialogTitle>
-							<AlertTriangle className="w-5 h-5 text-yellow-500" />
-							{t("settings:unsavedChangesDialog.title")}
+							<AlertTriangle className="w-5 h-5 shrink-0 text-vscode-editorWarning-foreground" />
+							<span className="min-w-0 break-words">{t("settings:unsavedChangesDialog.title")}</span>
 						</AlertDialogTitle>
 						<AlertDialogDescription>
 							{t("settings:unsavedChangesDialog.description")}
 						</AlertDialogDescription>
 					</AlertDialogHeader>
-					<AlertDialogFooter>
+					<AlertDialogFooter className="flex-wrap">
 						<AlertDialogCancel onClick={() => onConfirmDialogResult(false)}>
 							{t("settings:unsavedChangesDialog.cancelButton")}
 						</AlertDialogCancel>

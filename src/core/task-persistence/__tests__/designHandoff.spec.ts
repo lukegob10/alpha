@@ -11,8 +11,7 @@ import { TaskHistoryStore } from "../TaskHistoryStore"
 import { createDesignHandoff } from "../designHandoff"
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
-	resolveTaskDirectoryPath: (await importOriginal<typeof import("../../../utils/storage")>())
-		.resolveTaskDirectoryPath,
+	...(await importOriginal<typeof import("../../../utils/storage")>()),
 	getStorageBasePath: vi.fn().mockImplementation((defaultPath: string) => defaultPath),
 }))
 

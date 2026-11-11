@@ -4,10 +4,6 @@ import i18n from "../../../../i18n"
 import embeddingTranslations from "../../../../i18n/locales/en/embeddings.json"
 import { VertexGeminiEmbedder } from "../vertex"
 
-vi.mock("@alpha-code/telemetry", () => ({
-	TelemetryService: { instance: { captureEvent: vi.fn() } },
-}))
-
 // Exercise the adapter and installed SDK together, stubbing only HTTP and credentials.
 describe("Native Vertex embedding wire contract", () => {
 	beforeEach(() => {

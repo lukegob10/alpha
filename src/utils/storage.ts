@@ -103,8 +103,13 @@ function isResolvedPathWithin(rootPath: string, candidatePath: string): boolean 
  * directories remain valid paths so read-only callers can report absent data.
  */
 export async function resolveExistingTaskDirectoryPathReadOnly(defaultPath: string, taskId: string): Promise<string> {
-	const storageBasePath = getStorageBasePathReadOnly(defaultPath)
+	return resolveExistingTaskDirectoryInStorage(getStorageBasePathReadOnly(defaultPath), taskId)
+}
+
+/** Resolve against a captured storage base without reading configuration again. */
+export async function resolveExistingTaskDirectoryInStorage(storageBasePath: string, taskId: string): Promise<string> {
 	const taskDirectory = resolveTaskDirectoryPath(storageBasePath, taskId)
+	const tasksRoot = path.dirname(taskDirectory)
 	try {
 		const taskStats = await fs.lstat(taskDirectory)
 		if (!taskStats.isDirectory() || taskStats.isSymbolicLink()) {
@@ -112,7 +117,7 @@ export async function resolveExistingTaskDirectoryPathReadOnly(defaultPath: stri
 		}
 		const [realStorageBasePath, realTasksRoot, realTaskDirectory] = await Promise.all([
 			fs.realpath(storageBasePath),
-			fs.realpath(path.join(storageBasePath, "tasks")),
+			fs.realpath(tasksRoot),
 			fs.realpath(taskDirectory),
 		])
 		const expectedTasksRoot = path.resolve(realStorageBasePath, "tasks")

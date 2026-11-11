@@ -65,7 +65,6 @@ const state = (turnId: string, sequence: number, taskStateSeq: number): Extensio
 	experiments: { preventFocusDisruption: false, customTools: false },
 	mode: "code",
 	customModes: [],
-	telemetrySetting: "unset",
 	renderContext: "sidebar",
 	autoCondenseContext: false,
 	autoCondenseContextPercent: 100,

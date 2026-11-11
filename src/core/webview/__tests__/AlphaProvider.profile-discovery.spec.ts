@@ -70,9 +70,10 @@ describe("authoritative saved profile discovery", () => {
 	it("reads additions, renames, model changes and removals from current saved storage", async () => {
 		const fixture = await createProvider()
 		const first = await fixture.provider.listProviderProfiles()
+		const version = expect.stringMatching(/^sha256:[a-f0-9]{64}$/)
 		expect(first).toEqual([
-			{ id: "active-id", name: "Active", apiProvider: "openai-codex", modelId: "gpt-6.1-sol" },
-			{ id: "shared-id", name: "Shared", apiProvider: "openai-native", modelId: "gpt-6.1-sol" },
+			{ id: "active-id", name: "Active", apiProvider: "openai-codex", modelId: "gpt-6.1-sol", version },
+			{ id: "shared-id", name: "Shared", apiProvider: "openai-native", modelId: "gpt-6.1-sol", version },
 		])
 
 		fixture.replaceSaved({
@@ -87,11 +88,13 @@ describe("authoritative saved profile discovery", () => {
 				Added: { id: "added-id", apiProvider: "openai-native", apiModelId: "gpt-5.6-luna" },
 			},
 		})
-		expect(await fixture.provider.listProviderProfiles()).toEqual([
-			{ id: "active-id", name: "Active", apiProvider: "openai-codex", modelId: "gpt-6.1-sol" },
-			{ id: "shared-id", name: "Renamed", apiProvider: "vscode-lm", modelId: "grok-4.6" },
-			{ id: "added-id", name: "Added", apiProvider: "openai-native", modelId: "gpt-5.6-luna" },
+		const updated = await fixture.provider.listProviderProfiles()
+		expect(updated).toEqual([
+			first[0],
+			{ id: "shared-id", name: "Renamed", apiProvider: "vscode-lm", modelId: "grok-4.6", version },
+			{ id: "added-id", name: "Added", apiProvider: "openai-native", modelId: "gpt-5.6-luna", version },
 		])
+		expect(updated[1].version).not.toBe(first[1].version)
 		fixture.replaceSaved({ ...fixture.saved, apiConfigs: { Active: fixture.saved.apiConfigs.Active } })
 		expect(await fixture.provider.listProviderProfiles()).toEqual([first[0]])
 		expect(first[1].name).toBe("Shared")

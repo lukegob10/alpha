@@ -2,8 +2,12 @@
 
 const mockPid = 12345
 const execFileMock = vitest.hoisted(() => vitest.fn())
+const discoverMock = vitest.hoisted(() => vitest.fn())
 
-vitest.mock("node:child_process", () => ({ execFile: execFileMock }))
+vitest.mock("node:child_process", () => ({
+	execFile: (...args: [string, string[], unknown, unknown]) =>
+		(args[1][0] === "-A" ? discoverMock : execFileMock)(...args),
+}))
 
 vitest.mock("execa", () => {
 	const mockKill = vitest.fn()
@@ -21,16 +25,9 @@ vitest.mock("execa", () => {
 	return { execa, ExecaError: class extends Error {} }
 })
 
-vitest.mock("ps-tree", () => ({
-	default: vitest.fn(function (_: number, cb: any) {
-		return cb(null, [])
-	}),
-}))
-
 import { execa, ExecaError } from "execa"
 import * as commandShell from "../../../utils/shell"
 import * as path from "node:path"
-import psTree from "ps-tree"
 import { ExecaTerminalProcess } from "../ExecaTerminalProcess"
 import { ExecaTerminal } from "../ExecaTerminal"
 import { BaseTerminal } from "../BaseTerminal"
@@ -60,8 +57,7 @@ describe("ExecaTerminalProcess", () => {
 			callback(null, "", "")
 			return {}
 		})
-		vitest.mocked(psTree).mockReset()
-		vitest.mocked(psTree).mockImplementation((_, callback) => callback(null, []))
+		discoverMock.mockReset().mockImplementation((_file, _args, _options, callback) => callback(null, "", ""))
 		BaseTerminal.setExecaShellPath(undefined)
 		mockTerminal = {
 			provider: "execa",
@@ -88,7 +84,7 @@ describe("ExecaTerminalProcess", () => {
 
 	afterEach(async () => {
 		// POSIX runs schedule optional PID refinement after the output stream ends.
-		// Settle those callbacks before the next test replaces the ps-tree mock.
+		// Settle those callbacks before the next test replaces the process discovery mock.
 		await vitest.runOnlyPendingTimersAsync()
 		vitest.useRealTimers()
 		process.env = originalEnv
@@ -515,7 +511,7 @@ describe("ExecaTerminalProcess", () => {
 				["/PID", "12345", "/T", "/F"],
 				{ windowsHide: true, timeout: 5_000 },
 			])
-			expect(psTree).not.toHaveBeenCalled()
+			expect(discoverMock).not.toHaveBeenCalled()
 		})
 
 		it("returns one shared promise for repeated aborts", async () => {
@@ -654,14 +650,9 @@ describe("ExecaTerminalProcess", () => {
 			;(terminalProcess as any).subprocess = { pid: 12_345 }
 			;(terminalProcess as any).pid = 23_456
 			;(terminalProcess as any).pidUpdatePromise = Promise.resolve()
-			vitest
-				.mocked(psTree)
-				.mockImplementation((pid, callback) =>
-					callback(
-						null,
-						pid === 23_456 ? [{ PID: "34567", PPID: "23456", COMMAND: "powershell.exe", STAT: "" }] : [],
-					),
-				)
+			discoverMock.mockImplementation((_file, _args, _options, callback) => {
+				callback(null, "12345 23456\n23456 34567\n", "")
+			})
 
 			try {
 				await terminalProcess.abort()
@@ -670,7 +661,7 @@ describe("ExecaTerminalProcess", () => {
 					[23_456, "SIGKILL"],
 					[12_345, "SIGKILL"],
 				])
-				expect(Math.max(...vitest.mocked(psTree).mock.invocationCallOrder)).toBeLessThan(
+				expect(Math.max(...discoverMock.mock.invocationCallOrder)).toBeLessThan(
 					Math.min(...processKill.mock.invocationCallOrder),
 				)
 			} finally {
@@ -761,7 +752,9 @@ describe("ExecaTerminalProcess", () => {
 			Object.defineProperty(process, "platform", { value: "linux" })
 			;(terminalProcess as any).subprocess = { pid: 12_345 }
 			;(terminalProcess as any).pid = 12_345
-			vitest.mocked(psTree).mockImplementation((_pid, callback) => callback(new Error("ps failed"), []))
+			discoverMock.mockImplementation((_file, _args, _options, callback) => {
+				callback(new Error("ps failed"), "", "")
+			})
 
 			try {
 				await expect(terminalProcess.abort()).rejects.toThrow(
@@ -779,11 +772,13 @@ describe("ExecaTerminalProcess", () => {
 			Object.defineProperty(process, "platform", { value: "linux" })
 			;(terminalProcess as any).subprocess = { pid: 12_345 }
 			;(terminalProcess as any).pid = 12_345
-			vitest.mocked(psTree).mockImplementation(() => undefined as any)
+			discoverMock.mockImplementation((_file, _args, { timeout }, callback) => {
+				setTimeout(() => callback(new Error("ps timed out"), "", ""), timeout)
+			})
 
 			try {
 				const abort = terminalProcess.abort()
-				const rejected = expect(abort).rejects.toThrow("Timed out discovering the process tree for PID 12345")
+				const rejected = expect(abort).rejects.toThrow("Failed to get process tree for PID 12345: ps timed out")
 				await vitest.advanceTimersByTimeAsync(5_000)
 				await rejected
 				expect(processKill).toHaveBeenCalledWith(12_345, "SIGKILL")
@@ -803,7 +798,6 @@ describe("ExecaTerminalProcess", () => {
 			Object.defineProperty(process, "platform", { value: "linux" })
 			;(terminalProcess as any).subprocess = { pid: 12_345 }
 			;(terminalProcess as any).pid = 23_456
-			vitest.mocked(psTree).mockImplementation((_pid, callback) => callback(null, []))
 
 			try {
 				await expect(terminalProcess.abort()).rejects.toThrow("Failed to kill process 23456")
@@ -831,10 +825,8 @@ describe("ExecaTerminalProcess", () => {
 				kill: vitest.fn(),
 			}
 			vitest.mocked(execa).mockImplementationOnce((() => () => subprocess) as any)
-			let discoveryCalls = 0
-			vitest.mocked(psTree).mockImplementation((_pid, callback) => {
-				discoveryCalls++
-				if (discoveryCalls > 1) callback(null, [])
+			discoverMock.mockImplementationOnce((_file, _args, { timeout }, callback) => {
+				setTimeout(() => callback(new Error("ps timed out"), "", ""), timeout)
 			})
 
 			const run = terminalProcess.run("long-running-command")
@@ -843,7 +835,7 @@ describe("ExecaTerminalProcess", () => {
 			try {
 				await vitest.advanceTimersByTimeAsync(1_100)
 				await expect(abort).resolves.toBeUndefined()
-				expect(discoveryCalls).toBe(2)
+				expect(discoverMock).toHaveBeenCalledTimes(2)
 				releaseStream()
 				await run
 			} finally {

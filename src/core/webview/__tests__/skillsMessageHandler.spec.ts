@@ -189,16 +189,16 @@ describe("skillsMessageHandler", () => {
 			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: agentsSkills })
 		})
 
-		it("returns empty skills when skills manager is not available", async () => {
+		it("reports an unavailable manager without replacing the catalog with an empty list", async () => {
 			const provider = createMockProvider(false)
 
 			const result = await handleRequestSkills(provider)
 
 			expect(result).toEqual([])
-			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: [] })
+			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skillsError: "unavailable" })
 		})
 
-		it("handles errors and returns empty skills", async () => {
+		it("reports refresh failures without replacing the last successful catalog", async () => {
 			const provider = createMockProvider(true)
 			mockRefreshSkills.mockRejectedValue(new Error("Test error"))
 
@@ -206,7 +206,25 @@ describe("skillsMessageHandler", () => {
 
 			expect(result).toEqual([])
 			expect(mockLog).toHaveBeenCalled()
+			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skillsError: "unavailable" })
+			expect(mockPostMessageToWebview).not.toHaveBeenCalledWith(expect.objectContaining({ skills: [] }))
+		})
+
+		it("publishes a successful empty catalog distinctly from a discovery failure", async () => {
+			mockRefreshSkills.mockResolvedValue([])
+
+			await handleRequestSkills(createMockProvider())
+
 			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skills: [] })
+			expect(mockLog).not.toHaveBeenCalled()
+		})
+
+		it.each([null, undefined, "discovery failure"])("reports non-Error refresh rejection %s", async (failure) => {
+			mockRefreshSkills.mockRejectedValue(failure)
+
+			await expect(handleRequestSkills(createMockProvider())).resolves.toEqual([])
+
+			expect(mockPostMessageToWebview).toHaveBeenCalledWith({ type: "skills", skillsError: "unavailable" })
 		})
 	})
 

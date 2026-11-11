@@ -8,11 +8,28 @@ import {
 	selectBenchmarkSubset,
 	type SubsetMeasurement,
 } from "../index"
+import { subsetMeasurementSchema } from "../subsets"
 
 const publicRoot = path.resolve(process.cwd(), "../../evals")
 const subsetFile = path.join(publicRoot, "subsets", DEFAULT_BENCHMARK_SUBSET_FILE)
 
 describe("high-value benchmark subset", () => {
+	it.each([
+		{ taskVersion: undefined, message: "Subset measurement task version is required" },
+		{ taskVersion: "1", message: "Invalid subset measurement task version" },
+		{ taskVersion: null, message: "Invalid subset measurement task version" },
+	])("preserves the incoming task version diagnostic for $taskVersion", ({ taskVersion, message }) => {
+		const parsed = subsetMeasurementSchema.safeParse({
+			taskId: "repo-cache-invalidation",
+			...(taskVersion === undefined ? {} : { taskVersion }),
+			costUsd: 0,
+			latencyMs: 0,
+		})
+		expect(parsed.success).toBe(false)
+		if (parsed.success) throw new Error("Invalid measurement was accepted")
+		expect(parsed.error.issues).toEqual([expect.objectContaining({ path: ["taskVersion"], message })])
+	})
+
 	it("retains the original T1 history and carries observations only for unchanged task identities", async () => {
 		const historical = await loadBenchmarkSubset(path.join(publicRoot, "subsets", "frontier-t1.yaml"))
 		const active = await loadBenchmarkSubset(subsetFile)

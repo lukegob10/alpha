@@ -329,6 +329,8 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 		await openCampaignRoot(root, true)
 		context.after(() => fs.rm(root, { recursive: true, force: true }))
 		const phases: string[] = []
+		const profiles: string[] = []
+		const workspaces = new Set<string>()
 		const abort = new AbortController()
 		let audits = 0
 		const operations = createExtensionCampaignOperations(
@@ -364,6 +366,9 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 				},
 				runProcess: async (command: OwnedProcessCommand) => {
 					const argument = (flag: string) => command.args[command.args.indexOf(flag) + 1]!
+					profiles.push(argument("--profile-dir"))
+					workspaces.add(argument("--workspace"))
+					assert.equal(workspaces.size, 1, "Reload phases must retain their task workspace")
 					const phase = argument("--scenario-phase")
 					if (phase === "continue") {
 						assert.equal(phases.length, 1)
@@ -468,6 +473,16 @@ test("adapter gates reload continuation on complete evidence, retention and stor
 			assert.equal(index.manifests.length, 2)
 			assert.deepEqual(phases, ["prepare", "continue"])
 			assert.equal(audits, 2)
+			assert.equal(profiles[0], profiles[1], "Continuation retains the scenario's profile")
+			phases.length = 0
+			workspaces.clear()
+			const next = await operations.runScenario(
+				{ ...reloadRequest, attemptId: "attempt-0002" },
+				new AbortController().signal,
+			)
+			assert.equal(next.status, "passed")
+			assert.notEqual(profiles[0], profiles[2], "Independent scripted scenarios need isolated profile files")
+			assert.equal(profiles[2], profiles[3], "Continuation retains the second scenario's profile")
 		} else if (scenario === "host-cleanup-unverified" || scenario === "capture-helper-cleanup-unverified") {
 			const result = await operations.runScenario(reloadRequest, new AbortController().signal)
 			assert.equal(result.status, "blocked")

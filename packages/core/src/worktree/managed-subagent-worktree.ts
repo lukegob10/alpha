@@ -17,6 +17,8 @@ import {
 const execFileAsync = promisify(execFile)
 const MAX_GIT_OUTPUT = 100 * 1024 * 1024
 const UNCONFIRMED_STARTUP_PROCESS_CLEANUP = "Worker startup process cleanup is unconfirmed"
+const WORKTREE_LOCK_REASON = "Alpha editing sub-agent"
+const SHORT_CHECKOUT_PREFIX = "alpha-worker-checkout-"
 // Managed storage can exceed MAX_PATH even when every path component is valid.
 // Override only our Git invocations; never change the user's repository/global config.
 const GIT_PLATFORM_ARGS = process.platform === "win32" ? ["-c", "core.longpaths=true"] : []
@@ -94,6 +96,8 @@ export interface PreparedManagedWorktree {
 export type ManagedWorkerCreationOptions = WorktreeProcessCancellation & { groupId?: string; runId?: string }
 
 export type ManagedWorkerApplyOptions = WorktreeProcessCancellation & {
+	/** The live parent's workspace, independently of the retained proposal. */
+	expectedWorkspace?: string
 	validateBeforeMutation?: (artifact: ManagedWorkerArtifact) => void
 }
 
@@ -164,6 +168,14 @@ const relativeArtifactPath = artifactString.refine(
 		path.win32.parse(value).root === "" &&
 		value.split(/[\\/]/).every((part) => part !== "" && part !== "." && part !== ".."),
 )
+const worktreeOwnerSchema = z.object({
+	artifactId: artifactString.min(1),
+	checkout: absoluteArtifactPath,
+	physicalCheckout: absoluteArtifactPath,
+	dev: z.string().regex(/^\d+$/),
+	ino: z.string().regex(/^\d+$/),
+})
+type WorktreeOwner = z.infer<typeof worktreeOwnerSchema>
 const artifactScope = z.union([z.literal("."), relativeArtifactPath])
 const managedWorkerArtifactSchema = z
 	.object({
@@ -820,7 +832,7 @@ export class ManagedSubagentWorktreeService {
 		name: string,
 		allowMissing = true,
 	): Promise<string> {
-		if (!/^(?:metadata\.json|changes\.patch|\d+-(?:before|after))$/.test(name)) {
+		if (!/^(?:metadata\.json|worktree-owner\.json|changes\.patch|\d+-(?:before|after))$/.test(name)) {
 			throw new Error("Invalid managed worker artifact file reference")
 		}
 		const directory = await this.validateArtifactDirectory(storagePath, artifactId)
@@ -839,6 +851,89 @@ export class ManagedSubagentWorktreeService {
 			throw new Error("Managed worker artifact file ownership changed")
 		}
 		return file
+	}
+
+	private async readWorktreeOwner(storagePath: string, artifactId: string): Promise<WorktreeOwner | undefined> {
+		const file = await this.artifactFilePath(storagePath, artifactId, "worktree-owner.json")
+		const stat = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined
+			throw error
+		})
+		if (!stat) return undefined
+		if (stat.size > 16 * 1024) throw new Error("Invalid managed worker checkout owner receipt")
+		const parsed = worktreeOwnerSchema.safeParse(JSON.parse(await fs.readFile(file, "utf8")))
+		if (!parsed.success || parsed.data.artifactId !== artifactId) {
+			throw new Error("Invalid managed worker checkout owner receipt")
+		}
+		return parsed.data
+	}
+
+	private async assertWorktreeOwnership(
+		storagePath: string,
+		artifact: ManagedWorkerArtifact,
+		owner?: WorktreeOwner,
+	): Promise<void> {
+		const checkout = artifact.worktreePath
+		if (!checkout) return
+		owner ??= await this.readWorktreeOwner(storagePath, artifact.id)
+		const ownershipChanged = () => new Error("Managed worker checkout ownership changed")
+		if (owner && !samePath(checkout, owner.checkout)) throw ownershipChanged()
+		const stat = await fs.lstat(checkout, { bigint: true }).catch((error: NodeJS.ErrnoException) => {
+			if (error.code === "ENOENT") return undefined
+			throw error
+		})
+		if (stat && (!stat.isDirectory() || stat.isSymbolicLink())) throw ownershipChanged()
+		const physical = stat && (await fs.realpath(checkout))
+		if (owner) {
+			if (
+				stat &&
+				(String(stat.dev) !== owner.dev ||
+					String(stat.ino) !== owner.ino ||
+					!physical ||
+					!samePath(physical, owner.physicalCheckout))
+			) {
+				throw ownershipChanged()
+			}
+			return
+		}
+
+		// Legacy conventional checkouts have an artifact-specific location. Reject
+		// symlinked ancestors that would redirect that location outside storage.
+		if (samePath(checkout, path.join(storagePath, "subagent-worktrees", artifact.id))) {
+			if (
+				physical &&
+				!samePath(physical, path.join(await fs.realpath(storagePath), "subagent-worktrees", artifact.id))
+			) {
+				throw ownershipChanged()
+			}
+			return
+		}
+		// Older Windows short checkouts did not have receipts. Require both the
+		// temporary naming convention and the Git lock installed at Worker startup.
+		const checkoutName = path.basename(checkout)
+		const temp = os.tmpdir()
+		if (
+			process.platform !== "win32" ||
+			!samePath(path.dirname(checkout), temp) ||
+			!checkoutName.startsWith(SHORT_CHECKOUT_PREFIX) ||
+			!/^[a-zA-Z0-9]{6}$/.test(checkoutName.slice(SHORT_CHECKOUT_PREFIX.length)) ||
+			(physical && !samePath(physical, path.join(await fs.realpath(temp), checkoutName)))
+		) {
+			throw ownershipChanged()
+		}
+		const admin = await this.resolveWorktreeAdmin(artifact)
+		const listed = await this.artifactGit(
+			artifact,
+			[...admin.prefix, "worktree", "list", "--porcelain", "-z"],
+			undefined,
+			admin.cwd,
+		)
+		const registration = listed.split("\0\0").find((entry) => {
+			const first = entry.split("\0", 1)[0]!
+			return first.startsWith("worktree ") && samePath(first.slice("worktree ".length), physical ?? checkout)
+		})
+		if (!registration && !stat) return
+		if (!registration?.split("\0").includes(`locked ${WORKTREE_LOCK_REASON}`)) throw ownershipChanged()
 	}
 
 	private async persist(storagePath: string, artifact: ManagedWorkerArtifact): Promise<void> {
@@ -1168,6 +1263,7 @@ export class ManagedSubagentWorktreeService {
 		let artifact: ManagedWorkerArtifact | undefined
 		let ownsWorktreePath = false
 		let worktreeAdded = false
+		let worktreeOwner: WorktreeOwner | undefined
 		try {
 			await fs.mkdir(path.dirname(worktreePath), { recursive: true })
 			if (validated.privateRepository) {
@@ -1258,16 +1354,39 @@ export class ManagedSubagentWorktreeService {
 						path.join(await fs.realpath(path.dirname(worktreePath)), path.basename(worktreePath)),
 					))
 			) {
-				worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-worker-checkout-"))
+				worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), SHORT_CHECKOUT_PREFIX))
 				ownsWorktreePath = true
 				artifact.worktreePath = worktreePath
-				if (needsShortGitPath(await fs.realpath(worktreePath)))
-					throw new Error("The temporary directory is too long for a managed Git checkout")
 			}
 			await this.persist(storagePath, artifact)
 			if (!ownsWorktreePath) {
+				if (
+					!samePath(
+						await fs.realpath(path.dirname(worktreePath)),
+						path.join(await fs.realpath(storagePath), "subagent-worktrees"),
+					)
+				) {
+					throw new Error("Managed worker checkout storage ownership changed")
+				}
 				await fs.mkdir(worktreePath)
 				ownsWorktreePath = true
+			}
+			const checkoutStat = await fs.lstat(worktreePath, { bigint: true })
+			worktreeOwner = {
+				artifactId,
+				checkout: worktreePath,
+				physicalCheckout: await fs.realpath(worktreePath),
+				dev: String(checkoutStat.dev),
+				ino: String(checkoutStat.ino),
+			}
+			await this.assertWorktreeOwnership(storagePath, artifact, worktreeOwner)
+			await fs.writeFile(
+				await this.artifactFilePath(storagePath, artifactId, "worktree-owner.json"),
+				JSON.stringify(worktreeOwner),
+				{ encoding: "utf8", flag: "wx" },
+			)
+			if (process.platform === "win32" && needsShortGitPath(worktreeOwner.physicalCheckout)) {
+				throw new Error("The temporary directory is too long for a managed Git checkout")
 			}
 			await this.artifactGit(
 				artifact,
@@ -1279,7 +1398,7 @@ export class ManagedSubagentWorktreeService {
 			worktreeAdded = true
 			await this.artifactGit(
 				artifact,
-				["worktree", "lock", "--reason", "Alpha editing sub-agent", worktreePath],
+				["worktree", "lock", "--reason", WORKTREE_LOCK_REASON, worktreePath],
 				undefined,
 				artifact.gitRoot,
 				creation,
@@ -1317,8 +1436,11 @@ export class ManagedSubagentWorktreeService {
 							[],
 							this.artifactGitEnv(artifact),
 						))
-					if (registered) await this.cleanupWorktreeWithRetry(artifact)
-					else await fs.rm(worktreePath, { recursive: true, force: true })
+					if (registered) await this.cleanupWorktreeWithRetry(storagePath, artifact, worktreeOwner)
+					else {
+						await this.assertWorktreeOwnership(storagePath, artifact, worktreeOwner)
+						await fs.rm(worktreePath, { recursive: true, force: true })
+					}
 				}
 				if (error instanceof GitPathCleanupError) await this.releaseGitPaths(error.invocation)
 				if (artifact?.privateGitOwner) await this.removeShortPrivateRepository(storagePath, artifact)
@@ -1388,6 +1510,7 @@ export class ManagedSubagentWorktreeService {
 	async capture(storagePath: string, artifactId: string, partial = false): Promise<ManagedWorkerArtifact> {
 		const artifact = await this.load(storagePath, artifactId)
 		if (!artifact.worktreePath) return artifact
+		await this.assertWorktreeOwnership(storagePath, artifact)
 		const indexPath = path.join(this.artifactDir(storagePath, artifact.id), "result.index")
 		const indexEnv = { GIT_INDEX_FILE: indexPath, GIT_WORK_TREE: artifact.worktreePath }
 		let capturePersisted = false
@@ -1521,7 +1644,7 @@ export class ManagedSubagentWorktreeService {
 			// must not remove them or publish a partially assembled terminal snapshot.
 			if (capturePersisted) {
 				try {
-					await this.cleanupWorktreeWithRetry(artifact)
+					await this.cleanupWorktreeWithRetry(storagePath, artifact)
 					delete artifact.worktreePath
 				} catch (error) {
 					artifact.error = `Captured changes, but managed worktree cleanup must be retried: ${
@@ -1533,8 +1656,13 @@ export class ManagedSubagentWorktreeService {
 		}
 	}
 
-	private async cleanupWorktree(artifact: ManagedWorkerArtifact): Promise<void> {
+	private async cleanupWorktree(
+		storagePath: string,
+		artifact: ManagedWorkerArtifact,
+		owner?: WorktreeOwner,
+	): Promise<void> {
 		if (!artifact.worktreePath) return
+		await this.assertWorktreeOwnership(storagePath, artifact, owner)
 		const admin = await this.resolveWorktreeAdmin(artifact)
 		let absent = false
 		try {
@@ -1554,15 +1682,11 @@ export class ManagedSubagentWorktreeService {
 				this.artifactGitEnv(artifact, undefined, admin.cwd),
 			))
 		) {
+			// Git accepts two --force flags for a locked checkout. Leave the lock in
+			// place until removal so legacy checkout ownership survives a failed attempt.
 			await this.artifactGit(
 				artifact,
-				[...admin.prefix, "worktree", "unlock", artifact.worktreePath],
-				undefined,
-				admin.cwd,
-			).catch(() => undefined)
-			await this.artifactGit(
-				artifact,
-				[...admin.prefix, "worktree", "remove", "--force", artifact.worktreePath],
+				[...admin.prefix, "worktree", "remove", "--force", "--force", artifact.worktreePath],
 				undefined,
 				admin.cwd,
 			)
@@ -1570,11 +1694,15 @@ export class ManagedSubagentWorktreeService {
 		await this.artifactGit(artifact, [...admin.prefix, "worktree", "prune"], undefined, admin.cwd)
 	}
 
-	private async cleanupWorktreeWithRetry(artifact: ManagedWorkerArtifact): Promise<void> {
+	private async cleanupWorktreeWithRetry(
+		storagePath: string,
+		artifact: ManagedWorkerArtifact,
+		owner?: WorktreeOwner,
+	): Promise<void> {
 		let lastError: unknown
 		for (let attempt = 0; attempt < 3; attempt++) {
 			try {
-				await this.cleanupWorktree(artifact)
+				await this.cleanupWorktree(storagePath, artifact, owner)
 				return
 			} catch (error) {
 				lastError = error
@@ -1599,10 +1727,19 @@ export class ManagedSubagentWorktreeService {
 		if (!stat) return { kind: "absent" }
 		if (stat.isDirectory()) return { kind: "directory" }
 		if (stat.isSymbolicLink()) {
-			const content = Buffer.from(await fs.readlink(absolute))
+			const content = await fs.readlink(absolute, { encoding: "buffer" })
 			return {
 				kind: "symlink",
-				hash: crypto.createHash("sha1").update(`blob ${content.length}\0`).update(content).digest("hex"),
+				hash: (
+					await this.artifactGit(
+						artifact,
+						["hash-object", "--stdin", "--no-filters"],
+						undefined,
+						undefined,
+						cancellation,
+						content,
+					)
+				).trim(),
 				mode: "120000",
 			}
 		}
@@ -1809,6 +1946,15 @@ export class ManagedSubagentWorktreeService {
 		options?: ManagedWorkerApplyOptions,
 	): Promise<ApplyManagedWorktreeResult> {
 		const artifact = await this.load(storagePath, artifactId)
+		if (options?.expectedWorkspace) {
+			const parent = await fs.realpath(options.expectedWorkspace)
+			if (
+				!samePath(artifact.logicalWorkspace, parent) ||
+				!samePath(await fs.realpath(path.resolve(artifact.gitRoot, artifact.logicalWorkspaceFromRoot)), parent)
+			) {
+				throw new Error("Worker proposal does not belong to the parent workspace")
+			}
+		}
 		if (artifact.status === "applied") return { status: "applied" }
 		if (!["pending_review", "conflicted"].includes(artifact.status) || !artifact.patchFile) {
 			throw new Error("This worker change set is not available to apply")
@@ -1959,9 +2105,14 @@ export class ManagedSubagentWorktreeService {
 				if (options.hasTaskOwner?.(artifact.taskId)) continue
 				if (artifact.status === "active" && artifact.error?.startsWith(UNCONFIRMED_STARTUP_PROCESS_CLEANUP))
 					continue
+				await this.assertWorktreeOwnership(storagePath, artifact)
 				const conventionalWorktreePath = path.join(worktreeRoot, artifact.id)
 				let recoverableWorktreePath: string | undefined
-				for (const candidate of [artifact.worktreePath, conventionalWorktreePath]) {
+				const owner =
+					!artifact.worktreePath && artifact.status === "active"
+						? await this.readWorktreeOwner(storagePath, artifact.id)
+						: undefined
+				for (const candidate of [artifact.worktreePath, owner?.checkout ?? conventionalWorktreePath]) {
 					if (!candidate || recoverableWorktreePath) continue
 					try {
 						await fs.access(candidate)
@@ -1977,6 +2128,7 @@ export class ManagedSubagentWorktreeService {
 					if (recoverableWorktreePath) {
 						if (artifact.worktreePath !== recoverableWorktreePath) {
 							artifact.worktreePath = recoverableWorktreePath
+							await this.assertWorktreeOwnership(storagePath, artifact, owner)
 							await this.persist(storagePath, artifact)
 						}
 						recovered.push(await this.capture(storagePath, id, true))
@@ -1993,7 +2145,7 @@ export class ManagedSubagentWorktreeService {
 						if (recoverableWorktreePath || artifact.worktreePath) {
 							// The exported proposal is authoritative; cleanup must not recapture it.
 							artifact.worktreePath = recoverableWorktreePath ?? artifact.worktreePath
-							await this.cleanupWorktreeWithRetry(artifact)
+							await this.cleanupWorktreeWithRetry(storagePath, artifact, owner)
 							delete artifact.worktreePath
 							if (artifact.error?.startsWith("Captured changes, but managed worktree cleanup")) {
 								delete artifact.error
@@ -2026,7 +2178,7 @@ export class ManagedSubagentWorktreeService {
 			throw error
 		})
 		if (!artifact) return
-		if (artifact?.worktreePath) await this.cleanupWorktreeWithRetry(artifact)
+		if (artifact.worktreePath) await this.cleanupWorktreeWithRetry(storagePath, artifact)
 		if (artifact?.privateGitDir && !artifact.privateGitOwner)
 			await this.assertPrivateRepositoryUnreferenced(storagePath, artifact)
 		if (artifact?.privateGitOwner) await this.removeShortPrivateRepository(storagePath, artifact)

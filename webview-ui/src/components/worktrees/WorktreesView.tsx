@@ -10,14 +10,17 @@ import { SectionHeader } from "../settings/SectionHeader"
 
 import { CreateWorktreeModal } from "./CreateWorktreeModal"
 import { DeleteWorktreeModal } from "./DeleteWorktreeModal"
-import { Folder, GitBranch, Lock, Plus, SquareArrowOutUpRight, Trash } from "lucide-react"
+import { Folder, GitBranch, Lock, Plus, RefreshCw, SquareArrowOutUpRight, Trash } from "lucide-react"
 
 type WorktreesViewProps = {
-	showWorktreesInHomeScreen: boolean
-	onShowWorktreesInHomeScreenChange: (value: boolean) => void
+	showWorktreesInHomeScreen?: boolean
+	onShowWorktreesInHomeScreenChange?: (value: boolean) => void
 }
 
-export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHomeScreenChange }: WorktreesViewProps) => {
+export const WorktreesView = ({
+	showWorktreesInHomeScreen,
+	onShowWorktreesInHomeScreenChange,
+}: WorktreesViewProps = {}) => {
 	const { t } = useAppTranslation()
 
 	// State
@@ -39,6 +42,7 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 
 	// Fetch worktrees list
 	const fetchWorktrees = useCallback(() => {
+		setIsLoading(true)
 		vscode.postMessage({ type: "listWorktrees" })
 	}, [])
 
@@ -54,7 +58,7 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 			switch (message.type) {
 				case "worktreeList": {
 					const response: WorktreeListResponse = message
-					setWorktrees(response.worktrees || [])
+					if (!response.error) setWorktrees(response.worktrees || [])
 					setIsGitRepo(response.isGitRepo)
 					setIsMultiRoot(response.isMultiRoot)
 					setIsSubfolder(response.isSubfolder)
@@ -64,12 +68,10 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 					break
 				}
 				case "worktreeIncludeStatus": {
-					console.log("[WorktreesView] Received worktreeIncludeStatus:", message)
 					setIncludeStatus(message.worktreeIncludeStatus)
 					break
 				}
 				case "worktreeResult": {
-					console.log("[WorktreesView] Received worktreeResult:", message)
 					// Refresh list and include status after any worktree operation
 					fetchWorktrees()
 					fetchIncludeStatus()
@@ -83,38 +85,23 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 		return () => window.removeEventListener("message", handleMessage)
 	}, [fetchWorktrees, fetchIncludeStatus])
 
-	// Initial fetch and polling
+	// Refresh on entry and after our operations; external changes can be refreshed explicitly.
 	useEffect(() => {
 		fetchWorktrees()
 		fetchIncludeStatus()
-
-		// Poll every 3 seconds for updates
-		const interval = setInterval(fetchWorktrees, 3000)
-		return () => clearInterval(interval)
 	}, [fetchWorktrees, fetchIncludeStatus])
 
 	// Handle create worktree include file
 	const handleCreateWorktreeInclude = useCallback(() => {
-		console.log("[WorktreesView] handleCreateWorktreeInclude called, includeStatus:", includeStatus)
 		if (!includeStatus?.gitignoreContent) {
-			console.log("[WorktreesView] No gitignoreContent, returning early")
 			return
 		}
 		setIsCreatingInclude(true)
-		console.log(
-			"[WorktreesView] Sending createWorktreeInclude with content length:",
-			includeStatus.gitignoreContent.length,
-		)
 		vscode.postMessage({
 			type: "createWorktreeInclude",
 			worktreeIncludeContent: includeStatus.gitignoreContent,
 		} as const)
-		// Refresh status after a short delay
-		setTimeout(() => {
-			fetchIncludeStatus()
-			setIsCreatingInclude(false)
-		}, 500)
-	}, [includeStatus, fetchIncludeStatus])
+	}, [includeStatus])
 
 	// Handle switch worktree
 	const handleSwitchWorktree = useCallback((worktreePath: string, newWindow: boolean) => {
@@ -127,22 +114,10 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 
 	// Handle toggle show in home screen
 	const handleToggleShowInHomeScreen = useCallback(() => {
-		onShowWorktreesInHomeScreenChange(!showWorktreesInHomeScreen)
+		onShowWorktreesInHomeScreenChange?.(!(showWorktreesInHomeScreen ?? true))
 	}, [onShowWorktreesInHomeScreenChange, showWorktreesInHomeScreen])
 
 	// Render error states
-	if (!isGitRepo) {
-		return (
-			<div>
-				<SectionHeader>{t("worktrees:title")}</SectionHeader>
-				<div className="px-5 text-sm">
-					<p className="text-vscode-descriptionForeground">{t("worktrees:description")}</p>
-					<p>{t("worktrees:notGitRepo")}</p>
-				</div>
-			</div>
-		)
-	}
-
 	if (isMultiRoot) {
 		return (
 			<div>
@@ -150,6 +125,18 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 				<div className="px-5 text-sm">
 					<p className="text-vscode-descriptionForeground">{t("worktrees:description")}</p>
 					<p>{t("worktrees:multiRootNotSupported")}</p>
+				</div>
+			</div>
+		)
+	}
+
+	if (!isGitRepo) {
+		return (
+			<div>
+				<SectionHeader>{t("worktrees:title")}</SectionHeader>
+				<div className="px-5 text-sm">
+					<p className="text-vscode-descriptionForeground">{t("worktrees:description")}</p>
+					<p>{t("worktrees:notGitRepo")}</p>
 				</div>
 			</div>
 		)
@@ -179,37 +166,46 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 				<div className="flex flex-col gap-2 px-5 py-2">
 					<p className="text-vscode-descriptionForeground text-sm m-0">{t("worktrees:description")}</p>
 
-					{/* Show in Home Screen toggle */}
-					<div className="flex items-center gap-2 text-sm text-vscode-descriptionForeground">
-						<ToggleSwitch
-							checked={showWorktreesInHomeScreen}
-							onChange={handleToggleShowInHomeScreen}
-							aria-label={t("worktrees:showInHomeScreen")}
-						/>
-						<span className="cursor-pointer" onClick={handleToggleShowInHomeScreen}>
-							{t("worktrees:showInHomeScreen")}
-						</span>
-					</div>
+					{onShowWorktreesInHomeScreenChange && (
+						<div className="flex items-center gap-2 text-sm text-vscode-descriptionForeground">
+							<ToggleSwitch
+								checked={showWorktreesInHomeScreen ?? true}
+								onChange={handleToggleShowInHomeScreen}
+								aria-label={t("worktrees:showInHomeScreen")}
+							/>
+							<span className="cursor-pointer" onClick={handleToggleShowInHomeScreen}>
+								{t("worktrees:showInHomeScreen")}
+							</span>
+						</div>
+					)}
 
-					{/* New Worktree button */}
-					<Button variant="secondary" className="py-1" onClick={() => setShowCreateModal(true)}>
-						<Plus />
-						{t("worktrees:newWorktree")}
-					</Button>
+					<div className="flex flex-wrap gap-2">
+						<Button variant="secondary" className="py-1" onClick={() => setShowCreateModal(true)}>
+							<Plus />
+							{t("worktrees:newWorktree")}
+						</Button>
+						<Button variant="secondary" className="py-1" onClick={fetchWorktrees} disabled={isLoading}>
+							<RefreshCw />
+							{t("worktrees:refresh")}
+						</Button>
+					</div>
 				</div>
 			</div>
 
 			{/* Scrollable List Area */}
-			<div className="flex-1 overflow-y-auto px-4 py-2 min-h-0">
-				{isLoading ? (
-					<div className="flex items-center justify-center h-48">
+			<div className="flex-1 overflow-y-auto px-4 py-2 min-h-0" aria-busy={isLoading}>
+				{error && (
+					<div role="alert" className="py-3 text-sm text-vscode-errorForeground">
+						{error}
+					</div>
+				)}
+				{isLoading && worktrees.length === 0 ? (
+					<div role="status" className="flex items-center justify-center gap-2 h-48">
 						<span className="codicon codicon-loading codicon-modifier-spin text-2xl" />
+						{t("worktrees:loading")}
 					</div>
-				) : error ? (
-					<div className="flex flex-col items-center justify-center h-48 text-vscode-errorForeground">
-						<span className="codicon codicon-error text-4xl mb-4" />
-						<p className="text-center">{error}</p>
-					</div>
+				) : !error && worktrees.length === 0 ? (
+					<p className="text-sm text-vscode-descriptionForeground">{t("worktrees:emptyList")}</p>
 				) : (
 					<div className="flex flex-col gap-1">
 						{worktrees.map((worktree) => (
@@ -219,21 +215,31 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 									worktree.isCurrent
 										? " bg-vscode-list-activeSelectionBackground border-vscode-list-activeSelectionForeground/20"
 										: "cursor-pointer"
-								}`}
-								onClick={
-									worktree.isCurrent ? undefined : () => handleSwitchWorktree(worktree.path, false)
-								}>
+								}`}>
 								<div className="flex items-start min-[400px]:items-center justify-between gap-2 flex-col min-[400px]:flex-row overflow-hidden">
-									<div className={`flex-1 min-w-0 ${worktree.isCurrent && "cursor-default"}`}>
+									<div className="flex-1 min-w-0">
 										{/* Info */}
-										<div className="flex items-center gap-2 overflow-hidden">
-											<GitBranch className="size-3 shrink-0" />
-											<span className="font-medium truncate">
-												{worktree.branch ||
-													(worktree.isDetached
-														? t("worktrees:detachedHead")
-														: t("worktrees:noBranch"))}
-											</span>
+										<div className="flex items-start gap-2 overflow-hidden">
+											<button
+												type="button"
+												className="flex-1 min-w-0 border-0 bg-transparent p-0 text-left text-inherit rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder disabled:cursor-default"
+												aria-label={`${t("worktrees:switchInThisWindow")}: ${worktree.branch || worktree.path} (${worktree.path})`}
+												disabled={worktree.isCurrent}
+												onClick={() => handleSwitchWorktree(worktree.path, false)}>
+												<span className="flex items-center gap-2 overflow-hidden">
+													<GitBranch className="size-3 shrink-0" />
+													<span className="font-medium truncate">
+														{worktree.branch ||
+															(worktree.isDetached
+																? t("worktrees:detachedHead")
+																: t("worktrees:noBranch"))}
+													</span>
+												</span>
+												<span className="flex gap-2 text-xs text-vscode-descriptionForeground mt-1">
+													<Folder className="size-3 shrink-0 mt-0.5" />
+													<span className="truncate">{worktree.path}</span>
+												</span>
+											</button>
 											{worktree.isBare && (
 												<Badge className="text-[0.7em] -mt-0.25 py-0.5">
 													{t("worktrees:primary")}
@@ -245,10 +251,6 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 												</StandardTooltip>
 											)}
 										</div>
-										<div className="flex gap-2 text-xs text-vscode-descriptionForeground mt-1">
-											<Folder className="size-3 shrink-0 mt-0.5" />
-											<span className="truncate">{worktree.path}</span>
-										</div>
 									</div>
 
 									{/* Actions */}
@@ -257,6 +259,7 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 											<Button
 												variant="ghost"
 												size="icon"
+												aria-label={t("worktrees:openInNewWindow")}
 												disabled={worktree.isCurrent}
 												onClick={(e) => {
 													e.stopPropagation()
@@ -266,11 +269,17 @@ export const WorktreesView = ({ showWorktreesInHomeScreen, onShowWorktreesInHome
 											</Button>
 										</StandardTooltip>
 
-										<StandardTooltip content={t("worktrees:delete")}>
+										<StandardTooltip
+											content={t(
+												worktree.isLocked
+													? "worktrees:lockedDeleteUnavailable"
+													: "worktrees:delete",
+											)}>
 											<Button
 												variant="ghost"
 												size="icon"
-												disabled={worktree.isCurrent || worktree.isBare}
+												aria-label={t("worktrees:delete")}
+												disabled={worktree.isCurrent || worktree.isBare || worktree.isLocked}
 												onClick={(e) => {
 													e.stopPropagation()
 													setDeleteWorktree(worktree)

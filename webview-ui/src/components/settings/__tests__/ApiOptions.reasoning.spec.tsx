@@ -22,11 +22,10 @@ vi.mock("../ThinkingBudget", () => ({
 
 vi.mock("../ModelPicker", () => ({ ModelPicker: () => null }))
 vi.mock("../ApiErrorMessage", () => ({ ApiErrorMessage: () => null }))
+vi.mock("../SettingsHelp", () => ({ SettingsHelp: () => null }))
 vi.mock("../Verbosity", () => ({ Verbosity: () => null }))
-vi.mock("../TodoListSettingsControl", () => ({ TodoListSettingsControl: () => null }))
 vi.mock("../TemperatureControl", () => ({ TemperatureControl: () => null }))
 vi.mock("../RateLimitSecondsControl", () => ({ RateLimitSecondsControl: () => null }))
-vi.mock("../ConsecutiveMistakeLimitControl", () => ({ ConsecutiveMistakeLimitControl: () => null }))
 
 vi.mock("../constants", () => ({
 	PROVIDERS: [{ value: "vertex", label: "GCP Vertex AI" }],

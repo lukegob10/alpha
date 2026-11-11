@@ -1,21 +1,21 @@
-import { HTMLAttributes, useMemo } from "react"
+import { HTMLAttributes, useMemo, useRef } from "react"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import type { Checkbox } from "@vscode/webview-ui-toolkit"
-import { telemetryClient } from "@/utils/TelemetryClient"
-import { DEFAULT_MAX_CONCURRENT_TASKS, MAX_MAX_CONCURRENT_TASKS, MIN_MAX_CONCURRENT_TASKS } from "@alpha-code/types"
 
 import { SetCachedStateField } from "./types"
 import { SectionHeader } from "./SectionHeader"
 import { Section } from "./Section"
 import { SearchableSetting } from "./SearchableSetting"
+import { SettingsHelp } from "./SettingsHelp"
 import { ExtensionStateContextType } from "@/context/ExtensionStateContext"
 
 interface UISettingsProps extends HTMLAttributes<HTMLDivElement> {
 	reasoningBlockCollapsed: boolean
 	enterBehavior: "send" | "newline"
 	autoSteer: boolean
-	maxConcurrentTasks: number
+	embedded?: boolean
+	unframed?: boolean
 	setCachedStateField: SetCachedStateField<keyof ExtensionStateContextType>
 }
 
@@ -23,11 +23,15 @@ export const UISettings = ({
 	reasoningBlockCollapsed,
 	enterBehavior,
 	autoSteer,
-	maxConcurrentTasks,
+	embedded = false,
+	unframed = false,
 	setCachedStateField,
 	...props
 }: UISettingsProps) => {
 	const { t } = useAppTranslation()
+	const latestPreferences = useRef({ reasoningBlockCollapsed, enterBehavior, autoSteer })
+	// Toolkit changes can fire while checked props are applied, before React replaces the old listener.
+	latestPreferences.current = { reasoningBlockCollapsed, enterBehavior, autoSteer }
 
 	// Detect platform for dynamic modifier key display
 	const primaryMod = useMemo(() => {
@@ -36,119 +40,83 @@ export const UISettings = ({
 	}, [])
 
 	const handleReasoningBlockCollapsedChange = (value: boolean) => {
+		if (value === latestPreferences.current.reasoningBlockCollapsed) return
 		setCachedStateField("reasoningBlockCollapsed", value)
-
-		// Track telemetry event
-		telemetryClient.capture("ui_settings_collapse_thinking_changed", {
-			enabled: value,
-		})
 	}
 
-	const handleEnterBehaviorChange = (requireCtrlEnter: boolean) => {
-		const newBehavior = requireCtrlEnter ? "newline" : "send"
+	const handleEnterBehaviorChange = (enterInsertsNewline: boolean) => {
+		const newBehavior = enterInsertsNewline ? "newline" : "send"
+		if (newBehavior === latestPreferences.current.enterBehavior) return
 		setCachedStateField("enterBehavior", newBehavior)
-
-		// Track telemetry event
-		telemetryClient.capture("ui_settings_enter_behavior_changed", {
-			behavior: newBehavior,
-		})
 	}
 
-	const handleMaxConcurrentTasksChange = (rawValue: string) => {
-		const parsedValue = Number(rawValue)
-		const nextValue = Number.isFinite(parsedValue)
-			? Math.min(Math.max(Math.trunc(parsedValue), MIN_MAX_CONCURRENT_TASKS), MAX_MAX_CONCURRENT_TASKS)
-			: DEFAULT_MAX_CONCURRENT_TASKS
-
-		setCachedStateField("maxConcurrentTasks", nextValue)
+	const handleAutoSteerChange = (value: boolean) => {
+		if (value !== latestPreferences.current.autoSteer) setCachedStateField("autoSteer", value)
 	}
+	const Frame = unframed ? "div" : Section
 
 	return (
 		<div {...props}>
-			<SectionHeader>{t("settings:sections.ui")}</SectionHeader>
+			{!embedded && <SectionHeader>{t("settings:sections.preferences")}</SectionHeader>}
 
-			<Section>
-				<div className="space-y-6">
-					{/* Collapse Thinking Messages Setting */}
+			<Frame>
+				<div className="space-y-1">
 					<SearchableSetting
 						settingId="ui-collapse-thinking"
-						section="ui"
+						section="preferences"
 						label={t("settings:ui.collapseThinking.label")}>
-						<div className="flex flex-col gap-1">
+						<div className="flex min-h-11 items-center justify-between gap-2">
 							<VSCodeCheckbox
 								checked={reasoningBlockCollapsed}
-								onChange={(e: any) => handleReasoningBlockCollapsedChange(e.target.checked)}
+								onChange={(event) =>
+									handleReasoningBlockCollapsedChange((event.target as Checkbox).checked)
+								}
 								data-testid="collapse-thinking-checkbox">
 								<span className="font-medium">{t("settings:ui.collapseThinking.label")}</span>
 							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
+							<SettingsHelp label={t("settings:ui.collapseThinking.label")}>
 								{t("settings:ui.collapseThinking.description")}
-							</div>
+							</SettingsHelp>
 						</div>
 					</SearchableSetting>
 
-					{/* Enter Key Behavior Setting */}
 					<SearchableSetting
 						settingId="ui-enter-behavior"
-						section="ui"
+						section="preferences"
 						label={t("settings:ui.requireCtrlEnterToSend.label", { primaryMod })}>
-						<div className="flex flex-col gap-1">
+						<div className="flex min-h-11 items-center justify-between gap-2">
 							<VSCodeCheckbox
 								checked={enterBehavior === "newline"}
-								onChange={(e: any) => handleEnterBehaviorChange(e.target.checked)}
+								onChange={(event) => handleEnterBehaviorChange((event.target as Checkbox).checked)}
 								data-testid="enter-behavior-checkbox">
 								<span className="font-medium">
 									{t("settings:ui.requireCtrlEnterToSend.label", { primaryMod })}
 								</span>
 							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
+							<SettingsHelp label={t("settings:ui.requireCtrlEnterToSend.label", { primaryMod })}>
 								{t("settings:ui.requireCtrlEnterToSend.description", { primaryMod })}
-							</div>
-						</div>
-					</SearchableSetting>
-
-					<SearchableSetting settingId="ui-auto-steer" section="ui" label={t("settings:ui.autoSteer.label")}>
-						<div className="flex flex-col gap-1">
-							<VSCodeCheckbox
-								checked={autoSteer}
-								onChange={(event) =>
-									setCachedStateField("autoSteer", (event.target as Checkbox).checked)
-								}
-								data-testid="auto-steer-checkbox">
-								<span className="font-medium">{t("settings:ui.autoSteer.label")}</span>
-							</VSCodeCheckbox>
-							<div className="text-vscode-descriptionForeground text-sm ml-5 mt-1">
-								{t("settings:ui.autoSteer.description")}
-							</div>
+							</SettingsHelp>
 						</div>
 					</SearchableSetting>
 
 					<SearchableSetting
-						settingId="ui-max-concurrent-tasks"
-						section="ui"
-						label={t("settings:ui.maxConcurrentTasks.label")}>
-						<div className="flex flex-col gap-2">
-							<label className="font-medium" htmlFor="max-concurrent-tasks-input">
-								{t("settings:ui.maxConcurrentTasks.label")}
-							</label>
-							<input
-								id="max-concurrent-tasks-input"
-								className="w-24 bg-vscode-input-background text-vscode-input-foreground border border-vscode-input-border px-2 py-1"
-								type="number"
-								min={MIN_MAX_CONCURRENT_TASKS}
-								max={MAX_MAX_CONCURRENT_TASKS}
-								step={1}
-								value={maxConcurrentTasks}
-								onChange={(event) => handleMaxConcurrentTasksChange(event.target.value)}
-								data-testid="max-concurrent-tasks-input"
-							/>
-							<div className="text-vscode-descriptionForeground text-sm">
-								{t("settings:ui.maxConcurrentTasks.description")}
-							</div>
+						settingId="ui-auto-steer"
+						section="preferences"
+						label={t("settings:ui.autoSteer.label")}>
+						<div className="flex min-h-11 items-center justify-between gap-2">
+							<VSCodeCheckbox
+								checked={autoSteer}
+								onChange={(event) => handleAutoSteerChange((event.target as Checkbox).checked)}
+								data-testid="auto-steer-checkbox">
+								<span className="font-medium">{t("settings:ui.autoSteer.label")}</span>
+							</VSCodeCheckbox>
+							<SettingsHelp label={t("settings:ui.autoSteer.label")}>
+								{t("settings:ui.autoSteer.description")}
+							</SettingsHelp>
 						</div>
 					</SearchableSetting>
 				</div>
-			</Section>
+			</Frame>
 		</div>
 	)
 }

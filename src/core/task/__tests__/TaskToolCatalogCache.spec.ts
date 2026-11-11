@@ -185,6 +185,7 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 		Reflect.set(hub, field, new Map())
 	Reflect.set(hub, "latestCatalogRefresh", new WeakMap())
 	Reflect.set(hub, "catalogErrors", new WeakMap())
+	Reflect.set(hub, "options", { getProvider: () => options.provider })
 	hub.connections = servers.map((server, index) => ({
 		type: "connected",
 		server,
@@ -227,6 +228,36 @@ function holdMcpCatalogRefresh(hub: McpHub) {
 afterEach(() => vi.restoreAllMocks())
 
 describe("notified MCP catalog captures", () => {
+	it.each([false, true])(
+		"honors a disabled MCP setting before connection teardown (replay declarations: %s)",
+		async (replay) => {
+			const { server, options } = fixture(1)
+			options.includeAllToolsWithRestrictions = replay
+			const { executionHost, requests } = realMcpHost(options, [server])
+			let mcpEnabled = true
+			Object.assign(options.provider, { getValue: () => mcpEnabled })
+			const original = await capture(options)
+			expect(original.isCallable(target)).toBe(true)
+			expect(original.isCallable("list_mcp_resources")).toBe(true)
+
+			// Settings persistence can still be pending when the provider cache changes.
+			// The connection has not been torn down or replaced yet.
+			mcpEnabled = false
+			const disabled = await capture(options)
+			const stale = await execute(original, [call(target, { query: "today" })], { executionHost })
+
+			expect(disabled.isCallable("exec_command")).toBe(true)
+			expect(disabled.isCallable("list_mcp_resources")).toBe(false)
+			expect(disabled.resolve(target)).toBeUndefined()
+			expect(
+				disabled.schemas.some((schema) => schema.type === "function" && schema.function.name === target),
+			).toBe(false)
+			expect(stale.outcome.results[0].status).toBe("error")
+			expect(executionHost.ask).not.toHaveBeenCalled()
+			expect(requests[0]).not.toHaveBeenCalled()
+		},
+	)
+
 	it("blocks old bindings during refresh and waits before capturing the successor even when schemas are unchanged", async () => {
 		const { server, options } = fixture(1)
 		const { hub, requests, executionHost } = realMcpHost(options, [server])

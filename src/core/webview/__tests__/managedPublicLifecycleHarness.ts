@@ -34,19 +34,6 @@ vi.mock("../../../api", async (importOriginal) => {
 	}
 })
 vi.mock("delay", () => ({ default: () => Promise.resolve() }))
-vi.mock("@alpha-code/telemetry", () => {
-	const methods = new Map<string, ReturnType<typeof vi.fn>>()
-	const instance = new Proxy(
-		{},
-		{
-			get: (_target, name: string) => {
-				if (!methods.has(name)) methods.set(name, vi.fn())
-				return methods.get(name)
-			},
-		},
-	)
-	return { TelemetryService: { instance, hasInstance: () => true } }
-})
 vi.mock("../../../integrations/workspace/WorkspaceTracker", () => ({
 	default: class {
 		dispose() {}

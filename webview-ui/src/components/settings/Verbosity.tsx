@@ -8,6 +8,7 @@ import {
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@src/components/ui"
+import { SettingsHelp } from "./SettingsHelp"
 
 interface VerbosityProps {
 	apiConfiguration: ProviderSettings
@@ -30,8 +31,11 @@ export const Verbosity = ({ apiConfiguration, setApiConfigurationField, modelInf
 
 	return (
 		<div className="flex flex-col gap-1" data-testid="verbosity">
-			<div className="flex justify-between items-center">
-				<label className="block font-medium mb-1">{t("settings:providers.verbosity.label")}</label>
+			<div className="flex items-center gap-1">
+				<label className="block font-medium">{t("settings:providers.verbosity.label")}</label>
+				<SettingsHelp label={t("settings:providers.verbosity.label")}>
+					{t("settings:providers.verbosity.description")}
+				</SettingsHelp>
 			</div>
 			<Select
 				value={apiConfiguration.verbosity ?? "default"}
@@ -50,7 +54,6 @@ export const Verbosity = ({ apiConfiguration, setApiConfigurationField, modelInf
 					))}
 				</SelectContent>
 			</Select>
-			<div className="text-xs text-muted-foreground mt-1">{t("settings:providers.verbosity.description")}</div>
 		</div>
 	)
 }

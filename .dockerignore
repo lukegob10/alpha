@@ -4,8 +4,6 @@
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
-!patches/
-!patches/**
 !turbo.json
 !.prettierrc.json
 !README.md
@@ -26,8 +24,6 @@
 !packages/evals/**
 !packages/ipc/
 !packages/ipc/**
-!packages/telemetry/
-!packages/telemetry/**
 !packages/types/
 !packages/types/**
 !src/
