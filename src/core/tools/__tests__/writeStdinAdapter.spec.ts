@@ -27,8 +27,8 @@ describe("write_stdin adapter", () => {
 	})
 
 	it.each([
-		{ label: "empty poll default", chars: undefined, requested: undefined, expected: 5_000 },
-		{ label: "strict nullable poll fields", chars: null, requested: null, expected: 5_000 },
+		{ label: "omitted poll timeout", chars: undefined, requested: undefined, expected: undefined },
+		{ label: "strict nullable poll fields", chars: null, requested: null, expected: undefined },
 		{ label: "empty poll below minimum", chars: "", requested: 1_000, expected: 5_000 },
 		{ label: "empty poll at maximum", chars: "", requested: 300_000, expected: 300_000 },
 		{ label: "empty poll above maximum", chars: "", requested: 400_000, expected: 300_000 },
@@ -36,7 +36,7 @@ describe("write_stdin adapter", () => {
 		{ label: "input below minimum", chars: "yes\n", requested: 0, expected: 250 },
 		{ label: "input at maximum", chars: "yes\n", requested: 30_000, expected: 30_000 },
 		{ label: "input above maximum", chars: "yes\n", requested: 300_000, expected: 30_000 },
-	])("uses the Codex-compatible wait bound for $label", async ({ chars, requested, expected }) => {
+	])("passes the expected timeout to the command tool for $label", async ({ chars, requested, expected }) => {
 		const execute = vi.spyOn(manageCommandTool, "execute").mockResolvedValue(undefined)
 		const registry = new ToolRegistry()
 		const descriptor = registry.resolve("write_stdin")
