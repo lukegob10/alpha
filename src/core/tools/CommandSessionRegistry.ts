@@ -57,6 +57,8 @@ type CommandExecutionOwnership = {
 type TaskCommandSessions = {
 	generation: number
 	records: Map<CommandSessionKey, RetainedCommandSession>
+	lastQuietPollSessionId?: number
+	activeWait?: { sessionId: number; startedAt: number }
 	// Weak physical ownership permits a later lifecycle on the same Task object.
 	executions: WeakMap<AlphaTerminalProcess, Map<string, CommandExecutionOwnership>>
 }
@@ -351,6 +353,34 @@ export class CommandSessionRegistry {
 		return this.expired.get(task)?.get(sessionId)
 	}
 
+	beginWait(task: Task, sessionId: number, useDefaultWait: boolean) {
+		const state = this.sessions.get(task)
+		const session = state?.records.get(sessionId)
+		if (!state || !session?.pollPublished || session.pollReleased || session.process.isSettled) return undefined
+
+		const wait = { sessionId, startedAt: Date.now() }
+		const waitForProgress = useDefaultWait && state.lastQuietPollSessionId === sessionId
+		state.lastQuietPollSessionId = undefined
+		state.activeWait = wait
+		return {
+			waitForProgress,
+			finish: (quiet: boolean) => {
+				if (state.activeWait !== wait) return
+				state.activeWait = undefined
+				if (quiet) state.lastQuietPollSessionId = sessionId
+			},
+		}
+	}
+
+	getWaitStartedAt(task: Task): number | undefined {
+		return this.sessions.get(task)?.activeWait?.startedAt
+	}
+
+	resetQuietPoll(task: Task, sessionId: number): void {
+		const state = this.sessions.get(task)
+		if (state?.lastQuietPollSessionId === sessionId) state.lastQuietPollSessionId = undefined
+	}
+
 	/** Keep the original invocation with its physical session, never a task-global current command. */
 	bindPostToolUse(task: Task, sessionId: number, invocation: PostToolUseInvocation): void {
 		const session = this.sessions.get(task)?.records.get(sessionId)
@@ -427,6 +457,8 @@ export class CommandSessionRegistry {
 	private releaseSession(state: TaskCommandSessions, session: RetainedCommandSession): void {
 		this.executionOwnership(state, session.process, session.executionId).released = true
 		session.pollReleased = true
+		if (state.activeWait?.sessionId === session.key) state.activeWait = undefined
+		if (state.lastQuietPollSessionId === session.key) state.lastQuietPollSessionId = undefined
 		session.removeObservers()
 		if (this.outputOwners.get(session.process) === session) this.outputOwners.delete(session.process)
 		if (session.output?.pending && this.outputMayRetire(session.output)) session.output.pending = false

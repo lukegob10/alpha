@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.29
+
+### Patch Changes
+
+- Reduce repeated API requests while commands are quiet and show elapsed command waits in chat.
+- Preserve accepted steering through turn recovery so Continue delivers the message once.
+
 ## 3.2.28
 
 ### Patch Changes

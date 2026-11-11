@@ -65,7 +65,7 @@ import { CheckpointWarning } from "./CheckpointWarning"
 import { QueuedMessages } from "./QueuedMessages"
 import { WorktreeSelector } from "./WorktreeSelector"
 import FileChangesPanel from "./FileChangesPanel"
-import { ActivityTraceToggle } from "./ActivityTraceToggle"
+import { ActivityTraceToggle, CommandWaitLabel } from "./ActivityTraceToggle"
 import { getActionActivity, getCompletedTurnActivity, type ActionActivity } from "./actionActivity"
 import { fileChangeTurnsFromMessages, type FileChangeTurn } from "./utils/fileChangesFromMessages"
 import { createMessagePayloadSelector } from "./utils/messagePayload"
@@ -163,6 +163,7 @@ interface ChatTranscriptRowsProps {
 	task: AlphaMessage
 	expandedRows: Record<number, boolean>
 	isTurnActive: boolean
+	commandWaitStartedAt?: number
 	chatRowEnvironment: ChatRowEnvironment
 	toggleRowExpansion: (ts: number) => void
 	renderedGroupedMessages: AlphaMessage[]
@@ -189,6 +190,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 	task,
 	expandedRows,
 	isTurnActive,
+	commandWaitStartedAt,
 	chatRowEnvironment,
 	toggleRowExpansion,
 	renderedGroupedMessages,
@@ -210,6 +212,11 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 		return null
 	}
 	const lastRenderedMessageIndex = transcriptStartIndex + renderedGroupedMessages.length - 1
+	const activeCommandWait = isTurnActive ? commandWaitStartedAt : undefined
+	const commandWaitTrace =
+		activeCommandWait !== undefined && !completedTurnActivity.has(lastRenderedMessageIndex)
+			? actionActivity.get(lastRenderedMessageIndex)
+			: undefined
 	const firstTraceIndices = new Map<string, number>()
 	const traceControls = new Map<string, string[]>()
 	for (let localIndex = 0; localIndex < renderedGroupedMessages.length; localIndex++) {
@@ -280,6 +287,7 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 						count={activity.count}
 						durationMs={activity.durationMs}
 						active={isTurnActive && !parentTrace && activity.endIndex === lastRenderedMessageIndex}
+						commandWaitStartedAt={activity === commandWaitTrace ? activeCommandWait : undefined}
 						expanded={expanded}
 						controls={traceControls.get(traceDisclosureKey(activity))?.join(" ") ?? ""}
 						onToggle={() => {
@@ -324,6 +332,11 @@ const ChatTranscriptRows = memo(function ChatTranscriptRows({
 						]
 					: [row]
 			})}
+			{activeCommandWait !== undefined && !commandWaitTrace && (
+				<div role="status" className="mx-[15px] my-1 py-1.5 text-sm text-vscode-descriptionForeground">
+					<CommandWaitLabel startedAt={activeCommandWait} />
+				</div>
+			)}
 		</>
 	)
 })
@@ -1313,6 +1326,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	// Missing/degraded phase data cannot establish that the model is the source of a delay.
 	const isModelResponseDelayed =
 		isStreaming &&
+		effectiveVisibleLiveTask?.commandWaitStartedAt === undefined &&
 		!isVisibleTaskLifecycleDegraded &&
 		effectiveVisibleLiveTask?.activityPhase === "working" &&
 		!hasPendingToolCalls &&
@@ -3562,6 +3576,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 								task={task}
 								expandedRows={expandedRows}
 								isTurnActive={isTurnActive}
+								commandWaitStartedAt={effectiveVisibleLiveTask?.commandWaitStartedAt}
 								chatRowEnvironment={chatRowEnvironment}
 								toggleRowExpansion={toggleRowExpansion}
 								renderedGroupedMessages={renderedGroupedMessages}

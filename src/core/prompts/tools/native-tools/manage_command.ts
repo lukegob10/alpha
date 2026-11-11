@@ -99,7 +99,7 @@ export function createWriteStdinTool(artifactOnly = false): OpenAI.Chat.ChatComp
 			minimum: 0,
 			maximum: MANAGE_COMMAND_MAX_TIMEOUT_MS,
 			description:
-				"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. Collects output throughout the wait and returns early on completion, failure, or cancellation. Session calls only.",
+				"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms. Empty polls start at 5000 ms; after a quiet poll of the same session, omitting this value waits up to 30000 ms and yields on new output. Set an explicit wait (5000-300000 ms) when you need a different interval. Waits end early on exit, failure, or cancellation. Session calls only.",
 		},
 		max_output_tokens: {
 			type: "integer",

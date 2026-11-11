@@ -245,6 +245,8 @@ export interface LiveTaskMetadata {
 	canInterrupt?: boolean
 	/** Canonical phase used for task-scoped progress and stall diagnostics. */
 	activityPhase?: AgentLifecyclePhase
+	/** Start of the current command session wait, in epoch milliseconds. */
+	commandWaitStartedAt?: number
 	/** Current canonical turn identity used to fence task controls. */
 	turnId?: string
 	/** Whether accepted calls lack terminal results. Presence makes host metadata authoritative for UI lifecycle. */

@@ -1,5 +1,7 @@
 /** Maximum time a managed command wait may block a model step. */
 export const MANAGE_COMMAND_MAX_TIMEOUT_MS = 300_000
+export const WRITE_STDIN_MIN_POLL_MS = 5_000
+export const WRITE_STDIN_QUIET_POLL_MS = 30_000
 
 export const EXEC_COMMAND_DEFAULT_YIELD_TIME_MS = 10_000
 export const EXEC_COMMAND_MIN_YIELD_TIME_MS = 250

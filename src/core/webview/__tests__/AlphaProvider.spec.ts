@@ -757,7 +757,7 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
-		const announcementId = "november-2026-v3.2.28-agent-waits"
+		const announcementId = "november-2026-v3.2.29-command-waits"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 

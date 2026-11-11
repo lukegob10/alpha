@@ -4350,7 +4350,7 @@ describe("ChatView - Message Queueing Tests", () => {
 		const publishActivity = (
 			phase: string | undefined,
 			overrides: Partial<ExtensionState> = {},
-			hostLifecycle?: { turnId?: string; hasPendingToolCalls: boolean },
+			hostLifecycle?: { turnId?: string; hasPendingToolCalls: boolean; commandWaitStartedAt?: number },
 		) => {
 			mockPostMessage({
 				currentTaskId: "task-1",
@@ -4378,6 +4378,41 @@ describe("ChatView - Message Queueing Tests", () => {
 				...overrides,
 			})
 		}
+
+		it.each([true, false])("shows a live command wait with request rows present: %s", async (hasRequest) => {
+			const view = renderChatView()
+			const alphaMessages: AlphaMessage[] = [{ type: "say", say: "task", ts: 1, text: "Waiting test" }]
+			if (hasRequest) {
+				alphaMessages.push({
+					type: "say",
+					say: "api_req_started",
+					ts: 2,
+					text: JSON.stringify({ apiProtocol: "openai" }),
+				})
+			}
+			const label = "chat:activityTrace.waitingForCommand"
+			publishActivity(
+				"executing",
+				{ alphaMessages },
+				{
+					hasPendingToolCalls: true,
+					commandWaitStartedAt: Date.now(),
+				},
+			)
+			const wait = await waitFor(() =>
+				hasRequest ? view.getByRole("button", { name: label }) : view.getByRole("status"),
+			)
+			expect(wait).toHaveTextContent(label)
+			act(() => vi.advanceTimersByTime(12_000))
+			expect(wait).toHaveTextContent("12s")
+			expect(view.queryByText("chat:modelResponseDelayed")).not.toBeInTheDocument()
+			if (hasRequest) {
+				fireEvent.click(wait)
+				expect(wait).toHaveAttribute("aria-expanded", "true")
+			}
+			publishActivity("working", { alphaMessages }, { hasPendingToolCalls: false })
+			await waitFor(() => expect(view.queryByText(label)).not.toBeInTheDocument())
+		})
 
 		it.each([
 			"executing",

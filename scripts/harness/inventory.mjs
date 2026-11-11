@@ -513,6 +513,7 @@ export const evidenceInventory = [
 		source: ["apps/vscode-e2e/src/campaign/liveGate.ts", "packages/evals/src/benchmark/problemSolvingLive.ts"],
 		tests: [
 			"apps/vscode-e2e/src/suite/live-quality.test.ts",
+			"apps/vscode-e2e/src/suite/command-wait-steering-live.test.ts",
 			"apps/vscode-e2e/src/suite/harness-quality-live.test.ts",
 			"apps/vscode-e2e/src/suite/approval-github-live.test.ts",
 			"apps/vscode-e2e/src/suite/vscode-lm-empty-recovery.test.ts",
@@ -561,6 +562,7 @@ export const hostTestInventory = [
 			"claude-copilot-batching-live.test",
 			"claude-copilot-live.test",
 			"command-file-diff-live.test",
+			"command-wait-steering-live.test",
 			"file-tools-live.test",
 			"harness-quality-live.test",
 			"live-quality.test",

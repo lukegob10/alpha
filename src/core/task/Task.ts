@@ -8118,7 +8118,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// at completion/resume boundaries unless the user explicitly steers one.
 			const shouldDrainQueuedMessageForAsk = () =>
 				type === "completion_result" ||
-				((type === "resume_task" || type === "resume_completed_task") && !this.resumeRequiresExplicitInput)
+				((type === "resume_task" || type === "resume_completed_task") &&
+					!this.resumeRequiresExplicitInput &&
+					!this.pendingSteerMessage?.queuedMessageIds?.length)
 			const isStatusMutable =
 				!partial &&
 				!signal?.aborted &&
@@ -17071,7 +17073,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					return
 				}
 				try {
-					await this.releaseUnpersistedQueuedInputs()
+					await this.releaseUnpersistedQueuedInputs(this.pendingSteerMessage?.queuedMessageIds)
 					await this.retractCompletionResult()
 				} catch (recoveryError) {
 					console.error(`[Task#${this.taskId}] Failed to persist task recovery state:`, recoveryError)
@@ -17219,6 +17221,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let deferTaskStepCleanup = false
 		let taskStepCleanupReleased = false
 		let ownsCapturedTaskStep: CanonicalLifecycleEventGuard | undefined
+		let preparingHumanSteer: Task["pendingSteerMessage"]
+		const consumePendingSteer = (steer: NonNullable<Task["pendingSteerMessage"]>) => {
+			this.pendingSteerMessage = undefined
+			if (steer.inputOrigin === "human" && steer.queuedMessageIds?.length) preparingHumanSteer = steer
+		}
 		const releaseTaskStep = () => {
 			if (taskStepCleanupReleased) return
 			taskStepCleanupReleased = true
@@ -17286,7 +17293,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const pendingSteer = this.pendingSteerMessage
 				if (pendingSteer) {
-					this.pendingSteerMessage = undefined
+					consumePendingSteer(pendingSteer)
 					await this.presentSteeringInput(pendingSteer)
 					// The failed turn may have re-armed the limit after steering was
 					// accepted. Reset again at durable consumption time so this exact
@@ -17638,7 +17645,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const pendingSteer = this.pendingSteerMessage
 					if (!pendingSteer) throw error
 
-					this.pendingSteerMessage = undefined
+					consumePendingSteer(pendingSteer)
 					await this.presentSteeringInput(pendingSteer)
 					this.resetMistakeRecoveryState()
 					stack.push({
@@ -18584,7 +18591,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const pendingSteer = this.pendingSteerMessage
 
 							if (pendingSteer) {
-								this.pendingSteerMessage = undefined
+								consumePendingSteer(pendingSteer)
 								await abortStream("user_cancelled", undefined, ownsResponseStep)
 								if (!ownsResponseStep()) return supersededResponseResult()
 								await this.presentSteeringInput(pendingSteer)
@@ -18872,7 +18879,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							} catch (retryWaitError) {
 								const pendingSteer = this.pendingSteerMessage
 								if (pendingSteer) {
-									this.pendingSteerMessage = undefined
+									consumePendingSteer(pendingSteer)
 									await this.presentSteeringInput(pendingSteer)
 									this.resetMistakeRecoveryState()
 									stack.push({
@@ -19915,7 +19922,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								const pendingSteer = this.pendingSteerMessage
 								if (pendingSteer) {
 									await this.restoreRemovedApiUserMessage(removedUserMessage)
-									this.pendingSteerMessage = undefined
+									consumePendingSteer(pendingSteer)
 									await this.presentSteeringInput(pendingSteer)
 									this.resetMistakeRecoveryState()
 									stack.push({
@@ -20084,6 +20091,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			throw error
 		} finally {
+			// Preparation can fail after moving a durable steer into this step's
+			// local stack. Preserve its selected receipt for the same task's recovery.
+			if (
+				preparingHumanSteer?.queuedMessageIds?.length &&
+				this.steerMessageAwaitingPersistence &&
+				!this.pendingSteerMessage &&
+				!this.abort &&
+				!this.abandoned &&
+				!this.didComplete &&
+				(ownsCapturedTaskStep?.() ?? true)
+			) {
+				const claimed = new Set(this.messageQueueService.getClaimedMessageIds())
+				if (preparingHumanSteer.queuedMessageIds.every((id) => claimed.has(id))) {
+					this.pendingSteerMessage = preparingHumanSteer
+				}
+			}
 			if (!deferTaskStepCleanup) releaseTaskStep()
 		}
 	}

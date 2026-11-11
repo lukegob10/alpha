@@ -31,7 +31,11 @@ import { normalizeMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
 import { getNativeTools } from "../prompts/tools/native-tools"
 import { toolSearch } from "../prompts/tools/native-tools/discover_tools"
 import { formatResponse } from "../prompts/responses"
-import { MANAGE_COMMAND_MAX_TIMEOUT_MS, normalizeExecCommandYieldTimeMs } from "./commandTimeouts"
+import {
+	MANAGE_COMMAND_MAX_TIMEOUT_MS,
+	normalizeExecCommandYieldTimeMs,
+	WRITE_STDIN_MIN_POLL_MS,
+} from "./commandTimeouts"
 import type { Task } from "../task/Task"
 
 import { accessMcpResourceTool } from "./accessMcpResourceTool"
@@ -471,12 +475,15 @@ class WriteStdinToolAdapter extends BaseTool<"write_stdin"> {
 			return
 		}
 		const chars = params.chars ?? ""
-		const requestedYieldTimeMs = params.yield_time_ms ?? 250
+		const requestedYieldTimeMs = params.yield_time_ms
 		const maxOutputTokens = normalizeWriteStdinOutputTokens(params.max_output_tokens)
 		const yieldTimeMs =
 			chars.length > 0
-				? Math.max(250, Math.min(30_000, requestedYieldTimeMs))
-				: Math.max(5_000, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
+				? Math.max(250, Math.min(30_000, requestedYieldTimeMs ?? 250))
+				: requestedYieldTimeMs == null
+					? undefined
+					: Math.max(WRITE_STDIN_MIN_POLL_MS, Math.min(MANAGE_COMMAND_MAX_TIMEOUT_MS, requestedYieldTimeMs))
+		if (chars.length > 0) commandSessionRegistry.resetQuietPoll(task, params.session_id)
 		const boundedCallbacks = withMaxOutputTokens(callbacks, maxOutputTokens, true)
 		let returnedResult = false
 		let completedOrigin: PostToolUseInvocation | undefined

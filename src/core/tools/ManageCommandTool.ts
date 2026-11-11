@@ -5,7 +5,7 @@ import type { Task } from "../task/Task"
 import { TerminalRegistry } from "../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalProcess } from "../../integrations/terminal/types"
 import type { NativeToolArgs } from "../../shared/tools"
-import { MANAGE_COMMAND_MAX_TIMEOUT_MS } from "./commandTimeouts"
+import { MANAGE_COMMAND_MAX_TIMEOUT_MS, WRITE_STDIN_MIN_POLL_MS, WRITE_STDIN_QUIET_POLL_MS } from "./commandTimeouts"
 import { commandSessionRegistry } from "./CommandSessionRegistry"
 import { readCommandOutputTool } from "./ReadCommandOutputTool"
 import type { CommandToolResult } from "@alpha-code/types"
@@ -31,12 +31,13 @@ export async function waitForCommand(
 	process: AlphaTerminalProcess,
 	timeoutMs: number,
 	signal?: AbortSignal,
+	returnOnOutput = false,
 ): Promise<void> {
 	signal?.throwIfAborted()
-	// Codex collect_output_until_deadline (upstream main, retrieved 2026-10-29)
-	// accumulates progress until the deadline or terminal outcome, even with buffered output.
-	// Terminal adapters already bound and archive output independently of this wait.
-	if (process.isSettled || timeoutMs === 0) return
+	// Codex e58bf8f5 collects until the deadline or exit. Alpha's longer
+	// default wait after a quiet poll yields early when progress is available.
+	const hasNewOutput = () => returnOnOutput && process.hasUnretrievedOutput()
+	if (process.isSettled || timeoutMs === 0 || hasNewOutput()) return
 	await new Promise<void>((resolve, reject) => {
 		const finish = () => {
 			cleanup()
@@ -46,18 +47,30 @@ export async function waitForCommand(
 			cleanup()
 			reject(signal?.reason ?? new Error("Command wait cancelled"))
 		}
+		const onOutput = () => {
+			if (hasNewOutput()) finish()
+		}
 		const timer = setTimeout(finish, timeoutMs)
 		const cleanup = () => {
 			clearTimeout(timer)
 			process.off("completed", finish)
 			process.off("error", finish)
+			if (returnOnOutput) process.off("output_available", onOutput)
 			signal?.removeEventListener("abort", cancel)
 		}
 		process.once("completed", finish)
 		process.once("error", finish)
+		if (returnOnOutput) process.on("output_available", onOutput)
 		signal?.addEventListener("abort", cancel, { once: true })
 		if (signal?.aborted) cancel()
-		else if (process.isSettled) finish()
+		else if (process.isSettled || hasNewOutput()) finish()
+	})
+}
+
+function publishCommandWait(task: Task): void {
+	const provider = task.providerRef?.deref()
+	void provider?.postTaskSessionStateToWebview?.({ includeManagedAgentTree: false }).catch(() => {
+		provider.log("Failed to publish command wait status")
 	})
 }
 
@@ -72,6 +85,8 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 		sessionProcess?: AlphaTerminalProcess,
 	): Promise<void> {
 		const startedAt = performance.now()
+		let wait: ReturnType<typeof commandSessionRegistry.beginWait>
+		let quiet = false
 		try {
 			const params = paramsSchema.parse(raw)
 			const assertActive = () => {
@@ -161,7 +176,17 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 					} else await process.abort()
 				}
 			}
-			if (process) await waitForCommand(process, params.timeout_ms ?? 10_000, callbacks.signal)
+			if (process) {
+				const isSessionPoll = sessionId !== undefined && params.action === "wait"
+				if (isSessionPoll && params.timeout_ms !== 0) {
+					wait = commandSessionRegistry.beginWait(task, sessionId, params.timeout_ms == null)
+					if (wait) publishCommandWait(task)
+				}
+				const timeoutMs = wait?.waitForProgress
+					? WRITE_STDIN_QUIET_POLL_MS
+					: (params.timeout_ms ?? (isSessionPoll ? WRITE_STDIN_MIN_POLL_MS : 10_000))
+				await waitForCommand(process, timeoutMs, callbacks.signal, wait?.waitForProgress)
+			}
 			assertActive()
 			// Like Codex's refresh_process_state (upstream main, retrieved 2026-11-10),
 			// recheck the original command after waiting. A settled session can still
@@ -244,13 +269,25 @@ export class ManageCommandTool extends BaseTool<"manage_command"> {
 					waitOutcome: physicallyRunning || current.status === "running" ? "active" : "idle",
 				})
 				receipt?.commit()
+				quiet =
+					current.status === "running" &&
+					physicallyRunning &&
+					!process?.isSettled &&
+					output.length === 0 &&
+					!hasMoreOutput
 			} finally {
 				receipt?.release()
 			}
 		} catch (error) {
+			quiet = false
 			if (callbacks.signal?.aborted) throw error
 			callbacks.setResultMetadata?.({ status: "error" })
 			await callbacks.handleError("controlling command", error as Error)
+		} finally {
+			if (wait) {
+				wait.finish(quiet)
+				publishCommandWait(task)
+			}
 		}
 	}
 }

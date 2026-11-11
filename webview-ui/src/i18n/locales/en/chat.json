@@ -27,6 +27,7 @@
 		"working": "Working",
 		"workedFor": "Worked for {{duration}}",
 		"runningCommands": "Running commands",
+		"waitingForCommand": "Waiting for command",
 		"editingFiles": "Editing files"
 	},
 	"subagentDock": {
@@ -561,7 +562,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha recommends longer waits for delegated work. An update from a subagent or a message you send to steer the task can end the wait early."
+			"description": "Alpha shows elapsed time while waiting for a command and checks quiet commands less often. If request preparation fails, Continue carries forward the steering message you already sent."
 		}
 	},
 	"crossTasks": {

@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react"
 import { ChevronRight } from "lucide-react"
 
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -10,6 +11,7 @@ interface ActivityTraceToggleProps {
 	count: number
 	durationMs?: number
 	active?: boolean
+	commandWaitStartedAt?: number
 	expanded: boolean
 	controls: string
 	onToggle: () => void
@@ -28,12 +30,29 @@ function formatWorkedDuration(durationMs: number): string {
 	return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
 }
 
+export function CommandWaitLabel({ startedAt }: { startedAt: number }) {
+	const { t } = useAppTranslation()
+	const [now, setNow] = useState(() => Date.now())
+	useEffect(() => {
+		setNow(Date.now())
+		const timer = setInterval(() => setNow(Date.now()), 1_000)
+		return () => clearInterval(timer)
+	}, [startedAt])
+	return (
+		<>
+			{t("chat:activityTrace.waitingForCommand")}
+			<span aria-hidden="true"> · {formatWorkedDuration(now - startedAt)}</span>
+		</>
+	)
+}
+
 export function ActivityTraceToggle({
 	traceId,
 	kind,
 	count,
 	durationMs,
 	active = false,
+	commandWaitStartedAt,
 	expanded,
 	controls,
 	onToggle,
@@ -41,12 +60,16 @@ export function ActivityTraceToggle({
 	const { t } = useAppTranslation()
 	const isActive = active && kind !== "worked"
 	const isAnimating = isActive && !expanded
-	const label =
-		kind === "worked"
-			? t("chat:activityTrace.workedFor", { duration: formatWorkedDuration(durationMs ?? 0) })
-			: t(
-					`chat:activityTrace.${kind === "commands" ? "runningCommands" : kind === "edits" ? "editingFiles" : "working"}`,
-				)
+	const isWaitingForCommand = isActive && commandWaitStartedAt !== undefined
+	const label = isWaitingForCommand ? (
+		<CommandWaitLabel startedAt={commandWaitStartedAt} />
+	) : kind === "worked" ? (
+		t("chat:activityTrace.workedFor", { duration: formatWorkedDuration(durationMs ?? 0) })
+	) : (
+		t(
+			`chat:activityTrace.${kind === "commands" ? "runningCommands" : kind === "edits" ? "editingFiles" : "working"}`,
+		)
+	)
 
 	return (
 		<div className="mx-[15px] my-1 pb-1">
@@ -63,7 +86,9 @@ export function ActivityTraceToggle({
 					isAnimating && "activity-trace-toggle--active",
 				)}>
 				<span className="min-w-0 truncate">{label}</span>
-				{kind !== "worked" && <span className="shrink-0 text-xs tabular-nums opacity-70">{count}</span>}
+				{kind !== "worked" && !isWaitingForCommand && (
+					<span className="shrink-0 text-xs tabular-nums opacity-70">{count}</span>
+				)}
 				<ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0", expanded && "rotate-90")} />
 			</button>
 		</div>

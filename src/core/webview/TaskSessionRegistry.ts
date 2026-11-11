@@ -10,6 +10,7 @@ import path from "node:path"
 
 import { findLast } from "../../shared/array"
 import type { Task } from "../task/Task"
+import { commandSessionRegistry } from "../tools/CommandSessionRegistry"
 import {
 	projectAgentLifecycleSnapshot,
 	projectAlphaMessageStatus,
@@ -804,6 +805,10 @@ export class TaskSessionRegistry {
 			isTurnActive,
 			canInterrupt,
 			activityPhase: session.lifecycleSnapshot?.phase,
+			commandWaitStartedAt:
+				isTurnActive && !isWaitingForInput && !isTerminal
+					? commandSessionRegistry.getWaitStartedAt(task)
+					: undefined,
 			turnId: session.lifecycleSnapshot?.turnId,
 			hasPendingToolCalls: session.hasPendingToolCalls,
 			hasPendingSteer,

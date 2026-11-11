@@ -87,6 +87,74 @@ it.each(["timeout", "cancel", "completed", "error"])("cleans up a %s wait", asyn
 	expect(vi.getTimerCount()).toBe(0)
 })
 
+it("backs off repeated default polls of a quiet session and wakes on new output", async () => {
+	vi.useFakeTimers()
+	const { task, callbacks, process } = harness()
+	let output = ""
+	process.hasUnretrievedOutput = () => Boolean(output)
+	vi.mocked(process.captureUnretrievedOutput).mockImplementation(() => ({
+		output,
+		commit: () => {
+			output = ""
+		},
+		release: () => undefined,
+	}))
+	const sessionId = commandSessionRegistry.register(task, process)
+	const descriptor = new ToolRegistry().resolve("write_stdin")!
+	const poll = (id: string, yieldTimeMs?: number, signal?: AbortSignal) =>
+		descriptor.execute({
+			task,
+			callbacks: { ...callbacks, signal },
+			call: {
+				type: "tool_use",
+				id,
+				name: "write_stdin",
+				params: {},
+				partial: false,
+				nativeArgs: { session_id: sessionId, yield_time_ms: yieldTimeMs },
+			},
+		})
+	const first = poll("first")
+	await vi.advanceTimersByTimeAsync(5_000)
+	await first
+	expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
+
+	const longer = poll("second")
+	expect(commandSessionRegistry.getWaitStartedAt(task)).toBe(Date.now())
+	await vi.advanceTimersByTimeAsync(29_999)
+	expect(callbacks.pushToolResult).toHaveBeenCalledTimes(1)
+	await vi.advanceTimersByTimeAsync(1)
+	await longer
+
+	const interruptedByOutput = poll("third")
+	await vi.advanceTimersByTimeAsync(15_000)
+	expect(callbacks.pushToolResult).toHaveBeenCalledTimes(2)
+	output = "batch ready"
+	process.emit("output_available")
+	await interruptedByOutput
+	expect(callbacks.pushToolResult).toHaveBeenLastCalledWith(expect.stringContaining("batch ready"))
+	expect(process.listenerCount("output_available")).toBe(0)
+	expect(commandSessionRegistry.getWaitStartedAt(task)).toBeUndefined()
+
+	const normalAfterOutput = poll("fourth")
+	await vi.advanceTimersByTimeAsync(5_000)
+	await normalAfterOutput
+	const explicit = poll("explicit", 5_000)
+	await vi.advanceTimersByTimeAsync(5_000)
+	await explicit
+	expect(callbacks.pushToolResult).toHaveBeenCalledTimes(5)
+	const controller = new AbortController()
+	const cancelled = poll("cancelled", undefined, controller.signal)
+	expect(process.listenerCount("output_available")).toBe(1)
+	const cancelledResult = expect(cancelled).rejects.toThrow("Steering")
+	controller.abort(new Error("Steering"))
+	await cancelledResult
+	expect(commandSessionRegistry.getWaitStartedAt(task)).toBeUndefined()
+	expect(process.listenerCount("output_available")).toBe(0)
+	expect(callbacks.handleError).not.toHaveBeenCalled()
+	expect(process.abort).not.toHaveBeenCalled()
+})
+
 it("does not require a model poll or approval for a bounded wait", async () => {
 	const { task, callbacks } = harness()
 	await manageCommandTool.execute({ execution_id: "execution", action: "wait", timeout_ms: 0 }, task, callbacks)
