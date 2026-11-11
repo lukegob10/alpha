@@ -44,9 +44,13 @@ beforeEach(() => {
 		() => new AgentControlStore(new InMemoryAgentControlPersistence()),
 	)
 })
-afterEach(() => {
-	vi.mocked(TaskSessionRegistry.forGlobalStorage).mockRestore()
-	vi.mocked(AgentControlStore.forGlobalStorage).mockRestore()
+afterEach(async () => {
+	try {
+		await AlphaProvider.disposeAll()
+	} finally {
+		vi.mocked(TaskSessionRegistry.forGlobalStorage).mockRestore()
+		vi.mocked(AgentControlStore.forGlobalStorage).mockRestore()
+	}
 })
 
 // Mock setup must come before imports.
@@ -55,6 +59,12 @@ vi.mock("../../prompts/sections/custom-instructions")
 vi.mock("p-wait-for", () => ({
 	__esModule: true,
 	default: vi.fn().mockResolvedValue(undefined),
+}))
+
+// History watchers use the same in-memory filesystem as the asynchronous I/O below.
+vi.mock("fs", async (importOriginal) => ({
+	...(await importOriginal<typeof import("fs")>()),
+	watch: vi.fn(() => Object.assign(new EventEmitter(), { close: vi.fn() })),
 }))
 
 vi.mock("fs/promises", async (importOriginal) => {
@@ -160,6 +170,17 @@ vi.mock("axios", () => ({
 }))
 
 vi.mock("../../../utils/safeWriteJson")
+
+vi.mock("../../../services/mcp/McpServerManager", () => ({
+	McpServerManager: {
+		getInstance: vi.fn(async () => ({
+			registerClient: vi.fn(),
+			getAllServers: vi.fn(() => []),
+			getServers: vi.fn(() => []),
+		})),
+		unregisterProvider: vi.fn(async () => undefined),
+	},
+}))
 
 vi.mock("../../../utils/storage", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../utils/storage")>()),
