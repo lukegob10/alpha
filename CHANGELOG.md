@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.27
+
+### Patch Changes
+
+- Use VS Code’s tool grants for integrated browser actions in Auto and Full Access, avoiding a second confirmation in Alpha.
+- Require explicit Alpha approval before selecting local files in a browser dialog.
+- Document how to manage VS Code browser tool grants from the Command Palette.
+
 ## 3.2.26
 
 ### Patch Changes

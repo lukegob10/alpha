@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.26",
+		version: "3.2.27",
 	},
 }))
 
@@ -37,11 +37,11 @@ describe("Announcement", () => {
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
 		expect(screen.getByRole("dialog")).toHaveAccessibleDescription(
-			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.26" }),
+			i18n.t("chat:announcement.release.welcome", { lng: "en", version: "3.2.27" }),
 		)
 
-		expect(screen.getByText("Welcome to Alpha v3.2.26")).toBeInTheDocument()
-		expect(screen.getByText("Alpha v3.2.26 improves command execution and task recovery.")).toBeInTheDocument()
+		expect(screen.getByText("Welcome to Alpha v3.2.27")).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.27 streamlines integrated browser approvals.")).toBeInTheDocument()
 	})
 
 	it("renders the release highlights", () => {
@@ -49,16 +49,16 @@ describe("Announcement", () => {
 
 		expect(screen.getAllByRole("listitem")).toHaveLength(3)
 		expect(
-			screen.getByText("Keep terminal startup, output, and completion tied to the command that produced them."),
+			screen.getByText("Alpha asks for confirmation before selecting local files in a browser dialog."),
 		).toBeInTheDocument()
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {
 		renderAnnouncement("de")
 
-		expect(screen.getByText("Alpha v3.2.26 improves command execution and task recovery.")).toBeInTheDocument()
+		expect(screen.getByText("Alpha v3.2.27 streamlines integrated browser approvals.")).toBeInTheDocument()
 		expect(
-			screen.getByText("Keep terminal startup, output, and completion tied to the command that produced them."),
+			screen.getByText("Alpha asks for confirmation before selecting local files in a browser dialog."),
 		).toBeInTheDocument()
 	})
 })

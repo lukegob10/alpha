@@ -6,7 +6,7 @@ import { NativeToolCallParser } from "../../assistant-message/NativeToolCallPars
 import type { Task } from "../../task/Task"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry } from "../ToolRegistry"
-import { openBrowserPageTool, readPageTool } from "../VSCodeBrowserTool"
+import { handleDialogTool, openBrowserPageTool, readPageTool } from "../VSCodeBrowserTool"
 
 vi.mock("../../../services/browser/VSCodeBrowserTools", () => ({
 	invokeVSCodeBrowserTool: vi.fn(),
@@ -150,6 +150,29 @@ describe("VSCodeBrowserTool", () => {
 		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
 		expect(callbacks.pushToolResult).toHaveBeenCalledWith("Page contents")
 	})
+
+	it.each([
+		{ params: { selectFiles: ["/workspace/test.txt"] }, needsReview: true },
+		{ params: { selectFiles: [] }, needsReview: false },
+		{ params: { acceptModal: true }, needsReview: false },
+	])(
+		"requires explicit browser approval only when selecting local files ($params)",
+		async ({ params, needsReview }) => {
+			const { task, callbacks } = harness()
+			callbacks.askApproval.mockResolvedValue(false)
+
+			await handleDialogTool.execute({ pageId: "page-1", ...params }, task, callbacks)
+
+			expect(callbacks.askApproval).toHaveBeenCalledWith(
+				"tool",
+				expect.stringContaining('"action":"handle_dialog"'),
+				undefined,
+				undefined,
+				needsReview,
+			)
+			expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
+		},
+	)
 
 	it("replaces the running row with an error and delegates error formatting", async () => {
 		vi.mocked(invokeVSCodeBrowserTool).mockRejectedValue(new Error("Browser unavailable"))

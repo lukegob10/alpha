@@ -34,6 +34,11 @@ Choose **Ask**, **Auto**, or **Full Access** for tool approval behavior. Provide
 policy or workspace protections. Changing a task's approval mode also rechecks its pending permission prompt; the action
 proceeds when the new choice and its existing protection rules allow it.
 
+For integrated browser actions, **Auto** and **Full Access** skip Alpha's confirmation. To approve VS Code's own
+browser prompts for the workspace, open **Chat: Manage Tool Approval** in the Command Palette and allow **Open Browser
+Page**, **Navigate Page**, and **Run Playwright Code** to run without confirmation. Selecting local files through a
+browser file chooser still requires an Alpha review.
+
 In **Alpha Tickets**, use **Overview** for the completion ring and progress chart, or **Tickets** to browse and select
 work. **Export** saves selected tickets, all filtered matches, or the project as one ZIP of readable Markdown files;
 child tickets can be included. **Import** accepts one or more bundles or original ticket Markdown files and previews

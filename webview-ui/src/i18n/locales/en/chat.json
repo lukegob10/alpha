@@ -561,10 +561,10 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"welcome": "Alpha v{{version}} improves command execution and task recovery.",
-			"commands": "Keep terminal startup, output, and completion tied to the command that produced them.",
-			"taskRecovery": "Preserve completed tasks and recent history when saves and recovery overlap.",
-			"worktreeSafety": "Verify the target checkout before applying changes from a delegated task."
+			"welcome": "Alpha v{{version}} streamlines integrated browser approvals.",
+			"browserApprovals": "Auto and Full Access use your VS Code tool grants to open pages, navigate, and run Playwright.",
+			"manageApprovals": "Manage those grants with Chat: Manage Tool Approval in the Command Palette.",
+			"fileApproval": "Alpha asks for confirmation before selecting local files in a browser dialog."
 		}
 	},
 	"crossTasks": {

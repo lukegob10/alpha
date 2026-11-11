@@ -191,7 +191,8 @@ export async function runLiveCase(
 	const settings = captureLiveFixtureSettings(provider, {
 		mode: "code",
 		disabledTools: toolNames.filter((name) => !policyAllowed.has(name)),
-		approvalMode: "auto",
+		// Keep the live browser fixture's explicit loopback review active.
+		approvalMode: options.browserSession ? "ask" : "auto",
 		autoApprovalEnabled: true,
 		alwaysAllowReadOnly: true,
 		alwaysAllowReadOnlyOutsideWorkspace: false,

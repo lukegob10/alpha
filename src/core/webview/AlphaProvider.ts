@@ -1152,7 +1152,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.26-task-and-command-reliability"
+	public readonly latestAnnouncementId = "november-2026-v3.2.27-browser-tool-approvals"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
