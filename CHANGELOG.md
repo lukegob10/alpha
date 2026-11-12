@@ -6,6 +6,7 @@
 
 - Keep active tasks with their live VS Code extension host when a delayed heartbeat would otherwise interrupt them.
 - Save large chat transcripts faster and reduce the time spent checking provider history before tools run.
+- Finish saving a stopped turn when cancellation arrives while the next model request is being prepared.
 
 ## 3.2.31
 

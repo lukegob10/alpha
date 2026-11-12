@@ -542,6 +542,49 @@ afterEach(async () => {
 	vi.restoreAllMocks()
 })
 
+it("closes the durable turn when stopped while preparing the next request", async () => {
+	const fixture = await harness("EOF", { isolationReady: false })
+	fixture.releaseProvider()
+	expect(await fixture.run).toMatchObject({ status: "completed" })
+	expect(await fixture.task["flushPendingToolResultsToHistory"]()).toBe(true)
+	expect(fixture.task["currentAgentStep"]).toBeDefined()
+
+	const entered = barrier()
+	const release = barrier()
+	const hooks = fixture.task as unknown as TaskHooks
+	vi.mocked(hooks.drainStreamingPreviews).mockRestore()
+	const drain = fixture.task["drainStreamingPreviews"].bind(fixture.task)
+	vi.spyOn(hooks, "drainStreamingPreviews").mockImplementation(async (reason, guard) => {
+		if (reason === "starting API request") {
+			entered.resolve()
+			await release.promise
+		}
+		await drain(reason, guard)
+	})
+
+	const next = fixture.task.runAgentRequests([{ type: "text", text: "Continue" }])
+	fixture.task["ownBackgroundLifecycle"](
+		"start",
+		next.then(() => undefined),
+	)
+	try {
+		await Promise.race([
+			entered.promise,
+			next.then(() => {
+				throw new Error("Request completed before reaching the preparation boundary")
+			}),
+		])
+		const stop = fixture.task.beginTaskCancellation()
+		release.resolve()
+		const [outcome] = await Promise.all([next, stop.termination])
+		expect(outcome).toMatchObject({ status: "aborted" })
+		expect(await fixture.journal.replay()).toMatchObject({ status: "interrupted" })
+		expect(fixture.attempt).toHaveBeenCalledOnce()
+	} finally {
+		release.resolve()
+	}
+})
+
 describe("Task cancellation after accepted output reaches EOF", () => {
 	it("defers an unavailable isolated read until EOF, then executes its ordinary handler exactly once", async () => {
 		const fixture = await harness("EOF", { isolationReady: false })

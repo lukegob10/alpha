@@ -17842,6 +17842,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const lastApiReqIndex = findLastIndex(this.alphaMessages, (m) => m.say === "api_req_started")
 				const taskWasCancelled = () =>
 					this.abort || this.abandoned || this.getTaskLifetimeCancellationSignal().aborted
+				const cancelledBeforeProviderRequest = (): TaskStepExecutionResult => ({
+					status: "aborted",
+					reason: "The task was cancelled before starting its next provider request.",
+				})
 				let recoverCancelledResponse: (() => Promise<TaskStepExecutionResult>) | undefined
 				let ownsResponseStep = this.captureAgentStepOwnership()
 				let canonicalResponse: AgentResponse | undefined
@@ -17952,6 +17956,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Reset streaming state for each new API request
 					await this.drainStreamingPreviews("starting API request", ownsResponseStep)
 					if (!ownsResponseStep()) return supersededResponseResult()
+					// Stop owns the captured step until its terminal journal record is durable.
+					if (taskWasCancelled()) return cancelledBeforeProviderRequest()
 					this.invalidateStreamingPreviewEpoch()
 					this.currentStreamingContentIndex = 0
 					this.currentStreamingDidCheckpoint = false
@@ -17992,6 +17998,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 					await this.diffViewProvider.reset()
 					if (!ownsResponseStep()) return supersededResponseResult()
+					if (taskWasCancelled()) return cancelledBeforeProviderRequest()
 
 					// Cache model info once per API request to avoid repeated calls during streaming
 					// This is especially important for tools and background usage collection
@@ -19017,6 +19024,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									)
 									if (!ownsResponseStep()) return supersededResponseResult()
 								}
+								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 								const previousStep = this.currentAgentStep
 								options.onStepCaptured?.(undefined)
 								previousStep?.releaseRequest?.()
