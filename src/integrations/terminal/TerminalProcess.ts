@@ -454,8 +454,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 	private usesWindowsPowerShell(): boolean {
 		if (process.platform !== "win32") return false
-		const launch = this.terminal.shellLaunch
-		if (launch) return launch.family === "powershell"
+		const family = this.terminal.commandShellFamily
+		if (family) return family === "powershell"
 		const profile = vscode.workspace
 			.getConfiguration("terminal.integrated.defaultProfile")
 			.get<string | null>("windows")

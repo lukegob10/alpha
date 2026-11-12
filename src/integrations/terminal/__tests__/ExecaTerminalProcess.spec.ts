@@ -124,6 +124,26 @@ describe("ExecaTerminalProcess", () => {
 			},
 		)
 
+		it("launches built-in Windows PowerShell for default commands with UTF-8 output", async () => {
+			const originalPlatform = process.platform
+			Object.defineProperty(process, "platform", { value: "win32" })
+			const spawn = vitest.fn().mockReturnValue(Object.assign(Promise.resolve({ exitCode: 0 }), { pid: mockPid }))
+			const factory = vitest.fn().mockReturnValue(spawn)
+			vitest.mocked(execa).mockImplementationOnce(factory)
+			const command = "Get-Content -LiteralPath 'outside file.txt'"
+			try {
+				await terminalProcess.run(command)
+				const options = factory.mock.lastCall?.[0] as { shell?: boolean | string } | undefined
+				expect(options?.shell).toBe(false)
+				expect(spawn).toHaveBeenCalledExactlyOnceWith(
+					"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+					["-NoProfile", "-Command", expect.stringMatching(/OutputEncoding=.*UTF8.*\nGet-Content/)],
+				)
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform })
+			}
+		})
+
 		it("executes an approved shell/startup choice without consulting later global shell settings", async () => {
 			const child = Object.assign(Promise.resolve({ exitCode: 0 }), {
 				iterable: () =>
@@ -268,7 +288,6 @@ describe("ExecaTerminalProcess", () => {
 			const execaMock = vitest.mocked(execa)
 			expect(execaMock).toHaveBeenCalledWith(
 				expect.objectContaining({
-					shell: true,
 					cwd: "/test/cwd",
 					all: true,
 					env: expect.objectContaining({
@@ -310,15 +329,16 @@ describe("ExecaTerminalProcess", () => {
 			)
 		})
 
-		it("should fall back to shell=true when execaShellPath is undefined", async () => {
-			BaseTerminal.setExecaShellPath(undefined)
-			await terminalProcess.run("echo test")
-			const execaMock = vitest.mocked(execa)
-			expect(execaMock).toHaveBeenCalledWith(
-				expect.objectContaining({
-					shell: true,
-				}),
-			)
+		it("uses the platform shell outside Windows without a configured override", async () => {
+			const originalPlatform = process.platform
+			Object.defineProperty(process, "platform", { value: "linux" })
+			try {
+				await terminalProcess.run("echo test")
+				const options = vitest.mocked(execa).mock.lastCall?.[0] as unknown as { shell: boolean | string }
+				expect(options.shell).toBe(true)
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform })
+			}
 		})
 	})
 

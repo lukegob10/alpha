@@ -8,6 +8,13 @@ import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
 
 const PAGER = process.platform === "win32" ? "" : "cat"
+const windowsShellOptions =
+	process.platform === "win32"
+		? {
+				shellPath: expect.stringMatching(/\\WindowsPowerShell\\v1\.0\\powershell\.exe$/i),
+				shellArgs: [],
+			}
+		: {}
 
 vi.mock("execa", () => ({
 	execa: vi.fn(),
@@ -44,10 +51,32 @@ describe("TerminalRegistry", () => {
 	})
 
 	describe("createTerminal", () => {
+		it("selects built-in Windows PowerShell for new Alpha terminals", () => {
+			const originalPlatform = process.platform
+			const systemRoot = process.env.SystemRoot
+			Object.defineProperty(process, "platform", { value: "win32" })
+			process.env.SystemRoot = "D:\\Windows"
+			try {
+				const terminal = TerminalRegistry.createTerminal("D:\\project", "vscode")
+				expect(terminal).toBeInstanceOf(Terminal)
+				expect(mockCreateTerminal).toHaveBeenCalledWith(
+					expect.objectContaining({
+						shellPath: "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+						shellArgs: [],
+					}),
+				)
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform })
+				if (systemRoot === undefined) delete process.env.SystemRoot
+				else process.env.SystemRoot = systemRoot
+			}
+		})
+
 		it("creates terminal with PAGER set appropriately for platform", () => {
 			TerminalRegistry.createTerminal("/test/path", "vscode")
 
 			expect(mockCreateTerminal).toHaveBeenCalledWith({
+				...windowsShellOptions,
 				cwd: "/test/path",
 				name: "Alpha",
 				iconPath: expect.any(Object),
@@ -69,6 +98,7 @@ describe("TerminalRegistry", () => {
 				TerminalRegistry.createTerminal("/test/path", "vscode")
 
 				expect(mockCreateTerminal).toHaveBeenCalledWith({
+					...windowsShellOptions,
 					cwd: "/test/path",
 					name: "Alpha",
 					iconPath: expect.any(Object),
@@ -92,6 +122,7 @@ describe("TerminalRegistry", () => {
 				TerminalRegistry.createTerminal("/test/path", "vscode")
 
 				expect(mockCreateTerminal).toHaveBeenCalledWith({
+					...windowsShellOptions,
 					cwd: "/test/path",
 					name: "Alpha",
 					iconPath: expect.any(Object),
@@ -114,6 +145,7 @@ describe("TerminalRegistry", () => {
 				TerminalRegistry.createTerminal("/test/path", "vscode")
 
 				expect(mockCreateTerminal).toHaveBeenCalledWith({
+					...windowsShellOptions,
 					cwd: "/test/path",
 					name: "Alpha",
 					iconPath: expect.any(Object),

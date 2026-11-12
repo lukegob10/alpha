@@ -566,7 +566,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha shows what it is waiting for and rechecks completion when command results are saved. Subagent results arrive once, and the sidebar keeps updating when an editor panel is slow."
+			"description": "On Windows, Alpha uses built-in Windows PowerShell 5.1 for background and interactive commands. Its command guidance matches the shell it runs."
 		}
 	},
 	"crossTasks": {

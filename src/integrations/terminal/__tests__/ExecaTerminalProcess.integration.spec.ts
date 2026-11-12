@@ -22,6 +22,15 @@ type FixturePids = { parentPid: number; childPid: number }
 const supportedPlatform = ["win32", "linux", "darwin"].includes(process.platform)
 const fixturePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "process-tree-sleeper.mjs")
 
+function runNodeFixture(script: string): string {
+	if (process.platform === "win32") {
+		const quote = (value: string) => "'" + value.replaceAll("'", "''") + "'"
+		return "& " + quote(process.execPath) + " " + quote(script)
+	}
+	const quote = (value: string) => '"' + value.replaceAll('"', '\\"') + '"'
+	return quote(process.execPath) + " " + quote(script)
+}
+
 function isPidAlive(pid: number | undefined): boolean {
 	if (!pid) return false
 	try {
@@ -227,12 +236,61 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 		}
 	})
 
+	it.skipIf(process.platform !== "win32").each([
+		{
+			title: "a standalone parameter block",
+			source: "param <# label #> ([string]$Label = 'declared')\nWrite-Output $Label",
+			output: "declared",
+		},
+		{
+			title: "top-level using and parameter declarations",
+			source: "<# header #> using namespace System.Text\nparam([string]$Label = 'script')\n\"$Label $([Encoding]::UTF8.WebName)\"",
+			output: "script utf-8",
+		},
+		{
+			title: "named script blocks",
+			source: "begin { Write-Output 'begin' } end { Write-Output 'end' }",
+			output: "begin\nend",
+		},
+	])("preserves Windows PowerShell $title", async ({ source, output }) => {
+		const terminal = new ExecaTerminal(32, path.dirname(fixturePath))
+		const completed = vitest.fn()
+		const exited = vitest.fn()
+		const command = terminal.runCommand(source, {
+			onLine: () => undefined,
+			onCompleted: completed,
+			onShellExecutionStarted: () => undefined,
+			onShellExecutionComplete: exited,
+		})
+		await withTimeout(command, 10_000, "PowerShell script did not settle")
+		expect(exited).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ exitCode: 0 }), command)
+		expect(completed.mock.lastCall?.[0]?.trim().replaceAll("\r\n", "\n")).toBe(output)
+	})
+
+	it.skipIf(process.platform !== "win32").each([
+		{ suffix: "", code: 1 },
+		{ suffix: "; exit $LASTEXITCODE", code: 17 },
+	])("reports PowerShell exit code $code for a failing native command", async ({ suffix, code }) => {
+		const terminal = new ExecaTerminal(33, path.dirname(fixturePath))
+		const exited = vitest.fn()
+		const node = process.execPath.replaceAll("'", "''")
+		const source = `& '${node}' -e 'process.exit(17)'${suffix}`
+		const command = terminal.runCommand(source, {
+			onLine: () => undefined,
+			onCompleted: () => undefined,
+			onShellExecutionStarted: () => undefined,
+			onShellExecutionComplete: exited,
+		})
+		await withTimeout(command, 10_000, "PowerShell command did not settle")
+		expect(exited).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ exitCode: code }), command)
+	})
+
 	it("bounds high-output completion while preserving UTF-8, CRLF, and the final tail", async () => {
 		const outputFixture = path.join(path.dirname(fixturePath), "high-output.mjs")
 		const expected = "界🙂\r\n".repeat(8192 * 32) + "final-no-newline🙂"
 		const terminal = new ExecaTerminal(31, path.dirname(fixturePath))
 		let completed = ""
-		const command = terminal.runCommand(`"${process.execPath}" "${outputFixture}"`, {
+		const command = terminal.runCommand(runNodeFixture(outputFixture), {
 			onLine: () => undefined,
 			onCompleted: (output) => {
 				completed = output ?? ""
@@ -259,8 +317,7 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 			const shellCompleted = vitest.fn()
 			let fixturePids: FixturePids | undefined
 			let shellPid: number | undefined
-			const quote = (value: string) => `"${value.replaceAll('"', '\\"')}"`
-			const command = terminal.runCommand(`${quote(process.execPath)} ${quote(fixturePath)}`, {
+			const command = terminal.runCommand(runNodeFixture(fixturePath), {
 				onLine: (line, process) => {
 					fixturePids = JSON.parse(line.trim()) as FixturePids
 					shellPid = (process as ExecaTerminalProcess)["subprocess"]?.pid
@@ -341,8 +398,7 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 				rejectFixture(error instanceof Error ? error : new Error(String(error)))
 			}
 		})
-		const quote = (value: string) => `"${value.replaceAll('"', '\\"')}"`
-		const run = terminalProcess.run(`${quote(process.execPath)} ${quote(fixturePath)}`)
+		const run = terminalProcess.run(runNodeFixture(fixturePath))
 
 		try {
 			fixturePids = await withTimeout(fixtureStarted, 5_000, "Fixture did not report its PIDs within 5 seconds")
@@ -397,12 +453,11 @@ describe.skipIf(!supportedPlatform)("ExecaTerminalProcess process-tree integrati
 		let fixturePids: FixturePids | undefined
 		let shellPid: number | undefined
 		let terminalProcess: ExecaTerminalProcess | undefined
-		const quote = (value: string) => `"${value.replaceAll('"', '\\"')}"`
 
 		try {
 			const [, output] = await executeCommandInTerminal(task, {
 				executionId: taskId,
-				command: `${quote(process.execPath)} ${quote(fixturePath)}`,
+				command: runNodeFixture(fixturePath),
 				terminalShellIntegrationDisabled: true,
 				agentTimeout: 250,
 			})

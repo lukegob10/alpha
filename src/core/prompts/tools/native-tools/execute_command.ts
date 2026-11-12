@@ -1,7 +1,7 @@
 import type OpenAI from "openai"
 import { EXEC_COMMAND_DEFAULT_YIELD_TIME_MS, getExecCommandYieldTimeBounds } from "../../../tools/commandTimeouts"
 
-const EXEC_COMMAND_DESCRIPTION = `Runs a command in a PTY, returning output or a session ID for ongoing interaction. Use bounded, workspace-scoped commands for file inspection. For edits, prefer a supplied native editing tool. A complete standalone apply_patch heredoc is routed through the patch tool before shell execution. Commands remain subject to the task's approval and execution policy. Interactive terminals require a foreground Code task.`
+const EXEC_COMMAND_DESCRIPTION = `Runs a shell command, returning output or a session ID for an ongoing process. Use bounded, workspace-scoped commands for file inspection. For edits, prefer a supplied native editing tool. A complete standalone apply_patch heredoc is routed through the patch tool before shell execution. Commands remain subject to the task's approval and execution policy. Interactive terminals require a foreground Code task.`
 
 const PLAN_EXEC_COMMAND_DESCRIPTION = `Run one host-classified, source-non-mutating inspection or verification command in strict Plan mode. The host accepts only a conservative single-command allow-list, such as read-only git inspection and installed test, lint-check, or no-emit type-check binaries. Shell chaining, pipes, redirection, substitution, expansion, globs, watchers, update/fix/write flags, package installation, arbitrary scripts, and mutating commands are rejected even when command auto-approval is enabled. Output is bounded in Plan mode; a command that continues in the background cannot be managed from Plan.
 
@@ -44,12 +44,12 @@ export function createExecCommandTool(planMode = false): OpenAI.Chat.ChatComplet
 								shell: {
 									type: "string",
 									description:
-										"Select an installed approved sh, bash, zsh, PowerShell, or cmd executable. Omit to retain the configured shell.",
+										"Select an installed approved sh, bash, zsh, PowerShell, or cmd executable. Omit to use the default shell.",
 								},
 								login: {
 									type: "boolean",
 									description:
-										"Select login/profile startup for an explicit shell invocation. False disables it. Omit both shell and login to retain configured startup behavior.",
+										"Select login/profile startup for an explicit shell invocation. False disables it. Omit both shell and login to use the default startup behavior.",
 								},
 							}
 						: {}),

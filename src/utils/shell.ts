@@ -372,11 +372,26 @@ export function getShell(): string {
 	return shell
 }
 
+type CommandShellStartup = Pick<CommandShellLaunch, "shellPath" | "family" | "login">
+
+export function getDefaultWindowsCommandShell(): CommandShellStartup | undefined {
+	if (process.platform !== "win32") return undefined
+
+	// Codex 88c58562 prefers pwsh when installed. Alpha defaults to the Windows inbox shell.
+	const systemRoot = process.env.SystemRoot
+	const shellPath =
+		systemRoot && path.win32.isAbsolute(systemRoot)
+			? path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+			: SHELL_PATHS.POWERSHELL_LEGACY
+	return { shellPath, family: "powershell", login: false }
+}
+
 /** Reports the shell used by exec_command's selected terminal backend. */
 export function getCommandShell(useExeca: boolean, execaShellPath?: string): string {
-	if (!useExeca) return vscode.env?.shell || getShell()
-	if (execaShellPath) return execaShellPath
-	return process.platform === "win32" ? process.env.ComSpec || process.env.COMSPEC || "cmd.exe" : "/bin/sh"
+	if (useExeca && execaShellPath) return execaShellPath
+	const windowsShell = getDefaultWindowsCommandShell()
+	if (windowsShell) return windowsShell.shellPath
+	return useExeca ? "/bin/sh" : vscode.env?.shell || getShell()
 }
 
 // These locations apply only to explicit selections; getShell's historical fallback remains unchanged.
@@ -388,8 +403,12 @@ const COMMAND_SHELL_PATHS = new Set([
 	"/opt/microsoft/powershell/7/pwsh",
 ])
 
-function isCommandShellAllowed(shellPath: string): boolean {
-	return isShellAllowed(shellPath) || COMMAND_SHELL_PATHS.has(path.normalize(shellPath))
+function isCommandShellAllowed(shellPath: string, builtInWindowsShell?: string): boolean {
+	return (
+		isShellAllowed(shellPath) ||
+		COMMAND_SHELL_PATHS.has(path.normalize(shellPath)) ||
+		path.win32.normalize(shellPath).toLowerCase() === builtInWindowsShell?.toLowerCase()
+	)
 }
 
 function commandShellFamily(shellPath: string): CommandShellLaunch["family"] | undefined {
@@ -430,8 +449,12 @@ export async function captureCommandShellLaunch(
 	const family = commandShellFamily(requested)
 	if (!family) throw new Error("The requested shell family is unsupported")
 	const isBareName = path.win32.basename(requested) === requested && path.posix.basename(requested) === requested
+	const builtInWindowsShell = getDefaultWindowsCommandShell()?.shellPath
+	const approvedLocations = builtInWindowsShell
+		? new Set([builtInWindowsShell, ...COMMAND_SHELL_PATHS])
+		: COMMAND_SHELL_PATHS
 	const candidates = isBareName
-		? [...COMMAND_SHELL_PATHS].filter(
+		? [...approvedLocations].filter(
 				(candidate) =>
 					path.isAbsolute(candidate) &&
 					path
@@ -441,10 +464,10 @@ export async function captureCommandShellLaunch(
 			)
 		: [requested]
 	for (const candidate of candidates) {
-		if (!isCommandShellAllowed(candidate)) continue
+		if (!isCommandShellAllowed(candidate, builtInWindowsShell)) continue
 		try {
 			const shellPath = await fs.realpath(candidate)
-			if (!isCommandShellAllowed(shellPath)) continue
+			if (!isCommandShellAllowed(shellPath, builtInWindowsShell)) continue
 			const binaryIdentity = await commandShellBinaryIdentity(shellPath)
 			const useLogin = typeof login === "boolean" ? login : true
 			return Object.freeze({
@@ -466,13 +489,13 @@ export async function assertCommandShellLaunchUnchanged(launch: CommandShellLaun
 		throw new Error("The approved shell executable changed before command launch")
 }
 
-export function commandShellArgs(launch: CommandShellLaunch, command: string): string[] {
+export function commandShellArgs(launch: CommandShellStartup, command: string): string[] {
 	if (launch.family === "cmd") return ["/c", command]
 	if (launch.family === "powershell") return [...(launch.login ? [] : ["-NoProfile"]), "-Command", command]
 	return [launch.login ? "-lc" : "-c", command]
 }
 
-export function terminalShellArgs(launch: CommandShellLaunch): string[] {
+export function terminalShellArgs(launch: CommandShellStartup): string[] {
 	if (launch.family === "cmd") return []
 	if (launch.family === "powershell") return launch.login ? [] : ["-NoProfile"]
 	return launch.login ? ["-l"] : []

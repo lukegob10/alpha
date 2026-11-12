@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.31
+
+### Patch Changes
+
+- Use built-in Windows PowerShell 5.1 for Alpha’s background commands and interactive terminals. The model receives matching PowerShell 5.1 syntax guidance.
+- Keep PowerShell script declarations intact and capture UTF-8 output for ordinary background commands. Use `exit $LASTEXITCODE` when a command needs a native program’s exact exit code.
+
 ## 3.2.30
 
 ### Patch Changes

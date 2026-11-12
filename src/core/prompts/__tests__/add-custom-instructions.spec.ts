@@ -144,6 +144,7 @@ vi.mock("vscode", () => ({
 
 vi.mock("../../../utils/shell", () => ({
 	getShell: () => "/bin/zsh",
+	getDefaultWindowsCommandShell: () => undefined,
 }))
 
 // Create a mock ExtensionContext

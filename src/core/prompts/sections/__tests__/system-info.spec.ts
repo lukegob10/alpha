@@ -7,6 +7,7 @@ vi.mock("os-name", () => ({
 
 vi.mock("../../../../utils/shell", () => ({
 	getShell: vi.fn(() => "/bin/bash"),
+	getDefaultWindowsCommandShell: vi.fn(() => undefined),
 }))
 
 import { getSystemInfoSection } from "../system-info"
@@ -73,6 +74,12 @@ describe("getSystemInfoSection", () => {
 		expect(getSystemInfoSection(mockCwd, "C:\\Windows\\System32\\cmd.exe")).toContain(
 			"Default Shell: C:\\Windows\\System32\\cmd.exe",
 		)
+	})
+
+	it("gives Windows PowerShell 5.1 syntax for conditional commands", () => {
+		const result = getSystemInfoSection(mockCwd, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+		expect(result).toContain("Windows PowerShell 5.1")
+		expect(result).toContain("if ($?)")
 	})
 
 	it("uses the captured PowerShell dialect even on a different host platform", () => {

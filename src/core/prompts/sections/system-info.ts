@@ -1,20 +1,26 @@
 import os from "os"
 import osName from "os-name"
 
-import { getShell } from "../../../utils/shell"
+import { getDefaultWindowsCommandShell, getShell } from "../../../utils/shell"
 
 function getCommandSyntax(commandShell: string): string {
 	const executable = commandShell.split(/[\\/]/).pop()?.toLowerCase()
 	if (executable === "cmd.exe" || executable === "cmd") {
 		return "\nCommand syntax: cmd.exe uses double quotes; single quotes are literal characters. Do not assume Unix head/tail are installed. Use exec_command output limits for bounded output and rg --files to discover actual filenames before reading them."
 	}
-	if (executable && /^(?:powershell|pwsh)(?:\.exe)?$/.test(executable)) {
+	if (executable === "powershell.exe" || executable === "powershell") {
+		return "\nCommand syntax: use Windows PowerShell 5.1. Use Get-Content -Encoding UTF8 for UTF-8 files, Select-Object -First for bounded pipelines, and if ($?) { ... } for success-dependent commands. Use exit $LASTEXITCODE when you need a native program's exact exit code."
+	}
+	if (executable === "pwsh.exe" || executable === "pwsh") {
 		return "\nCommand syntax: use PowerShell syntax, Get-Content for files, and Select-Object -First for bounded pipelines; do not assume Unix head/tail are installed."
 	}
 	return ""
 }
 
-export function getSystemInfoSection(cwd: string, commandShell = getShell()): string {
+export function getSystemInfoSection(
+	cwd: string,
+	commandShell = getDefaultWindowsCommandShell()?.shellPath ?? getShell(),
+): string {
 	// windows-release (used by os-name) launches WMIC/PowerShell synchronously.
 	// Prompt construction must not block checkpoint/process callbacks in the host.
 	let osInfo: string

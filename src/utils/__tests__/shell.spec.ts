@@ -77,19 +77,16 @@ describe("Shell Detection Tests", () => {
 			Object.defineProperty(process, "platform", { value: "win32" })
 		})
 
-		it("reports the command backend shell rather than the VS Code profile for Execa", () => {
-			mockVsCodeConfig("windows", "PowerShell", {
-				PowerShell: { path: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" },
-			})
+		it("uses built-in Windows PowerShell for both command backends", () => {
+			process.env.SystemRoot = "D:\\Windows"
 			process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe"
+			Object.assign(vscode.env, { shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" })
+			const builtInPowerShell = "D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
 
-			expect(getCommandShell(true)).toBe("C:\\Windows\\System32\\cmd.exe")
-			expect(getCommandShell(true, "C:\\Program Files\\PowerShell\\7\\pwsh.exe")).toBe(
-				"C:\\Program Files\\PowerShell\\7\\pwsh.exe",
-			)
-			expect(getCommandShell(false)).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe")
-			Object.assign(vscode.env, { shell: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" })
-			expect(getCommandShell(false)).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+			expect(getCommandShell(true)).toBe(builtInPowerShell)
+			expect(getCommandShell(false)).toBe(builtInPowerShell)
+			expect(getCommandShell(true, process.env.ComSpec)).toBe(process.env.ComSpec)
+			expect(getCommandShell(false, process.env.ComSpec)).toBe(builtInPowerShell)
 		})
 
 		it("uses explicit PowerShell 7 path from VS Code config (profile path)", () => {

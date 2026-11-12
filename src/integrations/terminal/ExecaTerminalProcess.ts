@@ -4,12 +4,16 @@ import { captureRejectionSymbol } from "node:events"
 
 import type { AlphaTerminal, DirectTerminalCommand, ExitCodeDetails } from "./types"
 import { BaseTerminal } from "./BaseTerminal"
-import { assertCommandShellLaunchUnchanged, commandShellArgs } from "../../utils/shell"
+import { assertCommandShellLaunchUnchanged, commandShellArgs, getDefaultWindowsCommandShell } from "../../utils/shell"
 import { BaseTerminalProcess } from "./BaseTerminalProcess"
 import { getDescendantPids, terminateProcessTree } from "../../utils/processTree"
 
 const PID_UPDATE_TIMEOUT_MS = 1_000
 const MAX_PENDING_LINE_OBSERVERS = 16
+
+// These declarations must precede executable statements. Keep their script text intact.
+const POWERSHELL_SCRIPT_DECLARATION =
+	/\b(?:using\s*(?:assembly\b|module\b|namespace\b|<#|#|`)|param\s*(?:\(|<#|#|`)|(?:begin|process|end|dynamicparam)\s*(?:\{|<#|#|`))/i
 
 export class ExecaTerminalProcess extends BaseTerminalProcess {
 	private terminalRef: WeakRef<AlphaTerminal>
@@ -86,8 +90,17 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				const shellLaunch = this.terminal.shellLaunch
 				if (shellLaunch) await assertCommandShellLaunchUnchanged(shellLaunch)
 				if (this.aborted) throw new Error("Command was cancelled before shell launch")
+
+				const configuredShell = BaseTerminal.getExecaShellPath()
+				const defaultWindowsShell =
+					directCommand || shellLaunch || configuredShell ? undefined : getDefaultWindowsCommandShell()
+				const commandShell = shellLaunch ?? defaultWindowsShell
+				const shellCommand =
+					defaultWindowsShell && !POWERSHELL_SCRIPT_DECLARATION.test(command)
+						? `try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n${command}`
+						: command
 				const spawn = execa({
-					shell: directCommand || shellLaunch ? false : BaseTerminal.getExecaShellPath() || true,
+					shell: directCommand || commandShell ? false : configuredShell || true,
 					extendEnv: !directCommand,
 					windowsHide: true,
 					cwd: this.terminal.getCurrentWorkingDirectory(),
@@ -107,8 +120,8 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				})
 				this.subprocess = directCommand
 					? spawn(directCommand.executable, [...directCommand.args])
-					: shellLaunch
-						? spawn(shellLaunch.shellPath, commandShellArgs(shellLaunch, command))
+					: commandShell
+						? spawn(commandShell.shellPath, commandShellArgs(commandShell, shellCommand))
 						: spawn`${command}`
 				// Observe rejection immediately, and retain physical process ownership
 				// independently of the output iterator or its presentation callbacks.

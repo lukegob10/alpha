@@ -344,8 +344,8 @@ describe("getRulesSection shell-aware command chaining", () => {
 		const question = "Where is retryLimit defined?"
 		const combined = [question, getRulesSection(cwd), toolDescription(createShellTool())].join("\n")
 
-		expect(combined).toContain("Runs a command in a PTY")
-		expect(combined).toContain("output or a session ID for ongoing interaction")
+		expect(combined).toContain("Runs a shell command")
+		expect(combined).toContain("output or a session ID for an ongoing process")
 		expect(combined).toContain("Commands remain subject to the task's approval and execution policy")
 		expect(combined).toMatch(/\brg\b/)
 		expect(combined).not.toMatch(/\b(?:read_file|list_files|search_files|codebase_search)\b/)

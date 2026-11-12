@@ -20605,8 +20605,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					approvalMode: approvalModeOverride ?? migrateApprovalMode(state),
 					orchestrationParentTaskId: !isSubagent ? this.orchestrationParentTaskId : undefined,
 					commandShell: getCommandShell(
-						(isSubagent &&
-							(this.subagentRole === "worker" || this.subagentContextManifest?.runtimePolicy.execute)) ||
+						// Native exec_command uses pipes by default, including when TTY is available.
+						process.platform === "win32" ||
+							(isSubagent &&
+								(this.subagentRole === "worker" ||
+									this.subagentContextManifest?.runtimePolicy.execute)) ||
 							(state?.terminalShellIntegrationDisabled ?? true),
 						BaseTerminal.getExecaShellPath(),
 					),

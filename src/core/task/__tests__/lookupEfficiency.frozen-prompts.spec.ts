@@ -151,9 +151,21 @@ describe("lookup-efficiency frozen prompts CI shape", () => {
 				(tool) => tool.type === "function" && tool.function?.name === "exec_command",
 			) as { function?: { description?: string } } | undefined
 			const description = command?.function?.description
-			expect(description, fixture.id).toContain("Runs a command in a PTY")
-			expect(description, fixture.id).toContain("output or a session ID for ongoing interaction")
+			expect(description, fixture.id).toContain("Runs a shell command")
+			expect(description, fixture.id).toContain("output or a session ID for an ongoing process")
 			expect(description, fixture.id).toContain("task's approval and execution policy")
+			expect(command, fixture.id).toMatchObject({
+				function: {
+					parameters: {
+						properties: {
+							tty: {
+								type: "boolean",
+								description: expect.stringContaining("false or omitted uses plain pipes"),
+							},
+						},
+					},
+				},
+			})
 		}
 	})
 

@@ -1,7 +1,7 @@
 import * as vscode from "vscode"
 
 import type { AlphaTerminalCallbacks, AlphaTerminalProcessResultPromise, CommandShellLaunch } from "./types"
-import { terminalShellArgs } from "../../utils/shell"
+import { getDefaultWindowsCommandShell, terminalShellArgs } from "../../utils/shell"
 import { BaseTerminal } from "./BaseTerminal"
 import { TerminalProcess } from "./TerminalProcess"
 import { ShellIntegrationManager } from "./ShellIntegrationManager"
@@ -10,6 +10,7 @@ import { t } from "../../i18n"
 
 export class Terminal extends BaseTerminal {
 	public terminal: vscode.Terminal
+	readonly commandShellFamily?: CommandShellLaunch["family"]
 	private readonly pendingProcesses = new Set<TerminalProcess>()
 
 	public cmdCounter: number = 0
@@ -25,6 +26,8 @@ export class Terminal extends BaseTerminal {
 
 		const env = { ...Terminal.getEnv(), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
+		const commandShell = shellLaunch ?? (terminal ? undefined : getDefaultWindowsCommandShell())
+		this.commandShellFamily = commandShell?.family
 		this.terminal =
 			terminal ??
 			vscode.window.createTerminal({
@@ -32,7 +35,14 @@ export class Terminal extends BaseTerminal {
 				name: "Alpha",
 				iconPath,
 				env,
-				...(shellLaunch ? { shellPath: shellLaunch.shellPath, shellArgs: terminalShellArgs(shellLaunch) } : {}),
+				...(commandShell
+					? {
+							shellPath: commandShell.shellPath,
+							// VS Code's PowerShell integration needs supported startup arguments, so
+							// leave default interactive startup to the host.
+							shellArgs: shellLaunch ? terminalShellArgs(shellLaunch) : [],
+						}
+					: {}),
 			})
 
 		if (Terminal.getTerminalZdotdir()) {
