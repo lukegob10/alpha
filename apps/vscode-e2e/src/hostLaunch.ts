@@ -1,6 +1,7 @@
 import { spawn } from "child_process"
 import * as path from "node:path"
-import { downloadAndUnzipVSCode, type TestOptions } from "@vscode/test-electron"
+import type { TestOptions } from "@vscode/test-electron"
+import { downloadTestVSCode } from "./hostDownload"
 import { TestRunError, type TestRunFailureCode } from "./runFailure"
 import { terminateOwnedProcess } from "./campaign/ownedProcess"
 import {
@@ -70,7 +71,7 @@ export async function launchExtensionHost(
 		// Keep package-manager configuration in the runner's home; isolate only the GUI process.
 		extensionTestsEnv[process.platform === "win32" ? "USERPROFILE" : "HOME"] = userHome
 	}
-	const executable = options.vscodeExecutablePath ?? (await downloadAndUnzipVSCode(options))
+	const executable = options.vscodeExecutablePath ?? (await downloadTestVSCode(options, signal))
 	if (signal?.aborted) throw new HostLaunchCancelledError()
 	const developments = Array.isArray(options.extensionDevelopmentPath)
 		? options.extensionDevelopmentPath
