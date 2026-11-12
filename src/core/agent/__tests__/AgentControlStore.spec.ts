@@ -1396,54 +1396,41 @@ describe("AgentControlStore", () => {
 		}
 	})
 
-	it("does not revoke a stale-looking lease before a live owner can refresh after system resume", async () => {
+	it("keeps command admission available after repeated recovery scans of a live owner with a stale heartbeat", async () => {
 		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-agent-control-owner-resume-"))
 		const firstPersistence = new FileAgentControlPersistence(directory)
 		const secondPersistence = new FileAgentControlPersistence(directory)
-		const first = new AgentControlStore(firstPersistence, clock(96_000), { ownerId: "resuming-host" })
-		const second = new AgentControlStore(secondPersistence, clock(97_000), { ownerId: "observing-host" })
-		const stores = [first, second]
-
+		const ownerId = "resuming-host"
+		const staleMs = 120_000
+		const first = new AgentControlStore(firstPersistence, clock(96_000), {
+			ownerId,
+			ownerLeaseStaleMs: staleMs,
+			ownerLeaseUpdateMs: staleMs / 2,
+		})
+		const second = new AgentControlStore(secondPersistence, clock(97_000), {
+			ownerId: "observing-host",
+			ownerLeaseStaleMs: staleMs,
+		})
 		try {
 			await first.initialize()
-			await expect(firstPersistence.isOwnerProcessLive("resuming-host")).resolves.toBe(true)
 			await first.ensureRoot({ taskId: "resuming-root", status: "running" })
 			await second.initialize()
+			const lockPath = path.join(`${firstPersistence.filePath}.owners`, `${ownerId}.lock`)
+			const stale = new Date(Date.now() - staleMs * 2)
+			await fs.utimes(lockPath, stale, stale)
+			await expect(secondPersistence.isOwnerLeaseLive(ownerId, staleMs)).resolves.toBe(false)
+			await expect(secondPersistence.isOwnerProcessLive(ownerId)).resolves.toBe(true)
 
-			const originalLeaseCheck = secondPersistence.isOwnerLeaseLive.bind(secondPersistence)
-			const leaseCheck = vi
-				.spyOn(secondPersistence, "isOwnerLeaseLive")
-				.mockImplementation((ownerId, staleMs) =>
-					ownerId === "resuming-host" ? Promise.resolve(false) : originalLeaseCheck(ownerId, staleMs),
-				)
-			const originalProcessCheck = secondPersistence.isOwnerProcessLive.bind(secondPersistence)
-			const processCheck = vi
-				.spyOn(secondPersistence, "isOwnerProcessLive")
-				.mockImplementation((ownerId) =>
-					ownerId === "resuming-host" ? Promise.resolve(true) : originalProcessCheck(ownerId),
-				)
-			const revoke = vi.spyOn(secondPersistence, "tryRevokeOwnerLease")
+			const firstScan = await second.recoverAbandonedOwners()
+			const secondScan = await second.recoverAbandonedOwners()
 
-			try {
-				await expect(second.recoverAbandonedOwners()).resolves.toBe(0)
-				expect(revoke).not.toHaveBeenCalledWith("resuming-host", expect.any(Number))
-				expect(second.getAgent("resuming-root")).toMatchObject({
-					status: "running",
-					runtimeOwnerId: "resuming-host",
-				})
-
-				leaseCheck.mockImplementation((ownerId, staleMs) => originalLeaseCheck(ownerId, staleMs))
-				await expect(second.recoverAbandonedOwners()).resolves.toBe(0)
-				await expect(
-					first.updateAgentSnapshot("resuming-root", { phase: "completion-verification" }),
-				).resolves.toMatchObject({ snapshot: { phase: "completion-verification" } })
-			} finally {
-				leaseCheck.mockRestore()
-				processCheck.mockRestore()
-				revoke.mockRestore()
-			}
+			await expect(
+				first.reservePrimaryMutation("resuming-root", "resuming-root", directory, "command"),
+			).resolves.toBeUndefined()
+			expect([firstScan, secondScan]).toEqual([0, 0])
+			expect(first.getAgent("resuming-root")).toMatchObject({ status: "running", runtimeOwnerId: ownerId })
 		} finally {
-			await Promise.all(stores.map((store) => store.shutdown()))
+			await Promise.all([first.shutdown(), second.shutdown()])
 			await fs.rm(directory, { recursive: true, force: true })
 		}
 	})

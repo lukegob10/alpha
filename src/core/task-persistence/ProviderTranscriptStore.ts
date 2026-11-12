@@ -643,11 +643,23 @@ function cloneMessages(messages: ApiMessage[]): ApiMessage[] {
 function stableValue(value: unknown): unknown {
 	if (Array.isArray(value)) return value.map(stableValue)
 	if (value && typeof value === "object") {
-		return Object.fromEntries(
-			Object.entries(value as Record<string, unknown>)
-				.sort(([left], [right]) => left.localeCompare(right))
-				.map(([key, child]) => [key, stableValue(child)]),
-		)
+		const record = value as Record<string, unknown>
+		const ordered: Record<string, unknown> = {}
+		for (const key of Object.keys(record).sort((left, right) => left.localeCompare(right))) {
+			const child = stableValue(record[key])
+			if (key === "__proto__") {
+				// Preserve opaque JSON keys as own data properties for the existing digest format.
+				Object.defineProperty(ordered, key, {
+					value: child,
+					enumerable: true,
+					configurable: true,
+					writable: true,
+				})
+			} else {
+				ordered[key] = child
+			}
+		}
+		return ordered
 	}
 	return value
 }

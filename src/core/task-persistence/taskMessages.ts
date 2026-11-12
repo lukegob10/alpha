@@ -72,5 +72,5 @@ export async function saveTaskMessages({ messages, taskId, globalStoragePath }: 
 	const filePath = path.join(taskDir, GlobalFileNames.uiMessages)
 	// Reopen and background readers do not hold the writer's lease. Keep the
 	// previous snapshot at its canonical path until the replacement commits.
-	await safeWriteJson(filePath, messages, { atomicReplace: true })
+	await safeWriteJson(filePath, messages, { atomicReplace: true, serializationBufferSize: 65_536 })
 }

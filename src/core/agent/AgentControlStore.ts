@@ -217,6 +217,7 @@ interface OwnerLeaseMetadata {
 
 interface OwnerLeaseHandle {
 	token: string
+	directory: Pick<fsSync.BigIntStats, "dev" | "ino">
 	release: () => Promise<void>
 }
 
@@ -317,12 +318,15 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 		if (this.ownerLeaseHandles.has(ownerId)) return
 		await fs.mkdir(this.ownerLeaseDirectory, { recursive: true })
 		const token = randomUUID()
-		const release = await lockfile.lock(this.ownerLeasePath(ownerId), {
+		const leasePath = this.ownerLeasePath(ownerId)
+		let compromised = false
+		const release = await lockfile.lock(leasePath, {
 			stale: options.staleMs,
 			update: options.updateMs,
 			realpath: false,
 			retries: 0,
 			onCompromised: (error) => {
+				compromised = true
 				if (this.ownerLeaseHandles.get(ownerId)?.token === token) {
 					this.ownerLeaseHandles.delete(ownerId)
 				}
@@ -330,20 +334,40 @@ export class FileAgentControlPersistence implements AgentControlPersistence {
 			},
 		})
 		try {
+			const directory = await fs.lstat(`${leasePath}.lock`, { bigint: true })
+			if (!directory.isDirectory()) throw new Error("Runtime owner lease path is not a directory")
+			if (compromised) return
 			await fs.writeFile(
 				this.ownerLeaseMetadataPath(ownerId),
 				JSON.stringify({ token, pid: process.pid }),
 				"utf8",
 			)
+			if (!compromised) this.ownerLeaseHandles.set(ownerId, { token, directory, release })
 		} catch (error) {
-			await release()
+			if (!compromised) await release()
 			throw error
 		}
-		this.ownerLeaseHandles.set(ownerId, { token, release })
 	}
 
 	async isOwnerLeaseLive(ownerId: AgentRuntimeOwnerId, staleMs: number): Promise<boolean> {
-		return lockfile.check(this.ownerLeasePath(ownerId), { stale: staleMs, realpath: false })
+		const leasePath = this.ownerLeasePath(ownerId)
+		const handle = this.ownerLeaseHandles.get(ownerId)
+		if (!handle) return lockfile.check(leasePath, { stale: staleMs, realpath: false })
+
+		// The heartbeat can be overdue after suspension while the original lock
+		// directory is still held. Check its identity at the local write fence.
+		try {
+			const directory = await fs.lstat(`${leasePath}.lock`, { bigint: true })
+			return (
+				this.ownerLeaseHandles.get(ownerId) === handle &&
+				directory.isDirectory() &&
+				directory.dev === handle.directory.dev &&
+				directory.ino === handle.directory.ino
+			)
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false
+			throw error
+		}
 	}
 
 	async isOwnerProcessLive(ownerId: AgentRuntimeOwnerId): Promise<boolean | undefined> {
@@ -3621,17 +3645,18 @@ export class AgentControlStore {
 
 		const liveOwnerIds = new Set<AgentRuntimeOwnerId>()
 		for (const ownerId of ownerIds) {
-			const live = await persistence.isOwnerLeaseLive(ownerId, this.ownerLeaseStaleMs)
+			// A suspended extension host remains the owner regardless of how
+			// many times a peer observes its overdue heartbeat.
+			const live =
+				(await persistence.isOwnerLeaseLive(ownerId, this.ownerLeaseStaleMs)) ||
+				(await persistence.isOwnerProcessLive?.(ownerId))
 			if (live) {
 				this.staleOwnerObservations.delete(ownerId)
 				liveOwnerIds.add(ownerId)
 				continue
 			}
-			const ownerProcessLive = await persistence.isOwnerProcessLive?.(ownerId)
-			if (ownerProcessLive !== false && !this.staleOwnerObservations.has(ownerId)) {
-				// Wall-clock lease age jumps across system sleep. Give a live or legacy
-				// owner one complete recovery scan to refresh before revoking it; a
-				// confirmed dead process can be fenced immediately.
+			if (live === undefined && !this.staleOwnerObservations.has(ownerId)) {
+				// Give a legacy owner without process evidence one scan to refresh.
 				this.staleOwnerObservations.add(ownerId)
 				liveOwnerIds.add(ownerId)
 				continue

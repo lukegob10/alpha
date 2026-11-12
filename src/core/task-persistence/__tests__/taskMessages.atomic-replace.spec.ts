@@ -23,10 +23,22 @@ afterEach(async () => {
 	await actual.rm(storage, { recursive: true, force: true })
 })
 
-it("keeps the saved transcript readable until its replacement commits", async () => {
+it("keeps the saved transcript readable until a large replacement commits", async () => {
 	const input = { taskId: "recipient", globalStoragePath: storage, requireExisting: true }
 	const previous: AlphaMessage[] = [{ ts: 1, type: "say", say: "text", text: "Saved answer" }]
-	const next: AlphaMessage[] = [...previous, { ts: 2, type: "say", say: "text", text: "Next answer" }]
+	const next: AlphaMessage[] = [
+		...previous,
+		...Array.from(
+			{ length: 80 },
+			(_, index): AlphaMessage => ({
+				ts: index + 2,
+				type: "say",
+				say: "command_output",
+				text: "Command output 🧪\n".repeat(64),
+			}),
+		),
+		{ ts: 82, type: "say", say: "text", text: "Next answer" },
+	]
 	await saveTaskMessages({ ...input, messages: previous })
 	const file = path.join(storage, "tasks", input.taskId, "ui_messages.json")
 	const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")

@@ -1149,7 +1149,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.31-windows-powershell"
+	public readonly latestAnnouncementId = "november-2026-v3.2.32-long-task-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

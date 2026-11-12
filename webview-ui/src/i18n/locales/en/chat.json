@@ -566,7 +566,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "On Windows, Alpha uses built-in Windows PowerShell 5.1 for background and interactive commands. Its command guidance matches the shell it runs."
+			"description": "Alpha keeps active tasks running through delayed VS Code heartbeats and saves large chat histories faster."
 		}
 	},
 	"crossTasks": {

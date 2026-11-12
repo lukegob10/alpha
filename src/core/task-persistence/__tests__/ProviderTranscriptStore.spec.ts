@@ -20,6 +20,7 @@ import {
 	ProviderTranscriptRevisionConflictError,
 	ProviderTranscriptStore,
 	digestProviderTranscript,
+	serializeProviderTranscript,
 } from "../ProviderTranscriptStore"
 
 const taskId = "transcript-task"
@@ -50,6 +51,39 @@ describe("ProviderTranscriptStore", () => {
 		})
 		expect(envelope.digest).toBe(digestProviderTranscript(messages("hello")))
 		expect(receipt).toMatchObject({ taskId, revision: 1, digest: envelope.digest })
+	})
+
+	it("preserves the canonical bytes of compacted history and opaque tool input", () => {
+		const history: ApiMessage[] = [
+			{
+				role: "assistant",
+				condenseParent: "summary-1",
+				content: [
+					{
+						type: "tool_use",
+						name: "exec_command",
+						id: "call-1",
+						input: JSON.parse(
+							'{"z":"last","nested":{"b":2,"a":1},"10":"ten","2":"two","__proto__":{"own":true}}',
+						),
+					},
+				],
+			},
+			{
+				role: "user",
+				condenseParent: "summary-1",
+				content: [{ type: "tool_result", tool_use_id: "call-1", content: "Output 🧪" }],
+			},
+			{ role: "assistant", isSummary: true, condenseId: "summary-1", content: "Summary" },
+		]
+		const savedBytes =
+			'[{"condenseParent":"summary-1","content":[{"id":"call-1","input":' +
+			'{"2":"two","10":"ten","__proto__":{"own":true},"nested":{"a":1,"b":2},"z":"last"},' +
+			'"name":"exec_command","type":"tool_use"}],"role":"assistant"},' +
+			'{"condenseParent":"summary-1","content":[{"content":"Output 🧪","tool_use_id":"call-1","type":"tool_result"}],"role":"user"},' +
+			'{"condenseId":"summary-1","content":"Summary","isSummary":true,"role":"assistant"}]'
+		expect(serializeProviderTranscript(history)).toBe(savedBytes)
+		expect(digestProviderTranscript(history)).toBe(crypto.createHash("sha256").update(savedBytes).digest("hex"))
 	})
 
 	it("does not migrate or delete the legacy API history file", async () => {

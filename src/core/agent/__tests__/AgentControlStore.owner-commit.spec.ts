@@ -43,6 +43,7 @@ class CompromisedCommitPersistence extends FileAgentControlPersistence {
 }
 
 describe("AgentControlStore owner lease recovery during commit", () => {
+	const ownerLeaseStaleMs = 120_000
 	let directory: string
 	let persistence: CompromisedCommitPersistence
 	let store: AgentControlStore
@@ -51,7 +52,11 @@ describe("AgentControlStore owner lease recovery during commit", () => {
 	beforeEach(async () => {
 		directory = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-owner-commit-"))
 		persistence = new CompromisedCommitPersistence(directory)
-		store = new AgentControlStore(persistence, Date.now, { ownerId })
+		store = new AgentControlStore(persistence, Date.now, {
+			ownerId,
+			ownerLeaseStaleMs,
+			ownerLeaseUpdateMs: ownerLeaseStaleMs / 2,
+		})
 		observer = new AgentControlStore(new FileAgentControlPersistence(directory), Date.now, {
 			ownerId: "other-host",
 		})
@@ -65,6 +70,33 @@ describe("AgentControlStore owner lease recovery during commit", () => {
 		await observer.shutdown()
 		vi.restoreAllMocks()
 		await fs.rm(directory, { recursive: true, force: true })
+	})
+
+	it("commits command admission when its own lock heartbeat becomes stale during the transaction", async () => {
+		await store.ensureRoot({ taskId: "command-root" })
+		const lockPath = path.join(`${persistence.filePath}.owners`, `${ownerId}.lock`)
+		const read = persistence.readIsolated.bind(persistence)
+		vi.spyOn(persistence, "readIsolated").mockImplementationOnce(async () => {
+			const stale = new Date(Date.now() - ownerLeaseStaleMs * 2)
+			await fs.utimes(lockPath, stale, stale)
+			return read()
+		})
+
+		await expect(
+			store.reservePrimaryMutation("command-root", "command-root", directory, "command"),
+		).resolves.toBeUndefined()
+		expect(store.getAgent("command-root")).toMatchObject({ status: "running", runtimeOwnerId: ownerId })
+	})
+
+	it("recovers command admission with a new owner when the held lock directory disappears", async () => {
+		await store.ensureRoot({ taskId: "command-root" })
+		await fs.rmdir(path.join(`${persistence.filePath}.owners`, `${ownerId}.lock`))
+
+		await expect(
+			store.reservePrimaryMutation("command-root", "command-root", directory, "command"),
+		).resolves.toBeUndefined()
+		expect(store.getAgent("command-root")?.runtimeOwnerId).not.toBe(ownerId)
+		expect(store.getAgent("command-root")?.status).toBe("running")
 	})
 
 	it.each(["write", "transaction release"] as const)(
