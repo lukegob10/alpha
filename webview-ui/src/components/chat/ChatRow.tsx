@@ -92,6 +92,13 @@ import { GoalApproval } from "./GoalApproval"
 import { ActivityStep } from "./ActivityStep"
 import { MessageActions } from "./MessageActions"
 
+const completionWaitLabels = new Map([
+	["command_running", "chat:apiRequest.completionWaitCommand"],
+	["evidence_pending", "chat:apiRequest.completionWaitEvidence"],
+	["receipt_pending", "chat:apiRequest.completionWaitReceipt"],
+	["descendants_running", "chat:apiRequest.completionWaitSubagents"],
+])
+
 // Helper function to get previous todos before a specific message
 function getPreviousTodos(messages: AlphaMessage[], currentMessageTs: number): any[] {
 	// Find the previous updateTodoList message before the current one
@@ -1507,21 +1514,25 @@ const ChatRowContentInner = ({
 						/>
 					)
 				case "api_req_rate_limit_wait": {
-					const isWaiting = message.partial === true
+					if (message.partial !== true || !message.text) return null
 
-					const parsed = (() => {
-						if (!message.text) return {} as { seconds?: number; kind?: string }
-						try {
-							return JSON.parse(message.text) as { seconds?: number; kind?: string }
-						} catch {
-							return {}
-						}
-					})()
-					const waitSeconds = typeof parsed.seconds === "number" ? parsed.seconds : undefined
-					const isCompletionWait = parsed.kind === "completion"
+					let parsed: unknown
+					try {
+						parsed = JSON.parse(message.text)
+					} catch {
+						return null
+					}
+					if (parsed === null || typeof parsed !== "object") return null
 
-					if (!isWaiting) return null
+					const waitSeconds =
+						"seconds" in parsed && typeof parsed.seconds === "number" ? parsed.seconds : undefined
+					const isCompletionWait = "kind" in parsed && parsed.kind === "completion"
 					if (!isCompletionWait && waitSeconds === undefined) return null
+
+					const reason = "reason" in parsed && typeof parsed.reason === "string" ? parsed.reason : ""
+					const label = isCompletionWait
+						? (completionWaitLabels.get(reason) ?? "chat:apiRequest.completionWait")
+						: "chat:apiRequest.rateLimitWait"
 
 					return (
 						<div className="activity-row-header group flex min-w-0 items-center gap-2 py-1 text-sm transition-opacity opacity-100">
@@ -1530,13 +1541,7 @@ const ChatRowContentInner = ({
 								<div className="flex size-4 shrink-0 items-center justify-center">
 									<ProgressIndicator />
 								</div>
-								<span style={{ color: normalColor }}>
-									{t(
-										isCompletionWait
-											? "chat:apiRequest.completionWait"
-											: "chat:apiRequest.rateLimitWait",
-									)}
-								</span>
+								<span style={{ color: normalColor }}>{t(label)}</span>
 							</div>
 							{waitSeconds !== undefined && !isCompletionWait ? (
 								<span className="shrink-0 text-xs tabular-nums text-vscode-descriptionForeground">

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+	type AgentLifecycleEvent,
 	type AgentLifecycleSnapshot,
 	type ExtensionMessage,
 	type LiveTaskMetadata,
@@ -70,6 +71,32 @@ const createProvider = (taskSessions = new TaskSessionRegistry()) => {
 	})
 	Object.assign(provider, { agentLifecycleProjector: projector })
 	return { provider, taskSessions, post }
+}
+
+const createEditorPeer = (provider: AlphaProvider, taskSessions: TaskSessionRegistry) => {
+	const post = vi.fn(async (_message: ExtensionMessage): Promise<void> => undefined)
+	const log = vi.fn()
+	const editor: AlphaProvider = Object.assign(Object.create(AlphaProvider.prototype), {
+		taskSessions,
+		currentView: { type: "newTaskDraft" },
+		taskNavigationGeneration: 0,
+		taskStateSeq: 0,
+		getAgentLifecycleDegraded: () => ({}),
+		postMessageToWebview: post,
+		log,
+	})
+	Object.assign(provider, { getHostProviders: () => [provider, editor] })
+	return { editor, post, log }
+}
+
+function deferred() {
+	let resolve!: () => void
+	let reject!: (reason: Error) => void
+	const promise = new Promise<void>((done, failed) => {
+		resolve = done
+		reject = failed
+	})
+	return { promise, resolve, reject }
 }
 
 describe("compact webview lifecycle transport", () => {
@@ -222,16 +249,7 @@ describe("compact webview lifecycle transport", () => {
 		try {
 			const { provider, post } = createProvider(sidebarSessions)
 			editorSessions.clearFocus()
-			const editorPost = vi.fn(async (_message: ExtensionMessage) => undefined)
-			const editor = Object.assign(Object.create(AlphaProvider.prototype), {
-				taskSessions: editorSessions,
-				currentView: { type: "newTaskDraft" },
-				taskNavigationGeneration: 0,
-				taskStateSeq: 0,
-				getAgentLifecycleDegraded: () => ({}),
-				postMessageToWebview: editorPost,
-			})
-			Object.assign(provider, { getHostProviders: () => [provider, editor] })
+			const { post: editorPost } = createEditorPeer(provider, editorSessions)
 
 			await provider.publishAgentLifecycleSnapshot(snapshot(10))
 
@@ -251,6 +269,163 @@ describe("compact webview lifecycle transport", () => {
 			editorSessions.disposeView()
 		}
 	})
+
+	it("keeps sidebar lifecycle publication moving while an editor delivery is blocked", async () => {
+		const storage = "compact-lifecycle-transport-blocked-editor"
+		const sidebarSessions = TaskSessionRegistry.forGlobalStorage(storage)
+		const editorSessions = TaskSessionRegistry.forGlobalStorage(storage)
+		const editorStarted = deferred()
+		const releaseEditor = deferred()
+		const publications: Promise<unknown>[] = []
+		try {
+			const { provider, post } = createProvider(sidebarSessions)
+			const { post: editorPost } = createEditorPeer(provider, editorSessions)
+			editorPost.mockImplementationOnce(async () => {
+				editorStarted.resolve()
+				await releaseEditor.promise
+			})
+
+			const first = provider.publishAgentLifecycleSnapshot(snapshot(1))
+			const firstSettled = vi.fn()
+			publications.push(first.then(firstSettled))
+			await editorStarted.promise
+			publications.push(provider.publishAgentLifecycleSnapshot({ ...snapshot(2), phase: "executing" }))
+			// Drain runnable continuations while the first editor send is still held.
+			await new Promise<void>((resolve) => setImmediate(resolve))
+
+			expect(post).toHaveBeenCalledTimes(2)
+			expect(firstSettled).toHaveBeenCalledWith(expect.objectContaining({ accepted: true }))
+			expect(post.mock.calls[1][0]).toMatchObject({
+				type: "state",
+				state: { taskStateSeq: 2, liveTasksById: { task: { activityPhase: "executing" } } },
+			})
+
+			await provider.publishAgentLifecycleSnapshot({ ...snapshot(3), phase: "finalizing" })
+			expect(post).toHaveBeenCalledTimes(3)
+			expect(post.mock.calls[2][0]).toMatchObject({
+				type: "state",
+				state: { liveTasksById: { task: { activityPhase: "finalizing" } } },
+			})
+			expect(editorPost).toHaveBeenCalledOnce()
+
+			releaseEditor.resolve()
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(editorPost).toHaveBeenCalledTimes(2)
+			expect(editorPost.mock.calls[1][0]).toMatchObject({
+				type: "state",
+				state: { taskStateSeq: 2, liveTasksById: { task: { activityPhase: "finalizing" } } },
+			})
+		} finally {
+			releaseEditor.resolve()
+			await Promise.allSettled(publications)
+			sidebarSessions.disposeView()
+			editorSessions.disposeView()
+		}
+	})
+
+	it("awaits the durable lifecycle receipt while scheduling delivery independently", async () => {
+		const storage = "compact-lifecycle-transport-durable-receipt"
+		const sidebarSessions = TaskSessionRegistry.forGlobalStorage(storage)
+		const editorSessions = TaskSessionRegistry.forGlobalStorage(storage)
+		const journalStarted = deferred()
+		const commitJournal = deferred()
+		const editorStarted = deferred()
+		const releaseEditor = deferred()
+		let observedPublication: Promise<unknown> | undefined
+		try {
+			const { provider, post } = createProvider(sidebarSessions)
+			const { post: editorPost } = createEditorPeer(provider, editorSessions)
+			editorPost.mockImplementationOnce(async () => {
+				editorStarted.resolve()
+				await releaseEditor.promise
+			})
+			const event: AgentLifecycleEvent = {
+				version: 1,
+				eventId: "turn-started",
+				sequence: 1,
+				taskId: "task",
+				runId: "run",
+				turnId: "turn",
+				occurredAt: 1,
+				type: "turn_started",
+				payload: { phase: "starting" },
+			}
+			const append = vi.fn(async () => {
+				journalStarted.resolve()
+				await commitJournal.promise
+				return { event, replayed: false }
+			})
+			Object.assign(provider, { getAgentLifecycleJournal: async () => ({ append }) })
+			const receipt = vi.fn()
+			observedPublication = provider.publishAgentLifecycleEvent(event, { durable: true }).then(receipt)
+			await journalStarted.promise
+			expect(append).toHaveBeenCalledWith(event, { durable: true })
+			expect(receipt).not.toHaveBeenCalled()
+			expect(post).not.toHaveBeenCalled()
+			expect(editorPost).not.toHaveBeenCalled()
+
+			commitJournal.resolve()
+			await editorStarted.promise
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(receipt).toHaveBeenCalledWith(expect.objectContaining({ accepted: true }))
+			expect(post).toHaveBeenCalledOnce()
+			expect(editorPost).toHaveBeenCalledOnce()
+		} finally {
+			commitJournal.resolve()
+			releaseEditor.resolve()
+			await observedPublication
+			sidebarSessions.disposeView()
+			editorSessions.disposeView()
+		}
+	})
+
+	it.each(["rejected", "disposed"] as const)(
+		"keeps later lifecycle publications healthy after an editor send is %s",
+		async (outcome) => {
+			const storage = `compact-lifecycle-transport-editor-${outcome}`
+			const sidebarSessions = TaskSessionRegistry.forGlobalStorage(storage)
+			const editorSessions = TaskSessionRegistry.forGlobalStorage(storage)
+			const editorStarted = deferred()
+			const releaseEditor = deferred()
+			try {
+				const { provider, post } = createProvider(sidebarSessions)
+				const { editor, post: editorPost, log } = createEditorPeer(provider, editorSessions)
+				editorPost.mockImplementationOnce(async () => {
+					editorStarted.resolve()
+					await releaseEditor.promise
+				})
+
+				const first = provider.publishAgentLifecycleSnapshot(snapshot(1))
+				await editorStarted.promise
+				expect((await first).accepted).toBe(true)
+				await provider.publishAgentLifecycleSnapshot({ ...snapshot(2), phase: "executing" })
+				expect(post).toHaveBeenCalledTimes(2)
+				expect(editorPost).toHaveBeenCalledOnce()
+
+				if (outcome === "rejected") {
+					releaseEditor.reject(new Error("editor send failed"))
+				} else {
+					Object.assign(editor, { _disposed: true })
+					releaseEditor.resolve()
+				}
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				await provider.publishAgentLifecycleSnapshot({ ...snapshot(3), phase: "finalizing" })
+				expect(post).toHaveBeenCalledTimes(3)
+				expect(editorPost).toHaveBeenCalledTimes(outcome === "rejected" ? 3 : 1)
+				if (outcome === "rejected") {
+					expect(log).toHaveBeenCalledWith(expect.stringContaining("editor send failed"))
+					expect(editorPost.mock.calls[1][0]).toMatchObject({
+						type: "state",
+						state: { taskStateSeq: 2, liveTasksById: { task: { activityPhase: "executing" } } },
+					})
+				}
+			} finally {
+				releaseEditor.resolve()
+				sidebarSessions.disposeView()
+				editorSessions.disposeView()
+			}
+		},
+	)
 
 	it("retains terminal task and completion-review metadata over a completed turn", async () => {
 		const { provider, taskSessions, post } = createProvider()

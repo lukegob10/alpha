@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.30
+
+### Patch Changes
+
+- Show what Alpha is waiting for before a task can finish.
+- Recheck completion automatically when command results settle, including when a command exits during the final check.
+- Deliver each subagent result once through steering and task reload.
+- Keep sidebar status updates flowing while an editor panel is slow.
+
 ## 3.2.29
 
 ### Patch Changes

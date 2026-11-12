@@ -1795,6 +1795,7 @@ export async function executeCommandInTerminal(
 			// the terminal evidence. Late success callbacks may flush output, but must
 			// never settle that reservation again or overwrite the failed outcome.
 			if (commandMutationFailureHandling || commandTerminalOutcomeFenced) return
+			if (toolCallId) task.markCommandExecutionExitObserved?.(toolCallId, physicalExecutionId)
 			scheduleMissingOutputCompletionFailure()
 			commandMutationCompletion = observeCommandMutationFailure(
 				(async () => {

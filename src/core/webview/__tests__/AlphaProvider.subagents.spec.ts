@@ -225,6 +225,7 @@ const makeParent = (apiConfiguration: ProviderSettings = { apiProvider: "openai"
 	getTaskCancellationSignal: vi.fn(() => new AbortController().signal),
 	getTaskLifetimeCancellationSignal: vi.fn(() => new AbortController().signal),
 	beginAgentWait: vi.fn(() => ({ signal: new AbortController().signal, dispose: vi.fn() })),
+	hasPendingSteerMessage: vi.fn(() => false),
 	forgetWaitAgentResultClaim: vi.fn(),
 	hasRetainedWaitAgentResultClaim: vi.fn(() => false),
 	hasDurablyPersistedWaitAgentClaim: vi.fn(() => false),
@@ -258,6 +259,23 @@ const makeMailboxRecipient = (provider: AlphaProvider, history: ApiMessage[] = [
 		),
 	) as Task
 	return task
+}
+
+function holdWaitClaimAfterCommit(store: AgentControlStore, eventId: string) {
+	let announceClaim!: () => void
+	let releaseClaim!: () => void
+	const claimed = new Promise<void>((resolve) => (announceClaim = resolve))
+	const hold = new Promise<void>((resolve) => (releaseClaim = resolve))
+	const claimMailbox = store.claimMailbox.bind(store)
+	vi.spyOn(store, "claimMailbox").mockImplementation(async (recipient, options) => {
+		const claim = await claimMailbox(recipient, options)
+		if (options.channel === "wait" && claim.entries.some((entry) => entry.eventId === eventId)) {
+			announceClaim()
+			await hold
+		}
+		return claim
+	})
+	return { claimed, release: releaseClaim }
 }
 
 function ownedFinalization(entry: Promise<void> | { readonly promise: Promise<void> } | undefined) {
@@ -6390,6 +6408,178 @@ If complete, use attempt_completion.
 		expect(task.apiConversationHistory).toHaveLength(2)
 		expect(store.getUnacknowledgedMailboxEntries(task.taskId)).toEqual([])
 	})
+
+	it("does not release a committed wait claim while its result is being handed to the live tool", async () => {
+		const provider = makeProviderHarness()
+		const task = makeMailboxRecipient(provider)
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, task)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const child = await store.createAgent({
+			taskId: "wait-handoff-child",
+			parentTaskId: root.taskId,
+			nickname: "Child",
+			role: "review",
+			objective: "Publish before the wait tool receives its receipt",
+			status: "completed",
+		})
+		const eventId = "wait-handoff-result"
+		await store.appendEvent({
+			eventId,
+			sender: child.taskId,
+			recipient: root.taskId,
+			kind: "result",
+			name: "agent_completed",
+			payload: { taskId: child.taskId, status: "completed", summary: "Finished." },
+		})
+		const claimBarrier = holdWaitClaimAfterCommit(store, eventId)
+		const retained = new Set<string>()
+		task.retainWaitAgentResultClaim = vi.fn((_toolCallId, claimId) => {
+			retained.add(claimId)
+		})
+		vi.mocked(task.hasRetainedWaitAgentResultClaim).mockImplementation((claimId) => retained.has(claimId))
+		const waiting = provider.waitForAgent(task, 10_000, { toolCallId: "wait-handoff-call" })
+		try {
+			await claimBarrier.claimed
+			await task["deliverAgentMessages"]()
+		} finally {
+			claimBarrier.release()
+		}
+		const result = await waiting
+		await task["deliverAgentMessages"]()
+		expect(task.apiConversationHistory).toEqual([])
+		expect(result).toMatchObject({ source: "managed_agent_mailbox", eventCount: 1, claimId: expect.any(String) })
+		const { claimId } = result as { claimId: string }
+		expect(task.retainWaitAgentResultClaim).toHaveBeenCalledExactlyOnceWith("wait-handoff-call", claimId)
+		expect(store.getUnacknowledgedMailboxEntries(task.taskId)).toEqual([
+			expect.objectContaining({ eventId, claimChannel: "wait", claimId }),
+		])
+	})
+
+	it("lets steering win during terminal claim handoff and delivers the child result once at the next boundary", async () => {
+		const provider = makeProviderHarness()
+		const task = makeMailboxRecipient(provider)
+		const root = await Reflect.get(provider, "ensureAgentControlRoot").call(provider, task)
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const child = await store.createAgent({
+			taskId: "steer-handoff-child",
+			parentTaskId: root.taskId,
+			nickname: "Child",
+			role: "review",
+			objective: "Finish as the parent receives a steer",
+			status: "running",
+		})
+		const request = new AbortController()
+		const dispose = vi.fn()
+		task.beginAgentWait = vi.fn(() => ({ signal: request.signal, dispose }))
+		let announceSubscription!: () => void
+		const subscribed = new Promise<void>((resolve) => (announceSubscription = resolve))
+		const subscribe = store.subscribe.bind(store)
+		vi.spyOn(store, "subscribe").mockImplementation((listener) => {
+			const unsubscribe = subscribe(listener)
+			announceSubscription()
+			return unsubscribe
+		})
+		const eventId = "steer-handoff-result"
+		const claimBarrier = holdWaitClaimAfterCommit(store, eventId)
+		const waiting = provider.waitForAgent(task, 10_000)
+		try {
+			await subscribed
+			await store.updateAgentStatus(child.taskId, "completed")
+			await store.appendEvent({
+				eventId,
+				sender: child.taskId,
+				recipient: root.taskId,
+				kind: "result",
+				name: "agent_completed",
+				payload: { taskId: child.taskId, status: "completed", summary: "Finished with evidence." },
+			})
+			await claimBarrier.claimed
+			const steeringError = new Error("User steering was accepted")
+			steeringError.name = "SteerRequestInterruptError"
+			request.abort(steeringError)
+		} finally {
+			claimBarrier.release()
+		}
+		await expect(waiting).resolves.toEqual({ timedOut: false, interrupted: true, reason: "steered_input" })
+		expect(dispose).toHaveBeenCalledOnce()
+		const unacknowledged = store.getUnacknowledgedMailboxEntries(task.taskId)
+		expect(unacknowledged.map((entry) => [entry.eventId, entry.claimId])).toEqual([[eventId, undefined]])
+		await task["deliverAgentMessages"]()
+		await task["deliverAgentMessages"]()
+		expect(task.apiConversationHistory.map((message) => message.agent_message_id)).toEqual([eventId])
+		expect(store.getUnacknowledgedMailboxEntries(task.taskId)).toEqual([])
+	})
+
+	it.each(["before transcript commit", "after transcript commit"] as const)(
+		"restarts through automatic delivery %s with exactly one recorded child result",
+		async (restartPoint) => {
+			const persistence = new InMemoryAgentControlPersistence()
+			const store = new AgentControlStore(persistence)
+			await store.initialize()
+			const root = await store.ensureRoot({ taskId: "parent-1", status: "running" })
+			const child = await store.createAgent({
+				taskId: "wait-restart-child",
+				parentTaskId: root.taskId,
+				nickname: "Child",
+				role: "review",
+				objective: "Produce a result for a wait that can be interrupted by restart",
+				status: "completed",
+			})
+			const eventId = "wait-restart-result"
+			await store.appendEvent({
+				eventId,
+				sender: child.taskId,
+				recipient: root.taskId,
+				kind: "result",
+				name: "agent_completed",
+				payload: { taskId: child.taskId, status: "completed", summary: "Finished before restart." },
+			})
+			const claim = await store.claimMailbox(root.taskId, { channel: "wait", kinds: ["result"] })
+			const persistedBeforeRestart = restartPoint === "after transcript commit"
+			const notification = serializeAgentNotification(claim.entries[0])
+			const toolCallId = "wait-restart-call"
+			const history: ApiMessage[] = persistedBeforeRestart
+				? [
+						{
+							role: "assistant",
+							content: [{ type: "tool_use", id: toolCallId, name: "wait_agent", input: {} }],
+						},
+						{
+							role: "user",
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: toolCallId,
+									content: JSON.stringify({
+										source: "managed_agent_mailbox",
+										claimId: claim.claimId,
+									}),
+								},
+								{ type: "text", text: notification },
+							],
+						},
+					]
+				: []
+			await store.updateAgentStatus(root.taskId, "interrupted")
+
+			const reloaded = new AgentControlStore(persistence)
+			await reloaded.initialize()
+			const provider = makeProviderHarness()
+			Reflect.set(provider, "agentControlStore", reloaded)
+			Reflect.set(provider, "agentControlStoreReady", Promise.resolve())
+			const task = makeMailboxRecipient(provider, history)
+			await task["deliverAgentMessages"]()
+			await task["deliverAgentMessages"]()
+			expect(task.apiConversationHistory).toHaveLength(persistedBeforeRestart ? 2 : 1)
+			const delivered = task.apiConversationHistory.flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.filter((block) => block.type === "text" && block.text === notification)
+					: [],
+			)
+			expect(delivered).toHaveLength(1)
+			expect(reloaded.getUnacknowledgedMailboxEntries(task.taskId)).toEqual([])
+		},
+	)
 
 	it("defers completed result mail after a final answer while keeping active descendants blocking", async () => {
 		const provider = makeProviderHarness()

@@ -757,14 +757,11 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
-		const announcementId = "november-2026-v3.2.29-command-waits"
+		const announcementId = "november-2026-v3.2.30-completion-reliability"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
-		await provider.contextProxy.setValue(
-			"lastShownAnnouncementId",
-			"november-2026-v3.2.26-task-and-command-reliability",
-		)
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "november-2026-v3.2.29-command-waits")
 		const state = await provider.getStateToPostToWebview()
 		expect(state.shouldShowAnnouncement).toBe(true)
 		for (const key of ["telemetrySetting", "telemetryKey", "machineId"]) {
@@ -5082,7 +5079,12 @@ describe("AlphaProvider - Comprehensive Edit/Delete Edge Cases", () => {
 				expect(journal.replay).toHaveBeenCalledTimes(reuseUnchanged ? 0 : 1)
 				expect(journal.refresh).toHaveBeenCalledTimes(reuseUnchanged ? 1 : 0)
 				expect(provider.getAgentLifecycleSnapshot(taskId)).toEqual(snapshot)
-				expect(provider.postTaskSessionStateToWebview).toHaveBeenCalled()
+				expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+					expect.objectContaining({
+						type: "state",
+						state: expect.objectContaining({ taskStateSeq: expect.any(Number) }),
+					}),
+				)
 				expect(provider.postMessageToWebview).not.toHaveBeenCalledWith(
 					expect.objectContaining({ type: "agentLifecycleSnapshot" }),
 				)

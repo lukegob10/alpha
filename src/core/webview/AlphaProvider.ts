@@ -27,7 +27,7 @@ import { isWorkerWritePathAllowed, redactTaskPrivatePaths } from "../tools/taskP
 import { isDeepStrictEqual } from "util"
 import { settlementDiagnostics } from "../agent/SettlementDiagnostics"
 import { hashAgentTurnEvidenceId } from "../agent/AgentTurnEventLog"
-import { requireNonEmptyMessage, resolveWaitTimeout } from "../tools/AgentLifecycleTool"
+import { requireNonEmptyMessage, resolveWaitTimeout, type WaitForAgentOptions } from "../tools/AgentLifecycleTool"
 import { getInheritedSubagentToolNames } from "../agent/SubagentPermissions"
 import { captureToolReviewPolicy } from "../auto-approval"
 
@@ -391,6 +391,7 @@ async function flushLegacyHandoffMessagesDurably(
 
 const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
+const acquiringWaitAgentClaims = new Set<string>()
 const BLOCKING_SUBAGENT_RESULT_DELIVERY = "delegate_task"
 
 const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => {
@@ -412,11 +413,6 @@ const isTaskAwaitingContinuation = (task: Task): boolean => {
 		ask.partial !== true &&
 		(ask.ask === "completion_result" || ask.ask === "resume_completed_task" || ask.ask === "resume_task")
 	)
-}
-
-interface WaitForAgentOptions {
-	target?: string
-	untilTerminal?: boolean
 }
 
 const boundedManagedAgentText = (value: string | undefined, limit = MANAGED_AGENT_TREE_TEXT_LIMIT): string =>
@@ -656,6 +652,7 @@ export class AlphaProvider
 	private readonly taskControlMessageQueues = new Map<string, Promise<void>>()
 	private readonly immediateWebviewOperations = new Set<Promise<void>>()
 	private agentLifecycleMessageQueue: Promise<void> = Promise.resolve()
+	private compactLifecycleDelivery?: { refreshPending: boolean }
 	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 
@@ -1152,7 +1149,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.29-command-waits"
+	public readonly latestAnnouncementId = "november-2026-v3.2.30-completion-reliability"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -1634,6 +1631,7 @@ export class AlphaProvider
 	- https://github.com/microsoft/vscode-extension-samples/blob/main/webview-sample/src/extension.ts
 	*/
 	private clearWebviewResources() {
+		this.compactLifecycleDelivery = undefined
 		this.isViewLaunched = false
 		cancelTicketSearches(this)
 		this.clearWebviewFocus()
@@ -4434,7 +4432,7 @@ export class AlphaProvider
 		return projection
 	}
 
-	/** Async publishing variants await ordered delivery for runtime callers. */
+	/** Async publishing variants await canonical persistence before scheduling UI delivery. */
 	async publishAgentLifecycleEvent(
 		value: unknown,
 		options: { durable?: boolean } = {},
@@ -4623,19 +4621,45 @@ export class AlphaProvider
 		return { ...this.agentLifecycleProjector.getSnapshots(), ...this.taskSessions.getLifecycleSnapshots?.() }
 	}
 
-	private enqueueAgentLifecycleMessage(message: ExtensionMessage): Promise<void> {
-		// The canonical journal stays in the extension host. Repeatedly forwarding
-		// its accumulated items and replay receipts makes long turns quadratic.
-		const lifecycleMessage =
-			message.type === "agentLifecycleEvent" || message.type === "agentLifecycleSnapshot" ? undefined : message
+	private async enqueueAgentLifecycleMessage(message: ExtensionMessage): Promise<void> {
+		// The journal stays in the host. Compact snapshots are replaceable and
+		// their UI delivery must not hold the canonical lifecycle receipt.
+		if (message.type === "agentLifecycleEvent" || message.type === "agentLifecycleSnapshot") {
+			for (const provider of this.getHostProviders()) provider.queueCompactLifecycleState()
+			return
+		}
 		const delivery = this.agentLifecycleMessageQueue.then(async () => {
-			if (!lifecycleMessage) return this.postTaskSessionStateToWebview({ includeManagedAgentTree: false })
-			for (const provider of this.getHostProviders()) await provider.postMessageToWebview(lifecycleMessage)
+			for (const provider of this.getHostProviders()) await provider.postMessageToWebview(message)
 		})
 		this.agentLifecycleMessageQueue = delivery.catch((error) => {
 			this.log(`Failed to publish agent lifecycle message: ${String(error)}`)
 		})
 		return delivery
+	}
+
+	private queueCompactLifecycleState(): void {
+		if (this._disposed) return
+		if (this.compactLifecycleDelivery) {
+			this.compactLifecycleDelivery.refreshPending = true
+			return
+		}
+		const delivery = { refreshPending: false }
+		this.compactLifecycleDelivery = delivery
+		void this.flushCompactLifecycleState(delivery)
+	}
+
+	private async flushCompactLifecycleState(delivery: { refreshPending: boolean }): Promise<void> {
+		// As with Codex app-server's per-connection writer (5c3ff1d), a slow
+		// recipient owns its backpressure. One refresh suffices for these snapshots.
+		do {
+			delivery.refreshPending = false
+			try {
+				await this.postLocalTaskSessionStateToWebview({ includeManagedAgentTree: false })
+			} catch (error) {
+				this.log(`Failed to publish compact lifecycle state: ${String(error)}`)
+			}
+		} while (this.compactLifecycleDelivery === delivery && delivery.refreshPending && !this._disposed)
+		if (this.compactLifecycleDelivery === delivery) this.compactLifecycleDelivery = undefined
 	}
 
 	private handleAgentLifecycleSnapshotUpdated(snapshot: AgentLifecycleSnapshot): void {
@@ -11415,7 +11439,7 @@ export class AlphaProvider
 	private async reconcileWaitAgentClaims(parent: Task, rootTaskId: string): Promise<number> {
 		const claims = new Map<string, AgentMailboxEntry[]>()
 		for (const entry of this.agentControlStore.getUnacknowledgedMailboxEntries(parent.taskId, { rootTaskId })) {
-			if (entry.claimChannel !== "wait" || !entry.claimId) continue
+			if (entry.claimChannel !== "wait" || !entry.claimId || acquiringWaitAgentClaims.has(entry.claimId)) continue
 			const entries = claims.get(entry.claimId) ?? []
 			entries.push(entry)
 			claims.set(entry.claimId, entries)
@@ -11491,40 +11515,67 @@ export class AlphaProvider
 			)
 		}
 		const caller = this.agentControlStore.getAgent(parent.taskId, root.rootTaskId)
-		const takeAvailable = async (): Promise<{ events: AgentMailboxEntry[]; claimId?: string }> => {
-			const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
-				rootTaskId: root.rootTaskId,
-				channel: "wait",
-				limit: 16,
-				...(caller?.parentTaskId ? { excludeSenderTaskIds: [caller.parentTaskId] } : {}),
-				...(untilTerminal ? { kinds: ["result" as const] } : {}),
-				...(target ? { payloadTaskIds: [target.taskId] } : {}),
-			})
-			if (claim.entries.length === 0) return { events: [] }
-			return { events: claim.entries, claimId: claim.claimId }
-		}
-		const summarizeAvailable = (available: { events: AgentMailboxEntry[]; claimId?: string }) => {
-			if (!available.claimId) throw new Error("Cannot deliver unclaimed agent mailbox entries")
-			parent.stageWaitAgentNotifications(available.claimId, available.events)
-			const agents = new Map<string, { taskId: string; path?: string }>()
-			for (const entry of available.events) {
-				if (entry.senderTaskId && !agents.has(entry.senderTaskId)) {
-					agents.set(entry.senderTaskId, { taskId: entry.senderTaskId, path: entry.senderPath })
-				}
+		const lifetimeSignal = parent.getTaskLifetimeCancellationSignal()
+		const getInterruption = (signal?: AbortSignal) => {
+			const steered =
+				signal?.aborted && signal.reason instanceof Error && signal.reason.name === "SteerRequestInterruptError"
+			if (lifetimeSignal.aborted || (signal?.aborted && !steered)) {
+				return { timedOut: false, cancelled: true, events: [] }
 			}
-			return {
-				timedOut: false,
-				source: WAIT_AGENT_RESULT_SOURCE,
-				claimId: available.claimId,
-				eventCount: available.events.length,
-				updatedAgents: [...agents.values()],
+			if (steered || parent.hasPendingSteerMessage()) {
+				return { timedOut: false, interrupted: true, reason: "steered_input" }
+			}
+			return undefined
+		}
+		const takeAvailable = async (signal?: AbortSignal) => {
+			const earlyInterruption = getInterruption(signal)
+			if (earlyInterruption) return earlyInterruption
+
+			const claimId = crypto.randomUUID()
+			// The durable store can expose the claim to reconciliation before this
+			// await resumes. Keep its live owner until the transcript fence takes over.
+			acquiringWaitAgentClaims.add(claimId)
+			try {
+				const claim = await this.agentControlStore.claimMailbox(parent.taskId, {
+					rootTaskId: root.rootTaskId,
+					claimId,
+					channel: "wait",
+					limit: 16,
+					...(caller?.parentTaskId ? { excludeSenderTaskIds: [caller.parentTaskId] } : {}),
+					...(untilTerminal ? { kinds: ["result" as const] } : {}),
+					...(target ? { payloadTaskIds: [target.taskId] } : {}),
+				})
+				const interruption = getInterruption(signal)
+				if (claim.entries.length === 0) return interruption
+				if (interruption) {
+					// Codex 5c3ff1da gives steering priority over pending mailbox activity.
+					// The next authorized input boundary can deliver the released mail.
+					await this.agentControlStore.settleMailboxClaim(parent.taskId, claimId, "release", root.rootTaskId)
+					return interruption
+				}
+
+				parent.stageWaitAgentNotifications(claimId, claim.entries)
+				if (options.toolCallId) parent.retainWaitAgentResultClaim(options.toolCallId, claimId)
+				const agents = new Map<string, { taskId: string; path?: string }>()
+				for (const entry of claim.entries) {
+					if (entry.senderTaskId && !agents.has(entry.senderTaskId)) {
+						agents.set(entry.senderTaskId, { taskId: entry.senderTaskId, path: entry.senderPath })
+					}
+				}
+				return {
+					timedOut: false,
+					source: WAIT_AGENT_RESULT_SOURCE,
+					claimId,
+					eventCount: claim.entries.length,
+					updatedAgents: [...agents.values()],
+				}
+			} finally {
+				acquiringWaitAgentClaims.delete(claimId)
 			}
 		}
 
 		const immediate = await takeAvailable()
-		if (immediate.claimId) {
-			return summarizeAvailable(immediate)
-		}
+		if (immediate) return immediate
 		if (reconciledClaimCount > 0 && !untilTerminal) {
 			return { timedOut: false, events: [], alreadyDelivered: true }
 		}
@@ -11593,9 +11644,7 @@ export class AlphaProvider
 			// presence proves publication, not delivery, so claim once more before
 			// returning an empty/already-delivered fast path.
 			const finalAvailable = await takeAvailable()
-			if (finalAvailable.claimId) {
-				return summarizeAvailable(finalAvailable)
-			}
+			if (finalAvailable) return finalAvailable
 			if (target) {
 				return {
 					timedOut: false,
@@ -11613,18 +11662,14 @@ export class AlphaProvider
 		const wait = parent.beginAgentWait()
 		const signal = wait.signal
 		try {
-			if (signal.aborted) {
-				return signal.reason instanceof Error && signal.reason.name === "SteerRequestInterruptError"
-					? { timedOut: false, interrupted: true, reason: "steered_input" }
-					: { timedOut: false, cancelled: true, events: [] }
-			}
+			const interruption = getInterruption(signal)
+			if (interruption) return interruption
 
 			return await new Promise<unknown>((resolve, reject) => {
 				let settled = false
 				let reading = false
 				let readRequested = false
 				let timeoutElapsed = false
-				let cancellationRequested = false
 				let unsubscribe: () => void = () => {}
 				let timer: ReturnType<typeof setTimeout>
 				const cleanup = () => {
@@ -11646,7 +11691,6 @@ export class AlphaProvider
 				}
 				const onCancelled = () => {
 					if (settled) return
-					cancellationRequested = true
 					void finish()
 				}
 				const finish = async () => {
@@ -11659,9 +11703,9 @@ export class AlphaProvider
 					try {
 						do {
 							readRequested = false
-							const available = await takeAvailable()
-							if (available.claimId) {
-								settle(summarizeAvailable(available))
+							const outcome = (await takeAvailable(signal)) ?? getInterruption(signal)
+							if (outcome) {
+								settle(outcome)
 								return
 							}
 							// Parent input belongs to the normal model boundary, but its arrival must
@@ -11681,13 +11725,7 @@ export class AlphaProvider
 							}
 						} while (readRequested && !settled)
 
-						if (cancellationRequested) {
-							settle(
-								signal.reason instanceof Error && signal.reason.name === "SteerRequestInterruptError"
-									? { timedOut: false, interrupted: true, reason: "steered_input" }
-									: { timedOut: false, cancelled: true, events: [] },
-							)
-						} else if (timeoutElapsed) {
+						if (timeoutElapsed) {
 							settle({ timedOut: true, events: [] })
 						}
 					} catch (error) {

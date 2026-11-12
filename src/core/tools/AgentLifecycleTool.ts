@@ -28,14 +28,16 @@ type VisibleAgentLifecycleToolName = Extract<AgentLifecycleToolName, "list_agent
 
 const visibleAgentLifecycleTools = new Set<AgentLifecycleToolName>(["list_agents", "wait_agent"])
 
+export interface WaitForAgentOptions {
+	target?: string
+	untilTerminal?: boolean
+	toolCallId?: string
+}
+
 /** Minimal host surface required by the model-facing lifecycle tools. */
 export interface AgentLifecycleControlProvider {
 	listAgents(parent: Task, pathPrefix?: string): Promise<unknown>
-	waitForAgent(
-		parent: Task,
-		timeoutMs?: number,
-		options?: { target?: string; untilTerminal?: boolean },
-	): Promise<unknown>
+	waitForAgent(parent: Task, timeoutMs?: number, options?: WaitForAgentOptions): Promise<unknown>
 	sendMessageToAgent(parent: Task, target: string, message: string): Promise<unknown>
 	reportAgentProgress(child: Task, message: string): Promise<unknown>
 	followupAgentTask(parent: Task, target: string, message: string): Promise<unknown>

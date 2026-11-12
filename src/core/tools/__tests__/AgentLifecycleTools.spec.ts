@@ -34,7 +34,6 @@ function harness() {
 	const task = {
 		providerRef: { deref: () => provider },
 		recordToolError: vi.fn(),
-		retainWaitAgentResultClaim: vi.fn(),
 		say,
 		didToolFailInCurrentTurn: false,
 	} as any
@@ -223,7 +222,7 @@ describe("agent lifecycle tools", () => {
 		})
 	})
 
-	it("retains a native wait claim before returning a bounded summary without child content", async () => {
+	it("binds a native wait claim to its tool call before returning a bounded summary without child content", async () => {
 		const { provider, task, callbacks, pushToolResult } = harness()
 		callbacks.toolCallId = "call-native-wait"
 		const nativeResult = {
@@ -237,12 +236,13 @@ describe("agent lifecycle tools", () => {
 
 		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
 
-		expect(task.retainWaitAgentResultClaim).toHaveBeenCalledWith("call-native-wait", "claim-native-wait")
+		expect(provider.waitForAgent).toHaveBeenCalledWith(task, 10_000, {
+			target: undefined,
+			untilTerminal: false,
+			toolCallId: "call-native-wait",
+		})
 		expect(pushToolResult).toHaveBeenCalledWith(JSON.stringify(nativeResult))
 		expect(JSON.stringify(pushToolResult.mock.calls)).not.toContain("The review failed")
-		expect(task.retainWaitAgentResultClaim.mock.invocationCallOrder[0]).toBeLessThan(
-			pushToolResult.mock.invocationCallOrder[0],
-		)
 	})
 
 	it.each([

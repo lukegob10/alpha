@@ -1,13 +1,17 @@
+import { EventEmitter } from "events"
 import * as fs from "fs/promises"
 import * as path from "path"
 import { tmpdir } from "os"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import type { ToolApprovalDecision, ToolApprovalRequest } from "@alpha-code/types"
+import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
+import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import type { Task } from "../../task/Task"
 import { AskIgnoredError } from "../../task/AskIgnoredError"
 import { formatResponse } from "../../prompts/responses"
 import { ApplyPatchTool } from "../../tools/ApplyPatchTool"
+import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
 import { readFileTool } from "../../tools/ReadFileTool"
 import { ToolReadDeniedError } from "../../tools/BaseTool"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
@@ -341,6 +345,105 @@ describe("ToolScheduler", () => {
 		expect(task.userMessageContent).toContainEqual(
 			expect.objectContaining({ tool_use_id: "missing-session", is_error: true }),
 		)
+	})
+
+	it.each([
+		{ wake: "the quiet deadline", elapsed: 30_000, output: "" },
+		{ wake: "new command output", elapsed: 8_000, output: "batch ready" },
+	])("starts a following read after $wake in the same tool response", async ({ elapsed, output }) => {
+		let bufferedOutput = ""
+		const commandProcess = Object.assign(new EventEmitter(), {
+			executionId: "quiet-command",
+			isSettled: false,
+			hasUnretrievedOutput: () => bufferedOutput.length > 0,
+			captureUnretrievedOutput: () => ({
+				output: bufferedOutput,
+				commit: () => {
+					bufferedOutput = ""
+				},
+				release: () => {},
+			}),
+		}) as unknown as AlphaTerminalProcess
+		const command = {
+			toolCallId: "launch",
+			executionId: commandProcess.executionId,
+			status: "running" as const,
+			startedAt: Date.now(),
+		}
+		const task = Object.assign(makeTask(), { getCommandExecutionEvidence: () => [command] })
+		const terminal = { taskId: task.taskId, process: commandProcess, running: true }
+		const getTerminals = vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([terminal as never])
+		const controller = new AbortController()
+		let pending: ReturnType<ToolScheduler["run"]> | undefined
+		vi.useFakeTimers()
+		try {
+			const sessionId = commandSessionRegistry.register(task, commandProcess)
+			const poll = (id: string) => ({ id, name: "write_stdin", arguments: { session_id: sessionId } })
+			const readStarted = vi.fn<(startedAt: number) => void>()
+			const read = descriptor("fixture_read", "parallel", async ({ callbacks }) => {
+				readStarted(Date.now())
+				callbacks.pushToolResult("read result")
+			})
+			const registry = new ToolRegistry()
+			registry.register(read)
+			const events: AgentTurnEvent[] = []
+			const scheduler = new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				executionMode: "selective-parallel",
+				validateCall: () => {},
+				signal: controller.signal,
+				onEvent: (event) => {
+					events.push(event)
+				},
+			})
+
+			pending = scheduler.run(response(poll("first-poll")))
+			await vi.advanceTimersByTimeAsync(5_000)
+			expect(resultIds(task)).toEqual(["first-poll"])
+			expect(await pending).toMatchObject({
+				status: "completed",
+				results: [{ callId: "first-poll", status: "success", executionStatus: "running" }],
+			})
+
+			const startedAt = Date.now()
+			pending = scheduler.run(response(poll("quiet-poll"), { id: "following-read", name: read.name }))
+			await vi.advanceTimersByTimeAsync(output ? elapsed : elapsed - 1)
+			expect(commandSessionRegistry.getWaitStartedAt(task)).toBe(startedAt)
+			expect(readStarted).not.toHaveBeenCalled()
+			expect(resultIds(task)).toEqual(["first-poll"])
+
+			if (output) {
+				bufferedOutput = output
+				commandProcess.emit("output_available")
+				await vi.advanceTimersByTimeAsync(0)
+			} else {
+				await vi.advanceTimersByTimeAsync(1)
+			}
+
+			expect(readStarted).toHaveBeenCalledExactlyOnceWith(startedAt + elapsed)
+			expect(await pending).toMatchObject({
+				status: "completed",
+				results: [
+					{ callId: "quiet-poll", status: "success", executionStatus: "running", commandResult: { output } },
+					{ callId: "following-read", status: "success", content: "read result" },
+				],
+			})
+			const expectedCallIds = ["first-poll", "quiet-poll", "following-read"]
+			expect(resultIds(task)).toEqual(expectedCallIds)
+			expect(events.filter((event) => event.type === "tool_result").map((event) => event.callId)).toEqual(
+				expectedCallIds,
+			)
+			expect(commandSessionRegistry.getWaitStartedAt(task)).toBeUndefined()
+			expect(commandProcess.listenerCount("output_available")).toBe(0)
+		} finally {
+			controller.abort()
+			await pending?.catch(() => {})
+			commandSessionRegistry.releaseForTask(task)
+			getTerminals.mockRestore()
+			vi.useRealTimers()
+		}
 	})
 
 	it("retains earlier truthful receipts when a later read preflight rejects", async () => {

@@ -121,6 +121,7 @@ async function createFixture(
 		say: vi.fn(async () => undefined),
 		admitCommandExecution: vi.fn(async () => undefined),
 		completeCommandExecution: vi.fn(),
+		markCommandExecutionExitObserved: vi.fn(),
 		markCommandExecutionBackgrounded: vi.fn(),
 		failCommandExecution: vi.fn(),
 		supersedePendingAsk: vi.fn(),
@@ -542,6 +543,11 @@ describe("primary command timeout mutation receipts", () => {
 		await vi.advanceTimersByTimeAsync(1_100)
 		await execution
 		fixture.reportShellExit()
+		expect(fixture.task.markCommandExecutionExitObserved).toHaveBeenCalledExactlyOnceWith(
+			"closed-output-call",
+			expect.stringMatching(/^closed-output:/),
+		)
+		expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
 		fixture.process.isSettled = true
 		fixture.process.emit("error", new Error("terminal output reader closed"))
 		await vi.advanceTimersByTimeAsync(0)

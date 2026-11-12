@@ -5,6 +5,7 @@ import * as vscode from "vscode"
 import { toolNames, type AlphaCodeSettings, type LiveTaskMetadata, type ToolName } from "@alpha-code/types"
 
 import { guardTaskApi, WorkflowRequestBudget } from "../scenarios/requestBudget"
+import { LiveResponseProbe } from "../scenarios/liveResponseProbe"
 import { inspectToolTransactions } from "../scenarios/transactionAssertions"
 import { assertOwnedTestRoot } from "../testProfile"
 import { record, type LiveTask } from "./live-file-tool-support"
@@ -96,6 +97,20 @@ suite("Live GPT command wait and steering recovery", function () {
 			requestDelaySeconds: 0,
 		})
 		const budget = new WorkflowRequestBudget(8, modelId)
+		const requestTimings = new Map<number, { startedAt: number; firstOutputMs?: number }>()
+		budget.onTaskDispatch = () => {
+			requestTimings.set(budget.used, { startedAt: performance.now() })
+		}
+		budget.responseProbe = new LiveResponseProbe((part, request) => {
+			const timing = requestTimings.get(request)
+			if (!timing || timing.firstOutputMs !== undefined) return
+			if (
+				part instanceof vscode.LanguageModelToolCallPart ||
+				(part instanceof vscode.LanguageModelTextPart && part.value.length > 0)
+			) {
+				timing.firstOutputMs = performance.now() - timing.startedAt
+			}
+		})
 		const acknowledge = createCompletionReviewAcknowledger()
 		let task: SteeringTask | undefined
 		let releaseGuard: (() => void) | undefined
@@ -227,6 +242,10 @@ suite("Live GPT command wait and steering recovery", function () {
 					modelId,
 					reasoningEffort: process.env.ALPHA_E2E_ACTUAL_REASONING_EFFORT,
 					requests: budget.used,
+					firstOutputMsByRequest: [...requestTimings].map(([request, timing]) => ({
+						request,
+						ms: timing.firstOutputMs ?? null,
+					})),
 					quietWaitMs,
 					commandPolls: 2,
 					steeringDeliveries: 1,

@@ -142,6 +142,8 @@ function commandFixture(
 		say: vi.fn(async () => undefined),
 		recordToolError: vi.fn(),
 		beginCommandExecution: Task.prototype.beginCommandExecution,
+		recordCommandCompletionChange: Task.prototype["recordCommandCompletionChange"],
+		markCommandExecutionExitObserved: Task.prototype.markCommandExecutionExitObserved,
 		admitCommandExecution: async (callId: string, executionId: string, command: string, commandCwd: string) => {
 			Object.assign(evidence.get(callId)!, { executionId, command, cwd: commandCwd })
 		},

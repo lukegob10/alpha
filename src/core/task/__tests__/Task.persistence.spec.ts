@@ -1634,6 +1634,194 @@ describe("Task persistence", () => {
 			},
 		)
 
+		function holdCompletionEvidence(task: Task) {
+			let opened!: () => void
+			let settle!: () => void
+			let fail!: (error: Error) => void
+			const waitOpened = new Promise<void>((resolve) => {
+				opened = resolve
+			})
+			const publication = new Promise<void>((resolve, reject) => {
+				settle = resolve
+				fail = reject
+			})
+			const begin = task.beginAgentWait.bind(task)
+			vi.spyOn(task, "beginAgentWait").mockImplementation(() => {
+				const wait = begin()
+				opened()
+				return wait
+			})
+			const decision = vi.spyOn(task, "getCompletionGateDecision").mockImplementationOnce(async () => {
+				task["pendingCommandVerification"] = publication
+				return {
+					allowed: false,
+					classification: "waiting",
+					reasonCode: "evidence_pending",
+					modelCanResolveRejection: false,
+				}
+			})
+			return { waitOpened, settle, fail, decision }
+		}
+
+		it("restores exactly one staged completion tool result after the evidence recheck", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			const toolCallId = "completion-call"
+			task.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [
+						{ type: "tool_use", id: toolCallId, name: "attempt_completion", input: { result: "Done" } },
+					],
+				},
+			]
+			task.assistantMessageSavedToHistory = true
+			const receipt = { type: "tool_result" as const, tool_use_id: toolCallId, content: "Completion receipt" }
+			expect(task.pushToolResultToUserContent(receipt)).toBe(true)
+			const { waitOpened, settle, decision } = holdCompletionEvidence(task)
+			decision.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: true })
+			const completing = task.finalizeTaskCompletion(toolCallId)
+			const results = () =>
+				task.apiConversationHistory
+					.flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+					.filter((block) => block.type === "tool_result")
+
+			try {
+				await waitOpened
+				expect(results()).toEqual([])
+				expect(task.isCompleted()).toBe(false)
+				await expect(task.finalizeTaskCompletion()).resolves.toBe(false)
+				settle()
+				await expect(completing).resolves.toBe(true)
+
+				expect(decision).toHaveBeenCalledTimes(2)
+				expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+				expect(task.isCompleted()).toBe(true)
+				expect(results()).toEqual([receipt])
+				expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
+					role: "user",
+					content: [receipt],
+				})
+			} finally {
+				settle()
+				await completing
+			}
+		})
+
+		it.each(["timeout", "Stop", "publication failure"] as const)(
+			"releases a pending completion evidence wait on %s",
+			async (interruption) => {
+				vi.useFakeTimers()
+				const task = createTask()
+				mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				const { waitOpened, settle, fail, decision } = holdCompletionEvidence(task)
+				const suspend = vi.spyOn(task, "suspendAfterCurrentTurn")
+				const completing = task.finalizeTaskCompletion()
+				try {
+					await waitOpened
+					if (interruption === "timeout") await vi.advanceTimersByTimeAsync(30_000)
+					else if (interruption === "Stop") task["taskCancellationController"].abort()
+					else fail(new Error("Fixture evidence publication failed"))
+
+					await expect(completing).resolves.toBe(false)
+					expect(decision).toHaveBeenCalledOnce()
+					expect(task.isCompleted()).toBe(false)
+					expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+					expect(suspend).toHaveBeenCalledTimes(interruption === "Stop" ? 0 : 1)
+				} finally {
+					settle()
+					await completing
+					vi.useRealTimers()
+				}
+			},
+		)
+
+		it("cancels a recheck queued for the workspace lock when the task stops", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			const { waitOpened, settle, decision } = holdCompletionEvidence(task)
+			let holdLock!: () => void
+			let releaseLock!: () => void
+			let recheckQueued!: () => void
+			const held = new Promise<void>((resolve) => {
+				holdLock = resolve
+			})
+			const release = new Promise<void>((resolve) => {
+				releaseLock = resolve
+			})
+			const queued = new Promise<void>((resolve) => {
+				recheckQueued = resolve
+			})
+			const run = mockProvider.runWorkspaceMutation.bind(mockProvider)
+			let attempts = 0
+			vi.spyOn(mockProvider, "runWorkspaceMutation").mockImplementation((owner, label, operation, options) => {
+				const result = run(owner, label, operation, options)
+				if (label === "finalize task completion" && ++attempts === 2) recheckQueued()
+				return result
+			})
+			const suspend = vi.spyOn(task, "suspendAfterCurrentTurn")
+			const completing = task.finalizeTaskCompletion()
+			let holding: Promise<void> | undefined
+			try {
+				await waitOpened
+				holding = run(task, "hold workspace", async () => {
+					holdLock()
+					await release
+				})
+				await held
+				settle()
+				await queued
+				task["taskCancellationController"].abort()
+				await expect(completing).resolves.toBe(false)
+
+				expect(decision).toHaveBeenCalledOnce()
+				expect(suspend).not.toHaveBeenCalled()
+				expect(task.isCompleted()).toBe(false)
+			} finally {
+				settle()
+				releaseLock()
+				await holding
+				await completing
+			}
+		})
+
+		it.each(["verification_failed", "evidence_pending"] as const)(
+			"keeps completion recoverable when the single recheck returns %s",
+			async (reasonCode) => {
+				const task = createTask()
+				mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+				const { waitOpened, settle, decision } = holdCompletionEvidence(task)
+				decision.mockResolvedValueOnce({
+					allowed: false,
+					classification: reasonCode === "evidence_pending" ? "waiting" : "blocked",
+					reasonCode,
+					message: "Fresh verification still prevents completion.",
+					modelCanResolveRejection: false,
+				})
+				const suspend = vi.spyOn(task, "suspendAfterCurrentTurn")
+				const completing = task.finalizeTaskCompletion()
+
+				try {
+					await waitOpened
+					settle()
+					await expect(completing).resolves.toBe(false)
+					expect(decision).toHaveBeenCalledTimes(2)
+					expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledTimes(2)
+					expect(suspend).toHaveBeenCalledExactlyOnceWith(
+						"Task remains incomplete and unverified. Fresh verification still prevents completion.",
+					)
+					expect(task.isCompleted()).toBe(false)
+				} finally {
+					settle()
+					await completing
+				}
+			},
+		)
+
 		it("rejects a save that starts and settles during the final verification gate", async () => {
 			const task = createTask()
 			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)

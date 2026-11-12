@@ -315,6 +315,8 @@ async function fixture(
 		alphaIgnoreController: ignoreController,
 		alphaProtectedController: new AlphaProtectedController(root),
 		beginCommandExecution: Task.prototype.beginCommandExecution,
+		recordCommandCompletionChange: Task.prototype["recordCommandCompletionChange"],
+		markCommandExecutionExitObserved: Task.prototype.markCommandExecutionExitObserved,
 		admitCommandExecution: vi.fn(Task.prototype.admitCommandExecution),
 		completeCommandExecution: vi.fn<Task["completeCommandExecution"]>((...args) => {
 			try {

@@ -1,13 +1,23 @@
+import { EventEmitter } from "node:events"
 import { Task, type CommandExecutionEvidence } from "../Task"
 import type { ParentCompletionDecision } from "../../agent/ParentVerification"
 import { AgentControlStore, InMemoryAgentControlPersistence } from "../../agent/AgentControlStore"
 import { AlphaProvider } from "../../webview/AlphaProvider"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
-import type { AlphaTerminal } from "../../../integrations/terminal/types"
+import type { AlphaTerminal, AlphaTerminalProcessEvents } from "../../../integrations/terminal/types"
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((settled) => (resolve = settled))
+	return { promise, resolve }
+}
 
 function trackLiveBackgroundProcess(task: Task) {
 	const evidence = task.getCommandExecutionEvidence()[0]!
-	const process = { executionId: evidence.executionId, isSettled: false }
+	const process = Object.assign(new EventEmitter<AlphaTerminalProcessEvents>(), {
+		executionId: evidence.executionId,
+		isSettled: false,
+	})
 	const terminal = { taskId: task.taskId, process, running: true }
 	const getTerminals = vi
 		.spyOn(TerminalRegistry, "getTerminals")
@@ -34,7 +44,7 @@ function createFixture(request: string, command: string, overrides: Partial<Comm
 					blockingObligations: [],
 				}) satisfies ParentCompletionDecision,
 		),
-		recordParentVerificationEvidence: vi.fn(async () => undefined),
+		recordParentVerificationEvidence: vi.fn(async (): Promise<void> => undefined),
 		markCompletionWait: vi.fn(),
 	}
 	const task = Object.assign(Object.create(Task.prototype), {
@@ -275,11 +285,14 @@ describe("completion command observation", () => {
 		}
 	})
 
-	it("does not complete finite verification early while its process remains healthy", async () => {
+	it("does not poll finite verification and wakes only after output and evidence settle", async () => {
 		const fixture = createFixture("Implement the website and verify it.", "pnpm exec vitest run", {
 			verificationChangeSetIds: ["changed-files"],
 		})
-		trackLiveBackgroundProcess(fixture.task)
+		const { process, terminal } = trackLiveBackgroundProcess(fixture.task)
+		const persistence = deferred()
+		fixture.provider.recordParentVerificationEvidence.mockReturnValueOnce(persistence.promise)
+		const checkCompletion = vi.spyOn(fixture.task, "getCompletionGateDecision")
 		let settled = false
 		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
 			settled = true
@@ -288,15 +301,142 @@ describe("completion command observation", () => {
 		try {
 			await vi.advanceTimersByTimeAsync(60_000)
 			expect(settled).toBe(false)
+			expect(checkCompletion).toHaveBeenCalledTimes(1)
 			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
 			expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
+			fixture.task.markCommandExecutionExitObserved("command-call", "retired-execution")
+			await vi.advanceTimersByTimeAsync(0)
+			expect(checkCompletion).toHaveBeenCalledTimes(1)
+			terminal.running = false
+			fixture.task.markCommandExecutionExitObserved("command-call", "physical-command")
+			process.emit("shell_execution_complete", { exitCode: 0 })
+			await vi.advanceTimersByTimeAsync(10_000)
+			expect(checkCompletion).toHaveBeenCalledTimes(2)
+			expect(settled).toBe(false)
+			expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
+			expect(process.eventNames()).toEqual([])
+			process.isSettled = true
+			process.emit("completed", "verification output")
 			fixture.task.completeCommandExecution("command-call", { exitCode: 0 }, "physical-command")
-			await vi.advanceTimersByTimeAsync(250)
+			await vi.advanceTimersByTimeAsync(0)
+			expect(fixture.provider.recordParentVerificationEvidence).toHaveBeenCalledOnce()
+			expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
+			expect(settled).toBe(false)
+			persistence.resolve()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toBe(true)
 			expect(await waiting).toMatchObject({
 				allowed: true,
 				classification: "ready",
 			})
 			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "succeeded", exitCode: 0 })
+			expect(fixture.provider.getParentCompletionDecision).toHaveBeenCalledOnce()
+		} finally {
+			persistence.resolve()
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("retains the unowned-command deadline while a different command's evidence publishes", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		const publication = deferred()
+		fixture.provider.recordParentVerificationEvidence.mockReturnValueOnce(publication.promise)
+		fixture.task.beginCommandExecution("another-call", "another-execution", "node --version")
+		fixture.task.completeCommandExecution("another-call", { exitCode: 0 }, "another-execution")
+		let result: Awaited<ReturnType<Task["waitForCompletionGateDecision"]>> | undefined
+		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
+			result = decision
+		})
+		try {
+			await vi.advanceTimersByTimeAsync(29_000)
+			expect(result).toBeUndefined()
+			publication.resolve()
+			await vi.advanceTimersByTimeAsync(2_000)
+			expect(result).toMatchObject({ classification: "blocked", reasonCode: "runtime_timeout" })
+		} finally {
+			publication.resolve()
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("handles a command finishing while the first wait status is being published", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		const { process, terminal } = trackLiveBackgroundProcess(fixture.task)
+		const publishing = deferred()
+		vi.mocked(fixture.task.say).mockImplementationOnce(async () => {
+			await publishing.promise
+			return undefined
+		})
+		const waiting = fixture.task.waitForCompletionGateDecision()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(fixture.provider.markCompletionWait).toHaveBeenCalledWith(fixture.task.taskId, "command_running")
+			expect(process.eventNames()).toEqual([])
+			terminal.running = false
+			process.isSettled = true
+			fixture.task.markCommandExecutionExitObserved("command-call", "physical-command")
+			fixture.task.completeCommandExecution("command-call", { exitCode: 0 }, "physical-command")
+			await vi.advanceTimersByTimeAsync(0)
+			publishing.resolve()
+			await expect(waiting).resolves.toMatchObject({ allowed: true, classification: "ready" })
+			expect(fixture.provider.getParentCompletionDecision).toHaveBeenCalledOnce()
+		} finally {
+			publishing.resolve()
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("bounds stalled post-exit settlement without polling or changing the command outcome", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		const { process, terminal } = trackLiveBackgroundProcess(fixture.task)
+		const checkCompletion = vi.spyOn(fixture.task, "getCompletionGateDecision")
+		const waiting = fixture.task.waitForCompletionGateDecision()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			terminal.running = false
+			fixture.task.markCommandExecutionExitObserved("command-call", "physical-command")
+			process.emit("shell_execution_complete", { exitCode: 0 })
+			await vi.advanceTimersByTimeAsync(30_000)
+			await expect(waiting).resolves.toMatchObject({ classification: "blocked", reasonCode: "runtime_timeout" })
+			expect(checkCompletion).toHaveBeenCalledTimes(2)
+			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
+			expect(process.eventNames()).toEqual([])
+		} finally {
+			fixture.cancellation.abort(new Error("Probe cleanup"))
+			await waiting
+		}
+	})
+
+	it("fails closed if command evidence cannot be saved after an owned command ends", async () => {
+		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
+			verificationChangeSetIds: ["changed-files"],
+		})
+		const { process, terminal } = trackLiveBackgroundProcess(fixture.task)
+		vi.spyOn(console, "error").mockImplementation(() => undefined)
+		fixture.provider.recordParentVerificationEvidence.mockRejectedValueOnce(
+			new Error("Verification store unavailable"),
+		)
+		const waiting = fixture.task.waitForCompletionGateDecision()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			terminal.running = false
+			fixture.task.markCommandExecutionExitObserved("command-call", "physical-command")
+			fixture.task.completeCommandExecution("command-call", { exitCode: 0 }, "physical-command")
+			await expect(waiting).resolves.toMatchObject({
+				classification: "blocked",
+				reasonCode: "persistence_unavailable",
+			})
+			expect(fixture.provider.getParentCompletionDecision).not.toHaveBeenCalled()
+			expect(process.eventNames()).toEqual([])
 		} finally {
 			fixture.cancellation.abort(new Error("Probe cleanup"))
 			await waiting
@@ -325,6 +465,8 @@ describe("completion command observation", () => {
 				else if (loss === "foreign-task") terminal.taskId = "another-task"
 				else if (loss === "reused-execution") process.executionId = "another-execution"
 				else terminal.running = false
+				// The terminal emits an outcome when its ownership of a live execution ends.
+				process.emit(loss === "settled" ? "completed" : "terminal_closed")
 
 				await vi.advanceTimersByTimeAsync(29_000)
 				expect(result).toBeUndefined()
@@ -350,7 +492,7 @@ describe("completion command observation", () => {
 		const fixture = createFixture("Implement and verify the application.", "node checks.cjs", {
 			verificationChangeSetIds: ["changed-files"],
 		})
-		trackLiveBackgroundProcess(fixture.task)
+		const { process } = trackLiveBackgroundProcess(fixture.task)
 		let settled = false
 		const waiting = fixture.task.waitForCompletionGateDecision().then((decision) => {
 			settled = true
@@ -366,6 +508,7 @@ describe("completion command observation", () => {
 				reasonCode: "interrupted",
 			})
 			expect(fixture.task.getCommandExecutionEvidence()[0]).toMatchObject({ status: "running" })
+			expect(process.eventNames()).toEqual([])
 		} finally {
 			fixture.cancellation.abort(new Error("Probe cleanup"))
 			await waiting

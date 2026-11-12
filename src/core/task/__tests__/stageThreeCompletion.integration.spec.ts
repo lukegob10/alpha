@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events"
 import * as fs from "fs/promises"
 import * as os from "os"
 import * as path from "path"
@@ -6,7 +7,7 @@ import * as vscode from "vscode"
 import type { Anthropic } from "@anthropic-ai/sdk"
 import { AlphaCodeEventName, agentControlStateSchema, type TaskWorkPlan } from "@alpha-code/types"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
-import type { AlphaTerminal } from "../../../integrations/terminal/types"
+import type { AlphaTerminal, AlphaTerminalProcessEvents } from "../../../integrations/terminal/types"
 
 import { AgentControlStore, FileAgentControlPersistence } from "../../agent/AgentControlStore"
 import { createAgentResponse } from "../../agent/AgentResponse"
@@ -37,6 +38,14 @@ function deferred() {
 		resolve = settle
 	})
 	return { promise, resolve }
+}
+
+function mockOwnedCommandProcess(task: Task, executionId: string) {
+	const process = Object.assign(new EventEmitter<AlphaTerminalProcessEvents>(), { executionId, isSettled: false })
+	vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([
+		{ taskId: task.taskId, running: true, process } as unknown as AlphaTerminal,
+	])
+	return process
 }
 
 async function createHarness() {
@@ -869,13 +878,7 @@ describe("Stage Three durable completion integration", () => {
 	it("waits for a healthy command beyond the observation window and completes after its receipt settles", async () => {
 		const harness = await setup(true)
 		harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
-		vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([
-			{
-				taskId: harness.task.taskId,
-				running: true,
-				process: { executionId: "physical-running-check", isSettled: false },
-			} as unknown as AlphaTerminal,
-		])
+		const process = mockOwnedCommandProcess(harness.task, "physical-running-check")
 		const { running } = await observePendingCandidate(harness)
 		try {
 			await vi.advanceTimersByTimeAsync(60_000)
@@ -884,6 +887,7 @@ describe("Stage Three durable completion integration", () => {
 			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
 			expect(harness.task.consecutiveMistakeCount).toBe(0)
 			expect(harness.task.hasActiveCommandExecutions()).toBe(true)
+			expect(process.listenerCount("completed")).toBe(1)
 		} finally {
 			harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
 			await vi.advanceTimersByTimeAsync(1_000)
@@ -891,6 +895,7 @@ describe("Stage Three durable completion integration", () => {
 		}
 		expect(harness.completed).toHaveBeenCalledOnce()
 		expect(harness.requests).toHaveLength(1)
+		expect(process.eventNames()).toEqual([])
 	})
 
 	it("bounds an orphan mutation receipt wait during text completion without a model retry", async () => {
@@ -969,14 +974,18 @@ describe("Stage Three durable completion integration", () => {
 		const onPersisted = vi.fn(async () => undefined)
 		const guidance = "Check the new requirement before finishing."
 		harness.task.beginCommandExecution("running-check", "physical-running-check", "pnpm exec vitest run")
+		const process = mockOwnedCommandProcess(harness.task, "physical-running-check")
 		harness.installCandidates((step) => {
-			if (step === 2)
+			if (step === 2) {
+				expect(process.eventNames()).toEqual([])
 				harness.task.completeCommandExecution("running-check", { exitCode: 0 }, "physical-running-check")
+			}
 		})
 		const { running } = await observePendingCandidate(harness)
 		try {
 			await vi.advanceTimersByTimeAsync(1_000)
 			expect(harness.requests).toHaveLength(1)
+			expect(process.listenerCount("completed")).toBe(1)
 			await harness.task.steerUserMessage(guidance, [], onPersisted)
 			await vi.advanceTimersByTimeAsync(1_000)
 			await running
@@ -1039,6 +1048,157 @@ describe("Stage Three durable completion integration", () => {
 			release.resolve()
 			harness.cancel()
 			await heldMutation
+			await running
+		}
+	})
+
+	function timeOutBackgroundCommandDuringFinalRead(
+		harness: Awaited<ReturnType<typeof createHarness>>,
+		waitForPublication = false,
+	) {
+		const callId = "owned-background"
+		const executionId = "owned-background-execution"
+		harness.task.beginCommandExecution(callId, executionId, "node application.cjs")
+		const active = vi.spyOn(harness.task, "getActiveBackgroundCommandExecutionIds").mockReturnValue([executionId])
+		let expired = false
+		harness.provider.getParentCompletionDecision.mockImplementation(async () => {
+			const decision = harness.store.getParentCompletionDecision(TASK_ID, TASK_ID)
+			if (!expired && harness.provider.prepareTaskCompletionLifecycle.mock.calls.length > 0) {
+				expired = true
+				harness.task.failCommandExecution(callId, "timed_out", executionId)
+				active.mockReturnValue([])
+				if (waitForPublication) await harness.task["pendingCommandVerification"]
+			}
+			return decision
+		})
+		return { executionId, didTimeOut: () => expired }
+	}
+
+	it.each(["pending", "settled"] as const)(
+		"finishes once when a background command times out during the final read with %s evidence",
+		async (state) => {
+			const harness = await setup()
+			const { executionId, didTimeOut } = timeOutBackgroundCommandDuringFinalRead(harness, state === "settled")
+			const publish = vi.fn(async () => undefined)
+			if (state === "pending") {
+				harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() =>
+					harness.mutationGate.run(TASK_ID, "publish timed-out command evidence", publish),
+				)
+			}
+
+			await harness.run()
+
+			expect(didTimeOut()).toBe(true)
+			if (state === "pending") expect(publish).toHaveBeenCalledOnce()
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
+			expect(harness.completed).toHaveBeenCalledOnce()
+			expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("completed")
+			expect(harness.task.getCommandExecutionEvidence()).toEqual([
+				expect.objectContaining({ executionId, status: "timed_out" }),
+			])
+		},
+	)
+
+	it("completes after a background shell exit during the final read while output and receipts still settle", async () => {
+		const harness = await setup()
+		const callId = "owned-background"
+		const executionId = "owned-background-execution"
+		harness.task.beginCommandExecution(callId, executionId, "node application.cjs")
+		const active = vi.spyOn(harness.task, "getActiveBackgroundCommandExecutionIds").mockReturnValue([executionId])
+		const publish = vi.fn(async () => undefined)
+		harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() =>
+			harness.mutationGate.run(TASK_ID, "publish completed command evidence", publish),
+		)
+		const recheckStarted = deferred()
+		const releaseOutput = deferred()
+		let settlement: Promise<void> | undefined
+		const beginWait = harness.task.beginAgentWait.bind(harness.task)
+		vi.spyOn(harness.task, "beginAgentWait").mockImplementation(() => {
+			const wait = beginWait()
+			if (settlement) recheckStarted.resolve()
+			return wait
+		})
+		harness.provider.getParentCompletionDecision.mockImplementation(async () => {
+			const decision = harness.store.getParentCompletionDecision(TASK_ID, TASK_ID)
+			if (!settlement && harness.provider.prepareTaskCompletionLifecycle.mock.calls.length > 0) {
+				active.mockReturnValue([])
+				harness.task.markCommandExecutionExitObserved(callId, executionId)
+				// The physical exit has released the terminal. Its output and mutation
+				// settlement cannot finish until finalization releases the workspace lock.
+				settlement = harness.mutationGate.run(TASK_ID, "settle command mutation", async () => {
+					await releaseOutput.promise
+					harness.task.completeCommandExecution(callId, { exitCode: 0 }, executionId)
+				})
+			}
+			return decision
+		})
+
+		const running = harness.run()
+		try {
+			await Promise.race([
+				recheckStarted.promise,
+				running.then(() => {
+					throw new Error("Task ended before joining the observed command's settlement")
+				}),
+			])
+			harness.assertNotCompleted()
+			expect(publish).not.toHaveBeenCalled()
+			releaseOutput.resolve()
+			await settlement
+			await running
+
+			expect(publish).toHaveBeenCalledOnce()
+			expect(harness.requests).toHaveLength(1)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.presentCompletionResult).toHaveBeenCalledOnce()
+			expect(harness.completed).toHaveBeenCalledOnce()
+			expect(harness.task.getCommandExecutionEvidence()).toEqual([
+				expect.objectContaining({ executionId, status: "succeeded", exitCode: 0 }),
+			])
+		} finally {
+			releaseOutput.resolve()
+			harness.cancel()
+			await settlement
+			await running
+		}
+	})
+
+	it("lets real steering interrupt the final evidence recheck and delivers the guidance once", async () => {
+		const harness = await setup()
+		const { didTimeOut } = timeOutBackgroundCommandDuringFinalRead(harness)
+		const publication = deferred()
+		harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() => publication.promise)
+		const waiting = deferred()
+		const begin = harness.task.beginAgentWait.bind(harness.task)
+		vi.spyOn(harness.task, "beginAgentWait").mockImplementation(() => {
+			const wait = begin()
+			if (didTimeOut()) waiting.resolve()
+			return wait
+		})
+		const guidance = "Address the new requirement before finishing."
+		const onPersisted = vi.fn(async () => undefined)
+		const running = harness.run()
+		try {
+			await Promise.race([
+				waiting.promise,
+				running.then(() => {
+					throw new Error("Task ended before waiting for the completion evidence")
+				}),
+			])
+			await harness.task.steerUserMessage(guidance, [], onPersisted)
+			publication.resolve()
+			await running
+
+			expect(harness.requests).toHaveLength(2)
+			expect(JSON.stringify(harness.requests[1]).split(guidance)).toHaveLength(2)
+			expect(onPersisted).toHaveBeenCalledOnce()
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.completed).toHaveBeenCalledOnce()
+		} finally {
+			publication.resolve()
+			harness.cancel()
 			await running
 		}
 	})

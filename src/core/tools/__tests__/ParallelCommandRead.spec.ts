@@ -87,6 +87,8 @@ describe("command-read classification and session execution boundary", () => {
 			pendingCommandVerification: Promise.resolve(),
 			completionRuntimeRevision: 0,
 			beginCommandExecution: Task.prototype.beginCommandExecution,
+			recordCommandCompletionChange: Task.prototype["recordCommandCompletionChange"],
+			markCommandExecutionExitObserved: Task.prototype.markCommandExecutionExitObserved,
 			admitCommandExecution: Task.prototype.admitCommandExecution,
 			completeCommandExecution: Task.prototype.completeCommandExecution,
 			failCommandExecution: Task.prototype.failCommandExecution,

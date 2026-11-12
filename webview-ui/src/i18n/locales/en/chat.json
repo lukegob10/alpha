@@ -307,6 +307,10 @@
 		"streamingFailed": "API Streaming Failed",
 		"rateLimitWait": "Configured request pacing",
 		"completionWait": "Waiting before the task can finish",
+		"completionWaitCommand": "Waiting for command to finish",
+		"completionWaitEvidence": "Waiting for verification results",
+		"completionWaitReceipt": "Waiting for changes to be recorded",
+		"completionWaitSubagents": "Waiting for subagents to finish",
 		"errorTitle": "Provider Error {{code}}",
 		"errorMessage": {
 			"400": "The provider couldn't process the request as made. Stop the task and try a different approach.",
@@ -562,7 +566,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha shows elapsed time while waiting for a command and checks quiet commands less often. If request preparation fails, Continue carries forward the steering message you already sent."
+			"description": "Alpha shows what it is waiting for and rechecks completion when command results are saved. Subagent results arrive once, and the sidebar keeps updating when an editor panel is slow."
 		}
 	},
 	"crossTasks": {

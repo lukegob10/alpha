@@ -53,6 +53,7 @@ import { isDeepStrictEqual } from "node:util"
 import { canContinueFromCommittedHistoryTools } from "../agent/CommittedHistoryRecoveryPolicy"
 
 import { AskIgnoredError } from "./AskIgnoredError"
+import { WorkspaceMutationCancelledError } from "./WorkspaceMutationGate"
 import { AgentMessageInbox, type AgentMessage } from "../task-persistence/AgentMessageInbox"
 import { getPersistedAgentNotificationIds, serializeAgentNotification } from "../task-persistence/agentNotifications"
 import {
@@ -512,6 +513,14 @@ export interface CompletionGateDecision {
 		| CommandVerificationDiagnostic["code"]
 	/** Internal semantic identity; never included in metrics or telemetry. */
 	blockerKey?: string
+}
+
+interface CompletionEvidenceRecheck {
+	deadline: number
+	goalSteeringGeneration: number
+	goalRequestGeneration: number | undefined
+	stagedToolResult?: Anthropic.ToolResultBlockParam
+	settlingCommands?: readonly CommandExecutionEvidence[]
 }
 
 export interface CompletionStageMetrics {
@@ -1126,6 +1135,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private pendingCommandVerification: Promise<void> = Promise.resolve()
 	private pendingCommandVerificationCount = 0
 	private completionRuntimeRevision = 0
+	private observedCommandExits?: WeakSet<CommandExecutionEvidence>
+	private wakeCommandCompletionWait?: () => void
+	private completionEvidenceRecheck?: CompletionEvidenceRecheck
 	private completionRecovery?: CompletionRecovery
 	private completionRecoveryActive = false
 	private completionStageMetrics?: CompletionStageMetrics
@@ -9385,12 +9397,55 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * converge here so lifecycle state, final usage, and telemetry cannot drift.
 	 */
 	public async finalizeTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
-		const provider = this.providerRef?.deref()
-		return provider?.runWorkspaceMutation
-			? provider.runWorkspaceMutation(this, "finalize task completion", () =>
-					this.commitTaskCompletion(stagedToolCallId),
+		const commit = (recheck?: CompletionEvidenceRecheck, signal?: AbortSignal) => {
+			const provider = this.providerRef?.deref()
+			const operation = () => this.commitTaskCompletion(stagedToolCallId, recheck, signal)
+			return provider?.runWorkspaceMutation
+				? provider.runWorkspaceMutation(this, "finalize task completion", operation)
+				: operation()
+		}
+		const result = await commit()
+		if (typeof result === "boolean") return result
+
+		// The mutation gate has released. Evidence publishers may need that same gate.
+		const wait = this.beginAgentWait()
+		try {
+			try {
+				const settlingCommands = result.settlingCommands
+				if (settlingCommands?.length) {
+					const settled = () =>
+						!settlingCommands.some(
+							(command) =>
+								command.status === "running" &&
+								this.commandExecutionEvidence.get(command.toolCallId) === command,
+						)
+					if (!settled()) {
+						await this.waitForOwnedCommandCompletionChange(new Set(), wait.signal, result.deadline, settled)
+					}
+				}
+				await this.waitForRequestControl(
+					this.pendingCommandVerification ?? Promise.resolve(),
+					wait.signal,
+					result.deadline,
 				)
-			: this.commitTaskCompletion(stagedToolCallId)
+			} catch (error) {
+				const reason =
+					error instanceof ApiStreamDeadlineError
+						? t("common:errors.completion_evidence_read_timeout")
+						: "Verification evidence could not be persisted. Restore task persistence before resuming."
+				return await this.rejectTaskCompletion(reason, wait.signal)
+			}
+			try {
+				return (await commit(result, wait.signal)) === true
+			} catch (error) {
+				if (!(error instanceof WorkspaceMutationCancelledError) || !wait.signal.aborted) throw error
+				await this.retractCompletionResult()
+				return false
+			}
+		} finally {
+			wait.dispose()
+			this.completionEvidenceRecheck = undefined
+		}
 	}
 
 	private async completionHookTranscriptPath(taskId: string): Promise<string | null> {
@@ -10097,27 +10152,41 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private async commitTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
-		if (this.didEmitTaskCompleted) return false
-		const goalSteeringGeneration = this.goalSteeringGeneration ?? 0
-		const goalRequestGeneration = this.goalController?.getRequestGeneration()
+	private async commitTaskCompletion(
+		stagedToolCallId?: string,
+		recheck?: CompletionEvidenceRecheck,
+		recheckSignal?: AbortSignal,
+	): Promise<boolean | CompletionEvidenceRecheck> {
+		const ownsCompletion = () => !this.didEmitTaskCompleted && this.completionEvidenceRecheck === recheck
+		if (!ownsCompletion()) return false
+		const goalSteeringGeneration = recheck?.goalSteeringGeneration ?? this.goalSteeringGeneration ?? 0
+		const goalRequestGeneration = recheck
+			? recheck.goalRequestGeneration
+			: this.goalController?.getRequestGeneration()
 		const activeGoal = await this.getGoal()
-		if (activeGoal?.status === "active" && !activeGoal.recoveryDeferred && (await this.getTaskMode()) === "code") {
+		const activeCodeGoal =
+			activeGoal?.status === "active" && !activeGoal.recoveryDeferred && (await this.getTaskMode()) === "code"
+		if (!ownsCompletion()) return false
+		if (
+			activeCodeGoal ||
+			goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
+			goalRequestGeneration !== this.goalController?.getRequestGeneration() ||
+			(recheck && (this.abort || recheckSignal?.aborted || this.hasPendingSteerMessage()))
+		) {
+			if (recheck) await this.retractCompletionResult()
 			return false
 		}
-		if (
-			this.didEmitTaskCompleted ||
-			goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
-			goalRequestGeneration !== this.goalController?.getRequestGeneration()
-		)
-			return false
 
 		// Reserve the transition before awaiting the persistence barrier so concurrent
 		// acceptance paths cannot publish the same completion twice.
 		this.didEmitTaskCompleted = true
 		let preparedPrimaryLifecycle = false
 		let verificationRejection: string | undefined
+		let deferredRecheck: CompletionEvidenceRecheck | undefined
 		try {
+			if (recheck?.stagedToolResult && !this.pushToolResultToUserContent(recheck.stagedToolResult)) {
+				throw new Error("Unable to restage the completion tool result.")
+			}
 			if (this.taskKind === "primary") {
 				const provider = this.providerRef.deref()
 				if (!provider || typeof provider.prepareTaskCompletionLifecycle !== "function") {
@@ -10132,7 +10201,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.flushApiConversationHistoryPersistence()
 			this.getMutableCompletionStageMetrics().persistenceSettledAt = Date.now()
 			const transcriptQueue = this.apiConversationHistorySaveQueue
-			const completionSignal = this.getTaskLifetimeCancellationSignal()
+			const completionSignal = recheckSignal ?? this.getTaskLifetimeCancellationSignal()
+			const deadline = recheck?.deadline ?? Date.now() + 30_000
 			let finalDecision: CompletionGateDecision
 			try {
 				// Receipt publishers also need the mutation gate, so bound one snapshot
@@ -10140,7 +10210,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				finalDecision = await this.waitForRequestControl(
 					this.getCompletionGateDecision(),
 					completionSignal,
-					Date.now() + 30_000,
+					deadline,
 				)
 			} catch (error) {
 				if (error instanceof ApiStreamDeadlineError) {
@@ -10151,6 +10221,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				throw error
 			}
 			if (!finalDecision.allowed || this.abort || completionSignal.aborted) {
+				const settlingCommands =
+					finalDecision.reasonCode === "command_running" ? this.getBlockingCommandExecutions() : undefined
+				if (
+					!recheck &&
+					!this.abort &&
+					!completionSignal.aborted &&
+					finalDecision.classification === "waiting" &&
+					(finalDecision.reasonCode === "evidence_pending" ||
+						settlingCommands?.every((command) => this.observedCommandExits?.has(command)))
+				) {
+					const stagedId = stagedToolCallId ? sanitizeToolUseId(stagedToolCallId) : undefined
+					const stagedToolResult =
+						stagedId && this.persistedToolResultIds.has(stagedId)
+							? this.findPersistedProviderToolResult(stagedId)
+							: undefined
+					if (!stagedId || stagedToolResult) {
+						deferredRecheck = {
+							deadline,
+							goalSteeringGeneration,
+							goalRequestGeneration,
+							stagedToolResult,
+							settlingCommands,
+						}
+					}
+				}
 				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
 				throw new Error(verificationRejection)
 			}
@@ -10207,12 +10302,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 			this.didEmitTaskCompleted = false
-			if (verificationRejection) {
-				await this.retractCompletionResult()
-				if (this.hasPendingAgentMessages()) return false
-				this.suspendAfterCurrentTurn(`Task remains incomplete and unverified. ${verificationRejection}`)
-				return false
+			if (deferredRecheck) {
+				this.completionEvidenceRecheck = deferredRecheck
+				return deferredRecheck
 			}
+			if (verificationRejection) return this.rejectTaskCompletion(verificationRejection, recheckSignal)
 			throw error
 		}
 		this.markCompleted()
@@ -10224,6 +10318,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emitFinalTokenUsageUpdate()
 		this.notifyTaskSummary(AlphaCodeEventName.TaskCompleted, settledUsage, this.toolUsage)
 		return true
+	}
+
+	private async rejectTaskCompletion(reason: string, signal?: AbortSignal): Promise<false> {
+		await this.retractCompletionResult()
+		if (!signal?.aborted && !this.hasPendingAgentMessages()) {
+			this.suspendAfterCurrentTurn(`Task remains incomplete and unverified. ${reason}`)
+		}
+		return false
 	}
 
 	/**
@@ -10337,7 +10439,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private getPendingCompletionRuntimeDecision(): CompletionGateDecision | undefined {
-		const commandRunning = this.shouldWaitForCommandCompletion()
+		const commandRunning = this.getBlockingCommandExecutions().length > 0
 		if (!commandRunning && !(this.pendingCommandVerificationCount > 0)) return undefined
 		return {
 			allowed: false,
@@ -10350,38 +10452,72 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 	}
 
-	private shouldWaitForCommandCompletion(): boolean {
+	private getBlockingCommandExecutions(): CommandExecutionEvidence[] {
 		const running = [...(this.commandExecutionEvidence?.values() ?? [])].filter(
 			(evidence) => evidence.status === "running",
 		)
-		if (running.length === 0) return false
+		if (running.length === 0) return running
 		const activeBackgroundExecutions = new Set(this.getActiveBackgroundCommandExecutionIds())
 		const lookup = this.isLookupStyleCompletionTurn()
-		return running.some(
+		return running.filter(
 			(evidence) =>
 				!activeBackgroundExecutions.has(evidence.executionId) &&
 				!(lookup && this.isUnscopedBackgroundCommand(evidence)),
 		)
 	}
 
-	private hasUnownedRunningCommandEvidence(): boolean {
+	private getOwnedCommandCompletionWait(
+		commands: readonly CommandExecutionEvidence[],
+	): { processes: Set<AlphaTerminalProcess>; awaitingSettlement: boolean } | undefined {
 		const terminals = [
 			...TerminalRegistry.getTerminals(true, this.taskId),
 			...TerminalRegistry.getTerminals(false, this.taskId),
 		]
-		const lookup = this.isLookupStyleCompletionTurn()
-		return [...(this.commandExecutionEvidence?.values() ?? [])].some(
-			(evidence) =>
-				evidence.status === "running" &&
-				!(lookup && this.isUnscopedBackgroundCommand(evidence)) &&
-				!terminals.some(
-					(terminal) =>
-						terminal.taskId === this.taskId &&
-						terminal.running &&
-						terminal.process?.executionId === evidence.executionId &&
-						terminal.process.isSettled === false,
-				),
-		)
+		const processes = new Set<AlphaTerminalProcess>()
+		let awaitingSettlement = false
+		for (const command of commands) {
+			if (this.observedCommandExits?.has(command)) {
+				awaitingSettlement = true
+				continue
+			}
+			const owner = terminals.find(
+				(terminal) =>
+					terminal.taskId === this.taskId &&
+					terminal.running &&
+					terminal.process?.executionId === command.executionId &&
+					terminal.process.isSettled === false,
+			)?.process
+			if (!owner) return undefined
+			processes.add(owner)
+		}
+		return { processes, awaitingSettlement }
+	}
+
+	private async waitForOwnedCommandCompletionChange(
+		processes: ReadonlySet<AlphaTerminalProcess>,
+		signal: AbortSignal,
+		deadline?: number,
+		shouldWake?: () => boolean,
+	): Promise<void> {
+		let wake!: () => void
+		const changed = new Promise<void>((resolve) => {
+			wake = () => {
+				if (shouldWake?.() !== false) resolve()
+			}
+		})
+		const terminalEvents = ["shell_execution_complete", "completed", "error", "terminal_closed"] as const
+		this.wakeCommandCompletionWait = wake
+		try {
+			for (const process of processes) {
+				for (const event of terminalEvents) process.once(event, wake)
+			}
+			await this.waitForRequestControl(changed, signal, deadline)
+		} finally {
+			if (this.wakeCommandCompletionWait === wake) this.wakeCommandCompletionWait = undefined
+			for (const process of processes) {
+				for (const event of terminalEvents) process.off(event, wake)
+			}
+		}
 	}
 
 	/** Runtime ownership, never persisted history or command spelling, permits a process to outlive its turn. */
@@ -10426,7 +10562,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let lease = this.beginAgentWait()
 		const startedAt = Date.now()
 		let orphanReceiptDeadline: number | undefined
-		let unownedCommandDeadline: number | undefined
+		let commandSettlementDeadline: number | undefined
 		let orphanReceiptTimedOut = false
 		let timedOut = false
 		let waited = false
@@ -10454,15 +10590,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					lease = this.beginAgentWait()
 					continue
 				}
-				// Observing a live command does not set its execution timeout (Codex a0981298).
-				// Lost owners and stalled post-exit settlement still need bounded recovery.
-				if (lastDecision.reasonCode === "command_running" && this.hasUnownedRunningCommandEvidence()) {
-					unownedCommandDeadline ??= Date.now() + 30_000
-					if (Date.now() >= unownedCommandDeadline) {
-						timedOut = true
-						throw new Error("Command settlement has no active process owner")
-					}
-				} else unownedCommandDeadline = undefined
 				waited = true
 				if (!publishedWait) {
 					await this.publishCompletionWaitStatus(lastDecision, true)
@@ -10476,15 +10603,30 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						throw new Error("Mutation receipt has no active publisher")
 					}
 				} else orphanReceiptDeadline = undefined
-				// Tracked evidence publication is joined directly. Standalone durable
-				// receipts have no local publisher; bounded runtime polls recheck the ledger.
-				await this.waitForRequestControl(
-					this.pendingCommandVerificationCount > 0
-						? this.pendingCommandVerification
-						: delayWithAbort(250, lease.signal),
-					lease.signal,
-					this.pendingCommandVerificationCount > 0 ? Date.now() + 30_000 : undefined,
-				)
+				// Wait-status publication can yield after the original decision. Sample
+				// blockers again and subscribe in the same turn so settlement cannot be missed.
+				const commands =
+					lastDecision.reasonCode === "command_running" ? this.getBlockingCommandExecutions() : undefined
+				if (commands?.length === 0) continue
+				const owned = commands && this.getOwnedCommandCompletionWait(commands)
+				if (commands && (!owned || owned.awaitingSettlement)) {
+					commandSettlementDeadline ??= Date.now() + 30_000
+					if (Date.now() >= commandSettlementDeadline) throw new ApiStreamDeadlineError()
+				} else commandSettlementDeadline = undefined
+				if (this.pendingCommandVerificationCount > 0) {
+					await this.waitForRequestControl(this.pendingCommandVerification, lease.signal, Date.now() + 30_000)
+				} else if (owned) {
+					// Codex 5c3ff1da waits for exit and output drain. Alpha also waits
+					// for the command's durable evidence without imposing an execution timeout.
+					await this.waitForOwnedCommandCompletionChange(
+						owned.processes,
+						lease.signal,
+						commandSettlementDeadline,
+					)
+				} else {
+					// A standalone durable receipt or unowned command has no local publisher to join.
+					await this.waitForRequestControl(delayWithAbort(250, lease.signal), lease.signal)
+				}
 			}
 		} catch (error) {
 			timedOut ||= error instanceof ApiStreamDeadlineError
@@ -10635,7 +10777,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		verificationChangeSetIds?: readonly string[],
 	): void {
 		if (this.commandExecutionEvidence.has(toolCallId)) return
-		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
 		const scopedChangeSetIds =
 			verificationChangeSetIds === undefined ? undefined : [...new Set(verificationChangeSetIds)]
 		this.commandExecutionEvidence.set(toolCallId, {
@@ -10646,6 +10787,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			command,
 			...(scopedChangeSetIds ? { verificationChangeSetIds: scopedChangeSetIds } : {}),
 		})
+		this.recordCommandCompletionChange()
 	}
 
 	public async admitCommandExecution(
@@ -10765,8 +10907,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			exitCode: evidence.exitCode,
 			signalName: evidence.signalName,
 		})
-		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.recordCommandCompletionChange()
 		this.publishParentVerificationEvidence()
+	}
+
+	/** The process released its terminal, but its output and mutation receipt still have a local owner. */
+	public markCommandExecutionExitObserved(toolCallId: string, executionId: string): void {
+		const evidence = this.commandExecutionEvidence.get(toolCallId)
+		if (evidence?.executionId !== executionId || evidence.status !== "running") return
+		const observed = (this.observedCommandExits ??= new WeakSet())
+		if (observed.has(evidence)) return
+		observed.add(evidence)
+		this.recordCommandCompletionChange()
+	}
+
+	private recordCommandCompletionChange(): void {
+		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.wakeCommandCompletionWait?.()
 	}
 
 	public completeCommandExecution(
@@ -10787,7 +10944,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		evidence.exitCode = details.exitCode
 		evidence.signalName = details.signalName
 		evidence.completedAt = Date.now()
-		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.recordCommandCompletionChange()
 		this.publishParentVerificationEvidence()
 	}
 
@@ -10815,7 +10972,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				status: status === "cancelled" ? "cancelled" : status === "timed_out" ? "timeout" : "error",
 			}).catch((error) => console.error("Failed to persist terminal command presentation", error))
 		}
-		this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+		this.recordCommandCompletionChange()
 		this.publishParentVerificationEvidence()
 	}
 
@@ -10864,7 +11021,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const evidence = this.commandExecutionEvidence.get(toolCallId)
 		if (evidence?.executionId === executionId && !evidence.returnedInBackground) {
 			evidence.returnedInBackground = true
-			this.completionRuntimeRevision = (this.completionRuntimeRevision ?? 0) + 1
+			this.recordCommandCompletionChange()
 		}
 	}
 

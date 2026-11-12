@@ -123,6 +123,8 @@ async function commandFixture(
 		pendingCommandVerification: Promise.resolve(),
 		completionRuntimeRevision: 0,
 		beginCommandExecution: Task.prototype.beginCommandExecution,
+		recordCommandCompletionChange: Task.prototype["recordCommandCompletionChange"],
+		markCommandExecutionExitObserved: Task.prototype.markCommandExecutionExitObserved,
 		admitCommandExecution: vi.fn(Task.prototype.admitCommandExecution),
 		completeCommandExecution: vi.fn(Task.prototype.completeCommandExecution),
 		failCommandExecution: Task.prototype.failCommandExecution,
