@@ -5,6 +5,7 @@ import { CdpConnection } from "./cdp"
 import { waitUntil } from "../evidence/sharedStorageProtocol"
 import { writeJsonAtomically } from "../suite/preflightEvidence"
 import { javascriptLiteral } from "./javascriptLiteral"
+import { dismissRenderedReleaseAnnouncement } from "./renderedReleaseAnnouncement"
 
 /** Exercise the built webview with keyboard input while the host checks the resulting VS Code diff tab. */
 export async function exerciseRenderedFileReview(
@@ -92,6 +93,7 @@ export async function exerciseRenderedFileReview(
 
 	await check("!!d.querySelector('[data-activity-trace-id][aria-expanded=false]')")
 	await check("d.body.innerText.includes('Files edited: 3')")
+	await dismissRenderedReleaseAnnouncement(cdp, sessionId, workbenchSession, directory, "file-review", signal)
 	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-added]')?.textContent??''"), "+3")
 	assert.equal(await evaluate<string>("d.querySelector('[data-testid=total-removed]')?.textContent??''"), "-3")
 	await focus("d.querySelector('[data-activity-trace-id]')")

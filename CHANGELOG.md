@@ -9,6 +9,7 @@
 - Remove avoidable waits after command completion, during background file diagnostics, and when displaying provider countdowns.
 - Reduce repeated work when preparing long VS Code language-model histories, restoring empty message queues, and rendering streamed text.
 - Keep composer file searches with the active task, preserve saved provider settings when discarding edits, and release stale timers and watchers.
+- Update dependencies used by file matching, web requests, MCP, and webview builds.
 
 ## 3.2.32
 

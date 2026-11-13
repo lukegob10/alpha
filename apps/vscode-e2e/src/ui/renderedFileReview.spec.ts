@@ -101,15 +101,29 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 			}),
 		)
 
-		const activeElement = () => this.activeButton
+		let announcementOpen = true
+		const close = button("Close", undefined, () => {
+			announcementOpen = false
+		})
+		const announcement = {
+			querySelector: () => ({ textContent: "Welcome to Alpha v3.2.33" }),
+			querySelectorAll: () => [close],
+		}
+		const activeElement = () => {
+			if (announcementOpen && this.activeButton !== close) return undefined
+			return this.activeButton
+		}
 		const document = {
 			body: { innerText: `Files edited: 3\n${names.join("\n")}` },
 			get activeElement() {
 				return activeElement()
 			},
 			getElementById: () => null,
+			defaultView: { requestAnimationFrame: (callback: () => void) => callback() },
 			querySelector: (selector: string): unknown => {
 				switch (selector) {
+					case "[role=dialog],[role=alertdialog]":
+						return announcementOpen ? announcement : null
 					case "[data-activity-trace-id][aria-expanded=false]":
 						return traceExpanded ? null : trace
 					case "[data-activity-trace-id]":
@@ -125,6 +139,7 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 				}
 			},
 			querySelectorAll: (selector: string): unknown[] => {
+				if (selector === "[role=dialog]") return announcementOpen ? [announcement] : []
 				if (selector === "button[aria-expanded]") return [panel]
 				if (selector === "button") return [trace, review, panel, ...diffs]
 				assert.equal(selector, "[data-chat-message-index]")
@@ -212,7 +227,7 @@ class ControlledFileReview implements Pick<CdpConnection, "request"> {
 				this.dynamicExpressions.push(expression)
 				assert.doesNotMatch(expression, /[<\u2028\u2029]/)
 			}
-			return { result: { value: runInContext(expression, this.context, { timeout: 100 }) } } as T
+			return { result: { value: await runInContext(expression, this.context, { timeout: 100 }) } } as T
 		}
 		assert.equal(method, "Input.dispatchKeyEvent")
 		assert.equal(params.key, "Enter")
