@@ -1,5 +1,15 @@
 # Changelog
 
+## 3.2.33
+
+### Patch Changes
+
+- Send grouped answers directly from the last question and display longer question headers.
+- Keep a completed subagent report when an interrupt arrives during finalization. Command output receipts now explain how to retrieve output in the originating task.
+- Remove avoidable waits after command completion, during background file diagnostics, and when displaying provider countdowns.
+- Reduce repeated work when preparing long VS Code language-model histories, restoring empty message queues, and rendering streamed text.
+- Keep composer file searches with the active task, preserve saved provider settings when discarding edits, and release stale timers and watchers.
+
 ## 3.2.32
 
 ### Patch Changes

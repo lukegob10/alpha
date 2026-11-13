@@ -21,11 +21,6 @@ vi.mock("@src/i18n/TranslationContext", () => ({
 				"chat:requestUserInput.cancel": "Cancel",
 				"chat:requestUserInput.back": "Back",
 				"chat:requestUserInput.continue": "Continue",
-				"chat:requestUserInput.review": "Review answers",
-				"chat:requestUserInput.reviewTitle": "Review your answers",
-				"chat:requestUserInput.reviewDescription": "You can edit any answer before sending.",
-				"chat:requestUserInput.edit": "Edit",
-				"chat:requestUserInput.editQuestion": "Edit answer for {{header}}",
 				"chat:requestUserInput.submit": "Send answers",
 				"chat:requestUserInput.closed": "Question request closed",
 				"chat:requestUserInput.pending": "Sending answers…",
@@ -84,10 +79,9 @@ describe("RequestUserInputForm", () => {
 		fireEvent.click(screen.getByRole("radio", { name: "Current workspace (Recommended)" }))
 		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 		fireEvent.click(screen.getByRole("radio", { name: "Focused tests" }))
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
 	}
 
-	it("shows one question at a time and submits one packet only after reviewing every answer", () => {
+	it("shows one question at a time and sends one answer packet from the last question", () => {
 		const onSubmit = vi.fn()
 		render(<RequestUserInputForm request={request} onSubmit={onSubmit} />)
 
@@ -104,16 +98,11 @@ describe("RequestUserInputForm", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 		expect(screen.queryByText(request.questions[0]!.question)).not.toBeInTheDocument()
 		expect(screen.getByRole("heading", { name: request.questions[1]!.question })).toHaveFocus()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeDisabled()
 		expect(onSubmit).not.toHaveBeenCalled()
 
 		fireEvent.click(screen.getByRole("radio", { name: "Focused tests" }))
 		expect(screen.getByText("2 of 2 answered")).toBeInTheDocument()
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
-		expect(screen.getByRole("heading", { name: "Review your answers" })).toHaveFocus()
-		for (const question of request.questions) expect(screen.getByText(question.question)).toBeInTheDocument()
-		expect(screen.getByText("Current workspace (Recommended)")).toBeInTheDocument()
-		expect(screen.getByText("Focused tests")).toBeInTheDocument()
-		expect(screen.queryByRole("radio")).not.toBeInTheDocument()
 		expect(onSubmit).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 
@@ -121,9 +110,10 @@ describe("RequestUserInputForm", () => {
 			workspace_scope: { answers: ["Current workspace (Recommended)"] },
 			test_level: { answers: ["Focused tests"] },
 		})
+		expect(screen.queryByRole("form")).not.toBeInTheDocument()
 	})
 
-	it("reviews and submits multiline free-form text for a single question", () => {
+	it("sends multiline free-form text directly from a single question", () => {
 		const onSubmit = vi.fn()
 		render(<RequestUserInputForm request={{ questions: [request.questions[0]!] }} onSubmit={onSubmit} />)
 
@@ -131,7 +121,6 @@ describe("RequestUserInputForm", () => {
 		const otherAnswer = screen.getByRole("textbox", { name: "Custom answer for Scope, question 1" })
 		expect(otherAnswer.tagName).toBe("TEXTAREA")
 		fireEvent.change(otherAnswer, { target: { value: "  A linked workspace\nInclude the shared package  " } })
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
 		expect(onSubmit).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 
@@ -144,7 +133,6 @@ describe("RequestUserInputForm", () => {
 		const onSubmit = vi.fn<(answers: RequestUserInputAnswerMap) => void>()
 		render(<RequestUserInputForm request={{ questions: [{ ...request.questions[0]!, id }] }} onSubmit={onSubmit} />)
 		fireEvent.click(screen.getByRole("radio", { name: "Current workspace (Recommended)" }))
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 
 		expect(onSubmit).toHaveBeenCalledTimes(1)
@@ -163,8 +151,7 @@ describe("RequestUserInputForm", () => {
 
 		fireEvent.click(screen.getByRole("radio", { name: "Write your own" }))
 		fireEvent.change(screen.getByRole("textbox"), { target: { value: "Inspect the linked workspace" } })
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
-		expect(screen.getByText("Inspect the linked workspace")).toBeVisible()
+		expect(screen.getByRole("textbox")).toHaveValue("Inspect the linked workspace")
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
@@ -195,7 +182,7 @@ describe("RequestUserInputForm", () => {
 		expect(screen.getByRole("textbox")).toHaveValue("A linked workspace")
 		expect(screen.getByRole("radio", { name: "Write your own" })).toBeChecked()
 		expect(screen.getByRole("textbox")).toHaveFocus()
-		expect(screen.getByRole("button", { name: "Review answers" })).toBeEnabled()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeEnabled()
 		expect(onInteraction).toHaveBeenCalledTimes(1)
 	})
 
@@ -225,7 +212,7 @@ describe("RequestUserInputForm", () => {
 			/>,
 		)
 		fireEvent.click(screen.getByRole("radio", { name: /Current workspace/ }))
-		expect(screen.getByRole("button", { name: "Review answers" })).toBeEnabled()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeEnabled()
 
 		rerender(
 			<RequestUserInputForm
@@ -236,7 +223,7 @@ describe("RequestUserInputForm", () => {
 		)
 
 		for (const radio of screen.getAllByRole("radio")) expect(radio).not.toBeChecked()
-		expect(screen.getByRole("button", { name: "Review answers" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeDisabled()
 		fireEvent.submit(screen.getByRole("form"))
 		expect(onSubmit).not.toHaveBeenCalled()
 		fireEvent.click(screen.getAllByRole("radio")[0]!)
@@ -249,14 +236,12 @@ describe("RequestUserInputForm", () => {
 		fireEvent.click(screen.getByRole("radio", { name: "Write your own" }))
 		const answer = screen.getByRole("textbox")
 		fireEvent.change(answer, { target: { value: "   " } })
-		expect(screen.getByRole("button", { name: "Review answers" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeDisabled()
 		fireEvent.submit(screen.getByRole("form"))
 		expect(onSubmit).not.toHaveBeenCalled()
 
 		fireEvent.change(answer, { target: { value: "  A linked workspace  " } })
 		fireEvent.submit(screen.getByRole("form"))
-		expect(onSubmit).not.toHaveBeenCalled()
-		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ workspace_scope: { answers: ["A linked workspace"] } })
 	})
 
@@ -341,7 +326,7 @@ describe("RequestUserInputForm", () => {
 		expect(screen.getByText("1 of 1 answered")).toBeInTheDocument()
 	})
 
-	it("keeps custom answers when going back and editing from review", () => {
+	it("preserves drafts through Back and question navigation and sends the latest edits", () => {
 		const onSubmit = vi.fn()
 		render(<RequestUserInputForm request={request} onSubmit={onSubmit} />)
 		fireEvent.click(screen.getByRole("radio", { name: "Write your own" }))
@@ -353,12 +338,14 @@ describe("RequestUserInputForm", () => {
 		expect(screen.getByRole("textbox")).toHaveValue("Linked workspace")
 		expect(screen.getByText("2 of 2 answered")).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("button", { name: "Testing, question 2 of 2" }))
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
-		fireEvent.click(screen.getByRole("button", { name: "Edit answer for Scope" }))
+		expect(screen.getByRole("radio", { name: "Focused tests" })).toBeChecked()
+		fireEvent.click(screen.getByRole("button", { name: "Scope, question 1 of 2" }))
 		expect(screen.getByRole("heading", { name: request.questions[0]!.question })).toHaveFocus()
 		expect(screen.getByRole("textbox")).toHaveValue("Linked workspace")
 		fireEvent.change(screen.getByRole("textbox"), { target: { value: "Linked workspace with shared packages" } })
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
+		expect(screen.getByRole("heading", { name: request.questions[1]!.question })).toHaveFocus()
+		expect(onSubmit).not.toHaveBeenCalled()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
@@ -370,8 +357,6 @@ describe("RequestUserInputForm", () => {
 	it("focuses headings after navigation and keeps the custom textarea focused while typing", () => {
 		render(<RequestUserInputForm request={request} onSubmit={vi.fn()} />)
 		completeQuestions()
-		expect(screen.getByRole("heading", { name: "Review your answers" })).toHaveFocus()
-		fireEvent.click(screen.getByRole("button", { name: "Back" }))
 		expect(screen.getByRole("heading", { name: request.questions[1]!.question })).toHaveFocus()
 		fireEvent.click(screen.getByRole("button", { name: "Back" }))
 		expect(screen.getByRole("heading", { name: request.questions[0]!.question })).toHaveFocus()
@@ -392,21 +377,21 @@ describe("RequestUserInputForm", () => {
 		const radio = screen.getByRole("radio", { name: "Current workspace (Recommended)" })
 		expect(radio).toHaveAttribute("value", "Current workspace (Recommended)")
 		fireEvent.click(radio)
-		fireEvent.click(screen.getByRole("button", { name: "Review answers" }))
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
 			workspace_scope: { answers: ["Current workspace (Recommended)"] },
 		})
 	})
 
-	it("retains review and allows retry when submission is rejected", () => {
+	it("keeps the last question editable and allows retry when submission is rejected", () => {
 		const onSubmit = vi.fn().mockReturnValueOnce(false).mockReturnValue(true)
 		render(<RequestUserInputForm request={request} onSubmit={onSubmit} />)
 		completeQuestions()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 		expect(screen.getByRole("alert")).toHaveTextContent("Could not send your answers. You can try again.")
 		expect(screen.getByRole("button", { name: "Send answers" })).toBeEnabled()
-		expect(screen.getByText("Current workspace (Recommended)")).toBeInTheDocument()
+		expect(screen.getByRole("heading", { name: request.questions[1]!.question })).toBeVisible()
+		expect(screen.getByRole("radio", { name: "Focused tests" })).toBeChecked()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 		expect(onSubmit).toHaveBeenCalledTimes(2)
 		expect(onSubmit.mock.calls[1]).toEqual(onSubmit.mock.calls[0])
@@ -426,7 +411,7 @@ describe("RequestUserInputForm", () => {
 		expect(screen.queryByRole("form")).not.toBeInTheDocument()
 	})
 
-	it("reopens the retained review when the host rejects an optimistic answer acknowledgement", () => {
+	it("returns to the last question with its draft when the host rejects an optimistic acknowledgement", () => {
 		const onSubmit = vi.fn(() => true)
 		const { rerender } = render(<RequestUserInputForm request={request} onSubmit={onSubmit} />)
 		completeQuestions()
@@ -434,22 +419,30 @@ describe("RequestUserInputForm", () => {
 		rerender(<RequestUserInputForm request={request} isAnswered onSubmit={onSubmit} />)
 		expect(screen.getByRole("status")).toHaveTextContent("Question request closed")
 		rerender(<RequestUserInputForm request={request} isAnswered={false} onSubmit={onSubmit} />)
-		expect(screen.getByRole("heading", { name: "Review your answers" })).toHaveFocus()
-		expect(screen.getByText("Current workspace (Recommended)")).toBeInTheDocument()
+		expect(screen.getByRole("heading", { name: request.questions[1]!.question })).toHaveFocus()
+		expect(screen.getByRole("radio", { name: "Focused tests" })).toBeChecked()
 		fireEvent.click(screen.getByRole("button", { name: "Send answers" }))
 		expect(onSubmit).toHaveBeenCalledTimes(2)
+		expect(onSubmit.mock.calls[1]).toEqual(onSubmit.mock.calls[0])
 	})
 
-	it("updates the answered count when an edited custom answer becomes incomplete", () => {
-		render(<RequestUserInputForm request={request} onSubmit={vi.fn()} />)
+	it("blocks sending from the last question when an earlier answer has been cleared", () => {
+		const onSubmit = vi.fn()
+		render(<RequestUserInputForm request={request} onSubmit={onSubmit} />)
 		completeQuestions()
-		fireEvent.click(screen.getByRole("button", { name: "Edit answer for Testing" }))
+		fireEvent.click(screen.getByRole("button", { name: "Back" }))
 		fireEvent.click(screen.getByRole("radio", { name: "Write your own" }))
 		expect(screen.getByText("1 of 2 answered")).toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "Review answers" })).toBeDisabled()
 		fireEvent.change(screen.getByRole("textbox"), { target: { value: "  " } })
+		fireEvent.click(screen.getByRole("button", { name: "Testing, question 2 of 2" }))
 		expect(screen.getByText("1 of 2 answered")).toBeInTheDocument()
-		fireEvent.change(screen.getByRole("textbox"), { target: { value: "Run integration tests" } })
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeDisabled()
+		fireEvent.submit(screen.getByRole("form"))
+		expect(onSubmit).not.toHaveBeenCalled()
+		fireEvent.click(screen.getByRole("button", { name: "Back" }))
+		fireEvent.change(screen.getByRole("textbox"), { target: { value: "Linked workspace" } })
+		fireEvent.click(screen.getByRole("button", { name: "Continue" }))
 		expect(screen.getByText("2 of 2 answered")).toBeInTheDocument()
+		expect(screen.getByRole("button", { name: "Send answers" })).toBeEnabled()
 	})
 })

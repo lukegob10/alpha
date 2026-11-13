@@ -3140,6 +3140,8 @@ export class ToolScheduler {
 				})
 				if (this.isCancelled()) return
 				await this.checkEffectFence(prepared.call)
+				// A sibling can fail its effect-start fence while this admission waits.
+				if (this.effectFenceFailure) throw this.effectFenceFailure
 				if (this.isCancelled()) return
 				assertPathIdentities(prepared)
 				if (

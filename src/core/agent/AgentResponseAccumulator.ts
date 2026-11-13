@@ -516,13 +516,16 @@ export class AgentResponseAccumulator {
 		// Some Responses items arrive only with the final response, after later
 		// text deltas or tool receipts. Sort source-positioned items within their
 		// existing slots; providers without positions retain arrival ordering.
-		const positionedItems = orderedItems
-			.filter((item) => this.outputIndexes.has(item))
-			.sort((left, right) => this.outputIndexes.get(left)! - this.outputIndexes.get(right)!)
-		let nextPositionedItem = 0
-		const reconciledItems = orderedItems.map((item) =>
-			this.outputIndexes.has(item) ? positionedItems[nextPositionedItem++]! : item,
-		)
+		let reconciledItems = orderedItems
+		if (this.outputIndexes.size > 1) {
+			const positionedItems = orderedItems
+				.filter((item) => this.outputIndexes.has(item))
+				.sort((left, right) => this.outputIndexes.get(left)! - this.outputIndexes.get(right)!)
+			let nextPositionedItem = 0
+			reconciledItems = orderedItems.map((item) =>
+				this.outputIndexes.has(item) ? positionedItems[nextPositionedItem++]! : item,
+			)
+		}
 		this.pendingTools.clear()
 		this.pendingToolIndexes.clear()
 		this.textMessagesById.clear()

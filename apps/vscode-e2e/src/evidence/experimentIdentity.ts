@@ -100,14 +100,25 @@ export function readExperimentTaskLabel(env: NodeJS.ProcessEnv): ExperimentTaskL
 }
 
 /** Uses the official build-owned verifier, not a checkout hash copied into a historical run. */
-export async function verifyObservedExperimentBuild(extensionPath: string): Promise<BuildProof> {
+export async function verifyObservedExperimentBuild(
+	extensionPath: string,
+	repositoryRoot?: string,
+): Promise<BuildProof> {
 	const root = path.resolve(__dirname, "../../../..")
 	try {
 		// Node 24 supports synchronous loading of this ESM helper, which has no top-level await.
 		const verifier = createRequire(__filename)(path.join(root, "scripts/extension-build-provenance.mjs")) as {
-			verifyExtensionBuildProvenance(input: { extensionPath: string }): Promise<BuildProof>
+			verifyExtensionBuildProvenance(input: {
+				extensionPath: string
+				repositoryRoot?: string
+				requireCleanSource?: boolean
+			}): Promise<BuildProof>
 		}
-		const proof = await verifier.verifyExtensionBuildProvenance({ extensionPath })
+		const proof = await verifier.verifyExtensionBuildProvenance({
+			extensionPath,
+			repositoryRoot,
+			requireCleanSource: repositoryRoot !== undefined,
+		})
 		return proof
 	} catch {
 		return { status: "unavailable", missing: ["build-provenance-verifier-unavailable"] }

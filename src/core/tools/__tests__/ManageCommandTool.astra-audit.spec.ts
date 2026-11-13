@@ -16,12 +16,18 @@ import { TerminalProcess } from "../../../integrations/terminal/TerminalProcess"
 import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
 import type { Terminal } from "../../../integrations/terminal/Terminal"
 import type { ToolCallbacks } from "../BaseTool"
+import i18next from "../../../i18n"
+import toolTranslations from "../../../i18n/locales/en/tools.json"
 import type {
 	AlphaTerminal,
 	AlphaTerminalCallbacks,
 	AlphaTerminalProcess,
 	ExitCodeDetails,
 } from "../../../integrations/terminal/types"
+
+beforeAll(() => {
+	i18next.addResourceBundle("en", "tools", toolTranslations, true, true)
+})
 
 vi.mock("node:worker_threads", async (importOriginal) => {
 	const original = await importOriginal<typeof import("node:worker_threads")>()
@@ -596,8 +602,9 @@ describe("native command transaction consistency", () => {
 				const foreignRead = await otherTask.run("foreign-read", guidance![1], args)
 				expect(foreignRead.results[0]).toMatchObject({
 					status: "error",
-					content: expect.stringContaining("Artifact not found"),
+					content: expect.stringContaining("Artifact not found in this task"),
 				})
+				expect(foreignRead.results[0]?.content).toContain("ask that subagent for the relevant output")
 				expect(foreignRead.results[0].content).not.toContain("retained output")
 			} finally {
 				await fs.rm(globalStoragePath, { recursive: true, force: true })

@@ -936,7 +936,10 @@ describe("ReadCommandOutputTool", () => {
 			expect(mockCallbacks.setResultMetadata).toHaveBeenCalledWith({ status: "error" })
 			expect(mockTask.say).toHaveBeenCalledWith("error", expect.stringContaining("not found"))
 			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
-				expect.stringContaining("Error: Artifact not found"),
+				expect.stringContaining(`Error: Artifact not found in this task: "${artifactId}"`),
+			)
+			expect(mockCallbacks.pushToolResult).toHaveBeenCalledWith(
+				expect.stringContaining("ask that subagent for the relevant output"),
 			)
 		})
 

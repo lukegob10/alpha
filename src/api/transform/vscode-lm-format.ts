@@ -32,6 +32,10 @@ function asObjectSafe(value: any): object {
 	}
 }
 
+export const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
+
+type VsCodeLmModelIdentity = Pick<vscode.LanguageModelChat, "id" | "vendor" | "version">
+
 type LanguageModelTextPartLike = vscode.LanguageModelTextPart | { value: string }
 type LanguageModelToolCallPartLike = vscode.LanguageModelToolCallPart | { callId: string; name: string; input: object }
 type LanguageModelToolResultPartLike = vscode.LanguageModelToolResultPart | { callId: string; content: unknown[] }
@@ -41,10 +45,18 @@ function hasVsCodeLmThinkingType(value: unknown): boolean {
 	return typeof value === "object" && value !== null && "type" in value && value.type === "vscode_lm_thinking"
 }
 
-function toVsCodeLmThinkingPart(value: unknown): VscodeLmThinking | undefined {
+function toVsCodeLmThinkingPart(value: unknown, model?: VsCodeLmModelIdentity): VscodeLmThinking | undefined {
 	if (!hasVsCodeLmThinkingType(value)) return undefined
 	const thinking = snapshotVscodeLmThinking(value)
-	if (!thinking) return undefined
+	if (
+		!thinking ||
+		(model &&
+			((thinking.modelId !== undefined && thinking.modelId !== model.id) ||
+				(thinking.modelVendor !== undefined && thinking.modelVendor !== model.vendor) ||
+				(thinking.modelVersion !== undefined && thinking.modelVersion !== model.version)))
+	) {
+		return undefined
+	}
 	const constructor = (
 		vscode as typeof vscode & {
 			LanguageModelThinkingPart?: new (
@@ -124,8 +136,24 @@ function convertAnthropicImagePart(
 	)
 }
 
+function decodeVsCodeLmStatefulMarker(value: unknown): Uint8Array | undefined {
+	if (typeof value !== "string" || value.length === 0) {
+		return undefined
+	}
+
+	try {
+		const decoded = Buffer.from(value, "base64")
+		const normalizedInput = value.replace(/=+$/, "")
+		const normalizedDecoded = decoded.toString("base64").replace(/=+$/, "")
+		return decoded.length > 0 && normalizedInput === normalizedDecoded ? decoded : undefined
+	} catch {
+		return undefined
+	}
+}
+
 export function convertToVsCodeLmMessages(
 	anthropicMessages: Anthropic.Messages.MessageParam[],
+	model?: VsCodeLmModelIdentity,
 ): vscode.LanguageModelChatMessage[] {
 	const vsCodeLmMessages: vscode.LanguageModelChatMessage[] = []
 
@@ -135,13 +163,24 @@ export function convertToVsCodeLmMessages(
 			vsCodeLmMessages.push(vscode.LanguageModelChatMessage.User(hookContext))
 			continue
 		}
-		// Handle simple string messages
+		const marker =
+			model && anthropicMessage.role === "assistant"
+				? decodeVsCodeLmStatefulMarker(
+						(anthropicMessage as { vscodeLmStatefulMarker?: unknown }).vscodeLmStatefulMarker,
+					)
+				: undefined
 		if (typeof anthropicMessage.content === "string") {
-			vsCodeLmMessages.push(
+			const message =
 				anthropicMessage.role === "assistant"
 					? vscode.LanguageModelChatMessage.Assistant(anthropicMessage.content)
-					: vscode.LanguageModelChatMessage.User(anthropicMessage.content),
-			)
+					: vscode.LanguageModelChatMessage.User(anthropicMessage.content)
+			if (marker) {
+				message.content = [
+					...message.content,
+					new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE),
+				]
+			}
+			vsCodeLmMessages.push(message)
 			continue
 		}
 
@@ -182,7 +221,7 @@ export function convertToVsCodeLmMessages(
 					| VscodeLmThinking
 				> = []
 				for (const part of anthropicMessage.content) {
-					const thinking = toVsCodeLmThinkingPart(part)
+					const thinking = toVsCodeLmThinkingPart(part, model)
 					if (thinking) {
 						contentParts.push(thinking)
 					} else if (part.type === "tool_use") {
@@ -198,6 +237,11 @@ export function convertToVsCodeLmMessages(
 					} else if (part.type === "text") {
 						contentParts.push(new vscode.LanguageModelTextPart(part.text))
 					}
+				}
+
+				// Marker-only messages still carry continuation state when thinking is unavailable.
+				if (marker) {
+					contentParts.push(new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE))
 				}
 
 				// Unsupported host thinking must not fabricate an empty assistant turn.

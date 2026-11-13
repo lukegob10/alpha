@@ -192,6 +192,43 @@ describe("Gemini stream fidelity", () => {
 		}
 	})
 
+	it.each(routes.flatMap((route) => ["admission", "read"].map((phase) => ({ ...route, phase }))))(
+		"clears the $name inactivity timer when Stop interrupts a stalled SDK $phase",
+		async ({ create, phase }) => {
+			vi.useFakeTimers()
+			vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(600_000)
+			const controller = new AbortController()
+			const pending = new Promise<never>(() => {})
+			const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+			if (phase === "admission") {
+				generateContentStream.mockReturnValueOnce(pending)
+			} else {
+				generateContentStream.mockResolvedValueOnce({
+					[Symbol.asyncIterator]: () => ({ next: () => pending, return: close }),
+				})
+			}
+			const result = create()
+				.createMessage("System", messages, { taskId: "stop-stalled-stream", signal: controller.signal })
+				.next()
+			try {
+				await vi.advanceTimersByTimeAsync(0)
+				expect(vi.getTimerCount()).toBe(1)
+
+				const reason = new Error("Caller stopped")
+				const cancelled = expect(result).rejects.toBe(reason)
+				controller.abort(reason)
+				await cancelled
+				expect(generateContentStream.mock.calls[0][0].config.abortSignal.reason).toBe(reason)
+				if (phase === "read") expect(close).toHaveBeenCalledOnce()
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				controller.abort()
+				await result.catch(() => undefined)
+				vi.useRealTimers()
+			}
+		},
+	)
+
 	it.each(routes)("preserves an explicit $name compaction deadline during stream progress", async ({ create }) => {
 		vi.useFakeTimers()
 		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
@@ -219,6 +256,8 @@ describe("Gemini stream fidelity", () => {
 				timeoutScope: "compaction_deadline",
 				retryable: false,
 			})
+			// Only the mock SDK's outstanding read remains scheduled.
+			expect(vi.getTimerCount()).toBe(1)
 			await vi.advanceTimersByTimeAsync(30)
 			expect(vi.getTimerCount()).toBe(0)
 		} finally {

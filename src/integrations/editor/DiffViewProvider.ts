@@ -568,6 +568,7 @@ export class DiffViewProvider {
 		}
 
 		const postWriteWarnings: string[] = []
+		let diagnosticsDelayMs = Math.max(0, writeDelayMs)
 		const recordPostWriteWarning = (message: string, error: unknown) => {
 			const detail = error instanceof Error ? `: ${error.message}` : `: ${String(error)}`
 			console.warn(`${message}${detail}`)
@@ -596,8 +597,9 @@ export class DiffViewProvider {
 					)
 				}
 
-				// Force a small delay to ensure diagnostics are triggered
-				await new Promise((resolve) => setTimeout(resolve, 100))
+				// Give background document diagnostics at least 100 ms to start.
+				// The configured diagnostics wait can cover the same interval.
+				diagnosticsDelayMs = Math.max(diagnosticsDelayMs, 100)
 			}
 		} catch (error) {
 			recordPostWriteWarning(`The file '${relPath}' was written, but the editor could not be refreshed`, error)
@@ -607,9 +609,7 @@ export class DiffViewProvider {
 
 		if (diagnosticsEnabled) {
 			try {
-				// Add configurable delay to allow linters time to process
-				const safeDelayMs = Math.max(0, writeDelayMs)
-				await delay(safeDelayMs)
+				await delay(diagnosticsDelayMs)
 
 				const postDiagnostics = vscode.languages
 					.getDiagnostics()

@@ -141,10 +141,6 @@ class OperationTokenCountContext implements TokenCountContext {
 			throwIfAborted(this.signal)
 			return fallback
 		}
-		// Count the same immutable wire representation used for the cache key. A
-		// caller mutating its live block objects while the provider awaits cannot
-		// poison an earlier workload's cached result.
-		const stableContent = JSON.parse(serializedContent) as Anthropic.Messages.ContentBlockParam[]
 		const modelIdentity = this.getModelIdentity(apiHandler)
 		const cacheKey = this.getCacheKey(apiHandler, modelIdentity, serializedContent)
 		const cached = this.getCached(cacheKey)
@@ -153,6 +149,9 @@ class OperationTokenCountContext implements TokenCountContext {
 			return cached
 		}
 
+		// On a cache miss, count the immutable wire representation used for the cache key.
+		// Later mutations to the caller's blocks cannot poison the cached result.
+		const stableContent = JSON.parse(serializedContent) as Anthropic.Messages.ContentBlockParam[]
 		if (this.remoteAllowanceExhausted || this.remainingRemoteMs <= 0 || Date.now() >= this.requestDeadline) {
 			this.remoteAllowanceExhausted = true
 			const fallback = getConservativeLocalCount(stableContent, apiHandler, serializedContent)

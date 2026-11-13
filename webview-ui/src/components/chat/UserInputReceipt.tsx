@@ -24,7 +24,9 @@ export const UserInputReceipt = ({ response }: { response: UserInputResponseData
 						className="flex min-w-0 flex-col gap-2 border-b border-vscode-panel-border py-3 first:pt-0 last:border-b-0 last:pb-0">
 						<dt className="flex min-w-0 flex-col gap-1">
 							{entry.header && (
-								<span className="text-xs text-vscode-descriptionForeground">{entry.header}</span>
+								<span className="wrap-anywhere text-xs text-vscode-descriptionForeground">
+									{entry.header}
+								</span>
 							)}
 							<span className="break-words whitespace-pre-wrap font-medium">{entry.question}</span>
 						</dt>

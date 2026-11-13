@@ -1,4 +1,5 @@
 const OPEN_TAG = "<alpha-mem-citation>"
+const PARTIAL_OPEN_TAG_PREFIX = "<alpha-"
 const CLOSE_TAG = "</alpha-mem-citation>"
 export const MAX_MEMORY_CITATION_LENGTH = 16_384
 const MAX_BLOCKS = 32
@@ -10,6 +11,9 @@ export interface MemoryCitationText {
 
 /** Keep reserved metadata out of rendered/copied answers, without interpreting it as HTML. */
 export function splitMemoryCitations(text: string, partial = false): MemoryCitationText {
+	// Ordinary streamed text has no citation markup to scan for.
+	if (!text.includes(partial ? PARTIAL_OPEN_TAG_PREFIX : OPEN_TAG)) return { text, blocks: [] }
+
 	const visible: string[] = []
 	const blocks: string[] = []
 	let copiedUntil = 0
@@ -47,7 +51,7 @@ export function splitMemoryCitations(text: string, partial = false): MemoryCitat
 				!fence &&
 				partial &&
 				end === text.length &&
-				line.startsWith("<alpha-") &&
+				line.startsWith(PARTIAL_OPEN_TAG_PREFIX) &&
 				OPEN_TAG.startsWith(line)
 			) {
 				visible.push(text.slice(copiedUntil, start))

@@ -2336,6 +2336,37 @@ describe("Alpha", () => {
 				expect(performance.now()).toBe(5_000)
 			})
 
+			it.each([
+				{ publicationMs: 25, expectedAdmission: 1_000 },
+				{ publicationMs: 75, expectedAdmission: 1_025 },
+			])(
+				"counts a $publicationMs ms countdown publication toward the remaining pacing interval",
+				async (fixture) => {
+					usePacingClock()
+					const task = new Task({
+						provider: mockProvider,
+						apiConfiguration: { ...mockApiConfig, rateLimitSeconds: 1 },
+						task: "paced follow-up",
+						startTask: false,
+					})
+					await task["maybeWaitForProviderRateLimit"](0)
+					await vi.advanceTimersByTimeAsync(950)
+					const say = vi.mocked(task.say)
+					say.mockImplementationOnce(async () => {
+						await new Promise<void>((resolve) => setTimeout(resolve, fixture.publicationMs))
+						return undefined
+					})
+
+					const admission = task["maybeWaitForProviderRateLimit"](0).then(() => performance.now())
+					await vi.advanceTimersByTimeAsync(1_100)
+
+					expect(await admission).toBe(fixture.expectedAdmission)
+					expect(say).toHaveBeenNthCalledWith(1, "api_req_rate_limit_wait", '{"seconds":1}', undefined, true)
+					expect(say).toHaveBeenNthCalledWith(2, "api_req_rate_limit_wait", undefined, undefined, false)
+					expect(task.getRequestPacingMetrics()).toMatchObject({ waitCount: 1, totalWaitMs: 50 })
+				},
+			)
+
 			it("serializes simultaneous requests routed to the same stable profile", async () => {
 				usePacingClock()
 				const route = {

@@ -209,6 +209,22 @@ describe("operation-scoped context token counting", () => {
 		expect(countTokens).toHaveBeenCalledTimes(1)
 	})
 
+	it("reuses an exact count without reparsing cached prompt blocks", async () => {
+		const countTokens = vi.fn(async () => 7)
+		const context = createTokenCountContext(createHandler(countTokens))
+		const content: Anthropic.Messages.ContentBlockParam[] = [{ type: "text", text: "cached prompt blocks" }]
+		expect(await context.countTokens(content)).toBe(7)
+
+		const parse = vi.spyOn(JSON, "parse")
+		try {
+			expect(await context.countTokens(structuredClone(content))).toBe(7)
+			expect(parse).not.toHaveBeenCalledWith(JSON.stringify(content))
+		} finally {
+			parse.mockRestore()
+		}
+		expect(countTokens).toHaveBeenCalledOnce()
+	})
+
 	it("accepts semantic emptiness but fails closed on exact zero for countable content", async () => {
 		const countTokens = vi.fn(async () => 0)
 		const handler = createHandler(countTokens)

@@ -44,6 +44,7 @@ export class TaskMessageQueuePersistence implements MessageQueuePersistence {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
 				return []
 			}
+			if (messages.length === 0) return messages
 			const history = await readApiMessages({ taskId: this.taskId, globalStoragePath: this.globalStoragePath })
 			const consumed = new Set(history.flatMap((message) => message.queued_message_ids ?? []))
 			const pending = messages.filter((message) => !consumed.has(message.id))

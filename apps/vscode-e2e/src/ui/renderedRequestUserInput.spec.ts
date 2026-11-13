@@ -29,7 +29,7 @@ function documentFixture(options: { nonce?: string; loading?: boolean; missing?:
 	const paints: Array<() => void> = []
 	const focusedElement = {
 		tagName: "H3",
-		outerHTML: "<h3>Review your answers</h3>",
+		outerHTML: "<h3>What should the first version do?</h3>",
 		isConnected: true,
 		ownerDocument: undefined as unknown,
 	}

@@ -5,6 +5,7 @@ import type {
 	UserInputResponseData,
 } from "@alpha-code/types"
 
+import { t } from "../../i18n"
 import { Task } from "../task/Task"
 import type { ToolUse } from "../../shared/tools"
 
@@ -29,8 +30,9 @@ function validateQuestions(questions: unknown): asserts questions is RequestUser
 			throw new Error(`request_user_input question ${index + 1} must have a unique snake_case id.`)
 		}
 		ids.add(record.id)
-		if (typeof record.header !== "string" || record.header.trim().length === 0 || record.header.length > 12) {
-			throw new Error(`request_user_input question ${record.id} must have a header of 12 or fewer characters.`)
+		// Codex CLI (553c764e) treats the 12-character target as guidance. The webview wraps longer headers.
+		if (typeof record.header !== "string" || record.header.trim().length === 0) {
+			throw new Error(t("tools:requestUserInput.headerRequired", { id: record.id }))
 		}
 		if (typeof record.question !== "string" || record.question.trim().length === 0) {
 			throw new Error(`request_user_input question ${record.id} must have a prompt.`)

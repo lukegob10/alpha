@@ -51,6 +51,7 @@ import { captureVerificationContent } from "../../agent/VerificationScope"
 import { checkAutoApprovalWithInheritedPolicy } from "../../auto-approval"
 import { resolveTaskReasoning } from "../../agent/TaskReasoning"
 import * as api from "../../../api"
+import { deferred } from "./managedPublicLifecycleHarness"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -2609,6 +2610,74 @@ If complete, use attempt_completion.
 			}
 		},
 	)
+
+	it("retains one accepted child report when the parent interrupts during durable finalization", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		const report = "The review is complete."
+		const historyStarted = deferred()
+		const historyRelease = deferred()
+		const emitter = new EventEmitter()
+		const child = Object.assign(emitter, {
+			taskId: "",
+			alphaMessages: [{ ts: 1, type: "say", say: "completion_result", text: report }],
+			getTaskLifetimeCancellationSignal: () => new AbortController().signal,
+			getTokenUsage: () => ({ totalTokensIn: 0, totalTokensOut: 0 }),
+			persistFrozenSubagentInstructions: vi.fn(async () => undefined),
+			finalizeSubagentHistory: vi.fn(async () => {
+				historyStarted.resolve()
+				await historyRelease.promise
+			}),
+			cancelCurrentRequest: vi.fn(),
+			abortTask: vi.fn(async () => undefined),
+			start() {
+				emitter.emit(AlphaCodeEventName.TaskCompleted, this.taskId, this.getTokenUsage())
+			},
+		})
+		Reflect.set(
+			provider,
+			"createTask",
+			vi.fn(async (_prompt, _images, _parent, options: { taskId: string }) => {
+				child.taskId = options.taskId
+				return child as unknown as Task
+			}),
+		)
+		const bounded = new BoundedDelegationManager((envelope, signal, acceptCompletion) =>
+			Reflect.get(provider, "runSubagentEnvelope").call(provider, envelope, signal, acceptCompletion),
+		)
+		const runs = new AsyncSubagentRunManager(bounded)
+		Reflect.set(provider, "boundedDelegationManager", bounded)
+		Reflect.set(provider, "asyncSubagentRunManager", runs)
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Review the completed work", agent_kind: "review" },
+		])
+		const handle = await provider.launchPreparedSubagentGroup(parent as any, prepared, new AbortController().signal)
+		const finalization = Reflect.get(provider, "subagentRunFinalizations").get(handle.taskId)
+			.promise as Promise<void>
+		try {
+			await historyStarted.promise
+			await vi.waitFor(() => expect(store.getAgent(handle.taskId, parent.taskId)?.status).toBe("running"))
+			// Wait for the request to reach the bounded owner before allowing the
+			// accepted report to finish committing to history and the mailbox.
+			const interruptSpy = vi.spyOn(runs, "interrupt")
+			const interrupt = provider.interruptAgent(parent as any, handle.taskId)
+			await vi.waitFor(() => expect(interruptSpy).toHaveBeenCalledOnce())
+			historyRelease.resolve()
+			await expect(interrupt).resolves.toEqual({ previous_status: "running" })
+			await finalization
+			expect(child.abortTask).not.toHaveBeenCalled()
+			expect(child.finalizeSubagentHistory).toHaveBeenCalledExactlyOnceWith("completed", report, "completed")
+			expect(store.getAgent(handle.taskId, parent.taskId)?.status).toBe("completed")
+			expect(store.readMailbox(parent.taskId, { kinds: ["result"] }).entries).toEqual([
+				expect.objectContaining({ payload: expect.objectContaining({ status: "completed", summary: report }) }),
+			])
+			expect(store.readMailbox(handle.taskId, { kinds: ["control"] }).entries).toEqual([])
+		} finally {
+			historyRelease.resolve()
+			await finalization
+		}
+	})
 
 	it("settles twelve children across six waves including missing terminal events and releases capacity", async () => {
 		const provider = makeProviderHarness(2, { maxConcurrentSubagents: 2 })

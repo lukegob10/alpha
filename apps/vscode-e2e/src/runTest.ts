@@ -38,7 +38,7 @@ import {
 	type RepositoryEvidence,
 	type EvidenceRetentionOptions,
 } from "./evidence"
-import { finalizeRunEvidence, finalizeRunRetention, type RunRetentionReport } from "./runEvidence"
+import { finalizeRunEvidence, finalizeRunRetention, liveSmokeFixture, type RunRetentionReport } from "./runEvidence"
 import { validateLiveSetupTimeout } from "./suite/liveCopilot"
 import { writeHarnessReceipt } from "./harnessReceipt"
 import {
@@ -545,6 +545,7 @@ export async function runExtensionTests(
 	let captureHelperCleanupUncertain = false
 	let launchedHostPid: number | undefined
 	let alphaHome: string | undefined
+	let liveSmokeBuild: Awaited<ReturnType<typeof verifyObservedExperimentBuild>> | undefined
 	try {
 		if (options.signal?.aborted) throw new HostLaunchCancelledError()
 		release = profile.profileDir
@@ -568,6 +569,12 @@ export async function runExtensionTests(
 		const experimentBuild = options.experimentEvidence
 			? await verifyObservedExperimentBuild(extensionDevelopmentPath)
 			: undefined
+		if (identity.execution === "extension-host" && liveSmokeFixture(options) && !options.installedExtensionPath) {
+			liveSmokeBuild = await verifyObservedExperimentBuild(
+				extensionDevelopmentPath,
+				path.dirname(extensionDevelopmentPath),
+			)
+		}
 		repositoryBefore = await captureRepositoryEvidence(profile.workspace)
 		await fs.writeFile(
 			path.join(artifactsDir, "launch.json"),
@@ -853,6 +860,7 @@ export async function runExtensionTests(
 						startedAt,
 						repositoryBefore,
 						scenarioResultPath,
+						liveSmokeBuild,
 						improvementCapture,
 						improvementCaptureInvoker: dependencies.improvementCaptureInvoker,
 					})

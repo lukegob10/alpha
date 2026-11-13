@@ -114,25 +114,24 @@ describe("ChatRow grouped user input", () => {
 		expect(onSuggestionClick).toHaveBeenCalledWith(suggestion, expect.anything())
 	})
 
-	it("keeps valid grouped questions and structured submission", () => {
+	it("sends a structured answer directly from a single question", () => {
 		const onSubmit = vi.fn()
 		render(row(message.text!, undefined, onSubmit))
 
 		expect(screen.getByText("Which environment should I use?")).toBeInTheDocument()
 		fireEvent.click(screen.getByRole("radio", { name: /Staging/ }))
-		fireEvent.click(screen.getByRole("button", { name: "chat:requestUserInput.review" }))
 		fireEvent.click(screen.getByRole("button", { name: "chat:requestUserInput.submit" }))
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ environment: { answers: ["Staging"] } }, message.ts)
 	})
 
-	it("keeps the review editable when the host rejects the submission", () => {
+	it("keeps the answer editable when the host rejects the submission", () => {
 		const onSubmit = vi.fn(() => false)
 		render(row(message.text!, undefined, onSubmit))
 		fireEvent.click(screen.getByRole("radio", { name: /Staging/ }))
-		fireEvent.click(screen.getByRole("button", { name: "chat:requestUserInput.review" }))
 		fireEvent.click(screen.getByRole("button", { name: "chat:requestUserInput.submit" }))
 
 		expect(screen.getByRole("button", { name: "chat:requestUserInput.submit" })).toBeEnabled()
+		expect(screen.getByRole("radio", { name: /Staging/ })).toBeChecked()
 		expect(onSubmit).toHaveBeenCalledExactlyOnceWith({ environment: { answers: ["Staging"] } }, message.ts)
 	})
 
@@ -205,13 +204,13 @@ describe("ChatRow grouped user input", () => {
 		const { rerender } = render(row("task-a", 42))
 		fireEvent.click(screen.getByRole("radio", { name: "chat:requestUserInput.other" }))
 		fireEvent.change(screen.getByRole("textbox"), { target: { value: "A private testing environment" } })
-		expect(screen.getByRole("button", { name: "chat:requestUserInput.review" })).toBeEnabled()
+		expect(screen.getByRole("button", { name: "chat:requestUserInput.submit" })).toBeEnabled()
 
 		rerender(row(taskId, ts))
 
 		expect(screen.getByRole("radio", { name: "chat:requestUserInput.other" })).not.toBeChecked()
 		expect(screen.queryByRole("textbox")).not.toBeInTheDocument()
-		expect(screen.getByRole("button", { name: "chat:requestUserInput.review" })).toBeDisabled()
+		expect(screen.getByRole("button", { name: "chat:requestUserInput.submit" })).toBeDisabled()
 		fireEvent.click(screen.getByRole("radio", { name: /Staging/ }))
 		expect(onInteraction).toHaveBeenCalledTimes(2)
 	})

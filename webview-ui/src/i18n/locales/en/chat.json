@@ -566,7 +566,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha keeps active tasks running through delayed VS Code heartbeats and saves large chat histories faster."
+			"description": "Questions now send from the final step. Alpha also keeps completed subagent reports intact and handles long command output and task history more reliably."
 		}
 	},
 	"crossTasks": {
@@ -644,11 +644,6 @@
 		"cancel": "Cancel",
 		"back": "Back",
 		"continue": "Continue",
-		"review": "Review answers",
-		"reviewTitle": "Review your answers",
-		"reviewDescription": "You can edit any answer before sending.",
-		"edit": "Edit",
-		"editQuestion": "Edit answer for {{header}}",
 		"submit": "Send answers",
 		"closed": "Question request closed",
 		"pending": "Sending answers…",

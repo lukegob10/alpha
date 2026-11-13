@@ -33,6 +33,7 @@ export interface InternalTaskResult {
 export type InternalTaskRunner = (
 	envelope: InternalTaskEnvelope,
 	signal: AbortSignal,
+	acceptCompletion: () => void,
 ) => Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">>
 
 export type InternalTaskCancellationKind =
@@ -78,7 +79,7 @@ export class BoundedDelegationManager {
 		maxConcurrency: number
 		wake: () => void
 	}> = []
-	private readonly activeRuns = new Map<string, AbortController>()
+	private readonly activeRuns = new Map<string, { controller: AbortController; completionAccepted: boolean }>()
 	private readonly completions = new Map<string, Promise<InternalTaskResult>>()
 	constructor(
 		private readonly runner: InternalTaskRunner,
@@ -113,10 +114,10 @@ export class BoundedDelegationManager {
 	}
 
 	private abortRun(taskId: string, kind: InternalTaskCancellationKind, reason: string | Error): boolean {
-		const controller = this.activeRuns.get(taskId)
-		if (!controller || controller.signal.aborted) return false
+		const run = this.activeRuns.get(taskId)
+		if (!run || run.controller.signal.aborted || (kind === "interrupted" && run.completionAccepted)) return false
 
-		controller.abort(
+		run.controller.abort(
 			new InternalTaskCancellationError(kind, cancellationMessage(reason, "Internal task cancelled by user")),
 		)
 		return true
@@ -149,7 +150,8 @@ export class BoundedDelegationManager {
 	): Promise<InternalTaskResult> {
 		const rootKey = this.getRootKey(envelope)
 		const controller = new AbortController()
-		this.activeRuns.set(envelope.id, controller)
+		const run = { controller, completionAccepted: false }
+		this.activeRuns.set(envelope.id, run)
 		const cancelFromParent = () =>
 			controller.abort(
 				new InternalTaskCancellationError(
@@ -178,7 +180,9 @@ export class BoundedDelegationManager {
 			// A lifecycle observer may synchronously cancel the run in response to
 			// the started notification. Do not invoke the child runner in that case.
 			if (controller.signal.aborted) throw controller.signal.reason
-			const result = await this.runner(envelope, controller.signal)
+			const result = await this.runner(envelope, controller.signal, () => {
+				run.completionAccepted = true
+			})
 			if (result.taskId !== envelope.id) {
 				throw new Error(`Sub-agent runner returned task ${result.taskId} for handle ${envelope.id}`)
 			}
@@ -226,7 +230,7 @@ export class BoundedDelegationManager {
 		} finally {
 			if (parentListenerAttached) parentSignal?.removeEventListener("abort", cancelFromParent)
 			if (acquired) this.release(rootKey)
-			if (this.activeRuns.get(envelope.id) === controller) this.activeRuns.delete(envelope.id)
+			if (this.activeRuns.get(envelope.id) === run) this.activeRuns.delete(envelope.id)
 		}
 	}
 	async runBatch(envelopes: InternalTaskEnvelope[], parentSignal?: AbortSignal): Promise<InternalTaskResult[]> {

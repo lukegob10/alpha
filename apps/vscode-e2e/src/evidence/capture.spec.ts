@@ -73,6 +73,77 @@ async function manifestOf(manifestPath: string): Promise<EvidenceManifest> {
 	return JSON.parse(await fs.readFile(manifestPath, "utf8")) as EvidenceManifest
 }
 
+test("binds a fresh live task receipt and verified bundle identity without copying receipt contents", async () => {
+	const input = options()
+	const { artifactDirectory } = await prepareEvidenceRun(input)
+	const extensionPath = await ownedSource("extension")
+	const bundlePath = path.join(extensionPath, "extension.js")
+	const bundle = "verified extension bytes"
+	await fs.writeFile(bundlePath, bundle)
+	const file = "command-file-diff-live.json"
+	const privateReceipt = JSON.stringify({
+		schemaVersion: 1,
+		passed: true,
+		extensionPath,
+		hostVersion: input.metadata.hostVersion,
+		providerMode: input.metadata.provider,
+		model: { id: input.metadata.modelId },
+		effort: input.metadata.reasoningEffort,
+		answer: "private assistant reply",
+	})
+	await fs.writeFile(path.join(artifactDirectory, file), privateReceipt)
+	await fs.writeFile(path.join(artifactDirectory, "unrelated.json"), "private unrelated file")
+	const sourceRevision = "a".repeat(40)
+	const entrypointSha256 = createHash("sha256").update(bundle).digest("hex")
+	const result = await captureRunEvidence({
+		...input,
+		metadata: { ...input.metadata, outcome: "passed" },
+		bundlePath,
+		liveSmoke: { fixtureId: "command-file-diff-live", extensionPath, build: { sourceRevision, entrypointSha256 } },
+	})
+	const manifest = await manifestOf(result.manifestPath)
+	assert.equal(result.captureComplete, true)
+	assert.equal(manifest.metadata.sourceRevision, sourceRevision)
+	assert.equal(manifest.bundleSha256, entrypointSha256)
+	assert.deepEqual(manifest.artifacts, [
+		{
+			path: file,
+			bytes: Buffer.byteLength(privateReceipt),
+			sha256: createHash("sha256").update(privateReceipt).digest("hex"),
+		},
+	])
+	assert.equal(JSON.stringify(manifest).includes("private assistant reply"), false)
+	assert.equal(await fs.readFile(path.join(artifactDirectory, file), "utf8"), privateReceipt)
+})
+
+test("does not bind a live receipt from a different loaded extension", async () => {
+	const input = options()
+	const { artifactDirectory } = await prepareEvidenceRun(input)
+	const extensionPath = await ownedSource("extension")
+	const anotherExtension = await ownedSource("another-extension")
+	await fs.writeFile(
+		path.join(artifactDirectory, "command-file-diff-live.json"),
+		JSON.stringify({
+			schemaVersion: 1,
+			passed: true,
+			extensionPath: anotherExtension,
+			hostVersion: input.metadata.hostVersion,
+			providerMode: input.metadata.provider,
+			model: { id: input.metadata.modelId },
+			effort: input.metadata.reasoningEffort,
+		}),
+	)
+	const result = await captureRunEvidence({
+		...input,
+		metadata: { ...input.metadata, outcome: "passed" },
+		liveSmoke: { fixtureId: "command-file-diff-live", extensionPath },
+	})
+	const manifest = await manifestOf(result.manifestPath)
+	assert.equal(result.captureComplete, false)
+	assert.deepEqual(manifest.artifacts, [])
+	assert.deepEqual(manifest.warnings, ["LIVE_SMOKE_EVIDENCE_INCOMPLETE"])
+})
+
 test("categorizes canonical commands and aliases without exporting names or payloads", async () => {
 	const storage = await ownedSource("storage")
 	const task = path.join(storage, "tasks", "task-1")

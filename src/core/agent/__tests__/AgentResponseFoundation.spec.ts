@@ -108,6 +108,33 @@ describe("AgentResponseAccumulator", () => {
 		expect(response.reasoning).toBe("First.Second.")
 	})
 
+	it.each([
+		[undefined, undefined, undefined],
+		[1, undefined, undefined],
+		[1, 1, 4],
+	])(
+		"retains arrival order in mixed slots with positions %s, %s and %s",
+		async (firstIndex, secondIndex, thirdIndex) => {
+			const accumulator = new AgentResponseAccumulator()
+			const text = (value: string, outputIndex?: number) => ({
+				type: "text" as const,
+				text: value,
+				...(outputIndex !== undefined ? { outputIndex } : {}),
+			})
+			const fragments = [
+				text("First. ", firstIndex),
+				{ type: "reasoning", text: "Provider note." } as const,
+				text("Second. ", secondIndex),
+				text("Third.", thirdIndex),
+			]
+			for (const fragment of fragments) await accumulator.add(fragment)
+
+			const response = await accumulator.finish()
+			expect(response.items).toEqual(fragments)
+			expect(response.text).toBe("First. Second. Third.")
+		},
+	)
+
 	it("keeps unindexed text and reasoning in place for providers with tool-only indexes", async () => {
 		const accumulator = new AgentResponseAccumulator()
 		await accumulator.add({ type: "text", text: "Before." })

@@ -195,6 +195,14 @@ describe("Alpha memory citations", () => {
 		expect(stripMemoryCitations("An ordinary answer.\n")).toBe("An ordinary answer.\n")
 	})
 
+	it("recognizes the first streamed citation prefix without trimming ordinary text", () => {
+		expect(stripMemoryCitations("Answer.\r\n  <alpha-", true)).toBe("Answer.")
+		expect(stripMemoryCitations("Answer.\r\n  <alpha-")).toBe("Answer.\r\n  <alpha-")
+		expect(stripMemoryCitations("Answer.\n<alpha-feature>\n", true)).toBe("Answer.\n<alpha-feature>\n")
+		const code = "Example:\n~~~xml\n<alpha-"
+		expect(stripMemoryCitations(code, true)).toBe(code)
+	})
+
 	it("keeps oversized metadata invisible without accepting it for usage", () => {
 		const text = `Answer.\n${citation("x".repeat(16_385))}`
 		expect(stripMemoryCitations(text)).toBe("Answer.")

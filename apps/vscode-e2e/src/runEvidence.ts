@@ -12,6 +12,8 @@ import { assertOwnedTestRoot, type TestProfile } from "./testProfile"
 import { TestRunError } from "./runFailure"
 import type { ExtensionTestRunOptions, ExtensionTestRunResult } from "./runTest"
 import { requireEvidenceRoot, requireEvidenceRun } from "./evidence/paths"
+import { verifyObservedExperimentBuild } from "./evidence/experimentIdentity"
+import type { CaptureRunEvidenceOptions } from "./evidence/types"
 import {
 	finalizeImprovementCapture,
 	type ImprovementCaptureState,
@@ -159,6 +161,15 @@ async function scenarioTaskIds(file: string, runId: string): Promise<string[]> {
 	}
 }
 
+export function liveSmokeFixture(
+	options: ExtensionTestRunOptions,
+): "command-file-diff-live" | "supported-total" | undefined {
+	if (options.providerMode !== "live-copilot" || options.setup) return undefined
+	if (options.testFile === "command-file-diff-live.test" && !options.testGrep) return "command-file-diff-live"
+	if (options.testFile === "live-quality.test" && options.testGrep === "supported-total") return "supported-total"
+	return undefined
+}
+
 /** Capture only projected evidence from the runner's already-owned roots, never arbitrary settings/auth files. */
 export async function finalizeRunEvidence(input: {
 	options: ExtensionTestRunOptions
@@ -169,6 +180,7 @@ export async function finalizeRunEvidence(input: {
 	startedAt: string
 	repositoryBefore?: RepositoryEvidence
 	scenarioResultPath: string
+	liveSmokeBuild?: Awaited<ReturnType<typeof verifyObservedExperimentBuild>>
 	improvementCapture?: ImprovementCaptureState
 	improvementCaptureInvoker?: ImprovementCaptureInvoker
 }): Promise<void> {
@@ -179,6 +191,26 @@ export async function finalizeRunEvidence(input: {
 	const logsPath = await existingDirectory(path.join(profile.userDataDir, "logs"))
 	const workspacePath = await fs.realpath(profile.workspace)
 	const taskIds = options.scenarioId ? await scenarioTaskIds(input.scenarioResultPath, result.runId) : []
+	const fixtureId = result.status === "passed" && result.execution === "extension-host" && liveSmokeFixture(options)
+	let liveSmoke: CaptureRunEvidenceOptions["liveSmoke"]
+	if (fixtureId) {
+		liveSmoke = { fixtureId, extensionPath: input.extensionDevelopmentPath }
+		const before = input.liveSmokeBuild
+		if (
+			before?.status === "verified" &&
+			before.sourceRevision &&
+			before.entrypointSha256 &&
+			before.manifestDigest
+		) {
+			const after = await verifyObservedExperimentBuild(
+				input.extensionDevelopmentPath,
+				path.dirname(input.extensionDevelopmentPath),
+			)
+			if (after.status === "verified" && after.manifestDigest === before.manifestDigest) {
+				liveSmoke.build = { sourceRevision: before.sourceRevision, entrypointSha256: before.entrypointSha256 }
+			}
+		}
+	}
 	const capture = await captureRunEvidence({
 		artifactsRoot: profile.artifactsDir,
 		runId: result.runId,
@@ -198,6 +230,7 @@ export async function finalizeRunEvidence(input: {
 			result.execution === "extension-host"
 				? path.join(input.extensionDevelopmentPath, "dist", "extension.js")
 				: undefined,
+		liveSmoke,
 		workspacePath,
 		storagePath,
 		logsPath,

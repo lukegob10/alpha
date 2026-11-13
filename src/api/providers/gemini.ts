@@ -526,11 +526,14 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				requestControl.signal.throwIfAborted()
 			}
 			const awaitRequest = async <T>(operation: PromiseLike<T>, operationName: string): Promise<T> => {
-				const result = await raceApiStreamAbort(
-					withApiRequestTimeout(operation, operationName, requestTimeoutMs, () =>
+				// Stop or an explicit deadline must settle the read's timer even if the SDK stalls.
+				// Codex 16280e19 also drops its per-read idle timeout when the response consumer closes.
+				const result = await withApiRequestTimeout(
+					raceApiStreamAbort(operation, requestControl.signal),
+					operationName,
+					requestTimeoutMs,
+					() =>
 						requestAbortController.abort(new ApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0)),
-					),
-					requestControl.signal,
 				)
 				throwIfRequestAborted()
 				return result as T
@@ -682,20 +685,9 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 				while (true) {
 					throwIfRequestAborted()
-					const nextChunk = await raceApiStreamAbort(
-						withApiRequestTimeout(
-							resultIterator.next(),
-							`${this.providerName} stream response for ${requestContext.model}`,
-							requestTimeoutMs,
-							() =>
-								requestAbortController.abort(
-									new ApiRequestTimeoutError(
-										`${this.providerName} stream response for ${requestContext.model}`,
-										requestTimeoutMs ?? 0,
-									),
-								),
-						),
-						requestControl.signal,
+					const nextChunk = await awaitRequest(
+						resultIterator.next(),
+						`${this.providerName} stream response for ${requestContext.model}`,
 					)
 					throwIfRequestAborted()
 

@@ -317,6 +317,17 @@ describe.each(["serial", "selective-parallel"] as const)("managed wait progress 
 		expect(Reflect.get(task, "userMessageContent")).toHaveLength(1)
 	})
 
+	it("does not emit idle-wait guidance when a child wakes for parent mail", async () => {
+		const { task, provider, run } = harness("subagent", mode)
+		provider.waitForAgent.mockResolvedValue({ timedOut: false, mailboxActivity: true, events: [] })
+
+		for (let index = 0; index < 4; index++) {
+			expect((await run(index)).results[0]).toMatchObject({ status: "success", waitOutcome: "active" })
+		}
+
+		expect(Reflect.get(task, "userMessageContent")).toEqual([])
+	})
+
 	it("keeps a cancelled host wait cancelled through the scheduler", async () => {
 		const { provider, run } = harness("primary", mode)
 		provider.waitForAgent.mockResolvedValue({ timedOut: false, cancelled: true, events: [] })

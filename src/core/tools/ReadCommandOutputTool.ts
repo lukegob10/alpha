@@ -441,7 +441,7 @@ export class ReadCommandOutputTool extends BaseTool<"read_command_output"> {
 				const isMissingArtifact =
 					errorCode === "ENOENT" || (error instanceof Error && error.message === "ENOENT")
 				const errorMsg = isMissingArtifact
-					? `Artifact not found: ${displayArtifactId}. Please verify the artifact_id from the command output message. Available artifacts are created when command output exceeds the preview size.`
+					? t("tools:commandOutputSearch.artifactNotFound", { artifactId: displayArtifactId })
 					: `Unable to access artifact ${displayArtifactId}: ${error instanceof Error ? error.message : String(error)}`
 				await reportError(errorMsg)
 				return

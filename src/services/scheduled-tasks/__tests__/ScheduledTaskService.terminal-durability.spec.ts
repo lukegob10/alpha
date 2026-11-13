@@ -4,7 +4,13 @@ import * as path from "path"
 import * as vscode from "vscode"
 import { EventEmitter } from "events"
 import type { MockInstance } from "vitest"
-import { AlphaCodeEventName, type CreateScheduledTaskPayload, type ExtensionMessage } from "@alpha-code/types"
+import {
+	AlphaCodeEventName,
+	type CreateScheduledTaskPayload,
+	type ExtensionMessage,
+	type ScheduledTask,
+	type ScheduledTaskRun,
+} from "@alpha-code/types"
 
 import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { ScheduledTaskService } from "../ScheduledTaskService"
@@ -352,6 +358,65 @@ describe("scheduled terminal result durability", () => {
 		expect(provider.createTask).toHaveBeenCalledOnce()
 		expect(alphaTask.abortTask).not.toHaveBeenCalled()
 	})
+
+	it.each(["toast", "focus", "active"] as const)(
+		"handles completion Review while %s is pending",
+		async (disposeWhile) => {
+			const schedule = await service.createTask(payload({ notificationPreference: "on_completion" }))
+			const { alphaTask, run } = await launch(schedule.id)
+			const toastOpened = deferred()
+			const review = deferred<boolean>()
+			const focusStarted = deferred()
+			const finishFocus = deferred()
+			vi.spyOn(vscode.window, "showInformationMessage").mockImplementationOnce(
+				async <T extends string | vscode.MessageItem>(
+					_message: string,
+					...items: Array<T | vscode.MessageOptions>
+				): Promise<T | undefined> => {
+					toastOpened.resolve()
+					return (await review.promise) ? items.find((item): item is T => item === "Review") : undefined
+				},
+			)
+			const focus = vi.spyOn(vscode.commands, "executeCommand").mockImplementationOnce(async () => {
+				focusStarted.resolve()
+				await finishFocus.promise
+			})
+			const present = vi.spyOn(
+				service as unknown as {
+					presentRunCompletion(task: ScheduledTask, run: ScheduledTaskRun): Promise<void>
+				},
+				"presentRunCompletion",
+			)
+			await terminal(AlphaCodeEventName.TaskCompleted, alphaTask.taskId)
+			try {
+				await toastOpened.promise
+				if (disposeWhile === "toast") await service.dispose()
+				review.resolve(true)
+				if (disposeWhile === "focus") {
+					await focusStarted.promise
+					await service.dispose()
+				}
+				finishFocus.resolve()
+				await present.mock.results[0].value
+				expect(focus).toHaveBeenCalledTimes(disposeWhile === "toast" ? 0 : 1)
+				const reviewActions = provider.postMessageToWebview.mock.calls
+					.map(([message]) => message)
+					.filter((message) => message.type === "action")
+				expect(reviewActions).toHaveLength(disposeWhile === "active" ? 1 : 0)
+				if (disposeWhile === "active") {
+					expect(reviewActions[0]).toMatchObject({
+						action: "switchTab",
+						tab: "scheduledTasks",
+						values: { scheduledTaskId: schedule.id, scheduledTaskRunId: run.id },
+					})
+				}
+			} finally {
+				review.resolve(false)
+				finishFocus.resolve()
+				await present.mock.results[0]?.value
+			}
+		},
+	)
 
 	it("admits the next due occurrence while a retried completion notification remains open", async () => {
 		const schedule = await service.createTask(payload({ notificationPreference: "on_completion" }))

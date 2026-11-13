@@ -494,6 +494,41 @@ describe("primary command timeout mutation receipts", () => {
 		}
 	})
 
+	it("returns a settled command without advancing the clock after its output and receipt are published", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+		let recordExit!: () => void
+		const exitRecorded = new Promise<void>((resolve) => (recordExit = resolve))
+		vi.mocked(fixture.task.completeCommandExecution).mockImplementation(recordExit)
+		const onCommandResult = vi.fn<(result: CommandToolResult) => void>()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "settled-command",
+			toolCallId: "settled-command-call",
+			command: "command",
+			terminalShellIntegrationDisabled: true,
+			agentTimeout: 0,
+			commandExecutionTimeout: 0,
+			onCommandResult,
+		})
+		try {
+			await fixture.launch
+			await fs.writeFile(path.join(fixture.cwd, "fixture.txt"), "updated\n")
+			await fixture.finishProcess()
+			await exitRecorded
+			await vi.advanceTimersByTimeAsync(0)
+
+			expect(onCommandResult).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ exit_code: 0, wall_time_seconds: 0 }),
+			)
+			expect(fixture.provider.recordPrimaryMutation).toHaveBeenCalledOnce()
+			expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+			expect(await execution).toEqual([false, expect.stringContaining("Exit code: 0")])
+		} finally {
+			await vi.advanceTimersByTimeAsync(50)
+			await execution.catch(() => undefined)
+		}
+	})
+
 	it("finishes command output bookkeeping without waiting for the held user question", async () => {
 		const fixture = await createFixture()
 		let resolveQuestion!: (answer: Awaited<ReturnType<Task["ask"]>>) => void

@@ -15,7 +15,7 @@ const CUSTOM_ANSWER = "Oracle 23ai on a local Docker host; use the existing data
 const QUESTIONS: RequestUserInputQuestion[] = [
 	{
 		id: "app_type",
-		header: "App type",
+		header: "ApplicationArchitectureAndFirstDeploymentConfiguration",
 		question: "What should the first version do?",
 		options: [
 			{
@@ -162,7 +162,7 @@ class InputWizardAI {
 
 suite("Rendered native question wizard", function () {
 	this.timeout(240_000)
-	test("preserves drafts, sends one packet, and keeps full receipts after task and webview reload", async function () {
+	test("sends one packet from the last question and keeps the receipt after task and webview reload", async function () {
 		if (!process.env.ALPHA_UI_ACCEPTANCE_NONCE) this.skip()
 		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
@@ -205,8 +205,8 @@ suite("Rendered native question wizard", function () {
 				expectedAnswers: EXPECTED_ANSWERS,
 				customAnswer: CUSTOM_ANSWER,
 			})
-			assert.equal(model.getRequests().length, 1, "Drafts and review must not send an answer to the model")
-			assert.equal(task.taskAsk?.ask, "followup", "Review must retain the pending ask")
+			assert.equal(model.getRequests().length, 1, "Drafts must stay local until the user sends the answers")
+			assert.equal(task.taskAsk?.ask, "followup", "The request must still be pending on the last question")
 			assert.equal(task.alphaMessages.filter((message) => message.userInputResponse).length, 0)
 			await uiFixtureBarrier("input-send", { version: vscode.version, taskId })
 			await waitFor(

@@ -272,6 +272,20 @@ describe("agent lifecycle tools", () => {
 		})
 	})
 
+	it("treats a wake for parent mailbox activity as an active wait without claiming the message", async () => {
+		const { provider, task, callbacks, pushToolResult } = harness()
+		const outcome = { timedOut: false, mailboxActivity: true, events: [] }
+		provider.waitForAgent.mockResolvedValueOnce(outcome)
+
+		await waitAgentTool.execute({ timeout_ms: 10_000 }, task, callbacks)
+
+		expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({
+			status: "success",
+			waitOutcome: "active",
+		})
+		expect(pushToolResult).toHaveBeenCalledExactlyOnceWith(JSON.stringify(outcome))
+	})
+
 	it("dispatches a targeted terminal wait without changing legacy wait calls", async () => {
 		const { provider, task, callbacks } = harness()
 

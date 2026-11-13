@@ -8211,11 +8211,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						return true
 					}
 
-					// An accepted response owns its slot. Leave later FIFO guidance for the
-					// outer completion/recovery consumer instead of claiming it invisibly.
-					if (this.askResponse !== undefined || this.deferredAskResponse || this.lastMessageTs !== askTs) {
-						return true
-					}
+					if (this.askResponse !== undefined || this.lastMessageTs !== askTs) return true
+					// An Apply/Discard lease owns the workspace boundary. Leave FIFO guidance
+					// queued and wait for any deferred reply to reach the live ask slot.
+					if (this.externalMutationLease || this.deferredAskResponse) return false
 					if (shouldDrainQueuedMessageForAsk() && !this.messageQueueService.isEmpty()) {
 						const message = this.dequeueQueuedMessage()
 						if (message) {
@@ -8227,15 +8226,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								askTs,
 							)
 							if (!accepted) this.messageQueueService.releaseMessage(message.id)
-							return accepted
 						}
 					}
-
-					if (this.askResponse !== undefined || this.lastMessageTs !== askTs) {
-						return true
-					}
-
-					return false
+					return this.askResponse !== undefined || this.lastMessageTs !== askTs
 				},
 				{ interval: 100 },
 			)
@@ -21072,21 +21065,29 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const now = performance.now()
 			const timeSinceLastRequest = lane.lastRequestTime === undefined ? Infinity : now - lane.lastRequestTime
 			const remainingMs = Math.max(0, rateLimitSeconds * 1000 - timeSinceLastRequest)
-			const rateLimitDelay = Math.ceil(Math.min(rateLimitSeconds, remainingMs / 1000))
 
-			if (rateLimitDelay > 0) {
-				const plannedWaitMs = retryAttempt === 0 ? rateLimitDelay * 1000 : remainingMs
+			if (remainingMs > 0) {
 				if (retryAttempt === 0) {
+					const readyAt = now + remainingMs
 					try {
-						for (let i = rateLimitDelay; i > 0; i--) {
+						let untilReadyMs = remainingMs
+						while (untilReadyMs > 0) {
+							const seconds = Math.ceil(untilReadyMs / 1000)
 							// Send structured JSON data for i18n-safe transport.
-							const delayMessage = JSON.stringify({ seconds: i })
+							const delayMessage = JSON.stringify({ seconds })
 							await this.waitForRequestControl(
 								this.say("api_req_rate_limit_wait", delayMessage, undefined, true),
 								interruptionSignal,
 								retryDeadline,
 							)
-							await this.waitForProviderPacingDelay(1000, interruptionSignal, retryDeadline)
+							// Countdown publication consumes part of the pacing interval.
+							const nextTickAt = readyAt - (seconds - 1) * 1000
+							await this.waitForProviderPacingDelay(
+								nextTickAt - performance.now(),
+								interruptionSignal,
+								retryDeadline,
+							)
+							untilReadyMs = readyAt - performance.now()
 						}
 					} finally {
 						// Never let a stalled UI/persistence acknowledgement strand the shared
@@ -21103,7 +21104,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					await this.waitForProviderPacingDelay(remainingMs, interruptionSignal, retryDeadline)
 				}
 				this.requestPacingWaitCount++
-				this.requestPacingWaitMs += plannedWaitMs
+				this.requestPacingWaitMs += remainingMs
 			}
 
 			this.throwIfStepInterrupted(interruptionSignal)

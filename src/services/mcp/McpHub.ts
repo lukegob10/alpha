@@ -209,9 +209,9 @@ export interface McpHubOptions {
 export class McpHub {
 	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
-	private settingsWatcher?: vscode.FileSystemWatcher
+	private settingsWatcher?: vscode.Disposable
 	private fileWatchers: Map<string, FSWatcher[]> = new Map()
-	private projectMcpWatcher?: vscode.FileSystemWatcher
+	private projectMcpWatcher?: vscode.Disposable
 	private isDisposed: boolean = false
 	connections: McpConnection[] = []
 	isConnecting: boolean = false
@@ -530,11 +530,8 @@ export class McpHub {
 			return
 		}
 
-		// Clean up existing project MCP watcher if it exists
-		if (this.projectMcpWatcher) {
-			this.projectMcpWatcher.dispose()
-			this.projectMcpWatcher = undefined
-		}
+		this.projectMcpWatcher?.dispose()
+		this.projectMcpWatcher = undefined
 
 		if (!vscode.workspace.workspaceFolders?.length) {
 			return
@@ -544,29 +541,27 @@ export class McpHub {
 		const projectMcpPattern = new vscode.RelativePattern(workspaceFolder, ".alpha/mcp.json")
 
 		// Create a file system watcher for the project MCP file pattern
-		this.projectMcpWatcher = vscode.workspace.createFileSystemWatcher(projectMcpPattern)
+		const watcher = vscode.workspace.createFileSystemWatcher(projectMcpPattern)
 
 		// Watch for file changes
-		const changeDisposable = this.projectMcpWatcher.onDidChange((uri) => {
+		const changeDisposable = watcher.onDidChange((uri) => {
 			this.debounceConfigChange(uri.fsPath, "project")
 		})
 
 		// Watch for file creation
-		const createDisposable = this.projectMcpWatcher.onDidCreate((uri) => {
+		const createDisposable = watcher.onDidCreate((uri) => {
 			this.debounceConfigChange(uri.fsPath, "project")
 		})
 
 		// Watch for file deletion
-		const deleteDisposable = this.projectMcpWatcher.onDidDelete(async () => {
+		const deleteDisposable = watcher.onDidDelete(async () => {
 			// Clean up all project MCP servers when the file is deleted
 			await this.cleanupProjectMcpServers()
 			await this.notifyWebviewOfServerChanges()
 			vscode.window.showInformationMessage(t("mcp:info.project_config_deleted"))
 		})
 
-		this.disposables.push(
-			vscode.Disposable.from(changeDisposable, createDisposable, deleteDisposable, this.projectMcpWatcher),
-		)
+		this.projectMcpWatcher = vscode.Disposable.from(changeDisposable, createDisposable, deleteDisposable, watcher)
 	}
 
 	private async updateProjectMcpServers(): Promise<void> {
@@ -677,35 +672,31 @@ export class McpHub {
 			return
 		}
 
-		// Clean up existing settings watcher if it exists
-		if (this.settingsWatcher) {
-			this.settingsWatcher.dispose()
-			this.settingsWatcher = undefined
-		}
-
 		const settingsPath = await this.getMcpSettingsFilePath()
 		// The path lookup may finish after the final provider has released the hub.
 		if (this.isDisposed) return
+		this.settingsWatcher?.dispose()
+		this.settingsWatcher = undefined
 		const settingsPattern = new vscode.RelativePattern(path.dirname(settingsPath), path.basename(settingsPath))
 
 		// Create a file system watcher for the global MCP settings file
-		this.settingsWatcher = vscode.workspace.createFileSystemWatcher(settingsPattern)
+		const watcher = vscode.workspace.createFileSystemWatcher(settingsPattern)
 
 		// Watch for file changes
-		const changeDisposable = this.settingsWatcher.onDidChange((uri) => {
+		const changeDisposable = watcher.onDidChange((uri) => {
 			if (arePathsEqual(uri.fsPath, settingsPath)) {
 				this.debounceConfigChange(settingsPath, "global")
 			}
 		})
 
 		// Watch for file creation
-		const createDisposable = this.settingsWatcher.onDidCreate((uri) => {
+		const createDisposable = watcher.onDidCreate((uri) => {
 			if (arePathsEqual(uri.fsPath, settingsPath)) {
 				this.debounceConfigChange(settingsPath, "global")
 			}
 		})
 
-		this.disposables.push(vscode.Disposable.from(changeDisposable, createDisposable, this.settingsWatcher))
+		this.settingsWatcher = vscode.Disposable.from(changeDisposable, createDisposable, watcher)
 	}
 
 	private async initializeMcpServers(source: "global" | "project"): Promise<void> {

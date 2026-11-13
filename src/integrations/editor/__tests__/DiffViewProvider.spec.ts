@@ -602,6 +602,31 @@ describe("DiffViewProvider", () => {
 			expect(vscode.window.showTextDocument).not.toHaveBeenCalled()
 		})
 
+		it.each([
+			{ configuredMs: 0, expectedMs: 100 },
+			{ configuredMs: 1000, expectedMs: 1000 },
+		])("shares the background diagnostics window with the configured $configuredMs ms delay", async (fixture) => {
+			const actualDelay = await vi.importActual<typeof import("delay")>("delay")
+			vi.mocked(delay).mockImplementationOnce(actualDelay.default)
+			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+			try {
+				const startedAt = performance.now()
+				const save = diffViewProvider
+					.saveDirectly("test.ts", "new content", false, true, fixture.configuredMs, {
+						exists: true,
+						content: "file content",
+					})
+					.then(() => performance.now() - startedAt)
+				await vi.advanceTimersByTimeAsync(fixture.expectedMs + 100)
+
+				expect(await save).toBe(fixture.expectedMs)
+				expect(vscode.workspace.openTextDocument).toHaveBeenCalledOnce()
+				expect(vscode.languages.getDiagnostics).toHaveBeenCalledTimes(2)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("should skip diagnostics when diagnosticsEnabled is false", async () => {
 			const mockDelay = vi.mocked(delay)
 			mockDelay.mockClear()

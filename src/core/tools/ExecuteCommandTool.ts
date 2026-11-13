@@ -1769,7 +1769,7 @@ export async function executeCommandInTerminal(
 				// non-partial command_output update.
 				if (!presentation) await commandOutputSayChain
 				const artifactNotice = process?.outputArtifactId
-					? `\nArtifact ID: ${process.outputArtifactId}\nUse write_stdin with this artifact_id to view more output.`
+					? `\nArtifact ID: ${process.outputArtifactId}\n${t("tools:commandOutputSearch.readTaskArtifact")}`
 					: ""
 				await queueCommandOutputMessage(result + artifactNotice, false, true)
 				completed = true
@@ -2334,12 +2334,9 @@ export async function executeCommandInTerminal(
 		throw shellError
 	}
 
-	// Wait for a short delay to ensure all messages are sent to the webview.
-	// This delay allows time for non-awaited promises to be created and
-	// for their associated messages to be sent to the webview, maintaining
-	// the correct order of messages (although the webview is smart about
-	// grouping command_output messages despite any gaps anyways).
-	if (!presentation) await delay(50)
+	// A live command can still be publishing its preview when it yields. Once
+	// exit is known, the explicit output and mutation joins own finalization.
+	if (!presentation && !exitDetails) await delay(50)
 	if (terminalProcessFailure) {
 		await terminalProcessFailureHandling
 		throw terminalProcessFailure
@@ -2519,7 +2516,7 @@ function formatPersistedOutput(
 		"Preview:",
 		result.preview,
 		"",
-		"Use write_stdin with this artifact_id to view more output.",
+		t("tools:commandOutputSearch.readTaskArtifact"),
 	].join("\n")
 }
 

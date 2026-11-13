@@ -50,6 +50,11 @@ export interface CaptureRunEvidenceOptions {
 	runId: string
 	metadata: RunEvidenceMetadata
 	bundlePath?: string
+	liveSmoke?: {
+		fixtureId: "command-file-diff-live" | "supported-total"
+		extensionPath: string
+		build?: { sourceRevision: string; entrypointSha256: string }
+	}
 	workspacePath?: string
 	storagePath?: string
 	logsPath?: string
@@ -66,7 +71,7 @@ export interface EvidenceManifest {
 	version: 1
 	runId: string
 	finalized: true
-	metadata: RunEvidenceMetadata
+	metadata: RunEvidenceMetadata & { sourceRevision?: string }
 	summary: EvidenceSummary
 	bundleSha256?: string
 	captureComplete: boolean

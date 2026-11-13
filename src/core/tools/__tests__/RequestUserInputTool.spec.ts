@@ -15,7 +15,7 @@ const questions = [
 	},
 	{
 		id: "test_level",
-		header: "Testing",
+		header: "Validation scope",
 		question: "Which validation should I run?",
 		options: [
 			{ label: "Focused tests", description: "Run tests covering the changed behavior." },
@@ -36,7 +36,7 @@ const userInputResponse = {
 			question: "Which workspace should I inspect?",
 			answers: ["Current workspace (Recommended)"],
 		},
-		{ header: "Testing", question: "Which validation should I run?", answers: ["Focused tests"] },
+		{ header: "Validation scope", question: "Which validation should I run?", answers: ["Focused tests"] },
 	],
 }
 
@@ -57,7 +57,7 @@ function callbacks(overrides: Partial<ToolCallbacks> = {}): ToolCallbacks {
 }
 
 describe("RequestUserInputTool", () => {
-	it("opens one grouped request and returns answers atomically by stable question id", async () => {
+	it("preserves long headers in grouped requests and returns answers atomically by question id", async () => {
 		const task = {
 			taskKind: "primary",
 			abort: false,
@@ -384,6 +384,24 @@ describe("RequestUserInputTool", () => {
 		expect(cb.handleError).toHaveBeenCalledExactlyOnceWith(
 			"requesting user input",
 			expect.objectContaining({ message: expect.stringContaining("unique snake_case id") }),
+		)
+		expect(cb.pushToolResult).not.toHaveBeenCalled()
+	})
+
+	it("rejects a blank header before asking", async () => {
+		const task = { taskKind: "primary", abort: false, ask: vi.fn(), say: vi.fn() }
+		const cb = callbacks()
+
+		await new RequestUserInputTool().execute(
+			{ questions: [{ ...questions[0]!, header: " \t " }] },
+			task as never,
+			cb,
+		)
+
+		expect(task.ask).not.toHaveBeenCalled()
+		expect(cb.handleError).toHaveBeenCalledExactlyOnceWith(
+			"requesting user input",
+			expect.objectContaining({ message: "requestUserInput.headerRequired" }),
 		)
 		expect(cb.pushToolResult).not.toHaveBeenCalled()
 	})

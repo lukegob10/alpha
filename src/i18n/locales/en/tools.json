@@ -4,7 +4,12 @@
 	},
 	"approvalDetails": "{{toolName}}: review the complete action in the tool details ({{length}} characters).",
 	"customToolMissingMode": "Custom tools require a captured task mode.",
+	"requestUserInput": {
+		"headerRequired": "request_user_input question {{id}} requires a non-empty header."
+	},
 	"commandOutputSearch": {
+		"artifactNotFound": "Artifact not found in this task: {{artifactId}}. Use the exact ID from a retained command result in this task. If another subagent reported the ID, ask that subagent for the relevant output.",
+		"readTaskArtifact": "Use write_stdin with this artifact_id in this task to view more output.",
 		"busy": "Command output search is busy. Retry after current searches finish.",
 		"timeout": "Command output search timed out. Try a simpler pattern or read the artifact without a search.",
 		"cleanup": "Command output search could not release its worker.",

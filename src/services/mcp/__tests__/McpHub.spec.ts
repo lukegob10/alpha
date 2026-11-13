@@ -463,6 +463,55 @@ describe("McpHub", () => {
 			expect((mcpHub as any).fileWatchers.get("global:shared")).toEqual([globalWatcher])
 		})
 
+		it("disposes each project configuration watcher and its subscriptions when it is replaced", async () => {
+			await mcpHub.waitUntilReady()
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			const watch = mcpHub as unknown as { watchProjectMcpFile(): Promise<void> }
+			const createWatcher = vi.mocked(vscode.workspace.createFileSystemWatcher)
+			const combine = vi.mocked(vscode.Disposable.from)
+			const watchers = Array.from({ length: 3 }, () => {
+				const listeners = Array.from({ length: 3 }, () => ({ dispose: vi.fn() }))
+				return {
+					listeners,
+					watcher: {
+						onDidChange: vi.fn().mockReturnValue(listeners[0]),
+						onDidCreate: vi.fn().mockReturnValue(listeners[1]),
+						onDidDelete: vi.fn().mockReturnValue(listeners[2]),
+						dispose: vi.fn(),
+					},
+				}
+			})
+			vi.stubEnv("NODE_ENV", "development")
+			Object.assign(vscode.workspace, { workspaceFolders: [{ uri: { fsPath: "/test/workspace" } }] })
+			Object.assign(mockProvider, { cwd: "/test/workspace" })
+			combine.mockImplementation((...subscriptions) => ({
+				dispose: () => subscriptions.forEach((subscription) => subscription.dispose()),
+			}))
+
+			try {
+				for (const [index, { watcher }] of watchers.entries()) {
+					createWatcher.mockReturnValueOnce(watcher as unknown as vscode.FileSystemWatcher)
+					await watch.watchProjectMcpFile()
+					for (const retired of watchers.slice(0, index)) {
+						expect(retired.watcher.dispose).toHaveBeenCalledOnce()
+						for (const listener of retired.listeners) expect(listener.dispose).toHaveBeenCalledOnce()
+					}
+					expect(watcher.dispose).not.toHaveBeenCalled()
+				}
+
+				await mcpHub.dispose()
+				for (const { watcher, listeners } of watchers) {
+					expect(watcher.dispose).toHaveBeenCalledOnce()
+					for (const listener of listeners) expect(listener.dispose).toHaveBeenCalledOnce()
+				}
+			} finally {
+				await mcpHub.dispose()
+				Object.assign(vscode.workspace, { workspaceFolders })
+				combine.mockReset()
+				vi.unstubAllEnvs()
+			}
+		})
+
 		it("removes only the source-specific watcher for same-name servers", async () => {
 			await mcpHub.waitUntilReady()
 			const globalWatcher = { close: vi.fn() }

@@ -63,7 +63,10 @@ export class WaitAgentTool extends BaseTool<"wait_agent"> {
 					"eventCount" in result && typeof result.eventCount === "number" ? result.eventCount : 0
 				const claimId = "claimId" in result ? result.claimId : undefined
 				const hasClaim = typeof claimId === "string" && claimId.length > 0
-				const activity = hasClaim && eventCount > 0
+				// Codex CLI 16280e19 treats typed agent mail as a successful wake. Alpha
+				// leaves immediate-parent mail unclaimed for the next model input.
+				const parentMail = "mailboxActivity" in result && result.mailboxActivity === true
+				const activity = parentMail || (hasClaim && eventCount > 0)
 				const timedOut = "timedOut" in result && result.timedOut === true
 				callbacks.setResultMetadata?.({
 					status: "success",

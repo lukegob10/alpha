@@ -696,7 +696,7 @@ describe("command reads through the built-in registry and real subprocesses", ()
 				const foreign = await run("write_stdin", args)
 				expect(foreign).toMatchObject({
 					status: "error",
-					content: expect.stringContaining("Artifact not found"),
+					content: expect.stringContaining("commandOutputSearch.artifactNotFound"),
 				})
 				expect(foreign.content).not.toContain(marker)
 				Object.assign(task, { taskId: originalTaskId })

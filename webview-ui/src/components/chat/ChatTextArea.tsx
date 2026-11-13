@@ -704,9 +704,12 @@ export const ChatTextArea = memo(
 				searchRequestIdRef.current = ""
 			}, [])
 
-			useEffect(() => {
-				return () => cancelPendingFileSearch()
-			}, [cancelPendingFileSearch])
+			useLayoutEffect(() => {
+				// Codex CLI (16280e19) applies file matches only to the active mention.
+				// A new task or workspace invalidates this composer's previous file lookup.
+				setFileSearchResults((results) => (results.length === 0 ? results : []))
+				return cancelPendingFileSearch
+			}, [taskId, cwd, cancelPendingFileSearch])
 
 			const handleInputChange = useCallback(
 				(e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -776,6 +779,7 @@ export const ChatTextArea = memo(
 										type: "searchFiles",
 										query: unescapeSpaces(query),
 										requestId: reqId,
+										...(taskId ? { taskId } : {}),
 									})
 								}, 200) // 200ms debounce.
 							} else {
@@ -788,7 +792,14 @@ export const ChatTextArea = memo(
 						setFileSearchResults([]) // Clear file search results.
 					}
 				},
-				[cancelPendingFileSearch, setInputValue, setFileSearchResults, resetOnInputChange, selectedType],
+				[
+					cancelPendingFileSearch,
+					setInputValue,
+					setFileSearchResults,
+					resetOnInputChange,
+					selectedType,
+					taskId,
+				],
 			)
 
 			useEffect(() => {

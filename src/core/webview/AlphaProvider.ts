@@ -608,7 +608,7 @@ export class AlphaProvider
 		}
 	>()
 	private readonly boundedDelegationManager = new BoundedDelegationManager(
-		(envelope, signal) => this.runSubagentEnvelope(envelope, signal),
+		(envelope, signal, acceptCompletion) => this.runSubagentEnvelope(envelope, signal, acceptCompletion),
 		(envelope) => envelope.budget.maxConcurrency,
 	)
 	private readonly asyncSubagentRunManager = new AsyncSubagentRunManager(this.boundedDelegationManager)
@@ -1149,7 +1149,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.32-long-task-reliability"
+	public readonly latestAnnouncementId = "november-2026-v3.2.33-responsive-tasks"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -13903,9 +13903,10 @@ export class AlphaProvider
 	private async runSubagentEnvelope(
 		envelope: InternalTaskEnvelope,
 		signal: AbortSignal,
+		acceptCompletion?: () => void,
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
 		try {
-			return await this.executeSubagentEnvelope(envelope, signal)
+			return await this.executeSubagentEnvelope(envelope, signal, acceptCompletion)
 		} catch (error) {
 			if (signal.aborted && error === signal.reason) throw error
 			// A managed-agent control record exists before its Task. Preserve the
@@ -13919,6 +13920,7 @@ export class AlphaProvider
 	private async executeSubagentEnvelope(
 		envelope: InternalTaskEnvelope,
 		signal: AbortSignal,
+		acceptCompletion?: () => void,
 	): Promise<Omit<InternalTaskResult, "modelRouteId" | "requiresParentVerification">> {
 		signal.throwIfAborted()
 		const descriptor = this.subagentDescriptors.get(envelope.id)
@@ -14217,6 +14219,9 @@ export class AlphaProvider
 									: "failed",
 				): void => {
 					if (!claimSettlement()) return
+					// Codex CLI 16280e19 derives agent status from the terminal turn event.
+					// Alpha still owns artifact and history finalization after accepting it.
+					if (status === "completed" || status === "blocked") acceptCompletion?.()
 					resolveResult(status, tokenUsage, summaryOverride, stopReason)
 				}
 				const stopAndFinish = (

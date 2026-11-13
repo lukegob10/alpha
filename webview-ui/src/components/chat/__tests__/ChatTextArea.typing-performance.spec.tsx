@@ -3,6 +3,7 @@ import { expect } from "vitest"
 
 import { defaultModeSlug } from "@alpha/modes"
 import { act, fireEvent, render, screen } from "@src/utils/test-utils"
+import { vscode } from "@src/utils/vscode"
 
 import { ChatTextArea } from "../ChatTextArea"
 import type { RestoreHistoryDraft } from "../hooks/usePromptHistory"
@@ -126,6 +127,66 @@ describe("composer typing resources", () => {
 		view.unmount()
 		expect(removeListener.mock.calls.filter(([type]) => type === "message")).toEqual([["message", messageListener]])
 		expect(inputRef).toHaveBeenLastCalledWith(null)
+	})
+
+	it("cancels a pending file lookup on task navigation", () => {
+		vi.useFakeTimers()
+		const view = render(
+			<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId="task-a" />,
+		)
+		fireEvent.change(screen.getByRole("textbox"), { target: { value: "@fixture", selectionStart: 8 } })
+		expect(screen.getByRole("listbox")).toBeInTheDocument()
+
+		view.rerender(<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId="task-b" />)
+		act(() => vi.advanceTimersByTime(200))
+
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "searchFiles" }))
+	})
+
+	it.each([
+		{ label: "another task", taskId: "task-b" },
+		{ label: "a blank draft", taskId: undefined },
+	])("uses the visible scope and ignores prior replies after switching to $label", ({ taskId }) => {
+		vi.useFakeTimers()
+		const view = render(
+			<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId="task-a" />,
+		)
+		const typeQuery = (value: string) =>
+			fireEvent.change(screen.getByRole("textbox"), { target: { value, selectionStart: value.length } })
+		const dispatchSearch = () => {
+			act(() => vi.advanceTimersByTime(200))
+			return vi
+				.mocked(vscode.postMessage)
+				.mock.calls.map(([message]) => message)
+				.findLast(({ type }) => type === "searchFiles")!
+		}
+		const reply = (requestId: string | undefined, path: string) => {
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", {
+						data: { type: "fileSearchResults", requestId, results: [{ type: "file", path }] },
+					}),
+				)
+			})
+		}
+		typeQuery("@fixture")
+		const first = dispatchSearch()
+		expect(first).toMatchObject({ taskId: "task-a", query: "fixture" })
+		reply(first.requestId, "fixture-a.ts")
+		expect(screen.getByRole("option", { name: /fixture-a\.ts/ })).toBeInTheDocument()
+
+		view.rerender(<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId={taskId} />)
+		typeQuery("@fixture-b")
+		reply(first.requestId, "stale-a.ts")
+		expect(screen.queryByRole("option", { name: /(?:fixture|stale)-a\.ts/ })).not.toBeInTheDocument()
+
+		const second = dispatchSearch()
+		expect(second).toMatchObject({ query: "fixture-b" })
+		expect(second.taskId).toBe(taskId)
+		reply(first.requestId, "stale-a.ts")
+		reply(second.requestId, "fixture-b.ts")
+		expect(screen.queryByRole("option", { name: /stale-a\.ts/ })).not.toBeInTheDocument()
+		expect(screen.getByRole("option", { name: /fixture-b\.ts/ })).toBeInTheDocument()
 	})
 
 	it("inserts into the latest typed draft without renewing its message subscription", () => {

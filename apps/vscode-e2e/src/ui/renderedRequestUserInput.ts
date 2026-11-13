@@ -452,6 +452,12 @@ export async function exerciseRenderedRequestUserInput(
 			`d.querySelector('${form} h3')?.textContent===${javascriptLiteral(fixture.questions[index]!.question)}&&d.querySelectorAll('${form} fieldset').length===1`,
 		)
 		assert.equal(
+			await evaluate<string>(
+				`d.querySelector('${form} nav button[aria-current=step]').getAttribute('aria-label')`,
+			),
+			`${fixture.questions[index]!.header}, question ${index + 1} of ${fixture.questions.length}`,
+		)
+		assert.equal(
 			await evaluate<number>(`new Set([...d.querySelectorAll('${form} input[type=radio]')].map(e=>e.name)).size`),
 			1,
 			"Only one question's answer group is active",
@@ -513,20 +519,19 @@ export async function exerciseRenderedRequestUserInput(
 		assert.equal(await evaluate<string>(`d.querySelector('${form} textarea').value`), fixture.customAnswer)
 		await activate("Continue")
 		await question(2, true)
+		assert.equal(await evaluate<boolean>(`${button("Send answers")}.disabled`), true)
 		await choose(fixture.questions[2]!.options[0]!.label)
-		await activate("Review answers")
-		await check(`d.querySelector('${form} h3')?.textContent==='Review your answers'`)
-		await check(`d.activeElement===d.querySelector('${form} h3')`)
-		const editSelector = `${form} button[aria-label="Edit answer for Oracle"]`
-		await focus(`d.querySelector(${javascriptLiteral(editSelector)})`)
-		await key("Enter", "Enter", 13)
+		await activate("Back")
 		await question(1, true)
 		assert.equal(await evaluate<string>(`d.querySelector('${form} textarea').value`), fixture.customAnswer)
-		await activate("Review answers")
-		await check(`d.querySelector('${form} h3')?.textContent==='Review your answers'`)
-		await check(`d.activeElement===d.querySelector('${form} h3')`)
-		await assertFits(form)
-		await capture("input-review", form)
+		await activate("Continue")
+		await question(2, true)
+		assert.equal(
+			await evaluate<string>(`d.querySelector('${form} input[type=radio]:checked').value`),
+			fixture.questions[2]!.options[0]!.label,
+		)
+		assert.equal(await evaluate<boolean>(`${button("Send answers")}.disabled`), false)
+		await captureNarrow("input-last-question", form)
 		assert.equal(await evaluate<number>(`d.querySelectorAll('${receipt}').length`), 0)
 		await acknowledge("input-wizard")
 		await ready("input-send")
@@ -594,6 +599,7 @@ export async function exerciseRenderedRequestUserInput(
 			await check(`${closedRequest}.open===true`)
 			await check(receiptOutsideWork)
 			for (const expected of fixture.questions) {
+				await check(`${closedRequest}.innerText.includes(${javascriptLiteral(expected.header)})`)
 				await check(`${closedRequest}.innerText.includes(${javascriptLiteral(expected.question)})`)
 				for (const option of expected.options) {
 					await check(`${closedRequest}.innerText.includes(${javascriptLiteral(option.label)})`)
@@ -606,7 +612,7 @@ export async function exerciseRenderedRequestUserInput(
 				"Historical questions must contain no editable controls or actions",
 			)
 			if (stage === "input-receipt-dark")
-				await capture("input-questions-read-only", "details:has(> summary > [role=status])")
+				await captureNarrow("input-questions-read-only", "details:has(> summary > [role=status])")
 			await key("Enter", "Enter", 13)
 			await check(`${closedRequest}.open===false`)
 			if (revealHistory) {
@@ -616,6 +622,7 @@ export async function exerciseRenderedRequestUserInput(
 			}
 			await check(receiptOutsideWork)
 			for (const expected of fixture.questions) {
+				await check(`d.querySelector('${receipt}').innerText.includes(${javascriptLiteral(expected.header)})`)
 				await check(`d.querySelector('${receipt}').innerText.includes(${javascriptLiteral(expected.question)})`)
 				for (const answer of fixture.expectedAnswers[expected.id]!.answers) {
 					await check(`d.querySelector('${receipt}').innerText.includes(${javascriptLiteral(answer)})`)
@@ -642,8 +649,8 @@ export async function exerciseRenderedRequestUserInput(
 		"one-active-question",
 		"narrow-question-layout",
 		"native-keyboard-navigation",
-		"custom-draft-back-edit",
-		"review-before-one-submission",
+		"drafts-preserved-on-back",
+		"one-submission-from-last-question",
 		"dark-light-receipts",
 		"closed-question-history-read-only",
 		"cold-task-reopen",

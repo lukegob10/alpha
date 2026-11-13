@@ -1093,11 +1093,13 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	private async openScheduledTask(taskId: string, runId?: string): Promise<void> {
+		if (this.disposed) return
 		try {
 			await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
 		} catch {
 			// The webview message below still selects the task if the view is already available.
 		}
+		if (this.disposed) return
 		await this.provider.postMessageToWebview({
 			type: "action",
 			action: "switchTab",

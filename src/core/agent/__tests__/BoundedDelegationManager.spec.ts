@@ -75,6 +75,34 @@ describe("bounded delegation", () => {
 		}))
 		expect((await manager.run(envelope("a"))).requiresParentVerification).toBe(true)
 	})
+	it.each(["completed", "blocked", "failed"] as const)(
+		"preserves a %s outcome if an interrupt arrives after turn acceptance",
+		async (status) => {
+			const accepted = barrier()
+			const durable = barrier()
+			const manager = new BoundedDelegationManager(async (item, signal, acceptCompletion) => {
+				acceptCompletion()
+				accepted.resolve()
+				await durable.promise
+				if (status === "failed") throw new Error("Unable to finalize the child report")
+				expect(signal.aborted).toBe(false)
+				return { ...result(item.id), status }
+			})
+			const run = manager.run(envelope("accepted-child"))
+			try {
+				await accepted.promise
+				expect(manager.interrupt("accepted-child")).toBe(false)
+			} finally {
+				durable.resolve()
+				await run
+			}
+			await expect(run).resolves.toMatchObject({
+				status,
+				stopReason: status === "failed" ? "failed" : "completed",
+			})
+		},
+	)
+
 	it("allows explicitly bounded children to retain narrowed delegation authority", async () => {
 		const manager = new BoundedDelegationManager(async (item) => result(item.id))
 		const nestedReady = buildInternalTaskEnvelope({

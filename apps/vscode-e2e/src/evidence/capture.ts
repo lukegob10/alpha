@@ -570,6 +570,39 @@ export async function captureRunEvidence(options: CaptureRunEvidenceOptions): Pr
 			warn("BUNDLE_UNAVAILABLE")
 		}
 	}
+	if (options.liveSmoke) {
+		try {
+			const { fixtureId, extensionPath, build } = options.liveSmoke
+			const file = `${fixtureId}.json`
+			if (fixtureId !== "command-file-diff-live" && fixtureId !== "supported-total")
+				throw new Error("Unknown live smoke receipt")
+			const content = await readBounded(path.join(artifactDirectory, file), limits.maxFileBytes)
+			const receipt = object(JSON.parse(content.toString("utf8")))
+			if (
+				metadata.outcome !== "passed" ||
+				receipt?.schemaVersion !== 1 ||
+				receipt.passed !== true ||
+				receipt.hostVersion !== metadata.hostVersion ||
+				receipt.providerMode !== metadata.provider ||
+				object(receipt.model)?.id !== metadata.modelId ||
+				receipt.effort !== metadata.reasoningEffort ||
+				typeof receipt.extensionPath !== "string" ||
+				!path.isAbsolute(receipt.extensionPath) ||
+				(await fs.realpath(receipt.extensionPath)) !== (await fs.realpath(extensionPath)) ||
+				written + content.length > limits.maxTotalBytes ||
+				(build &&
+					(build.entrypointSha256 !== manifest.bundleSha256 || !/^[a-f0-9]{40}$/.test(build.sourceRevision)))
+			) {
+				throw new Error("Invalid live smoke receipt")
+			}
+			// Bind the original bytes without copying the private task receipt into projected evidence.
+			written += content.length
+			manifest.artifacts.push({ path: file, bytes: content.length, sha256: sha256(content) })
+			if (build) manifest.metadata.sourceRevision = build.sourceRevision
+		} catch {
+			warn("LIVE_SMOKE_EVIDENCE_INCOMPLETE")
+		}
+	}
 	if (options.repositoryBefore) {
 		const before = validateRepositoryEvidence(options.repositoryBefore, limits)
 		if (!before.complete) warn("REPOSITORY_BEFORE_INCOMPLETE")

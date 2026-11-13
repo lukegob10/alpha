@@ -76,7 +76,7 @@ describe("bounded command results", () => {
 		expect(artifactOutput.length).toBeLessThanOrEqual(350)
 		expect(artifact).toContain("[output truncated]")
 		expect(artifact).toContain(
-			'Read artifact cmd-output.txt with write_stdin using {"artifact_id":"cmd-output.txt"}.',
+			'Read artifact cmd-output.txt with write_stdin using {"artifact_id":"cmd-output.txt"}. This artifact belongs to this task.',
 		)
 	})
 

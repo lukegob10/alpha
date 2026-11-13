@@ -53,6 +53,55 @@ describe("Task.ask queued message drain", () => {
 		expect(task["askResponse"]).toBeUndefined()
 	})
 
+	it.each(["direct follow-up", "queued completion reply"] as const)(
+		"keeps the ask pending until the workspace mutation releases a %s",
+		async (delivery) => {
+			vi.useFakeTimers()
+			const task = await createAskOnlyTask()
+			Object.assign(task, { taskKind: "primary", _taskMode: "code", isTaskLoopActive: true })
+			const pending = task.ask(delivery === "direct follow-up" ? "followup" : "completion_result", "Q?")
+			let settled = false
+			void pending.finally(() => {
+				settled = true
+			})
+			let release: (() => void) | undefined
+			try {
+				await vi.advanceTimersByTimeAsync(0)
+				const askTs = task.getActiveAskTimestamp()!
+				const lease = task.acquireExternalMutation("applying Worker changes")
+				release = lease.release
+				expect(lease.capability.allowed).toBe(true)
+				const text = "Use the new workspace state"
+				let queuedId: string | undefined
+				if (delivery === "direct follow-up") {
+					expect(task.handleWebviewAskResponse("messageResponse", text, undefined, undefined, askTs)).toBe(
+						true,
+					)
+				} else {
+					queuedId = task.messageQueueService.addMessage(text)!.id
+				}
+
+				await vi.advanceTimersByTimeAsync(200)
+				expect(settled).toBe(false)
+				expect(task.getActiveAskTimestamp()).toBe(askTs)
+
+				release!()
+				await vi.advanceTimersByTimeAsync(100)
+				await expect(pending).resolves.toMatchObject({
+					response: "messageResponse",
+					text,
+					...(queuedId ? { queuedMessageIds: [queuedId] } : {}),
+				})
+			} finally {
+				release?.()
+				task.handleWebviewAskResponse("noButtonClicked")
+				await vi.advanceTimersByTimeAsync(100)
+				await pending
+				vi.useRealTimers()
+			}
+		},
+	)
+
 	it("binds durable ask feedback to the host tool call that opened the ask", async () => {
 		const task = await createAskOnlyTask()
 		const queue = task.messageQueueService

@@ -36,8 +36,8 @@ import {
 	extractTextCountFromMessage,
 	isLanguageModelTextPartLike,
 	isLanguageModelToolCallPartLike,
+	VSCODE_LM_STATEFUL_MARKER_MIME_TYPE,
 } from "../transform/vscode-lm-format"
-import { normalizeToolHistory } from "../transform/tool-history"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 
 import { BaseProvider } from "./base-provider"
@@ -123,7 +123,6 @@ type VsCodeLmCompatibleRequestOptions = vscode.LanguageModelChatRequestOptions &
 
 const VSCODE_GPT_56_MIN_VERSION = "1.128.0"
 const VSCODE_COPILOT_THINKING_MIN_VERSION = "1.136.1"
-const VSCODE_LM_STATEFUL_MARKER_MIME_TYPE = "stateful_marker"
 const VSCODE_LM_TOKEN_COUNT_TIMEOUT_MS = 5_000
 const VSCODE_LM_CLIENT_CACHE_MAX_SETTLED_ENTRIES = 32
 const VSCODE_LM_CLIENT_CACHE_MAX_TOTAL_ENTRIES = 64
@@ -223,10 +222,6 @@ function evictPendingVsCodeLmClient(
 	if (vsCodeLmClientCache.get(key)?.promise === promise) {
 		vsCodeLmClientCache.delete(key)
 	}
-}
-
-type VsCodeLmPersistedMessage = Anthropic.Messages.MessageParam & {
-	vscodeLmStatefulMarker?: string
 }
 
 function isVersionBefore(version: string, minimum: string): boolean {
@@ -648,78 +643,6 @@ function encodeVsCodeLmStatefulMarker(chunk: unknown): string | undefined {
 
 	const data = (chunk as { data?: unknown }).data
 	return data instanceof Uint8Array && data.length > 0 ? Buffer.from(data).toString("base64") : undefined
-}
-
-function decodeVsCodeLmStatefulMarker(value: unknown): Uint8Array | undefined {
-	if (typeof value !== "string" || value.length === 0) {
-		return undefined
-	}
-
-	try {
-		const decoded = Buffer.from(value, "base64")
-		const normalizedInput = value.replace(/=+$/, "")
-		const normalizedDecoded = decoded.toString("base64").replace(/=+$/, "")
-		return decoded.length > 0 && normalizedInput === normalizedDecoded ? decoded : undefined
-	} catch {
-		return undefined
-	}
-}
-
-function convertToStatefulVsCodeLmMessages(
-	messages: Anthropic.Messages.MessageParam[],
-	model: Pick<vscode.LanguageModelChat, "id" | "vendor" | "version">,
-): vscode.LanguageModelChatMessage[] {
-	return normalizeToolHistory(messages).flatMap((message) => {
-		const content =
-			message.role === "assistant" && Array.isArray(message.content)
-				? message.content.filter((block) => {
-						const state = block as {
-							type: string
-							modelId?: unknown
-							modelVendor?: unknown
-							modelVersion?: unknown
-						}
-						return (
-							state.type !== "vscode_lm_thinking" ||
-							((state.modelId === undefined || state.modelId === model.id) &&
-								(state.modelVendor === undefined || state.modelVendor === model.vendor) &&
-								(state.modelVersion === undefined || state.modelVersion === model.version))
-						)
-					})
-				: message.content
-		// Model-specific signatures cannot migrate to a different selected model.
-		// Retain the saved envelope; the host separately scopes continuation markers.
-		const converted =
-			Array.isArray(content) &&
-			content.length === 0 &&
-			Array.isArray(message.content) &&
-			message.content.length > 0
-				? []
-				: convertToVsCodeLmMessages([{ ...message, content }])
-		const marker = decodeVsCodeLmStatefulMarker((message as VsCodeLmPersistedMessage).vscodeLmStatefulMarker)
-
-		if (message.role === "assistant" && marker && converted.length === 0) {
-			// Optional thinking support may be absent while marker replay is available.
-			return [
-				vscode.LanguageModelChatMessage.Assistant([
-					new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE),
-				]),
-			]
-		}
-		if (message.role !== "assistant" || !marker || converted.length !== 1) {
-			return converted
-		}
-		const assistantContent = converted[0].content as Array<
-			vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart | vscode.LanguageModelDataPart
-		>
-
-		return [
-			vscode.LanguageModelChatMessage.Assistant([
-				...assistantContent,
-				new vscode.LanguageModelDataPart(marker, VSCODE_LM_STATEFUL_MARKER_MIME_TYPE),
-			]),
-		]
-	})
 }
 
 function toVsCodeLmInstructionMessages(
@@ -1300,7 +1223,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				...(metadata?.instructionFragments !== undefined
 					? toVsCodeLmInstructionMessages(metadata.instructionFragments)
 					: [vscode.LanguageModelChatMessage.User(systemPrompt)]),
-				...convertToStatefulVsCodeLmMessages(messages, client),
+				...convertToVsCodeLmMessages(messages, client),
 			]
 			const tools = convertToVsCodeLmTools(metadata?.tools ?? [])
 			// Create the response stream with required options

@@ -1726,15 +1726,39 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 			},
 		)
 
-		it("creates a new profile by name after discarding an existing profile's dirty edits", () => {
-			const test = setupDirtyProfile()
-			fireEvent.click(screen.getByTestId("create-profile"))
-			expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
-			fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
-			expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "upsertApiConfiguration")).toEqual(
-				[[{ type: "upsertApiConfiguration", text: "new-profile", apiConfiguration: test.savedProvider }]],
-			)
-		})
+		it.each(["legacy state", "paired saved snapshot"])(
+			"creates a new profile from %s after discarding dirty edits",
+			(source) => {
+				const snapshot =
+					source === "paired saved snapshot"
+						? {
+								id: "profile-a",
+								name: "default",
+								version: `sha256:${"a".repeat(64)}`,
+								configuration: {
+									apiProvider: "openai" as const,
+									openAiBaseUrl: "https://persisted.example/v1",
+									openAiModelId: "persisted-model",
+								},
+							}
+						: undefined
+				const test = setupDirtyProfile(false, undefined, "profile-a", undefined, snapshot)
+				fireEvent.click(screen.getByTestId("create-profile"))
+				expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+				fireEvent.click(screen.getByText("settings:unsavedChangesDialog.discardButton"))
+				expect(
+					mockPostMessage.mock.calls.filter(([message]) => message.type === "upsertApiConfiguration"),
+				).toEqual([
+					[
+						{
+							type: "upsertApiConfiguration",
+							text: "new-profile",
+							apiConfiguration: snapshot?.configuration ?? test.savedProvider,
+						},
+					],
+				])
+			},
+		)
 
 		it("keeps the old buffer and ID paired until a real selection reset commits", async () => {
 			let saveBeforeSelectionEffect = false

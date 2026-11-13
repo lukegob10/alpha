@@ -139,7 +139,7 @@ describe("VS Code LM canonical contracts", () => {
 		handler.dispose()
 	})
 
-	it("sends a saved receipt before host progress guidance when continuing a completed tool call", async () => {
+	it("deduplicates saved receipts across messages and sends the result before host progress guidance", async () => {
 		const history: Anthropic.Messages.MessageParam[] = [
 			{
 				role: "assistant",
@@ -152,18 +152,25 @@ describe("VS Code LM canonical contracts", () => {
 					{ type: "tool_result", tool_use_id: "cleanup-call", content: "Existing output", is_error: false },
 				],
 			},
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "cleanup-call", content: "Existing output", is_error: false },
+				],
+			},
 		]
 		const before = structuredClone(history)
 		sendRequest.mockResolvedValueOnce(response([new vscode.LanguageModelTextPart("Review complete.")]))
 		const result = await collectAgentResponse(handler.createMessage("Instructions", history))
 		expect(result.text).toBe("Review complete.")
 		const request = sendRequest.mock.calls[0][0] as vscode.LanguageModelChatMessage[]
-		const continuation = request.find((message) =>
+		const continuations = request.filter((message) =>
 			message.content.some(
 				(part) => part instanceof vscode.LanguageModelToolResultPart && part.callId === "cleanup-call",
 			),
 		)
-		expect(continuation?.content).toEqual([
+		expect(continuations).toHaveLength(1)
+		expect(continuations[0]?.content).toEqual([
 			new vscode.LanguageModelToolResultPart("cleanup-call", [
 				new vscode.LanguageModelTextPart("Existing output"),
 			]),
@@ -283,6 +290,11 @@ describe("VS Code LM canonical contracts", () => {
 			metadata: { signature: "foreign-version-signature" },
 			modelVersion: "different-provider-version",
 		}
+		const malformed = {
+			...matching,
+			id: "malformed-thinking",
+			modelId: null,
+		}
 		const legacy = {
 			type: "vscode_lm_thinking",
 			value: "",
@@ -299,6 +311,7 @@ describe("VS Code LM canonical contracts", () => {
 					foreign,
 					foreignVendor,
 					foreignVersion,
+					malformed,
 					{ type: "tool_use", id: "read-1", name: "read_file", input: { path: "README.md" } },
 					legacy,
 				],
@@ -334,6 +347,7 @@ describe("VS Code LM canonical contracts", () => {
 		expect(JSON.stringify(projected)).not.toContain("foreign-vendor-thinking")
 		expect(JSON.stringify(projected)).not.toContain("foreign-vendor-signature")
 		expect(JSON.stringify(projected)).not.toContain("foreign-version-thinking")
+		expect(JSON.stringify(projected)).not.toContain("malformed-thinking")
 		expect(JSON.stringify(projected)).not.toContain("foreign-version-signature")
 		expect(projected.at(-1)?.content).toContainEqual(expect.objectContaining({ callId: "read-1" }))
 		expect(history).toEqual(savedHistory)

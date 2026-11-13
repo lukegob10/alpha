@@ -206,7 +206,7 @@ export function formatCommandToolResult(result: CommandToolResult, maxCharacters
 	]
 	const prefix = `${lines.join("\n")}\n`
 	const artifactNote = result.artifact_id
-		? `\nOutput truncated. Read artifact ${result.artifact_id} with write_stdin using ${JSON.stringify({ artifact_id: result.artifact_id })}.`
+		? `\nOutput truncated. Read artifact ${result.artifact_id} with write_stdin using ${JSON.stringify({ artifact_id: result.artifact_id })}. This artifact belongs to this task.`
 		: ""
 	const remainingOutputNote =
 		result.has_more_output && result.session_id

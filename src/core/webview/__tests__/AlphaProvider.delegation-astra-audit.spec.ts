@@ -305,10 +305,10 @@ describe("managed spawn request admission", () => {
 		const entered = deferred<AbortSignal>()
 		const held = deferred()
 		const complete = runner.getMockImplementation()!
-		runner.mockImplementationOnce(async (envelope, signal) => {
+		runner.mockImplementationOnce(async (envelope, signal, acceptCompletion) => {
 			entered.resolve(signal)
 			await held.promise
-			return complete(envelope, signal)
+			return complete(envelope, signal, acceptCompletion)
 		})
 		const request = new AbortController()
 		const handle = await provider.launchPreparedSubagentGroup(

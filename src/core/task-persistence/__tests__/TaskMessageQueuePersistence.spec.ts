@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { TaskMessageQueuePersistence } from "../TaskMessageQueuePersistence"
-import { saveApiMessages } from "../apiMessages"
+import * as apiMessages from "../apiMessages"
 import * as atomicWrite from "../atomicWrite"
 
 let storage: string
@@ -18,6 +18,20 @@ afterEach(async () => {
 	await fs.rm(storage, { recursive: true, force: true })
 })
 
+it("loads an empty durable queue without reading the provider transcript", async () => {
+	const persistence = new TaskMessageQueuePersistence("task", storage)
+	await persistence.save([])
+	await apiMessages.saveApiMessages({
+		taskId: "task",
+		globalStoragePath: storage,
+		messages: [{ role: "user", content: "Already consumed", queued_message_ids: ["consumed"] }],
+	})
+	const readTranscript = vi.spyOn(apiMessages, "readApiMessages")
+
+	await expect(persistence.load()).resolves.toEqual([])
+	expect(readTranscript).not.toHaveBeenCalled()
+})
+
 it("recovers pending/claimed input and suppresses consumed IDs after the transcript commit precedes queue ACK", async () => {
 	const queue = new MessageQueueService(new TaskMessageQueuePersistence("task", storage))
 	await queue.ready
@@ -26,7 +40,7 @@ it("recovers pending/claimed input and suppresses consumed IDs after the transcr
 	queue.dequeueMessage()
 	await queue.flush()
 	queue.dispose()
-	await saveApiMessages({
+	await apiMessages.saveApiMessages({
 		taskId: "task",
 		globalStoragePath: storage,
 		messages: [{ role: "user", content: "first", queued_message_ids: [first.id] }],
@@ -56,13 +70,13 @@ it("repairs consumed disk entries before transcript compaction can erase their r
 	const consumed = { id: "consumed", timestamp: 1, text: "do this once" }
 	const pending = { id: "pending", timestamp: 2, text: "later" }
 	await persistence.save([consumed, pending])
-	await saveApiMessages({
+	await apiMessages.saveApiMessages({
 		taskId: "task",
 		globalStoragePath: storage,
 		messages: [{ role: "user", content: consumed.text, queued_message_ids: [consumed.id] }],
 	})
 	expect(await persistence.load()).toEqual([pending])
-	await saveApiMessages({
+	await apiMessages.saveApiMessages({
 		taskId: "task",
 		globalStoragePath: storage,
 		messages: [{ role: "user", content: "compacted summary", isSummary: true }],

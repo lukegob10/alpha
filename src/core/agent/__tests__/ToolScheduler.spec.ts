@@ -3702,6 +3702,68 @@ describe("ToolScheduler", () => {
 		expect(task.userMessageContentReady).toBe(true)
 	})
 
+	it("rechecks the batch fence after awaiting durability before admitting a sibling read", async () => {
+		vi.useFakeTimers()
+		const task = makeTask()
+		const readEnteredFence = deferred()
+		const releaseReadFence = deferred()
+		const read = vi.fn(async () => {})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		const mcp = mcpDescriptor(
+			"mcp_read",
+			async ({ callbacks }) => {
+				if (await callbacks.askApproval("use_mcp_server", "read")) callbacks.pushToolResult("MCP output")
+			},
+			true,
+		)
+		const local = descriptor("local_read", "parallel", async ({ callbacks }) => {
+			await read()
+			callbacks.pushToolResult("Local output")
+		})
+		registry.register(mcp)
+		registry.register(local)
+		const pending = new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 2,
+			validateCall: () => {},
+			policy: createToolPolicySnapshot({
+				visibleTools: [mcp.name, local.name],
+				capabilities: { [mcp.name]: mcp.capabilities, [local.name]: local.capabilities },
+			}),
+			beforeEffect: async ({ id }) => {
+				if (id !== "waiting-read") return
+				readEnteredFence.resolve()
+				await releaseReadFence.promise
+			},
+			onEffectStart: async () => {
+				await readEnteredFence.promise
+				throw new Error("Effect-start persistence failed")
+			},
+		}).run(response({ id: "failing-effect", name: mcp.name }, { id: "waiting-read", name: local.name }))
+
+		try {
+			await readEnteredFence.promise
+			await vi.advanceTimersByTimeAsync(0)
+			releaseReadFence.resolve()
+			const outcome = await pending
+
+			expect(outcome).toMatchObject({
+				status: "failed",
+				failure: { kind: "effect_fence", callId: "failing-effect", message: "Effect-start persistence failed" },
+			})
+			expect(read).not.toHaveBeenCalled()
+			expect(outcome.results.map(({ status }) => status)).toEqual(["error", "error"])
+			expect(resultIds(task)).toEqual(["failing-effect", "waiting-read"])
+		} finally {
+			releaseReadFence.resolve()
+			await pending
+			vi.useRealTimers()
+		}
+	})
+
 	it("observes a preflight failure before admitting a later mutation", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
