@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import type { HistoryItem } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
+import { TaskSessionRegistry } from "../TaskSessionRegistry"
 
 const barrier = () => {
 	let resolve!: () => void
@@ -91,10 +92,11 @@ describe("editor chat identity restoration", () => {
 	it("revokes history constructor admission if the panel closes while awaiting initialization", async () => {
 		const ready = barrier()
 		const { provider } = fixture(ready.promise)
-		const ownership = vi.fn()
+		const taskSessions = new TaskSessionRegistry()
+		const ownership = vi.spyOn(taskSessions, "runOwnershipOperation")
 		Object.assign(provider, {
 			getLiveTask: () => undefined,
-			taskSessions: { runOwnershipOperation: ownership },
+			taskSessions,
 		})
 		let open = true
 		const restoring = AlphaProvider.prototype.createTaskWithHistoryItem.call(
