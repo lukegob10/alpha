@@ -395,6 +395,7 @@ type CompactionHost = {
 				isStreaming?: boolean
 				isWaitingForFirstChunk?: boolean
 				isTaskLoopActive?: boolean
+				waitForTermination(): Promise<void>
 				taskAsk?: { ask?: string }
 				approveAsk(): void
 				alphaMessages: Array<{
@@ -414,13 +415,19 @@ type CompactionHost = {
 	getStateToPostToWebview(): Promise<Partial<ExtensionState>>
 }
 
-function assertCompletedTaskState(provider: CompactionHost, state: Partial<ExtensionState>, taskId: string) {
+async function assertCompletedTaskState(provider: CompactionHost, taskId: string) {
+	const task = provider.getLiveTask(taskId)
+	assert.ok(task, "The completed task must remain live")
+	// TaskCompleted can fire while the terminal journal write is still pending.
+	await task.waitForTermination()
+	const state = await provider.getStateToPostToWebview()
 	const canonical = provider.getAgentLifecycleSnapshot(taskId)
 	assert.equal(canonical?.status, "completed", "The canonical journal must retain terminal completion")
 	assert.equal(state.liveTasksById?.[taskId]?.lifecycle, TaskLifecycleState.Completed)
 	assert.equal(state.liveTasksById?.[taskId]?.turnId, canonical?.turnId)
 	assert.equal(state.liveTasksById?.[taskId]?.hasPendingToolCalls, false)
 	assert.equal(state.agentLifecycleSnapshots, undefined, "UI state must not retransmit the full lifecycle journal")
+	return state
 }
 
 suite("Alpha native compaction acceptance", function () {
@@ -467,9 +474,8 @@ suite("Alpha native compaction acceptance", function () {
 						},
 						{ timeout: 30_000, description: `small-window turn ${turn} to settle` },
 					)
-					const state = await provider.getStateToPostToWebview()
+					const state = await assertCompletedTaskState(provider, taskId)
 					assert.equal(state.currentTaskId, taskId)
-					assertCompletedTaskState(provider, state, taskId)
 					const task = provider.getLiveTask(taskId)!
 					assert.equal(task.instanceId, instanceId)
 					assert.equal(task.isStreaming, false)
@@ -591,7 +597,7 @@ suite("Alpha native compaction acceptance", function () {
 			})
 			assert.equal(model.requests.length, 3)
 			assert.equal(model.requests[2]!.rejected, false)
-			assertCompletedTaskState(provider, await provider.getStateToPostToWebview(), healthyId)
+			await assertCompletedTaskState(provider, healthyId)
 		} finally {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			await api.clearCurrentTask().catch(() => undefined)
@@ -699,9 +705,8 @@ suite("Alpha native compaction acceptance", function () {
 				RETAINED_TURNS,
 				"Compaction must preserve every completed answer in the rewind archive",
 			)
-			const state = await provider.getStateToPostToWebview()
+			const state = await assertCompletedTaskState(provider, taskId)
 			assert.equal(state.currentTaskId, taskId)
-			assertCompletedTaskState(provider, state, taskId)
 		} finally {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			api.off(AlphaCodeEventName.TaskCreated, onCreated)
