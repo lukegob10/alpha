@@ -44,6 +44,7 @@ import ContextMenu from "./ContextMenu"
 import { IndexingStatusBadge } from "./IndexingStatusBadge"
 import { usePromptHistory, type RestoreHistoryDraft } from "./hooks/usePromptHistory"
 import { useTicketSearch } from "./hooks/useTicketSearch"
+import { forkChatCommandName, parseForkChatCommand } from "./forkChatCommand"
 
 interface ChatTextAreaProps {
 	appearance?: "default" | "newTask"
@@ -57,6 +58,7 @@ interface ChatTextAreaProps {
 	selectedImages: string[]
 	setSelectedImages: React.Dispatch<React.SetStateAction<string[]>>
 	onSend: () => void
+	canForkChat?: boolean
 	onSelectImages: () => void
 	shouldDisableImages: boolean
 	onHeightChange?: (height: number) => void
@@ -95,6 +97,7 @@ export const ChatTextArea = memo(
 				selectedImages,
 				setSelectedImages,
 				onSend,
+				canForkChat = false,
 				shouldDisableImages,
 				onHeightChange,
 				mode,
@@ -312,10 +315,12 @@ export const ChatTextArea = memo(
 				return inputValue.trim().length > 0 || selectedImages.length > 0
 			}, [inputValue, selectedImages])
 			const isStopAction = isStreaming && !isEditMode && !hasInputContent
+			const isForkCommand = !isEditMode && parseForkChatCommand(inputValue) !== undefined
 			const sendDisabled =
-				(!hasInputContent && !isStopAction) ||
-				(sendingDisabled && (isEditMode || !isStreaming)) ||
-				(isStreaming && !isEditMode && hasInputContent && enqueueDisabled)
+				!isForkCommand &&
+				((!hasInputContent && !isStopAction) ||
+					(sendingDisabled && (isEditMode || !isStreaming)) ||
+					(isStreaming && !isEditMode && hasInputContent && enqueueDisabled))
 
 			// Compute the key combination text for the send button tooltip based on enterBehavior
 			const sendKeyCombination = useMemo(() => {
@@ -330,7 +335,7 @@ export const ChatTextArea = memo(
 			const sendActionLabel = isStopAction
 				? t("chat:stop.title")
 				: t(
-						isStreaming && !isEditMode
+						isStreaming && !isEditMode && !isForkCommand
 							? autoSteer
 								? "chat:pressToSteer"
 								: "chat:pressToQueue"
@@ -359,6 +364,25 @@ export const ChatTextArea = memo(
 				]
 			}, [filePaths, gitCommits, openedTabs])
 
+			const builtInCommands = useMemo<ContextMenuQueryItem[]>(
+				() =>
+					canForkChat && !isEditMode
+						? [
+								{
+									type: ContextMenuOptionType.Command,
+									value: forkChatCommandName,
+									slashCommand: `/${forkChatCommandName}`,
+									description: t("chat:forkChat.description"),
+									argumentHint: t("chat:forkChat.nameHint"),
+								},
+							]
+						: [],
+				[canForkChat, isEditMode, t],
+			)
+			const skillCommands = useMemo(
+				() => commands?.filter((command) => command.name !== forkChatCommandName),
+				[commands],
+			)
 			const contextMenuOptions = useMemo(
 				() =>
 					getContextMenuOptions(
@@ -367,10 +391,20 @@ export const ChatTextArea = memo(
 						queryItems,
 						fileSearchResults,
 						contextMenuModes,
-						commands,
+						skillCommands,
 						ticketOptions,
+						builtInCommands,
 					),
-				[searchQuery, selectedType, queryItems, fileSearchResults, contextMenuModes, commands, ticketOptions],
+				[
+					searchQuery,
+					selectedType,
+					queryItems,
+					fileSearchResults,
+					contextMenuModes,
+					skillCommands,
+					ticketOptions,
+					builtInCommands,
+				],
 			)
 
 			useEffect(() => {
@@ -570,7 +604,11 @@ export const ChatTextArea = memo(
 							})
 							return
 						}
-						if ((event.key === "Enter" || event.key === "Tab") && selectedMenuIndex !== -1) {
+						if (
+							(event.key === "Enter" || event.key === "Tab") &&
+							selectedMenuIndex !== -1 &&
+							!(event.key === "Enter" && inputValue === `/${forkChatCommandName}` && !isEditMode)
+						) {
 							event.preventDefault()
 							const selectedOption = contextMenuOptions[selectedMenuIndex]
 							if (
@@ -617,6 +655,7 @@ export const ChatTextArea = memo(
 						if (shouldSubmit) {
 							event.preventDefault()
 							if (!sendDisabled) {
+								setShowContextMenu(false)
 								handleSend()
 							}
 						}
@@ -1413,27 +1452,32 @@ export const ChatTextArea = memo(
 									</StandardTooltip>
 								)}
 								{/* Auto-steer keeps an explicit queue action beside the primary submission. */}
-								{!isEditMode && isStreaming && autoSteer && hasInputContent && onEnqueueMessage && (
-									<StandardTooltip content={t("chat:enqueueMessage")}>
-										<button
-											aria-label={t("chat:enqueueMessage")}
-											disabled={enqueueDisabled}
-											onClick={enqueueDisabled ? undefined : onEnqueueMessage}
-											className={cn(
-												"relative inline-flex items-center justify-center",
-												"bg-transparent border-none p-1.5",
-												"rounded-md min-w-[28px] min-h-[28px]",
-												"text-vscode-descriptionForeground hover:text-vscode-foreground",
-												"transition-all duration-200",
-												"opacity-100 hover:opacity-100 pointer-events-auto",
-												"hover:bg-vscode-toolbar-hoverBackground active:scale-95",
-												"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
-												"cursor-pointer",
-											)}>
-											<ListEnd className="w-4 h-4" />
-										</button>
-									</StandardTooltip>
-								)}
+								{!isEditMode &&
+									!isForkCommand &&
+									isStreaming &&
+									autoSteer &&
+									hasInputContent &&
+									onEnqueueMessage && (
+										<StandardTooltip content={t("chat:enqueueMessage")}>
+											<button
+												aria-label={t("chat:enqueueMessage")}
+												disabled={enqueueDisabled}
+												onClick={enqueueDisabled ? undefined : onEnqueueMessage}
+												className={cn(
+													"relative inline-flex items-center justify-center",
+													"bg-transparent border-none p-1.5",
+													"rounded-md min-w-[28px] min-h-[28px]",
+													"text-vscode-descriptionForeground hover:text-vscode-foreground",
+													"transition-all duration-200",
+													"opacity-100 hover:opacity-100 pointer-events-auto",
+													"hover:bg-vscode-toolbar-hoverBackground active:scale-95",
+													"focus:outline-none focus-visible:ring-1 focus-visible:ring-vscode-focusBorder",
+													"cursor-pointer",
+												)}>
+												<ListEnd className="w-4 h-4" />
+											</button>
+										</StandardTooltip>
+									)}
 								{isStreaming && !isEditMode && hasInputContent && (
 									<StandardTooltip content={t("chat:stop.title")}>
 										<button

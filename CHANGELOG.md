@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.34
+
+### Patch Changes
+
+- Fork a chat from the toolbar, history, or the `/fork` command. The new chat uses the same checkout and inherits the conversation through its latest completed reply.
+- Show the active chat name beside the chat switcher and delete saved chats in bulk from the current project.
+- Keep interleaved streamed text together in the completed reply. Queue or steer new input as a task completes.
+- Wait for command receipts outside the workspace mutation gate and recheck verification before completing. Let new guidance or cancellation interrupt the wait.
+
 ## 3.2.33
 
 ### Patch Changes

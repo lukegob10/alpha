@@ -1,6 +1,6 @@
 import { forwardRef, useContext, useImperativeHandle, useMemo, useRef, useState, type RefObject } from "react"
-import { Copy, Download, MoreHorizontal, Pencil, Trash2 } from "lucide-react"
-import { getTaskDisplayName, type HistoryItem } from "@alpha-code/types"
+import { Copy, Download, GitFork, MoreHorizontal, Pencil, Trash2 } from "lucide-react"
+import { getTaskDisplayName, isIndependentChat, type HistoryItem } from "@alpha-code/types"
 import {
 	Button,
 	DropdownMenu,
@@ -84,6 +84,13 @@ const TaskItemActionsMenu = forwardRef<TaskItemActionsMenuHandle, TaskItemAction
 							<Pencil aria-hidden="true" />
 							{t("history:renameChat")}
 						</DropdownMenuItem>
+						{isIndependentChat(item) && (
+							<DropdownMenuItem
+								onSelect={() => vscode.postMessage({ type: "forkChat", taskId: item.id })}>
+								<GitFork aria-hidden="true" />
+								{t("history:forkChat")}
+							</DropdownMenuItem>
+						)}
 						<DropdownMenuItem onSelect={() => void copyToClipboard(item.task)}>
 							<Copy aria-hidden="true" />
 							{t("history:copyPrompt")}

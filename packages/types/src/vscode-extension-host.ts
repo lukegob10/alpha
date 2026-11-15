@@ -45,7 +45,7 @@ import type {
 	ProviderProfileSnapshot,
 } from "./provider-profile-save.js"
 import type { SettingsSaveRequest, SettingsSaveResult } from "./settings-save.js"
-import type { HistoryItem } from "./history.js"
+import { taskDisplayNameSchema, type HistoryItem } from "./history.js"
 import type { TaskRenameRequest, TaskRenameResult } from "./task-rename.js"
 import type { ModeConfig, PromptComponent } from "./mode.js"
 import type { Experiments } from "./experiment.js"
@@ -878,6 +878,14 @@ export interface ReorderQueuedMessagePayload {
 	toIndex: number
 }
 
+export const forkChatRequestSchema = z
+	.object({
+		type: z.literal("forkChat"),
+		taskId: z.string().min(1).max(64),
+		displayName: taskDisplayNameSchema.optional(),
+	})
+	.strict()
+
 interface WebviewMessageBase {
 	type:
 		| "updateTodoList"
@@ -1196,6 +1204,7 @@ interface WebviewMessageBase {
 export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type" | "source"> & WebviewErrorMessage)
 	| (Omit<WebviewMessageBase, "type"> & z.infer<typeof chatGptAuthActionSchema>)
+	| (Omit<WebviewMessageBase, "type" | "taskId"> & z.infer<typeof forkChatRequestSchema>)
 	| (Omit<WebviewMessageBase, "type"> & { type: "renameTask"; taskRenameRequest: TaskRenameRequest })
 	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
 	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })

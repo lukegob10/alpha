@@ -566,7 +566,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Questions now send from the final step. Alpha also keeps completed subagent reports intact and handles long command output and task history more reliably."
+			"description": "Fork a chat from the toolbar, history, or /fork. The new chat starts with the conversation through the last completed reply and uses the same checkout."
 		}
 	},
 	"crossTasks": {
@@ -812,6 +812,14 @@
 	"transcript": {
 		"loadOlder": "Load older messages",
 		"loadAll": "Load all messages"
+	},
+	"forkChat": {
+		"commands": "Commands",
+		"description": "Open a new chat with the conversation through its latest completed reply.",
+		"nameHint": "[name]",
+		"unavailable": "Open a chat before using /fork.",
+		"removeAttachments": "Remove attachments before using /fork.",
+		"invalidName": "Use a fork name of up to 96 characters."
 	},
 	"slashSkills": {
 		"title": "Skills",

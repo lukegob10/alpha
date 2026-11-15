@@ -122,6 +122,17 @@ export const historyItemSchema = z.object({
 
 export type HistoryItem = z.infer<typeof historyItemSchema>
 
+export function isIndependentChat(
+	item: Pick<HistoryItem, "id" | "taskKind" | "diagnosticSession" | "parentTaskId" | "rootTaskId">,
+): boolean {
+	return (
+		item.taskKind !== "subagent" &&
+		!item.diagnosticSession &&
+		!item.parentTaskId &&
+		(!item.rootTaskId || item.rootTaskId === item.id)
+	)
+}
+
 export function getTaskDisplayName(
 	item: Pick<HistoryItem, "task"> & Partial<Pick<HistoryItem, "displayName" | "generatedTitle">>,
 ): string {

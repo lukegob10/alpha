@@ -64,6 +64,7 @@ export const lanes = {
 				"core/task/__tests__/Task.approval-mode-updates.spec.ts",
 				"core/task/__tests__/Task.completion-obligations.spec.ts",
 				"core/task/__tests__/Task.turn-completion-hooks.spec.ts",
+				"core/task/__tests__/stageThreeCompletion.integration.spec.ts",
 				"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
 				"core/tools/__tests__/ExecuteCommand.lifecycle.spec.ts",
 				"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",

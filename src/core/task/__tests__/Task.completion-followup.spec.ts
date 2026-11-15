@@ -115,27 +115,31 @@ it("coalesces independent wake requests while the preceding lifecycle drains", a
 	expect(resume).toHaveBeenCalledOnce()
 })
 
-it.each(["passive", "cancelled", "managed"])("does not wake %s mail after lifecycle settlement", async (kind) => {
-	const { task } = createTask()
-	Object.assign(task, {
-		isInitialized: true,
-		_started: true,
-		agentMessageInbox: { hasPending: () => true },
-	})
-	if (kind !== "passive") task.markIndependentAgentMessagesPending()
-	if (kind === "cancelled") task.abort = true
-	if (kind === "managed") Object.assign(task, { taskKind: "subagent" })
-	const resumed = vi.spyOn(task, "resumeCompletedTaskFollowup").mockResolvedValue(undefined)
-	const ending = deferred()
-	task["ownBackgroundLifecycle"]("resume", ending.promise)
-	task.markCompleted()
-	expect(await task.resumeIndependentAgentMessages()).toBe(false)
-	ending.resolve()
-	await ending.promise
-	await task["queuedInputWakePromise"]
+it.each(["passive", "cancelled", "managed", "requires human input"])(
+	"does not wake %s mail after lifecycle settlement",
+	async (kind) => {
+		const { task } = createTask()
+		Object.assign(task, {
+			isInitialized: true,
+			_started: true,
+			agentMessageInbox: { hasPending: () => true },
+		})
+		if (kind !== "passive") task.markIndependentAgentMessagesPending()
+		if (kind === "cancelled") task.abort = true
+		if (kind === "managed") Object.assign(task, { taskKind: "subagent" })
+		if (kind === "requires human input") task["resumeRequiresExplicitInput"] = true
+		const resumed = vi.spyOn(task, "resumeCompletedTaskFollowup").mockResolvedValue(undefined)
+		const ending = deferred()
+		task["ownBackgroundLifecycle"]("resume", ending.promise)
+		task.markCompleted()
+		expect(await task.resumeIndependentAgentMessages()).toBe(false)
+		ending.resolve()
+		await ending.promise
+		await task["queuedInputWakePromise"]
 
-	expect(resumed).not.toHaveBeenCalled()
-})
+		expect(resumed).not.toHaveBeenCalled()
+	},
+)
 
 it("clears a consumed independent wake request before later passive mail arrives", async () => {
 	const { task } = createTask()
@@ -718,7 +722,7 @@ it("completes ordinary text through the real turn engine without waiting for ack
 	expect(task.ask).not.toHaveBeenCalled()
 })
 
-it.each(["finishCanonicalLifecycleTurn", "presentCompletionResult", "finalizeTaskCompletion"] as const)(
+it.each(["presentCompletionResult", "finalizeTaskCompletion"] as const)(
 	"offers a visible recovery boundary when late %s fails",
 	async (operation) => {
 		const task = createCompletionTask()
@@ -733,3 +737,14 @@ it.each(["finishCanonicalLifecycleTurn", "presentCompletionResult", "finalizeTas
 		expect(task.isCompleted()).toBe(false)
 	},
 )
+
+it("does not reopen a durably completed task if publishing the final turn fails", async () => {
+	const task = createCompletionTask()
+	vi.mocked(task["finishCanonicalLifecycleTurn"]).mockRejectedValueOnce(new Error("Final turn publication failed"))
+
+	await task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+
+	expect(task.isCompleted()).toBe(true)
+	expect(task["finalizeTaskCompletion"]).toHaveBeenCalledOnce()
+	expect(task.ask).not.toHaveBeenCalledWith("resume_task")
+})

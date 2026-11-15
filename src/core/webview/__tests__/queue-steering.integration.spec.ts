@@ -1,5 +1,6 @@
-import type { ExtensionMessage, ExtensionState, QueuedMessage } from "@alpha-code/types"
+import { AlphaCodeEventName, type ExtensionMessage, type ExtensionState, type QueuedMessage } from "@alpha-code/types"
 
+import { createManagedPublicLifecycleHarness } from "./managedPublicLifecycleHarness"
 import { AlphaProvider } from "../AlphaProvider"
 import { webviewMessageHandler } from "../webviewMessageHandler"
 import { MessageQueueService, type MessageQueuePersistence } from "../../message-queue/MessageQueueService"
@@ -185,6 +186,7 @@ it("leaves active-turn input queued until an explicit Steer selects it without c
 		isCurrentApiConversationHistoryOwner: () => true,
 		apiConversationHistory: [],
 		messageQueueService: queue,
+		providerRef: { deref: () => provider },
 		resetMistakeRecoveryState: vi.fn(),
 		resetCompletionRecoveryState: vi.fn(),
 		emit: vi.fn(),
@@ -274,6 +276,7 @@ function queuedSteeringFixture(persistence?: MessageQueuePersistence) {
 		isInitialized: true,
 		isTaskLoopActive: true,
 		isStreaming: true,
+		steerMessageAwaitingPersistence: false,
 		currentRequestAbortController: requestController,
 		stepInterruptionController: stepController,
 		taskCancellationController: new AbortController(),
@@ -302,6 +305,119 @@ function queuedSteeringFixture(persistence?: MessageQueuePersistence) {
 	}
 	return { task, queue, provider, request, requestController, stepController }
 }
+
+it.each(["sendAndSteer", "queueMessage"] as const)(
+	"starts a new turn when a late %s addresses a completed chat",
+	async (type) => {
+		const fixture = await createManagedPublicLifecycleHarness()
+		const { root, provider } = fixture
+		try {
+			const first = fixture.queueTurn(root.taskId, "The first question is answered.")
+			const firstCompleted = barrier()
+			root.once(AlphaCodeEventName.TaskCompleted, firstCompleted.resolve)
+			root.start()
+			await first.entered
+			const expectedTurnId = provider.getAgentLifecycleSnapshot(root.taskId)?.turnId
+			expect(expectedTurnId).toBeDefined()
+			first.release()
+			await firstCompleted.promise
+			await root.waitForTermination()
+
+			const publish = vi.spyOn(provider, "postMessageToWebview")
+			const followup = fixture.queueTurn(root.taskId, "The follow-up is answered.")
+			const requestId = "late-followup"
+			const text = "Explain the first result further."
+			const submission =
+				type === "sendAndSteer"
+					? { type, taskId: root.taskId, requestId, text, expectedTurnId }
+					: { type, taskId: root.taskId, requestId, text }
+			await webviewMessageHandler(provider, submission)
+
+			const receipt = publish.mock.calls.find(
+				([message]) => message.chatCommandResult?.requestId === requestId,
+			)?.[0]
+			expect(receipt?.chatCommandResult).toMatchObject({ command: type, requestId, status: "accepted" })
+			await followup.entered
+			expect(JSON.stringify(followup.messages)).toContain(text)
+			expect(provider.getAgentLifecycleSnapshot(root.taskId)?.turnId).not.toBe(expectedTurnId)
+			expect(
+				root.apiConversationHistory.filter((entry) => entry.queued_message_ids?.includes(requestId)),
+			).toHaveLength(1)
+			expect(root.messageQueueService.hasUnconsumedInput()).toBe(false)
+		} finally {
+			await fixture.cleanup()
+		}
+	},
+)
+
+it("acknowledges a failed queue load so the queued Steer action can be used again", async () => {
+	const { queue, provider, request, requestController } = queuedSteeringFixture({
+		load: async () => {
+			throw new Error("Queue unavailable")
+		},
+		save: async () => undefined,
+	})
+	try {
+		await webviewMessageHandler(provider, request)
+		expect(provider.postMessageToWebview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				chatCommandResult: expect.objectContaining({ requestId: request.requestId, status: "rejected" }),
+			}),
+		)
+		expect(requestController.signal.aborted).toBe(false)
+	} finally {
+		queue.dispose()
+	}
+})
+
+it.each(["sendAndSteer", "steerQueuedMessage"] as const)(
+	"releases a %s claim as follow-up input when the old turn closes during persistence",
+	async (type) => {
+		const claiming = barrier()
+		const claimed = barrier()
+		const { task, queue, provider, request, requestController, stepController } = queuedSteeringFixture({
+			load: async () => [],
+			save: async () => {
+				if (queue.getClaimedMessageIds().includes(request.text)) {
+					claiming.resolve()
+					await claimed.promise
+				}
+			},
+		})
+		const text = "Explain the completed answer"
+		if (type === "steerQueuedMessage") await queue.addMessageDurably(text, [], request.text)
+		Object.assign(provider, { postTaskQueueToWebview: vi.fn(async () => undefined) })
+		const pending = webviewMessageHandler(
+			provider,
+			type === "sendAndSteer" ? { ...request, type, requestId: request.text, text } : request,
+		)
+		try {
+			await Promise.race([claiming.promise, pending])
+			expect(queue.getClaimedMessageIds()).toEqual([request.text])
+			Object.assign(provider, {
+				getAgentLifecycleSnapshot: () => ({
+					turnId: request.expectedTurnId,
+					phase: "finalizing",
+					status: "completed",
+				}),
+			})
+			claimed.resolve()
+			await pending
+			expect(requestController.signal.aborted).toBe(false)
+			expect(stepController.signal.aborted).toBe(false)
+			expect(task.hasPendingSteerMessage()).toBe(false)
+			expect(queue.messages).toMatchObject([{ id: request.text, text }])
+			expect(queue.getClaimedMessageIds()).toEqual([])
+			const receipt = vi.mocked(provider.postMessageToWebview).mock.lastCall?.[0]?.chatCommandResult
+			expect(receipt).toMatchObject({ command: type, status: "accepted" })
+			expect(receipt?.deliveryState).toBeUndefined()
+		} finally {
+			claimed.resolve()
+			await pending
+			queue.dispose()
+		}
+	},
+)
 
 it("steers queued messages in FIFO order, skipping claimed input and leaving an empty queue alone", async () => {
 	const { task, queue, provider } = queuedSteeringFixture()

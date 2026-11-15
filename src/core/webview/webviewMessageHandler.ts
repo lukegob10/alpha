@@ -45,14 +45,16 @@ import {
 	type ProviderSettingsEntry,
 	taskRenameRequestSchema,
 	type TaskRenameResult,
+	forkChatRequestSchema,
 } from "@alpha-code/types"
 import { customToolRegistry, serializeCustomTool } from "@alpha-code/core"
 
 import { type ApiMessage } from "../task-persistence/apiMessages"
 import { saveTaskMessages } from "../task-persistence"
 import { TaskRenameError } from "../task-persistence/TaskHistoryStore"
+import { ChatForkEmptyError } from "../task-persistence/ThreadHistory"
 
-import { AlphaProvider } from "./AlphaProvider"
+import type { AlphaProvider } from "./AlphaProvider"
 import { handleSettingsUpdate } from "./settingsSaveHandler"
 import {
 	ProviderProfileRenameError,
@@ -1081,6 +1083,42 @@ export const webviewMessageHandler = async (
 			}
 			break
 		}
+		case "forkChat": {
+			const request = forkChatRequestSchema.safeParse(message)
+			if (!request.success) {
+				await vscode.window.showWarningMessage(t("common:tasks.fork_invalid"))
+				break
+			}
+			const generation = provider.getTaskNavigationGeneration()
+			let forkedTaskId: string
+			try {
+				forkedTaskId = await provider.forkChat(request.data.taskId, request.data.displayName)
+			} catch (error) {
+				provider.log(
+					`[forkChat] Unable to save a conversation fork (${error instanceof Error ? error.name : "unknown"})`,
+				)
+				await vscode.window.showWarningMessage(
+					t(error instanceof ChatForkEmptyError ? "common:tasks.fork_empty" : "common:tasks.fork_failed"),
+				)
+				break
+			}
+			// Saving the copy can outlast the view or a newer explicit navigation.
+			if (options?.isCurrentWebview?.() === false || provider.getTaskNavigationGeneration() !== generation) break
+			try {
+				const opening = provider.showTaskWithId(forkedTaskId)
+				const forkGeneration = provider.getTaskNavigationGeneration()
+				await opening
+				if (
+					options?.isCurrentWebview?.() !== false &&
+					provider.getTaskNavigationGeneration() === forkGeneration
+				) {
+					await provider.postMessageToWebview({ type: "action", action: "focusInput" })
+				}
+			} catch {
+				await vscode.window.showWarningMessage(t("common:tasks.fork_open_failed"))
+			}
+			break
+		}
 		case "renameTask": {
 			const payload: unknown = message.taskRenameRequest
 			const identity = payload && typeof payload === "object" ? payload : undefined
@@ -1132,45 +1170,28 @@ export const webviewMessageHandler = async (
 			break
 		case "deleteMultipleTasksWithIds": {
 			const ids = message.ids
-
-			if (Array.isArray(ids)) {
-				// Process in batches of 20 (or another reasonable number)
-				const batchSize = 20
-				const results = []
-
-				// Only log start and end of the operation
-				console.log(`Batch deletion started: ${ids.length} tasks total`)
-
-				for (let i = 0; i < ids.length; i += batchSize) {
-					const batch = ids.slice(i, i + batchSize)
-
-					const batchPromises = batch.map(async (id) => {
-						try {
-							await provider.deleteTaskWithId(id)
-							return { id, success: true }
-						} catch (error) {
-							// Keep error logging for debugging purposes
-							console.log(
-								`Failed to delete task ${id}: ${error instanceof Error ? error.message : String(error)}`,
-							)
-							return { id, success: false }
-						}
-					})
-
-					// Process each batch in parallel but wait for completion before starting the next batch
-					const batchResults = await Promise.all(batchPromises)
-					results.push(...batchResults)
-
-					// Update the UI after each batch to show progress
-					await provider.postStateToWebview()
-				}
-
-				// Log final results
-				const successCount = results.filter((r) => r.success).length
-				const failCount = results.length - successCount
-				console.log(
-					`Batch deletion completed: ${successCount}/${ids.length} tasks successful, ${failCount} tasks failed`,
+			if (!Array.isArray(ids) || ids.length === 0 || !ids.every((id) => typeof id === "string" && id.length > 0))
+				break
+			if (options?.isCurrentWebview?.() === false) break
+			const workspace = provider.cwd
+			try {
+				const { failed, skipped, cleanupFailed } = await vscode.window.withProgress(
+					{ location: vscode.ProgressLocation.Notification, title: t("common:tasks.history_deleting") },
+					() => provider.deleteTasksWithIds(ids, workspace),
 				)
+				if (failed || skipped || cleanupFailed) {
+					const details = [
+						failed ? t("common:tasks.history_delete_failed_count", { count: failed }) : undefined,
+						skipped ? t("common:tasks.history_delete_skipped", { count: skipped }) : undefined,
+						cleanupFailed ? t("common:tasks.history_delete_cleanup_failed") : undefined,
+					]
+						.filter(Boolean)
+						.join(" ")
+					void vscode.window.showWarningMessage(details)
+				}
+			} catch (error) {
+				provider.log(`[deleteTasksWithIds] ${String(error)}`)
+				void vscode.window.showWarningMessage(t("common:tasks.history_delete_failed"))
 			}
 			break
 		}
@@ -3291,8 +3312,17 @@ export const webviewMessageHandler = async (
 				await postChatCommandResult("sendAndSteer", "rejected", "unknown")
 				break
 			}
-			const task = getRequiredTaskForMessage(provider, message, "sendAndSteer")
+			const task = getTaskForMessage(provider, message)
 			if (!task || task.taskKind === "subagent") {
+				await postChatCommandResult("sendAndSteer", "rejected", "task_unavailable")
+				break
+			}
+			const canAdmit = () =>
+				provider.getLiveTask(task.taskId) === task &&
+				!task.abort &&
+				!task.abandoned &&
+				(provider.canAcceptTaskInput(task.taskId) || task.isCompleted?.() === true)
+			if (!canAdmit()) {
 				await postChatCommandResult("sendAndSteer", "rejected", "task_unavailable")
 				break
 			}
@@ -3307,9 +3337,7 @@ export const webviewMessageHandler = async (
 			const postStaleSteeringResult = async () => {
 				// A lost ACK may be retried after its original turn completed. Its receipt
 				// remains accepted, but must not steer or refresh a successor's transcript.
-				const accepted =
-					typeof task.hasAcceptedQueuedUserMessage === "function" &&
-					(await task.hasAcceptedQueuedUserMessage(parsed.data.requestId))
+				const accepted = await task.hasAcceptedQueuedUserMessage?.(parsed.data.requestId).catch(() => false)
 				await postChatCommandResult(
 					"sendAndSteer",
 					accepted ? "accepted" : "rejected",
@@ -3333,14 +3361,23 @@ export const webviewMessageHandler = async (
 				await postStaleSteeringResult()
 				break
 			}
+			if (!canAdmit()) {
+				await postChatCommandResult("sendAndSteer", "rejected", "task_unavailable")
+				break
+			}
 			let deliveryState: ChatCommandResult["deliveryState"]
+			let routedAsFollowup = false
 			try {
-				await task.steerUserMessageDurably(
-					resolved.text,
-					resolved.images,
-					parsed.data.requestId,
-					expectedTurnId,
-				)
+				routedAsFollowup =
+					(await task.steerUserMessageDurably(
+						resolved.text,
+						resolved.images,
+						parsed.data.requestId,
+						expectedTurnId,
+						{
+							canAcceptInput: canAdmit,
+						},
+					)) === "followup"
 			} catch (error) {
 				provider.log(`[webviewMessageHandler] Direct steering failed for task ${task.taskId}: ${String(error)}`)
 				// A handoff can become unavailable after durable admission. Keep that
@@ -3363,7 +3400,10 @@ export const webviewMessageHandler = async (
 				}
 			}
 			const queue = task.messageQueueService.visibleMessages
-			if (queue.some((entry) => entry.id === parsed.data.requestId && entry.deliveryState !== "delivering")) {
+			if (
+				!routedAsFollowup &&
+				queue.some((entry) => entry.id === parsed.data.requestId && entry.deliveryState !== "delivering")
+			) {
 				deliveryState = "queued"
 			}
 			if (queue.some((entry) => entry.id === parsed.data.requestId)) {
@@ -3508,7 +3548,15 @@ export const webviewMessageHandler = async (
 				break
 			}
 
-			await task.messageQueueService.ready
+			try {
+				await task.messageQueueService.ready
+			} catch (error) {
+				provider.log(
+					`[webviewMessageHandler] Unable to load queued input for task ${task.taskId}: ${String(error)}`,
+				)
+				await postChatCommandResult(command, "rejected", "unknown")
+				break
+			}
 			if (isStaleTurn()) {
 				await postChatCommandResult(command, "rejected", "stale_turn")
 				break

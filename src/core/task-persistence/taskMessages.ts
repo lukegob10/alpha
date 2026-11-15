@@ -5,13 +5,15 @@ import * as fs from "fs/promises"
 import type { AlphaMessage } from "@alpha-code/types"
 
 import { GlobalFileNames } from "../../shared/globalFileNames"
-import { getTaskDirectoryPath } from "../../utils/storage"
+import { getTaskDirectoryPath, resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
 
 export type ReadTaskMessagesOptions = {
 	taskId: string
 	globalStoragePath: string
 	/** Reopening existing tasks must not interpret unreadable history as a new empty task. */
 	requireExisting?: boolean
+	/** Snapshot reads leave the source directory untouched. */
+	readOnly?: boolean
 }
 
 export class TaskMessagesReadError extends Error {
@@ -38,13 +40,19 @@ export async function readTaskMessages({
 	taskId,
 	globalStoragePath,
 	requireExisting = false,
+	readOnly = false,
 }: ReadTaskMessagesOptions): Promise<AlphaMessage[]> {
-	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
+	const taskDir = await (readOnly ? resolveExistingTaskDirectoryPathReadOnly : getTaskDirectoryPath)(
+		globalStoragePath,
+		taskId,
+	)
 	const filePath = path.join(taskDir, GlobalFileNames.uiMessages)
 	let contents: string
 	try {
+		if (readOnly && !(await fs.lstat(filePath)).isFile()) throw new TaskMessagesReadError("invalid")
 		contents = await fs.readFile(filePath, "utf8")
 	} catch (error) {
+		if (error instanceof TaskMessagesReadError) throw error
 		const kind = (error as NodeJS.ErrnoException).code === "ENOENT" ? "not_found" : "io_error"
 		if (requireExisting) throw new TaskMessagesReadError(kind)
 		return []

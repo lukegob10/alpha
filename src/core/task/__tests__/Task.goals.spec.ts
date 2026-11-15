@@ -319,7 +319,8 @@ describe("Task idle continuation completion authority", () => {
 		const { task, controller, store, queue } = fixture()
 		await controller.create({ objective: "Finish." }, "user")
 		const { entered, release } = holdIdleReservation(controller, store)
-		vi.mocked(task.runAgentRequests).mockImplementation(async () => {
+		vi.mocked(task.runAgentRequests).mockImplementation(async (input) => {
+			queue.acknowledgeMessages(task["getQueuedInputReceipts"](input))
 			if (vi.mocked(task.runAgentRequests).mock.calls.length === 2)
 				await task.updateGoalStatus("complete", { source: "tool" })
 			return { status: "completed", response: createAgentResponse([{ type: "text", text: "Progress." }]) }

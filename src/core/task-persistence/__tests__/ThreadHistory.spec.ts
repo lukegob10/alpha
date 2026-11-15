@@ -507,6 +507,40 @@ describe("independent thread forks", () => {
 		const snapshot = forkTaskHistory([{ role: "user", content: "First turn", ts: 1 }], [], { active: true })
 		expect(snapshot).toEqual({ apiMessages: [], uiMessages: [] })
 	})
+
+	it("keeps the completed reply and tool receipt when the next turn is running", () => {
+		const call = { type: "tool_use", id: "finish", name: "attempt_completion", input: { result: "Done" } } as const
+		const history: ApiMessage[] = [
+			{ role: "user", content: "Test the parser", ts: 10 },
+			{ role: "assistant", content: [call], ts: 20 },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: call.id, content: "Accepted" }], ts: 30 },
+			{ role: "user", content: "Follow up in the original", ts: 40 },
+			{ role: "assistant", content: "Still working", ts: 50 },
+		]
+		const completedTurn = { runId: "run", turnId: "completed" }
+		const ui: AlphaMessage[] = [
+			{ type: "say", say: "text", text: "Test the parser", ts: 10 },
+			{ type: "say", say: "checkpoint_saved", text: "source-checkpoint", ts: 20 },
+			{
+				type: "say",
+				say: "completion_result",
+				text: "Done",
+				ts: 31,
+				turn: { ...completedTurn, terminalStatus: "completed" },
+			},
+			{ type: "say", say: "user_feedback", text: "Follow up in the original", ts: 40 },
+			{
+				type: "say",
+				say: "completion_result",
+				text: "Still working",
+				ts: 51,
+				turn: { runId: "run", turnId: "active" },
+			},
+		]
+		const fork = forkTaskHistory(history, ui, { active: true })
+		expect(fork.apiMessages).toEqual(history.slice(0, 3))
+		expect(fork.uiMessages).toEqual([ui[0], ui[2]])
+	})
 })
 
 const persistedToolFormats = [

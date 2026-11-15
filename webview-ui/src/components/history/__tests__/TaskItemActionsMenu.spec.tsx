@@ -45,6 +45,14 @@ describe("chat row actions", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
+	it("forks a saved chat from its history menu", async () => {
+		const user = userEvent.setup()
+		render(<TaskItem item={item} variant="compact" />)
+		await user.click(screen.getByRole("button", { name: "Chat actions: Short label" }))
+		await user.click(screen.getByRole("menuitem", { name: "Fork chat" }))
+		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "forkChat", taskId: item.id })
+	})
+
 	it("retains export and confirmed delete for recent rows", async () => {
 		const user = userEvent.setup()
 		render(<TaskItem item={item} variant="compact" />)

@@ -229,6 +229,32 @@ describe("attemptCompletionTool", () => {
 		expect(mockHandleError).not.toHaveBeenCalled()
 	})
 
+	it("returns the actual repair request when final verification rejects a staged completion", async () => {
+		const message = "Review the worker result before completing."
+		vi.mocked(mockTask.finalizeTaskCompletion!).mockImplementationOnce(async (_toolCallId, onRejected) => {
+			onRejected?.({
+				allowed: false,
+				modelCanResolveRejection: true,
+				reasonCode: "child_results_unconsumed",
+				message,
+			})
+			return false
+		})
+		await attemptCompletionTool.execute({ result: "Done." }, mockTask as Task, {
+			askApproval: mockAskApproval,
+			handleError: mockHandleError,
+			pushToolResult: mockPushToolResult,
+			askFinishSubTaskApproval: mockAskFinishSubTaskApproval,
+			toolDescription: mockToolDescription,
+			toolCallId: "late-verification-repair",
+		})
+
+		expect(mockPushToolResult).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(message))
+		expect(mockTask.suspendAfterCurrentTurn).not.toHaveBeenCalled()
+		expect(mockTask.consecutiveMistakeCount).toBe(0)
+		expect(mockHandleError).not.toHaveBeenCalled()
+	})
+
 	it("reports completion failures with the task completion context", async () => {
 		const error = new Error("Completion hooks failed")
 		vi.mocked(mockTask.evaluateCompletionHooks!).mockRejectedValueOnce(error)
@@ -536,7 +562,7 @@ describe("attemptCompletionTool", () => {
 			}
 			await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-			expect(mockTask.consecutiveMistakeCount).toBe(1)
+			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("attempt_completion")
 			expect(mockPushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("Cannot complete task while there are incomplete todos"),
@@ -578,7 +604,7 @@ describe("attemptCompletionTool", () => {
 			}
 			await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-			expect(mockTask.consecutiveMistakeCount).toBe(1)
+			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("attempt_completion")
 			expect(mockPushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("Cannot complete task while there are incomplete todos"),
@@ -621,7 +647,7 @@ describe("attemptCompletionTool", () => {
 			}
 			await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
-			expect(mockTask.consecutiveMistakeCount).toBe(1)
+			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("attempt_completion")
 			expect(mockPushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("Cannot complete task while there are incomplete todos"),
@@ -707,7 +733,7 @@ describe("attemptCompletionTool", () => {
 			await attemptCompletionTool.handle(mockTask as Task, block, callbacks)
 
 			// Should prevent completion when setting is enabled and there are incomplete todos
-			expect(mockTask.consecutiveMistakeCount).toBe(1)
+			expect(mockTask.consecutiveMistakeCount).toBe(0)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("attempt_completion")
 			expect(mockPushToolResult).toHaveBeenCalledWith(
 				expect.stringContaining("Cannot complete task while there are incomplete todos"),

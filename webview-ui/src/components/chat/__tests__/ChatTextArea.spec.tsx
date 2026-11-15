@@ -496,6 +496,31 @@ describe("ChatTextArea", () => {
 			expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
 			expect(defaultProps.onSend).not.toHaveBeenCalled()
 		})
+		it("offers /fork in a chat and submits it with one Enter", () => {
+			const onSend = vi.fn()
+			function Composer() {
+				const [inputValue, setInputValue] = useState("")
+				return (
+					<ChatTextArea
+						{...defaultProps}
+						canForkChat
+						inputValue={inputValue}
+						setInputValue={setInputValue}
+						onSend={onSend}
+					/>
+				)
+			}
+			render(<Composer />)
+			const textarea = screen.getByRole("textbox")
+			fireEvent.change(textarea, { target: { value: "/fo", selectionStart: 3 } })
+			expect(screen.getByRole("option", { name: /\/fork/i })).toBeInTheDocument()
+			fireEvent.keyDown(textarea, { key: "Tab" })
+			expect(textarea).toHaveValue("/fork ")
+			fireEvent.change(textarea, { target: { value: "/fork", selectionStart: 5 } })
+			fireEvent.keyDown(textarea, { key: "Enter" })
+			expect(onSend).toHaveBeenCalledOnce()
+		})
+
 		it("offers only Plan and Code built-ins through slash-mode suggestions", () => {
 			const { container } = render(<ChatTextArea {...defaultProps} />)
 			const textarea = container.querySelector("textarea")!

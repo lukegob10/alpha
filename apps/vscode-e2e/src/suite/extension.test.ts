@@ -1,8 +1,17 @@
 import * as assert from "assert"
 import { randomUUID } from "node:crypto"
+import { readFile } from "node:fs/promises"
+import { join } from "node:path"
 import * as vscode from "vscode"
 
-import { retiredProviderNames, type AlphaCodeSettings } from "@alpha-code/types"
+import {
+	retiredProviderNames,
+	type AlphaCodeSettings,
+	type AlphaMessage,
+	type HistoryItem,
+	type LiveTaskMetadata,
+	type WebviewMessage,
+} from "@alpha-code/types"
 
 import { assertRequestedHostVersion, setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
@@ -12,6 +21,266 @@ suite("Alpha Extension", function () {
 
 	test("Runs on the requested VS Code version", () => {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
+	})
+
+	test("saves interleaved assistant text as one completed row", async () => {
+		const api = globalThis.api
+		const host = (
+			api as unknown as {
+				sidebarProvider: {
+					getLiveTask(id: string): { didComplete: boolean; alphaMessages: AlphaMessage[] } | undefined
+					getTaskWithId(id: string): Promise<{ taskDirPath: string }>
+				}
+			}
+		).sidebarProvider
+		const answer = "I checked the ticket."
+		let previewTimestamp: number | undefined
+		const model = {
+			id: "interleaved-assistant-text",
+			async *createMessage(_system: string, _messages: unknown[], metadata?: { taskId?: string }) {
+				assert.ok(metadata?.taskId)
+				const id = metadata.taskId
+				yield { type: "reasoning" as const, text: "Checking the request." }
+				yield { type: "text" as const, text: "I" }
+				await waitFor(
+					() => {
+						previewTimestamp = host
+							.getLiveTask(id)
+							?.alphaMessages.find(({ say, text }) => say === "text" && text === "I")?.ts
+						return previewTimestamp !== undefined
+					},
+					{ timeout: 10_000, description: "the first assistant text chunk" },
+				)
+				yield { type: "reasoning" as const, text: "The ticket is available." }
+				yield { type: "text" as const, text: answer.slice(1) }
+				yield { type: "usage" as const, inputTokens: 12, outputTokens: 8 }
+			},
+			getModel() {
+				return { id: this.id, info: { contextWindow: 128_000, maxTokens: 4096, supportsPromptCache: false } }
+			},
+			async countTokens() {
+				return 1
+			},
+			async completePrompt() {
+				return ""
+			},
+		}
+		const id = await api.startNewTask({
+			text: "Check the disposable ticket fixture.",
+			presentationModelCalls: false,
+			configuration: {
+				...api.getConfiguration(),
+				apiProvider: "fake-ai",
+				fakeAi: model,
+				mode: "code",
+				enableCheckpoints: false,
+				postTurnCondenseContextPercent: 0,
+			},
+		})
+		try {
+			await waitFor(() => host.getLiveTask(id)?.didComplete === true, { timeout: 20_000 })
+			const { taskDirPath } = await host.getTaskWithId(id)
+			const saved: AlphaMessage[] = JSON.parse(await readFile(join(taskDirPath, "ui_messages.json"), "utf8"))
+			// The first saved text row represents the opening user prompt.
+			assert.equal(saved[0]?.text, "Check the disposable ticket fixture.")
+			const textRows = saved.slice(1).filter(({ say }) => say === "text" || say === "completion_result")
+			assert.deepStrictEqual(
+				textRows.map(({ ts, text, partial }) => ({ ts, text, partial })),
+				[{ ts: previewTimestamp, text: answer, partial: false }],
+			)
+			assert.ok(saved.some(({ say, text }) => say === "reasoning" && text?.includes("The ticket is available.")))
+		} finally {
+			await api.clearCurrentTask()
+		}
+	})
+
+	test("bulk deletes saved chats in this workspace and leaves other projects alone", async () => {
+		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		assert.ok(workspace)
+		const host = (
+			globalThis.api as unknown as {
+				sidebarProvider: {
+					setWebviewMessageListener(webview: Pick<vscode.Webview, "onDidReceiveMessage">): void
+					updateTaskHistory(item: HistoryItem, options: { broadcast: boolean }): Promise<unknown>
+					getTaskWithId(
+						id: string,
+						options: { includeApiConversationHistory: boolean },
+					): Promise<{ historyItem: HistoryItem }>
+					deleteTaskWithId(id: string): Promise<void>
+				}
+			}
+		).sidebarProvider
+		let receive: ((message: WebviewMessage) => Promise<void>) | undefined
+		const subscription = new vscode.Disposable(() => {
+			receive = undefined
+		})
+		host.setWebviewMessageListener({
+			onDidReceiveMessage(handler) {
+				receive = handler
+				return subscription
+			},
+		})
+		assert.ok(receive)
+		const prefix = `host-delete-${randomUUID()}`
+		const parentId = `${prefix}-parent`
+		const childId = `${prefix}-child`
+		const foreignId = `${prefix}-foreign`
+		const keptId = `${prefix}-kept`
+		const fixture = (id: string, extra: Partial<HistoryItem> = {}): HistoryItem => ({
+			id,
+			workspace,
+			ts: Date.now(),
+			number: 1,
+			task: "Disposable bulk-delete fixture",
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+			...extra,
+		})
+		const lookup = (id: string) => host.getTaskWithId(id, { includeApiConversationHistory: false })
+		try {
+			for (const item of [
+				fixture(parentId, { childIds: [childId] }),
+				fixture(childId, { parentTaskId: parentId }),
+				fixture(foreignId, { workspace: `${workspace}-other` }),
+				fixture(keptId),
+			])
+				await host.updateTaskHistory(item, { broadcast: false })
+
+			await receive({ type: "deleteMultipleTasksWithIds", ids: [parentId, childId, parentId, foreignId] })
+
+			await assert.rejects(lookup(parentId), /Task not found/)
+			await assert.rejects(lookup(childId), /Task not found/)
+			assert.equal((await lookup(foreignId)).historyItem.id, foreignId)
+			assert.equal((await lookup(keptId)).historyItem.id, keptId)
+		} finally {
+			subscription.dispose()
+			for (const id of [parentId, childId, foreignId, keptId]) await host.deleteTaskWithId(id)
+		}
+	})
+
+	test("opens a conversation fork and continuations inherit the saved context", async () => {
+		const api = globalThis.api
+		const original = api.getConfiguration()
+		const host = (
+			api as unknown as {
+				sidebarProvider: {
+					setWebviewMessageListener(webview: {
+						onDidReceiveMessage(receive: (message: WebviewMessage) => Promise<void>): vscode.Disposable
+					}): void
+					getCurrentTask(): { taskId: string } | undefined
+					getLiveTask(taskId: string): { didComplete: boolean; alphaMessages: AlphaMessage[] } | undefined
+					getLiveTaskMetadata(): Record<string, LiveTaskMetadata>
+					getTaskWithId(
+						taskId: string,
+					): Promise<{ historyItem: HistoryItem; apiConversationHistory: unknown[] }>
+					deleteTaskWithId(taskId: string): Promise<void>
+				}
+			}
+		).sidebarProvider
+		let receive: ((message: WebviewMessage) => Promise<void>) | undefined
+		const subscription = new vscode.Disposable(() => {
+			receive = undefined
+		})
+		host.setWebviewMessageListener({
+			onDidReceiveMessage(listener) {
+				receive = listener
+				return subscription
+			},
+		})
+		assert.ok(receive)
+
+		const requests: Array<{ taskId?: string; history: string }> = []
+		const model = {
+			id: "chat-fork-fixture",
+			async *createMessage(_system: string, messages: unknown[], metadata?: { taskId?: string }) {
+				requests.push({ taskId: metadata?.taskId, history: JSON.stringify(messages) })
+				yield {
+					type: "text" as const,
+					text: requests.length === 1 ? "The parser issue is understood." : "The fork continued.",
+				}
+				yield { type: "usage" as const, inputTokens: 100, outputTokens: 10 }
+			},
+			getModel() {
+				return { id: this.id, info: { contextWindow: 128_000, maxTokens: 4096, supportsPromptCache: false } }
+			},
+			async countTokens() {
+				return 100
+			},
+			async completePrompt() {
+				return ""
+			},
+		}
+		const taskIds: string[] = []
+		try {
+			const sourceId = await api.startNewTask({
+				text: "Analyze the parser fixture.",
+				presentationModelCalls: false,
+				configuration: {
+					...original,
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "code",
+					enableCheckpoints: false,
+					postTurnCondenseContextPercent: 0,
+				},
+			})
+			taskIds.push(sourceId)
+			await waitFor(() => host.getLiveTask(sourceId)?.didComplete === true, { timeout: 20_000 })
+			const source = await host.getTaskWithId(sourceId)
+
+			await receive({ type: "forkChat", taskId: sourceId, displayName: "Alternate parser investigation" })
+			const forkId = host.getCurrentTask()?.taskId
+			assert.ok(forkId)
+			assert.notEqual(forkId, sourceId)
+			taskIds.push(forkId)
+			const fork = await host.getTaskWithId(forkId)
+			assert.equal(fork.historyItem.forkedFromId, sourceId)
+			assert.equal(fork.historyItem.displayName, "Alternate parser investigation")
+			assert.ok(JSON.stringify(fork.apiConversationHistory).includes("The parser issue is understood."))
+			const assertIdleFork = async () => {
+				await waitFor(() => host.getLiveTask(forkId)?.didComplete === true, {
+					description: "the fork to finish loading and become idle",
+					timeout: 15_000,
+				})
+				const live = host.getLiveTask(forkId)
+				assert.ok(live)
+				assert.ok(live.alphaMessages.some((message) => message.text === "The parser issue is understood."))
+				assert.ok(
+					!live.alphaMessages.some(({ ask }) => ask === "resume_task" || ask === "resume_completed_task"),
+				)
+				assert.equal(host.getLiveTaskMetadata()[forkId]?.isTurnActive, false)
+				assert.equal(host.getLiveTaskMetadata()[forkId]?.isWaitingForInput, false)
+				assert.equal((await host.getTaskWithId(forkId)).historyItem.forkSessionStarted, false)
+				assert.equal(requests.length, 1, "Opening a fork must wait for the user's next message")
+			}
+			await assertIdleFork()
+			await api.clearCurrentTask()
+			assert.equal(host.getLiveTask(forkId), undefined)
+			await receive({ type: "showTaskWithId", text: forkId })
+			assert.equal(host.getCurrentTask()?.taskId, forkId)
+			await assertIdleFork()
+
+			await receive({
+				type: "resumeCompletedTask",
+				taskId: forkId,
+				requestId: randomUUID(),
+				text: "Explore a different fix.",
+			})
+			await waitFor(() => host.getLiveTask(forkId)?.didComplete === true, { timeout: 20_000 })
+			assert.equal(requests.length, 2)
+			const continuation = requests[1]
+			assert.ok(continuation)
+			assert.equal(continuation.taskId, forkId)
+			assert.ok(continuation.history.includes("The parser issue is understood."))
+			assert.ok(continuation.history.includes("Explore a different fix."))
+			assert.equal((await host.getTaskWithId(forkId)).historyItem.forkSessionStarted, true)
+			assert.deepEqual((await host.getTaskWithId(sourceId)).apiConversationHistory, source.apiConversationHistory)
+		} finally {
+			subscription.dispose()
+			for (const taskId of taskIds.reverse()) await host.deleteTaskWithId(taskId)
+			await api.setConfiguration(original)
+		}
 	})
 
 	test("New Chat commands leave Quick Open and open a draft through the extension UI", async () => {

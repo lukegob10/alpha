@@ -50,6 +50,7 @@ type SharedTaskSessions = {
 	nextTranscriptRevision: number
 	maxLiveTasks: number
 	ownershipOperations: Map<string, Promise<void>>
+	deletingHistory: Set<string>
 	slotReservations: Map<string, TaskSlotReservation>
 	startupRecovery?: Promise<void>
 }
@@ -70,6 +71,7 @@ const createSharedTaskSessions = (maxLiveTasks: number): SharedTaskSessions => (
 	nextTranscriptRevision: 0,
 	maxLiveTasks: normalizeMaxLiveTasks(maxLiveTasks),
 	ownershipOperations: new Map(),
+	deletingHistory: new Set(),
 	slotReservations: new Map(),
 })
 
@@ -194,6 +196,7 @@ export class TaskSessionRegistry {
 
 	/** Hold host capacity across asynchronous construction, reusing an owned prepared child slot. */
 	reserveTaskAdmission(taskId: string): () => void {
+		if (this.isHistoryDeleting(taskId)) throw new Error("Task history is being deleted")
 		const reservationId = `task-admission:${taskId}`
 		if (this.sessions.has(taskId) || this.shared.slotReservations.has(reservationId)) {
 			throw new Error(`Task ${taskId} already has a registered or admitting runtime owner`)
@@ -307,6 +310,25 @@ export class TaskSessionRegistry {
 			if (this.shared.ownershipOperations.get(taskId) === pending) {
 				this.shared.ownershipOperations.delete(taskId)
 			}
+		}
+	}
+
+	isHistoryDeleting(taskId: string): boolean {
+		return this.shared.deletingHistory.has(taskId)
+	}
+
+	isTaskAdmissionPending(taskId: string): boolean {
+		return this.shared.slotReservations.has(`task-admission:${taskId}`)
+	}
+
+	/** Keep selected IDs unavailable for restore until their history and artifacts have settled. */
+	async runHistoryDeletion<T>(taskIds: readonly string[], operation: () => Promise<T>): Promise<T> {
+		if (taskIds.some((id) => this.isHistoryDeleting(id))) throw new Error("Task history is already being deleted")
+		for (const id of taskIds) this.shared.deletingHistory.add(id)
+		try {
+			return await operation()
+		} finally {
+			for (const id of taskIds) this.shared.deletingHistory.delete(id)
 		}
 	}
 

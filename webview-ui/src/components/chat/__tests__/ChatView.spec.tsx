@@ -723,7 +723,7 @@ describe("ChatView toolbar navigation", () => {
 			mockPostMessage(taskState("a"))
 			await view.findByRole("button", { name: "history:backToHome" })
 			const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
-			expect(within(toolbar).queryByText("Named a")).not.toBeInTheDocument()
+			expect(within(toolbar).getByText("Named a")).toBeVisible()
 			expect(within(toolbar).getByRole("button", { name: "history:backToHome" })).toBeInTheDocument()
 			expect(within(view.getByTestId("chat-transcript-viewport")).getByText("Original a")).toBeInTheDocument()
 			const input = view.getByTestId("chat-textarea").querySelector("input")!
@@ -743,12 +743,16 @@ describe("ChatView toolbar navigation", () => {
 				expect(view.queryByRole("group", { name: "common:chatToolbar.label" })).not.toBeInTheDocument()
 				props.isHidden = false
 				view.rerender(tree())
-			} else mockPostMessage(taskState("a"))
+			} else {
+				expect(view.getByTestId("chat-title")).toHaveTextContent("Named b")
+				mockPostMessage(taskState("a"))
+			}
 			await waitFor(() => expect(input).toHaveValue("Keep unsent guidance"))
+			expect(view.getByTestId("chat-title")).toHaveTextContent("Named a")
 		},
 	)
 
-	it("keeps only task navigation in an active sidebar and preserves the unsent draft while switching", async () => {
+	it("shows the chat name and navigation in the sidebar and preserves the unsent draft while switching", async () => {
 		const view = renderChatView()
 		const currentTaskItem = {
 			id: "sidebar-active",
@@ -769,12 +773,12 @@ describe("ChatView toolbar navigation", () => {
 		})
 		await view.findByRole("button", { name: "history:backToHome" })
 		const toolbar = view.getByRole("group", { name: "common:chatToolbar.label" })
-		expect(within(toolbar).queryByText("Sidebar chat")).not.toBeInTheDocument()
+		expect(within(toolbar).getByText("Sidebar chat")).toBeVisible()
 		expect(
 			within(toolbar)
 				.getAllByRole("button")
 				.map((button) => button.getAttribute("aria-label")),
-		).toEqual(["history:backToHome", "history:switchChat"])
+		).toEqual(["history:backToHome", "history:switchChat", "history:forkChat"])
 		for (const action of ["newChat", "settings", "tickets", "more"]) {
 			expect(
 				within(toolbar).queryByRole("button", { name: `common:chatToolbar.${action}` }),
@@ -786,6 +790,37 @@ describe("ChatView toolbar navigation", () => {
 		fireEvent.click(await view.findByTestId("task-item-sidebar-other"))
 		expect(vscode.postMessage).toHaveBeenCalledWith({ type: "showTaskWithId", text: "sidebar-other" })
 		expect(input).toHaveValue("Keep sidebar guidance")
+	})
+
+	it("updates the ribbon as the host generates a title and saves a rename", async () => {
+		const view = renderChatView()
+		const currentTaskItem = {
+			id: "title-task",
+			number: 1,
+			task: "Original prompt",
+			ts: 1,
+			tokensIn: 0,
+			tokensOut: 0,
+			totalCost: 0,
+		}
+		mockPostMessage({
+			currentTaskId: currentTaskItem.id,
+			currentView: { type: "task", taskId: currentTaskItem.id },
+			currentTaskItem,
+			alphaMessages: [],
+		})
+		const toolbar = within(await view.findByRole("group", { name: "common:chatToolbar.label" }))
+		expect(await toolbar.findByText("Original prompt")).toBeVisible()
+
+		const titled = { ...currentTaskItem, generatedTitle: "Generated title" }
+		window.postMessage({ type: "taskHistoryItemUpdated", taskHistoryItem: titled }, "*")
+		expect(await toolbar.findByText("Generated title")).toBeVisible()
+		expect(toolbar.queryByText("Original prompt")).not.toBeInTheDocument()
+
+		const renamed = { ...titled, displayName: "Saved name" }
+		window.postMessage({ type: "taskHistoryItemUpdated", taskHistoryItem: renamed }, "*")
+		expect(await toolbar.findByText("Saved name")).toBeVisible()
+		expect(toolbar.queryByText("Generated title")).not.toBeInTheDocument()
 	})
 
 	it.each(["sidebar", "editor"])(
@@ -819,7 +854,7 @@ describe("ChatView toolbar navigation", () => {
 					.slice(0, 2)
 					.map((button) => button.getAttribute("aria-label")),
 			).toEqual(["history:backToHome", "history:switchChat"])
-			expect(within(toolbar).queryByText(currentTaskItem.displayName)).not.toBeInTheDocument()
+			expect(within(toolbar).getByText(currentTaskItem.displayName)).toBeVisible()
 			expect(
 				within(view.getByTestId("chat-transcript-viewport")).getByText(currentTaskItem.task),
 			).toBeInTheDocument()
@@ -830,6 +865,7 @@ describe("ChatView toolbar navigation", () => {
 			fireEvent.click(back)
 			await view.findByTestId("alpha-home-brand")
 			expect(vi.mocked(vscode.postMessage).mock.calls).toEqual([[{ type: "startBlankTask" }]])
+			expect(view.queryByTestId("chat-title")).not.toBeInTheDocument()
 			expect(view.queryByRole("button", { name: "history:backToHome" })).not.toBeInTheDocument()
 			expect(view.queryByRole("button", { name: "history:switchChat" })).not.toBeInTheDocument()
 			expect(view.getByTestId("chat-textarea").querySelector("input")).toHaveValue("")
@@ -850,6 +886,7 @@ describe("ChatView toolbar navigation", () => {
 			})
 			mockPostMessage(taskState)
 			await view.findByRole("button", { name: "history:backToHome" })
+			expect(view.getByTestId("chat-title")).toHaveTextContent(currentTaskItem.displayName)
 			expect(view.queryByTestId("alpha-home-brand")).not.toBeInTheDocument()
 			expect(view.getByTestId("chat-textarea").querySelector("input")).toHaveValue("Keep my task draft")
 			expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "clearTask" }))
@@ -1584,13 +1621,17 @@ describe("ChatView activity trace", () => {
 		fireEvent.click(await waitFor(() => view.getByRole("button", { name: /chat:activityTrace.workedFor/ })))
 		fireEvent.click(view.getByTestId("reasoning-disclosure-200"))
 		mockPostMessage(state("b"))
-		await waitFor(() => expect(view.getByText("Prompt b")).toBeVisible())
+		await waitFor(() =>
+			expect(within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt b")).toBeVisible(),
+		)
 		expect(view.getByRole("button", { name: /chat:activityTrace.workedFor/ })).toHaveAttribute(
 			"aria-expanded",
 			"false",
 		)
 		mockPostMessage({ currentTaskId: "a", currentTaskItem: state("a").currentTaskItem, alphaMessages: [] })
-		await waitFor(() => expect(view.getByText("Prompt a")).toBeVisible())
+		await waitFor(() =>
+			expect(within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a")).toBeVisible(),
+		)
 		mockPostMessage(state("a"))
 		await waitFor(() =>
 			expect(view.getByTestId("reasoning-disclosure-200")).toHaveAttribute("aria-expanded", "true"),
@@ -2558,7 +2599,7 @@ describe("ChatView restored-chat composer routing", () => {
 	)
 })
 
-describe("ChatView - Plan command", () => {
+describe("ChatView - New chat submissions", () => {
 	beforeEach(() => vi.clearAllMocks())
 
 	it("shows the first prompt immediately and claims its admission before the host responds", async () => {
@@ -2743,6 +2784,61 @@ describe("ChatView - Plan command", () => {
 			})
 		})
 	})
+})
+
+describe("ChatView - Fork Chat", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it.each(["sidebar", "editor"] as const)(
+		"forks the current chat from the %s toolbar or composer",
+		async (renderContext) => {
+			const view = renderChatView()
+			const currentTaskItem = { id: "source-chat", task: "Inspect the parser", ts: 1 }
+			mockPostMessage({
+				renderContext,
+				currentTaskId: currentTaskItem.id,
+				currentView: { type: "task", taskId: currentTaskItem.id },
+				currentTaskItem,
+				alphaMessages: [
+					{ type: "say", say: "task", text: currentTaskItem.task, ts: 1 },
+					{ type: "say", say: "completion_result", text: "Found the bug", ts: 2 },
+				],
+			})
+			const button = await view.findByRole("button", { name: "history:forkChat" })
+			const input = view.getByTestId("chat-textarea").querySelector("input")!
+			fireEvent.change(input, { target: { value: "An unsent draft" } })
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.click(button)
+			expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "forkChat", taskId: currentTaskItem.id })
+			expect(input).toHaveValue("An unsent draft")
+
+			vi.mocked(vscode.postMessage).mockClear()
+			fireEvent.change(input, { target: { value: "/fork  Try another fix " } })
+			fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+			expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({
+				type: "forkChat",
+				taskId: currentTaskItem.id,
+				displayName: "Try another fix",
+			})
+			expect(input).toHaveValue("")
+		},
+	)
+
+	it("keeps /fork out of model input on an empty draft", async () => {
+		const view = renderChatView()
+		mockPostMessage({ currentView: { type: "newTaskDraft" }, alphaMessages: [] })
+		const input = await waitFor(() => view.getByTestId("chat-textarea").querySelector("input")!)
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.change(input, { target: { value: "/fork" } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		expect(input).toHaveValue("/fork")
+		expect(view.getByRole("alert")).toHaveTextContent("chat:forkChat.unavailable")
+	})
+})
+
+describe("ChatView - Plan command", () => {
+	beforeEach(() => vi.clearAllMocks())
 
 	it("sends an inline Plan command as one atomic host request", async () => {
 		const { getByTestId } = renderChatView()
@@ -6693,6 +6789,56 @@ describe("ChatView - Message Queueing Tests", () => {
 			expect.objectContaining({ type: "queueMessage", taskId, text: "Keep this for the next turn" }),
 		)
 		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "askResponse" }))
+	})
+
+	it("uses the composer for an idle fork with an inherited completion question", async () => {
+		const view = renderChatView()
+		const taskId = "forked-chat"
+		mockPostMessage({
+			currentTaskId: taskId,
+			currentView: { type: "task", taskId },
+			currentTaskItem: {
+				id: taskId,
+				ts: 1,
+				task: "Original prompt",
+				forkedFromId: "source",
+				forkSessionStarted: false,
+			},
+			liveTasksById: {
+				[taskId]: {
+					id: taskId,
+					status: "idle",
+					lifecycle: "completed",
+					isActive: true,
+					isStreaming: false,
+					isTurnActive: false,
+					isWaitingForInput: false,
+				},
+			},
+			alphaMessages: [
+				{ ts: 1, type: "say", say: "task", text: "Original prompt" },
+				{ ts: 2, type: "ask", ask: "completion_result", text: "Copied reply", isAnswered: true },
+			],
+		})
+		const input = await waitFor(() => {
+			expect(view.getByTestId("chat-transcript-viewport")).toHaveTextContent("Copied reply")
+			return view.getByTestId("chat-textarea").querySelector("input")!
+		})
+		expect(input).toHaveValue("")
+		expect(view.queryByRole("button", { name: "chat:resumeTask.title" })).not.toBeInTheDocument()
+		expect(view.queryByRole("button", { name: "chat:terminate.title" })).not.toBeInTheDocument()
+		vi.mocked(vscode.postMessage).mockClear()
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		expect(vscode.postMessage).not.toHaveBeenCalled()
+		fireEvent.change(input, { target: { value: "Explore the copied context." } })
+		fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
+		expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith({
+			type: "resumeCompletedTask",
+			requestId: expect.any(String),
+			taskId,
+			text: "Explore the copied context.",
+			images: [],
+		})
 	})
 
 	it.each(["completion_result", "followup"] as const)(

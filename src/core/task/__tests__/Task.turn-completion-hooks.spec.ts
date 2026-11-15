@@ -71,10 +71,14 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		api: { getModel: () => ({ id: "hook-model" }) },
 		getTaskMode: vi.fn(async () => "code"),
 		completionHookTranscriptPath: vi.fn(async () => null),
-		runAgentRequests: vi.fn<Task["runAgentRequests"]>(async () => ({
-			status: "completed",
-			response: createAgentResponse([{ type: "text", text: "Candidate answer." }]),
-		})),
+		runAgentRequests: vi.fn<Task["runAgentRequests"]>(async (input) => {
+			// The real request adapter acknowledges a queued message once its input is durable.
+			task.messageQueueService.acknowledgeMessages(task["getQueuedInputReceipts"](input))
+			return {
+				status: "completed",
+				response: createAgentResponse([{ type: "text", text: "Candidate answer." }]),
+			}
+		}),
 		appendAgentTurnEvent: vi.fn(async () => undefined),
 		flushAgentTurnEvents: vi.fn(async () => undefined),
 		maybeCompactAfterTurn: vi.fn(async () => undefined),
@@ -436,6 +440,7 @@ describe("completion hooks inside the canonical turn", () => {
 		})
 		Object.assign(task, {
 			asyncLifecycleHooks: { hasPendingContext: () => readyContext },
+			persistedToolResultIds: new Set(["pending-completion"]),
 			flushPendingToolResultsToHistory: vi.fn(async () => true),
 			flushApiConversationHistoryPersistence: vi.fn(async () => undefined),
 			getCompletionGateDecision: vi.fn(async () => {

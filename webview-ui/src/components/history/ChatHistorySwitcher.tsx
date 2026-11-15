@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 
 export type ChatHistorySwitcherProps = {
 	currentTaskId?: string
+	currentTaskName?: string
 	onBackToHome: () => void
 	onOpenTask: (taskId: string) => void
 	onViewAll?: () => void
@@ -21,6 +22,7 @@ const controlClassName =
 /** Ephemeral navigation UI; task selection remains owned by the extension. */
 function ChatHistorySwitcher({
 	currentTaskId,
+	currentTaskName,
 	onBackToHome,
 	onOpenTask,
 	onViewAll,
@@ -128,6 +130,16 @@ function ChatHistorySwitcher({
 					</div>
 				</PopoverContent>
 			</Popover>
+			{currentTaskName && (
+				<StandardTooltip content={currentTaskName} side="bottom" className="wrap-anywhere">
+					<span
+						data-testid="chat-title"
+						dir="auto"
+						className="min-w-0 truncate font-medium text-vscode-foreground">
+						{currentTaskName}
+					</span>
+				</StandardTooltip>
+			)}
 		</div>
 	)
 }

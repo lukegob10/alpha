@@ -244,7 +244,7 @@ import {
 } from "../../api/providers/utils/timeout-config"
 
 // shared
-import { findLastIndex } from "../../shared/array"
+import { findLast, findLastIndex } from "../../shared/array"
 import { combineApiRequests } from "../../shared/combineApiRequests"
 import { combineCommandSequences } from "../../shared/combineCommandSequences"
 import { t } from "../../i18n"
@@ -442,6 +442,7 @@ import {
 	type AgentResponse,
 	type AgentResponseItem,
 	type AgentToolCall,
+	type AgentTurnContinuation,
 	type AgentTurnStagedHost,
 	type AgentTurnOutcome,
 	type AgentTurnContinuationDiagnostic,
@@ -515,14 +516,6 @@ export interface CompletionGateDecision {
 	blockerKey?: string
 }
 
-interface CompletionEvidenceRecheck {
-	deadline: number
-	goalSteeringGeneration: number
-	goalRequestGeneration: number | undefined
-	stagedToolResult?: Anthropic.ToolResultBlockParam
-	settlingCommands?: readonly CommandExecutionEvidence[]
-}
-
 export interface CompletionStageMetrics {
 	candidateCount: number
 	rejectionCount: number
@@ -539,6 +532,13 @@ export interface CompletionStageMetrics {
 
 const OPEN_TODO_COMPLETION_MESSAGE =
 	"Cannot complete task while there are incomplete todos. Please finish all todos before attempting completion."
+const MAX_COMPLETION_SETTLEMENT_RECHECKS = 3
+
+class CompletionCommitRejected extends Error {
+	constructor(readonly decision: CompletionGateDecision) {
+		super(decision.message ?? "Task completion was rejected.")
+	}
+}
 
 const SAFE_EXTERNAL_MUTATION_ASKS = new Set<AlphaAsk>([
 	"followup",
@@ -1114,7 +1114,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private subagentRuntimeUnloadPromise?: Promise<void>
 	private ownedLifecyclePromise?: Promise<void>
 	private queuedInputWakePromise?: Promise<void>
-	/** Retains host input until a rehydrated task has installed its initial resume ask. */
+	/** Holds queued input until the rehydrated task has installed its next input boundary. */
 	private initialHistoryResumePending = false
 	private resumeRequiresExplicitInput = false
 	private taskTerminationPromise?: Promise<void>
@@ -1137,7 +1137,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private completionRuntimeRevision = 0
 	private observedCommandExits?: WeakSet<CommandExecutionEvidence>
 	private wakeCommandCompletionWait?: () => void
-	private completionEvidenceRecheck?: CompletionEvidenceRecheck
+	private completionSettlementOwner?: symbol
 	private completionRecovery?: CompletionRecovery
 	private completionRecoveryActive = false
 	private completionStageMetrics?: CompletionStageMetrics
@@ -1158,7 +1158,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private toolInputContext = new AsyncLocalStorage<{ toolCallId: string; turn?: AlphaMessageTurn }>()
 	/** Presentation cursor only; canonical lifecycle state continues to own the turn. */
 	private openingTurnInputPending = false
-	private durableSteerAdmission: Promise<void> = Promise.resolve()
+	private durableSteerAdmission: Promise<unknown> = Promise.resolve()
 	private readonly pendingWaitAgentResultClaims = new Map<string, string>()
 	private readonly stagedWaitAgentNotifications = new Map<string, Anthropic.TextBlockParam[]>()
 	private readonly waitAgentClaimEntries = new Map<string, readonly AgentMailboxEntry[]>()
@@ -9389,55 +9389,131 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * Both explicit `attempt_completion` calls and ordinary assistant responses
 	 * converge here so lifecycle state, final usage, and telemetry cannot drift.
 	 */
-	public async finalizeTaskCompletion(stagedToolCallId?: string): Promise<boolean> {
-		const commit = (recheck?: CompletionEvidenceRecheck, signal?: AbortSignal) => {
-			const provider = this.providerRef?.deref()
-			const operation = () => this.commitTaskCompletion(stagedToolCallId, recheck, signal)
-			return provider?.runWorkspaceMutation
-				? provider.runWorkspaceMutation(this, "finalize task completion", operation)
-				: operation()
-		}
-		const result = await commit()
-		if (typeof result === "boolean") return result
-
-		// The mutation gate has released. Evidence publishers may need that same gate.
-		const wait = this.beginAgentWait()
+	public async finalizeTaskCompletion(
+		stagedToolCallId?: string,
+		onRejected?: (decision: CompletionGateDecision) => void,
+	): Promise<boolean> {
+		const provider = this.providerRef?.deref()
+		const owner = Symbol()
+		const ownsStep = this.captureAgentStepOwnership()
+		const goalGeneration = this.goalSteeringGeneration ?? 0
+		const goalRequestGeneration = this.goalController?.getRequestGeneration()
+		const ownershipChanged = () =>
+			!ownsStep() ||
+			this.abandoned ||
+			goalGeneration !== (this.goalSteeringGeneration ?? 0) ||
+			goalRequestGeneration !== this.goalController?.getRequestGeneration()
+		const superseded = () =>
+			ownershipChanged() ||
+			this.hasPendingSteerMessage() ||
+			this.messageQueueService.hasUnconsumedInput() ||
+			this.hasPendingAgentMessages() ||
+			(stagedToolCallId !== undefined && this.hasPendingAsyncLifecycleHookContext())
+		const stagedResult = stagedToolCallId
+			? this.userMessageContent.find(
+					(block): block is Anthropic.ToolResultBlockParam =>
+						block.type === "tool_result" &&
+						sanitizeToolUseId(block.tool_use_id) === sanitizeToolUseId(stagedToolCallId),
+				)
+			: undefined
+		let joinedEvidence: Promise<void> | undefined
+		const lifetime = this.getTaskLifetimeCancellationSignal()
 		try {
-			try {
-				const settlingCommands = result.settlingCommands
-				if (settlingCommands?.length) {
-					const settled = () =>
-						!settlingCommands.some(
-							(command) =>
-								command.status === "running" &&
-								this.commandExecutionEvidence.get(command.toolCallId) === command,
+			for (let recheck = 0; ; recheck++) {
+				const commit = async () => {
+					if (ownershipChanged() || (recheck > 0 && superseded())) return false
+					const wait = recheck > 0 ? this.beginAgentWait() : undefined
+					try {
+						return await this.commitTaskCompletion(
+							owner,
+							superseded,
+							stagedToolCallId,
+							recheck > 0,
+							stagedResult,
+							wait?.signal,
 						)
-					if (!settled()) {
-						await this.waitForOwnedCommandCompletionChange(new Set(), wait.signal, result.deadline, settled)
+					} finally {
+						wait?.dispose()
 					}
 				}
-				await this.waitForRequestControl(
-					this.pendingCommandVerification ?? Promise.resolve(),
-					wait.signal,
-					result.deadline,
-				)
-			} catch (error) {
-				const reason =
-					error instanceof ApiStreamDeadlineError
-						? t("common:errors.completion_evidence_read_timeout")
-						: "Verification evidence could not be persisted. Restore task persistence before resuming."
-				return await this.rejectTaskCompletion(reason, wait.signal)
-			}
-			try {
-				return (await commit(result, wait.signal)) === true
-			} catch (error) {
-				if (!(error instanceof WorkspaceMutationCancelledError) || !wait.signal.aborted) throw error
-				await this.retractCompletionResult()
+				let result = provider?.runWorkspaceMutation
+					? await provider.runWorkspaceMutation(this, "finalize task completion", commit)
+					: await commit()
+				if (typeof result === "boolean") {
+					if (!result && recheck > 0 && ownsStep()) await this.retractCompletionResult()
+					return result
+				}
+				const waiting = result.classification === "waiting"
+				if (waiting && !lifetime.aborted && !superseded()) {
+					// Receipt publishers can need the mutation gate. Join settlement only
+					// after its release and retry this candidate without resampling.
+					if (recheck >= MAX_COMPLETION_SETTLEMENT_RECHECKS) {
+						result = {
+							allowed: false,
+							modelCanResolveRejection: false,
+							classification: "blocked",
+							reasonCode: "stale_content",
+							message: t("common:errors.completion_evidence_changed_repeatedly"),
+						}
+					} else if (result.reasonCode === "evidence_pending") {
+						const evidence = this.pendingCommandVerification
+						if (joinedEvidence !== evidence) {
+							joinedEvidence = evidence
+							const failure = await this.waitForFinalCommandEvidence(evidence)
+							if (!failure && !superseded()) continue
+							if (failure) result = failure
+						}
+					} else {
+						result = await this.waitForCompletionGateDecision()
+						if (result.allowed && !superseded()) continue
+					}
+				}
+				if (ownsStep()) await this.retractCompletionResult()
+				if (superseded() || (waiting && lifetime.aborted) || result.allowed) return false
+				if (onRejected) onRejected(result)
+				else
+					this.suspendAfterCurrentTurn(
+						`Task remains incomplete and unverified. ${result.message ?? ""}`.trim(),
+					)
 				return false
+			}
+		} catch (error) {
+			if (
+				!(error instanceof WorkspaceMutationCancelledError) ||
+				!this.getTaskLifetimeCancellationSignal().aborted
+			)
+				throw error
+			if (ownsStep()) await this.retractCompletionResult()
+			return false
+		} finally {
+			if (this.completionSettlementOwner === owner) this.completionSettlementOwner = undefined
+		}
+	}
+
+	private async waitForFinalCommandEvidence(evidence: Promise<void>): Promise<CompletionGateDecision | undefined> {
+		const wait = this.beginAgentWait()
+		try {
+			await this.waitForRequestControl(evidence, wait.signal, Date.now() + 30_000)
+			return undefined
+		} catch (error) {
+			const timedOut = error instanceof ApiStreamDeadlineError
+			return {
+				allowed: false,
+				classification: "blocked",
+				reasonCode: timedOut
+					? "runtime_timeout"
+					: wait.signal.aborted
+						? "interrupted"
+						: "persistence_unavailable",
+				modelCanResolveRejection: false,
+				message: timedOut
+					? t("common:errors.completion_evidence_read_timeout")
+					: wait.signal.aborted
+						? t("common:errors.completion_evidence_read_interrupted")
+						: "Verification evidence could not be persisted. Restore task persistence before resuming.",
 			}
 		} finally {
 			wait.dispose()
-			this.completionEvidenceRecheck = undefined
 		}
 	}
 
@@ -10146,39 +10222,28 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private async commitTaskCompletion(
-		stagedToolCallId?: string,
-		recheck?: CompletionEvidenceRecheck,
+		owner: symbol,
+		superseded: () => boolean,
+		stagedToolCallId: string | undefined,
+		rechecking: boolean,
+		stagedResult?: Anthropic.ToolResultBlockParam,
 		recheckSignal?: AbortSignal,
-	): Promise<boolean | CompletionEvidenceRecheck> {
-		const ownsCompletion = () => !this.didEmitTaskCompleted && this.completionEvidenceRecheck === recheck
+	): Promise<boolean | CompletionGateDecision> {
+		const ownsCompletion = () =>
+			!this.didEmitTaskCompleted && (!this.completionSettlementOwner || this.completionSettlementOwner === owner)
 		if (!ownsCompletion()) return false
-		const goalSteeringGeneration = recheck?.goalSteeringGeneration ?? this.goalSteeringGeneration ?? 0
-		const goalRequestGeneration = recheck
-			? recheck.goalRequestGeneration
-			: this.goalController?.getRequestGeneration()
 		const activeGoal = await this.getGoal()
 		const activeCodeGoal =
 			activeGoal?.status === "active" && !activeGoal.recoveryDeferred && (await this.getTaskMode()) === "code"
-		if (!ownsCompletion()) return false
-		if (
-			activeCodeGoal ||
-			goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
-			goalRequestGeneration !== this.goalController?.getRequestGeneration() ||
-			(recheck && (this.abort || recheckSignal?.aborted || this.hasPendingSteerMessage()))
-		) {
-			if (recheck) await this.retractCompletionResult()
-			return false
-		}
+		if (!ownsCompletion() || activeCodeGoal || (rechecking && superseded())) return false
 
 		// Reserve the transition before awaiting the persistence barrier so concurrent
 		// acceptance paths cannot publish the same completion twice.
 		this.didEmitTaskCompleted = true
 		let preparedPrimaryLifecycle = false
-		let verificationRejection: string | undefined
-		let deferredRecheck: CompletionEvidenceRecheck | undefined
 		try {
-			if (recheck?.stagedToolResult && !this.pushToolResultToUserContent(recheck.stagedToolResult)) {
-				throw new Error("Unable to restage the completion tool result.")
+			if (rechecking && stagedToolCallId && (!stagedResult || !this.pushToolResultToUserContent(stagedResult))) {
+				throw new TaskPersistenceError("Unable to restage the completion tool result.")
 			}
 			if (this.taskKind === "primary") {
 				const provider = this.providerRef.deref()
@@ -10195,7 +10260,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.getMutableCompletionStageMetrics().persistenceSettledAt = Date.now()
 			const transcriptQueue = this.apiConversationHistorySaveQueue
 			const completionSignal = recheckSignal ?? this.getTaskLifetimeCancellationSignal()
-			const deadline = recheck?.deadline ?? Date.now() + 30_000
+			const deadline = Date.now() + 30_000
 			let finalDecision: CompletionGateDecision
 			try {
 				// Receipt publishers also need the mutation gate, so bound one snapshot
@@ -10206,42 +10271,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					deadline,
 				)
 			} catch (error) {
-				if (error instanceof ApiStreamDeadlineError) {
-					verificationRejection = t("common:errors.completion_evidence_read_timeout")
-				} else if (completionSignal.aborted) {
-					verificationRejection = t("common:errors.completion_evidence_read_interrupted")
+				if (error instanceof ApiStreamDeadlineError || completionSignal.aborted) {
+					throw new CompletionCommitRejected({
+						allowed: false,
+						modelCanResolveRejection: false,
+						classification: "blocked",
+						reasonCode: completionSignal.aborted ? "interrupted" : "runtime_timeout",
+						message: t(
+							completionSignal.aborted
+								? "common:errors.completion_evidence_read_interrupted"
+								: "common:errors.completion_evidence_read_timeout",
+						),
+					})
 				}
 				throw error
 			}
-			if (!finalDecision.allowed || this.abort || completionSignal.aborted) {
-				const settlingCommands =
-					finalDecision.reasonCode === "command_running" ? this.getBlockingCommandExecutions() : undefined
-				if (
-					!recheck &&
-					!this.abort &&
-					!completionSignal.aborted &&
-					finalDecision.classification === "waiting" &&
-					(finalDecision.reasonCode === "evidence_pending" ||
-						settlingCommands?.every((command) => this.observedCommandExits?.has(command)))
-				) {
-					const stagedId = stagedToolCallId ? sanitizeToolUseId(stagedToolCallId) : undefined
-					const stagedToolResult =
-						stagedId && this.persistedToolResultIds.has(stagedId)
-							? this.findPersistedProviderToolResult(stagedId)
-							: undefined
-					if (!stagedId || stagedToolResult) {
-						deferredRecheck = {
-							deadline,
-							goalSteeringGeneration,
-							goalRequestGeneration,
-							stagedToolResult,
-							settlingCommands,
-						}
-					}
-				}
-				verificationRejection = finalDecision.message ?? "Task completion was interrupted."
-				throw new Error(verificationRejection)
+			if (this.abort || completionSignal.aborted) {
+				throw new CompletionCommitRejected({
+					allowed: false,
+					modelCanResolveRejection: false,
+					classification: "blocked",
+					reasonCode: "interrupted",
+					message: t("common:errors.completion_evidence_read_interrupted"),
+				})
 			}
+			if (!finalDecision.allowed) throw new CompletionCommitRejected(finalDecision)
 			// The verification decision remains the last asynchronous gate. A save
 			// admitted while it was pending requires a fresh completion attempt,
 			// not another await that could stale the Stage 3 verification decision.
@@ -10256,21 +10310,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// User guidance wins any race with the asynchronous persistence barriers.
 			// A staged completion tool also defers to ready hook feedback in its active turn.
 			// No await occurs between this check and markCompleted().
-			if (
-				this.messageQueueService.hasUnconsumedInput() ||
-				this.hasPendingAgentMessages() ||
-				(stagedToolCallId !== undefined && this.hasPendingAsyncLifecycleHookContext()) ||
-				goalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) ||
-				goalRequestGeneration !== this.goalController?.getRequestGeneration()
-			) {
-				if (stagedToolCallId) await this.rollbackPersistedToolResult(stagedToolCallId)
-				if (preparedPrimaryLifecycle) {
-					await this.providerRef.deref()?.rollbackTaskCompletionLifecycle(this.taskId)
-				}
-				await this.retractCompletionResult()
-				this.didEmitTaskCompleted = false
-				return false
-			}
+			if (superseded())
+				throw new CompletionCommitRejected({
+					allowed: false,
+					modelCanResolveRejection: false,
+					reasonCode: "interrupted",
+				})
 		} catch (error) {
 			if (stagedToolCallId && this.persistedToolResultIds.has(sanitizeToolUseId(stagedToolCallId))) {
 				try {
@@ -10295,11 +10340,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 			this.didEmitTaskCompleted = false
-			if (deferredRecheck) {
-				this.completionEvidenceRecheck = deferredRecheck
-				return deferredRecheck
+			if (error instanceof CompletionCommitRejected) {
+				this.completionSettlementOwner = owner
+				return error.decision
 			}
-			if (verificationRejection) return this.rejectTaskCompletion(verificationRejection, recheckSignal)
 			throw error
 		}
 		this.markCompleted()
@@ -10311,14 +10355,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.emitFinalTokenUsageUpdate()
 		this.notifyTaskSummary(AlphaCodeEventName.TaskCompleted, settledUsage, this.toolUsage)
 		return true
-	}
-
-	private async rejectTaskCompletion(reason: string, signal?: AbortSignal): Promise<false> {
-		await this.retractCompletionResult()
-		if (!signal?.aborted && !this.hasPendingAgentMessages()) {
-			this.suspendAfterCurrentTurn(`Task remains incomplete and unverified. ${reason}`)
-		}
-		return false
 	}
 
 	/**
@@ -10348,9 +10384,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		try {
-			await this.pendingCommandVerification
 			const runtimeRevision = this.completionRuntimeRevision
 			const backgroundExecutions = JSON.stringify(this.getActiveBackgroundCommandExecutionIds())
+			// A live publisher returns a waiting decision above. This only observes
+			// the settled promise (including a failed write), even under the mutation gate.
+			await this.pendingCommandVerification
 			// Codex f7167ac ends a settled turn through Stop hooks, not mandatory test-pass receipts.
 			// Keep declared command evidence advisory; durable review and effect settlement still gate completion.
 			const decision = await provider.getParentCompletionDecision(this, {
@@ -10361,6 +10399,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (this.hasPendingAgentMessages()) return this.pendingAgentMessageDecision()
 			const lateReviewDecision = this.getPendingSubagentReviewCompletionDecision()
 			if (lateReviewDecision) return lateReviewDecision
+			const lateTodoDecision = this.getOpenTodoCompletionDecision()
+			if (lateTodoDecision) return lateTodoDecision
 			if (lateRuntimeDecision) return lateRuntimeDecision
 			if (
 				runtimeRevision !== this.completionRuntimeRevision ||
@@ -10490,13 +10530,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		processes: ReadonlySet<AlphaTerminalProcess>,
 		signal: AbortSignal,
 		deadline?: number,
-		shouldWake?: () => boolean,
 	): Promise<void> {
 		let wake!: () => void
 		const changed = new Promise<void>((resolve) => {
-			wake = () => {
-				if (shouldWake?.() !== false) resolve()
-			}
+			wake = resolve
 		})
 		const terminalEvents = ["shell_execution_complete", "completed", "error", "terminal_closed"] as const
 		this.wakeCommandCompletionWait = wake
@@ -12362,17 +12399,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return (this.agentTurnId ?? this.getCanonicalLifecycleSnapshot()?.turnId) === expectedTurnId
 	}
 
+	private shouldQueueSteeringAsFollowup(): boolean {
+		if (this.taskKind !== "primary" || this.abort || this.abandoned) return false
+		if (this.didComplete) return true
+		const turn = this.getCanonicalLifecycleSnapshot()
+		return (
+			(turn?.phase === "finalizing" || turn?.status === "completed") &&
+			(!this.agentTurnId || this.agentTurnId === turn.turnId)
+		)
+	}
+
 	public async steerUserMessageDurably(
 		text: string,
 		images: string[] = [],
 		receiptId?: string,
 		expectedTurnId?: string,
-	): Promise<void> {
+		options?: { canAcceptInput: () => boolean },
+	): Promise<"followup" | void> {
 		const assertExpectedTurn = () => {
 			if (expectedTurnId !== undefined && !this.matchesExpectedTurn(expectedTurnId)) {
 				throw new Error("The active turn changed before steering admission")
 			}
 		}
+		const assertAdmission = () => {
+			assertExpectedTurn()
+			if (options && !options.canAcceptInput()) throw new Error("The task cannot accept a steering message")
+		}
+		const shouldQueueFollowup = () => options !== undefined && this.shouldQueueSteeringAsFollowup()
 		// An ACK retry observes the original admission even after its turn has ended.
 		if (expectedTurnId !== undefined && !this.matchesExpectedTurn(expectedTurnId) && receiptId) {
 			if (await this.hasAcceptedQueuedUserMessage(receiptId)) return
@@ -12382,7 +12435,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			text = (text ?? "").trim()
 			await this.messageQueueService.ready
 			if (receiptId && (await this.hasAcceptedQueuedUserMessage(receiptId))) return
-			assertExpectedTurn()
+			assertAdmission()
+			// Like Codex's start-or-steer submission, fresh composer input can
+			// continue once the turn closes. The expected ID still fences successors.
+			if (shouldQueueFollowup()) {
+				if (!(await this.queueUserMessageDurably(text, images, receiptId, assertAdmission))) {
+					throw new Error("A follow-up message or image is required")
+				}
+				return "followup"
+			}
 			if (
 				this.abort ||
 				this.abandoned ||
@@ -12390,26 +12451,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				(!this.canAcceptSteerMessage() && !this.hasPendingSteerMessage())
 			)
 				throw new Error("The task cannot accept a steering message")
-			const message = await this.messageQueueService.addMessageDurably(
-				text,
-				images,
-				receiptId,
-				assertExpectedTurn,
-			)
+			const message = await this.messageQueueService.addMessageDurably(text, images, receiptId, assertAdmission)
 			if (!message) throw new Error("A steering message or image is required")
 			await this.messageQueueService.flush()
+			assertAdmission()
+			if (shouldQueueFollowup()) return "followup"
 			// A rapid second submission belongs to the FIFO until the first input's
 			// transcript receipt commits; it cannot replace that selected input.
 			if (this.hasPendingSteerMessage()) return
-			try {
-				await this.applyQueuedSteeringMessage(message.id, assertExpectedTurn)
-			} catch (error) {
-				if (!this.pendingSteerMessage?.queuedMessageIds?.includes(message.id)) {
-					this.messageQueueService.releaseMessage(message.id)
-					await this.messageQueueService.flush()
-				}
-				throw error
-			}
+			return this.applyQueuedSteeringMessage(message.id, assertAdmission, shouldQueueFollowup)
 		})
 	}
 
@@ -12425,23 +12475,33 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.messageQueueService.ready
 			assertExpectedTurn()
 			const selectedId = messageId ?? this.messageQueueService.messages[0]?.id
-			if (selectedId) await this.applyQueuedSteeringMessage(selectedId, assertExpectedTurn)
+			if (selectedId) {
+				const result = await this.applyQueuedSteeringMessage(selectedId, assertExpectedTurn, () =>
+					this.shouldQueueSteeringAsFollowup(),
+				)
+				if (result === "followup") await this.wakeQueuedInputWhenIdle()
+			}
 		})
 	}
 
-	private enqueueDurableSteer(operation: () => Promise<void>): Promise<void> {
+	private enqueueDurableSteer<T>(operation: () => Promise<T>): Promise<T> {
 		const admission = (this.durableSteerAdmission ?? Promise.resolve()).catch(() => undefined).then(operation)
 		this.durableSteerAdmission = admission
 		return admission
 	}
 
-	private async applyQueuedSteeringMessage(messageId: string, assertExpectedTurn?: () => void): Promise<void> {
+	private async applyQueuedSteeringMessage(
+		messageId: string,
+		assertAdmission: () => void,
+		shouldQueueFollowup: () => boolean,
+	): Promise<"followup" | void> {
 		await this.messageQueueService.ready
 		if (!this.messageQueueService.getMessage(messageId)) {
 			if (await this.hasAcceptedQueuedUserMessage(messageId)) return
 			throw new Error("The queued steering message is unavailable")
 		}
-		assertExpectedTurn?.()
+		assertAdmission()
+		if (shouldQueueFollowup()) return "followup"
 		if (!this.canAcceptSteerMessage()) throw new Error("The task cannot accept a steering message")
 		const message = this.messageQueueService.claimMessage(messageId)
 		if (!message) {
@@ -12451,7 +12511,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			await this.messageQueueService.flush()
 			// Command handoffs and approvals can change while the claim is persisted.
-			assertExpectedTurn?.()
+			assertAdmission()
+			if (shouldQueueFollowup()) {
+				this.messageQueueService.releaseMessage(messageId)
+				await this.messageQueueService.flush()
+				return "followup"
+			}
 			if (!this.canAcceptSteerMessage()) throw new Error("The task cannot accept a steering message")
 			await this.steerUserMessage(message.text, message.images, undefined, [message.id])
 		} catch (error) {
@@ -12539,6 +12604,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!this.independentAgentMessagesMayResume ||
 			!this.agentMessageInbox.hasPending() ||
 			!this.didComplete ||
+			this.resumeRequiresExplicitInput ||
 			this.abort ||
 			this.abandoned ||
 			this.steerMessageAwaitingPersistence
@@ -13751,6 +13817,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			commandExecutionId?: string
 			stateUpdate?: "full" | "task"
 			previewEpoch?: number
+			previewMessageTs?: number
 			/** Automatic retry guidance shares the feedback presentation, not the user-request boundary. */
 			feedbackSource?: "user" | "automatic"
 			/** Correlates canonical user input with its durable admission and optimistic UI row. */
@@ -13888,17 +13955,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (partial !== undefined) {
 			const commandOutputExecutionId =
 				type === "command_output" ? options.commandExecutionId || undefined : undefined
-			// Output from another command may arrive while this command's row is still partial.
-			const previousMessageIndex = commandOutputExecutionId
-				? findLastIndex(
-						this.alphaMessages,
-						(message) =>
-							message.type === "say" &&
-							message.say === type &&
-							message.commandExecutionId === commandOutputExecutionId,
-					)
-				: findLastIndex(this.alphaMessages, (message) => message.say !== "agent_message")
-			const lastMessage = this.alphaMessages[previousMessageIndex]
+			const isAssistantPreview = type === "text" && options.previewEpoch !== undefined
+			// Codex TUI 81b995a6 (chatwidget/streaming.rs) consolidates each streamed
+			// item in its own row. Other text, reasoning and tool output can arrive meanwhile.
+			const lastMessage = isAssistantPreview
+				? options.previewMessageTs === undefined
+					? undefined
+					: this.findMessageByTimestamp(options.previewMessageTs)
+				: commandOutputExecutionId
+					? findLast(
+							this.alphaMessages,
+							(message) =>
+								message.type === "say" &&
+								message.say === type &&
+								message.commandExecutionId === commandOutputExecutionId,
+						)
+					: this.getLastNonAgentMessage()
 			// Boolean publications are cumulative snapshots of one command invocation.
 			if (commandOutputExecutionId && lastMessage && !lastMessage.partial) return
 
@@ -13909,6 +13981,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				lastMessage.say === type &&
 				(type !== "command_output" ||
 					(lastMessage.commandExecutionId || undefined) === commandOutputExecutionId)
+
+			if (isAssistantPreview && options.previewMessageTs !== undefined && !isUpdatingPreviousPartial) return
 
 			if (partial) {
 				if (isUpdatingPreviousPartial) {
@@ -13961,9 +14035,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// message, so replace the partial with the complete version.
 				if (isUpdatingPreviousPartial) {
 					if (!options.isNonInteractive) {
-						this.lastMessageTs = commandOutputExecutionId
-							? Math.max(this.lastMessageTs ?? 0, lastMessage.ts)
-							: lastMessage.ts
+						this.lastMessageTs =
+							commandOutputExecutionId || isAssistantPreview
+								? Math.max(this.lastMessageTs ?? 0, lastMessage.ts)
+								: lastMessage.ts
 						if (type === "text") this.currentAssistantResponseMessageTs = lastMessage.ts
 					}
 
@@ -14581,9 +14656,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			goalAdmission?: GoalInputAdmission
 		} = {},
 	) {
-		if (options.requireExplicitResume) this.resumeRequiresExplicitInput = true
+		const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
+		const isUnstartedFork = this.lifecycleHookStartSource === "fork" && !this.lifecycleHookStartConsumed
+		const isOpeningFork = isUnstartedFork && !hasDirectFollowup
+		if (options.requireExplicitResume || isOpeningFork) this.resumeRequiresExplicitInput = true
 		try {
-			const hasDirectFollowup = followupText !== undefined || Boolean(followupImages?.length)
 			const useRetainedHistory = options.reuseRetainedHistory === true && hasDirectFollowup
 
 			// A resumed task may have a final legacy/sidecar write queued by the
@@ -14646,13 +14723,34 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 			}
 
-			// Paint the cleaned UI transcript before provider history finishes.
-			// Continue still waits for both reads; this does not persist or ask.
+			if (isUnstartedFork) {
+				// Questions in the copied transcript are historical, including in older forks.
+				for (const message of modifiedAlphaMessages) {
+					if (message.type === "ask") message.isAnswered = true
+				}
+			}
+			// A fork has no recovery prompt to gate input. Load both histories
+			// before publishing its input-ready transcript.
+			if (isOpeningFork) {
+				const savedApiHistory = await savedApiHistoryPromise
+				if (this.abort || this.abandoned) return
+				this.apiConversationHistory = savedApiHistory
+			}
 			this.invalidateBackgroundUsageDrain("The task transcript was resumed")
 			this.alphaMessages = modifiedAlphaMessages
 			this.observeUiMessageTimestamps()
 			this.alphaMessagesHydrated = true
 			restoreTodoListForTask(this)
+			if (isOpeningFork) {
+				// Codex 65a5410 attaches a fork without submitting a user message.
+				this.isInitialized = true
+				this.markCompleted()
+				this.didEmitTaskCompleted = true
+				this.emit(AlphaCodeEventName.TaskIdle, this.taskId)
+				await this.publishResumedUiPreview()
+				return
+			}
+			// Ordinary recovery can preview the UI while provider history is loading.
 			if (!useRetainedHistory) {
 				await this.publishResumedUiPreview()
 			}
@@ -15928,6 +16026,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let goalTurnHadEmptyFinal = false
 		let goalOwnerAtTurn: { goalId: string; controlVersion: number } | undefined
 
+		let compactedCompletionStep = false
+		let returnedCompletionToLegacyParent = false
+		let taskCompletionFailure: { error: unknown } | undefined
+		let completionGoalAtAdmission: TaskGoal | undefined
 		const host: AgentTurnStagedHost<TaskTurnInput, TaskTurnStep> = {
 			shouldAbort: () => this.abort || this.getTaskLifetimeCancellationSignal().aborted || !ownsTurnAndSample(),
 			onContinuation: (diagnostic) => this.recordModelContinuation(diagnostic),
@@ -15955,6 +16057,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			},
 			sampleStep: async (input) => {
+				compactedCompletionStep = false
 				if (input.inputOrigin === "human" || this.pendingSteerMessage || this.steerMessageAwaitingPersistence)
 					goalTurnHadActivity = true
 				if (pendingOpeningMessageTs !== undefined) {
@@ -16510,6 +16613,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (this.abort || this.didComplete) return undefined
 				const goal = await this.getGoal()
 				if (!this.isCurrentApiConversationHistoryOwner()) return { nextInput: "complete", status: "aborted" }
+				completionGoalAtAdmission = goal
 				const goalProgress =
 					goal &&
 					(goalWasActiveThisTurn || this.goalTurnCompletionText !== undefined) &&
@@ -16519,16 +16623,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const decision = await this.waitForCompletionGateDecision()
 					if (!this.isCurrentApiConversationHistoryOwner())
 						return { nextInput: "complete", status: "aborted" }
-					if (!decision.allowed) {
-						const input = await continueAfterCompletionRejection(decision)
-						return input
-							? { nextInput: input, requiresContinuation: true }
-							: {
-									nextInput: "complete",
-									status: this.abort ? "aborted" : "incomplete",
-									reason: decision.message,
-								}
-					}
+					if (!decision.allowed) return continueAfterCompletionRejection(decision)
 				}
 				// As in Codex 67f0994, Stop runs before goal idle continuation, including progress turns.
 				const hooks = await this.evaluateCompletionHooks(this.goalTurnCompletionText ?? outcome.response.text)
@@ -16539,17 +16634,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				) {
 					return { nextInput: "complete", status: "aborted" }
 				}
-				if (!hooks.prompt) return undefined
-				goalTurnHadActivity = true
-				return {
-					nextInput: {
-						userContent: [{ type: "text", text: hooks.prompt }],
-						inputOrigin: "agent",
-						includeFileDetails: false,
-						hookPrompt: hooks.hookPrompt,
-					},
-					requiresContinuation: true,
+				if (hooks.prompt) {
+					goalTurnHadActivity = true
+					return {
+						nextInput: {
+							userContent: [{ type: "text", text: hooks.prompt }],
+							inputOrigin: "agent",
+							includeFileDetails: false,
+							hookPrompt: hooks.hookPrompt,
+						},
+						requiresContinuation: true,
+					}
 				}
+				if (goalProgress && goal && !goal.recoveryDeferred && (await this.getTaskMode()) === "code") return
+				return admitTaskCompletion(outcome)
 			},
 			releaseStep: async (sample) => {
 				sample.step?.result.transaction?.release()
@@ -16576,6 +16674,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.completionHookActive = false
 			this.pendingCompletionHookPrompt = undefined
 			this.goalRequestAdmissionRevoked = false
+			returnedCompletionToLegacyParent = false
+			taskCompletionFailure = undefined
+			completionGoalAtAdmission = undefined
 			acceptedToolCallCount = 0
 			acceptedToolCallIds = new Set()
 			ownsSampledStep = undefined
@@ -16615,7 +16716,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				unsignalledReasoningSteps = 0
 				let outcome = await engine.run(input)
 				if (!ownsTurnAndSample()) return outcome
-				if (shouldCompactAfterTurn(outcome, this.lifecycleHookStoppedThisTurn) && !this.abort) {
+				if (
+					!compactedCompletionStep &&
+					shouldCompactAfterTurn(outcome, this.lifecycleHookStoppedThisTurn) &&
+					!this.abort
+				) {
 					try {
 						await this.maybeCompactAfterTurn()
 						if (!ownsTurnAndSample()) return outcome
@@ -16737,10 +16842,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		const continueAfterCompletionRejection = async (
 			decision: CompletionGateDecision,
-		): Promise<TaskTurnInput | undefined> => {
+		): Promise<AgentTurnContinuation<TaskTurnInput>> => {
+			const continueWithInput = (input: TaskTurnInput): AgentTurnContinuation<TaskTurnInput> => ({
+				nextInput: input,
+				requiresContinuation: true,
+			})
+			if (this.abort || this.getTaskLifetimeCancellationSignal().aborted || !ownsTurnAndSample()) {
+				return { nextInput: "complete", status: "aborted" }
+			}
 			if (decision.reasonCode === "interrupted") {
-				if (this.hasPendingAgentMessages()) return { userContent: [], includeFileDetails: false }
-				if (this.hasPendingSteerMessage()) return { userContent: [], includeFileDetails: false }
+				if (this.hasPendingAgentMessages() || this.hasPendingSteerMessage()) {
+					return continueWithInput({ userContent: [], includeFileDetails: false })
+				}
 				const queued = this.dequeueQueuedMessage()
 				if (queued) {
 					this.resetCompletionRecoveryState()
@@ -16748,12 +16861,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					pendingOpeningMessageTs = await this.sayOpeningInput("user_feedback", queued.text, queued.images, [
 						queued.id,
 					])
-					return {
+					return continueWithInput({
 						userContent: this.buildUserMessageContent(queued.text, queued.images, [queued.id]),
 						includeFileDetails: false,
-					}
+					})
 				}
-				if (this.abort) return undefined
 			}
 			decision = this.recordCompletionRejection(decision)
 			const message =
@@ -16761,16 +16873,116 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				"Cannot complete while managed-agent results or parent verification obligations remain unresolved."
 			if (!decision.modelCanResolveRejection) {
 				await this.say("error", message)
-				return undefined
+				recoveryExplanationPublished = true
+				return { nextInput: "complete", status: "incomplete", reason: message }
 			}
-			// As with attempt_completion, feed repairable rejection back to the model.
-			// A visible error belongs to a stopped task, not an ongoing repair turn.
-			this.consecutiveMistakeCount++
-			return {
+			// CompletionRecovery owns the repair budget. An expected blocker does not
+			// spend the generic mistake allowance or require user acknowledgement.
+			return continueWithInput({
 				userContent: [{ type: "text", text: formatResponse.toolError(message) }],
 				inputOrigin: "agent",
 				includeFileDetails: false,
+			})
+		}
+		const admitTaskCompletion = async (
+			outcome: Extract<AgentTurnOutcome, { status: "completed" }>,
+		): Promise<AgentTurnContinuation<TaskTurnInput> | undefined> => {
+			const isStopped = () =>
+				this.abort || this.abandoned || this.getTaskLifetimeCancellationSignal().aborted || !ownsTurnAndSample()
+			const aborted = { nextInput: "complete", status: "aborted" } as const
+			const userInputPending = () =>
+				this.hasPendingSteerMessage() || this.messageQueueService.hasUnconsumedInput()
+			const continueWithAgentMessages: AgentTurnContinuation<TaskTurnInput> = {
+				nextInput: { userContent: [], includeFileDetails: false },
+				continuationReason: "host-pending-input",
+				requiresContinuation: true,
 			}
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending()) return
+			if (this.hasPendingAgentMessages()) return continueWithAgentMessages
+			if (shouldCompactAfterTurn(outcome, this.lifecycleHookStoppedThisTurn)) {
+				compactedCompletionStep = true
+				try {
+					await this.maybeCompactAfterTurn()
+				} catch (error) {
+					if (!(error instanceof LifecycleHookStoppedError)) throw error
+					return { nextInput: "complete", status: "awaiting-user", reason: error.message }
+				}
+				if (isStopped()) return aborted
+				if (this.didComplete || userInputPending()) return
+			}
+			// Codex 81b995a6 keeps actionable Stop feedback inside the open turn.
+			// Alpha's durable evidence gate has the same continuation semantics.
+			const completionText = this.goalTurnCompletionText ?? outcome.response.text
+			if (finalAssistantMessageTs !== undefined) this.currentAssistantResponseMessageTs = finalAssistantMessageTs
+			try {
+				await this.presentCompletionResult(completionText)
+			} catch (error) {
+				taskCompletionFailure = { error }
+				throw error
+			}
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending()) return
+			const decision = await this.waitForCompletionGateDecision()
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending()) return
+			if (!decision.allowed) {
+				await this.retractCompletionResult()
+				return continueAfterCompletionRejection(decision)
+			}
+			try {
+				if (await this.returnCompletionToLegacyParent(completionText)) {
+					returnedCompletionToLegacyParent = true
+					return
+				}
+			} catch (error) {
+				await this.retractCompletionResult()
+				return continueAfterCompletionRejection({
+					allowed: false,
+					modelCanResolveRejection: false,
+					message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
+				})
+			}
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending()) return
+			const goalGeneration = this.goalSteeringGeneration ?? 0
+			let rejection: CompletionGateDecision | undefined
+			try {
+				// Settle the goal's usage receipt before committing the final transcript.
+				await this.settleGoalStep(this.activeGoalStep)
+				if (isStopped()) return aborted
+				if (this.didComplete || userInputPending()) return
+				if (this.hasPendingAgentMessages()) {
+					await this.retractCompletionResult()
+					return continueWithAgentMessages
+				}
+				if (
+					await this.finalizeTaskCompletion(undefined, (decision) => {
+						rejection = decision
+					})
+				) {
+					if (this.taskKind === "subagent") this.subagentCompletionOutcome = "completed"
+					finalAssistantMessageTs = this.currentAssistantResponseMessageTs ?? finalAssistantMessageTs
+					return
+				}
+			} catch (error) {
+				taskCompletionFailure = { error }
+				if (ownsTurnAndSample()) await this.retractCompletionResult()
+				throw error
+			}
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending() || goalGeneration !== (this.goalSteeringGeneration ?? 0)) return
+			if (this.hasPendingAgentMessages()) return continueWithAgentMessages
+			const goal = await this.getGoal()
+			const activeGoal =
+				goal?.status === "active" && !goal.recoveryDeferred && (await this.getTaskMode()) === "code"
+			if (isStopped()) return aborted
+			if (this.didComplete || userInputPending() || activeGoal) return
+			if (rejection) return continueAfterCompletionRejection(rejection)
+			const message = this.pendingTurnSuspension?.reason ?? t("common:errors.task_recovery_incomplete")
+			this.pendingTurnSuspension = undefined
+			await this.retractCompletionResult()
+			return continueAfterCompletionRejection({ allowed: false, modelCanResolveRejection: false, message })
 		}
 		const waitForPrimaryTurnRecovery = async (failure?: {
 			status: "failed" | "incomplete" | "exhausted"
@@ -16878,6 +17090,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			try {
 				const outcome = await runAgentTurn(nextTurnInput)
 				if (!ownsTurnAndSample()) return
+				if (returnedCompletionToLegacyParent) {
+					await appendTaskTerminalEvent("completed")
+					return
+				}
 				const goalCompletionText = this.goalTurnCompletionText
 				if (
 					outcome.status === "incomplete" &&
@@ -16931,6 +17147,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 
 				if (completedBoundary && !this.abort && !this.didComplete) {
+					const newGoal = await this.getGoal()
+					if (
+						newGoal?.status === "active" &&
+						!newGoal.recoveryDeferred &&
+						(newGoal.goalId !== completionGoalAtAdmission?.goalId ||
+							newGoal.controlVersion !== completionGoalAtAdmission.controlVersion) &&
+						(await this.getTaskMode()) === "code" &&
+						this.isGoalIdleBoundary()
+					) {
+						nextTurnInput = {
+							userContent: [{ type: "text", text: this.goalContinuationText(newGoal) }],
+							inputOrigin: "agent",
+							includeFileDetails: false,
+							goalAdmission: this.goalInputAdmission(newGoal),
+						}
+						continue
+					}
 					const goalContinuation = await engine.continueIfIdle(outcome)
 					if (
 						this.abort ||
@@ -16992,225 +17225,35 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				}
 
-				if (outcome.status !== "completed" || !completedBoundary || this.abort || this.didComplete) {
-					const terminalStatus = this.abort ? "aborted" : outcome.status
-					const terminalReason = "reason" in outcome ? outcome.reason : undefined
-					const terminalError = "error" in outcome ? outcome.error : undefined
-					if (
-						this.taskKind === "primary" &&
-						!this.abort &&
-						!this.didComplete &&
-						(terminalStatus === "failed" ||
-							terminalStatus === "exhausted" ||
-							terminalStatus === "incomplete")
-					) {
-						const continuation = await waitForPrimaryTurnRecovery({
-							status: terminalStatus,
-							error: terminalError,
-						})
-						if (continuation) {
-							if (isSupersededRecovery(continuation)) return
-							nextTurnInput = continuation
-							continue
-						}
-					}
-					await appendTaskTerminalEvent(
-						this.abort ? "aborted" : this.didComplete ? "completed" : terminalStatus,
-						terminalReason,
-						terminalError,
-						acceptedToolCallCount,
-					)
-					return
-				}
-				const completionText = goalCompletionText ?? outcome.response.text
-
-				// Both task kinds publish through the same verified completion transition.
-				// The visible answer does not require a user acknowledgement to finalize.
-				await this.presentCompletionResult(completionText)
-				if (this.abort || this.didComplete) {
-					await appendTaskTerminalEvent(
-						this.abort ? "aborted" : "completed",
-						undefined,
-						undefined,
-						acceptedToolCallCount,
-					)
-					return
-				}
-
-				const queuedFollowup = this.dequeueQueuedMessage()
-				const feedbackText = queuedFollowup?.text ?? ""
-				const feedbackImages = queuedFollowup?.images ?? []
-
-				const shouldFinish = !queuedFollowup || (!feedbackText.trim() && feedbackImages.length === 0)
-				if (shouldFinish) {
-					// Presentation can yield while descendants or obligations change.
-					// Recheck immediately before the terminal write.
-					const finalCompletionDecision = await this.waitForCompletionGateDecision()
-					if (!finalCompletionDecision.allowed) {
-						await this.retractCompletionResult()
-						const continuation = await continueAfterCompletionRejection(finalCompletionDecision)
-						if (!continuation) {
-							const recovery = await waitForPrimaryTurnRecovery()
-							if (recovery) {
-								if (isSupersededRecovery(recovery)) return
-								nextTurnInput = recovery
-								continue
-							}
-							await appendTaskTerminalEvent(
-								this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
-								finalCompletionDecision.message,
-							)
-							return
-						}
+				const terminalStatus = this.abort ? "aborted" : outcome.status
+				const terminalReason = "reason" in outcome ? outcome.reason : undefined
+				const terminalError = "error" in outcome ? outcome.error : undefined
+				if (
+					this.taskKind === "primary" &&
+					!this.abort &&
+					!this.didComplete &&
+					(terminalStatus === "failed" || terminalStatus === "exhausted" || terminalStatus === "incomplete")
+				) {
+					const continuation = await waitForPrimaryTurnRecovery({
+						status: terminalStatus,
+						error: terminalError,
+					})
+					if (continuation) {
+						if (isSupersededRecovery(continuation)) return
 						nextTurnInput = continuation
 						continue
 					}
-
-					const lateQueuedFeedback = this.dequeueQueuedMessage()
-					if (lateQueuedFeedback) {
-						pendingOpeningMessageTs = await this.sayOpeningInput(
-							"user_feedback",
-							lateQueuedFeedback.text,
-							lateQueuedFeedback.images,
-							[lateQueuedFeedback.id],
-						)
-						nextTurnInput = {
-							userContent: this.buildUserMessageContent(
-								lateQueuedFeedback.text,
-								lateQueuedFeedback.images,
-								[lateQueuedFeedback.id],
-							),
-							includeFileDetails: false,
-						}
-						continue
-					}
-
-					try {
-						if (await this.returnCompletionToLegacyParent(completionText)) {
-							await appendTaskTerminalEvent("completed", undefined, undefined, acceptedToolCallCount)
-							return
-						}
-					} catch (error) {
-						await this.retractCompletionResult()
-						const continuation = await continueAfterCompletionRejection({
-							allowed: false,
-							modelCanResolveRejection: false,
-							message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
-						})
-						if (!continuation) {
-							const recovery = await waitForPrimaryTurnRecovery()
-							if (recovery) {
-								if (isSupersededRecovery(recovery)) return
-								nextTurnInput = recovery
-								continue
-							}
-							await appendTaskTerminalEvent(
-								this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
-								error instanceof Error ? error.message : String(error),
-								error,
-							)
-							return
-						}
-						nextTurnInput = continuation
-						continue
-					}
-
-					if (this.taskKind === "subagent") this.subagentCompletionOutcome = "completed"
-					const completionGoalSteeringGeneration = this.goalSteeringGeneration ?? 0
-					const finalized = await this.finalizeTaskCompletion()
-					if (!finalized) {
-						if (this.abort || this.didComplete) {
-							await appendTaskTerminalEvent(
-								this.abort ? "aborted" : "completed",
-								undefined,
-								undefined,
-								acceptedToolCallCount,
-							)
-							return
-						}
-
-						// A follow-up admitted during completion persistence still belongs to
-						// the current task's existing input consumer.
-						if (this.hasPendingAgentMessages() || this.hasPendingSteerMessage()) {
-							nextTurnInput = { userContent: [], includeFileDetails: false }
-							continue
-						}
-
-						const concurrentFeedback = this.dequeueQueuedMessage()
-						if (concurrentFeedback) {
-							pendingOpeningMessageTs = await this.sayOpeningInput(
-								"user_feedback",
-								concurrentFeedback.text,
-								concurrentFeedback.images,
-								[concurrentFeedback.id],
-							)
-							nextTurnInput = {
-								userContent: this.buildUserMessageContent(
-									concurrentFeedback.text,
-									concurrentFeedback.images,
-									[concurrentFeedback.id],
-								),
-								includeFileDetails: false,
-							}
-							continue
-						}
-
-						const goal = await this.getGoal()
-						if (
-							completionGoalSteeringGeneration !== (this.goalSteeringGeneration ?? 0) &&
-							goal?.status === "active" &&
-							!goal.recoveryDeferred &&
-							(await this.getTaskMode()) === "code" &&
-							this.isGoalIdleBoundary()
-						) {
-							// A new explicit host goal superseded terminal completion after
-							// the prior idle check. Enter it through this same drained loop.
-							nextTurnInput = {
-								userContent: [{ type: "text", text: this.goalContinuationText(goal) }],
-								inputOrigin: "agent",
-								includeFileDetails: false,
-								goalAdmission: this.goalInputAdmission(goal),
-							}
-							continue
-						}
-
-						const completionFailureReason =
-							this.pendingTurnSuspension?.reason ?? "Task completion was not durably finalized."
-						this.pendingTurnSuspension = undefined
-						await this.say("error", completionFailureReason)
-						const recovery = await waitForPrimaryTurnRecovery()
-						if (recovery) {
-							if (isSupersededRecovery(recovery)) return
-							nextTurnInput = recovery
-							continue
-						}
-						await appendTaskTerminalEvent(
-							this.abort ? "aborted" : this.didComplete ? "completed" : "incomplete",
-							completionFailureReason,
-							undefined,
-							acceptedToolCallCount,
-						)
-						return
-					}
-					await appendTaskTerminalEvent("completed", undefined, undefined, acceptedToolCallCount)
-					return
 				}
-
-				// A follow-up starts a new conversational turn; retain the prior answer's durable trace boundary.
-				pendingOpeningMessageTs = await this.sayOpeningInput(
-					"user_feedback",
-					feedbackText,
-					feedbackImages,
-					queuedFollowup ? [queuedFollowup.id] : undefined,
+				if (this.taskKind === "subagent" && terminalStatus === "failed" && taskCompletionFailure) {
+					throw taskCompletionFailure.error
+				}
+				await appendTaskTerminalEvent(
+					this.abort ? "aborted" : this.didComplete ? "completed" : terminalStatus,
+					terminalReason,
+					terminalError,
+					acceptedToolCallCount,
 				)
-				nextTurnInput = {
-					userContent: this.buildUserMessageContent(
-						feedbackText,
-						feedbackImages,
-						queuedFollowup ? [queuedFollowup.id] : undefined,
-					),
-					includeFileDetails: false,
-				}
+				return
 			} catch (error) {
 				// A superseded frame cannot repair or fail the replacement. Unexpected
 				// cleanup failures still reach its owner instead of being swallowed.

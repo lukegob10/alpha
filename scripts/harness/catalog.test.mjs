@@ -145,6 +145,7 @@ test("required stopping contracts execute the shared loop and reproduced regress
 		"core/task/__tests__/completionDiagnostics.spec.ts",
 		"core/task/__tests__/Task.completion-obligations.spec.ts",
 		"core/task/__tests__/Task.spec.ts",
+		"core/task/__tests__/stageThreeCompletion.integration.spec.ts",
 		"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
 		"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
 		"core/condense/__tests__/index.spec.ts",

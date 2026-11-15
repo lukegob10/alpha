@@ -40,6 +40,7 @@
 	"backToHome": "Back to main screen",
 	"switchChat": "Switch chat",
 	"renameChat": "Rename chat",
+	"forkChat": "Fork chat",
 	"renameChatNamed": "Rename chat: {{task}}",
 	"renameDescription": "Choose a name to find this chat again. Your original message stays unchanged.",
 	"chatName": "Chat name",

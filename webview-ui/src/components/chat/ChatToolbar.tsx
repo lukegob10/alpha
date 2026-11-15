@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import type { ExtensionState } from "@alpha-code/types"
-import { CalendarClock, Ellipsis, LayoutDashboard, Settings, SquarePen, Ticket } from "lucide-react"
+import { CalendarClock, Ellipsis, GitFork, LayoutDashboard, Settings, SquarePen, Ticket } from "lucide-react"
 
 import {
 	Button,
@@ -18,6 +18,7 @@ export interface ChatToolbarProps {
 	renderContext: ExtensionState["renderContext"]
 	debug: boolean
 	onNewChat: () => void
+	onForkChat?: () => void
 	onOpenSettings: () => void
 	onOpenTickets: () => void
 	onOpenIncidents: () => void
@@ -32,6 +33,7 @@ const ChatToolbar = ({
 	renderContext,
 	debug,
 	onNewChat,
+	onForkChat,
 	onOpenSettings,
 	onOpenTickets,
 	onOpenIncidents,
@@ -56,6 +58,19 @@ const ChatToolbar = ({
 				{!hasNativeActions && <AlphaHero />}
 				{navigation}
 			</div>
+			{onForkChat && (
+				<StandardTooltip content={t("history:forkChat")} side="bottom">
+					<Button
+						type="button"
+						variant="ghost"
+						size="icon"
+						className={controlClassName}
+						aria-label={t("history:forkChat")}
+						onClick={onForkChat}>
+						<GitFork aria-hidden="true" />
+					</Button>
+				</StandardTooltip>
+			)}
 			{!hasNativeActions &&
 				actions.map(({ label, Icon, onClick }) => (
 					<StandardTooltip key={label} content={label} side="bottom">

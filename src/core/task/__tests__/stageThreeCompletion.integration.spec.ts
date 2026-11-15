@@ -1401,6 +1401,105 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.completed).toHaveBeenCalledOnce()
 	})
 
+	it.each(["settle", "steer", "cancel"] as const)(
+		"releases the mutation gate when a command receipt arrives during the final completion check (%s)",
+		async (action) => {
+			const harness = await setup()
+			const callId = "background-command"
+			const executionId = "background-command-execution"
+			harness.task.beginCommandExecution(callId, executionId, "node app.js")
+			harness.task.markCommandExecutionBackgrounded(callId, executionId)
+			vi.spyOn(TerminalRegistry, "getTerminals").mockReturnValue([
+				{
+					taskId: TASK_ID,
+					running: true,
+					process: { executionId, isSettled: false },
+				} as unknown as AlphaTerminal,
+			])
+			const receiptStarted = deferred()
+			const releaseReceipt = deferred()
+			harness.provider.recordParentVerificationEvidence.mockImplementationOnce(() =>
+				harness.mutationGate.run(TASK_ID, "publish command receipt", async () => {
+					receiptStarted.resolve()
+					await releaseReceipt.promise
+				}),
+			)
+			const readVerdict = harness.provider.getParentCompletionDecision.getMockImplementation()!
+			let exited = false
+			harness.provider.getParentCompletionDecision.mockImplementation(async () => {
+				const decision = await readVerdict()
+				if (!exited && harness.store.getAgent(TASK_ID, TASK_ID)?.status === "completed") {
+					exited = true
+					harness.task.completeCommandExecution(callId, { exitCode: 0 }, executionId)
+				}
+				return decision
+			})
+
+			const running = harness.run()
+			try {
+				await Promise.race([
+					receiptStarted.promise,
+					running.then(() => {
+						throw new Error("Completion ended before the receipt could acquire the mutation gate")
+					}),
+				])
+				harness.assertNotCompleted()
+				expect(harness.store.getAgent(TASK_ID, TASK_ID)?.status).toBe("running")
+				if (action === "steer") await harness.task.steerUserMessage("Include the new requirement.")
+				if (action === "cancel") {
+					harness.cancel()
+					await running
+				}
+			} finally {
+				releaseReceipt.resolve()
+				await running
+			}
+
+			expect(harness.requests).toHaveLength(action === "steer" ? 2 : 1)
+			if (action === "steer") {
+				expect(JSON.stringify(harness.requests[1]).split("Include the new requirement.")).toHaveLength(2)
+			}
+			expect(harness.task.say).not.toHaveBeenCalledWith("error", expect.any(String))
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.provider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+			expect(harness.presentCompletionResult).toHaveBeenCalledTimes(action === "steer" ? 2 : 1)
+			expect(harness.completed).toHaveBeenCalledTimes(action === "cancel" ? 0 : 1)
+			expect(harness.events.filter((event) => event.type === "turn_completed")).toHaveLength(
+				action === "steer" ? 2 : 1,
+			)
+		},
+	)
+
+	it("repairs a blocker found during the final completion check in the same turn", async () => {
+		const harness = await setup()
+		const configuration = vscode.workspace.getConfiguration()
+		vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
+			...configuration,
+			get: (key: string, fallback: unknown) => (key === "preventCompletionWithOpenTodos" ? true : fallback),
+		} as vscode.WorkspaceConfiguration)
+		const todo = { id: "late-todo", content: "Finish the remaining work" }
+		harness.flush.mockImplementationOnce(async () => {
+			harness.task.todoList = [{ ...todo, status: "pending" }]
+			return true
+		})
+		harness.installCandidates((step) => {
+			if (step === 2) harness.task.todoList = [{ ...todo, status: "completed" }]
+		})
+
+		await harness.run()
+
+		expect(harness.requests).toHaveLength(2)
+		expect(harness.requests[1]).toEqual([
+			expect.objectContaining({ type: "text", text: expect.stringContaining("incomplete todos") }),
+		])
+		expect(harness.task.say).not.toHaveBeenCalledWith("error", expect.any(String))
+		expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+		expect(harness.provider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+		expect(harness.task.retractCompletionResult).toHaveBeenCalledOnce()
+		expect(harness.completed).toHaveBeenCalledOnce()
+		expect(harness.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
+	})
+
 	it("does not complete a cancelled text candidate", async () => {
 		const harness = await setup()
 		harness.installCandidates(() => harness.cancel())

@@ -1689,6 +1689,7 @@ describe("Task persistence", () => {
 
 			try {
 				await waitOpened
+				expect(task.canMutateWorkspace()).toBe(true)
 				expect(results()).toEqual([])
 				expect(task.isCompleted()).toBe(false)
 				await expect(task.finalizeTaskCompletion()).resolves.toBe(false)

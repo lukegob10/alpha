@@ -21,14 +21,20 @@ interface NavigationFixtureTask {
 
 interface NavigationFixtureHost extends HistoryFixtureHost {
 	getLiveTask(taskId: string): NavigationFixtureTask | undefined
+	getCurrentTask(): { taskId: string } | undefined
+	getTaskWithId(taskId: string): Promise<{ historyItem: HistoryItem }>
 }
 
 class HistoryNavigationAI {
 	readonly id = "history-ui-navigation"
 	removeFromCache?: () => void
 
-	async *createMessage() {
-		yield { type: "text" as const, text: "The rendered navigation fixture is ready." }
+	async *createMessage(_system: string, messages: unknown[]) {
+		const isForkFollowup = JSON.stringify(messages).includes("Explore the copied context.")
+		yield {
+			type: "text" as const,
+			text: isForkFollowup ? "The fork answered the new message." : "The rendered navigation fixture is ready.",
+		}
 	}
 
 	getModel() {
@@ -122,21 +128,23 @@ suite("Inline Chats rendered history", function () {
 
 		const navigationAI = new HistoryNavigationAI()
 		try {
+			const configuration = {
+				...originalConfiguration,
+				apiProvider: "fake-ai" as const,
+				fakeAi: navigationAI,
+				mode: "code" as const,
+				approvalMode: "auto" as const,
+				allowedCommands: [],
+				deniedCommands: [],
+				terminalShellIntegrationDisabled: true,
+				enableCheckpoints: false,
+				requestDelaySeconds: 0,
+				writeDelayMs: 0,
+			}
+			await api.setConfiguration(configuration)
 			const taskId = await api.startNewTask({
 				text: "Create a completed task for the renderer navigation fixture.",
-				configuration: {
-					...originalConfiguration,
-					apiProvider: "fake-ai",
-					fakeAi: navigationAI,
-					mode: "code",
-					approvalMode: "auto",
-					allowedCommands: [],
-					deniedCommands: [],
-					terminalShellIntegrationDisabled: true,
-					enableCheckpoints: false,
-					requestDelaySeconds: 0,
-					writeDelayMs: 0,
-				},
+				configuration,
 			})
 			await waitFor(() => provider.getLiveTask(taskId)?.didComplete === true, {
 				description: "the navigation fixture to finalize completion",
@@ -211,6 +219,16 @@ suite("Inline Chats rendered history", function () {
 				taskId,
 				text: TICKET_PREVIEW_TEXT,
 			})
+
+			await uiFixtureBarrier("chat-fork", { version: vscode.version, taskId })
+			const slashFork = provider.getCurrentTask()
+			assert.ok(slashFork)
+			const { historyItem: slashHistory } = await provider.getTaskWithId(slashFork.taskId)
+			assert.equal(slashHistory.displayName, "Compare parser fixes")
+			assert.equal(slashHistory.forkSessionStarted, true)
+			assert.ok(slashHistory.forkedFromId)
+			const { historyItem: buttonHistory } = await provider.getTaskWithId(slashHistory.forkedFromId)
+			assert.equal(buttonHistory.forkedFromId, taskId)
 		} finally {
 			await api.clearCurrentTask().catch(() => undefined)
 			navigationAI.removeFromCache?.()

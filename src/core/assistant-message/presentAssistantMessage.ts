@@ -60,28 +60,33 @@ async function presentAssistantMessageContent(alphaTask: Task, options: PresentA
 			return
 		}
 
-		// Snapshot the current text/partial fields while a webview update is pending.
-		const block = { ...alphaTask.assistantMessageContent[alphaTask.currentStreamingContentIndex] }
+		const block = alphaTask.assistantMessageContent[alphaTask.currentStreamingContentIndex]
 		if (block.type !== "text") {
 			alphaTask.currentStreamingContentIndex++
 			continue
 		}
 
+		// Snapshot the streamed text while a webview update is pending.
+		const { content, partial, previewMessageTs } = block
 		if (!alphaTask.didRejectTool) {
 			// Strip streamed thinking tags before the markdown renderer sees them.
-			const content = block.content.replace(/<thinking>\s?/g, "").replace(/\s?<\/thinking>/g, "")
+			const visibleText = content.replace(/<thinking>\s?/g, "").replace(/\s?<\/thinking>/g, "")
 			if (options.previewEpoch === undefined) {
-				await alphaTask.say("text", content, undefined, block.partial)
+				await alphaTask.say("text", visibleText, undefined, partial)
 			} else {
-				await alphaTask.say("text", content, undefined, block.partial, undefined, undefined, {
+				await alphaTask.say("text", visibleText, undefined, partial, undefined, undefined, {
 					previewEpoch: options.previewEpoch,
+					previewMessageTs,
+					onCreated: (message) => {
+						block.previewMessageTs = message.ts
+					},
 				})
 			}
 			if (!isCurrentStreamingPreview(alphaTask, options)) return
 			throwIfAborted(alphaTask)
 		}
 
-		if (block.partial && !alphaTask.didRejectTool) {
+		if (partial && !alphaTask.didRejectTool) {
 			// Keep the lock owner's promise alive for updates queued during say().
 			// The outer loop also checks after this async boundary for a final delta.
 			if (!alphaTask.presentAssistantMessageHasPendingUpdates) return

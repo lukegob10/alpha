@@ -133,12 +133,19 @@ export function getContextMenuOptions(
 	modes?: ModeConfig[],
 	commands?: Command[],
 	ticketOptions: ContextMenuQueryItem[] = [],
+	builtInCommands: ContextMenuQueryItem[] = [],
 ): ContextMenuQueryItem[] {
 	// Handle slash commands for modes and commands
 	// Only process as slash command if the query itself starts with "/" (meaning we're typing a slash command)
 	if (query.startsWith("/")) {
 		const slashQuery = query.slice(1)
 		const results: ContextMenuQueryItem[] = []
+
+		const matchingBuiltIns = builtInCommands.filter((command) => command.value?.startsWith(slashQuery))
+		if (matchingBuiltIns.length) {
+			results.push({ type: ContextMenuOptionType.SectionHeader, label: t("chat:forkChat.commands") })
+			results.push(...matchingBuiltIns)
+		}
 
 		// Add command suggestions first (prioritize commands at the top)
 		if (commands?.length) {

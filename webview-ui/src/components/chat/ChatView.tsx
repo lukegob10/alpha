@@ -29,7 +29,13 @@ import type {
 	QueuedMessage,
 	ApprovalMode,
 } from "@alpha-code/types"
-import { getTaskDisplayName, isRetiredProvider, TaskLifecycleState } from "@alpha-code/types"
+import {
+	getTaskDisplayName,
+	isIndependentChat,
+	isRetiredProvider,
+	taskDisplayNameSchema,
+	TaskLifecycleState,
+} from "@alpha-code/types"
 
 import { findLast } from "@alpha/array"
 import { planModeSlug } from "@alpha/modes"
@@ -54,6 +60,7 @@ import HistoryPreview from "../history/HistoryPreview"
 import ChatHistorySwitcher from "../history/ChatHistorySwitcher"
 import ChatToolbar from "./ChatToolbar"
 import { chatToolbarActions } from "./chatToolbarActions"
+import { parseForkChatCommand } from "./forkChatCommand"
 import { SubagentDock } from "./SubagentDock"
 import { CrossTaskPanel } from "./CrossTaskPanel"
 import Announcement from "./Announcement"
@@ -449,6 +456,12 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const isVisibleTaskCompleted = effectiveVisibleLiveTask?.lifecycle === TaskLifecycleState.Completed
 	const visibleCurrentTaskItem = isDraftView ? undefined : currentTaskItem
 	const isManagedSubagent = visibleCurrentTaskItem?.taskKind === "subagent"
+	const canForkChat = Boolean(
+		visibleCurrentTaskId &&
+			visibleCurrentTaskItem?.id === visibleCurrentTaskId &&
+			isIndependentChat(visibleCurrentTaskItem) &&
+			!isTaskTranscriptPending,
+	)
 	const canShowCrossTaskPanel = Boolean(
 		visibleCurrentTaskId &&
 			!visibleCurrentTaskItem?.parentTaskId &&
@@ -737,7 +750,9 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	const latestVisibleMessage = activeMessages.at(-1)
 	const completedTaskResponseAsk = isCompletedTaskResponseAsk(alphaAsk)
 		? alphaAsk
-		: latestVisibleMessage?.type === "ask" && isCompletedTaskResponseAsk(latestVisibleMessage.ask)
+		: latestVisibleMessage?.type === "ask" &&
+			  !latestVisibleMessage.isAnswered &&
+			  isCompletedTaskResponseAsk(latestVisibleMessage.ask)
 			? latestVisibleMessage.ask
 			: undefined
 	const hasCompletedTranscriptBoundary = isVisibleTaskCompleted || completedTaskResponseAsk !== undefined
@@ -1480,6 +1495,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		[isCondensing, sendingDisabled],
 	)
 
+	const forkCurrentChat = useCallback(
+		(displayName?: string) => {
+			if (!visibleCurrentTaskId || !canForkChat) return
+			vscode.postMessage({
+				type: "forkChat",
+				taskId: visibleCurrentTaskId,
+				...(displayName === undefined ? {} : { displayName }),
+			})
+		},
+		[visibleCurrentTaskId, canForkChat],
+	)
+
 	const postQueuedMessage = useCallback(
 		(text: string, images: string[], asyncUserInputMessageTs?: number, steer = false) => {
 			// Queue messages are task-scoped on the extension side. Preserve the draft
@@ -1866,15 +1893,54 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setDidClickCancel(true)
 	}, [visibleTaskPayload, visibleTurnId, setDidClickCancel])
 
+	const handleComposerFork = useCallback(() => {
+		if (editingQueuedMessage) return false
+		const command = parseForkChatCommand(inputValue)
+		if (!command) return false
+
+		if (!canForkChat) {
+			setChatCommandError(t("chat:forkChat.unavailable"))
+		} else if (selectedImages.length) {
+			setChatCommandError(t("chat:forkChat.removeAttachments"))
+		} else if (command.displayName !== undefined && !taskDisplayNameSchema.safeParse(command.displayName).success) {
+			setChatCommandError(t("chat:forkChat.invalidName"))
+		} else {
+			forkCurrentChat(command.displayName)
+			setChatCommandError(undefined)
+			setInputValue("")
+		}
+		return true
+	}, [
+		editingQueuedMessage,
+		inputValue,
+		canForkChat,
+		setChatCommandError,
+		t,
+		selectedImages.length,
+		forkCurrentChat,
+		setInputValue,
+	])
+
 	const handleComposerSend = useCallback(() => {
-		handleSendMessage(inputValue, selectedImages, undefined, autoSteer && !isManagedSubagent)
-	}, [handleSendMessage, inputValue, selectedImages, autoSteer, isManagedSubagent])
+		if (!handleComposerFork() && !isProfileDisabled && !isCondensing)
+			handleSendMessage(inputValue, selectedImages, undefined, autoSteer && !isManagedSubagent)
+	}, [
+		handleComposerFork,
+		isProfileDisabled,
+		isCondensing,
+		handleSendMessage,
+		inputValue,
+		selectedImages,
+		autoSteer,
+		isManagedSubagent,
+	])
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
+		if (handleComposerFork()) return
 		const text = inputValue.trim()
 		if (text || selectedImages.length > 0) postQueuedMessage(text, selectedImages)
-	}, [inputValue, postQueuedMessage, selectedImages])
+	}, [handleComposerFork, inputValue, postQueuedMessage, selectedImages])
 
 	const startQueuedMessageEdit = useCallback(
 		(message: QueuedMessage) => {
@@ -3407,7 +3473,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				pendingEditRequestRef.current
 			)
 				return
-			handleSendMessage(inputValue, selectedImages, undefined, true)
+			if (!handleComposerFork()) handleSendMessage(inputValue, selectedImages, undefined, true)
 		},
 		acceptInput: () => {
 			const hasInput = inputValue.trim() || selectedImages.length > 0
@@ -3415,7 +3481,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (hasInput) {
 				// The host Enter shortcut and textarea submit share input routing.
 				// Approval buttons remain explicit actions when no draft is present.
-				if (!isProfileDisabled && !isCondensing) handleComposerSend()
+				handleComposerSend()
 				return
 			}
 
@@ -3465,6 +3531,10 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		onExpandedChange: handleTaskHeaderExpandedChange,
 	}
 	const parentChatId = taskHeaderProps.parentTaskId ?? taskHeaderProps.launcherTaskId
+	const chatTitle =
+		visibleCurrentTaskItem && visibleCurrentTaskItem.id === visibleCurrentTaskId
+			? getTaskDisplayName(visibleCurrentTaskItem)
+			: undefined
 
 	return (
 		<div
@@ -3487,11 +3557,13 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					renderContext={extensionState.renderContext}
 					debug={extensionState.debug === true}
 					onNewChat={startBlankTask}
+					onForkChat={canForkChat ? () => forkCurrentChat() : undefined}
 					navigation={
 						task ? (
 							<ChatHistorySwitcher
 								isVisible={!isHidden}
 								currentTaskId={visibleCurrentTaskId}
+								currentTaskName={chatTitle}
 								onBackToHome={startBlankTask}
 								onOpenTask={openTaskWithCache}
 								onViewAll={expandChatsPanel}
@@ -3964,6 +4036,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}
 						onSend={handleComposerSend}
+						canForkChat={canForkChat}
 						onSelectImages={selectImages}
 						shouldDisableImages={shouldDisableImages}
 						mode={mode}

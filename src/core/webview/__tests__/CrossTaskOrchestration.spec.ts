@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { Task } from "../../task/Task"
 import { AlphaProvider } from "../AlphaProvider"
 import { AgentMessageInbox } from "../../task-persistence/AgentMessageInbox"
-import { TaskHistoryStore, saveTaskMessages } from "../../task-persistence"
+import { readTaskMessages, TaskHistoryStore, saveTaskMessages } from "../../task-persistence"
 import { readApiMessages, saveApiMessages } from "../../task-persistence/apiMessages"
 import { ProviderTranscriptStore } from "../../task-persistence/ProviderTranscriptStore"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
@@ -1916,6 +1916,64 @@ describe("Cross-task orchestration host", () => {
 		expect(tasks.has(result.task_id)).toBe(false)
 		expect(internals.createTask).not.toHaveBeenCalled()
 		expect(internals.createTaskWithHistoryItem).not.toHaveBeenCalled()
+	})
+
+	it("forks a cold saved chat by user action and leaves the source intact", async () => {
+		const { provider, internals, history, tasks } = createProviderFixture()
+		internals.currentWorkspacePath = "C:/repo"
+		const source = {
+			...taskHistoryItem("saved-source", "orchestrator", "Investigate the parser"),
+			status: "completed",
+			mode: "architect",
+			apiConfigName: "profile-a",
+			approvalMode: "ask",
+		}
+		history.set(source.id, source)
+		const globalStoragePath = internals.contextProxy.globalStorageUri.fsPath
+		const apiMessages = [
+			{ role: "user" as const, content: source.task, ts: 1 },
+			{ role: "assistant" as const, content: "Found the issue", ts: 2 },
+		]
+		const uiMessages = [
+			{ type: "say" as const, say: "text" as const, text: source.task, ts: 1 },
+			{ type: "say" as const, say: "completion_result" as const, text: "Found the issue", ts: 2 },
+		]
+		await saveApiMessages({ taskId: source.id, globalStoragePath, messages: apiMessages })
+		await saveTaskMessages({ taskId: source.id, globalStoragePath, messages: uiMessages })
+		const forkId = await provider.forkChat(source.id, "Alternative parser fix")
+		expect(forkId).not.toBe(source.id)
+		expect(history.get(forkId)).toMatchObject({
+			forkedFromId: source.id,
+			forkSessionStarted: false,
+			displayName: "Alternative parser fix",
+			workspace: source.workspace,
+			apiConfigName: "profile-a",
+			mode: "architect",
+			approvalMode: "ask",
+		})
+		expect(history.get(source.id)).toEqual(source)
+		expect(tasks.has(forkId)).toBe(false)
+		for (const taskId of [forkId, source.id]) {
+			expect(await readApiMessages({ taskId, globalStoragePath })).toEqual(apiMessages)
+			expect(await readTaskMessages({ taskId, globalStoragePath, requireExisting: true })).toEqual(uiMessages)
+		}
+	})
+
+	it("declines a first turn in progress and a chat in another workspace", async () => {
+		const { provider, internals, history, tasks } = createProviderFixture()
+		internals.currentWorkspacePath = "C:/repo"
+		const source = createTask({
+			taskId: "running-source",
+			apiConversationHistory: [{ role: "user", content: "First turn", ts: 1 }],
+			alphaMessages: [{ type: "say", say: "text", text: "First turn", ts: 1 }],
+		})
+		tasks.set(source.taskId, source)
+		history.set(source.taskId, taskHistoryItem(source.taskId, "orchestrator"))
+		await expect(provider.forkChat(source.taskId)).rejects.toThrow("no completed history")
+		history.set("other-workspace", { ...taskHistoryItem("other-workspace", "orchestrator"), workspace: "C:/other" })
+		await expect(provider.forkChat("other-workspace")).rejects.toThrow("current workspace")
+		expect(internals.updateTaskHistory).not.toHaveBeenCalled()
+		expect(source.abort).toBe(false)
 	})
 
 	it("archives peers and their descendants and rejects archiving an ancestor of the caller", async () => {

@@ -25,6 +25,8 @@ Open **About Alpha** from the settings footer for version information and settin
 - Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff. Agent file edits run in
   the background; open a file or diff whenever you want to review it.
 - Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
+- Use **Fork chat** in the chat toolbar or history menu, or type `/fork` in a chat. Add a name with `/fork <name>`.
+  The new chat uses the same checkout and inherits the conversation through its latest completed reply.
 - Use built-in skills, Alpha Tickets, the HTML document previewer, and scheduled tasks.
   Type `/skill-name` to invoke a skill, and manage reusable workflows in **Settings → Tools & agents → Skills**.
   Custom `.alpha/commands/*.md` files are no longer loaded.

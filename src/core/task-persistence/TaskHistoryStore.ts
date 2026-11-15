@@ -505,13 +505,14 @@ export class TaskHistoryStore {
 	/**
 	 * Delete multiple tasks' history items in a batch.
 	 */
-	async deleteMany(taskIds: string[]): Promise<void> {
+	async deleteMany(taskIds: string[], options: { storageBasePath?: string } = {}): Promise<void> {
 		return this.withLock(async () => {
 			const failures: unknown[] = []
+			const tasksDir = await this.getTasksDir(options.storageBasePath)
 
 			for (const taskId of taskIds) {
 				try {
-					await this.removeTaskFile(taskId)
+					await this.removeTaskFile(taskId, tasksDir)
 					this.cache.delete(taskId)
 				} catch (error) {
 					failures.push(error)
@@ -633,6 +634,15 @@ export class TaskHistoryStore {
 			} catch {
 				this.cache.delete(taskId)
 			}
+		})
+	}
+
+	/** Update sibling view caches after their shared store has durably deleted these rows. */
+	async forgetDeleted(taskIds: readonly string[]): Promise<void> {
+		await this.withLock(async () => {
+			let changed = false
+			for (const id of taskIds) if (this.cache.delete(id)) changed = true
+			if (changed) this.scheduleIndexWrite()
 		})
 	}
 
@@ -876,8 +886,8 @@ export class TaskHistoryStore {
 	 * Remove a per-task history file. An absent file already satisfies deletion;
 	 * every other I/O failure must remain visible to the caller.
 	 */
-	private async removeTaskFile(taskId: string): Promise<void> {
-		const filePath = await this.getTaskFilePath(taskId)
+	private async removeTaskFile(taskId: string, tasksDir?: string): Promise<void> {
+		const filePath = await this.getTaskFilePath(taskId, tasksDir)
 		try {
 			await fs.unlink(filePath)
 		} catch (error) {
@@ -1006,8 +1016,8 @@ export class TaskHistoryStore {
 	/**
 	 * Get the tasks base directory path, resolving custom storage paths.
 	 */
-	private async getTasksDir(): Promise<string> {
-		const basePath = await getStorageBasePath(this.globalStoragePath)
+	private async getTasksDir(storageBasePath?: string): Promise<string> {
+		const basePath = storageBasePath ?? (await getStorageBasePath(this.globalStoragePath))
 		const tasksDir = path.join(basePath, "tasks")
 		try {
 			const stats = await fs.lstat(tasksDir)

@@ -1,6 +1,6 @@
 import type { HistoryItem } from "@alpha-code/types"
 
-import { Task } from "../task/Task"
+import type { CompletionGateDecision, Task } from "../task/Task"
 import { formatResponse } from "../prompts/responses"
 import type { ToolUse } from "../../shared/tools"
 
@@ -177,18 +177,28 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
 		toolCallId?: string,
 	): Promise<boolean> {
-		let decision = await task.waitForCompletionGateDecision()
+		const decision = await task.waitForCompletionGateDecision()
 		if (decision.allowed) return false
+		await this.reportCompletionRejection(task, decision, pushToolResult, toolCallId)
+		return true
+	}
+
+	private async reportCompletionRejection(
+		task: Task,
+		decision: CompletionGateDecision,
+		pushToolResult: AttemptCompletionCallbacks["pushToolResult"],
+		toolCallId?: string,
+	): Promise<void> {
 		if (task.hasPendingAgentMessages()) {
 			pushToolResult(
 				formatResponse.toolError(decision.message ?? "Read pending agent messages before completing."),
 			)
-			return true
+			return
 		}
 		if (decision.reasonCode === "interrupted") {
 			if (task.hasPendingSteerMessage()) {
 				pushToolResult(formatResponse.toolError(decision.message ?? "Completion interrupted by user guidance."))
-				return true
+				return
 			}
 			const queued = task.messageQueueService.dequeueMessage()
 			if (queued) {
@@ -201,7 +211,7 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				pushToolResult(
 					formatResponse.toolResult(`<user_message>\n${queued.text}\n</user_message>`, queued.images),
 				)
-				return true
+				return
 			}
 		}
 		decision = task.recordCompletionRejection(decision)
@@ -210,13 +220,11 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			decision.message ??
 			"Cannot complete while applied Worker changes still require parent review and verification."
 		if (decision.modelCanResolveRejection) {
-			task.consecutiveMistakeCount++
 			task.recordToolError("attempt_completion")
 		} else {
 			task.suspendAfterCurrentTurn(errorMsg)
 		}
 		pushToolResult(formatResponse.toolError(errorMsg))
-		return true
 	}
 
 	private async rejectLegacyParentReturn(
@@ -307,7 +315,10 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 			content: "(tool did not return anything)",
 		})
 		try {
-			const finalized = await task.finalizeTaskCompletion(staged ? toolCallId : undefined)
+			let rejection: CompletionGateDecision | undefined
+			const finalized = await task.finalizeTaskCompletion(staged ? toolCallId : undefined, (decision) => {
+				rejection = decision
+			})
 			if (!finalized) {
 				if (toolCallId) task.removePendingToolResult(toolCallId)
 				const queued = task.messageQueueService.dequeueMessage()
@@ -323,6 +334,10 @@ export class AttemptCompletionTool extends BaseTool<"attempt_completion"> {
 				}
 				if (task.hasPendingAsyncLifecycleHookContext?.()) {
 					pushToolResult(JSON.stringify({ status: "success", requiresContinuation: true }))
+					return false
+				}
+				if (rejection) {
+					await this.reportCompletionRejection(task, rejection, pushToolResult, toolCallId)
 					return false
 				}
 				pushToolResult(formatResponse.toolError("Task completion was not verified and remains incomplete."))

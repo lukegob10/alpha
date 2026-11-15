@@ -1151,7 +1151,10 @@ describe("AlphaProvider Task History Synchronization", () => {
 			try {
 				await provider.deleteTaskWithId("cycle-root")
 
-				expect(deletedHistory).toHaveBeenCalledExactlyOnceWith(["cycle-root", "cycle-a", "cycle-b"])
+				expect(deletedHistory).toHaveBeenCalledExactlyOnceWith(
+					["cycle-root", "cycle-a", "cycle-b"],
+					expect.objectContaining({ storageBasePath: "/test/storage/path" }),
+				)
 				expect(getTask).toHaveBeenCalledTimes(4)
 				expect(checkpoints.mock.calls.map(([options]) => options.taskId)).toEqual([
 					"cycle-root",

@@ -62,7 +62,7 @@ function lastIndex<T>(items: readonly T[], predicate: (item: T) => boolean): num
 	return -1
 }
 
-function isFinalResponse(message: ApiMessage, completedText: ReadonlySet<string>): boolean {
+function isFinalResponse(message: ApiMessage, completedText?: ReadonlySet<string>): boolean {
 	if (message.role !== "assistant" || blocks(message).some((block) => getToolCallId(block) !== undefined))
 		return false
 	const lastText = message.agentResponseItems
@@ -77,7 +77,7 @@ function isFinalResponse(message: ApiMessage, completedText: ReadonlySet<string>
 			message.agentResponseOutcome.requiresContinuation !== true &&
 			Boolean(textContent(message.content))) ||
 		(!phase && !message.agentResponseOutcome && Boolean(textContent(message.content))) ||
-		completedText.has(textContent(message.content).trim())
+		completedText?.has(textContent(message.content).trim()) === true
 	)
 }
 
@@ -93,7 +93,7 @@ function completionTexts(messages: readonly AlphaMessage[]): ReadonlySet<string>
 
 function responseTerminalStatus(
 	message: ApiMessage,
-	completedText: ReadonlySet<string>,
+	completedText?: ReadonlySet<string>,
 ): ThreadTurnSummary["status"] | undefined {
 	if (message.role !== "assistant") return undefined
 	const outcome = message.agentResponseOutcome
@@ -392,6 +392,8 @@ export function buildThreadReadResult(input: ThreadHistoryReadInput): ThreadRead
 	}
 }
 
+export class ChatForkEmptyError extends Error {}
+
 /** Copy a safe history prefix; live work, inbox receipts, and goal accounting stay with the source task. */
 export function forkTaskHistory(
 	apiMessages: readonly ApiMessage[],
@@ -399,30 +401,73 @@ export function forkTaskHistory(
 	options: { active: boolean },
 ): { apiMessages: ApiMessage[]; uiMessages: AlphaMessage[] } {
 	let end = apiMessages.length
+	let uiEnd = uiMessages.length
 	if (options.active) {
 		const normalize = (text: string) => (parseProposedPlan(text)?.content ?? text).trim()
 		const candidates = new Map<string, { indices: number[]; next: number }>()
+		const completionTools = new Map<string, string>()
+		const legacyCompletionBoundaries = new Set(
+			uiMessages.flatMap((message) =>
+				message.ask === "completion_result" && !message.partial && message.turn
+					? [JSON.stringify([message.turn.runId, message.turn.turnId])]
+					: [],
+			),
+		)
+		const addCandidate = (text: string, index: number) => {
+			const key = normalize(text)
+			if (!key) return
+			const entry = candidates.get(key) ?? { indices: [], next: 0 }
+			entry.indices.push(index)
+			candidates.set(key, entry)
+		}
 		for (let index = 0; index < apiMessages.length; index++) {
 			const message = apiMessages[index]
-			if (message.role !== "assistant" || blocks(message).some((block) => getToolCallId(block) !== undefined))
-				continue
-			const text = normalize(textContent(message.content))
-			if (!text) continue
-			const entry = candidates.get(text) ?? { indices: [], next: 0 }
-			entry.indices.push(index)
-			candidates.set(text, entry)
+			const content = blocks(message)
+			if (responseTerminalStatus(message) === "completed") {
+				addCandidate(textContent(message.content), index)
+			}
+			for (const block of content) {
+				const callId = getToolCallId(block)
+				if (
+					callId &&
+					block.name === "attempt_completion" &&
+					object(block.input) &&
+					typeof block.input.result === "string"
+				) {
+					completionTools.set(callId, block.input.result)
+				}
+				const resultId = getToolResultId(block)
+				if (resultId && completionTools.has(resultId)) {
+					if (block.is_error !== true) addCandidate(completionTools.get(resultId)!, index)
+					completionTools.delete(resultId)
+				}
+			}
 		}
 		// A provider's final phase may still be rejected by the completion gate.
 		// Match committed host completions in order, including repeated answers,
 		// before copying any part of a live turn.
 		end = 0
-		for (const message of uiMessages) {
-			if (message.type !== "say" || message.say !== "completion_result" || message.partial || !message.text)
+		uiEnd = 0
+		for (const [index, message] of uiMessages.entries()) {
+			if (
+				message.partial ||
+				!message.text ||
+				(message.say !== "completion_result" &&
+					message.ask !== "completion_result" &&
+					message.turn?.terminalStatus !== "completed") ||
+				(message.turn?.terminalStatus !== undefined && message.turn.terminalStatus !== "completed") ||
+				(message.turn &&
+					message.turn.terminalStatus !== "completed" &&
+					!legacyCompletionBoundaries.has(JSON.stringify([message.turn.runId, message.turn.turnId])))
+			)
 				continue
 			const entry = candidates.get(normalize(message.text))
 			if (!entry) continue
 			while (entry.next < entry.indices.length && entry.indices[entry.next] < end) entry.next++
-			if (entry.next < entry.indices.length) end = entry.indices[entry.next++] + 1
+			if (entry.next < entry.indices.length) {
+				end = entry.indices[entry.next++] + 1
+				uiEnd = index + 1
+			}
 		}
 	}
 	const pending = new Set<string>()
@@ -443,10 +488,18 @@ export function forkTaskHistory(
 		delete message.agent_message_id
 		delete message.sampled_agent_message_ids
 	}
-	let visible = uiMessages.filter(
-		(message) => !message.partial && message.ask !== "resume_task" && message.ask !== "resume_completed_task",
-	)
-	if (options.active || safeEnd < apiMessages.length) {
+	let visible = uiMessages
+		.slice(0, uiEnd)
+		.filter(
+			(message) =>
+				!message.partial &&
+				message.ask !== "resume_task" &&
+				message.ask !== "resume_completed_task" &&
+				message.say !== "checkpoint_saved" &&
+				message.say !== "subagent_group" &&
+				(message.say !== "async_user_input" || message.isAnswered === true),
+		)
+	if (safeEnd < end) {
 		const lastTimestamp = snapshot.at(-1)?.ts
 		if (lastTimestamp !== undefined) visible = visible.filter((message) => message.ts <= lastTimestamp)
 		else {
@@ -457,5 +510,13 @@ export function forkTaskHistory(
 			visible = snapshot.length > 0 && completed >= 0 ? visible.slice(0, completed + 1) : []
 		}
 	}
-	return { apiMessages: snapshot, uiMessages: structuredClone(visible) }
+	return {
+		apiMessages: snapshot,
+		uiMessages: structuredClone(visible).map((message) => {
+			delete message.queuedMessageIds
+			delete message.toolApprovalRequest
+			delete message.checkpoint
+			return message
+		}),
+	}
 }

@@ -89,6 +89,7 @@ const mockAlphaProvider = {
 	createTaskWithHistoryItem: vi.fn(),
 	cancelTask: vi.fn(),
 	showTaskWithId: vi.fn(),
+	forkChat: vi.fn(),
 	clearPublishedTaskTranscriptRevisions: vi.fn(),
 	exportTaskWithId: vi.fn(),
 	condenseTaskContext: vi.fn(),
@@ -1177,6 +1178,42 @@ describe("webviewMessageHandler - showTaskWithId", () => {
 	})
 })
 
+describe("webviewMessageHandler - forkChat", () => {
+	beforeEach(() => vi.clearAllMocks())
+
+	it("saves the requested chat and opens the fork in the requesting view", async () => {
+		vi.mocked(mockAlphaProvider.forkChat).mockResolvedValueOnce("fork-id")
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "forkChat",
+			taskId: "saved-chat",
+			displayName: "Try again",
+		})
+		expect(mockAlphaProvider.forkChat).toHaveBeenCalledWith("saved-chat", "Try again")
+		expect(mockAlphaProvider.showTaskWithId).toHaveBeenCalledWith("fork-id")
+		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({ type: "action", action: "focusInput" })
+	})
+
+	it("keeps a saved fork in history when the user navigates elsewhere during the copy", async () => {
+		let finishCopy!: (taskId: string) => void
+		const copy = new Promise<string>((resolve) => {
+			finishCopy = resolve
+		})
+		vi.mocked(mockAlphaProvider.forkChat).mockReturnValueOnce(copy)
+		vi.mocked(mockAlphaProvider.getTaskNavigationGeneration).mockReturnValueOnce(1).mockReturnValueOnce(2)
+		const request = webviewMessageHandler(mockAlphaProvider, { type: "forkChat", taskId: "saved-chat" })
+		finishCopy("fork-id")
+		await request
+		expect(mockAlphaProvider.forkChat).toHaveBeenCalledWith("saved-chat", undefined)
+		expect(mockAlphaProvider.showTaskWithId).not.toHaveBeenCalled()
+	})
+
+	it("rejects malformed requests before reading history", async () => {
+		await webviewMessageHandler(mockAlphaProvider, { type: "forkChat", taskId: "saved-chat", displayName: " " })
+		expect(mockAlphaProvider.forkChat).not.toHaveBeenCalled()
+		expect(vscode.window.showWarningMessage).toHaveBeenCalledWith("common:tasks.fork_invalid")
+	})
+})
+
 describe("webviewMessageHandler - task history commands", () => {
 	beforeEach(() => {
 		vi.mocked(mockAlphaProvider.getCurrentTask).mockReset()
@@ -2001,6 +2038,7 @@ describe("webviewMessageHandler - queued message steering", () => {
 				[],
 				"direct-steer",
 				undefined,
+				{ canAcceptInput: expect.any(Function) },
 			)
 			expect(mockAlphaProvider.getCurrentTask).not.toHaveBeenCalled()
 			expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()

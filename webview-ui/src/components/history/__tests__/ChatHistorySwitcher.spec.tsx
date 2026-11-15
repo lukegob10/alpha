@@ -30,6 +30,7 @@ const view = (onOpenTask = vi.fn(), onViewAll = vi.fn(), history = tasks, isVisi
 	<ExtensionStateContext.Provider value={context(history)}>
 		<ChatHistorySwitcher
 			currentTaskId={history[0]?.id}
+			currentTaskName={history[0]?.displayName}
 			onBackToHome={onBackToHome}
 			onOpenTask={onOpenTask}
 			onViewAll={onViewAll}
@@ -41,15 +42,14 @@ const view = (onOpenTask = vi.fn(), onViewAll = vi.fn(), history = tasks, isVisi
 describe("ChatHistorySwitcher", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it("shows only the Back and Switch chat icons, in that order, without the active title", () => {
-		const { container } = render(view())
+	it("shows the active chat name beside the Back and Switch chat actions", () => {
+		render(view())
 		expect(screen.getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
 			"Back to main screen",
 			"Switch chat",
 		])
-		expect(screen.queryByText("Navigation cleanup")).not.toBeInTheDocument()
+		expect(screen.getByText("Navigation cleanup")).toBeVisible()
 		expect(screen.queryByText("Original prompt 0")).not.toBeInTheDocument()
-		expect(container.querySelector(".chat-history-switcher")).toHaveTextContent("")
 		expect(screen.queryByRole("button", { name: /Rename chat/ })).not.toBeInTheDocument()
 	})
 

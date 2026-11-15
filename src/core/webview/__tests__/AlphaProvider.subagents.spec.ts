@@ -8174,7 +8174,7 @@ If complete, use attempt_completion.
 
 	it("keeps a completion-result candidate waiting without publishing terminal state", async () => {
 		const provider = makeProviderHarness()
-		const parent = { ...makeParent(), taskAsk: { ask: "completion_result" } }
+		const parent = { ...makeParent(), isCompleted: () => false, taskAsk: { ask: "completion_result" } }
 		await (provider as any).ensureAgentControlRoot(parent)
 		const initialRootStatus = (provider as any).agentControlStore.getAgent(parent.taskId, parent.taskId)?.status
 		const publicationOrder: string[] = []

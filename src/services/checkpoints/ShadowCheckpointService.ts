@@ -721,6 +721,18 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		workspaceDir: string
 	}) {
 		const workspaceRepoDir = this.workspaceRepoDir({ globalStorageDir, workspaceDir })
+		try {
+			const repo = await fs.lstat(workspaceRepoDir)
+			const dotGit = await fs.lstat(path.join(workspaceRepoDir, ".git"))
+			if (!repo.isDirectory() || repo.isSymbolicLink() || !dotGit.isDirectory() || dotGit.isSymbolicLink()) {
+				throw new Error("Invalid legacy checkpoint repository")
+			}
+		} catch (error) {
+			// Current checkpoints live inside each task directory. Most chat deletions
+			// have no legacy shared repository to clean up.
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+			throw error
+		}
 		const branchName = `alpha-${taskId}`
 		const git = createSanitizedGit(workspaceRepoDir)
 		const success = await this.deleteBranch(git, branchName)
@@ -728,7 +740,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		if (success) {
 			console.log(`[${this.name}#deleteTask.${taskId}] deleted branch ${branchName}`)
 		} else {
-			console.error(`[${this.name}#deleteTask.${taskId}] failed to delete branch ${branchName}`)
+			throw new Error(`Could not delete legacy checkpoint branch ${branchName}`)
 		}
 	}
 
@@ -736,8 +748,7 @@ export abstract class ShadowCheckpointService extends EventEmitter {
 		const branches = await git.branchLocal()
 
 		if (!branches.all.includes(branchName)) {
-			console.error(`[${this.constructor.name}#deleteBranch] branch ${branchName} does not exist`)
-			return false
+			return true
 		}
 
 		const currentBranch = await git.revparse(["--abbrev-ref", "HEAD"])

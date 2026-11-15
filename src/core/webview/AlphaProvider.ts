@@ -60,6 +60,7 @@ import {
 	type ThreadReadResult,
 	type ThreadRuntimeStatus,
 	getTaskDisplayName,
+	isIndependentChat,
 	type IncidentDashboardTurnDetail,
 	type CreateTaskOptions,
 	type CurrentTaskView,
@@ -222,7 +223,11 @@ import {
 } from "../agent/AgentIncidentMonitor"
 import { collectDiagnosticsEvidence } from "./diagnosticsEvidence"
 import { readRecentIncidentEvents } from "./readRecentIncidentEvents"
-import { resolveExistingTaskDirectoryPathReadOnly } from "../../utils/storage"
+import {
+	getStorageBasePath,
+	resolveExistingTaskDirectoryInStorage,
+	resolveExistingTaskDirectoryPathReadOnly,
+} from "../../utils/storage"
 import {
 	formatParentVerificationContext,
 	isBlockingParentVerification,
@@ -283,7 +288,7 @@ import {
 import { readTaskMessages } from "../task-persistence/taskMessages"
 import type { ApiMessagesWritePrecondition } from "../task-persistence/apiMessages"
 import { resolveWorkerArtifactRecoveryTarget } from "../task-persistence/workerArtifactRecovery"
-import { buildThreadReadResult, forkTaskHistory } from "../task-persistence/ThreadHistory"
+import { buildThreadReadResult, ChatForkEmptyError, forkTaskHistory } from "../task-persistence/ThreadHistory"
 import { readThreadApiMessages } from "./ThreadTaskStorage"
 import { invalidateOpaqueProviderStateReplay } from "../task-persistence/providerStateScope"
 import {
@@ -1149,7 +1154,7 @@ export class AlphaProvider
 
 	public isViewLaunched = false
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.33-responsive-tasks"
+	public readonly latestAnnouncementId = "november-2026-v3.2.34-chat-forks"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 
@@ -2051,6 +2056,7 @@ export class AlphaProvider
 		const assertRestoreAdmission = () => {
 			// Cold restores can outlive disposal while awaiting profile or storage I/O.
 			if (this._disposed) throw new Error("Cannot restore a task in a disposed provider")
+			if (this.taskSessions.isHistoryDeleting(historyItem.id)) throw new Error("Task history is being deleted")
 			if (options?.isRestoreCurrent && !options.isRestoreCurrent()) throw supersededCancellation
 			if (
 				options?.cancellation &&
@@ -2503,6 +2509,9 @@ export class AlphaProvider
 			// Overlapping opens are coalesced by taskNavigationGeneration.
 			"showTaskWithId",
 			"startBlankTask",
+			"forkChat",
+			// Deletion has its own host-wide lane. Slow cleanup should not hold the view's controls.
+			"deleteMultipleTasksWithIds",
 		])
 		const logFailure = (message: WebviewMessage, error: unknown) => {
 			this.log(
@@ -2510,7 +2519,10 @@ export class AlphaProvider
 			)
 		}
 		const run = (message: WebviewMessage) =>
-			message.type === "webviewDidLaunch" || message.type.startsWith("chatGpt")
+			message.type === "webviewDidLaunch" ||
+			message.type === "forkChat" ||
+			message.type === "deleteMultipleTasksWithIds" ||
+			message.type.startsWith("chatGpt")
 				? webviewMessageHandler(this, message, { isCurrentWebview })
 				: webviewMessageHandler(this, message)
 		const failTicketSearch = (requestId: string) =>
@@ -3551,8 +3563,12 @@ export class AlphaProvider
 		uiMessagesFilePath: string
 		apiConversationHistory: Anthropic.MessageParam[]
 	}> {
+		if (this.taskSessions.isHistoryDeleting(id)) throw new Error("Task not found")
 		const historyItem =
-			this.taskHistoryStore.get(id) ?? (this.getGlobalState("taskHistory") ?? []).find((item) => item.id === id)
+			this.taskHistoryStore.get(id) ??
+			(!this.taskHistoryStoreInitialized
+				? (this.getGlobalState("taskHistory") ?? []).find((item) => item.id === id)
+				: undefined)
 
 		if (!historyItem) {
 			throw new Error("Task not found")
@@ -3749,31 +3765,175 @@ export class AlphaProvider
 		if (completionNotificationFailed) throw completionNotificationError
 	}
 
-	// this function deletes a task from task history, and deletes its checkpoints and delete the task folder
-	// If the task has subtasks (childIds), they will also be deleted recursively
-	private async purgeDeletedAgentControlRoots(taskIds: readonly string[]): Promise<void> {
+	private async purgeDeletedAgentControlRoots(taskIds: readonly string[]): Promise<string[]> {
 		try {
 			await this.agentControlStoreReady
 		} catch (error) {
 			this.log(
 				`Failed to initialize managed-agent evidence cleanup after task history deletion: ${String(error)}`,
 			)
-			return
+			return [...taskIds]
 		}
+		const failures: string[] = []
 		for (const taskId of new Set(taskIds)) {
 			try {
 				await this.agentControlStore.purgeRoot(taskId)
 			} catch (error) {
+				failures.push(taskId)
 				this.log(`Failed to purge managed-agent evidence for deleted task ${taskId}: ${String(error)}`)
 			}
 		}
+		return failures
 	}
 
-	async deleteTaskWithId(id: string, cascadeSubtasks: boolean = true) {
+	/** Codex 81b995a6 resolves a subtree before deleting it in one store batch. */
+	async deleteTasksWithIds(
+		ids: readonly string[],
+		workspace = this.cwd,
+	): Promise<{ failed: number; skipped: number; cleanupFailed: boolean }> {
 		await this.taskHistoryStoreReady
+		return this.taskSessions.runOwnershipOperation("history:delete", async () => {
+			const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
+			const storageBasePath = await getStorageBasePath(globalStoragePath)
+			const history = this.taskHistoryStore
+			const selected = new Map<string, HistoryItem>()
+			let skipped = 0
+			const isOpen = (id: string) => this.getLiveTask(id) || this.taskSessions.isTaskAdmissionPending(id)
+
+			// Resolve only stored metadata, never the stale downgrade mirror. An
+			// open descendant protects its selected parent. Single delete can stop it explicitly.
+			for (const id of new Set(ids)) {
+				if (selected.has(id)) continue
+				const root = history.get(id)
+				if (!root || root.archived || !history.isForWorkspace(root, workspace)) {
+					skipped++
+					continue
+				}
+				const subtree = new Set([id])
+				let canDelete = true
+				for (const taskId of subtree) {
+					const item = history.get(taskId)
+					if (isOpen(taskId) || (item?.workspace && !history.isForWorkspace(item, workspace))) {
+						canDelete = false
+						break
+					}
+					for (const childId of item?.childIds ?? []) subtree.add(childId)
+				}
+				if (!canDelete) {
+					skipped++
+					continue
+				}
+				for (const taskId of subtree) {
+					const item = history.get(taskId)
+					if (item) selected.set(taskId, item)
+				}
+			}
+			if (!selected.size) return { failed: 0, skipped, cleanupFailed: false }
+
+			const taskIds = [...selected.keys()]
+			return this.taskSessions.runHistoryDeletion(taskIds, async () => {
+				try {
+					await history.deleteMany(taskIds, { storageBasePath })
+				} catch (error) {
+					// deleteMany commits successful unlinks even when another row fails.
+					this.log(`[deleteTasksWithIds] History deletion did not fully complete: ${String(error)}`)
+				}
+				const removed = taskIds.filter((id) => !history.get(id))
+				const failed = taskIds.length - removed.length
+				await this.publishDeletedTaskHistory(removed)
+
+				// A partial unlink must not erase a surviving managed child's audit trail.
+				const retainedRoots = new Set(
+					taskIds.filter((id) => history.get(id)).map((id) => selected.get(id)?.rootTaskId ?? id),
+				)
+				const purgeFailures = await this.purgeDeletedAgentControlRoots(
+					removed.filter((id) => !retainedRoots.has(id)),
+				)
+				const blockedCleanup = new Set(purgeFailures)
+				const cleanupIds = removed.filter((id) => {
+					const rootId = selected.get(id)?.rootTaskId
+					return !blockedCleanup.has(id) && (!rootId || !blockedCleanup.has(rootId))
+				})
+				const cleanupSucceeded = await this.cleanDeletedTaskFiles(
+					cleanupIds,
+					selected,
+					storageBasePath,
+					workspace,
+				)
+				return { failed, skipped, cleanupFailed: !cleanupSucceeded || blockedCleanup.size > 0 }
+			})
+		})
+	}
+
+	private async publishDeletedTaskHistory(taskIds: readonly string[]): Promise<void> {
+		if (!taskIds.length) return
+		await Promise.all(
+			this.getHostProviders().map(async (peer) => {
+				if (peer._disposed) return
+				try {
+					if (peer !== this) {
+						await peer.taskHistoryMetadataReady
+						await peer.taskHistoryStore.forgetDeleted(taskIds)
+						peer.scheduleGlobalStateWriteThrough()
+					}
+					peer.recentTasksCache = undefined
+					await peer.broadcastTaskHistoryUpdate()
+				} catch (error) {
+					this.log(`[deleteTasksWithIds] History refresh failed: ${String(error)}`)
+				}
+			}),
+		)
+	}
+
+	private async cleanDeletedTaskFiles(
+		taskIds: string[],
+		items: ReadonlyMap<string, HistoryItem>,
+		storageBasePath: string,
+		workspace: string,
+	): Promise<boolean> {
+		if (!taskIds.length) return true
+		const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
+		let ok = true
+		// Legacy checkpoints share a Git repository per workspace.
+		for (const id of taskIds) {
+			try {
+				await ShadowCheckpointService.deleteTask({
+					taskId: id,
+					globalStorageDir: globalStoragePath,
+					workspaceDir: items.get(id)?.workspace || workspace,
+				})
+			} catch (error) {
+				ok = false
+				this.log(`[deleteTasksWithIds] Checkpoint cleanup failed for ${id}: ${String(error)}`)
+			}
+			try {
+				const directory = await resolveExistingTaskDirectoryInStorage(storageBasePath, id)
+				await fs.rm(directory, { recursive: true, force: true })
+			} catch (error) {
+				ok = false
+				this.log(`[deleteTasksWithIds] Could not remove task files for ${id}: ${String(error)}`)
+			}
+		}
+		try {
+			await managedSubagentWorktreeService.deleteArtifactsForTasks(globalStoragePath, taskIds)
+		} catch (error) {
+			ok = false
+			this.log(`[deleteTasksWithIds] Worker artifact cleanup failed: ${String(error)}`)
+		}
+		return ok
+	}
+
+	async deleteTaskWithId(id: string, cascadeSubtasks: boolean = true): Promise<void> {
+		await this.taskHistoryStoreReady
+		await this.taskSessions.runOwnershipOperation("history:delete", () =>
+			this.deleteTaskHistory(id, cascadeSubtasks),
+		)
+	}
+
+	private async deleteTaskHistory(id: string, cascadeSubtasks: boolean): Promise<void> {
 		try {
 			// get the task directory full path and history item
-			const { taskDirPath, historyItem } = await this.getTaskWithId(id, {
+			const { historyItem } = await this.getTaskWithId(id, {
 				includeApiConversationHistory: false,
 			})
 
@@ -3810,11 +3970,14 @@ export class AlphaProvider
 			// alone must not leave a live session counted against the max task limit.
 			for (const taskId of allIdsToDelete) {
 				if (this.getLiveTask(taskId)) {
+					const owner = this.getTaskOwner(taskId) ?? this
 					await this.removeTaskFromStack({ taskId })
+					await owner.taskLifecycleHistoryWrites?.get(taskId)
 				}
 			}
 			// Delete all tasks from state in one batch
-			await this.taskHistoryStore.deleteMany(allIdsToDelete)
+			const storageBasePath = await getStorageBasePath(this.contextProxy.globalStorageUri.fsPath)
+			await this.taskHistoryStore.deleteMany(allIdsToDelete, { storageBasePath })
 			this.recentTasksCache = undefined
 			// The agent-control ledger intentionally retains audit evidence while
 			// task history exists. Purge it only after authoritative history deletion
@@ -3822,36 +3985,12 @@ export class AlphaProvider
 			// audit trail.
 			await this.purgeDeletedAgentControlRoots(allIdsToDelete)
 
-			// Delete associated shadow repositories or branches and task directories
-			const globalStorageDir = this.contextProxy.globalStorageUri.fsPath
-			const workspaceDir = this.cwd
-			const { getTaskDirectoryPath } = await import("../../utils/storage")
-			const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
-
-			for (const taskId of allIdsToDelete) {
-				try {
-					await ShadowCheckpointService.deleteTask({ taskId, globalStorageDir, workspaceDir })
-				} catch (error) {
-					console.error(
-						`[deleteTaskWithId${taskId}] failed to delete associated shadow repository or branch: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-
-				// Delete the task directory
-				try {
-					const dirPath = await getTaskDirectoryPath(globalStoragePath, taskId)
-					await fs.rm(dirPath, { recursive: true, force: true })
-					console.log(`[deleteTaskWithId${taskId}] removed task directory`)
-				} catch (error) {
-					console.error(
-						`[deleteTaskWithId${taskId}] failed to remove task directory: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}
-
-			await managedSubagentWorktreeService
-				.deleteArtifactsForTasks(globalStoragePath, allIdsToDelete)
-				.catch((error) => this.log(`Failed to delete worker artifacts: ${String(error)}`))
+			await this.cleanDeletedTaskFiles(
+				allIdsToDelete,
+				new Map(),
+				storageBasePath,
+				historyItem.workspace || this.cwd,
+			)
 
 			await this.postStateToWebview()
 		} catch (error) {
@@ -6428,14 +6567,14 @@ export class AlphaProvider
 		}
 	}
 
-	private getIdleTaskLifecycle(task: Task): TaskLifecycleState {
-		return task.taskAsk?.ask === "resume_completed_task" ? TaskLifecycleState.Completed : TaskLifecycleState.Waiting
-	}
-
 	/** Publish idle state without treating an unaccepted completion candidate as terminal. */
 	private async completeIdleTaskLifecycle(task: Task, taskId: string): Promise<void> {
-		const lifecycle = this.getIdleTaskLifecycle(task)
-		if (lifecycle === TaskLifecycleState.Completed) {
+		const alreadyCompleted = task.isCompleted()
+		const lifecycle =
+			alreadyCompleted || task.taskAsk?.ask === "resume_completed_task"
+				? TaskLifecycleState.Completed
+				: TaskLifecycleState.Waiting
+		if (lifecycle === TaskLifecycleState.Completed && !alreadyCompleted) {
 			await this.updateAgentControlRootStatus(taskId, "completed")
 		}
 		const waitingReason =
@@ -6838,48 +6977,98 @@ export class AlphaProvider
 			throw new Error("Forking requires an explicit user request to fork or retain conversation history")
 		}
 		await this.assertIndependentModelRequest(caller, options)
+		const history = await this.saveConversationFork(
+			sourceTaskId,
+			caller.historyWorkspacePath ?? caller.workspacePath,
+			{
+				caller,
+				modelSelection: options,
+				signal,
+			},
+		)
+		return this.getCrossTaskRecord(history, undefined, false)
+	}
+
+	/** User entry point for the composer and chat menus. */
+	public async forkChat(sourceTaskId: string, displayName?: string): Promise<string> {
+		const history = await this.saveConversationFork(sourceTaskId, this.cwd, { displayName })
+		return history.id
+	}
+
+	private async saveConversationFork(
+		sourceTaskId: string,
+		workspacePath: string,
+		{
+			caller,
+			modelSelection,
+			signal,
+			displayName,
+		}: {
+			caller?: Task
+			modelSelection?: IndependentTaskModelSelection
+			signal?: AbortSignal
+			displayName?: string
+		},
+	): Promise<HistoryItem> {
 		return this.taskSessions.runOwnershipOperation(`cross-task:${sourceTaskId}`, async () => {
 			const owner = this.getTaskOwner(sourceTaskId) ?? this
-			const source = await owner.getDirectCrossTask(caller, sourceTaskId, true)
+			const source = await owner.getIndependentThreadSource(sourceTaskId, workspacePath)
 			this.throwIfThreadCancelled(signal)
 			const history =
-				source.history ?? (source.task ? await owner.ensureCrossTaskHistory(source.task) : undefined)
+				source.history ?? (caller && source.task ? await owner.ensureCrossTaskHistory(source.task) : undefined)
 			if (!history) throw new Error("The source thread has no saved history")
 			const modelRoute =
-				source.task || hasIndependentTaskModelSelection(options)
+				source.task || hasIndependentTaskModelSelection(modelSelection)
 					? await owner.enqueueConfiguration(() =>
 							owner.resolveIndependentThreadModelRoute(
 								source.task,
 								history,
-								options ?? {},
-								!hasIndependentTaskModelSelection(options),
+								modelSelection ?? {},
+								!hasIndependentTaskModelSelection(modelSelection),
 								signal,
 							),
 						)
 					: undefined
-			const globalStoragePath = this.contextProxy.globalStorageUri.fsPath
-			const apiMessages =
+			const globalStoragePath = owner.contextProxy.globalStorageUri.fsPath
+			const savedApiMessages =
 				source.task && (source.task.apiConversationHistory.length > 0 || source.task.isInitialized)
-					? [...source.task.apiConversationHistory]
+					? undefined
 					: await readThreadApiMessages(sourceTaskId, globalStoragePath, signal)
-			const uiMessages = source.task
-				? [...source.task.alphaMessages]
-				: await readTaskMessages({ taskId: sourceTaskId, globalStoragePath, requireExisting: true })
+			const savedUiMessages = source.task
+				? undefined
+				: await readTaskMessages({
+						taskId: sourceTaskId,
+						globalStoragePath,
+						requireExisting: true,
+						readOnly: true,
+					})
 			// UI restoration uses the lifecycle ownership fence rather than this
 			// control queue. Never copy a cold snapshot after a new producer appeared.
 			if (owner.getLiveTask(sourceTaskId) !== source.task)
 				throw new Error("The source thread changed while preparing its fork; retry the request")
+			const apiMessages = source.task?.apiConversationHistory.length
+				? source.task.apiConversationHistory
+				: (savedApiMessages ?? [])
+			const uiMessages = source.task?.alphaMessages.length ? source.task.alphaMessages : (savedUiMessages ?? [])
 			const sourceLifecycle = this.getCrossTaskLifecycle(history, source.task)
 			const fork = forkTaskHistory(apiMessages, uiMessages, {
 				active:
 					source.task?.isTurnActive() === true ||
 					["running", "initializing", "waiting"].includes(sourceLifecycle) ||
-					(!source.task && ["active", "blocked", "delegated"].includes(history.status ?? "")),
+					(!source.task && ["active", "blocked", "delegated"].includes(history.status ?? "")) ||
+					(!caller &&
+						!source.task?.isCompleted() &&
+						["interrupted", "failed", "cancelled", "timed_out"].includes(history.status ?? "")),
 			})
 			this.throwIfThreadCancelled(signal)
+			if (!caller && (!fork.apiMessages.length || !fork.uiMessages.length)) {
+				throw new ChatForkEmptyError("The source chat has no completed history to fork")
+			}
 			if (
 				modelRoute &&
-				(options?.provider !== undefined || options?.profile !== undefined || options?.model !== undefined)
+				(modelSelection?.provider !== undefined ||
+					modelSelection?.profile !== undefined ||
+					modelSelection?.model !== undefined)
 			)
 				fork.apiMessages = invalidateOpaqueProviderStateReplay(fork.apiMessages)
 			const taskId = uuidv7()
@@ -6887,7 +7076,7 @@ export class AlphaProvider
 			// goal, child, mailbox, journal, or completion-notification producer.
 			const forkHistory: HistoryItem = {
 				id: taskId,
-				...(caller.presentationModelCalls === false ||
+				...(caller?.presentationModelCalls === false ||
 				source.task?.presentationModelCalls === false ||
 				history.presentationModelCalls === false
 					? { presentationModelCalls: false as const }
@@ -6895,7 +7084,12 @@ export class AlphaProvider
 				number: 0,
 				ts: Date.now(),
 				task: history.task,
-				displayName: history.displayName,
+				displayName: caller
+					? history.displayName
+					: (displayName ??
+						t("common:tasks.fork_title", { title: getTaskDisplayName(history) })
+							.slice(0, 96)
+							.trim()),
 				tokensIn: 0,
 				tokensOut: 0,
 				totalCost: 0,
@@ -6903,7 +7097,8 @@ export class AlphaProvider
 				mode: history.mode,
 				apiConfigName: modelRoute ? modelRoute.apiConfigName : history.apiConfigName,
 				reasoningPreference: structuredClone(modelRoute?.reasoningPreference ?? history.reasoningPreference),
-				approvalMode: history.approvalMode ?? "ask",
+				approvalMode:
+					(!caller ? source.task?.getTaskApprovalMode() : undefined) ?? history.approvalMode ?? "ask",
 				taskKind: "primary",
 				status: "interrupted",
 				forkedFromId: sourceTaskId,
@@ -6929,7 +7124,7 @@ export class AlphaProvider
 			await saveApiMessages({ messages: fork.apiMessages, taskId, globalStoragePath })
 			await saveTaskMessages({ messages: fork.uiMessages, taskId, globalStoragePath })
 			await this.updateCrossTaskHistory(forkHistory)
-			return this.getCrossTaskRecord(forkHistory, undefined, false)
+			return forkHistory
 		})
 	}
 
@@ -7987,16 +8182,22 @@ export class AlphaProvider
 	}
 
 	private isAccessibleCrossTask(caller: Task, history?: HistoryItem, task?: Task): boolean {
-		const taskId = task?.taskId ?? history?.id
-		if (!taskId || (!history && !task)) return false
-		if (history?.taskKind === "subagent" || (task && task.taskKind !== "primary")) return false
-		if (history?.diagnosticSession || task?.diagnosticSession || history?.parentTaskId || task?.parentTaskId)
+		return this.isIndependentThreadInWorkspace(caller.historyWorkspacePath ?? caller.workspacePath, history, task)
+	}
+
+	private isIndependentThreadInWorkspace(workspacePath: string, history?: HistoryItem, task?: Task): boolean {
+		if (!history && !task) return false
+		if (history && !isIndependentChat(history)) return false
+		if (
+			task &&
+			(task.taskKind !== "primary" ||
+				task.diagnosticSession ||
+				task.parentTaskId ||
+				(task.rootTaskId && task.rootTaskId !== task.taskId))
+		)
 			return false
-		if (history?.rootTaskId && history.rootTaskId !== taskId) return false
-		if (task?.rootTaskId && task.rootTaskId !== taskId) return false
-		const callerWorkspace = caller.historyWorkspacePath ?? caller.workspacePath
 		const targetWorkspace = task?.historyWorkspacePath ?? history?.workspace ?? task?.workspacePath
-		return arePathsEqual(callerWorkspace, targetWorkspace)
+		return arePathsEqual(workspacePath, targetWorkspace)
 	}
 
 	private async getDirectCrossTask(
@@ -8004,12 +8205,19 @@ export class AlphaProvider
 		taskId: string,
 		allowSelf = false,
 	): Promise<{ history?: HistoryItem; task?: Task }> {
+		if (!allowSelf && taskId === parent.taskId)
+			throw new Error("Use the current thread's own lifecycle instead of controlling itself")
+		return this.getIndependentThreadSource(taskId, parent.historyWorkspacePath ?? parent.workspacePath)
+	}
+
+	private async getIndependentThreadSource(
+		taskId: string,
+		workspacePath: string,
+	): Promise<{ history?: HistoryItem; task?: Task }> {
 		await this.taskHistoryStoreReady
 		const history = this.getCrossTaskHistoryItems().get(taskId)
 		const task = this.getLiveTask(taskId)
-		if (!allowSelf && taskId === parent.taskId)
-			throw new Error("Use the current thread's own lifecycle instead of controlling itself")
-		if (!this.isAccessibleCrossTask(parent, history, task))
+		if (!this.isIndependentThreadInWorkspace(workspacePath, history, task))
 			throw new Error("The thread is not an independent primary task in the current workspace")
 		return { history, task }
 	}
@@ -8186,9 +8394,18 @@ export class AlphaProvider
 					if (persisted.some((message) => message.queued_message_ids?.includes(requestId))) return true
 				}
 				assertRoute()
-				if (!handoff && !this.canAcceptTaskInput(taskId)) return false
+				// A composer may still be showing Queue while the task finishes.
+				// Fresh human input can continue that completed primary chat.
+				const canAcceptInput = () =>
+					this.getLiveTask(taskId) === task &&
+					(this.canAcceptTaskInput(taskId) ||
+						(options?.source === "human" && task.taskKind === "primary" && task.isCompleted()))
+				if (!handoff && !canAcceptInput()) return false
 				if (options?.source === "human") {
-					return await task.queueUserMessageDurably(text, images, requestId, assertRoute)
+					return await task.queueUserMessageDurably(text, images, requestId, () => {
+						assertRoute()
+						if (!handoff && !canAcceptInput()) throw new Error("The task cannot accept queued input")
+					})
 				}
 				return Boolean(await task.messageQueueService.addMessageDurably(text, images, requestId, assertRoute))
 			} catch (error) {
@@ -8263,6 +8480,7 @@ export class AlphaProvider
 		navigationGeneration?: number,
 		options: { underOwnership?: boolean } = {},
 	): Promise<boolean> {
+		if (this.taskSessions.isHistoryDeleting(taskId)) return false
 		const callerPublishesTranscript = navigationGeneration !== undefined
 		const generation = navigationGeneration ?? ++this.taskNavigationGeneration
 		// A nested caller already holding the ownership queue must not join an
@@ -8278,7 +8496,7 @@ export class AlphaProvider
 				if (generation !== this.taskNavigationGeneration) return false
 			}
 		}
-		if (generation !== this.taskNavigationGeneration) return false
+		if (generation !== this.taskNavigationGeneration || this.taskSessions.isHistoryDeleting(taskId)) return false
 		const previous = this.getActiveTask()
 		const task = this.taskSessions.focus(taskId)
 

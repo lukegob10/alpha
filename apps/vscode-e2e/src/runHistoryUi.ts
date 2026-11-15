@@ -1165,6 +1165,36 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 			stage: "ticket-mention-ready",
 			status: "passed",
 		})
+		await ready("chat-fork")
+		const composer = '[data-testid="chat-bottom-dock"] textarea'
+		const transcript = '[data-testid="chat-transcript-content"]'
+		const assertIdleForkComposer = async () => {
+			await check(
+				`d.querySelector('${transcript}')?.textContent.includes('The rendered navigation fixture is ready.')`,
+			)
+			await check(`d.querySelector('${composer}')?.value === '' && !d.querySelector('${composer}').disabled`)
+			const actions = await evaluate<string[]>(
+				"[...d.querySelectorAll('[data-testid=chat-bottom-dock] button')].map(button=>button.textContent.trim())",
+			)
+			assert.ok(!actions.includes("Continue") && !actions.includes("New Chat"), "A fork opened recovery actions")
+		}
+		await activateSelector('.chat-toolbar button[aria-label="Fork chat"]')
+		await check("d.querySelector('[data-testid=chat-title]')?.textContent.startsWith('Fork of ')")
+		await assertIdleForkComposer()
+		await evaluate(`d.querySelector('${composer}').focus()`)
+		await connection.request("Input.insertText", { text: "/fork Compare parser fixes" }, sessionId)
+		await activateSelector(composer)
+		await check("d.querySelector('[data-testid=chat-title]')?.textContent === 'Compare parser fixes'")
+		await assertIdleForkComposer()
+		await evaluate(`d.querySelector('${composer}').focus()`)
+		await connection.request("Input.insertText", { text: "Explore the copied context." }, sessionId)
+		await activateSelector(composer)
+		await check(`d.querySelector('${transcript}')?.textContent.includes('The fork answered the new message.')`)
+		await writeJsonAtomically(path.join(directory, "ui-done-chat-fork.json"), {
+			nonce,
+			stage: "chat-fork",
+			status: "passed",
+		})
 		const host = await running
 		assert.ok(host.evidenceManifestPath)
 		const manifest = JSON.parse(await fs.readFile(host.evidenceManifestPath, "utf8")) as { bundleSha256?: unknown }

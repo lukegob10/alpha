@@ -12074,6 +12074,44 @@ describe("Alpha", () => {
 			},
 		)
 
+		it("opens an unstarted fork as idle copied history until a new message is submitted", async () => {
+			const task = createTask()
+			task["lifecycleHookStartSource"] = "fork"
+			const savedUi = [
+				{ ts: 1, type: "say" as const, say: "task" as const, text: "The source prompt." },
+				{ ts: 2, type: "ask" as const, ask: "completion_result" as const, text: "The copied answer." },
+				{ ts: 3, type: "ask" as const, ask: "resume_task" as const },
+			]
+			const savedApi = [
+				{ role: "user" as const, content: "The source prompt.", ts: 1 },
+				{ role: "assistant" as const, content: "The copied answer.", ts: 2 },
+			]
+			vi.spyOn(task as any, "getSavedAlphaMessages").mockResolvedValue(structuredClone(savedUi))
+			vi.spyOn(task as any, "getSavedApiConversationHistory").mockResolvedValue(savedApi)
+			vi.spyOn(task as any, "reconcileInterruptedSubagentGroups").mockResolvedValue(undefined)
+			const ask = vi.spyOn(task, "ask").mockResolvedValue({ response: "noButtonClicked" })
+			const loop = vi.spyOn(task as any, "initiateTaskLoop").mockResolvedValue(undefined)
+			const completed = vi.fn()
+			const idle = vi.fn()
+			task.on(AlphaCodeEventName.TaskCompleted, completed)
+			task.on(AlphaCodeEventName.TaskIdle, idle)
+
+			await task["resumeTaskFromHistory"]()
+
+			expect(ask).not.toHaveBeenCalled()
+			expect(loop).not.toHaveBeenCalled()
+			expect(completed).not.toHaveBeenCalled()
+			expect(idle).toHaveBeenCalledExactlyOnceWith(task.taskId)
+			expect(task.isInitialized).toBe(true)
+			expect(task.isCompleted()).toBe(true)
+			expect(task.isTurnActive()).toBe(false)
+			expect(task.taskAsk).toBeUndefined()
+			expect(task["resumeRequiresExplicitInput"]).toBe(true)
+			expect(task["lifecycleHookStartConsumed"]).toBe(false)
+			expect(task.alphaMessages).toEqual([savedUi[0], { ...savedUi[1], isAnswered: true }])
+			expect(task.apiConversationHistory).toEqual(savedApi)
+		})
+
 		it("reopens a managed child through verified child finalization without a local completion ask", async () => {
 			const task = createTask("subagent")
 			const completion = { ts: 2, type: "say" as const, say: "completion_result" as const, text: "Child answer." }

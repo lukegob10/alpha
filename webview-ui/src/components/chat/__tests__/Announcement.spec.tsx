@@ -14,7 +14,7 @@ vi.mock("@src/utils/vscode", () => ({
 
 vi.mock("@alpha/package", () => ({
 	Package: {
-		version: "3.2.33",
+		version: "3.2.34",
 	},
 }))
 
@@ -35,11 +35,11 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Questions now send from the final step. Alpha also keeps completed subagent reports intact and handles long command output and task history more reliably."
+		"Fork a chat from the toolbar, history, or /fork. The new chat starts with the conversation through the last completed reply and uses the same checkout."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
-		expect(screen.getByRole("dialog", { name: "Welcome to Alpha v3.2.33" })).toHaveAccessibleDescription(
+		expect(screen.getByRole("dialog", { name: "Welcome to Alpha v3.2.34" })).toHaveAccessibleDescription(
 			description,
 		)
 	})

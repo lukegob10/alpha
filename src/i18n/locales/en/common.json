@@ -157,6 +157,7 @@
 	"errors": {
 		"custom_tools_disabled": "Enable custom tools and save settings before loading them.",
 		"completion_evidence_read_timeout": "Completion evidence could not be read within 30 seconds. Resume after the existing operation settles.",
+		"completion_evidence_changed_repeatedly": "Completion evidence kept changing during the final check. Resume after the existing operations settle.",
 		"completion_evidence_read_interrupted": "Completion was interrupted; pending user guidance and unresolved evidence are preserved.",
 		"completion_review_pending": "Worker proposals still await review. Apply or discard the pending proposals before completing; you can send guidance to continue investigating.",
 		"completed_followup_finalize_timeout": "The previous turn is still finalizing after 30 seconds. Your follow-up is preserved. Wait for the existing operation to finish, then retry.",
@@ -306,6 +307,11 @@
 		"no_changes": "No changes found.",
 		"clipboard_copy": "System prompt successfully copied to clipboard",
 		"history_cleanup": "Cleaned up {{count}} task(s) with missing files from history.",
+		"history_deleting": "Deleting selected chats…",
+		"history_delete_failed": "Alpha could not delete the selected chats. Check the Alpha output for details.",
+		"history_delete_failed_count": "Alpha could not remove {{count}} chat history record(s). You can select them again to retry.",
+		"history_delete_skipped": "Alpha skipped {{count}} selection(s) that are open or unavailable in this project. Close open chats before deleting them in bulk.",
+		"history_delete_cleanup_failed": "Some files for removed chats could not be cleaned up. Check the Alpha output for details.",
 		"custom_storage_path_set": "Custom storage path set: {{path}}",
 		"default_storage_path": "Reverted to using default storage path",
 		"settings_imported": "Settings imported successfully.",
@@ -330,6 +336,11 @@
 		"learn_more": "Learn More"
 	},
 	"tasks": {
+		"fork_title": "Fork of {{title}}",
+		"fork_invalid": "Choose a chat and use a name of up to 96 characters.",
+		"fork_empty": "Finish a reply before forking this chat.",
+		"fork_failed": "Couldn't fork this chat. Check that the source chat is available and try again.",
+		"fork_open_failed": "The fork was saved. Open it from chat history to continue.",
 		"peer_stop_request": "Stop this conversation.",
 		"peer_stop_loading": "This conversation is still loading. Retry the stop once it has loaded.",
 		"peer_stop_unavailable": "The conversation stopped or was replaced before the stop notice was recorded.",

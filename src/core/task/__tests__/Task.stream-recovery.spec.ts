@@ -29,6 +29,7 @@ import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { readApiMessages, saveApiMessages, type ApiMessage } from "../../task-persistence/apiMessages"
 import { ProviderTranscriptStoreError } from "../../task-persistence/ProviderTranscriptStore"
+import { readTaskMessages } from "../../task-persistence/taskMessages"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { commandSessionRegistry } from "../../tools/CommandSessionRegistry"
 import type { AlphaTerminalProcess } from "../../../integrations/terminal/types"
@@ -236,6 +237,7 @@ async function harness(
 		getState: async () => ({ ...live, autoCondenseContext: false, requestDelaySeconds: 0, customModes: [] }),
 		getValues: () => ({ ...live }),
 		getSkillsManager: async () => undefined,
+		updateTaskHistory: vi.fn(async () => undefined),
 		getAgentLifecycleSnapshot: () => journal.getSnapshot(),
 		replayAgentLifecycle: () => journal.replay(),
 		publishAgentLifecycleEvent: async (input: AgentLifecycleEventInput, options?: { durable?: boolean }) => ({
@@ -403,6 +405,7 @@ async function harness(
 		effectSettled: effectSettled.promise,
 		run,
 		history: () => readApiMessages({ taskId, globalStoragePath: storage }),
+		transcript: () => readTaskMessages({ taskId, globalStoragePath: storage, requireExisting: true }),
 	}
 }
 
@@ -3077,6 +3080,65 @@ describe("Task terminal receipt persistence ownership", () => {
 })
 
 describe("Task canonical response projection ownership", () => {
+	it("finishes a streamed assistant row even when reasoning arrives between its text chunks", async () => {
+		const answer = "I checked the ticket."
+		let previewTimestamp: number | undefined
+		const fixture = await harness(async function* (_attempt, task) {
+			yield { type: "reasoning", text: "Reading the request." }
+			yield { type: "text", text: "I" }
+			await task["streamingPreviewQueue"]
+			previewTimestamp = task.alphaMessages.find(({ say, text }) => say === "text" && text === "I")?.ts
+			yield { type: "reasoning", text: "The ticket is available." }
+			yield { type: "text", text: answer.slice(1) }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		vi.mocked(fixture.task.say).mockRestore()
+		vi.mocked(fixture.hooks.scheduleStreamingPreview).mockRestore()
+		vi.mocked(fixture.hooks.updateAlphaMessage).mockRestore()
+		vi.mocked(fixture.hooks.saveAlphaMessages).mockRestore()
+
+		await fixture.run()
+
+		expect(previewTimestamp).toBeDefined()
+		for (const transcript of [fixture.task.alphaMessages, await fixture.transcript()]) {
+			const assistantRows = transcript.filter(({ say }) => say === "text" || say === "completion_result")
+			expect(assistantRows.map(({ ts, text, partial }) => ({ ts, text, partial }))).toEqual([
+				{ ts: previewTimestamp, text: answer, partial: false },
+			])
+			expect(
+				transcript.some(({ say, text }) => say === "reasoning" && text?.includes("The ticket is available.")),
+			).toBe(true)
+		}
+	})
+
+	it("keeps a short commentary and the reply after a tool call as separate rows", async () => {
+		const fixture = await harness(async function* (attempt, task) {
+			if (attempt === 1) {
+				yield { type: "text", text: "I" }
+				await task["streamingPreviewQueue"]
+				yield { type: "reasoning", text: "A ticket read is needed." }
+				yield { type: "tool_call", id: "read-ticket", name: "read_file", arguments: "{}" }
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				return
+			}
+			yield { type: "text", text: "The ticket is loaded." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		vi.mocked(fixture.task.say).mockRestore()
+		vi.mocked(fixture.hooks.scheduleStreamingPreview).mockRestore()
+
+		await fixture.run()
+
+		expect(fixture.effect).toHaveBeenCalledOnce()
+		const assistantRows = fixture.task.alphaMessages.filter(
+			({ say }) => say === "text" || say === "completion_result",
+		)
+		expect(assistantRows.map(({ text, partial }) => ({ text, partial }))).toEqual([
+			{ text: "I", partial: false },
+			{ text: "The ticket is loaded.", partial: false },
+		])
+	})
+
 	it.each(
 		(["cancelled", "failed", "incomplete", "completed", "missing terminal text"] as const).flatMap((status) =>
 			(["fulfilled", "rejected"] as const).map((settlement) => ({ status, settlement })),
