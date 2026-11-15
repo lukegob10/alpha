@@ -69,7 +69,7 @@ describe("Task metadata mode ownership", () => {
 			taskHistoryStore: store,
 			taskHistoryStoreReady: Promise.resolve(),
 			taskLifecycleHistoryWrites: new Map(),
-			taskSessions: { markLifecycle: vi.fn() },
+			taskSessions: { markLifecycle: vi.fn(), isHistoryDeleting: () => false },
 			agentControlStoreReady: Promise.resolve(),
 			agentControlStore: { getAgent: () => undefined },
 			workspaceMutationGate: new WorkspaceMutationGate(),

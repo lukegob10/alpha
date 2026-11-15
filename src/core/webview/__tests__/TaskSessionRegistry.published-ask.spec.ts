@@ -18,6 +18,7 @@ function createRecoveryTask(registry: TaskSessionRegistry) {
 		taskKind: "primary",
 		workspacePath: process.cwd(),
 		abort: false,
+		taskCancellationController: new AbortController(),
 		isTaskLoopActive: false,
 		isAgentTurnEngineActive: false,
 		isWaitingForFirstChunk: false,

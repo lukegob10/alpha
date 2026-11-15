@@ -411,11 +411,16 @@ describe("FileWatcher", () => {
 		const content = "export const label = '数据😀'"
 		vi.mocked(vscode.workspace.fs.readFile).mockResolvedValueOnce(new TextEncoder().encode(content))
 		mockCacheManager.getHash.mockReturnValue(undefined)
-		await fileWatcher.processFile("/mock/workspace/state.ts")
-		expect(codeParser.parseFile).toHaveBeenCalledWith(
-			"/mock/workspace/state.ts",
-			expect.objectContaining({ content }),
-		)
+		await fileWatcher.initialize()
+		try {
+			await fileWatcher.processFile("/mock/workspace/state.ts")
+			expect(codeParser.parseFile).toHaveBeenCalledWith(
+				"/mock/workspace/state.ts",
+				expect.objectContaining({ content }),
+			)
+		} finally {
+			fileWatcher.dispose()
+		}
 	})
 
 	describe("incremental indexing regressions", () => {

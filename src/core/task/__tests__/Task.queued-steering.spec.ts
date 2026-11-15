@@ -18,6 +18,7 @@ function harness() {
 		instanceId: "queued-steering-instance",
 		taskKind: "primary",
 		abort: false,
+		taskCancellationController: new AbortController(),
 		didComplete: false,
 		isInitialized: true,
 		isTaskLoopActive: true,

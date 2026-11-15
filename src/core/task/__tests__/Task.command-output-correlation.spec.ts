@@ -3,6 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks"
 import type { AlphaMessage, ToolApprovalRequest, ToolProgressStatus } from "@alpha-code/types"
 import { consolidateCommands } from "@alpha-code/core"
 
+import { MessageQueueService } from "../../message-queue/MessageQueueService"
 import { Task } from "../Task"
 
 type SayOptions = NonNullable<Parameters<Task["say"]>[6]>
@@ -36,12 +37,13 @@ function createTask(seed: AlphaMessage[] = []) {
 		updated.push(structuredClone(message))
 	})
 	// The actual say/add methods own mutation and ordering; only storage/publication are captured.
-	const task = {
+	const task = Object.assign(Object.create(Task.prototype), {
 		taskId: "command-output-task",
 		instanceId: "primary-instance",
 		taskKind: "primary",
-		cwd: process.cwd(),
+		workspacePath: process.cwd(),
 		abort: false,
+		taskCancellationController: new AbortController(),
 		abandoned: false,
 		alphaMessages: messages,
 		apiConversationHistory: [],
@@ -60,7 +62,7 @@ function createTask(seed: AlphaMessage[] = []) {
 		getApprovalModeForAsk: Task.prototype["getApprovalModeForAsk"],
 		approvalStateForAsk: () => undefined,
 		getOffscreenAutoAskResponse: () => undefined,
-		messageQueueService: { isEmpty: () => true, releaseMessage: vi.fn(), flush: vi.fn(async () => {}) },
+		messageQueueService: new MessageQueueService(),
 		emit: vi.fn(),
 		invalidateGoalContinuation: vi.fn(),
 		cancelAutoApprovalTimeout: Task.prototype.cancelAutoApprovalTimeout,
@@ -84,7 +86,7 @@ function createTask(seed: AlphaMessage[] = []) {
 		}),
 		invalidateBackgroundUsageDrain: vi.fn(),
 		requireAlphaMessagesSaved: Task.prototype["requireAlphaMessagesSaved"],
-	} as unknown as Task
+	}) as Task
 	const output = (
 		text: string,
 		partial: boolean | undefined,

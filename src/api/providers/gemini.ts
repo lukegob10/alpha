@@ -698,15 +698,17 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					return
 				}
 
-				const admission = requestContext.client.models.generateContentStream(params).then((result) => {
-					const iterator = result[Symbol.asyncIterator]()
-					if (requestControl.signal.aborted) {
-						closeGeminiIterator(iterator)
-						requestControl.signal.throwIfAborted()
-					}
-					resultIterator = iterator
-					return iterator
-				})
+				const admission = Promise.resolve(requestContext.client.models.generateContentStream(params)).then(
+					(result) => {
+						const iterator = result[Symbol.asyncIterator]()
+						if (requestControl.signal.aborted) {
+							closeGeminiIterator(iterator)
+							requestControl.signal.throwIfAborted()
+						}
+						resultIterator = iterator
+						return iterator
+					},
+				)
 				const iterator = await awaitRequest(
 					admission,
 					`${this.providerName} stream request for ${requestContext.model}`,

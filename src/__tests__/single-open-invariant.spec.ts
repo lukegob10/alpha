@@ -262,15 +262,16 @@ describe("Task creation and navigation ownership", () => {
 		const deleteFromHistory = vi.fn().mockResolvedValue(undefined)
 		const postStateToWebview = vi.fn().mockResolvedValue(undefined)
 
-		const provider = {
+		const provider = Object.assign(Object.create(AlphaProvider.prototype), {
+			taskSessions: new TaskSessionRegistry(),
 			getLiveTask: vi.fn((taskId: string) => (taskId === "background-1" ? { taskId } : undefined)),
 			removeTaskFromStack,
 			taskHistoryStore: { delete: deleteFromHistory },
 			purgeDeletedAgentControlRoots: vi.fn().mockResolvedValue(undefined),
 			postStateToWebview,
-		} as unknown as AlphaProvider
+		}) as AlphaProvider
 
-		await (AlphaProvider.prototype as any).deleteTaskFromState.call(provider, "background-1")
+		await provider.deleteTaskFromState("background-1")
 
 		expect(removeTaskFromStack).toHaveBeenCalledWith({ taskId: "background-1" })
 		expect(deleteFromHistory).toHaveBeenCalledWith("background-1")

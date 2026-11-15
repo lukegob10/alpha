@@ -75,6 +75,7 @@ function createQuestionTask(mode: "code" | "architect", approvalMode: ApprovalMo
 		_taskMode: mode,
 		taskApprovalMode: approvalMode,
 		abort: false,
+		taskCancellationController: new AbortController(),
 		alphaMessages: [],
 		messageQueueService: new MessageQueueService(),
 		providerRef: { deref: () => provider },

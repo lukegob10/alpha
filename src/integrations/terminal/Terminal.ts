@@ -176,8 +176,8 @@ export class Terminal extends BaseTerminal {
 			this.waitForShellIntegration(process, timeoutMs)
 				.then(async (readiness) => {
 					if (readiness === "settled" || process.isSettled || process.terminalClosedSignal.aborted) {
-						// The shell can still need its startup script after a command is cancelled.
-						await process.completionObservers
+						// Termination reports observer failures. The shell may still need its startup script.
+						await process.completionObservers?.catch(() => undefined)
 						resolve()
 						return
 					}

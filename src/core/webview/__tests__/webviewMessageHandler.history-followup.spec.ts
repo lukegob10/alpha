@@ -14,6 +14,7 @@ function restoredTaskFixture() {
 		taskKind: "primary",
 		workspacePath: process.cwd(),
 		abort: false,
+		taskCancellationController: new AbortController(),
 		abandoned: false,
 		isInitialized: false,
 		_started: true,

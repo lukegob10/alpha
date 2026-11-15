@@ -569,7 +569,7 @@ export class AlphaProvider
 	private readonly incidentLaunches = new Map<string, Promise<Task>>()
 	private readonly notifiedIncidentIds = new Set<string>()
 	/** Serialize task-level status writes without deriving them from turn snapshots. */
-	private readonly taskLifecycleHistoryWrites = new Map<string, Promise<void>>()
+	private taskLifecycleHistoryWrites?: Map<string, Promise<void>>
 	/** A waiting parent receives the child's result through wait_task, so no second message is needed. */
 	private readonly independentTaskWaiters = new Map<string, number>()
 	/** Serialize retained relaunches and closes before reading or changing the agent's lifecycle. */
@@ -1153,7 +1153,7 @@ export class AlphaProvider
 	private currentTaskTodosSeq = 0
 
 	private webviewLaunched = false
-	private readonly webviewLaunchWaiters = new Set<(launched: boolean) => void>()
+	private webviewLaunchWaiters?: Set<(launched: boolean) => void>
 	public settingsImportedAt?: number
 	public readonly latestAnnouncementId = "november-2026-v3.2.34-chat-forks"
 	public readonly providerSettingsManager: ProviderSettingsManager
@@ -1691,7 +1691,7 @@ export class AlphaProvider
 
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
-		for (const finish of this.webviewLaunchWaiters) finish(false)
+		this.webviewLaunchWaiters?.forEach((finish) => finish(false))
 		const memoryStopped = this.stopMemoryServices()
 		// Cleanup joins this below; foreground cancellation must not wait for a background model.
 		void memoryStopped.catch(() => undefined)
@@ -1791,7 +1791,7 @@ export class AlphaProvider
 		await this.taskHistoryStoreReady.catch((error) => {
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
 		})
-		await Promise.all(this.taskLifecycleHistoryWrites.values())
+		if (this.taskLifecycleHistoryWrites) await Promise.all(this.taskLifecycleHistoryWrites.values())
 		await this.flushGlobalStateWriteThrough()
 		await memoryStopped
 		await this.taskHistoryStore.dispose()
@@ -6231,9 +6231,7 @@ export class AlphaProvider
 
 	set isViewLaunched(launched: boolean) {
 		this.webviewLaunched = launched
-		if (launched) {
-			for (const finish of this.webviewLaunchWaiters) finish(true)
-		}
+		if (launched) this.webviewLaunchWaiters?.forEach((finish) => finish(true))
 	}
 
 	get viewLaunched() {
@@ -6243,14 +6241,15 @@ export class AlphaProvider
 	waitForWebviewLaunch(timeoutMs: number): Promise<boolean> {
 		if (this._disposed || this.isViewLaunched) return Promise.resolve(!this._disposed)
 
+		const waiters = (this.webviewLaunchWaiters ??= new Set())
 		return new Promise((resolve) => {
 			const finish = (launched: boolean) => {
 				clearTimeout(timer)
-				this.webviewLaunchWaiters.delete(finish)
+				waiters.delete(finish)
 				resolve(launched)
 			}
 			const timer = setTimeout(() => finish(false), timeoutMs)
-			this.webviewLaunchWaiters.add(finish)
+			waiters.add(finish)
 		})
 	}
 
@@ -6430,7 +6429,8 @@ export class AlphaProvider
 						: lifecycle === TaskLifecycleState.Waiting && waitingReason === "resumable"
 							? "interrupted"
 							: "active"
-		const previous = this.taskLifecycleHistoryWrites.get(taskId) ?? Promise.resolve()
+		const historyWrites = (this.taskLifecycleHistoryWrites ??= new Map<string, Promise<void>>())
+		const previous = historyWrites.get(taskId) ?? Promise.resolve()
 		const write = previous
 			.catch(() => undefined)
 			.then(async () => {
@@ -6450,11 +6450,9 @@ export class AlphaProvider
 		const settled = write.catch((error) => {
 			this.log(`Failed to persist task lifecycle status for ${taskId}: ${String(error)}`)
 		})
-		this.taskLifecycleHistoryWrites.set(taskId, settled)
+		historyWrites.set(taskId, settled)
 		void settled.then(() => {
-			if (this.taskLifecycleHistoryWrites.get(taskId) === settled) {
-				this.taskLifecycleHistoryWrites.delete(taskId)
-			}
+			if (historyWrites.get(taskId) === settled) historyWrites.delete(taskId)
 		})
 	}
 
@@ -7902,7 +7900,7 @@ export class AlphaProvider
 			// A human resume cannot acquire this provisional runtime after that point.
 			target.beginTaskCancellation(true)
 			await this.removeTaskFromStack({ taskId: target.taskId, requireAbortSuccess: true, expectedTask: target })
-			await this.taskLifecycleHistoryWrites.get(target.taskId)
+			await this.taskLifecycleHistoryWrites?.get(target.taskId)
 			// removeTaskFromStack has released this raw-ID fence. Reacquire it only
 			// for compensation, so a rehydrated successor can never be overwritten.
 			await this.taskSessions.runOwnershipOperation(target.taskId, async () => {
@@ -8019,7 +8017,7 @@ export class AlphaProvider
 			requireAbortSuccess: true,
 			...(options.expectedTask ? { expectedTask: options.expectedTask } : {}),
 		})
-		await this.taskLifecycleHistoryWrites.get(taskId)
+		await this.taskLifecycleHistoryWrites?.get(taskId)
 		const stoppedHistory = this.taskHistoryStore.get(taskId)
 		if (stoppedHistory?.status === "completed" || stoppedHistory?.status === "failed") {
 			return { task_id: taskId, status: "already_terminal" }

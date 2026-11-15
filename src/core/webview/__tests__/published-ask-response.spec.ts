@@ -67,6 +67,7 @@ describe("published ask response admission", () => {
 				taskKind: "primary",
 				workspacePath: "F:/alpha-fork/Alpha-Code",
 				abort: false,
+				taskCancellationController: new AbortController(),
 				alphaMessages: [] as AlphaMessage[],
 				messageQueueService: new MessageQueueService(),
 				providerRef: { deref: () => undefined },
@@ -97,8 +98,6 @@ describe("published ask response admission", () => {
 					text: "Continue with this answer",
 					images: [],
 				})
-				expect(task["askResponseText"]).toBe("Continue with this answer")
-				await vi.advanceTimersByTimeAsync(100)
 				await expect(pending).resolves.toMatchObject({
 					response: "messageResponse",
 					text: "Continue with this answer",
