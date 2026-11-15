@@ -957,7 +957,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // alphaIgnoreInstructions
 		)
 
-		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/with-mcp-hub-provided.snap")
+		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/consistent-system-prompt.snap")
 	})
 
 	it("should explicitly handle undefined mcpHub", async () => {
@@ -976,7 +976,7 @@ describe("SYSTEM_PROMPT", () => {
 			undefined, // alphaIgnoreInstructions
 		)
 
-		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/with-undefined-mcp-hub.snap")
+		expect(prompt).toMatchFileSnapshot("./__snapshots__/system-prompt/consistent-system-prompt.snap")
 	})
 
 	it.each(["explore", "review", "worker"] as const)(

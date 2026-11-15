@@ -7,7 +7,6 @@ import {
 	createTokenCountContext,
 	getEffectiveApiHistory,
 	getLogicalStepStarts,
-	getToolCallResultPairs,
 	hasToolCallResultIntegrity,
 	selectRecentTail,
 	summarizeConversation,
@@ -61,151 +60,10 @@ export async function estimateTokenCount(
 /**
  * Result of truncation operation, includes the truncation ID for UI events.
  */
-export type TruncationResult = {
+type TruncationResult = {
 	messages: ApiMessage[]
 	truncationId: string
 	messagesRemoved: number
-}
-
-/**
- * Truncates a conversation by tagging messages as hidden instead of removing them.
- *
- * The first message is always retained, and a specified fraction (rounded to an even number)
- * of messages from the beginning (excluding the first) is tagged with truncationParent.
- * A truncation marker is inserted to track where truncation occurred.
- *
- * This implements non-destructive sliding window truncation, allowing messages to be
- * restored if the user rewinds past the truncation point.
- *
- * @param {ApiMessage[]} messages - The conversation messages.
- * @param {number} fracToRemove - The fraction (between 0 and 1) of messages (excluding the first) to hide.
- * @param {string} _taskId - Retained task identity argument for call compatibility.
- * @returns {TruncationResult} Object containing the tagged messages, truncation ID, and count of messages removed.
- */
-export function truncateConversation(messages: ApiMessage[], fracToRemove: number, _taskId: string): TruncationResult {
-	const truncationId = crypto.randomUUID()
-
-	// A summary is a fresh-start boundary: messages before the latest summary remain
-	// stored for rewind, but they are not visible to the API and must not consume a
-	// later truncation quota. Track original indices so tagging stays non-destructive.
-	let effectiveStartIndex = 0
-	for (let index = messages.length - 1; index >= 0; index--) {
-		if (messages[index].isSummary) {
-			effectiveStartIndex = index
-			break
-		}
-	}
-
-	const visibleIndices: number[] = []
-	messages.forEach((msg, index) => {
-		if (index >= effectiveStartIndex && !msg.truncationParent && !msg.isTruncationMarker) {
-			visibleIndices.push(index)
-		}
-	})
-
-	// Calculate how many visible messages to truncate (excluding first visible message).
-	// The even rounding is retained as the default for ordinary user/assistant
-	// turns, but tool call/result pairs are treated as indivisible units below.
-	const visibleCount = visibleIndices.length
-	const rawMessagesToRemove = Math.floor((visibleCount - 1) * fracToRemove)
-	const requestedMessagesToRemove = rawMessagesToRemove - (rawMessagesToRemove % 2)
-
-	if (requestedMessagesToRemove <= 0) {
-		// Nothing to truncate
-		return {
-			messages,
-			truncationId,
-			messagesRemoved: 0,
-		}
-	}
-
-	// Get the indices of visible messages to truncate (skip first visible, take
-	// the requested number), then remove any candidate that would split a
-	// tool_call/tool_result pair.  A pair whose two sides are both candidates is
-	// hidden together; an incomplete candidate is kept visible instead.
-	const candidateIndices = new Set(visibleIndices.slice(1, requestedMessagesToRemove + 1))
-	const indicesToTruncate = new Set(candidateIndices)
-	const pendingMailIds = getPendingAgentMailIds(messages)
-	for (const index of indicesToTruncate) {
-		const id = messages[index].agent_message_id
-		if (id && pendingMailIds.has(id)) indicesToTruncate.delete(index)
-	}
-	const visibleIndexSet = new Set(visibleIndices)
-	const firstVisibleIndex = visibleIndices[0]
-
-	for (const pair of getToolCallResultPairs(messages).values()) {
-		const pairIndices = new Set(
-			[...pair.callMessageIndexes, ...pair.resultMessageIndexes].filter((index) => visibleIndexSet.has(index)),
-		)
-		if (pairIndices.size === 0) continue
-
-		const intersectsCandidate = [...pairIndices].some((index) => candidateIndices.has(index))
-		if (!intersectsCandidate) continue
-
-		const canHideWholePair = [...pairIndices].every(
-			(index) => index !== firstVisibleIndex && indicesToTruncate.has(index),
-		)
-		if (canHideWholePair) {
-			for (const index of pairIndices) indicesToTruncate.add(index)
-		} else {
-			// Keep both sides visible when one side is outside the removable
-			// window (or is the first retained message).
-			for (const index of pairIndices) indicesToTruncate.delete(index)
-		}
-	}
-
-	if (indicesToTruncate.size === 0) {
-		return {
-			messages,
-			truncationId,
-			messagesRemoved: 0,
-		}
-	}
-
-	const messagesToRemove = indicesToTruncate.size
-
-	// Tag messages that are being "truncated" (hidden from API calls)
-	const taggedMessages = messages.map((msg, index) => {
-		if (indicesToTruncate.has(index)) {
-			return { ...msg, truncationParent: truncationId }
-		}
-		return msg
-	})
-
-	// Find the actual boundary - the index right after the last truncated
-	// message.  Pair-safe selection can leave a candidate visible, so deriving
-	// the boundary from the selected indexes avoids placing the marker in the
-	// middle of a preserved pair.
-	const lastTruncatedVisibleIndex = Math.max(...indicesToTruncate)
-	// If all visible messages except the first are truncated, insert marker at the end
-	const firstKeptVisibleIndex =
-		visibleIndices.find((index) => index > lastTruncatedVisibleIndex && !indicesToTruncate.has(index)) ??
-		taggedMessages.length
-
-	// Insert truncation marker at the actual boundary (between last truncated and first kept)
-	const firstKeptTs = messages[firstKeptVisibleIndex]?.ts ?? Date.now()
-	const truncationMarker: ApiMessage = {
-		role: "user",
-		content: `[Sliding window truncation: ${messagesToRemove} messages hidden to reduce context]`,
-		ts: firstKeptTs - 1,
-		isTruncationMarker: true,
-		truncationId,
-	}
-
-	// Insert marker at the boundary position
-	// Find where to insert: right before the first kept visible message
-	const insertPosition = firstKeptVisibleIndex
-	const result = [
-		...taggedMessages.slice(0, insertPosition),
-		truncationMarker,
-		...taggedMessages.slice(insertPosition),
-	]
-
-	return {
-		messages: result,
-		truncationId,
-		messagesRemoved: messagesToRemove,
-	}
 }
 
 /**

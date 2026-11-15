@@ -114,5 +114,3 @@ export function calculateApiCostOpenAI(
 		outputTokens,
 	)
 }
-
-export const parseApiPrice = (price: any) => (price ? parseFloat(price) * 1_000_000 : undefined)

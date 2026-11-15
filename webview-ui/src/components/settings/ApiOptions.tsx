@@ -1,14 +1,16 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
-import { useDebounce } from "react-use"
 import { VSCodeLink } from "@vscode/webview-ui-toolkit/react"
 
 import {
+	type ExtensionMessage,
+	type ModelInfo,
 	type ProviderName,
 	type OrganizationAllowList,
 	type ProviderSettings,
 	isProviderName,
 	isCuratedProvider,
 	getModelId,
+	openAiModelInfoSaneDefaults,
 	resolveModelParameterApplicability,
 } from "@alpha-code/types"
 
@@ -113,29 +115,51 @@ const ApiOptions = ({
 		}
 	}, [selectedModelId, setApiConfigurationField, apiConfiguration.apiModelId, isUnsupportedSelectedProvider])
 
-	// Debounce OpenAI connection edits until the user stops typing.
-	useDebounce(
-		() => {
-			if (selectedProvider === "openai") {
-				vscode.postMessage({
-					type: "requestOpenAiModels",
-					values: {
-						baseUrl: apiConfiguration?.openAiBaseUrl,
-						apiKey: apiConfiguration?.openAiApiKey,
-						customHeaders: {}, // Reserved for any additional headers.
-						openAiHeaders: apiConfiguration.openAiHeaders ?? {},
-					},
-				})
-			}
-		},
-		250,
-		[
-			selectedProvider,
-			apiConfiguration?.openAiBaseUrl,
-			apiConfiguration?.openAiApiKey,
-			apiConfiguration.openAiHeaders,
-		],
+	const { openAiBaseUrl, openAiApiKey, openAiHeaders } = apiConfiguration
+	const modelConnection = useMemo(
+		() =>
+			selectedProvider === "openai" && openAiBaseUrl && openAiApiKey
+				? { profileIdentity, baseUrl: openAiBaseUrl, apiKey: openAiApiKey, openAiHeaders }
+				: undefined,
+		[selectedProvider, profileIdentity, openAiBaseUrl, openAiApiKey, openAiHeaders],
 	)
+	const [modelCatalog, setModelCatalog] = useState<{
+		connection: NonNullable<typeof modelConnection>
+		models: Record<string, ModelInfo>
+	}>()
+	const openAiModels = modelCatalog?.connection === modelConnection ? (modelCatalog?.models ?? null) : null
+	useEffect(() => {
+		setModelCatalog(undefined)
+		if (!modelConnection) return
+
+		const requestId = crypto.randomUUID()
+		const receive = ({ data }: MessageEvent<ExtensionMessage>) => {
+			if (data?.type !== "openAiModels" || data.requestId !== requestId || !Array.isArray(data.openAiModels)) {
+				return
+			}
+			setModelCatalog({
+				connection: modelConnection,
+				models: Object.fromEntries(data.openAiModels.map((id) => [id, openAiModelInfoSaneDefaults])),
+			})
+		}
+		window.addEventListener("message", receive)
+		const timer = setTimeout(() => {
+			vscode.postMessage({
+				type: "requestOpenAiModels",
+				requestId,
+				values: {
+					baseUrl: modelConnection.baseUrl,
+					apiKey: modelConnection.apiKey,
+					customHeaders: {},
+					openAiHeaders: modelConnection.openAiHeaders ?? {},
+				},
+			})
+		}, 250)
+		return () => {
+			clearTimeout(timer)
+			window.removeEventListener("message", receive)
+		}
+	}, [modelConnection])
 
 	useEffect(() => {
 		if (isUnsupportedSelectedProvider) {
@@ -382,6 +406,7 @@ const ApiOptions = ({
 					{selectedProvider === "openai" && (
 						<OpenAICompatible
 							apiConfiguration={apiConfiguration}
+							models={openAiModels}
 							setApiConfigurationField={setApiConfigurationField}
 							organizationAllowList={organizationAllowList}
 							modelValidationError={modelValidationError}

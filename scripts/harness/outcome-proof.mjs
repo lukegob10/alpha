@@ -6,13 +6,11 @@ import { isDeepStrictEqual } from "node:util"
 import { require as tsRequire } from "tsx/cjs/api"
 import { readExecutionJson } from "./execution-evidence.mjs"
 
-const { projectWorkflowResult } = tsRequire("../../apps/vscode-e2e/src/campaign/extensionAdapter.ts", import.meta.url)
 const { joinProjectedEvidence } = tsRequire("../../apps/vscode-e2e/src/evidence/journalProjection.ts", import.meta.url)
 const { rejectSymlinkComponents, readBounded } = tsRequire(
 	"../../apps/vscode-e2e/src/evidence/paths.ts",
 	import.meta.url,
 )
-const { fingerprintArtifactPaths } = tsRequire("../../apps/vscode-e2e/src/campaign/liveGate.ts", import.meta.url)
 const { DEVELOPMENT_SCENARIOS } = tsRequire(
 	"../../apps/vscode-e2e/src/scenarios/developmentCatalog.ts",
 	import.meta.url,
@@ -123,6 +121,8 @@ const outcomeReasons = new Set([
 
 /** The same existing build owner used by the campaign, plus its separately captured extension.js hash. */
 export async function collectOutcomeBuild(root) {
+	// Runtime-backed helpers need the shared types built by this lane's prerequisites.
+	const { fingerprintArtifactPaths } = tsRequire("../../apps/vscode-e2e/src/campaign/liveGate.ts", import.meta.url)
 	const bundle = path.join(root, "src", "dist", "extension.js")
 	await rejectSymlinkComponents(bundle)
 	if (!positive((await stat(bundle)).size, 512 * 1024 * 1024)) throw new Error("Invalid outcome bundle")
@@ -356,6 +356,10 @@ export function outcomeProofVerdict(proofs, campaign, receipts, build) {
 				!sameIds(proof.taskIds, workflow.value.taskIds)
 			)
 				return failed("invalid_independent_workflow_result")
+			const { projectWorkflowResult } = tsRequire(
+				"../../apps/vscode-e2e/src/campaign/extensionAdapter.ts",
+				import.meta.url,
+			)
 			const projected = projectWorkflowResult(workflow.value, attempt.request, "run", receipt.runId)
 			if (projected.checkpointed || projected.result.status !== "passed")
 				return failed("failed_independent_workflow_result")

@@ -115,9 +115,6 @@ export const isLanguageLoaded = (language: string): boolean => {
 	return state.loadedLanguages.has(normalizeLanguage(language))
 }
 
-// Artificial delay for testing language loading (ms) - for testing
-const LANGUAGE_LOAD_DELAY = 0
-
 // Common languages for first-stage initialization
 const initialLanguages: BundledLanguage[] = ["shell", "log"]
 const activeThemes: BundledTheme[] = ["github-light", "github-dark"]
@@ -182,11 +179,6 @@ export const getHighlighter = async (language?: string): Promise<Highlighter> =>
 				// Create new loading promise
 				loadingPromise = (async () => {
 					try {
-						// Add artificial delay for testing if nonzero
-						if (LANGUAGE_LOAD_DELAY > 0) {
-							await new Promise((resolve) => setTimeout(resolve, LANGUAGE_LOAD_DELAY))
-						}
-
 						await instance.loadLanguage(shikilang as BundledLanguage)
 						state.loadedLanguages.add(shikilang)
 

@@ -116,6 +116,7 @@ export const ticketSearchRequestSchema = z.object({
 	type: z.literal("searchTickets"),
 	requestId: z.string().min(1).max(100),
 	query: z.string().max(200),
+	workspaceScope: z.literal(true).optional(),
 })
 export const ticketSearchResponseSchema = z.object({
 	type: z.literal("ticketSearchResults"),

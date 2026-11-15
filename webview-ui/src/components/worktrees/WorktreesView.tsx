@@ -68,7 +68,7 @@ export const WorktreesView = ({
 					break
 				}
 				case "worktreeIncludeStatus": {
-					setIncludeStatus(message.worktreeIncludeStatus)
+					if (message.requestId === undefined) setIncludeStatus(message.worktreeIncludeStatus)
 					break
 				}
 				case "worktreeResult": {

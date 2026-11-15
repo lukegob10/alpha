@@ -1152,7 +1152,8 @@ export class AlphaProvider
 	private messageQueueSeq = 0
 	private currentTaskTodosSeq = 0
 
-	public isViewLaunched = false
+	private webviewLaunched = false
+	private readonly webviewLaunchWaiters = new Set<(launched: boolean) => void>()
 	public settingsImportedAt?: number
 	public readonly latestAnnouncementId = "november-2026-v3.2.34-chat-forks"
 	public readonly providerSettingsManager: ProviderSettingsManager
@@ -1690,6 +1691,7 @@ export class AlphaProvider
 
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
+		for (const finish of this.webviewLaunchWaiters) finish(false)
 		const memoryStopped = this.stopMemoryServices()
 		// Cleanup joins this below; foreground cancellation must not wait for a background model.
 		void memoryStopped.catch(() => undefined)
@@ -1789,6 +1791,7 @@ export class AlphaProvider
 		await this.taskHistoryStoreReady.catch((error) => {
 			this.log(`TaskHistoryStore did not finish initialization before disposal: ${String(error)}`)
 		})
+		await Promise.all(this.taskLifecycleHistoryWrites.values())
 		await this.flushGlobalStateWriteThrough()
 		await memoryStopped
 		await this.taskHistoryStore.dispose()
@@ -2576,7 +2579,7 @@ export class AlphaProvider
 			}
 			if (messageType === "searchFiles") {
 				if (message.taskId !== undefined && (typeof message.taskId !== "string" || !message.taskId)) return
-				const taskId = message.taskId ?? this.getActiveTaskId()
+				const taskId = message.taskId ?? (message.workspaceScope === true ? undefined : this.getActiveTaskId())
 				const task = taskId ? this.getLiveTask(taskId) : undefined
 				if (taskId && !task) {
 					return this.postMessageToWebview({
@@ -2612,7 +2615,7 @@ export class AlphaProvider
 				if (!request.success) return
 				if (message.taskId !== undefined && (typeof message.taskId !== "string" || !message.taskId)) return
 				// Capture scope before another view or navigation can change the foreground task.
-				const taskId = message.taskId ?? this.getActiveTaskId()
+				const taskId = message.taskId ?? (request.data.workspaceScope ? undefined : this.getActiveTaskId())
 				const task = taskId ? this.getLiveTask(taskId) : undefined
 				if (taskId && !task) return failTicketSearch(request.data.requestId)
 				const cwd = task?.cwd ?? this.cwd
@@ -3832,6 +3835,7 @@ export class AlphaProvider
 
 			const taskIds = [...selected.keys()]
 			return this.taskSessions.runHistoryDeletion(taskIds, async () => {
+				await this.joinTaskLifecycleHistoryWrites(taskIds)
 				try {
 					await history.deleteMany(taskIds, { storageBasePath })
 				} catch (error) {
@@ -3863,6 +3867,13 @@ export class AlphaProvider
 				return { failed, skipped, cleanupFailed: !cleanupSucceeded || blockedCleanup.size > 0 }
 			})
 		})
+	}
+
+	private async joinTaskLifecycleHistoryWrites(taskIds: readonly string[]): Promise<void> {
+		const peers = this.getHostProviders()
+		for (const taskId of taskIds) {
+			await Promise.all(peers.map((peer) => peer.taskLifecycleHistoryWrites?.get(taskId)))
+		}
 	}
 
 	private async publishDeletedTaskHistory(taskIds: readonly string[]): Promise<void> {
@@ -3966,31 +3977,25 @@ export class AlphaProvider
 				await collectChildIds(id)
 			}
 
-			// Close any live task instances, including background tasks. History deletion
-			// alone must not leave a live session counted against the max task limit.
-			for (const taskId of allIdsToDelete) {
-				if (this.getLiveTask(taskId)) {
-					const owner = this.getTaskOwner(taskId) ?? this
-					await this.removeTaskFromStack({ taskId })
-					await owner.taskLifecycleHistoryWrites?.get(taskId)
-				}
-			}
-			// Delete all tasks from state in one batch
 			const storageBasePath = await getStorageBasePath(this.contextProxy.globalStorageUri.fsPath)
-			await this.taskHistoryStore.deleteMany(allIdsToDelete, { storageBasePath })
-			this.recentTasksCache = undefined
-			// The agent-control ledger intentionally retains audit evidence while
-			// task history exists. Purge it only after authoritative history deletion
-			// succeeds so a failed delete cannot leave a surviving task without its
-			// audit trail.
-			await this.purgeDeletedAgentControlRoots(allIdsToDelete)
+			await this.taskSessions.runHistoryDeletion(allIdsToDelete, async () => {
+				// Close all owners before deleting history, including background sessions.
+				for (const taskId of allIdsToDelete) {
+					if (this.getLiveTask(taskId)) await this.removeTaskFromStack({ taskId })
+				}
+				await this.joinTaskLifecycleHistoryWrites(allIdsToDelete)
+				await this.taskHistoryStore.deleteMany(allIdsToDelete, { storageBasePath })
+				this.recentTasksCache = undefined
+				// Retain agent-control evidence until the authoritative deletion succeeds.
+				await this.purgeDeletedAgentControlRoots(allIdsToDelete)
 
-			await this.cleanDeletedTaskFiles(
-				allIdsToDelete,
-				new Map(),
-				storageBasePath,
-				historyItem.workspace || this.cwd,
-			)
+				await this.cleanDeletedTaskFiles(
+					allIdsToDelete,
+					new Map(),
+					storageBasePath,
+					historyItem.workspace || this.cwd,
+				)
+			})
 
 			await this.postStateToWebview()
 		} catch (error) {
@@ -4004,12 +4009,13 @@ export class AlphaProvider
 	}
 
 	async deleteTaskFromState(id: string) {
-		if (this.getLiveTask(id)) {
-			await this.removeTaskFromStack({ taskId: id })
-		}
-		await this.taskHistoryStore.delete(id)
-		this.recentTasksCache = undefined
-		await this.purgeDeletedAgentControlRoots([id])
+		await this.taskSessions.runHistoryDeletion([id], async () => {
+			if (this.getLiveTask(id)) await this.removeTaskFromStack({ taskId: id })
+			await this.joinTaskLifecycleHistoryWrites([id])
+			await this.taskHistoryStore.delete(id)
+			this.recentTasksCache = undefined
+			await this.purgeDeletedAgentControlRoots([id])
+		})
 
 		await this.postStateToWebview()
 	}
@@ -6066,7 +6072,8 @@ export class AlphaProvider
 	private scheduleGlobalStateWriteThrough(): void {
 		if (this._disposed) return
 		if (this.globalStateWriteThroughTimer) {
-			clearTimeout(this.globalStateWriteThroughTimer)
+			this.globalStateWriteThroughTimer.refresh()
+			return
 		}
 
 		this.globalStateWriteThroughTimer = setTimeout(() => {
@@ -6218,8 +6225,33 @@ export class AlphaProvider
 		return this._workspaceTracker
 	}
 
+	get isViewLaunched() {
+		return this.webviewLaunched
+	}
+
+	set isViewLaunched(launched: boolean) {
+		this.webviewLaunched = launched
+		if (launched) {
+			for (const finish of this.webviewLaunchWaiters) finish(true)
+		}
+	}
+
 	get viewLaunched() {
 		return this.isViewLaunched
+	}
+
+	waitForWebviewLaunch(timeoutMs: number): Promise<boolean> {
+		if (this._disposed || this.isViewLaunched) return Promise.resolve(!this._disposed)
+
+		return new Promise((resolve) => {
+			const finish = (launched: boolean) => {
+				clearTimeout(timer)
+				this.webviewLaunchWaiters.delete(finish)
+				resolve(launched)
+			}
+			const timer = setTimeout(() => finish(false), timeoutMs)
+			this.webviewLaunchWaiters.add(finish)
+		})
 	}
 
 	get messages() {
@@ -6387,6 +6419,7 @@ export class AlphaProvider
 		lifecycle: TaskLifecycleState,
 		waitingReason?: string,
 	): void {
+		if (this.taskSessions.isHistoryDeleting(taskId) && !this.getLiveTask(taskId)) return
 		const historyStatus: NonNullable<HistoryItem["status"]> =
 			lifecycle === TaskLifecycleState.Completed
 				? "completed"
@@ -8526,6 +8559,10 @@ export class AlphaProvider
 			this.log(`[focusTask] Background state refresh failed: ${String(error)}`)
 		})
 		return true
+	}
+
+	public getNewTaskDraftMode(): Mode {
+		return this.newTaskDraftMode
 	}
 
 	private resetNewTaskDraftMode(): void {

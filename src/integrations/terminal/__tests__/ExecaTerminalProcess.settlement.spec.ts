@@ -326,7 +326,6 @@ describe("ExecaTerminalProcess physical settlement", () => {
 				expect(continued).toHaveBeenCalledOnce()
 				expect(escapedRunFailure).not.toHaveBeenCalled()
 				expect(command.isSettled).toBe(true)
-				expect(command.isHot).toBe(false)
 				expect(terminal.process).toBeUndefined()
 				expect(terminal.running).toBe(false)
 				expect(terminal.busy).toBe(false)

@@ -72,7 +72,9 @@ export class FileContextTracker {
 
 			// A watcher event has no writer identity. Conservatively retain it rather than
 			// letting an unmatched Alpha-write marker acknowledge an external change.
-			void this.trackFileContext(filePath, "user_edited")
+			void this.trackFileContext(filePath, "user_edited").catch((error) =>
+				console.error("Failed to track workspace file change:", error),
+			)
 		}
 		watcher.onDidCreate(onFileEvent)
 		watcher.onDidChange(onFileEvent)
@@ -357,15 +359,20 @@ export class FileContextTracker {
 		return files
 	}
 
-	// Disposes all file watchers
-	dispose(): void {
-		if (this.disposed) return
-		this.disposed = true
-		this.pendingMetadataUpdate = undefined
-		for (const watcher of this.fileWatchers.values()) {
-			watcher.dispose()
+	async dispose(): Promise<void> {
+		try {
+			if (!this.disposed) {
+				this.disposed = true
+				this.pendingMetadataUpdate = undefined
+				for (const watcher of this.fileWatchers.values()) {
+					watcher.dispose()
+				}
+				this.fileWatchers.clear()
+			}
+		} finally {
+			// Task storage can be removed as soon as disposal settles.
+			await this.metadataUpdateQueue
 		}
-		this.fileWatchers.clear()
 	}
 }
 

@@ -634,10 +634,6 @@ export const runTaskInVscode = async ({
 				})
 				if (effectOwnerClosed()) return
 
-				await updateTask(task.id, { taskMetricsId: taskMetrics.id, startedAt: new Date() })
-				if (effectOwnerClosed()) return
-
-				taskStartedAt = Date.now()
 				taskMetricsId = taskMetrics.id
 			}
 
@@ -763,9 +759,13 @@ export const runTaskInVscode = async ({
 			throw costAccountingFailure
 		}
 
-		// Execution completion precedes the separate grading/trial-finalization boundary in processTask.
+		// Only the runner may link its metrics to the shared task row. The event
+		// queue can be abandoned on cancellation or timeout and owns only its metrics row.
 		logger.info("setting task finished at")
-		await updateTask(task.id, { finishedAt: new Date() })
+		await updateTask(task.id, {
+			finishedAt: new Date(),
+			...(taskMetricsId === undefined ? {} : { taskMetricsId, startedAt: new Date(taskStartedAt) }),
+		})
 
 		if (alphaTaskId && !isClientDisconnected) {
 			logger.info("closing task")

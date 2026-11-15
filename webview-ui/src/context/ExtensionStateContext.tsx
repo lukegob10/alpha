@@ -17,7 +17,6 @@ import {
 	type AlphaMessage,
 	type LiveTaskMetadata,
 	type SkillMetadata,
-	type Command,
 	type McpServer,
 	DEFAULT_CHECKPOINT_TIMEOUT_SECONDS,
 	DEFAULT_POST_TURN_CONDENSE_CONTEXT_PERCENT,
@@ -53,7 +52,6 @@ export interface ExtensionStateContextType extends ExtensionState {
 	currentTaskTodos?: TodoItem[] // Initial todos for the current task
 	filePaths: string[]
 	openedTabs: Array<{ label: string; isActive: boolean; path?: string }>
-	commands: Command[]
 	hasOpenedModeSelector: boolean // New property to track if user has opened mode selector
 	setHasOpenedModeSelector: (value: boolean) => void // Setter for the new property
 	alwaysAllowFollowupQuestions: boolean // New property for follow-up questions auto-approve
@@ -585,7 +583,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const [theme, setTheme] = useState<any>(undefined)
 	const [filePaths, setFilePaths] = useState<string[]>([])
 	const [openedTabs, setOpenedTabs] = useState<Array<{ label: string; isActive: boolean; path?: string }>>([])
-	const [commands, setCommands] = useState<Command[]>([])
 	const [mcpServers, setMcpServers] = useState<McpServer[]>([])
 	const [currentCheckpoint, setCurrentCheckpoint] = useState<string>()
 	const [alwaysAllowFollowupQuestions, setAlwaysAllowFollowupQuestions] = useState(false) // Add state for follow-up questions auto-approve
@@ -881,10 +878,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 					setOpenedTabs(tabs)
 					break
 				}
-				case "commands": {
-					setCommands(message.commands ?? [])
-					break
-				}
 				case "messageUpdated": {
 					const alphaMessage = message.alphaMessage
 					if (!alphaMessage) break
@@ -1065,7 +1058,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 		currentCheckpoint,
 		filePaths,
 		openedTabs,
-		commands,
 		soundVolume: state.soundVolume,
 		writeDelayMs: state.writeDelayMs,
 		profileThresholds: state.profileThresholds ?? EMPTY_PROFILE_THRESHOLDS,

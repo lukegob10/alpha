@@ -23,7 +23,7 @@ async function initializeZsh(env: Record<string, string>): Promise<string> {
 		resolveScript(Buffer.from(content).toString("utf8"))
 	})
 
-	ShellIntegrationManager.zshInitTmpDir(env)
+	await ShellIntegrationManager.zshInitTmpDir(env)
 	return script
 }
 
@@ -59,5 +59,22 @@ describe("ShellIntegrationManager Alpha environment", () => {
 		expect(env).toEqual({})
 		expect(script).toContain("ZDOTDIR=${ALPHA_ZDOTDIR:-$HOME}")
 		expect(script).toContain('[ "$ZDOTDIR" = "$HOME" ] && unset ZDOTDIR')
+	})
+
+	it("does not return the startup directory while writing .zshrc", async () => {
+		let finishWrite!: () => void
+		const writeGate = new Promise<void>((resolve) => (finishWrite = resolve))
+		vi.mocked(vscode.workspace.fs.writeFile).mockReturnValue(writeGate)
+		const prepared = vi.fn()
+		const directory = ShellIntegrationManager.zshInitTmpDir({}).then(prepared)
+		await Promise.resolve()
+		try {
+			expect(vscode.workspace.fs.writeFile).toHaveBeenCalledOnce()
+			expect(prepared).not.toHaveBeenCalled()
+		} finally {
+			finishWrite()
+			await directory
+		}
+		expect(prepared).toHaveBeenCalledWith(expect.stringContaining("alpha-zdotdir-"))
 	})
 })

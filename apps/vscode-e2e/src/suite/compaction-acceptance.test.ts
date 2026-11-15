@@ -470,7 +470,12 @@ suite("Alpha native compaction acceptance", function () {
 						() => {
 							const task = provider.getLiveTask(taskId)
 							if (task?.taskAsk?.ask === "completion_result") task.approveAsk()
-							return completions.filter((id) => id === taskId).length === turn
+							// The completion event can precede the loop's terminal journal flush.
+							return (
+								completions.filter((id) => id === taskId).length === turn &&
+								task?.isTaskLoopActive === false &&
+								provider.getAgentLifecycleSnapshot(taskId)?.status === "completed"
+							)
 						},
 						{ timeout: 30_000, description: `small-window turn ${turn} to settle` },
 					)

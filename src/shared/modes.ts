@@ -1,5 +1,3 @@
-import type * as vscode from "vscode"
-
 import {
 	type GroupEntry,
 	type ModeConfig,
@@ -67,14 +65,6 @@ export function getModeBySlug(slug: string, customModes?: ModeConfig[]): ModeCon
 	}
 	// Then check built-in modes
 	return modes.find((mode) => mode.slug === slug)
-}
-
-export function getModeConfig(slug: string, customModes?: ModeConfig[]): ModeConfig {
-	const mode = getModeBySlug(slug, customModes)
-	if (!mode) {
-		throw new Error(`No mode found for slug: ${slug}`)
-	}
-	return mode
 }
 
 // Get all available modes, with custom modes overriding built-in modes
@@ -178,62 +168,3 @@ export const defaultPrompts: Readonly<CustomModePrompts> = Object.freeze(
 		]),
 	),
 )
-
-// Helper function to get all modes with their prompt overrides from extension state
-export async function getAllModesWithPrompts(context: vscode.ExtensionContext): Promise<ModeConfig[]> {
-	const customModes = (await context.globalState.get<ModeConfig[]>("customModes")) || []
-	const customModePrompts = (await context.globalState.get<CustomModePrompts>("customModePrompts")) || {}
-
-	const allModes = getAllModes(customModes)
-	return allModes.map((mode) => {
-		if (mode.slug === planModeSlug) return mode
-
-		return {
-			...mode,
-			roleDefinition: customModePrompts[mode.slug]?.roleDefinition ?? mode.roleDefinition,
-			whenToUse: customModePrompts[mode.slug]?.whenToUse ?? mode.whenToUse,
-			customInstructions: customModePrompts[mode.slug]?.customInstructions ?? mode.customInstructions,
-			// description is not overridable via customModePrompts, so we keep the original
-		}
-	})
-}
-
-// Helper function to safely get role definition
-export function getRoleDefinition(modeSlug: string, customModes?: ModeConfig[]): string {
-	const mode = getModeBySlug(modeSlug, customModes)
-	if (!mode) {
-		console.warn(`No mode found for slug: ${modeSlug}`)
-		return ""
-	}
-	return mode.roleDefinition
-}
-
-// Helper function to safely get description
-export function getDescription(modeSlug: string, customModes?: ModeConfig[]): string {
-	const mode = getModeBySlug(modeSlug, customModes)
-	if (!mode) {
-		console.warn(`No mode found for slug: ${modeSlug}`)
-		return ""
-	}
-	return mode.description ?? ""
-}
-
-// Helper function to safely get whenToUse
-export function getWhenToUse(modeSlug: string, customModes?: ModeConfig[]): string {
-	const mode = getModeBySlug(modeSlug, customModes)
-	if (!mode) {
-		console.warn(`No mode found for slug: ${modeSlug}`)
-		return ""
-	}
-	return mode.whenToUse ?? ""
-}
-
-// Helper function to safely get custom instructions
-export function getCustomInstructions(modeSlug: string, customModes?: ModeConfig[]): string {
-	const mode = getModeBySlug(modeSlug, customModes)
-	if (!mode) {
-		console.warn(`No mode found for slug: ${modeSlug}`)
-		return ""
-	}
-	return mode.customInstructions ?? ""
-}

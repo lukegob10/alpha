@@ -1069,6 +1069,8 @@ interface WebviewMessageBase {
 		| "startDebuggingTask"
 	text?: string
 	taskId?: string
+	/** Scope a composer lookup to the workspace draft during a task transition. */
+	workspaceScope?: true
 	/** Guard Stop and direct steering against a successor turn. */
 	expectedTurnId?: string
 	parentTaskId?: string

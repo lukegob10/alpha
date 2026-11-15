@@ -4,6 +4,8 @@ import type {
 	ParentVerificationSummary,
 } from "@alpha-code/types"
 
+import { t } from "../../i18n"
+
 const STATUS_PRIORITY: Record<ParentVerificationStatus, number> = {
 	failed: 0,
 	pending: 1,
@@ -157,6 +159,13 @@ export function decideParentCompletion(
 		.sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
 		.map((item) => structuredClone(item))
 	if (blockingObligations.length === 0) return { allowed: true, blockingObligations: [] }
+	if (blockingObligations.some((item) => item.scopeUnresolved)) {
+		return {
+			allowed: false,
+			blockingObligations,
+			message: t("common:errors.completion_mutation_scope_unavailable"),
+		}
+	}
 
 	const details = blockingObligations.map((item) => {
 		const worker = item.workerPath ? `${item.workerNickname} (${item.workerPath})` : item.workerNickname
@@ -170,13 +179,9 @@ export function decideParentCompletion(
 		message:
 			`Cannot complete while ${count} applied change set${count === 1 ? "" : "s"} ` +
 			`await${count === 1 ? "s" : ""} review or effect settlement. ` +
-			(blockingObligations.some((item) => item.scopeUnresolved)
-				? "Validation is unavailable because the mutation scope could not be captured. Report the completed work and this missing evidence as an explicit blocked/unverified outcome. "
-				: blockingObligations.some((item) => item.mutationReservations?.length)
-					? "An admitted mutation still needs its durable content receipt. Let the runtime settle that receipt before completing. "
-					: blockingObligations.some((item) => !isPrimaryObligation(item))
-						? "An applied Worker record lacks an approved review or durable effect receipt. Resolve that ledger state before completing. "
-						: "Resolve the parent-owned workspace receipt before completing. ") +
+			(blockingObligations.some((item) => item.mutationReservations?.length)
+				? "An admitted mutation still needs its durable content receipt. Let the runtime settle that receipt before completing. "
+				: "An applied Worker record lacks an approved review or durable effect receipt. Resolve that ledger state before completing. ") +
 			`Needs attention: ${details.join("; ")}.`,
 	}
 }

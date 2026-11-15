@@ -93,7 +93,6 @@ export interface AlphaTerminalProcess extends EventEmitter<AlphaTerminalProcessE
 	command: string
 	/** Host proof used to reject automatic replay after a terminal observation failure. */
 	readonly hasSubmittedCommand?: boolean
-	isHot: boolean
 	/** True only after the process emitted its terminal completed/error event. */
 	isSettled?: boolean
 	/** Completed observers and output persistence have released their ownership. */

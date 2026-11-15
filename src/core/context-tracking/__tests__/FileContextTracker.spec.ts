@@ -345,7 +345,7 @@ describe("FileContextTracker watcher ownership", () => {
 		tracker.dispose()
 	})
 
-	it("does not create a watcher when an in-flight save settles after disposal", async () => {
+	it("waits for an admitted save before disposal settles and creates no watcher afterward", async () => {
 		const tracker = createTracker()
 		let releaseSave!: () => void
 		let markSaveStarted!: () => void
@@ -361,9 +361,15 @@ describe("FileContextTracker watcher ownership", () => {
 		})
 		const tracking = tracker.trackFileContext("src/one.ts", "read_tool")
 		await saveStarted
-		tracker.dispose()
-		releaseSave()
-		await tracking
+		const complete = vi.fn()
+		const disposal = Promise.resolve(tracker.dispose()).then(complete)
+		try {
+			await Promise.resolve()
+			expect(complete).not.toHaveBeenCalled()
+		} finally {
+			releaseSave()
+			await Promise.all([tracking, disposal])
+		}
 
 		expect(vscode.workspace.createFileSystemWatcher).not.toHaveBeenCalled()
 	})

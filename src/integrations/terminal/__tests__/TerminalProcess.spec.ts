@@ -112,20 +112,34 @@ describe("TerminalProcess", () => {
 			}
 		})
 
-		it("settles initialization failure before run without submitting a command", () => {
+		it("waits for completion observers when initialization fails before launch", async () => {
 			const process = new TerminalProcess(mockTerminalInfo)
-			const completed = vi.fn()
+			let finishObserver!: () => void
+			const observer = new Promise<void>((resolve) => (finishObserver = resolve))
+			const completed = vi.fn(() => observer)
 			const continued = vi.fn()
 			process.on("completed", completed)
 			process.on("continue", continued)
 
-			process.emit("no_shell_integration", "Shell initialization failed")
-
+			const running = process.completeShellIntegrationFailure("Shell initialization failed")
+			await Promise.resolve()
 			expect(completed).toHaveBeenCalledExactlyOnceWith("<no shell integration>")
+			expect(continued).not.toHaveBeenCalled()
+			finishObserver()
+			await running
 			expect(continued).toHaveBeenCalledOnce()
 			expect(process.hasSubmittedCommand).toBe(false)
 			expect(mockTerminal.shellIntegration.executeCommand).not.toHaveBeenCalled()
 			expect(mockTerminal.sendText).not.toHaveBeenCalled()
+		})
+
+		it("passes a rejected fallback completion observer back to the caller", async () => {
+			const process = new TerminalProcess(mockTerminalInfo)
+			const error = new Error("Completion could not be published")
+			process.on("completed", async () => {
+				throw error
+			})
+			await expect(process.completeShellIntegrationFailure("Shell initialization failed")).rejects.toBe(error)
 		})
 
 		it.each(
@@ -252,7 +266,6 @@ describe("TerminalProcess", () => {
 			await runPromise
 
 			expect(lines).toEqual(["Initial output", "More output", "Final output"])
-			expect(terminalProcess.isHot).toBe(false)
 		})
 
 		it("handles terminals without shell integration", async () => {
@@ -301,42 +314,34 @@ describe("TerminalProcess", () => {
 			consoleWarnSpy.mockRestore()
 		})
 
-		it("sets hot state for compiling commands", async () => {
-			let lines: string[] = []
-
-			terminalProcess.on("completed", (output) => {
-				if (output) {
-					lines = output.split("\n")
-				}
-			})
-
-			const completePromise = new Promise<void>((resolve) => {
-				terminalProcess.on("shell_execution_complete", () => resolve())
-			})
-
+		it("streams a burst of output without scheduling timeouts for the chunks", async () => {
+			const schedule = vi.spyOn(globalThis, "setTimeout")
+			const completed = vi.fn()
+			terminalProcess.on("completed", completed)
+			const chunks = Array.from({ length: 1_000 }, (_, index) => `compiling ${index}\n`)
+			let outputTimeoutCount = 0
 			mockStream = (async function* () {
-				yield "\x1b]633;C\x07" // The first chunk contains the command start sequence with bell character.
-				yield "compiling...\n"
-				yield "still compiling...\n"
-				yield "done"
-				yield "\x1b]633;D\x07" // The last chunk contains the command end sequence with bell character.
+				yield "\x1b]633;C\x07"
+				const countBeforeOutput = schedule.mock.calls.length
+				yield* chunks
+				outputTimeoutCount = schedule.mock.calls.length - countBeforeOutput
+				yield "\x1b]633;D\x07"
 				terminalProcess.emit("shell_execution_complete", { exitCode: 0 })
 			})()
-
 			mockTerminal.shellIntegration.executeCommand.mockReturnValue({
 				read: vi.fn().mockReturnValue(mockStream),
 			})
 
-			const runPromise = terminalProcess.run("npm run build")
-			terminalProcess.emit("stream_available", mockStream)
+			try {
+				const run = terminalProcess.run("npm run build")
+				terminalProcess.emit("stream_available", mockStream)
+				await run
 
-			expect(terminalProcess.isHot).toBe(true)
-			await runPromise
-
-			expect(lines).toEqual(["compiling...", "still compiling...", "done"])
-
-			await completePromise
-			expect(terminalProcess.isHot).toBe(false)
+				expect(completed).toHaveBeenCalledExactlyOnceWith(chunks.join(""))
+				expect(outputTimeoutCount).toBe(0)
+			} finally {
+				schedule.mockRestore()
+			}
 		})
 	})
 
@@ -491,7 +496,6 @@ describe("TerminalProcess", () => {
 					expect(observed.onShellExecutionComplete).toHaveBeenCalledTimes(reportedExit ? 1 : 0)
 					expect(observed.onOutputClosed).toHaveBeenCalledOnce()
 					expect(running.isOutputFinalized).toBe(true)
-					expect(running.isHot).toBe(false)
 					expect(mockTerminalInfo.running).toBe(false)
 					expect(mockTerminalInfo.busy).toBe(false)
 					expect(mockTerminalInfo.process).toBeUndefined()

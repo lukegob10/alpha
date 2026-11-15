@@ -431,6 +431,53 @@ describe("ChatTextArea", () => {
 				expect(defaultProps.onSend).not.toHaveBeenCalled()
 			},
 		)
+		it("retires a ticket lookup when the caret moves to a different mention", async () => {
+			vi.useFakeTimers()
+			try {
+				function Composer() {
+					const [value, setValue] = useState("")
+					return <ChatTextArea {...defaultProps} inputValue={value} setInputValue={setValue} />
+				}
+				render(<Composer />)
+				const textarea = screen.getByRole<HTMLTextAreaElement>("textbox")
+				const value = "@ticket:alpha @ticket:beta"
+				fireEvent.change(textarea, { target: { value, selectionStart: value.length } })
+				await act(() => vi.advanceTimersByTimeAsync(50))
+				const request = mockPostMessage.mock.calls.findLast(([message]) => message.type === "searchTickets")![0]
+				expect(request).toMatchObject({ query: "beta", workspaceScope: true })
+
+				textarea.setSelectionRange(13, 13)
+				fireEvent.keyUp(textarea, { key: "ArrowLeft" })
+				act(() => {
+					window.dispatchEvent(
+						new MessageEvent("message", {
+							data: {
+								type: "ticketSearchResults",
+								ticketSearch: {
+									type: "ticketSearchResults",
+									requestId: request.requestId,
+									tickets: [
+										{
+											id: "c884cae0-8e51-41eb-93e8-71d384f03602",
+											name: "Beta result",
+											reference: "PM-01",
+											status: "backlog",
+											updatedAt: "2026-11-10T00:00:00Z",
+										},
+									],
+								},
+							},
+						}),
+					)
+				})
+				expect(screen.queryByRole("option", { name: /Beta result/ })).not.toBeInTheDocument()
+				fireEvent.keyDown(textarea, { key: "Enter" })
+				expect(textarea).toHaveValue(value)
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("leaves ticket search when the input switches to slash commands", () => {
 			const { container } = render(<ChatTextArea {...defaultProps} />)
 			const textarea = container.querySelector("textarea")!
@@ -771,6 +818,81 @@ describe("ChatTextArea", () => {
 	})
 
 	describe("file search debounce", () => {
+		it("keeps one scheduled wake through a typing burst and searches after the final keystroke", () => {
+			vi.useFakeTimers()
+			const schedule = vi.spyOn(globalThis, "setTimeout")
+			try {
+				const { container, rerender } = render(<ChatTextArea {...defaultProps} inputValue="" />)
+				const textarea = container.querySelector("textarea")!
+				for (let length = 2; length <= 11; length++) {
+					const inputValue = "@abcdefghij".slice(0, length)
+					fireEvent.change(textarea, { target: { value: inputValue, selectionStart: length } })
+					rerender(<ChatTextArea {...defaultProps} inputValue={inputValue} />)
+					if (length < 11) act(() => vi.advanceTimersByTime(10))
+				}
+
+				expect(schedule.mock.calls.filter(([, delay]) => delay === 200)).toHaveLength(1)
+				act(() => vi.advanceTimersByTime(199))
+				expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "searchFiles" }))
+				act(() => vi.advanceTimersByTime(1))
+				expect(mockPostMessage.mock.calls.filter(([message]) => message.type === "searchFiles")).toEqual([
+					[expect.objectContaining({ query: "abcdefghij" })],
+				])
+			} finally {
+				schedule.mockRestore()
+				vi.useRealTimers()
+			}
+		})
+
+		it("shows only current file results across typing and a switch to New Chat", () => {
+			vi.useFakeTimers()
+			try {
+				function Composer({ taskId }: { taskId?: string }) {
+					const [value, setValue] = useState("")
+					return (
+						<ChatTextArea
+							{...defaultProps}
+							inputValue={taskId ? value : ""}
+							setInputValue={setValue}
+							conversationAlphaMessages={[]}
+							conversationTaskId={taskId}
+						/>
+					)
+				}
+				const lastSearch = () =>
+					mockPostMessage.mock.calls.findLast(([message]) => message.type === "searchFiles")![0]
+				const reply = (requestId: string, path: string) =>
+					act(() => {
+						window.dispatchEvent(
+							new MessageEvent("message", {
+								data: { type: "fileSearchResults", requestId, results: [{ path, type: "file" }] },
+							}),
+						)
+					})
+				const view = render(<Composer taskId="task-a" />)
+				const textarea = screen.getByRole("textbox")
+				fireEvent.change(textarea, { target: { value: "@apple", selectionStart: 6 } })
+				act(() => vi.advanceTimersByTime(200))
+				const first = lastSearch()
+				expect(first).toMatchObject({ taskId: "task-a", query: "apple" })
+				reply(first.requestId, "apple.txt")
+				expect(screen.getByRole("option", { name: /apple\.txt/ })).toBeInTheDocument()
+
+				fireEvent.change(textarea, { target: { value: "@banana", selectionStart: 7 } })
+				reply(first.requestId, "apple.txt")
+				expect(screen.queryByRole("option", { name: /apple\.txt/ })).not.toBeInTheDocument()
+				act(() => vi.advanceTimersByTime(200))
+				const second = lastSearch()
+				expect(second.requestId).not.toBe(first.requestId)
+				view.rerender(<Composer />)
+				reply(second.requestId, "banana.txt")
+				expect(textarea).toHaveValue("")
+				expect(screen.queryByRole("option", { name: /banana\.txt/ })).not.toBeInTheDocument()
+			} finally {
+				vi.useRealTimers()
+			}
+		})
+
 		it("cancels a pending search when the mention is cleared", () => {
 			vi.useFakeTimers()
 			try {
@@ -1648,18 +1770,55 @@ describe("ChatTextArea", () => {
 			{ name: "test-command", source: "project", description: "Test command with dash" },
 		]
 
-		beforeEach(() => {
-			;(useExtensionState as import("vitest").Mock).mockReturnValue({
-				filePaths: [],
-				openedTabs: [],
-				taskHistory: [],
-				cwd: "/test/workspace",
-				commands: mockCommands,
+		function Composer({ taskId }: { taskId?: string }) {
+			const [value, setValue] = useState("")
+			return (
+				<ChatTextArea
+					{...defaultProps}
+					inputValue={value}
+					setInputValue={setValue}
+					conversationAlphaMessages={[]}
+					conversationTaskId={taskId}
+				/>
+			)
+		}
+
+		const requests = () => mockPostMessage.mock.calls.filter(([message]) => message.type === "requestCommands")
+		const receive = (requestId: string, commands: typeof mockCommands) =>
+			act(() => {
+				window.dispatchEvent(new MessageEvent("message", { data: { type: "commands", requestId, commands } }))
 			})
+		const renderCommandDraft = (value: string) => {
+			const view = render(<Composer />)
+			const textarea = screen.getByRole("textbox")
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+			receive(requests().at(-1)![0].requestId, mockCommands)
+			fireEvent.change(textarea, { target: { value, selectionStart: value.length } })
+			return view
+		}
+
+		it("filters one catalog locally and ignores the previous chat's replies", () => {
+			const view = render(<Composer taskId="task-a" />)
+			const textarea = screen.getByRole("textbox")
+			fireEvent.change(textarea, { target: { value: "/", selectionStart: 1 } })
+			fireEvent.change(textarea, { target: { value: "/test", selectionStart: 5 } })
+			expect(requests()).toHaveLength(1)
+			const [first] = requests()[0]
+			expect(first).toMatchObject({ taskId: "task-a", requestId: expect.any(String) })
+
+			view.rerender(<Composer taskId="task-b" />)
+			const [current] = requests().at(-1)!
+			expect(current).toMatchObject({ taskId: "task-b", requestId: expect.any(String) })
+			receive(first.requestId, [mockCommands[2]])
+			expect(screen.queryByRole("option", { name: /test-command/ })).not.toBeInTheDocument()
+
+			receive(current.requestId, [{ name: "test-current", source: "project", description: "Current command" }])
+			receive(first.requestId, [])
+			expect(screen.getByRole("option", { name: /test-current/ })).toBeInTheDocument()
 		})
 
 		it("should highlight valid slash commands", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/setup the project" />)
+			const { getByTestId } = renderCommandDraft("/setup the project")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1670,7 +1829,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should not highlight invalid slash commands", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/invalid command" />)
+			const { getByTestId } = renderCommandDraft("/invalid command")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1684,7 +1843,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should highlight only the command portion, not arguments", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/deploy to production" />)
+			const { getByTestId } = renderCommandDraft("/deploy to production")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1699,7 +1858,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should handle commands with dashes and underscores", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/test-command with args" />)
+			const { getByTestId } = renderCommandDraft("/test-command with args")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1711,7 +1870,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should be case-sensitive when matching commands", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/Setup the project" />)
+			const { getByTestId } = renderCommandDraft("/Setup the project")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1724,7 +1883,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should highlight multiple valid commands in the same text", () => {
-			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/setup first then /deploy" />)
+			const { getByTestId } = renderCommandDraft("/setup first then /deploy")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1737,9 +1896,7 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should handle mixed valid and invalid commands", () => {
-			const { getByTestId } = render(
-				<ChatTextArea {...defaultProps} inputValue="/setup first then /invalid then /deploy" />,
-			)
+			const { getByTestId } = renderCommandDraft("/setup first then /invalid then /deploy")
 
 			const highlightLayer = getByTestId("highlight-layer")
 			expect(highlightLayer).toBeInTheDocument()
@@ -1758,14 +1915,6 @@ describe("ChatTextArea", () => {
 		})
 
 		it("should work when no commands are available", () => {
-			;(useExtensionState as import("vitest").Mock).mockReturnValue({
-				filePaths: [],
-				openedTabs: [],
-				taskHistory: [],
-				cwd: "/test/workspace",
-				commands: undefined,
-			})
-
 			const { getByTestId } = render(<ChatTextArea {...defaultProps} inputValue="/setup the project" />)
 
 			const highlightLayer = getByTestId("highlight-layer")

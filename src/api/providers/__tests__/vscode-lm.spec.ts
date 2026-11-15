@@ -3119,6 +3119,27 @@ describe("VsCodeLmHandler", () => {
 			expect(vscode.lm.selectChatModels).toHaveBeenCalledTimes(2)
 		})
 
+		it("reuses the stream timer for 100 host reads after the first text part", async () => {
+			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					for (let index = 0; index < 100; index++) yield new vscode.LanguageModelTextPart(String(index))
+				})(),
+			})
+			const stream = handler.createMessage("System", [{ role: "user", content: "Hello" }])
+			await expect(stream.next()).resolves.toMatchObject({ value: { type: "text", text: "0" } })
+			const schedule = vi.spyOn(globalThis, "setTimeout")
+			try {
+				const text: string[] = []
+				for await (const chunk of stream) {
+					if (chunk?.type === "text") text.push(chunk.text)
+				}
+				expect(text).toEqual(Array.from({ length: 99 }, (_, index) => String(index + 1)))
+				expect(schedule.mock.calls.length).toBe(0)
+			} finally {
+				schedule.mockRestore()
+			}
+		})
+
 		it("should cancel when VS Code LM response stream stalls past the API timeout", async () => {
 			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
 

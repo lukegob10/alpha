@@ -85,8 +85,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			if (this.aborted) {
 				exitDetails = { exitCode: 130, signalName: "SIGINT" }
 			} else {
-				this.isHot = true
-
 				const shellLaunch = this.terminal.shellLaunch
 				if (shellLaunch) await assertCommandShellLaunchUnchanged(shellLaunch)
 				if (this.aborted) throw new Error("Command was cancelled before shell launch")
@@ -184,7 +182,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 							this.lastEmitTime_ms = now
 						}
 
-						this.startHotTimer(line)
 						// Bound outstanding async output callbacks without awaiting every
 						// chunk or retaining a separate output queue. The active command
 						// consumer is synchronous; this only backpressures async observers.
@@ -251,7 +248,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				await stopAfterOutputFailure(error)
 				reportFailure()
 			}
-			this.stopHotTimer()
 			const completionFailure = await this.emitCompletedAndWait(this.getOutputTranscript())
 			if (completionFailure) {
 				await stopAfterOutputFailure(completionFailure)
@@ -267,7 +263,6 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 			// Shell completion permits terminal reuse while these observers settle.
 			// An old owner must never close the replacement's stream or clear it.
 			if (!this.terminal.process || this.terminal.process === this) this.terminal.setActiveStream(undefined)
-			this.stopHotTimer()
 			if (this.terminal.process === this) {
 				this.terminal.process = undefined
 				this.terminal.running = false

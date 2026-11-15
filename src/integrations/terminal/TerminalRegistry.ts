@@ -112,12 +112,13 @@ export class TerminalRegistry {
 		provider: AlphaTerminalProvider,
 		commandEnv: Record<string, string> = {},
 		shellLaunch?: CommandShellLaunch,
+		zshDirectory?: string,
 	): AlphaTerminal {
 		this.assertCommandCapacity()
 		let newTerminal
 
 		if (provider === "vscode") {
-			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv, shellLaunch)
+			newTerminal = new Terminal(this.nextTerminalId++, undefined, cwd, commandEnv, shellLaunch, zshDirectory)
 		} else {
 			newTerminal = new ExecaTerminal(this.nextTerminalId++, cwd, commandEnv, shellLaunch)
 		}
@@ -171,26 +172,42 @@ export class TerminalRegistry {
 			)
 		}
 
-		let terminal = findAvailableTerminal()
-		if (!terminal) {
-			const commandEnv = await getRipgrepPathOverlay()
-			// Capacity may have been consumed by another task during environment lookup.
-			// This check and the reservation below have no asynchronous boundary.
-			this.assertCommandCapacity()
-			// Another request may have created a terminal while binary resolution was pending.
-			terminal =
-				findAvailableTerminal() ??
-				(shellLaunch
+		let zshDirectory: string | undefined
+		try {
+			let terminal = findAvailableTerminal()
+			if (!terminal) {
+				const commandEnv = await getRipgrepPathOverlay()
+				this.assertCommandCapacity()
+				terminal = findAvailableTerminal()
+				if (!terminal && provider === "vscode" && Terminal.getTerminalZdotdir()) {
+					const startupEnv: Record<string, string> = {}
+					zshDirectory = await ShellIntegrationManager.zshInitTmpDir(startupEnv)
+					this.assertCommandCapacity()
+					terminal = findAvailableTerminal()
+					if (!terminal) {
+						terminal = this.createTerminal(
+							cwd,
+							provider,
+							{ ...startupEnv, ...commandEnv },
+							shellLaunch,
+							zshDirectory,
+						)
+						zshDirectory = undefined
+					}
+				}
+				terminal ??= shellLaunch
 					? this.createTerminal(cwd, provider, commandEnv, shellLaunch)
-					: this.createTerminal(cwd, provider, commandEnv))
+					: this.createTerminal(cwd, provider, commandEnv)
+			}
+
+			terminal.taskId = taskId
+			// Reserve before yielding, including while discarding unused startup files.
+			terminal.busy = true
+
+			return terminal
+		} finally {
+			if (zshDirectory) await ShellIntegrationManager.discardZshDirectory(zshDirectory)
 		}
-
-		terminal.taskId = taskId
-		// Reserve the terminal before returning. Command admission awaits persistence,
-		// so another task must not acquire this shell before runCommand marks it busy.
-		terminal.busy = true
-
-		return terminal
 	}
 
 	/** Release a claim when command admission ends before runCommand starts. */
@@ -213,16 +230,6 @@ export class TerminalRegistry {
 	 */
 	public static getUnretrievedOutput(id: number): string {
 		return this.getTerminalById(id)?.getUnretrievedOutput() ?? ""
-	}
-
-	/**
-	 * Checks if a terminal process is "hot" (recently active).
-	 *
-	 * @param id The terminal ID
-	 * @returns True if the process is hot, false otherwise
-	 */
-	public static isProcessHot(id: number): boolean {
-		return this.getTerminalById(id)?.process?.isHot ?? false
 	}
 
 	/**

@@ -8,13 +8,7 @@ import { BaseProvider } from "../../../api/providers/base-provider"
 import { ApiMessage } from "../../task-persistence/apiMessages"
 import * as condenseModule from "../../condense"
 
-import {
-	TOKEN_BUFFER_PERCENTAGE,
-	estimateTokenCount,
-	truncateConversation,
-	manageContext,
-	willManageContext,
-} from "../index"
+import { TOKEN_BUFFER_PERCENTAGE, estimateTokenCount, manageContext, willManageContext } from "../index"
 
 // Create a mock ApiHandler for testing
 class MockApiHandler extends BaseProvider {
@@ -57,124 +51,6 @@ const mockApiHandler = new MockApiHandler()
 const taskId = "test-task-id"
 
 describe("Context Management", () => {
-	/**
-	 * Tests for the truncateConversation function
-	 */
-	describe("truncateConversation", () => {
-		it("should retain the first message", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-			]
-
-			const result = truncateConversation(messages, 0.5, taskId)
-
-			// With 2 messages after the first, 0.5 fraction means remove 1 message
-			// But 1 is odd, so it rounds down to 0 (to make it even)
-			// No truncation happens, so no marker is inserted
-			expect(result.messages.length).toBe(3) // Original messages unchanged
-			expect(result.messagesRemoved).toBe(0)
-			expect(result.messages[0]).toEqual(messages[0])
-			expect(result.messages[1]).toEqual(messages[1])
-			expect(result.messages[2]).toEqual(messages[2])
-		})
-
-		it("should remove the specified fraction of messages (rounded to even number)", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-				{ role: "assistant", content: "Fourth message" },
-				{ role: "user", content: "Fifth message" },
-			]
-
-			// 4 messages excluding first, 0.5 fraction = 2 messages to remove
-			// 2 is already even, so no rounding needed
-			const result = truncateConversation(messages, 0.5, taskId)
-
-			// Should have all original messages + truncation marker
-			expect(result.messages.length).toBe(6) // 5 original + 1 marker
-			expect(result.messagesRemoved).toBe(2)
-			expect(result.messages[0]).toEqual(messages[0])
-
-			// Messages at indices 1 and 2 from original should be tagged
-			expect(result.messages[1].truncationParent).toBe(result.truncationId)
-			expect(result.messages[2].truncationParent).toBe(result.truncationId)
-
-			// Marker should be at index 3 (at the boundary, after truncated messages)
-			expect(result.messages[3].isTruncationMarker).toBe(true)
-			expect(result.messages[3].role).toBe("user")
-
-			// Messages at indices 3 and 4 from original should NOT be tagged (now at indices 4 and 5)
-			expect(result.messages[4].truncationParent).toBeUndefined()
-			expect(result.messages[5].truncationParent).toBeUndefined()
-		})
-
-		it("should round to an even number of messages to remove", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-				{ role: "assistant", content: "Fourth message" },
-				{ role: "user", content: "Fifth message" },
-				{ role: "assistant", content: "Sixth message" },
-				{ role: "user", content: "Seventh message" },
-			]
-
-			// 6 messages excluding first, 0.3 fraction = 1.8 messages to remove
-			// 1.8 rounds down to 1, then to 0 to make it even
-			const result = truncateConversation(messages, 0.3, taskId)
-
-			expect(result.messagesRemoved).toBe(0) // No messages removed
-			// When nothing is truncated, no marker is inserted
-			expect(result.messages.length).toBe(7) // Original messages unchanged
-		})
-
-		it("should handle edge case with fracToRemove = 0", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-			]
-
-			const result = truncateConversation(messages, 0, taskId)
-
-			expect(result.messagesRemoved).toBe(0)
-			// When nothing is truncated, no marker is inserted
-			expect(result.messages.length).toBe(3) // Original messages unchanged
-		})
-
-		it("should handle edge case with fracToRemove = 1", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-				{ role: "assistant", content: "Fourth message" },
-			]
-
-			// 3 messages excluding first, 1.0 fraction = 3 messages to remove
-			// But 3 is odd, so it rounds down to 2 to make it even
-			const result = truncateConversation(messages, 1, taskId)
-
-			expect(result.messagesRemoved).toBe(2)
-			// Should have all original messages + truncation marker
-			expect(result.messages.length).toBe(5) // 4 original + 1 marker
-			expect(result.messages[0]).toEqual(messages[0])
-
-			// Messages at indices 1 and 2 should be tagged
-			expect(result.messages[1].truncationParent).toBe(result.truncationId)
-			expect(result.messages[2].truncationParent).toBe(result.truncationId)
-
-			// Marker should be at index 3 (at the boundary)
-			expect(result.messages[3].isTruncationMarker).toBe(true)
-			expect(result.messages[3].role).toBe("user")
-
-			// Last message should NOT be tagged (now at index 4)
-			expect(result.messages[4].truncationParent).toBeUndefined()
-		})
-	})
-
 	/**
 	 * Tests for the estimateTokenCount function
 	 */

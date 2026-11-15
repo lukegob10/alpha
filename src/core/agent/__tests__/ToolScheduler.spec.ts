@@ -2082,17 +2082,24 @@ describe("ToolScheduler", () => {
 			arguments: { command: "git status --short" },
 		})
 
-		const pending = new ToolScheduler({
-			task,
-			registry,
-			mode: "code",
-			validateCall: () => {},
-			signal: controller.signal,
-		}).run(commandResponse)
-		await waiting
-		controller.abort(new Error("cancelled while approval was pending"))
-		const cancelled = await pending
-		releaseApproval?.({ decision: "approve_once" })
+		const schedule = vi.spyOn(globalThis, "setInterval")
+		let cancelled
+		try {
+			const pending = new ToolScheduler({
+				task,
+				registry,
+				mode: "code",
+				validateCall: () => {},
+				signal: controller.signal,
+			}).run(commandResponse)
+			await waiting
+			controller.abort(new Error("cancelled while approval was pending"))
+			cancelled = await pending
+			expect(schedule.mock.calls.filter(([, delay]) => delay === 25)).toHaveLength(0)
+		} finally {
+			releaseApproval?.({ decision: "approve_once" })
+			schedule.mockRestore()
+		}
 		const next = await new ToolScheduler({
 			task,
 			registry,

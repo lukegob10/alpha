@@ -12907,6 +12907,7 @@ describe("Task typed tool approval bridge", () => {
 					context: { globalStorageUri: { fsPath: "/test/storage" } },
 					getState: vi.fn().mockResolvedValue({}),
 					isTaskOnScreen: vi.fn().mockReturnValue(true),
+					postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 					postStateToWebviewWithoutTaskHistory: vi.fn().mockResolvedValue(undefined),
 				} as any),
 			apiConfiguration: { apiProvider: "openai", openAiApiKey: "test-key" },
@@ -13020,10 +13021,21 @@ describe("Task typed tool approval bridge", () => {
 		return { outcome, executeEffect }
 	}
 
+	const denyPublishedApproval = (task: Task) => {
+		task.on(AlphaCodeEventName.Message, function denyAsk({ action, message }) {
+			if (action !== "created" || message.type !== "ask" || !message.toolApprovalRequest || message.isAnswered) {
+				return
+			}
+			task.off(AlphaCodeEventName.Message, denyAsk)
+			task.handleWebviewAskResponse("noButtonClicked", undefined, undefined, undefined, message.ts)
+		})
+	}
+
 	it.each(["ask", "auto", "bypass"] as const)(
 		"preserves complete file review data and valid persisted prompts in %s mode",
 		async (taskApprovalMode) => {
 			const task = createTask({ taskApprovalMode })
+			if (taskApprovalMode === "ask") denyPublishedApproval(task)
 			const reviewMessage = JSON.stringify({
 				tool: "appliedDiff",
 				path: "large.ts",
@@ -13067,6 +13079,7 @@ describe("Task typed tool approval bridge", () => {
 
 	it("projects the reviewed working directory into command approval prompts", async () => {
 		const task = createTask()
+		denyPublishedApproval(task)
 		const approval = request(task.taskId, {
 			toolName: "exec_command",
 			askType: "command",
@@ -13090,6 +13103,7 @@ describe("Task typed tool approval bridge", () => {
 
 	it("projects the persistent prefix into the command approval prompt", async () => {
 		const task = createTask()
+		denyPublishedApproval(task)
 		const approval = request(task.taskId, {
 			toolName: "exec_command",
 			askType: "command",

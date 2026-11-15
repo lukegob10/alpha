@@ -228,6 +228,26 @@ const getScrollToBottomButton = (): HTMLButtonElement => {
 }
 
 describe("ChatView native scroll behavior", () => {
+	it("streams transcript updates without scheduling periodic cache cleanup", async () => {
+		const schedule = vi.spyOn(globalThis, "setInterval")
+		const messages = buildMessages(1000)
+		try {
+			await hydrate(messages)
+			for (let index = 0; index < 10; index++) {
+				await act(async () =>
+					postState([
+						...messages,
+						{ type: "say", say: "text", ts: 1003, text: `Update ${index}`, partial: true },
+					]),
+				)
+			}
+			expect(document.querySelector("[data-testid='chat-transcript-content']")).toHaveAttribute("data-count", "3")
+			expect(schedule.mock.calls.filter(([, delay]) => delay === 60_000)).toHaveLength(0)
+		} finally {
+			schedule.mockRestore()
+		}
+	})
+
 	it("keeps an expanded opening prompt open during updates and releases automatic bottom following", async () => {
 		const messages = buildMessages(1000)
 		await hydrate(messages)

@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { useTicketSearch } from "../useTicketSearch"
 import { vscode } from "../../../../utils/vscode"
 vi.mock("../../../../utils/vscode", () => ({ vscode: { postMessage: vi.fn() } }))
@@ -9,8 +9,9 @@ afterEach(() => {
 	vi.clearAllMocks()
 })
 describe("ticket search lifecycle", () => {
+	beforeEach(() => vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "queueMicrotask", "performance"] }))
+
 	it("routes the picker to its editor task and invalidates replies when that task changes", () => {
-		vi.useFakeTimers()
 		const { rerender, result } = renderHook(({ taskId }) => useTicketSearch(true, "", "/project", taskId), {
 			initialProps: { taskId: "editor-one" },
 		})
@@ -35,7 +36,6 @@ describe("ticket search lifecycle", () => {
 	it.each(["", "PM-42", "pm42", "42", "#42"])(
 		"immediately searches an opened picker or complete reference: %s",
 		(query) => {
-			vi.useFakeTimers()
 			renderHook(() => useTicketSearch(true, query, "/project"))
 			act(() => vi.advanceTimersByTime(0))
 			expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith(
@@ -44,10 +44,10 @@ describe("ticket search lifecycle", () => {
 		},
 	)
 	it("debounces title typing into one request after 50 ms", () => {
-		vi.useFakeTimers()
 		const { rerender } = renderHook(({ query }) => useTicketSearch(true, query, "/project"), {
 			initialProps: { query: "backend" },
 		})
+		expect(vi.getTimerCount()).toBe(1)
 		act(() => vi.advanceTimersByTime(25))
 		rerender({ query: "backend cleanup" })
 		act(() => vi.advanceTimersByTime(49))
@@ -57,15 +57,34 @@ describe("ticket search lifecycle", () => {
 			expect.objectContaining({ type: "searchTickets", query: "backend cleanup" }),
 		)
 	})
+	it("keeps one scheduled wake through a burst of fuzzy queries", () => {
+		const schedule = vi.spyOn(globalThis, "setTimeout")
+		try {
+			const { rerender } = renderHook(({ query }) => useTicketSearch(true, query, "/project"), {
+				initialProps: { query: "a" },
+			})
+			for (let length = 2; length <= 10; length++) {
+				act(() => vi.advanceTimersByTime(4))
+				rerender({ query: "abcdefghij".slice(0, length) })
+			}
+			expect(schedule.mock.calls.filter(([, delay]) => delay === 50)).toHaveLength(1)
+			act(() => vi.advanceTimersByTime(49))
+			expect(vscode.postMessage).not.toHaveBeenCalled()
+			act(() => vi.advanceTimersByTime(1))
+			expect(vscode.postMessage).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ type: "searchTickets", query: "abcdefghij" }),
+			)
+		} finally {
+			schedule.mockRestore()
+		}
+	})
 	it("rejects oversized queries without scheduling requests", () => {
-		vi.useFakeTimers()
 		const { result } = renderHook(() => useTicketSearch(true, "x".repeat(201), "/project"))
 		expect(result.current[0]?.label).toBe("activityLookupFailed")
 		act(() => vi.advanceTimersByTime(15000))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 	it("ignores replies from an earlier query or workspace and detaches when closed", () => {
-		vi.useFakeTimers()
 		const { result, rerender } = renderHook(({ active, query, cwd }) => useTicketSearch(active, query, cwd), {
 			initialProps: { active: true, query: "PM-42", cwd: "/project" },
 		})
@@ -92,10 +111,17 @@ describe("ticket search lifecycle", () => {
 		rerender({ active: false, query: "PM-42", cwd: "/other" })
 		reply(current.requestId!)
 		act(() => vi.advanceTimersByTime(15000))
+		expect(result.current).toEqual([])
+
+		rerender({ active: true, query: "PM-42", cwd: "/other" })
+		act(() => vi.advanceTimersByTime(0))
+		reply(current.requestId!)
+		expect(result.current[0]?.label).toBe("activitySearching")
+		const reopened = vi.mocked(vscode.postMessage).mock.lastCall![0]
+		reply(reopened.requestId!)
 		expect(result.current[0]?.label).toBe("empty")
 	})
 	it("distinguishes empty, failed, and timed-out searches", () => {
-		vi.useFakeTimers()
 		const { result, rerender } = renderHook(({ query }) => useTicketSearch(true, query, "/project"), {
 			initialProps: { query: "" },
 		})
@@ -126,11 +152,14 @@ describe("ticket search lifecycle", () => {
 		reply(true)
 		expect(result.current[0]?.label).toBe("activityLookupFailed")
 		rerender({ query: "timeout" })
-		act(() => vi.advanceTimersByTime(15000))
+		act(() => vi.advanceTimersByTime(15_049))
+		expect(result.current[0]?.label).toBe("activitySearching")
+		act(() => vi.advanceTimersByTime(1))
+		expect(result.current[0]?.label).toBe("activityLookupFailed")
+		reply()
 		expect(result.current[0]?.label).toBe("activityLookupFailed")
 	})
 	it("cancels queued searches when closed or unmounted", () => {
-		vi.useFakeTimers()
 		const { rerender, unmount } = renderHook(({ active }) => useTicketSearch(active, "backend", "/project"), {
 			initialProps: { active: true },
 		})

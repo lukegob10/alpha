@@ -1,8 +1,13 @@
 import { reactConfig } from "@alpha-code/config-eslint/react"
+import { promiseOwnership } from "@alpha-code/config-eslint/base"
 
 /** @type {import("eslint").Linter.Config} */
 export default [
 	...reactConfig,
+	{
+		...promiseOwnership,
+		files: ["src/components/chat/ChatTextArea.tsx"],
+	},
 	{
 		rules: {
 			"@typescript-eslint/no-unused-vars": [

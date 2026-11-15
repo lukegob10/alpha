@@ -13,7 +13,6 @@ import { useDeepCompareEffect, useEvent } from "react-use"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
 
-import { useDebounceEffect } from "@src/utils/useDebounceEffect"
 import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 
@@ -690,6 +689,11 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		: visibleMessageQueue
 	const inputValueRef = useRef(inputValue)
 	const textAreaRef = useRef<HTMLTextAreaElement>(null)
+	const [composerFocusRequest, setComposerFocusRequest] = useState(0)
+	const requestComposerFocus = useCallback(() => setComposerFocusRequest((current) => current + 1), [])
+	useLayoutEffect(() => {
+		if (composerFocusRequest) textAreaRef.current?.focus()
+	}, [composerFocusRequest])
 	const expandChatsPanel = useCallback(() => setIsHistoryExpanded(true), [])
 	const closeChatsPanel = useCallback(() => {
 		setIsHistoryExpanded(false)
@@ -727,7 +731,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		pendingResumeRequest,
 		pendingAskRequests,
 	])
-	const [activityClock, setActivityClock] = useState(() => Date.now())
 	const [notificationTaskIds, setNotificationTaskIds] = useState<string[]>([])
 	useEffect(() => {
 		setNotificationTaskIds((current) => current.filter((taskId) => taskId !== visibleCurrentTaskId))
@@ -833,8 +836,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			ttl: 1000 * 60 * 5,
 		}),
 	)
-	const autoApproveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-	const userRespondedRef = useRef<boolean>(false)
 	const [currentFollowUpTs, setCurrentFollowUpTs] = useState<number | null>(null)
 	const submittedFollowUpRef = useRef<{ taskId: string | undefined; ts: number }>()
 	useLayoutEffect(() => {
@@ -964,8 +965,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			}
 			switch (lastMessage.type) {
 				case "ask":
-					// Reset user response flag when a new ask arrives to allow auto-approval
-					userRespondedRef.current = false
 					if (
 						lastMessage.toolApprovalRequest &&
 						lastMessage.toolApprovalRequest.taskId !== visibleCurrentTaskId
@@ -1246,12 +1245,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		everVisibleMessagesTsRef.current.clear()
 		setCurrentFollowUpTs(null)
 		setIsCondensing(false)
-
-		if (autoApproveTimeoutRef.current) {
-			clearTimeout(autoApproveTimeoutRef.current)
-			autoApproveTimeoutRef.current = null
-		}
-		userRespondedRef.current = false
 	}, [task?.ts])
 
 	const taskTs = task?.ts
@@ -1339,21 +1332,61 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [hasHostLifecycleMetadata, visibleLiveTask, visibleLifecycleSnapshot])
 	// Silence is expected while tools (including wait_agent), compaction, or other runtime phases run.
 	// Missing/degraded phase data cannot establish that the model is the source of a delay.
-	const isModelResponseDelayed =
+	const modelResponseDeadline =
+		!isHidden &&
 		isStreaming &&
 		effectiveVisibleLiveTask?.commandWaitStartedAt === undefined &&
 		!isVisibleTaskLifecycleDegraded &&
 		effectiveVisibleLiveTask?.activityPhase === "working" &&
 		!hasPendingToolCalls &&
-		Boolean(effectiveVisibleLiveTask?.lastUpdatedAt) &&
-		activityClock - (effectiveVisibleLiveTask?.lastUpdatedAt ?? activityClock) >= MODEL_RESPONSE_DELAY_MS
+		effectiveVisibleLiveTask.lastUpdatedAt
+			? effectiveVisibleLiveTask.lastUpdatedAt + MODEL_RESPONSE_DELAY_MS
+			: undefined
+	const [reportedModelDeadline, setReportedModelDeadline] = useState<number>()
+	const isModelResponseDelayed =
+		modelResponseDeadline !== undefined && modelResponseDeadline === reportedModelDeadline
+	const responseDelayCheck = useRef<{
+		deadline?: number
+		pending?: { wakeAt: number; timer: ReturnType<typeof setTimeout> }
+	}>({})
 
 	useEffect(() => {
-		if (!isTurnActive) return
-		setActivityClock(Date.now())
-		const interval = setInterval(() => setActivityClock(Date.now()), 5_000)
-		return () => clearInterval(interval)
-	}, [isTurnActive, visibleCurrentTaskId])
+		const check = responseDelayCheck.current
+		check.deadline = modelResponseDeadline
+		if (
+			check.pending &&
+			(modelResponseDeadline === undefined ||
+				isModelResponseDelayed ||
+				modelResponseDeadline < check.pending.wakeAt)
+		) {
+			clearTimeout(check.pending.timer)
+			check.pending = undefined
+		}
+		if (modelResponseDeadline === undefined || isModelResponseDelayed || check.pending) return
+
+		// Keep the pending wakeup when streaming moves the deadline later.
+		const checkDeadline = () => {
+			check.pending = undefined
+			const deadline = check.deadline
+			if (deadline === undefined) return
+			const now = Date.now()
+			if (now >= deadline) {
+				setReportedModelDeadline(deadline)
+				return
+			}
+			const delay = Math.min(deadline - now, MODEL_RESPONSE_DELAY_MS)
+			check.pending = { wakeAt: now + delay, timer: setTimeout(checkDeadline, delay) }
+		}
+		checkDeadline()
+	}, [modelResponseDeadline, isModelResponseDelayed])
+
+	useEffect(() => {
+		const check = responseDelayCheck.current
+		return () => {
+			clearTimeout(check.pending?.timer)
+			check.pending = undefined
+		}
+	}, [])
 
 	const markFollowUpAsAnswered = useCallback(() => {
 		const lastFollowUpMessage = messagesRef.current.findLast((msg: AlphaMessage) => msg.ask === "followup")
@@ -1363,14 +1396,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [])
 
 	const handleChatReset = useCallback(() => {
-		// Clear any pending auto-approval timeout
-		if (autoApproveTimeoutRef.current) {
-			clearTimeout(autoApproveTimeoutRef.current)
-			autoApproveTimeoutRef.current = null
-		}
-		// Reset user response flag for new message
-		userRespondedRef.current = false
-
 		// Only reset message-specific state, preserving mode.
 		setInputValue("")
 		setSendingDisabled(true)
@@ -1396,8 +1421,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setPrimaryButtonText(undefined)
 		setSecondaryButtonText(undefined)
 
-		setTimeout(() => textAreaRef.current?.focus(), 0)
-	}, [currentTaskId, currentView?.type])
+		requestComposerFocus()
+	}, [currentTaskId, currentView?.type, requestComposerFocus])
 
 	const postNewTaskSubmission = useCallback(
 		(text: string, images: string[]) => {
@@ -1720,9 +1745,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				return true
 			}
 
-			// Mark that user has responded - this prevents any pending auto-approvals.
-			userRespondedRef.current = true
-
 			if (isBlankTaskPendingRef.current || messagesRef.current.length === 0) {
 				if (!postNewTaskSubmission(text, images)) return false
 			} else if (
@@ -1921,10 +1943,18 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setInputValue,
 	])
 
+	const pendingImageReads = useRef(new Set<string | undefined>())
+	const handleImageReadsPendingChange = useCallback((taskId: string | undefined, pending: boolean) => {
+		if (pending) pendingImageReads.current.add(taskId)
+		else pendingImageReads.current.delete(taskId)
+	}, [])
+
 	const handleComposerSend = useCallback(() => {
+		if (pendingImageReads.current.has(visibleCurrentTaskId)) return
 		if (!handleComposerFork() && !isProfileDisabled && !isCondensing)
 			handleSendMessage(inputValue, selectedImages, undefined, autoSteer && !isManagedSubagent)
 	}, [
+		visibleCurrentTaskId,
 		handleComposerFork,
 		isProfileDisabled,
 		isCondensing,
@@ -1937,14 +1967,19 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	// Handle enqueue button click from textarea
 	const handleEnqueueCurrentMessage = useCallback(() => {
-		if (handleComposerFork()) return
+		if (pendingImageReads.current.has(visibleCurrentTaskId) || handleComposerFork()) return
 		const text = inputValue.trim()
 		if (text || selectedImages.length > 0) postQueuedMessage(text, selectedImages)
-	}, [handleComposerFork, inputValue, postQueuedMessage, selectedImages])
+	}, [visibleCurrentTaskId, handleComposerFork, inputValue, postQueuedMessage, selectedImages])
 
 	const startQueuedMessageEdit = useCallback(
 		(message: QueuedMessage) => {
-			if (!visibleCurrentTaskId || pendingEditRequestRef.current) return
+			if (
+				!visibleCurrentTaskId ||
+				pendingEditRequestRef.current ||
+				pendingImageReads.current.has(visibleCurrentTaskId)
+			)
+				return
 			setEditingQueuedMessage({
 				taskId: visibleCurrentTaskId,
 				id: message.id,
@@ -1953,9 +1988,16 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			})
 			setInputValue(message.text)
 			setSelectedImages(message.images ?? [])
-			setTimeout(() => textAreaRef.current?.focus(), 0)
+			requestComposerFocus()
 		},
-		[editingQueuedMessage, visibleCurrentTaskId, setEditingQueuedMessage, setInputValue, setSelectedImages],
+		[
+			editingQueuedMessage,
+			visibleCurrentTaskId,
+			setEditingQueuedMessage,
+			setInputValue,
+			setSelectedImages,
+			requestComposerFocus,
+		],
 	)
 
 	const cancelQueuedMessageEdit = useCallback(() => {
@@ -1967,8 +2009,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		setInputValue(editingQueuedMessage.priorText)
 		setSelectedImages(editingQueuedMessage.priorImages)
 		setEditingQueuedMessage(null)
-		setTimeout(() => textAreaRef.current?.focus(), 0)
-	}, [editingQueuedMessage, setEditingQueuedMessage, setInputValue, setSelectedImages])
+		requestComposerFocus()
+	}, [editingQueuedMessage, setEditingQueuedMessage, setInputValue, setSelectedImages, requestComposerFocus])
 
 	// This logic depends on the useEffect[messages] above to set alphaAsk,
 	// after which buttons are shown and we then send an askResponse to the
@@ -2009,7 +2051,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 				approvalRequestId: toolApprovalRequest.requestId,
 				toolApprovalDecision,
 			})
-			userRespondedRef.current = true
 			setSendingDisabled(true)
 			setAlphaAsk(undefined)
 			setEnableButtons(false)
@@ -2027,9 +2068,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (isVisibleTaskFailedOrClosed || pendingResumeRequestRef.current) {
 				return
 			}
-			// Mark that user has responded
-			userRespondedRef.current = true
-
 			const trimmedInput = text?.trim()
 			if (isCompletedTaskResponseAsk(alphaAsk)) {
 				startNewTask(trimmedInput, images)
@@ -2141,9 +2179,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const handleSecondaryButtonClick = useCallback(() => {
 		if (isVisibleTaskFailedOrClosed) return
-		// Mark that user has responded
-		userRespondedRef.current = true
-
 		if (isStreaming && !toolApprovalRequest) {
 			vscode.postMessage({
 				type: "cancelTask",
@@ -2710,31 +2745,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 	}, [modifiedMessages])
 
 	useEffect(() => {
-		const cleanupInterval = setInterval(() => {
-			const cache = everVisibleMessagesTsRef.current
-			const currentMessageIds = new Set(modifiedMessages.map((m: AlphaMessage) => m.ts))
-			const viewportMessages = visibleMessages.slice(Math.max(0, visibleMessages.length - 100))
-			const viewportMessageIds = new Set(viewportMessages.map((m: AlphaMessage) => m.ts))
-
-			cache.forEach((_value: boolean, key: number) => {
-				if (!currentMessageIds.has(key) && !viewportMessageIds.has(key)) {
-					cache.delete(key)
-				}
-			})
-		}, 60000)
-
-		return () => clearInterval(cleanupInterval)
-	}, [modifiedMessages, visibleMessages])
-
-	useDebounceEffect(
-		() => {
-			if (!isHidden && !sendingDisabled && !enableButtons) {
-				textAreaRef.current?.focus()
-			}
-		},
-		50,
-		[isHidden, sendingDisabled, enableButtons],
-	)
+		if (!isHidden && !sendingDisabled && !enableButtons) textAreaRef.current?.focus()
+	}, [isHidden, sendingDisabled, enableButtons])
 
 	const groupedMessages = useMemo(() => {
 		const filtered: AlphaMessage[] = visibleMessages
@@ -3069,11 +3081,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 
 	const handleSuggestionClickInRow = useCallback(
 		(suggestion: SuggestionItem, event?: React.MouseEvent) => {
-			// Mark that user has responded if this is a manual click (not auto-approval)
-			if (event) {
-				userRespondedRef.current = true
-			}
-
 			// Suggestions may contain legacy mode hints. Keep the visible workflow
 			// within Plan/Code and ignore unknown custom-mode hints.
 			const suggestedMode = normalizeUserFacingSuggestionMode(suggestion.mode)
@@ -3227,7 +3234,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			const preservedInput = inputValueRef.current
 			const preservedImages = [...selectedImagesRef.current]
 			submittedFollowUpRef.current = { taskId: visibleCurrentTaskId, ts: askMessageTs }
-			userRespondedRef.current = true
 			markFollowUpAsAnswered()
 			vscode.postMessage({
 				type: "askResponse",
@@ -3462,6 +3468,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		sendAndSteer: (taskId) => {
 			if (
 				taskId !== visibleCurrentTaskId ||
+				pendingImageReads.current.has(visibleCurrentTaskId) ||
 				isHidden ||
 				isManagedSubagent ||
 				isProfileDisabled ||
@@ -3476,6 +3483,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			if (!handleComposerFork()) handleSendMessage(inputValue, selectedImages, undefined, true)
 		},
 		acceptInput: () => {
+			if (pendingImageReads.current.has(visibleCurrentTaskId)) return
 			const hasInput = inputValue.trim() || selectedImages.length > 0
 
 			if (hasInput) {
@@ -4035,6 +4043,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						placeholderText={placeholderText}
 						selectedImages={selectedImages}
 						setSelectedImages={setSelectedImages}
+						onImageReadsPendingChange={handleImageReadsPendingChange}
 						onSend={handleComposerSend}
 						canForkChat={canForkChat}
 						onSelectImages={selectImages}

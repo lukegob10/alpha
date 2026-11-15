@@ -994,6 +994,35 @@ describe("TaskHistoryStore", () => {
 	})
 
 	describe("flushIndex()", () => {
+		it("reuses one index write timer until updates settle", async () => {
+			await store.initialize()
+			vi.useFakeTimers()
+			const schedule = vi.spyOn(globalThis, "setTimeout")
+			const flush = vi.spyOn(store, "flushIndex")
+			const item = makeHistoryItem({ id: "debounced-task" })
+			try {
+				for (let tokensIn = 1; tokensIn <= 10; tokensIn++) {
+					await store.upsert({ ...item, tokensIn })
+					await vi.advanceTimersByTimeAsync(50)
+				}
+				expect(schedule.mock.calls.filter(([, delay]) => delay === 2_000)).toHaveLength(1)
+				await vi.advanceTimersByTimeAsync(1_949)
+				expect(flush).not.toHaveBeenCalled()
+				await vi.advanceTimersByTimeAsync(1)
+				expect(flush).toHaveBeenCalledOnce()
+				await flush.mock.results[0].value
+
+				const indexPath = path.join(tmpDir, "tasks", GlobalFileNames.historyIndex)
+				const index = JSON.parse(await fs.readFile(indexPath, "utf8"))
+				expect(index.entries).toMatchObject([{ id: item.id, tokensIn: 10 }])
+			} finally {
+				flush.mockRestore()
+				schedule.mockRestore()
+				store.dispose()
+				vi.useRealTimers()
+			}
+		})
+
 		it("writes index to disk on flush", async () => {
 			await store.initialize()
 

@@ -211,6 +211,7 @@ export class McpHub {
 	private disposables: vscode.Disposable[] = []
 	private settingsWatcher?: vscode.Disposable
 	private fileWatchers: Map<string, FSWatcher[]> = new Map()
+	private readonly fileWatcherClosures = new Map<string, Promise<void>>()
 	private projectMcpWatcher?: vscode.Disposable
 	private isDisposed: boolean = false
 	connections: McpConnection[] = []
@@ -462,22 +463,28 @@ export class McpHub {
 		const key = `${source}-${filePath}`
 		this.pendingConfigChanges.set(key, { filePath, source })
 
-		// Clear existing timer if any
 		const existingTimer = this.configChangeDebounceTimers.get(key)
-		if (existingTimer) {
-			clearTimeout(existingTimer)
-			this.configChangeDebounceTimers.delete(key)
-		}
 		// A watcher cannot distinguish our write from an external edit or a different
 		// source's revocation. Retain its latest event until the write window closes.
-		if (this.isProgrammaticUpdate) return
+		if (this.isProgrammaticUpdate) {
+			if (existingTimer) {
+				clearTimeout(existingTimer)
+				this.configChangeDebounceTimers.delete(key)
+			}
+			return
+		}
+		if (existingTimer) {
+			existingTimer.refresh()
+			return
+		}
 
-		// Set new timer
-		const timer = setTimeout(async () => {
+		const timer = setTimeout(() => {
 			this.configChangeDebounceTimers.delete(key)
 			if (this.isDisposed || this.isProgrammaticUpdate) return
 			this.pendingConfigChanges.delete(key)
-			await this.handleConfigFileChange(filePath, source)
+			void this.handleConfigFileChange(filePath, source).catch((error) =>
+				this.showErrorMessage(t("mcp:errors.failed_update_project"), error),
+			)
 		}, 500) // 500ms debounce
 
 		this.configChangeDebounceTimers.set(key, timer)
@@ -515,9 +522,7 @@ export class McpHub {
 			// Check if the error is because the file doesn't exist
 			if (error.code === "ENOENT" && source === "project") {
 				// File was deleted, clean up project MCP servers
-				await this.cleanupProjectMcpServers()
-				await this.notifyWebviewOfServerChanges()
-				vscode.window.showInformationMessage(t("mcp:info.project_config_deleted"))
+				await this.handleProjectMcpDeletion(revision)
 			} else {
 				this.showErrorMessage(t("mcp:errors.failed_update_project"), error)
 			}
@@ -554,11 +559,10 @@ export class McpHub {
 		})
 
 		// Watch for file deletion
-		const deleteDisposable = watcher.onDidDelete(async () => {
-			// Clean up all project MCP servers when the file is deleted
-			await this.cleanupProjectMcpServers()
-			await this.notifyWebviewOfServerChanges()
-			vscode.window.showInformationMessage(t("mcp:info.project_config_deleted"))
+		const deleteDisposable = watcher.onDidDelete(() => {
+			void this.handleProjectMcpDeletion(++this.configRevisions.project).catch((error) =>
+				this.showErrorMessage(t("mcp:errors.failed_update_project"), error),
+			)
 		})
 
 		this.projectMcpWatcher = vscode.Disposable.from(changeDisposable, createDisposable, deleteDisposable, watcher)
@@ -570,7 +574,7 @@ export class McpHub {
 			const projectMcpPath = await this.getProjectMcpPath()
 			if (revision !== this.configRevisions.project || this.isDisposed) return
 			if (!projectMcpPath) {
-				await this.cleanupProjectMcpServers()
+				await this.cleanupProjectMcpServers(revision)
 				return
 			}
 
@@ -604,8 +608,16 @@ export class McpHub {
 		}
 	}
 
-	private async cleanupProjectMcpServers(): Promise<void> {
-		await this.updateServerConnections({}, "project", false)
+	private async cleanupProjectMcpServers(revision?: number): Promise<void> {
+		await this.updateServerConnections({}, "project", false, revision)
+	}
+
+	private async handleProjectMcpDeletion(revision: number): Promise<void> {
+		await this.cleanupProjectMcpServers(revision)
+		if (this.isDisposed || revision !== this.configRevisions.project) return
+		void Promise.resolve(vscode.window.showInformationMessage(t("mcp:info.project_config_deleted"))).catch(
+			(error) => console.error("[McpHub] Could not show project MCP deletion notice", error),
+		)
 	}
 
 	getServers(): McpServer[] {
@@ -841,10 +853,13 @@ export class McpHub {
 			controller.signal.throwIfAborted()
 			if (this.connectionAttempts.get(key) !== controller)
 				throw new DOMException("MCP connection attempt was superseded", "AbortError")
-			this.removeFileWatchersForServer(name, source)
-			await this.disconnectConnections(
-				(connection) => connection.server.name === name && (connection.server.source ?? "global") === source,
-			)
+			await Promise.all([
+				this.removeFileWatchersForServer(name, source),
+				this.disconnectConnections(
+					(connection) =>
+						connection.server.name === name && (connection.server.source ?? "global") === source,
+				),
+			])
 			controller.signal.throwIfAborted()
 			await this.connectServerAttempt(name, config, source, controller.signal)
 		} finally {
@@ -966,7 +981,7 @@ export class McpHub {
 				startupSignal.throwIfAborted()
 				const stderrStream = transport.stderr
 				if (stderrStream) {
-					stderrStream.on("data", async (data: Buffer) => {
+					stderrStream.on("data", (data: Buffer) => {
 						const output = data.toString()
 						// Check if output contains INFO level log
 						const isInfoLog = /INFO/i.test(output)
@@ -981,7 +996,9 @@ export class McpHub {
 							if (connection?.type === "connected" && connection.client === client && !this.isDisposed) {
 								this.appendErrorMessage(connection, output)
 								if (connection.server.status === "disconnected") {
-									await this.notifyWebviewOfServerChanges()
+									void this.notifyWebviewOfServerChanges().catch((error) =>
+										console.error("[McpHub] Could not publish MCP server status", error),
+									)
 								}
 							}
 						}
@@ -1127,7 +1144,7 @@ export class McpHub {
 				this.cancelConnectionRequests(connection)
 			}
 			if (this.connectionAttempts.get(`${source}:${name}`)?.signal === signal) {
-				this.removeFileWatchersForServer(name, source)
+				await this.removeFileWatchersForServer(name, source)
 			}
 			await Promise.allSettled([provisionalClient?.close(), provisionalTransport?.close()])
 			throw error
@@ -1478,12 +1495,14 @@ export class McpHub {
 		for (const candidateSource of source ? [source] : ["global", "project"]) {
 			this.cancelConnectionAttempt(`${candidateSource}:${name}`)
 		}
-		this.removeFileWatchersForServer(name, source)
-		await this.disconnectConnections(
-			(connection) =>
-				connection.server.name === name &&
-				(source === undefined || (connection.server.source ?? "global") === source),
-		)
+		await Promise.all([
+			this.removeFileWatchersForServer(name, source),
+			this.disconnectConnections(
+				(connection) =>
+					connection.server.name === name &&
+					(source === undefined || (connection.server.source ?? "global") === source),
+			),
+		])
 	}
 
 	private cancelConnectionAttempt(key: string): void {
@@ -1498,9 +1517,10 @@ export class McpHub {
 		const removed = new Set(connections)
 		this.connections = this.connections.filter((connection) => !removed.has(connection))
 		const remainingNames = new Set(this.connections.map(({ server }) => server.name))
+		const closingWatchers: Promise<void>[] = []
 		for (const connection of connections) {
 			const { name, source = "global" } = connection.server
-			this.removeFileWatchersForServer(name, source)
+			closingWatchers.push(this.removeFileWatchersForServer(name, source))
 			if (connection.type === "connected") this.cancelConnectionRequests(connection)
 			if (!remainingNames.has(name)) {
 				const sanitizedName = sanitizeMcpName(name)
@@ -1509,6 +1529,7 @@ export class McpHub {
 			}
 		}
 
+		await Promise.all(closingWatchers)
 		for (const connection of connections) {
 			try {
 				if (connection.type === "connected") {
@@ -1535,16 +1556,20 @@ export class McpHub {
 		const newNames = new Set(Object.keys(newServers))
 		const prefix = `${source}:`
 		try {
+			const closingWatchers: Promise<void>[] = []
 			// Pending startup owns resources before a connection appears in the catalog.
 			for (const key of this.connectionAttempts.keys()) {
 				if (key.startsWith(prefix) && !newNames.has(key.slice(prefix.length))) {
 					this.cancelConnectionAttempt(key)
-					this.removeFileWatchersForServer(key.slice(prefix.length), source)
+					closingWatchers.push(this.removeFileWatchersForServer(key.slice(prefix.length), source))
 				}
 			}
-			await this.disconnectConnections(
-				({ server }) => (server.source ?? "global") === source && !newNames.has(server.name),
-			)
+			await Promise.all([
+				...closingWatchers,
+				this.disconnectConnections(
+					({ server }) => (server.source ?? "global") === source && !newNames.has(server.name),
+				),
+			])
 
 			for (const [name, config] of Object.entries(newServers)) {
 				if (!isCurrent()) return
@@ -1642,19 +1667,32 @@ export class McpHub {
 		}
 	}
 
-	private removeAllFileWatchers() {
-		this.fileWatchers.forEach((watchers) => watchers.forEach((watcher) => watcher.close()))
-		this.fileWatchers.clear()
+	private async removeAllFileWatchers(): Promise<void> {
+		const keys = new Set([...this.fileWatchers.keys(), ...this.fileWatcherClosures.keys()])
+		await Promise.all([...keys].map((key) => this.removeFileWatchersByKey(key)))
 	}
 
-	private removeFileWatchersForServer(serverName: string, source?: "global" | "project") {
+	private async removeFileWatchersForServer(serverName: string, source?: "global" | "project"): Promise<void> {
 		const keys = source ? [`${source}:${serverName}`] : [`global:${serverName}`, `project:${serverName}`]
-		for (const key of keys) {
-			const watchers = this.fileWatchers.get(key)
-			if (watchers) {
-				watchers.forEach((watcher) => watcher.close())
-				this.fileWatchers.delete(key)
-			}
+		await Promise.all(keys.map((key) => this.removeFileWatchersByKey(key)))
+	}
+
+	private removeFileWatchersByKey(key: string): Promise<void> {
+		const closing = this.fileWatcherClosures.get(key)
+		const watchers = this.fileWatchers.get(key)
+		if (!watchers) return closing ?? Promise.resolve()
+		this.fileWatchers.delete(key)
+		const settlement = Promise.all([closing, this.closeFileWatchers(watchers)]).then(() => {
+			if (this.fileWatcherClosures.get(key) === settlement) this.fileWatcherClosures.delete(key)
+		})
+		this.fileWatcherClosures.set(key, settlement)
+		return settlement
+	}
+
+	private async closeFileWatchers(watchers: FSWatcher[]): Promise<void> {
+		const results = await Promise.allSettled(watchers.map(async (watcher) => watcher.close()))
+		for (const result of results) {
+			if (result.status === "rejected") console.error("[McpHub] Failed to close MCP file watcher", result.reason)
 		}
 	}
 
@@ -1774,11 +1812,15 @@ export class McpHub {
 	}
 
 	private async notifyWebviewOfServerChanges(): Promise<void> {
-		// Get global server order from settings file
-		const settingsPath = await this.getMcpSettingsFilePath()
-		const content = await fs.readFile(settingsPath, "utf-8")
-		const config = JSON.parse(content)
-		const globalServerOrder = Object.keys(config.mcpServers || {})
+		// Ordering is optional. An invalid settings file cannot suppress the current connection state.
+		let globalServerOrder: string[] = []
+		try {
+			const settingsPath = await this.getMcpSettingsFilePath()
+			const content = await fs.readFile(settingsPath, "utf-8")
+			globalServerOrder = Object.keys(JSON.parse(content).mcpServers || {})
+		} catch {
+			console.warn("[McpHub] Global MCP server ordering unavailable")
+		}
 
 		// Get project server order if available
 		const projectMcpPath = await this.getProjectMcpPath()
@@ -1860,8 +1902,6 @@ export class McpHub {
 
 					// If disabling a connected server, disconnect it
 					if (disabled && connection.type === "connected") {
-						// Clean up file watchers when disabling
-						this.removeFileWatchersForServer(serverName, serverSource)
 						await this.deleteConnection(serverName, serverSource)
 						// Re-add as a disabled connection
 						// Re-read config from file to get updated disabled state
@@ -2353,8 +2393,11 @@ export class McpHub {
 		this.configRevisions.project++
 		// Revoke dispatch, unpublished startup, and in-flight requests before the first close can block.
 		for (const key of this.connectionAttempts.keys()) this.cancelConnectionAttempt(key)
-		this.removeAllFileWatchers()
-		transition.teardown = Promise.all([previousTeardown, this.disconnectConnections(() => true)]).then(() => {})
+		transition.teardown = Promise.all([
+			previousTeardown,
+			this.removeAllFileWatchers(),
+			this.disconnectConnections(() => true),
+		]).then(() => {})
 		try {
 			await transition.teardown
 			if (this.isDisposed || this.mcpEnablement !== transition) return
@@ -2394,17 +2437,11 @@ export class McpHub {
 		}
 
 		this.isProgrammaticUpdate = false
-		this.removeAllFileWatchers()
-
-		for (const connection of this.connections) {
-			try {
-				await this.deleteConnection(connection.server.name, connection.server.source)
-			} catch (error) {
-				console.error(`Failed to close connection for ${connection.server.name}:`, error)
-			}
-		}
-
-		this.connections = []
+		await Promise.all([
+			this.mcpEnablement?.teardown,
+			this.removeAllFileWatchers(),
+			this.disconnectConnections(() => true),
+		])
 
 		if (this.settingsWatcher) {
 			this.settingsWatcher.dispose()

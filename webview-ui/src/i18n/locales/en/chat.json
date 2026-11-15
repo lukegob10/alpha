@@ -294,6 +294,7 @@
 	"dragFilesImages": "hold shift to drag in files/images",
 	"errorReadingFile": "Error reading file",
 	"noValidImages": "No valid images were processed",
+	"loadingAttachments": "Reading image attachments",
 	"separator": "Separator",
 	"edit": "Edit...",
 	"forNextMode": "for next mode",

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { openAiModelInfoSaneDefaults, toolNames, toolUsageSchema, type McpServer } from "@alpha-code/types"
 
 import { filterNativeToolsForMode } from "../../prompts/tools/filter-tools-for-mode"
-import { getNativeTools, nativeTools } from "../../prompts/tools/native-tools"
+import { getNativeTools } from "../../prompts/tools/native-tools"
 import { TOOL_ALIASES, TOOL_DISPLAY_NAMES, TOOL_GROUPS, type NativeToolArgs } from "../../../shared/tools"
 import { createAgentResponse, type AgentToolCall } from "../../agent/AgentResponse"
 import { ToolScheduler, type ToolExecutionHost } from "../../agent/ToolScheduler"
@@ -265,7 +265,6 @@ describe("native tool-surface refactor contract", () => {
 
 		it("keeps the Codex patch and plan tools in the eager native catalog and registry", () => {
 			expect(namesOf(getNativeTools())).toContain("apply_patch")
-			expect(namesOf(nativeTools)).toContain("apply_patch")
 			expect(new ToolRegistry().getSchema("apply_patch")).toBeDefined()
 			expect(new ToolRegistry().getSchema("update_plan")).toMatchObject({
 				function: { name: "update_plan" },

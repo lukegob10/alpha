@@ -804,6 +804,15 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 				return
 			}
 
+			if (command.includes("\0")) {
+				const message = t("common:errors.command_argument_contains_nul")
+				preLaunchFailure("invalid_arguments", { kind: "repair" }, "nul-argument")
+				task.consecutiveMistakeCount++
+				task.recordToolError(this.name, message)
+				pushToolResult(formatResponse.toolError(message))
+				return
+			}
+
 			let shellLaunch: CommandShellLaunch | undefined
 			if (shell != null || login != null) {
 				const mode = typeof task.getTaskMode === "function" ? await task.getTaskMode() : defaultModeSlug

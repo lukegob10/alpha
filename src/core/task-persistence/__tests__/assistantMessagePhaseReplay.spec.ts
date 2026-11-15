@@ -11,7 +11,6 @@ import { filterNonAnthropicBlocks } from "../../../api/transform/anthropic-filte
 import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import { createAgentResponse, type AgentResponse } from "../../agent/AgentResponse"
 import { cleanupAfterTruncation, getEffectiveApiHistory } from "../../condense"
-import { truncateConversation } from "../../context-management"
 import { Task } from "../../task/Task"
 import { readApiMessages, saveApiMessages, type ApiMessage } from "../apiMessages"
 import {
@@ -407,9 +406,24 @@ describe("assistant message phase persistence and replay", () => {
 		mockProviderResponse("nonstreaming", [assistantMessage(undefined, undefined, "Later answer.")])
 		await persistResponse(task, await collectResponse(handler))
 		const original = await reloadHistory()
-		const truncated = truncateConversation(original, 0.5, taskId)
-		expect(truncated.messagesRemoved).toBe(2)
-		await saveApiMessages({ messages: truncated.messages, taskId, globalStoragePath: storagePath })
+		const [initial, toolCall, toolResult, ...tail] = original
+		const truncationId = "saved-fractional-window"
+		await saveApiMessages({
+			messages: [
+				initial,
+				{ ...toolCall, truncationParent: truncationId },
+				{ ...toolResult, truncationParent: truncationId },
+				{
+					role: "user",
+					content: "[Sliding window truncation: 2 messages hidden to reduce context]",
+					isTruncationMarker: true,
+					truncationId,
+				},
+				...tail,
+			],
+			taskId,
+			globalStoragePath: storagePath,
+		})
 		const stored = await readApiMessages({ taskId, globalStoragePath: storagePath })
 		expect(stored.find((message) => message.role === "assistant" && message.truncationParent)).toMatchObject({
 			content: original[1]!.content,

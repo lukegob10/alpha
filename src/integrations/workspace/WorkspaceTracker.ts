@@ -12,6 +12,7 @@ class WorkspaceTracker {
 	private providerRef: WeakRef<AlphaProvider>
 	private disposables: vscode.Disposable[] = []
 	private filePaths: Set<string> = new Set()
+	private readonly pendingCreates = new Map<string, symbol>()
 	private updateTimer: NodeJS.Timeout | null = null
 	private prevWorkSpacePath: string | undefined
 	private resetTimer: NodeJS.Timeout | null = null
@@ -51,16 +52,19 @@ class WorkspaceTracker {
 		const watcher = vscode.workspace.createFileSystemWatcher("**")
 		this.prevWorkSpacePath = this.cwd
 		this.disposables.push(
-			watcher.onDidCreate(async (uri) => {
-				await this.addFilePath(uri.fsPath)
-				this.workspaceDidUpdate()
+			watcher.onDidCreate((uri) => {
+				return this.addFilePath(uri.fsPath)
+					.then((added) => {
+						if (added) this.workspaceDidUpdate()
+					})
+					.catch((error) => console.error("Failed to track a new workspace path", error))
 			}),
 		)
 
 		// Renaming files triggers a delete and create event
 		this.disposables.push(
-			watcher.onDidDelete(async (uri) => {
-				if (await this.removeFilePath(uri.fsPath)) {
+			watcher.onDidDelete((uri) => {
+				if (this.removeFilePath(uri.fsPath)) {
 					this.workspaceDidUpdate()
 				}
 			}),
@@ -104,6 +108,7 @@ class WorkspaceTracker {
 		if (this.disposed) return
 		const cwd = this.cwd
 		const generation = ++this.generation
+		this.pendingCreates.clear()
 		if (this.resetTimer) {
 			clearTimeout(this.resetTimer)
 		}
@@ -111,21 +116,24 @@ class WorkspaceTracker {
 			clearTimeout(this.updateTimer)
 			this.updateTimer = null
 		}
-		this.resetTimer = setTimeout(async () => {
+		this.resetTimer = setTimeout(() => {
 			this.resetTimer = null
-			if (!this.isCurrentWorkspace(cwd, generation)) return
-			if (this.prevWorkSpacePath !== cwd) {
-				await this.providerRef.deref()?.postMessageToWebview({
-					type: "workspaceUpdated",
-					filePaths: [],
-					openedTabs: this.getOpenedTabsInfo(cwd),
-				})
-				if (!this.isCurrentWorkspace(cwd, generation)) return
-				this.filePaths.clear()
-				this.prevWorkSpacePath = cwd
-				this.initializeFilePaths()
-			}
+			void this.resetWorkspace(cwd, generation).catch((error) =>
+				console.error("Failed to initialize workspace file suggestions", error),
+			)
 		}, 300) // Debounce for 300ms
+	}
+
+	private async resetWorkspace(cwd: string | undefined, generation: number): Promise<void> {
+		if (!this.isCurrentWorkspace(cwd, generation) || this.prevWorkSpacePath === cwd) return
+		this.filePaths.clear()
+		this.prevWorkSpacePath = cwd
+		await this.providerRef.deref()?.postMessageToWebview({
+			type: "workspaceUpdated",
+			filePaths: [],
+			openedTabs: this.getOpenedTabsInfo(cwd),
+		})
+		if (this.isCurrentWorkspace(cwd, generation)) await this.initializeFilePaths()
 	}
 
 	private workspaceDidUpdate() {
@@ -133,7 +141,8 @@ class WorkspaceTracker {
 		const generation = this.generation
 		if (this.disposed || this.prevWorkSpacePath !== cwd) return
 		if (this.updateTimer) {
-			clearTimeout(this.updateTimer)
+			this.updateTimer.refresh()
+			return
 		}
 		this.updateTimer = setTimeout(() => {
 			this.updateTimer = null
@@ -142,11 +151,15 @@ class WorkspaceTracker {
 			}
 
 			const relativeFilePaths = Array.from(this.filePaths).map((file) => toRelativePath(file, cwd))
-			this.providerRef.deref()?.postMessageToWebview({
-				type: "workspaceUpdated",
-				filePaths: relativeFilePaths,
-				openedTabs: this.getOpenedTabsInfo(cwd),
-			})
+			const provider = this.providerRef.deref()
+			if (!provider) return
+			void provider
+				.postMessageToWebview({
+					type: "workspaceUpdated",
+					filePaths: relativeFilePaths,
+					openedTabs: this.getOpenedTabsInfo(cwd),
+				})
+				.catch((error) => console.error("Failed to publish workspace file suggestions", error))
 		}, 300) // Debounce for 300ms
 	}
 
@@ -155,37 +168,55 @@ class WorkspaceTracker {
 		return filePath.endsWith("/") ? resolvedPath + "/" : resolvedPath
 	}
 
-	private async addFilePath(filePath: string): Promise<void> {
+	private async addFilePath(filePath: string): Promise<boolean> {
 		const cwd = this.cwd
 		const generation = this.generation
 		// Allow for some buffer to account for files being created/deleted during a task
-		if (this.disposed || this.prevWorkSpacePath !== cwd || this.filePaths.size >= MAX_INITIAL_FILES * 2) {
-			return
-		}
+		if (
+			this.disposed ||
+			this.prevWorkSpacePath !== cwd ||
+			this.filePaths.size + this.pendingCreates.size >= MAX_INITIAL_FILES * 2
+		)
+			return false
 
-		const normalizedPath = this.normalizeFilePath(filePath, cwd)
+		const normalizedPath = path.resolve(cwd ?? "", filePath)
+		const creation = Symbol()
+		this.pendingCreates.set(normalizedPath, creation)
 		try {
-			const stat = await vscode.workspace.fs.stat(vscode.Uri.file(normalizedPath))
-			if (!this.isCurrentWorkspace(cwd, generation)) return
-			const isDirectory = (stat.type & vscode.FileType.Directory) !== 0
-			const pathWithSlash = isDirectory && !normalizedPath.endsWith("/") ? normalizedPath + "/" : normalizedPath
-			this.filePaths.add(pathWithSlash)
-		} catch {
-			if (!this.isCurrentWorkspace(cwd, generation)) return
-			// If stat fails, assume it's a file (this can happen for newly created files)
-			this.filePaths.add(normalizedPath)
+			const stat = await Promise.resolve(vscode.workspace.fs.stat(vscode.Uri.file(normalizedPath))).catch(
+				(error: unknown) =>
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					(error.code === "FileNotFound" || error.code === "ENOENT")
+						? null
+						: undefined,
+			)
+			if (stat === null) return false
+			if (!this.isCurrentWorkspace(cwd, generation) || this.pendingCreates.get(normalizedPath) !== creation)
+				return false
+			const isDirectory = stat && (stat.type & vscode.FileType.Directory) !== 0
+			this.filePaths.add(isDirectory && !normalizedPath.endsWith("/") ? normalizedPath + "/" : normalizedPath)
+			return true
+		} finally {
+			if (this.pendingCreates.get(normalizedPath) === creation) this.pendingCreates.delete(normalizedPath)
 		}
 	}
 
-	private async removeFilePath(filePath: string): Promise<boolean> {
-		const normalizedPath = this.normalizeFilePath(filePath)
-		return this.filePaths.delete(normalizedPath) || this.filePaths.delete(normalizedPath + "/")
+	private removeFilePath(filePath: string): boolean {
+		const cwd = this.cwd
+		if (this.disposed || this.prevWorkSpacePath !== cwd) return false
+		const normalizedPath = path.resolve(cwd ?? "", filePath)
+		this.pendingCreates.delete(normalizedPath)
+		const removedFile = this.filePaths.delete(normalizedPath)
+		return this.filePaths.delete(normalizedPath + "/") || removedFile
 	}
 
 	public dispose() {
 		if (this.disposed) return
 		this.disposed = true
 		this.generation++
+		this.pendingCreates.clear()
 		if (this.updateTimer) {
 			clearTimeout(this.updateTimer)
 			this.updateTimer = null

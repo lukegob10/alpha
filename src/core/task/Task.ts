@@ -235,9 +235,11 @@ import {
 	isApiStreamAbortError,
 	isApiStreamSemanticChunk,
 	normalizeApiStreamErrorMetadata,
+	scheduleApiStreamDeadline,
 } from "../../api/transform/stream"
 import { maybeRemoveImageBlocks } from "../../api/transform/image-cleaning"
 import {
+	ApiRequestIdleTimeout,
 	ApiRequestTimeoutError,
 	getApiRequestTimeout,
 	withApiRequestTimeout,
@@ -1106,7 +1108,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private apiConversationHistoryFailureGeneration = 0
 	/** A staged resume repair is retired by its transcript receipt, independently of input admission. */
 	private pendingResumeHistoryRepair?: { message: ApiMessage; persisted: boolean }
-	abort: boolean = false
+	private abortRequested = false
+	get abort(): boolean {
+		return this.abortRequested
+	}
+	set abort(value: boolean) {
+		this.abortRequested = value
+		if (value) this.notifyAskStateChanged()
+	}
 	private abortTaskPromise?: Promise<void>
 	private taskCancellationReceipt?: TaskCancellationReceipt
 	private retryTaskCancellationFinalization?: () => TaskCancellationReceipt
@@ -1351,8 +1360,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	toolRepetitionDetector: ToolRepetitionDetector
 	alphaIgnoreController?: AlphaIgnoreController
+	private readonly alphaIgnoreReady: Promise<void>
 	alphaProtectedController?: AlphaProtectedController
 	fileContextTracker: FileContextTracker
+	private fileContextDisposal?: Promise<void>
 	private readonly environmentContext = new EnvironmentContext()
 	terminalProcess?: AlphaTerminalProcess
 
@@ -1377,12 +1388,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		ts: number
 		toolCallId?: string
 		queuedMessageIds?: string[]
+		pendingDirectReplies?: number
 		signal?: AbortSignal
 		published?: boolean
 		recheckApproval?: () => Promise<void>
 	}
 	private askResponseQueuedMessageIds?: string[]
-	public lastMessageTs?: number
+	private askStateChange?: { promise: Promise<void>; notify: () => void }
+	private lastMessageTimestamp?: number
+	public get lastMessageTs(): number | undefined {
+		return this.lastMessageTimestamp
+	}
+	public set lastMessageTs(value: number | undefined) {
+		if (this.lastMessageTimestamp === value) return
+		this.lastMessageTimestamp = value
+		this.notifyAskStateChanged()
+	}
 	private autoApprovalTimeoutRef?: NodeJS.Timeout
 	private autoApprovalTimeoutRevision = 0
 
@@ -2107,9 +2128,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.alphaProtectedController = new AlphaProtectedController(this.cwd)
 		this.fileContextTracker = new FileContextTracker(provider, this.taskId, this.cwd)
 
-		this.alphaIgnoreController.initialize().catch((error) => {
-			console.error("Failed to initialize AlphaIgnoreController:", error)
-		})
+		this.alphaIgnoreReady = this.alphaIgnoreController.initialize()
+		// Construction can precede task admission; the lifecycle awaits the original failure.
+		void this.alphaIgnoreReady.catch(() => undefined)
 
 		this.apiConfiguration = apiConfiguration
 		this.reasoningPreference = taskReasoningPreferenceSchema.parse(
@@ -8018,7 +8039,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (installedAsk) installedAsk.published = true
-		let timeouts: NodeJS.Timeout[] = []
+		const timeouts: NodeJS.Timeout[] = []
+		const taskSignal = this.getTaskLifetimeCancellationSignal()
+		const wakeAsk = () => this.notifyAskStateChanged()
+		const canDrainQueuedInput =
+			type === "completion_result" || type === "resume_task" || type === "resume_completed_task"
 
 		const onAbort = () => {
 			if (
@@ -8036,6 +8061,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		try {
 			// Await publication before cancellation can answer its owned slot.
 			signal?.addEventListener("abort", onAbort, { once: true })
+			taskSignal.addEventListener("abort", wakeAsk, { once: true })
 			if (signal?.aborted) onAbort()
 
 			// A user update can arrive while state or prompt persistence is awaiting.
@@ -8122,9 +8148,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				timeouts.push(timeout)
 			}
 
-			// The state is mutable if the message is complete and the task will
-			// block (via the `pWaitFor`).
-			const isBlocking = !(this.askResponse !== undefined || this.lastMessageTs !== askTs)
+			const hasAnswerOrLostOwnership = () =>
+				this.abort || taskSignal.aborted || this.askResponse !== undefined || this.lastMessageTs !== askTs
 			const isMessageQueued = !this.messageQueueService.isEmpty()
 			// Queued messages represent the next conversational turn. Only drain them
 			// at completion/resume boundaries unless the user explicitly steers one.
@@ -8136,7 +8161,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const isStatusMutable =
 				!partial &&
 				!signal?.aborted &&
-				isBlocking &&
+				!hasAnswerOrLostOwnership() &&
+				!this.deferredAskResponse &&
 				(!shouldDrainQueuedMessageForAsk() || !isMessageQueued) &&
 				(approvalModeChanged() ||
 					approval.decision === "ask" ||
@@ -8160,80 +8186,62 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			}
 
-			if (isStatusMutable) {
-				const statusMutationTimeout = 2_000
-
-				if (isInteractiveAsk(type)) {
-					timeouts.push(
-						setTimeout(() => {
-							if (type === "followup") {
-								this.markActiveFollowupQuestionWaiting(askTs)
-								return
-							}
-							const message = this.findMessageByTimestamp(askTs)
-
-							if (message) {
-								this.interactiveAsk = message
-								this.emit(AlphaCodeEventName.TaskInteractive, this.taskId)
-								provider?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
-							}
-						}, statusMutationTimeout),
-					)
-				} else if (isResumableAsk(type)) {
-					timeouts.push(
-						setTimeout(() => {
-							const message = this.findMessageByTimestamp(askTs)
-
-							if (message) {
-								this.resumableAsk = message
-								this.emit(AlphaCodeEventName.TaskResumable, this.taskId)
-							}
-						}, statusMutationTimeout),
-					)
-				} else if (isIdleAsk(type)) {
-					timeouts.push(
-						setTimeout(() => {
-							const message = this.findMessageByTimestamp(askTs)
-
-							if (message) {
-								this.idleAsk = message
-								this.emit(AlphaCodeEventName.TaskIdle, this.taskId)
-							}
-						}, statusMutationTimeout),
-					)
-				}
+			const interactive = isInteractiveAsk(type)
+			const resumable = isResumableAsk(type)
+			if (isStatusMutable && (interactive || resumable || isIdleAsk(type))) {
+				timeouts.push(
+					setTimeout(() => {
+						if (hasAnswerOrLostOwnership() || this.deferredAskResponse) return
+						if (type === "followup") {
+							this.markActiveFollowupQuestionWaiting(askTs)
+							return
+						}
+						const message = this.findMessageByTimestamp(askTs)
+						if (!message) return
+						if (interactive) {
+							this.interactiveAsk = message
+							this.emit(AlphaCodeEventName.TaskInteractive, this.taskId)
+							provider?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
+						} else if (resumable) {
+							this.resumableAsk = message
+							this.emit(AlphaCodeEventName.TaskResumable, this.taskId)
+						} else {
+							this.idleAsk = message
+							this.emit(AlphaCodeEventName.TaskIdle, this.taskId)
+						}
+					}, 2_000),
+				)
 			}
 
-			// Wait for askResponse to be set
-			await pWaitFor(
-				() => {
-					if (this.abort) {
-						return true
+			if (canDrainQueuedInput) this.messageQueueService.on("stateChanged", wakeAsk)
+			while (!hasAnswerOrLostOwnership()) {
+				// Leave FIFO guidance queued while an Apply/Discard lease or a direct reply owns the ask.
+				if (
+					!this.externalMutationLease &&
+					!this.deferredAskResponse &&
+					!installedAsk?.pendingDirectReplies &&
+					shouldDrainQueuedMessageForAsk() &&
+					!this.messageQueueService.isEmpty()
+				) {
+					const message = this.dequeueQueuedMessage()
+					if (message) {
+						const accepted = this.handleWebviewAskResponse(
+							"messageResponse",
+							message.text,
+							message.images,
+							[message.id],
+							askTs,
+						)
+						if (!accepted) this.messageQueueService.releaseMessage(message.id)
+						if (hasAnswerOrLostOwnership()) break
 					}
-
-					if (this.askResponse !== undefined || this.lastMessageTs !== askTs) return true
-					// An Apply/Discard lease owns the workspace boundary. Leave FIFO guidance
-					// queued and wait for any deferred reply to reach the live ask slot.
-					if (this.externalMutationLease || this.deferredAskResponse) return false
-					if (shouldDrainQueuedMessageForAsk() && !this.messageQueueService.isEmpty()) {
-						const message = this.dequeueQueuedMessage()
-						if (message) {
-							const accepted = this.handleWebviewAskResponse(
-								"messageResponse",
-								message.text,
-								message.images,
-								[message.id],
-								askTs,
-							)
-							if (!accepted) this.messageQueueService.releaseMessage(message.id)
-						}
-					}
-					return this.askResponse !== undefined || this.lastMessageTs !== askTs
-				},
-				{ interval: 100 },
-			)
+				}
+				await this.waitForAskStateChange()
+			}
 		} finally {
 			signal?.removeEventListener("abort", onAbort)
+			taskSignal.removeEventListener("abort", wakeAsk)
+			if (canDrainQueuedInput) this.messageQueueService.off("stateChanged", wakeAsk)
 			// Every exit path owns and clears only the timers created for this ask.
 			timeouts.forEach((timeout) => clearTimeout(timeout))
 			if (this.autoApprovalTimeoutRef && timeouts.includes(this.autoApprovalTimeoutRef)) {
@@ -8241,7 +8249,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		if (this.abort) {
+		if (this.abort || taskSignal.aborted) {
 			await this.releaseQueuedAskInput(installedAsk)
 			if (this.activeAsk?.ts === askTs) {
 				this.activeAsk = undefined
@@ -8294,6 +8302,23 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (type === "command" && result.response === "yesButtonClicked") onCommandApproved?.(askTs.toString())
 		this.emit(AlphaCodeEventName.TaskAskResponded)
 		return result
+	}
+
+	private waitForAskStateChange(): Promise<void> {
+		if (!this.askStateChange) {
+			let notify!: () => void
+			const promise = new Promise<void>((resolve) => {
+				notify = resolve
+			})
+			this.askStateChange = { promise, notify }
+		}
+		return this.askStateChange.promise
+	}
+
+	private notifyAskStateChanged(): void {
+		const change = this.askStateChange
+		this.askStateChange = undefined
+		change?.notify()
 	}
 
 	/** A superseded ask must return its selected guidance even after a replacement resets the reply slot. */
@@ -8600,6 +8625,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.askResponseText = text
 		this.askResponseImages = images
 		this.askResponseQueuedMessageIds = queuedMessageIds
+		this.notifyAskStateChanged()
 
 		if (askResponse === "messageResponse" && (Boolean(text?.trim()) || Boolean(images?.length))) {
 			// Human guidance is the recovery boundary the mistake dialog asks for.
@@ -11764,6 +11790,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				}
 				this.releaseSubagentReviewBarrierIfSettled()
+				this.notifyAskStateChanged()
 			},
 		}
 	}
@@ -12271,6 +12298,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		// stopped/replaced owner cannot transfer its resume intent to a successor.
 		if (isNewAdmission && ownsAdmission()) {
 			this.resumeRequiresExplicitInput = false
+			this.notifyAskStateChanged()
 			void this.wakeQueuedInputWhenIdle().catch(() => {
 				console.warn(
 					`[Task#${this.taskId}] Accepted human input remains queued after follow-up admission failed`,
@@ -12323,65 +12351,75 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			throw new Error("Use managed follow-up to resume a completed sub-agent")
 		// Admission is durable before returning to UI/API callers, even while history
 		// initialization or a provider response still owns the current input boundary.
-		const message = queuedMessageIds?.length
-			? undefined
-			: await this.messageQueueService.addMessageDurably(text, images, receiptId)
-		const ids = queuedMessageIds ?? (message ? [message.id] : [])
-		await this.messageQueueService.flush()
-		// Only a fresh durable human admission can lift a Stop restore's fence.
-		// Receipt retries returned above without reauthorizing the retained queue.
-		this.resumeRequiresExplicitInput = false
-		this.postTurnCompactionAbortController?.abort(new SteerRequestInterruptError())
-		if (this.didComplete) {
-			if (this.taskKind !== "primary") throw new Error("Use managed follow-up to resume a completed sub-agent")
-			if (!this.steerMessageAwaitingPersistence) {
-				await this.resumeCompletedTaskFollowup(text, images, "human", ids).catch(() => {
-					console.warn(`[Task#${this.taskId}] Accepted input remains queued after completed follow-up failed`)
-				})
-			}
-			return
-		}
-		if (
-			!originatingAsk ||
-			this.activeAsk !== originatingAsk ||
-			this.activeToolApprovalRequest ||
-			this.askResponse !== undefined ||
-			this.deferredAskResponse
-		) {
-			for (const id of ids.slice().reverse()) this.messageQueueService.releaseMessage(id)
-			await this.messageQueueService.flush()
-			await this.wakeQueuedInputWhenIdle().catch(() => {
-				console.warn(`[Task#${this.taskId}] Accepted input remains queued after follow-up selection failed`)
-			})
-			return
-		}
-		for (const id of ids) this.messageQueueService.claimMessage(id)
+		// Hold FIFO selection for this ask while its direct reply is being reserved.
+		if (originatingAsk) originatingAsk.pendingDirectReplies = (originatingAsk.pendingDirectReplies ?? 0) + 1
 		try {
+			const message = queuedMessageIds?.length
+				? undefined
+				: await this.messageQueueService.addMessageDurably(text, images, receiptId)
+			const ids = queuedMessageIds ?? (message ? [message.id] : [])
 			await this.messageQueueService.flush()
-		} catch {
-			// The input already has a durable admission receipt. Selection failure
-			// falls back to FIFO delivery and must not strand an invisible claim.
-			for (const id of ids.slice().reverse()) this.messageQueueService.releaseMessage(id)
+			// Only a fresh durable human admission can lift a Stop restore's fence.
+			// Receipt retries returned above without reauthorizing the retained queue.
+			this.resumeRequiresExplicitInput = false
+			this.postTurnCompactionAbortController?.abort(new SteerRequestInterruptError())
+			if (this.didComplete) {
+				if (this.taskKind !== "primary")
+					throw new Error("Use managed follow-up to resume a completed sub-agent")
+				if (!this.steerMessageAwaitingPersistence) {
+					await this.resumeCompletedTaskFollowup(text, images, "human", ids).catch(() => {
+						console.warn(
+							`[Task#${this.taskId}] Accepted input remains queued after completed follow-up failed`,
+						)
+					})
+				}
+				return
+			}
+			if (
+				!originatingAsk ||
+				this.activeAsk !== originatingAsk ||
+				this.activeToolApprovalRequest ||
+				this.askResponse !== undefined ||
+				this.deferredAskResponse
+			) {
+				for (const id of (queuedMessageIds ?? []).slice().reverse()) this.messageQueueService.releaseMessage(id)
+				await this.messageQueueService.flush()
+				await this.wakeQueuedInputWhenIdle().catch(() => {
+					console.warn(`[Task#${this.taskId}] Accepted input remains queued after follow-up selection failed`)
+				})
+				return
+			}
+			for (const id of ids) this.messageQueueService.claimMessage(id)
 			try {
 				await this.messageQueueService.flush()
 			} catch {
-				// The admission snapshot still contains these entries for reload.
-				console.warn(`[Task#${this.taskId}] Failed to persist queued reply selection recovery`)
+				// The input already has a durable admission receipt. Selection failure
+				// falls back to FIFO delivery and must not strand an invisible claim.
+				for (const id of ids.slice().reverse()) this.messageQueueService.releaseMessage(id)
+				try {
+					await this.messageQueueService.flush()
+				} catch {
+					// The admission snapshot still contains these entries for reload.
+					console.warn(`[Task#${this.taskId}] Failed to persist queued reply selection recovery`)
+				}
+				console.warn(`[Task#${this.taskId}] Accepted input remains queued after reply selection failed`)
+				return
 			}
-			console.warn(`[Task#${this.taskId}] Accepted input remains queued after reply selection failed`)
-			return
+			if (
+				this.activeAsk !== originatingAsk ||
+				this.activeToolApprovalRequest ||
+				this.askResponse !== undefined ||
+				this.deferredAskResponse
+			) {
+				for (const id of ids.slice().reverse()) this.messageQueueService.releaseMessage(id)
+				await this.messageQueueService.flush()
+				return
+			}
+			this.handleWebviewAskResponse("messageResponse", text, images, ids)
+		} finally {
+			if (originatingAsk?.pendingDirectReplies) originatingAsk.pendingDirectReplies--
+			this.notifyAskStateChanged()
 		}
-		if (
-			this.activeAsk !== originatingAsk ||
-			this.activeToolApprovalRequest ||
-			this.askResponse !== undefined ||
-			this.deferredAskResponse
-		) {
-			for (const id of ids.slice().reverse()) this.messageQueueService.releaseMessage(id)
-			await this.messageQueueService.flush()
-			return
-		}
-		this.handleWebviewAskResponse("messageResponse", text, images, ids)
 	}
 
 	/** Request IDs survive accepted-ACK retries through the queue and transcript receipts. */
@@ -15311,7 +15349,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				captureFailure(error)
 			}
 			try {
-				this.disposeCancelledTaskResources(cancellation)
+				await this.disposeCancelledTaskResources(cancellation)
 			} catch (error) {
 				captureFailure(error)
 			}
@@ -15413,21 +15451,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			await this.finalizeAgentStopMessage({ guard: ownsCancellation, provider: cancellation.provider })
 	}
 
-	private disposeCancelledTaskResources(cancellation: TaskCancellationBoundary): void {
-		if (cancellation.disposalAttempted) return
-		if (cancellation.guard()) {
-			cancellation.disposalAttempted = true
-			this.dispose({
-				preserveCommandOutputArtifacts: cancellation.preserveCommandOutputArtifacts,
-				commandOutputCleanup: cancellation.outputCleanup,
-			})
-		} else if (!this.isCurrentApiConversationHistoryOwner()) {
-			cancellation.disposalAttempted = true
-			this.dispose({
-				preserveSharedTaskResources: true,
-				preserveCommandOutputArtifacts: cancellation.preserveCommandOutputArtifacts,
-				commandOutputCleanup: cancellation.outputCleanup,
-			})
+	private async disposeCancelledTaskResources(cancellation: TaskCancellationBoundary): Promise<void> {
+		try {
+			if (cancellation.disposalAttempted) return
+			const ownsTask = cancellation.guard()
+			if (ownsTask || !this.isCurrentApiConversationHistoryOwner()) {
+				cancellation.disposalAttempted = true
+				this.dispose({
+					...(ownsTask ? {} : { preserveSharedTaskResources: true }),
+					preserveCommandOutputArtifacts: cancellation.preserveCommandOutputArtifacts,
+					commandOutputCleanup: cancellation.outputCleanup,
+				})
+			}
+		} finally {
+			await this.fileContextDisposal
 		}
 	}
 
@@ -15488,7 +15525,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			if (!ownsCancellation()) break abortCleanup
 
 			try {
-				this.disposeCancelledTaskResources(cancellation)
+				await this.disposeCancelledTaskResources(cancellation)
 			} catch (error) {
 				console.error(`Error during task ${this.taskId}.${this.instanceId} disposal:`, error)
 				// Don't rethrow - we want abort to always succeed
@@ -15610,7 +15647,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// services without touching the replacement's shared resources. A
 				// same-instance step handoff retains its live services instead.
 				try {
-					this.disposeCancelledTaskResources(cancellation)
+					await this.disposeCancelledTaskResources(cancellation)
 				} catch (error) {
 					captureCleanupFailure(error)
 				}
@@ -15708,6 +15745,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.abort = true
 			disposalAttempted = true
 			this.dispose({ preserveCommandOutputArtifacts: true })
+			await this.fileContextDisposal
 			assertUnloadOwnership()
 			const goalShutdown = this.goalShutdownPromise
 			await goalShutdown
@@ -15727,6 +15765,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				}
 			}
+			await this.fileContextDisposal
 		}
 		if (failureObserved) throw failure
 	}
@@ -15860,7 +15899,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		try {
-			this.fileContextTracker.dispose()
+			this.fileContextDisposal ??= Promise.resolve(this.fileContextTracker.dispose()).catch((error) => {
+				console.error("Error disposing file context tracker:", error)
+			})
 		} catch (error) {
 			console.error("Error disposing file context tracker:", error)
 		}
@@ -15945,6 +15986,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		} = {},
 	): Promise<void> {
 		if (this.contextCondenseAbortController) throw new Error("Context compaction is in progress")
+		await this.waitForRequestControl(this.alphaIgnoreReady, this.getTaskLifetimeCancellationSignal())
 		if (
 			options.goalAdmission &&
 			(!(await options.goalAdmission.canWake()) || !options.goalAdmission.isStillCurrent())
@@ -18293,14 +18335,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					try {
 						const iterator = stream[Symbol.asyncIterator]()
 
-						// Helper to race iterator.next() with abort signal and the configured API timeout.
+						// The provider read owns the stream's idle timeout. This layer also
+						// bounds startup before provider admission and the separate usage drain.
 						const nextChunkWithAbort = async (
-							operationName = `API response stream for ${cachedModelId}`,
-							timeoutMs = getApiRequestTimeout(),
+							operationName?: string,
+							timeoutMs?: number,
 							requestController = this.currentRequestAbortController,
 							additionalSignal?: AbortSignal,
 						) => {
-							const boundedTimeoutMs = getTimeoutWithinDeadline(timeoutMs, currentItem.retryDeadline)
+							const boundedTimeoutMs =
+								operationName === undefined
+									? undefined
+									: getTimeoutWithinDeadline(timeoutMs, currentItem.retryDeadline)
+							if (operationName === undefined) throwIfAbsoluteDeadlineExceeded(currentItem.retryDeadline)
 							const nextPromise = iterator.next()
 							const requestSignal = requestController?.signal
 							const abortSignals = [
@@ -18340,6 +18387,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							const operation = abortPromise ? Promise.race([nextPromise, abortPromise]) : nextPromise
 
 							try {
+								if (operationName === undefined) return await operation
 								return await withApiRequestTimeout(operation, operationName, boundedTimeoutMs, () => {
 									requestController?.abort(
 										currentItem.retryDeadline !== undefined &&
@@ -18362,7 +18410,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 						}
 
-						let item = await nextChunkWithAbort()
+						let item = await nextChunkWithAbort(
+							`API response stream for ${cachedModelId}`,
+							getApiRequestTimeout(),
+						)
 						while (!item.done) {
 							if (!ownsResponseStep()) return supersededResponseResult()
 							const chunk = item.value
@@ -21994,7 +22045,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		assertPreflightWithinBudget()
 
 		const configuredRequestTimeoutMs = getApiRequestTimeout()
-		// Codex c92700d resets provider idle waits after each application event.
+		// Codex b016cd184 resets provider idle waits after each application event.
 		// Only an explicit caller/recovery limit bounds a progressing response.
 		const requestDeadline = options.retryDeadline
 		const requestAdmissionDeadline = getBoundedRequestDeadline(configuredRequestTimeoutMs, requestDeadline)
@@ -22002,7 +22053,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			requestDeadline !== undefined && requestAdmissionDeadline === requestDeadline
 				? "retry_deadline"
 				: "request_deadline"
-		const requestTimeoutMs = getTimeoutWithinDeadline(configuredRequestTimeoutMs, requestDeadline)
 		// Create an AbortController to allow cancelling the request mid-stream
 		const requestController = new AbortController()
 		const abortSignal = requestController.signal
@@ -22094,20 +22144,32 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 		// Install request ownership only after lifecycle preflight has succeeded.
 		// A failed/aborted lifecycle await therefore cannot strand an active signal.
+		const createStreamIdleTimeout = (controller: AbortController) =>
+			new ApiRequestIdleTimeout(
+				`API response stream for ${step.snapshot.context.provider.modelId}`,
+				configuredRequestTimeoutMs,
+				() =>
+					controller.abort(
+						new ApiRequestTimeoutError("Provider response stream", configuredRequestTimeoutMs ?? 0),
+					),
+			)
+		const streamIdleTimeout = createStreamIdleTimeout(requestController)
+		let requestDeadlineTimer: ReturnType<typeof setTimeout> | undefined
 		let removeFirstChunkAbortListener: (() => void) | undefined
 		const clearOwnedRequestController = () => {
+			if (requestDeadlineTimer !== undefined) clearTimeout(requestDeadlineTimer)
+			requestDeadlineTimer = undefined
 			if (this.currentRequestAbortController === requestController) {
 				this.currentRequestAbortController = undefined
 			}
 		}
 		const clearRequestOwnership = () => {
+			streamIdleTimeout.dispose()
 			removeFirstChunkAbortListener?.()
 			removeFirstChunkAbortListener = undefined
 			stepInterruptionSignal?.removeEventListener("abort", abortFromStep)
 			abortSignal.removeEventListener("abort", clearOwnedRequestController)
-			if (this.currentRequestAbortController === requestController) {
-				this.currentRequestAbortController = undefined
-			}
+			clearOwnedRequestController()
 			if (this.currentRequestSignal === abortSignal) {
 				this.currentRequestSignal = undefined
 			}
@@ -22153,7 +22215,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			})
 			return
 		}
-		let stream: ApiStream
+		let iterator: AsyncIterator<ApiStreamChunk>
 		try {
 			await this.awaitLifecycleHookCleanup()
 			this.throwIfStepInterrupted(abortSignal)
@@ -22163,15 +22225,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.performanceRequestPending = false
 				this.performanceSubmissionStartedAt = undefined
 			}
-			stream = this.observeModelRequest(
+			requestDeadlineTimer = scheduleApiStreamDeadline(requestController, requestDeadline, "retry_deadline")
+			this.throwIfStepInterrupted(abortSignal)
+			const stream = this.observeModelRequest(
 				() => requestHandler.createMessage(request.systemPrompt, request.messages, requestMetadata),
 				abortSignal,
 			)
+			iterator = stream[Symbol.asyncIterator]()
 		} catch (error) {
 			clearRequestOwnership()
 			throw error
 		}
-		const iterator = stream[Symbol.asyncIterator]()
 		let activeRequestStep = step
 		let streamCompleted = false
 		let streamFailure: unknown
@@ -22202,27 +22266,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 				})
 
-				const firstChunk = await withApiRequestTimeout(
-					// abortPromise owns normalized user/steer cancellation; this guard owns only the deadline.
-					this.waitForRequestControl(
-						Promise.race([firstChunkPromise, abortPromise]),
-						undefined,
-						requestDeadline,
-					),
-					`API response stream for ${step.snapshot.context.provider.modelId}`,
-					requestTimeoutMs,
-					() => {
-						requestController.abort(
-							requestDeadline !== undefined && Date.now() >= requestDeadline
-								? new ApiStreamDeadlineError("Automatic retry deadline exceeded", "retry_deadline")
-								: new ApiRequestTimeoutError("Provider response stream", requestTimeoutMs ?? 0),
-						)
-					},
-				)
+				const firstChunk = await streamIdleTimeout.wait(Promise.race([firstChunkPromise, abortPromise]))
 				removeFirstChunkAbortListener?.()
 				removeFirstChunkAbortListener = undefined
 				this.isWaitingForFirstChunk = false
 				this.throwIfStepInterrupted(abortSignal)
+				throwIfAbsoluteDeadlineExceeded(requestDeadline)
 				streamCompleted = firstChunk.done === true
 				yield firstChunk.value
 			} catch (error) {
@@ -22302,7 +22351,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						this.throwIfStepInterrupted(stepInterruptionSignal)
 						throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
 						const compatibilityRequest = step.getRequest()
-						const compatibilityController = new AbortController()
+						const compatibilityControl = createLinkedAbortController({
+							deadline: compatibilityDeadline,
+							deadlineScope: "retry_deadline",
+						})
+						const compatibilityController = compatibilityControl.controller
+						const compatibilityIdleTimeout = createStreamIdleTimeout(compatibilityController)
 						const abortCompatibilityFromStep = () => {
 							const reason = stepInterruptionSignal?.reason
 							if (!compatibilityController.signal.aborted) {
@@ -22337,6 +22391,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						try {
 							await this.awaitLifecycleHookCleanup()
 							this.throwIfStepInterrupted(stepInterruptionSignal)
+							throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
 							if (this.currentAgentStep !== activeRequestStep) throw new LifecycleHookOwnershipError()
 							const compatibilityStep = this.captureAgentStep(
 								compatibilityAttempt,
@@ -22364,10 +22419,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							)
 							compatibilityIterator = compatibilityStream[Symbol.asyncIterator]()
 							const nextCompatibilityChunk = async (): Promise<IteratorResult<ApiStreamChunk>> => {
-								const readTimeoutMs = getTimeoutWithinDeadline(
-									configuredRequestTimeoutMs,
-									compatibilityDeadline,
-								)
+								throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
 								const nextPromise = compatibilityIterator!.next()
 								let removeAbortListener: (() => void) | undefined
 								const abortPromise = new Promise<never>((_resolve, reject) => {
@@ -22390,38 +22442,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									}
 								})
 								try {
-									try {
-										return await withApiRequestTimeout(
-											Promise.race([nextPromise, abortPromise]),
-											`API response stream for ${step.snapshot.context.provider.modelId}`,
-											readTimeoutMs,
-											() => {
-												compatibilityController.abort(
-													compatibilityDeadline !== undefined &&
-														Date.now() >= compatibilityDeadline
-														? new ApiStreamDeadlineError(
-																"Automatic retry deadline exceeded",
-																"retry_deadline",
-															)
-														: new ApiRequestTimeoutError(
-																"Provider response stream",
-																readTimeoutMs ?? 0,
-															),
-												)
-											},
-										)
-									} catch (error) {
-										if (
-											compatibilityRetryDeadline !== undefined &&
-											Date.now() >= compatibilityRetryDeadline
-										) {
-											throw new ApiStreamDeadlineError(
-												"Automatic retry deadline exceeded",
-												"retry_deadline",
-											)
-										}
-										throw error
-									}
+									return await compatibilityIdleTimeout.wait(
+										Promise.race([nextPromise, abortPromise]),
+									)
+								} catch (error) {
+									throwIfAbsoluteDeadlineExceeded(compatibilityDeadline)
+									throw error
 								} finally {
 									removeAbortListener?.()
 								}
@@ -22453,6 +22479,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							if (nextError instanceof SteerRequestInterruptError) throw nextError
 							if (stepInterruptionSignal?.aborted) this.throwIfStepInterrupted(stepInterruptionSignal)
 						} finally {
+							compatibilityIdleTimeout.dispose()
+							compatibilityControl.dispose()
 							stepInterruptionSignal?.removeEventListener("abort", abortCompatibilityFromStep)
 							if (!compatibilityStreamCompleted) {
 								if (!compatibilityController.signal.aborted) {
@@ -22485,16 +22513,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// closes the generator while it is suspended at the first yield.
 			while (!streamCompleted) {
 				this.throwIfStepInterrupted(abortSignal)
-				const chunk = await withApiRequestTimeout(
-					this.waitForRequestControl(iterator.next(), abortSignal, requestDeadline),
-					`API response stream for ${step.snapshot.context.provider.modelId}`,
-					configuredRequestTimeoutMs,
-					() =>
-						requestController.abort(
-							new ApiRequestTimeoutError("Provider response stream", configuredRequestTimeoutMs ?? 0),
-						),
-				)
+				throwIfAbsoluteDeadlineExceeded(requestDeadline)
+				const chunk = await streamIdleTimeout.wait(this.waitForRequestControl(iterator.next(), abortSignal))
 				this.throwIfStepInterrupted(abortSignal)
+				throwIfAbsoluteDeadlineExceeded(requestDeadline)
 				streamCompleted = chunk.done === true
 				if (!chunk.done) yield chunk.value
 			}

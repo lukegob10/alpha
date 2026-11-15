@@ -9,10 +9,10 @@ import {
 	isAutoCondenseLimitReached,
 	isPostTurnCondenseDue,
 	manageContext,
-	truncateConversation,
 	willManageContext,
 } from "../index"
 import {
+	getEffectiveApiHistory,
 	getToolCallResultPairs,
 	getToolFreeMetadata,
 	hasToolCallResultIntegrity,
@@ -191,25 +191,55 @@ describe("bounded context recovery policy", () => {
 		},
 	)
 
-	it("keeps tool call/result pairs together when truncating", () => {
+	it.each([false, true])("keeps tool pairs together and preserves unread mail (sampled=%s)", async (sampled) => {
 		const messages: ApiMessage[] = [
 			{ role: "user", content: "Initial task", ts: 1 },
+			{ role: "assistant", content: "Initial response", ts: 2 },
+			{ role: "user", content: "Older discussion. ".repeat(100), ts: 3 },
+			{ role: "assistant", content: "Looking up the file", ts: 4 },
+			{ role: "user", content: "Agent report", input_origin: "agent", agent_message_id: "mail", ts: 5 },
 			{
 				role: "assistant",
 				content: [{ type: "tool_use", id: "call-1", name: "read_file", input: { path: "a.ts" } }],
-				ts: 2,
+				ts: 6,
 			},
-			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "contents" }], ts: 3 },
-			{ role: "assistant", content: "Done", ts: 4 },
-			{ role: "user", content: "Next", ts: 5 },
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call-1", content: "contents" }], ts: 7 },
+			{ role: "assistant", content: "Done with the earlier request", ts: 8 },
+			{ role: "user", content: "Follow-up request", ts: 9 },
+			{
+				role: "assistant",
+				content: "Follow-up response",
+				ts: 10,
+				...(sampled ? { sampled_agent_message_ids: ["mail"] } : {}),
+			},
+			{ role: "user", content: "More details", ts: 11 },
+			{ role: "assistant", content: "Acknowledged", ts: 12 },
+			{ role: "user", content: "Next", ts: 13 },
 		]
 
-		const result = truncateConversation(messages, 0.5, "task-1")
-		const pair = getToolCallResultPairs(result.messages).get("call-1")
-		expect(pair?.callMessageIndexes).toHaveLength(1)
-		expect(pair?.resultMessageIndexes).toHaveLength(1)
-		expect(result.messages[1].truncationParent).toBe(result.messages[2].truncationParent)
-		expect(hasToolCallResultIntegrity(result.messages)).toBe(true)
+		const result = await manageContext({
+			messages,
+			totalTokens: 2_000,
+			contextWindow: 1_000,
+			maxTokens: 100,
+			apiHandler: createCountingHandler(),
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 50,
+			systemPrompt: "System",
+			taskId: "task-1",
+		})
+
+		expect(result.status).toBe("reduced")
+		expect(result.truncationId).toBeDefined()
+		expect(result.messages).toHaveLength(messages.length + 1)
+		expect(result.messages.find((message) => message.ts === 6)?.truncationParent).toBe(result.truncationId)
+		expect(result.messages.find((message) => message.ts === 7)?.truncationParent).toBe(result.truncationId)
+		expect(getToolCallResultPairs(result.messages).get("call-1")).toBeDefined()
+		const visible = getEffectiveApiHistory(result.messages)
+		expect(hasToolCallResultIntegrity(visible)).toBe(true)
+		expect(visible.slice(0, 2)).toEqual(messages.slice(0, 2))
+		expect(visible.at(-1)).toEqual(messages.at(-1))
+		expect(visible.some((message) => message.agent_message_id === "mail")).toBe(!sampled)
 	})
 
 	it.each(

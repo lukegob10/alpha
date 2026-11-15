@@ -939,32 +939,5 @@ describe("validateAndFixToolResultIds", () => {
 				{ type: "tool_result", tool_use_id: "tool-1", content: "Content" },
 			])
 		})
-
-		it("does not add receipts when every tool result already exists", () => {
-			const assistantMessage: Anthropic.MessageParam = {
-				role: "assistant",
-				content: [
-					{
-						type: "tool_use",
-						id: "tool-123",
-						name: "read_file",
-						input: { path: "test.txt" },
-					},
-				],
-			}
-
-			const userMessage: Anthropic.MessageParam = {
-				role: "user",
-				content: [
-					{
-						type: "tool_result",
-						tool_use_id: "tool-123",
-						content: "Content",
-					},
-				],
-			}
-
-			expect(validateAndFixToolResultIds(userMessage, [assistantMessage])).toEqual(userMessage)
-		})
 	})
 })

@@ -36,6 +36,7 @@ function fixture() {
 		taskControlMessageQueues: new Map(),
 		immediateWebviewOperations: new Set(),
 		webviewDisposables: [],
+		webviewLaunchWaiters: new Set(),
 		getActiveTaskId,
 		getCurrentTask: () => {
 			const taskId = getActiveTaskId()
@@ -93,6 +94,17 @@ beforeEach(() => {
 })
 
 describe("file picker provider dispatch", () => {
+	it("uses the draft workspace while an outgoing task is still active", async () => {
+		const { receive, getLiveTask } = fixture()
+		await receive({ type: "searchFiles", requestId: "draft", query: "file", workspaceScope: true })
+
+		expect(dispatchedFileRequests()).toEqual([
+			{ type: "searchFiles", requestId: "draft", query: "file", workspaceScope: true },
+		])
+		expect(fileSearchOptions("draft")?.cwd).toBe("/workspace")
+		expect(getLiveTask).not.toHaveBeenCalled()
+	})
+
 	it("coalesces twenty queries behind one joined reader while unrelated commands remain available", async () => {
 		const blocked = deferred()
 		vi.mocked(webviewMessageHandler).mockImplementation(async (_provider, message) => {

@@ -100,7 +100,7 @@ describe("WorktreeSelector", () => {
 		fireEvent.click(screen.getByRole("button", { name: "worktrees:newWorktree" }))
 
 		expect(screen.getByRole("dialog")).toBeInTheDocument()
-		expect(mockPostMessage).toHaveBeenCalledWith({ type: "getWorktreeDefaults" })
+		expect(mockPostMessage).toHaveBeenCalledWith({ type: "getWorktreeDefaults", requestId: expect.any(String) })
 	})
 
 	test.each([{ isMultiRoot: true }, { isSubfolder: true }])(

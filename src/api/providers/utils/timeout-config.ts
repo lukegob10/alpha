@@ -50,35 +50,60 @@ export function formatApiRequestTimeoutError(operationName: string, timeoutMs: n
 	return `${operationName} timed out after ${timeoutSeconds} ${unit}.`
 }
 
+/** Reuses one Node timer across sequential reads of a response stream. */
+export class ApiRequestIdleTimeout {
+	private timer: ReturnType<typeof setTimeout> | undefined
+	private expire: (() => void) | undefined
+
+	constructor(
+		private readonly operationName: string,
+		private readonly timeoutMs: number | undefined,
+		private readonly onTimeout?: (error: ApiRequestTimeoutError) => void,
+	) {}
+
+	async wait<T>(operation: PromiseLike<T>): Promise<T> {
+		const { timeoutMs } = this
+		if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return operation
+
+		const timeout = new Promise<never>((_resolve, reject) => {
+			this.expire = () => {
+				const error = new ApiRequestTimeoutError(this.operationName, timeoutMs)
+				try {
+					this.onTimeout?.(error)
+				} catch {
+					// The timeout error below is the actionable failure.
+				}
+				reject(error)
+			}
+			if (this.timer) this.timer.refresh().ref()
+			else this.timer = setTimeout(() => this.expire?.(), timeoutMs)
+		})
+
+		try {
+			return await Promise.race([operation, timeout])
+		} finally {
+			// A stream consumer can pause between reads. Only a pending read can expire.
+			this.expire = undefined
+			this.timer?.unref()
+		}
+	}
+
+	dispose() {
+		if (this.timer !== undefined) clearTimeout(this.timer)
+		this.timer = undefined
+	}
+}
+
 export async function withApiRequestTimeout<T>(
 	operation: PromiseLike<T>,
 	operationName: string,
 	timeoutMs = getApiRequestTimeout(),
 	onTimeout?: () => void,
 ): Promise<T> {
-	if (typeof timeoutMs !== "number" || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
-		return operation
-	}
-
-	let timeout: ReturnType<typeof setTimeout> | undefined
-
-	const timeoutPromise = new Promise<never>((_resolve, reject) => {
-		timeout = setTimeout(() => {
-			try {
-				onTimeout?.()
-			} catch {
-				// The timeout error below is the actionable failure.
-			}
-
-			reject(new ApiRequestTimeoutError(operationName, timeoutMs))
-		}, timeoutMs)
-	})
-
+	const timeout = new ApiRequestIdleTimeout(operationName, timeoutMs, onTimeout)
 	try {
-		return await Promise.race([operation, timeoutPromise])
+		return await timeout.wait(operation)
 	} finally {
-		if (timeout) {
-			clearTimeout(timeout)
-		}
+		timeout.dispose()
 	}
 }

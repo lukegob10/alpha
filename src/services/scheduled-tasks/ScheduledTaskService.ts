@@ -428,7 +428,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 			return
 		}
 		if (this.timer) {
-			clearTimeout(this.timer)
+			this.timer.refresh()
+			return
 		}
 		this.timer = setTimeout(() => {
 			this.timer = undefined
@@ -438,7 +439,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	private scheduleRefresh(): void {
 		if (this.disposed) return
-		if (this.refreshTimer) clearTimeout(this.refreshTimer)
+		if (this.refreshTimer) {
+			this.refreshTimer.refresh()
+			return
+		}
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = undefined
 			void this.refreshState().catch((error) => {

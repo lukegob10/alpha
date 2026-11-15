@@ -1,5 +1,5 @@
 import { AlphaMessage, HistoryItem } from "@alpha-code/types"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 
 export type RestoreHistoryDraft = (taskId: string | undefined, recalledPrompt: string, originalDraft: string) => void
 
@@ -45,6 +45,7 @@ export const usePromptHistory = ({
 	// Prompt history navigation state
 	const [historyIndex, setHistoryIndex] = useState(-1)
 	const [tempInput, setTempInput] = useState("")
+	const pendingSelection = useRef<{ textarea: HTMLTextAreaElement; position: number }>()
 	const recalledDraft = useRef<{
 		taskId?: string
 		originalDraft: string
@@ -116,22 +117,12 @@ export const usePromptHistory = ({
 		}
 	}, [inputValue])
 
-	// Helper to set cursor position after React renders
-	const setCursorPosition = useCallback(
-		(textarea: HTMLTextAreaElement, position: number | "start" | "end", length?: number) => {
-			setTimeout(() => {
-				if (position === "start") {
-					textarea.setSelectionRange(0, 0)
-				} else if (position === "end") {
-					const len = length ?? textarea.value.length
-					textarea.setSelectionRange(len, len)
-				} else {
-					textarea.setSelectionRange(position, position)
-				}
-			}, 0)
-		},
-		[],
-	)
+	useLayoutEffect(() => {
+		const selection = pendingSelection.current
+		if (!selection) return
+		pendingSelection.current = undefined
+		selection.textarea.setSelectionRange(selection.position, selection.position)
+	}, [historyIndex, inputValue])
 
 	// Helper to navigate to a specific history entry
 	const navigateToHistory = useCallback(
@@ -147,25 +138,25 @@ export const usePromptHistory = ({
 				recalledPrompt: historicalPrompt,
 				restore: onRestoreHistoryDraft,
 			}
+			pendingSelection.current = { textarea, position: cursorPos === "start" ? 0 : historicalPrompt.length }
 			setHistoryIndex(newIndex)
 			setInputValue(historicalPrompt)
-			setCursorPosition(textarea, cursorPos, historicalPrompt.length)
 
 			return true
 		},
-		[promptHistory, taskId, inputValue, onRestoreHistoryDraft, setInputValue, setCursorPosition],
+		[promptHistory, taskId, inputValue, onRestoreHistoryDraft, setInputValue],
 	)
 
 	// Helper to return to current input
 	const returnToCurrentInput = useCallback(
 		(textarea: HTMLTextAreaElement, cursorPos: "start" | "end" = "end") => {
 			recalledDraft.current = undefined
+			pendingSelection.current = { textarea, position: cursorPos === "start" ? 0 : tempInput.length }
 			setHistoryIndex(-1)
 			setTempInput("")
 			setInputValue(tempInput)
-			setCursorPosition(textarea, cursorPos, tempInput.length)
 		},
-		[tempInput, setInputValue, setCursorPosition],
+		[tempInput, setInputValue],
 	)
 
 	const handleHistoryNavigation = useCallback(

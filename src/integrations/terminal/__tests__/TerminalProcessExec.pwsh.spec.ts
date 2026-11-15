@@ -1,8 +1,6 @@
 // pnpm --dir src test integrations/terminal/__tests__/TerminalProcessExec.pwsh.spec.ts
 
-// Probe shell availability only for this suite instead of every unit-test file.
-import "./setupTerminalTests"
-
+import { execSync } from "child_process"
 import * as vscode from "vscode"
 
 import { ExitCodeDetails } from "../types"
@@ -10,7 +8,18 @@ import { TerminalProcess } from "../TerminalProcess"
 import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
 import { createPowerShellStream } from "./streamUtils/pwshStream"
-import { createPowerShellMockStream, isPowerShellCoreAvailable } from "./streamUtils"
+import { createPowerShellMockStream } from "./streamUtils"
+
+function isPowerShellCoreAvailable() {
+	try {
+		execSync("pwsh -Command \"Write-Host 'PowerShell Core is available'\"", {
+			stdio: "pipe",
+		})
+		return true
+	} catch (error) {
+		return false
+	}
+}
 
 // Skip this test if PowerShell Core is not available
 const hasPwsh = isPowerShellCoreAvailable()

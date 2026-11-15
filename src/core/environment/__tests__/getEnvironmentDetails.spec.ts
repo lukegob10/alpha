@@ -143,7 +143,6 @@ describe("getEnvironmentDetails", () => {
 		;(Terminal.compressTerminalOutput as Mock).mockImplementation((output: string) => output)
 		;(TerminalRegistry.getTerminals as Mock).mockReturnValue([])
 		;(TerminalRegistry.getBackgroundTerminals as Mock).mockReturnValue([])
-		;(TerminalRegistry.isProcessHot as Mock).mockReturnValue(false)
 		;(TerminalRegistry.getUnretrievedOutput as Mock).mockReturnValue("")
 		;(getGitStatus as Mock).mockResolvedValue("## main")
 		vi.mocked(pWaitFor).mockResolvedValue(undefined)

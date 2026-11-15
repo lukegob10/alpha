@@ -38,6 +38,46 @@ const routes: Array<{ name: string; create(): ApiHandler & SingleCompletionHandl
 ]
 
 describe("Gemini stream fidelity", () => {
+	it.each(routes)(
+		"blocks a late $name transport and closes a returned stream after cancellation",
+		async ({ create }) => {
+			const controller = new AbortController()
+			const cancelled = new Error("The turn stopped")
+			let recordSignal!: (signal: AbortSignal) => void
+			let admitStream!: (stream: AsyncIterable<never>) => void
+			let markClosed!: () => void
+			const receivedSignal = new Promise<AbortSignal>((resolve) => (recordSignal = resolve))
+			const admission = new Promise<AsyncIterable<never>>((resolve) => (admitStream = resolve))
+			const closed = new Promise<void>((resolve) => (markClosed = resolve))
+			const next = vi.fn()
+			generateContentStream.mockImplementationOnce(({ config }) => {
+				recordSignal(config.abortSignal)
+				return admission
+			})
+			const result = create()
+				.createMessage("System", messages, { taskId: "cancelled", signal: controller.signal })
+				.next()
+			const rejected = expect(result).rejects.toBe(cancelled)
+			const signal = await receivedSignal
+			controller.abort(cancelled)
+			await rejected
+			expect(() => signal.addEventListener("abort", () => {})).toThrow(cancelled)
+			admitStream({
+				[Symbol.asyncIterator]() {
+					return {
+						next,
+						return: async () => {
+							markClosed()
+							return { done: true, value: undefined }
+						},
+					}
+				},
+			})
+			await closed
+			expect(next).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each(routes.flatMap((route) => ["stream", "completion"].map((operation) => ({ ...route, operation }))))(
 		"preserves $name $operation errors and retry metadata",
 		async ({ create, operation }) => {
@@ -134,6 +174,7 @@ describe("Gemini stream fidelity", () => {
 		async ({ create }) => {
 			vi.useFakeTimers()
 			vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
+			const schedule = vi.spyOn(globalThis, "setTimeout")
 			generateContentStream.mockResolvedValue({
 				async *[Symbol.asyncIterator]() {
 					for (let index = 0; index < 4; index++) {
@@ -160,8 +201,10 @@ describe("Gemini stream fidelity", () => {
 				await consuming
 				expect(text).toEqual(["chunk 0", "chunk 1", "chunk 2", "chunk 3"])
 				expect(generateContentStream.mock.calls[0][0].config.httpOptions ?? {}).not.toHaveProperty("timeout")
+				expect(schedule.mock.calls.filter(([, delay]) => delay === 100)).toHaveLength(2)
 				expect(vi.getTimerCount()).toBe(0)
 			} finally {
+				schedule.mockRestore()
 				vi.useRealTimers()
 			}
 		},

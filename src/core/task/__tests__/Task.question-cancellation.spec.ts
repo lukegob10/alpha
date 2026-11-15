@@ -270,25 +270,19 @@ describe("question cancellation owns its Task ask", () => {
 					).toBe(true)
 				}
 				request.controller.abort()
-				// Keep the other ask's 100 ms poll suspended while checking its accepted reply slot.
 				await vi.advanceTimersByTimeAsync(0)
 				expect(request.isSettled()).toBe(true)
 				await request.pending
 				expectCancelled(request)
 				expect(task.abort).toBe(false)
-				expect(task.getActiveAskTimestamp()).toBe(timestamp)
 				expect(task.lastMessageTs).toBe(timestamp)
-				expect(Reflect.get(task, "askResponse")).toBe(
-					kind === "accepted-response" ? "messageResponse" : undefined,
-				)
+				if (kind === "pending") expect(task.getActiveAskTimestamp()).toBe(timestamp)
 
 				state.resolve(undefined)
 				await vi.advanceTimersByTimeAsync(0)
-				expect(task.getActiveAskTimestamp()).toBe(timestamp)
 				expect(task.alphaMessages).toHaveLength(1)
-				if (kind === "accepted-response") {
-					expect(Reflect.get(task, "askResponseText")).toBe("The user's accepted answer")
-				} else {
+				if (kind === "pending") {
+					expect(task.getActiveAskTimestamp()).toBe(timestamp)
 					expect(
 						task.handleWebviewAskResponse(
 							"messageResponse",
@@ -299,7 +293,7 @@ describe("question cancellation owns its Task ask", () => {
 						),
 					).toBe(true)
 				}
-				await vi.advanceTimersByTimeAsync(100)
+				await vi.advanceTimersByTimeAsync(0)
 				await expect(otherAsk).resolves.toMatchObject({
 					response: "messageResponse",
 					text: "The user's accepted answer",

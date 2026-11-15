@@ -36,6 +36,7 @@ function fixture() {
 		taskControlMessageQueues: new Map(),
 		immediateWebviewOperations: new Set(),
 		webviewDisposables: [],
+		webviewLaunchWaiters: new Set(),
 		getActiveTaskId,
 		getCurrentTask: () => {
 			const taskId = getActiveTaskId()
@@ -185,6 +186,17 @@ describe("ticket picker provider dispatch", () => {
 		await Promise.all([first, pending])
 		expect(dispatchedTicketRequests().find((message) => message.requestId === "pending")?.taskId).toBe("task-one")
 		expect(ticketSearchOptions("pending")?.cwd).toBe("/workspace/task-one")
+	})
+
+	it("uses the draft project while an outgoing task is still active", async () => {
+		const { receive, getLiveTask } = fixture()
+		await receive({ type: "searchTickets", requestId: "draft", query: "ticket", workspaceScope: true })
+
+		expect(dispatchedTicketRequests()).toEqual([
+			{ type: "searchTickets", requestId: "draft", query: "ticket", workspaceScope: true },
+		])
+		expect(ticketSearchOptions("draft")?.cwd).toBe("/workspace")
+		expect(getLiveTask).not.toHaveBeenCalled()
 	})
 
 	it("captures the draft project before workspace navigation changes it", async () => {

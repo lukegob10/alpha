@@ -1837,6 +1837,50 @@ describe("Task persistence", () => {
 			expect(completed).not.toHaveBeenCalled()
 		})
 
+		it("restores exactly one durable completion tool result after a late evidence wait", async () => {
+			const task = createTask()
+			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			mockProvider.rollbackTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)
+			const callId = "completion-call"
+			task.apiConversationHistory = [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: callId, name: "attempt_completion", input: { result: "Done" } }],
+				},
+			]
+			task.assistantMessageSavedToHistory = true
+			const receipt = { type: "tool_result" as const, tool_use_id: callId, content: "Completion receipt" }
+			expect(task.pushToolResultToUserContent(receipt)).toBe(true)
+			vi.spyOn(task, "getCompletionGateDecision")
+				.mockResolvedValue({ allowed: true, modelCanResolveRejection: true })
+				.mockResolvedValueOnce({
+					allowed: false,
+					classification: "waiting",
+					reasonCode: "evidence_pending",
+					modelCanResolveRejection: false,
+				})
+			const results = () =>
+				task.apiConversationHistory
+					.flatMap((message) => (Array.isArray(message.content) ? message.content : []))
+					.filter((block) => block.type === "tool_result")
+			const wait = task.waitForCompletionGateDecision.bind(task)
+			vi.spyOn(task, "waitForCompletionGateDecision").mockImplementationOnce(async () => {
+				expect(results()).toEqual([])
+				expect(task.canMutateWorkspace()).toBe(true)
+				await expect(task.finalizeTaskCompletion()).resolves.toBe(false)
+				return wait()
+			})
+
+			await expect(task.finalizeTaskCompletion(callId)).resolves.toBe(true)
+			expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
+			expect(task.isCompleted()).toBe(true)
+			expect(results()).toEqual([receipt])
+			expect(mockSaveApiMessages.mock.calls.at(-1)?.[0].messages.at(-1)).toMatchObject({
+				role: "user",
+				content: [receipt],
+			})
+		})
+
 		it("rejects a save admitted during the final verification gate without marking completed", async () => {
 			const task = createTask()
 			mockProvider.prepareTaskCompletionLifecycle = vi.fn().mockResolvedValue(undefined)

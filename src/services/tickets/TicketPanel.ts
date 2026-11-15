@@ -175,7 +175,10 @@ export class TicketPanel implements vscode.Disposable {
 				let refreshTimer: ReturnType<typeof setTimeout> | undefined
 				// One imported hierarchy can change hundreds of files; refresh the projection as a batch.
 				const changed = () => {
-					if (refreshTimer) clearTimeout(refreshTimer)
+					if (refreshTimer) {
+						refreshTimer.refresh()
+						return
+					}
 					refreshTimer = setTimeout(() => {
 						refreshTimer = undefined
 						this.post({ type: "ticketChanged", project: store.projectId })

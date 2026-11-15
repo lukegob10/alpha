@@ -6,6 +6,7 @@ import { resolveRipgrepBinary } from "../../../services/ripgrep"
 import { ExecaTerminal } from "../ExecaTerminal"
 import { Terminal } from "../Terminal"
 import { TerminalRegistry } from "../TerminalRegistry"
+import { ShellIntegrationManager } from "../ShellIntegrationManager"
 
 const PAGER = process.platform === "win32" ? "" : "cat"
 const windowsShellOptions =
@@ -182,6 +183,34 @@ describe("TerminalRegistry", () => {
 		} finally {
 			if (originalPath === undefined) delete process.env[pathKey]
 			else process.env[pathKey] = originalPath
+		}
+	})
+
+	it("waits for zsh startup setup before creating a VS Code terminal", async () => {
+		let beganSetup!: () => void
+		let finishSetup!: (directory: string) => void
+		const setupStarted = new Promise<void>((resolve) => (beganSetup = resolve))
+		const prepared = new Promise<string>((resolve) => (finishSetup = resolve))
+		const enabled = vi.spyOn(Terminal, "getTerminalZdotdir").mockReturnValue(true)
+		const setup = vi.spyOn(ShellIntegrationManager, "zshInitTmpDir").mockImplementationOnce(() => {
+			beganSetup()
+			return prepared
+		})
+		const creating = TerminalRegistry.getOrCreateTerminal("/test/zsh-startup", "zsh-startup")
+		try {
+			await setupStarted
+			expect(mockCreateTerminal).not.toHaveBeenCalled()
+			finishSetup("/test/zsh-temp")
+			const terminal = await creating
+			expect(mockCreateTerminal).toHaveBeenCalledWith(
+				expect.objectContaining({ env: expect.objectContaining({ ZDOTDIR: "/test/zsh-temp" }) }),
+			)
+			ShellIntegrationManager.terminalTmpDirs.delete(terminal.id)
+		} finally {
+			finishSetup("/test/zsh-temp")
+			await creating
+			setup.mockRestore()
+			enabled.mockRestore()
 		}
 	})
 

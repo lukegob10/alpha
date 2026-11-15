@@ -119,7 +119,7 @@ vi.mock("../../activate", () => {
 vi.mock("../../i18n", () => ({ initializeI18n: vi.fn() }))
 
 import type * as vscode from "vscode"
-import { commands, window } from "vscode"
+import { commands, window, workspace } from "vscode"
 import { activate, deactivate } from "../../extension"
 import { ChatGptAuthService } from "../../services/chatgpt/ChatGptAuthService"
 
@@ -421,8 +421,7 @@ describe("extension lifecycle", () => {
 		await deactivate()
 	})
 
-	it("persists the default command policy before initializing provider state", async () => {
-		let finishGlobalStateUpdate!: () => void
+	it("does not copy inherited command rules into extension-global storage on activation", async () => {
 		const context = {
 			extensionPath: "/extension",
 			extensionUri: {},
@@ -430,19 +429,26 @@ describe("extension lifecycle", () => {
 			secrets: createSecretStorage(),
 			globalState: {
 				get: vi.fn(),
-				update: vi.fn(() => new Promise<void>((resolve) => (finishGlobalStateUpdate = resolve))),
+				update: vi.fn().mockResolvedValue(undefined),
 			},
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
 
-		const activating = activate(context)
-		await vi.waitFor(() => expect(context.globalState.update).toHaveBeenCalledWith("allowedCommands", []))
-		expect(mocks.getContextProxy).not.toHaveBeenCalled()
-
-		finishGlobalStateUpdate()
-		await activating
-		expect(mocks.getContextProxy).toHaveBeenCalledWith(context)
-		await deactivate()
+		await vi.mocked(workspace.getConfiguration).withImplementation(
+			() =>
+				({
+					get: vi.fn((key: string) => (key === "allowedCommands" ? ["git status"] : undefined)),
+				}) as unknown as vscode.WorkspaceConfiguration,
+			async () => {
+				try {
+					await activate(context)
+					expect(mocks.getContextProxy).toHaveBeenCalledWith(context)
+					expect(context.globalState.update).not.toHaveBeenCalledWith("allowedCommands", expect.anything())
+				} finally {
+					await deactivate()
+				}
+			},
+		)
 	})
 
 	it("does not register retired provider OAuth callbacks", async () => {

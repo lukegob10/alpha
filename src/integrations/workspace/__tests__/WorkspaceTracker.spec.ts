@@ -154,6 +154,20 @@ describe("WorkspaceTracker", () => {
 		})
 	})
 
+	it("does not re-add a deleted file when a pending create stat finishes", async () => {
+		const stat = deferred<{ type: vscode.FileType }>()
+		;(vscode.workspace.fs.stat as Mock).mockReturnValueOnce(stat.promise)
+		const [[create]] = mockOnDidCreate.mock.calls
+		const [[remove]] = mockOnDidDelete.mock.calls
+		const uri = { fsPath: "/test/workspace/removed.ts" }
+		const adding = create(uri)
+		remove(uri)
+		stat.resolve({ type: vscode.FileType.File })
+		await adding
+		await vitest.runAllTimersAsync()
+		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
 	it("should handle directory paths correctly", async () => {
 		// Mock stat to return directory type
 		;(vscode.workspace.fs.stat as Mock).mockResolvedValueOnce({ type: 2 }) // FileType.Directory = 2

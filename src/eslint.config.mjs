@@ -1,8 +1,19 @@
-import { config } from "@alpha-code/config-eslint/base"
+import { config, promiseOwnership } from "@alpha-code/config-eslint/base"
 
 /** @type {import("eslint").Linter.Config} */
 export default [
 	...config,
+	{
+		...promiseOwnership,
+		files: [
+			"api/providers/gemini.ts",
+			"core/context-tracking/FileContextTracker.ts",
+			"core/ignore/AlphaIgnoreController.ts",
+			"integrations/terminal/ShellIntegrationManager.ts",
+			"integrations/terminal/TerminalProcess.ts",
+			"integrations/workspace/WorkspaceTracker.ts",
+		],
+	},
 	{
 		rules: {
 			// TODO: These should be fixed and the rules re-enabled.

@@ -5,12 +5,7 @@ import type { ModelInfo } from "@alpha-code/types"
 
 import { BaseProvider } from "../../../api/providers/base-provider"
 import { ApiMessage } from "../../task-persistence/apiMessages"
-import {
-	summarizeConversation,
-	getMessagesSinceLastSummary,
-	getEffectiveApiHistory,
-	extractCommandBlocks,
-} from "../index"
+import { getEffectiveApiHistory, summarizeConversation } from "../index"
 
 // Create a mock ApiHandler for testing
 class MockApiHandler extends BaseProvider {
@@ -56,65 +51,6 @@ const mockApiHandler = new MockApiHandler()
 const taskId = "test-task-id"
 
 describe("Condense", () => {
-	describe("extractCommandBlocks", () => {
-		it("should extract command blocks from string content", () => {
-			const message: ApiMessage = {
-				role: "user",
-				content: 'Some text <command name="prr">/prr #123</command> more text',
-			}
-
-			const result = extractCommandBlocks(message)
-			expect(result).toBe('<command name="prr">/prr #123</command>')
-		})
-
-		it("should extract multiple command blocks", () => {
-			const message: ApiMessage = {
-				role: "user",
-				content: '<command name="prr">/prr #123</command> text <command name="mode">/mode code</command>',
-			}
-
-			const result = extractCommandBlocks(message)
-			expect(result).toBe('<command name="prr">/prr #123</command>\n<command name="mode">/mode code</command>')
-		})
-
-		it("should extract command blocks from array content", () => {
-			const message: ApiMessage = {
-				role: "user",
-				content: [
-					{ type: "text", text: "Some user text" },
-					{ type: "text", text: '<command name="prr">Help content</command>' },
-				],
-			}
-
-			const result = extractCommandBlocks(message)
-			expect(result).toBe('<command name="prr">Help content</command>')
-		})
-
-		it("should return empty string when no command blocks found", () => {
-			const message: ApiMessage = {
-				role: "user",
-				content: "Just regular text without commands",
-			}
-
-			const result = extractCommandBlocks(message)
-			expect(result).toBe("")
-		})
-
-		it("should handle multiline command blocks", () => {
-			const message: ApiMessage = {
-				role: "user",
-				content: `<command name="prr">
-Line 1
-Line 2
-</command>`,
-			}
-
-			const result = extractCommandBlocks(message)
-			expect(result).toContain("Line 1")
-			expect(result).toContain("Line 2")
-		})
-	})
-
 	describe("summarizeConversation", () => {
 		it.each([
 			{ count: 1_001, reason: "candidate_over_budget" },
@@ -385,127 +321,6 @@ Line 2
 			expect(result.error).toBeDefined()
 			expect(result.messages).toEqual(messages)
 			expect(result.cost).toBeGreaterThan(0)
-		})
-	})
-
-	describe("getEffectiveApiHistory", () => {
-		it("should return only summary when summary exists (fresh start)", () => {
-			const condenseId = "test-condense-id"
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First", condenseParent: condenseId },
-				{ role: "assistant", content: "Second", condenseParent: condenseId },
-				{ role: "user", content: "Third", condenseParent: condenseId },
-				{
-					role: "user",
-					content: [{ type: "text", text: "Summary content" }],
-					isSummary: true,
-					condenseId,
-				},
-			]
-
-			const result = getEffectiveApiHistory(messages)
-
-			expect(result).toHaveLength(1)
-			expect(result[0].isSummary).toBe(true)
-		})
-
-		it("should include messages after summary in fresh start model", () => {
-			const condenseId = "test-condense-id"
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First", condenseParent: condenseId },
-				{ role: "assistant", content: "Second", condenseParent: condenseId },
-				{
-					role: "user",
-					content: [{ type: "text", text: "Summary content" }],
-					isSummary: true,
-					condenseId,
-				},
-				{ role: "assistant", content: "New response after summary" },
-				{ role: "user", content: "New user message" },
-			]
-
-			const result = getEffectiveApiHistory(messages)
-
-			expect(result).toHaveLength(3)
-			expect(result[0].isSummary).toBe(true)
-			expect(result[1].content).toBe("New response after summary")
-			expect(result[2].content).toBe("New user message")
-		})
-
-		it("should return all messages when no summary exists", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First" },
-				{ role: "assistant", content: "Second" },
-				{ role: "user", content: "Third" },
-			]
-
-			const result = getEffectiveApiHistory(messages)
-
-			expect(result).toEqual(messages)
-		})
-
-		it("should restore messages when summary is deleted (rewind)", () => {
-			// After rewind, summary is deleted but condenseParent tags remain as orphans
-			// The cleanupAfterTruncation function would normally clear these,
-			// but even without cleanup, getEffectiveApiHistory should handle orphaned tags
-			const orphanedCondenseId = "deleted-summary-id"
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First", condenseParent: orphanedCondenseId },
-				{ role: "assistant", content: "Second", condenseParent: orphanedCondenseId },
-				{ role: "user", content: "Third", condenseParent: orphanedCondenseId },
-				// Summary was deleted - no isSummary message exists
-			]
-
-			const result = getEffectiveApiHistory(messages)
-
-			// With no summary, all messages should be included (orphaned condenseParent is ignored)
-			expect(result).toHaveLength(3)
-		})
-	})
-
-	describe("getMessagesSinceLastSummary", () => {
-		it("should return all messages when no summary exists", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Third message" },
-			]
-
-			const result = getMessagesSinceLastSummary(messages)
-			expect(result).toEqual(messages)
-		})
-
-		it("should return messages since last summary including the summary", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "assistant", content: "Second message" },
-				{ role: "user", content: "Summary content", isSummary: true },
-				{ role: "assistant", content: "Message after summary" },
-				{ role: "user", content: "Final message" },
-			]
-
-			const result = getMessagesSinceLastSummary(messages)
-
-			expect(result[0]).toEqual(messages[2]) // The summary
-			expect(result[1]).toEqual(messages[3])
-			expect(result[2]).toEqual(messages[4])
-		})
-
-		it("should handle multiple summaries and return from the last one", () => {
-			const messages: ApiMessage[] = [
-				{ role: "user", content: "First message" },
-				{ role: "user", content: "First summary", isSummary: true },
-				{ role: "assistant", content: "Middle message" },
-				{ role: "user", content: "Second summary", isSummary: true },
-				{ role: "assistant", content: "Recent message" },
-				{ role: "user", content: "Final message" },
-			]
-
-			const result = getMessagesSinceLastSummary(messages)
-
-			expect(result[0]).toEqual(messages[3]) // Second summary
-			expect(result[1]).toEqual(messages[4])
-			expect(result[2]).toEqual(messages[5])
 		})
 	})
 })

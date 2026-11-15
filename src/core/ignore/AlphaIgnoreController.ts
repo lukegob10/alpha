@@ -18,6 +18,8 @@ export class AlphaIgnoreController {
 	private ignoreInstance: Ignore
 	private disposables: vscode.Disposable[] = []
 	private loadGeneration = 0
+	private latestLoad = Promise.resolve()
+	private policyLoaded = false
 	alphaIgnoreContent: string | undefined
 
 	constructor(cwd: string) {
@@ -33,7 +35,17 @@ export class AlphaIgnoreController {
 	 * Must be called after construction and before using the controller
 	 */
 	async initialize(): Promise<void> {
-		await this.loadAlphaIgnore()
+		let load = this.reload()
+		for (;;) {
+			await load
+			if (load === this.latestLoad) break
+			load = this.latestLoad
+		}
+		if (!this.policyLoaded) throw new Error("Unable to load .alphaignore policy")
+	}
+
+	private reload(): Promise<void> {
+		return (this.latestLoad = this.loadAlphaIgnore())
 	}
 
 	/**
@@ -45,9 +57,9 @@ export class AlphaIgnoreController {
 
 		// Watch for changes and updates
 		this.disposables.push(
-			fileWatcher.onDidChange(() => this.loadAlphaIgnore()),
-			fileWatcher.onDidCreate(() => this.loadAlphaIgnore()),
-			fileWatcher.onDidDelete(() => this.loadAlphaIgnore()),
+			fileWatcher.onDidChange(() => this.reload()),
+			fileWatcher.onDidCreate(() => this.reload()),
+			fileWatcher.onDidDelete(() => this.reload()),
 		)
 
 		// Add fileWatcher itself to disposables
@@ -82,6 +94,7 @@ export class AlphaIgnoreController {
 				this.alphaIgnoreContent = undefined
 				this.ignoreInstance = ignore()
 			}
+			this.policyLoaded = true
 		} catch (error) {
 			// Retain the last known-good policy if the file cannot be reloaded.
 			console.error("Unexpected error loading .alphaignore:", error)
@@ -95,6 +108,7 @@ export class AlphaIgnoreController {
 	 * @returns true if file is accessible, false if ignored
 	 */
 	validateAccess(filePath: string): boolean {
+		if (!this.policyLoaded) return false
 		// Always allow access if .alphaignore does not exist
 		if (this.alphaIgnoreContent === undefined) {
 			return true
@@ -128,6 +142,7 @@ export class AlphaIgnoreController {
 	 * @returns path of file that is being accessed if it is being accessed, undefined if command is allowed
 	 */
 	validateCommand(command: string, workingDirectory: string = "."): string | undefined {
+		if (!this.policyLoaded) return ".alphaignore"
 		// Always allow if no .alphaignore exists
 		if (this.alphaIgnoreContent === undefined) {
 			return undefined

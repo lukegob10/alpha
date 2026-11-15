@@ -693,6 +693,34 @@ describe("Stage Three durable completion integration", () => {
 		expect(harness.store.getParentCompletionDecision(TASK_ID).allowed).toBe(true)
 	})
 
+	it("reports an unverified workspace operation after a README edit and a passing check", async () => {
+		const harness = await setup()
+		const readmePath = path.join(harness.storagePath, "README.md")
+		await harness.addAppliedObligation("primary", ["README.md"])
+		const readme = await fs.readFile(readmePath, "utf8")
+		const executionId = "unknown-command"
+		await harness.store.reservePrimaryMutation(TASK_ID, TASK_ID, harness.storagePath, executionId)
+		await harness.store.recordPrimaryMutation({
+			rootTaskId: TASK_ID,
+			parentTaskId: TASK_ID,
+			workspacePath: harness.storagePath,
+			fileVersions: { __unobserved_command_scope__: executionId },
+			scopeUnresolved: true,
+			reservationToken: executionId,
+		})
+		harness.task.beginCommandExecution("diff-check", "physical-diff-check", "git diff --check")
+		harness.task.completeCommandExecution("diff-check", { exitCode: 0 }, "physical-diff-check")
+
+		await harness.run()
+
+		harness.assertRecoverableStop()
+		expect(harness.requests).toHaveLength(1)
+		expect(harness.presentCompletionResult).not.toHaveBeenCalled()
+		expect(harness.task.getCompletionStageMetrics()).toMatchObject({ lastReasonCode: "scope_unavailable" })
+		expect(await fs.readFile(readmePath, "utf8")).toBe(readme)
+		expect(harness.task.say).toHaveBeenCalledWith("error", "errors.completion_mutation_scope_unavailable")
+	})
+
 	it("finishes text once after a passing acceptance check is reworded without rerunning it", async () => {
 		const harness = await setup()
 		await fs.writeFile(path.join(harness.storagePath, "check.js"), "process.exit(0)")

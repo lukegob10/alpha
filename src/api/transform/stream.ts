@@ -147,6 +147,27 @@ export class ApiStreamDeadlineError extends Error {
 	}
 }
 
+/** Arms an absolute deadline on a request's own cancellation controller. */
+export function scheduleApiStreamDeadline(
+	controller: AbortController,
+	deadline?: ApiStreamRequestControl["deadline"],
+	scope?: ApiDeadlineScope,
+): ReturnType<typeof setTimeout> | undefined {
+	if (deadline === undefined || controller.signal.aborted) return undefined
+	const deadlineMs = deadline instanceof Date ? deadline.getTime() : deadline
+	if (!Number.isFinite(deadlineMs)) return undefined
+	const delay = deadlineMs - Date.now()
+	const expire = () => {
+		if (!controller.signal.aborted) controller.abort(new ApiStreamDeadlineError(undefined, scope))
+	}
+	// An elapsed deadline must prevent dispatch in this event-loop turn.
+	if (delay <= 0) {
+		expire()
+		return undefined
+	}
+	return setTimeout(expire, delay)
+}
+
 /**
  * Link a caller signal to a provider-owned controller and optionally enforce an
  * absolute deadline. This lets SDK and manual-fetch paths share one signal,
@@ -154,7 +175,6 @@ export class ApiStreamDeadlineError extends Error {
  */
 export function createLinkedAbortController(options: ApiStreamRequestControl = {}): LinkedAbortController {
 	const controller = new AbortController()
-	let deadlineTimer: ReturnType<typeof setTimeout> | undefined
 	let disposed = false
 
 	const abortFromSignal = () => {
@@ -171,21 +191,7 @@ export function createLinkedAbortController(options: ApiStreamRequestControl = {
 		}
 	}
 
-	if (options.deadline !== undefined && !controller.signal.aborted) {
-		const deadlineMs = options.deadline instanceof Date ? options.deadline.getTime() : options.deadline
-		if (Number.isFinite(deadlineMs)) {
-			const delay = deadlineMs - Date.now()
-			const abortAtDeadline = () => {
-				if (!controller.signal.aborted) {
-					controller.abort(new ApiStreamDeadlineError(undefined, options.deadlineScope))
-				}
-			}
-			// An elapsed deadline is an admission barrier. A zero-delay timer would
-			// still let an SDK dispatch before the next event-loop turn.
-			if (delay <= 0) abortAtDeadline()
-			else deadlineTimer = setTimeout(abortAtDeadline, delay)
-		}
-	}
+	const deadlineTimer = scheduleApiStreamDeadline(controller, options.deadline, options.deadlineScope)
 
 	return {
 		controller,

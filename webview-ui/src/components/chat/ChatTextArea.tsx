@@ -12,12 +12,19 @@ import React, {
 import DynamicTextArea from "react-textarea-autosize"
 import { SendHorizontal, X, ListEnd, Square } from "lucide-react"
 
-import { restoreTaskMode, type AlphaMessage, type ApprovalMode, type ExtensionMessage } from "@alpha-code/types"
+import {
+	restoreTaskMode,
+	type AlphaMessage,
+	type ApprovalMode,
+	type Command,
+	type ExtensionMessage,
+} from "@alpha-code/types"
 
 import { mentionRegex, mentionRegexGlobal, commandRegexGlobal, unescapeSpaces } from "@alpha/context-mentions"
 import { Mode, codeModeSlug, getAllModes, planModeSlug } from "@alpha/modes"
 
 import { vscode } from "@src/utils/vscode"
+import { createDebounce } from "@src/utils/debounce"
 import { getUserFacingModeOptions } from "@src/utils/modePresentation"
 import { useShellState } from "@src/context/ExtensionStateContext"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
@@ -46,6 +53,8 @@ import { usePromptHistory, type RestoreHistoryDraft } from "./hooks/usePromptHis
 import { useTicketSearch } from "./hooks/useTicketSearch"
 import { forkChatCommandName, parseForkChatCommand } from "./forkChatCommand"
 
+type ComposerSearchTarget = { value: string; caret: number }
+
 interface ChatTextAreaProps {
 	appearance?: "default" | "newTask"
 	isVisible?: boolean
@@ -57,6 +66,7 @@ interface ChatTextAreaProps {
 	placeholderText: string
 	selectedImages: string[]
 	setSelectedImages: React.Dispatch<React.SetStateAction<string[]>>
+	onImageReadsPendingChange?: (taskId: string | undefined, pending: boolean) => void
 	onSend: () => void
 	canForkChat?: boolean
 	onSelectImages: () => void
@@ -96,6 +106,7 @@ export const ChatTextArea = memo(
 				placeholderText,
 				selectedImages,
 				setSelectedImages,
+				onImageReadsPendingChange,
 				onSend,
 				canForkChat = false,
 				shouldDisableImages,
@@ -132,7 +143,6 @@ export const ChatTextArea = memo(
 				togglePinnedApiConfig,
 				taskHistory,
 				alphaMessages,
-				commands,
 				enterBehavior,
 				autoSteer = false,
 				taskReasoning,
@@ -157,8 +167,12 @@ export const ChatTextArea = memo(
 				query: string
 				items: ContextMenuQueryItem[]
 			}>()
-			const [fileSearchResults, setFileSearchResults] = useState<SearchResult[]>([])
-			const searchRequestIdRef = useRef("")
+			const [fileSearchResult, setFileSearchResult] = useState<{
+				target: ComposerSearchTarget
+				query: string
+				results: SearchResult[]
+			}>()
+			const pendingFileSearch = useRef<{ requestId: string; target: ComposerSearchTarget; query: string }>()
 			// Handle inserted text and search results.
 			useEffect(() => {
 				const messageHandler = (event: MessageEvent) => {
@@ -187,17 +201,25 @@ export const ChatTextArea = memo(
 
 							// Set cursor position after the inserted text
 							const newCursorPos = cursorPos + prefix.length + message.text.length + 1
-							setTimeout(() => {
-								if (textAreaRef.current) {
-									textAreaRef.current.focus()
-									textAreaRef.current.setSelectionRange(newCursorPos, newCursorPos)
-								}
-							}, 0)
+							setCursorPosition(newCursorPos)
+							setCursorSelection({ position: newCursorPos, focus: "focus" })
 						}
 					} else if (message.type === "fileSearchResults") {
-						if (message.requestId === searchRequestIdRef.current) {
-							setFileSearchResults(message.results || [])
+						const pending = pendingFileSearch.current
+						if (!pending || message.requestId !== pending.requestId) return
+						pendingFileSearch.current = undefined
+						const textarea = textAreaRef.current
+						if (
+							textarea?.value !== pending.target.value ||
+							textarea.selectionStart !== pending.target.caret
+						) {
+							return
 						}
+						setFileSearchResult({
+							target: pending.target,
+							query: pending.query,
+							results: message.results || [],
+						})
 					}
 				}
 
@@ -210,6 +232,14 @@ export const ChatTextArea = memo(
 			const [showContextMenu, setShowContextMenu] = useState(false)
 			const [cursorPosition, setCursorPosition] = useState(0)
 			const [searchQuery, setSearchQuery] = useState("")
+			const menuTarget = useRef<ComposerSearchTarget>()
+			const fileSearchResults =
+				showContextMenu &&
+				fileSearchResult?.target.value === inputValue &&
+				fileSearchResult.target.caret === cursorPosition &&
+				fileSearchResult.query === searchQuery
+					? fileSearchResult.results
+					: undefined
 			const textAreaRef = useRef<HTMLTextAreaElement | null>(null)
 			const setTextAreaRef = useCallback(
 				(element: HTMLTextAreaElement | null) => {
@@ -235,10 +265,42 @@ export const ChatTextArea = memo(
 				taskId,
 			)
 			const [justDeletedSpaceAfterMention, setJustDeletedSpaceAfterMention] = useState(false)
-			const [intendedCursorPosition, setIntendedCursorPosition] = useState<number | null>(null)
+			const [cursorSelection, setCursorSelection] = useState<{
+				position: number
+				focus?: "focus" | "refocus"
+			} | null>(null)
 			const contextMenuContainerRef = useRef<HTMLDivElement>(null)
 			const contextMenuId = useId()
 			const [isFocused, setIsFocused] = useState(false)
+			useLayoutEffect(() => {
+				if (!isVisible || (menuTarget.current && menuTarget.current.value !== inputValue)) {
+					setShowContextMenu(false)
+				}
+			}, [inputValue, isVisible])
+
+			const commandScope = useMemo(() => ({ taskId, cwd, mode }), [taskId, cwd, mode])
+			const [commandCatalog, setCommandCatalog] = useState<{ scope: typeof commandScope; commands: Command[] }>()
+			const commands = commandCatalog?.scope === commandScope ? commandCatalog.commands : undefined
+			const slashSearchActive =
+				isVisible && showContextMenu && searchQuery.startsWith("/") && searchQuery === inputValue
+			useLayoutEffect(() => {
+				if (!slashSearchActive) return
+				setCommandCatalog(undefined)
+				const requestId = crypto.randomUUID()
+				const receive = ({ data }: MessageEvent<ExtensionMessage>) => {
+					if (data?.type !== "commands" || data.requestId !== requestId || !Array.isArray(data.commands)) {
+						return
+					}
+					setCommandCatalog({ scope: commandScope, commands: data.commands })
+				}
+				window.addEventListener("message", receive)
+				vscode.postMessage({
+					type: "requestCommands",
+					requestId,
+					...(commandScope.taskId ? { taskId: commandScope.taskId } : { workspaceScope: true }),
+				})
+				return () => window.removeEventListener("message", receive)
+			}, [commandScope, slashSearchActive])
 
 			// Use custom hook for prompt history navigation
 			const { handleHistoryNavigation, resetHistoryNavigation, resetOnInputChange } = usePromptHistory({
@@ -295,10 +357,25 @@ export const ChatTextArea = memo(
 					? commitSearchResult.items
 					: undefined
 
+			const imageReadBatches = useRef(new Map<string | undefined, { pending: number }>())
+			const [imageReadOwners, setImageReadOwners] = useState<ReadonlySet<string | undefined>>(new Set())
+			const imagesLoading = imageReadOwners.has(conversationTaskId)
+			const publishImageReads = useCallback(
+				(owner: string | undefined, pending: boolean) => {
+					onImageReadsPendingChange?.(owner, pending)
+					setImageReadOwners(new Set(imageReadBatches.current.keys()))
+				},
+				[onImageReadsPendingChange],
+			)
 			const handleSend = useCallback(() => {
+				if (imageReadBatches.current.has(conversationTaskId)) return
 				resetHistoryNavigation()
 				onSend()
-			}, [resetHistoryNavigation, onSend])
+			}, [conversationTaskId, resetHistoryNavigation, onSend])
+			const handleCancelEdit = useCallback(() => {
+				if (imageReadBatches.current.delete(conversationTaskId)) publishImageReads(conversationTaskId, false)
+				onCancel?.()
+			}, [conversationTaskId, onCancel, publishImageReads])
 			const handleStop = useCallback(() => {
 				onStop?.()
 			}, [onStop])
@@ -317,10 +394,11 @@ export const ChatTextArea = memo(
 			const isStopAction = isStreaming && !isEditMode && !hasInputContent
 			const isForkCommand = !isEditMode && parseForkChatCommand(inputValue) !== undefined
 			const sendDisabled =
-				!isForkCommand &&
-				((!hasInputContent && !isStopAction) ||
-					(sendingDisabled && (isEditMode || !isStreaming)) ||
-					(isStreaming && !isEditMode && hasInputContent && enqueueDisabled))
+				(imagesLoading && !isStopAction) ||
+				(!isForkCommand &&
+					((!hasInputContent && !isStopAction) ||
+						(sendingDisabled && (isEditMode || !isStreaming)) ||
+						(isStreaming && !isEditMode && hasInputContent && enqueueDisabled)))
 
 			// Compute the key combination text for the send button tooltip based on enterBehavior
 			const sendKeyCombination = useMemo(() => {
@@ -457,14 +535,7 @@ export const ChatTextArea = memo(
 						const commandMention = `/${value}`
 						setInputValue(commandMention + " ")
 						setCursorPosition(commandMention.length + 1)
-						setIntendedCursorPosition(commandMention.length + 1)
-
-						// Focus the textarea
-						setTimeout(() => {
-							if (textAreaRef.current) {
-								textAreaRef.current.focus()
-							}
-						}, 0)
+						setCursorSelection({ position: commandMention.length + 1, focus: "focus" })
 						return
 					}
 
@@ -481,14 +552,14 @@ export const ChatTextArea = memo(
 							if (type === ContextMenuOptionType.Ticket && textAreaRef.current) {
 								const before = textAreaRef.current.value.slice(0, cursorPosition)
 								const start = before.lastIndexOf("@")
-								setInputValue(
+								const value =
 									before.slice(0, start) +
-										"@ticket:" +
-										textAreaRef.current.value.slice(cursorPosition),
-								)
+									"@ticket:" +
+									textAreaRef.current.value.slice(cursorPosition)
+								menuTarget.current = { value, caret: start + 8 }
+								setInputValue(value)
 								setCursorPosition(start + 8)
-								setIntendedCursorPosition(start + 8)
-								textAreaRef.current.focus()
+								setCursorSelection({ position: start + 8, focus: "focus" })
 							}
 							return
 						}
@@ -529,15 +600,7 @@ export const ChatTextArea = memo(
 						setInputValue(newValue)
 						const newCursorPosition = newValue.indexOf(" ", mentionIndex + insertValue.length) + 1
 						setCursorPosition(newCursorPosition)
-						setIntendedCursorPosition(newCursorPosition)
-
-						// Scroll to cursor.
-						setTimeout(() => {
-							if (textAreaRef.current) {
-								textAreaRef.current.blur()
-								textAreaRef.current.focus()
-							}
-						}, 0)
+						setCursorSelection({ position: newCursorPosition, focus: "refocus" })
 					}
 				},
 				[setInputValue, cursorPosition, modeSwitchDisabled, setMode],
@@ -695,7 +758,7 @@ export const ChatTextArea = memo(
 							if (newText !== inputValue) {
 								event.preventDefault()
 								setInputValue(newText)
-								setIntendedCursorPosition(newPosition) // Store the new cursor position in state
+								setCursorSelection({ position: newPosition })
 							}
 
 							setJustDeletedSpaceAfterMention(false)
@@ -726,34 +789,32 @@ export const ChatTextArea = memo(
 			)
 
 			useLayoutEffect(() => {
-				if (intendedCursorPosition !== null && textAreaRef.current) {
-					textAreaRef.current.setSelectionRange(intendedCursorPosition, intendedCursorPosition)
-					setIntendedCursorPosition(null) // Reset the state.
-				}
-			}, [inputValue, intendedCursorPosition])
+				const textarea = textAreaRef.current
+				if (!cursorSelection || !textarea) return
+				if (cursorSelection.focus === "refocus") textarea.blur()
+				textarea.setSelectionRange(cursorSelection.position, cursorSelection.position)
+				if (cursorSelection.focus) textarea.focus()
+				setCursorSelection(null)
+			}, [inputValue, cursorSelection])
 
-			// Ref to store the search timeout.
-			const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+			const fileSearch = useMemo(() => createDebounce(200), [])
 
 			const cancelPendingFileSearch = useCallback(() => {
-				if (searchTimeoutRef.current) {
-					clearTimeout(searchTimeoutRef.current)
-					searchTimeoutRef.current = null
-				}
-				searchRequestIdRef.current = ""
-			}, [])
+				fileSearch.cancel()
+				pendingFileSearch.current = undefined
+				setFileSearchResult(undefined)
+			}, [fileSearch])
 
 			useLayoutEffect(() => {
-				// Codex CLI (16280e19) applies file matches only to the active mention.
-				// A new task or workspace invalidates this composer's previous file lookup.
-				setFileSearchResults((results) => (results.length === 0 ? results : []))
+				// Changing task or workspace invalidates the pending mention lookup.
 				return cancelPendingFileSearch
 			}, [taskId, cwd, cancelPendingFileSearch])
 
 			const handleInputChange = useCallback(
 				(e: React.ChangeEvent<HTMLTextAreaElement>) => {
 					const newValue = e.target.value
-					cancelPendingFileSearch()
+					pendingFileSearch.current = undefined
+					setFileSearchResult(undefined)
 					setInputValue(newValue)
 
 					// Reset history navigation when user types
@@ -773,18 +834,17 @@ export const ChatTextArea = memo(
 							(selectedType === ContextMenuOptionType.Ticket || !mentionQuery.includes(" "))) ||
 							/^[a-z]{2,4}-\d{0,10}$/i.test(mentionQuery))
 					const showMenu = searchingTickets || shouldShowContextMenu(newValue, newCursorPosition)
+					const target = { value: newValue, caret: newCursorPosition }
+					menuTarget.current = showMenu ? target : undefined
 					setShowContextMenu(showMenu)
 
 					if (showMenu) {
 						if (newValue.startsWith("/") && !newValue.includes(" ")) {
+							fileSearch.cancel()
 							setSelectedType(null)
-							// Handle slash command - request fresh commands
-							const query = newValue
-							setSearchQuery(query)
+							setSearchQuery(newValue)
 							// Set to first selectable item (skip section headers)
 							setSelectedMenuIndex(1) // Section header is at 0, first command is at 1
-							// Request commands fresh each time slash menu is shown
-							vscode.postMessage({ type: "requestCommands" })
 						} else {
 							// Existing @ mention handling.
 							const query =
@@ -793,6 +853,7 @@ export const ChatTextArea = memo(
 									: mentionQuery
 							setSearchQuery(query)
 							if (searchingTickets) {
+								fileSearch.cancel()
 								setSelectedType(ContextMenuOptionType.Ticket)
 								setSelectedMenuIndex(0)
 								return
@@ -803,48 +864,36 @@ export const ChatTextArea = memo(
 							if (query.length > 0) {
 								setSelectedMenuIndex(0)
 
-								// Don't clear results until we have new ones. This
-								// prevents flickering.
+								fileSearch.schedule(() => {
+									if (menuTarget.current !== target) return
+									const requestId = crypto.randomUUID()
+									pendingFileSearch.current = { target, query, requestId }
 
-								// Set a timeout to debounce the search requests.
-								searchTimeoutRef.current = setTimeout(() => {
-									// Generate a request ID for this search.
-									const reqId = Math.random().toString(36).substring(2, 9)
-									searchTimeoutRef.current = null
-									searchRequestIdRef.current = reqId
-
-									// Send message to extension to search files.
 									vscode.postMessage({
 										type: "searchFiles",
 										query: unescapeSpaces(query),
-										requestId: reqId,
-										...(taskId ? { taskId } : {}),
+										requestId,
+										...(taskId ? { taskId } : { workspaceScope: true }),
 									})
-								}, 200) // 200ms debounce.
+								})
 							} else {
+								fileSearch.cancel()
 								setSelectedMenuIndex(3) // Set to "File" option by default.
 							}
 						}
 					} else {
+						fileSearch.cancel()
 						setSearchQuery("")
 						setSelectedMenuIndex(-1)
-						setFileSearchResults([]) // Clear file search results.
 					}
 				},
-				[
-					cancelPendingFileSearch,
-					setInputValue,
-					setFileSearchResults,
-					resetOnInputChange,
-					selectedType,
-					taskId,
-				],
+				[fileSearch, setInputValue, resetOnInputChange, selectedType, taskId],
 			)
 
-			useEffect(() => {
-				if (selectedType === ContextMenuOptionType.Ticket) cancelPendingFileSearch()
+			useLayoutEffect(() => {
+				if (!showContextMenu || selectedType === ContextMenuOptionType.Ticket) cancelPendingFileSearch()
 				if (!showContextMenu) {
-					cancelPendingFileSearch()
+					menuTarget.current = undefined
 					setSelectedType(null)
 				}
 			}, [cancelPendingFileSearch, showContextMenu, selectedType])
@@ -869,15 +918,8 @@ export const ChatTextArea = memo(
 
 					setInputValue(newValue)
 					setCursorPosition(newCursorPosition)
-					setIntendedCursorPosition(newCursorPosition)
+					setCursorSelection({ position: newCursorPosition, focus: "focus" })
 					setShowContextMenu(false)
-
-					setTimeout(() => {
-						if (textAreaRef.current) {
-							textAreaRef.current.focus()
-							textAreaRef.current.setSelectionRange(newCursorPosition, newCursorPosition)
-						}
-					}, 0)
 				},
 				[setInputValue],
 			)
@@ -914,6 +956,7 @@ export const ChatTextArea = memo(
 			const imageReadsDisposedRef = useRef(false)
 			useLayoutEffect(() => {
 				const pendingImageReads = pendingImageReadsRef.current
+				const batches = imageReadBatches.current
 				imageReadsDisposedRef.current = false
 				return () => {
 					imageReadsDisposedRef.current = true
@@ -923,8 +966,10 @@ export const ChatTextArea = memo(
 						cancel()
 					}
 					pendingImageReads.clear()
+					for (const owner of batches.keys()) onImageReadsPendingChange?.(owner, false)
+					batches.clear()
 				}
-			}, [])
+			}, [onImageReadsPendingChange])
 			const readImageFile = useCallback(
 				(blob: Blob) =>
 					new Promise<string | null>((resolve) => {
@@ -940,13 +985,52 @@ export const ChatTextArea = memo(
 								resolve(typeof reader.result === "string" ? reader.result : null)
 							}
 						}
-						reader.readAsDataURL(blob)
+						try {
+							reader.readAsDataURL(blob)
+						} catch (error) {
+							pendingImageReadsRef.current.delete(reader)
+							reader.onloadend = null
+							console.error(t("chat:errorReadingFile"), error)
+							resolve(null)
+						}
 					}),
 				[t],
 			)
 
+			const appendImages = useCallback(
+				async (files: File[], source: "paste" | "drop") => {
+					const owner = conversationTaskId
+					const batches = imageReadBatches.current
+					const existing = batches.get(owner)
+					const batch = existing ?? { pending: 0 }
+					batch.pending++
+					if (!existing) {
+						batches.set(owner, batch)
+						publishImageReads(owner, true)
+					}
+					try {
+						const images = await Promise.all(files.map(readImageFile))
+						if (imageReadsDisposedRef.current || batches.get(owner) !== batch) return
+						const dataUrls = images.filter((image): image is string => image !== null)
+						if (!dataUrls.length) {
+							console.warn(t("chat:noValidImages"))
+							return
+						}
+						setSelectedImages((previous) => [...previous, ...dataUrls].slice(0, MAX_IMAGES_PER_MESSAGE))
+						if (source === "drop") vscode.postMessage({ type: "draggedImages", dataUrls })
+					} finally {
+						batch.pending--
+						if (batch.pending === 0 && batches.get(owner) === batch) {
+							batches.delete(owner)
+							publishImageReads(owner, false)
+						}
+					}
+				},
+				[conversationTaskId, publishImageReads, readImageFile, setSelectedImages, t],
+			)
+
 			const handlePaste = useCallback(
-				async (e: React.ClipboardEvent) => {
+				(e: React.ClipboardEvent) => {
 					const items = e.clipboardData.items
 
 					const uriList = getClipboardUriList(e.clipboardData)
@@ -991,22 +1075,10 @@ export const ChatTextArea = memo(
 					if (!shouldDisableImages && imageItems.length > 0) {
 						e.preventDefault()
 
-						const imagePromises = imageItems.map((item) => {
-							const blob = item.getAsFile()
-							return blob ? readImageFile(blob) : Promise.resolve(null)
-						})
-
-						const imageDataArray = await Promise.all(imagePromises)
-						if (imageReadsDisposedRef.current) return
-						const dataUrls = imageDataArray.filter((dataUrl): dataUrl is string => dataUrl !== null)
-
-						if (dataUrls.length > 0) {
-							setSelectedImages((prevImages) =>
-								[...prevImages, ...dataUrls].slice(0, MAX_IMAGES_PER_MESSAGE),
-							)
-						} else {
-							console.warn(t("chat:noValidImages"))
-						}
+						const files = imageItems.map((item) => item.getAsFile()).filter((file) => file !== null)
+						void appendImages(files, "paste").catch((error) =>
+							console.error(t("chat:errorReadingFile"), error),
+						)
 					}
 				},
 				[
@@ -1015,8 +1087,7 @@ export const ChatTextArea = memo(
 					getVsCodeResourcePaths,
 					insertTextAtSelection,
 					shouldDisableImages,
-					readImageFile,
-					setSelectedImages,
+					appendImages,
 					t,
 				],
 			)
@@ -1080,8 +1151,16 @@ export const ChatTextArea = memo(
 			}, [inputValue, updateHighlights])
 
 			const updateCursorPosition = useCallback(() => {
-				if (textAreaRef.current) {
-					setCursorPosition(textAreaRef.current.selectionStart)
+				const textarea = textAreaRef.current
+				if (!textarea) return
+				const { selectionStart, selectionEnd } = textarea
+				setCursorPosition(selectionStart)
+				if (
+					menuTarget.current &&
+					(selectionStart !== menuTarget.current.caret || selectionStart !== selectionEnd)
+				) {
+					menuTarget.current = undefined
+					setShowContextMenu(false)
 				}
 			}, [])
 
@@ -1095,7 +1174,7 @@ export const ChatTextArea = memo(
 			)
 
 			const handleDrop = useCallback(
-				async (e: React.DragEvent<HTMLDivElement>) => {
+				(e: React.DragEvent<HTMLDivElement>) => {
 					e.preventDefault()
 					setIsDraggingOver(false)
 
@@ -1134,7 +1213,7 @@ export const ChatTextArea = memo(
 							setInputValue(newValue)
 							const newCursorPosition = cursorPosition + totalLength
 							setCursorPosition(newCursorPosition)
-							setIntendedCursorPosition(newCursorPosition)
+							setCursorSelection({ position: newCursorPosition })
 						}
 
 						return
@@ -1151,23 +1230,9 @@ export const ChatTextArea = memo(
 						})
 
 						if (!shouldDisableImages && imageFiles.length > 0) {
-							const imagePromises = imageFiles.map(readImageFile)
-
-							const imageDataArray = await Promise.all(imagePromises)
-							if (imageReadsDisposedRef.current) return
-							const dataUrls = imageDataArray.filter((dataUrl): dataUrl is string => dataUrl !== null)
-
-							if (dataUrls.length > 0) {
-								setSelectedImages((prevImages) =>
-									[...prevImages, ...dataUrls].slice(0, MAX_IMAGES_PER_MESSAGE),
-								)
-
-								if (typeof vscode !== "undefined") {
-									vscode.postMessage({ type: "draggedImages", dataUrls: dataUrls })
-								}
-							} else {
-								console.warn(t("chat:noValidImages"))
-							}
+							void appendImages(imageFiles, "drop").catch((error) =>
+								console.error(t("chat:errorReadingFile"), error),
+							)
 						}
 					}
 				},
@@ -1177,10 +1242,8 @@ export const ChatTextArea = memo(
 					inputValue,
 					setInputValue,
 					setCursorPosition,
-					setIntendedCursorPosition,
 					shouldDisableImages,
-					readImageFile,
-					setSelectedImages,
+					appendImages,
 					t,
 				],
 			)
@@ -1323,7 +1386,7 @@ export const ChatTextArea = memo(
 											// Handle ESC to cancel in edit mode
 											if (isEditMode && e.key === "Escape" && !e.nativeEvent?.isComposing) {
 												e.preventDefault()
-												onCancel?.()
+												handleCancelEdit()
 												return
 											}
 											handleKeyDown(e)
@@ -1436,7 +1499,7 @@ export const ChatTextArea = memo(
 										<button
 											aria-label={t("chat:cancel.title")}
 											disabled={false}
-											onClick={onCancel}
+											onClick={handleCancelEdit}
 											className={cn(
 												"relative inline-flex items-center justify-center",
 												"bg-transparent border-none p-1.5",
@@ -1458,11 +1521,16 @@ export const ChatTextArea = memo(
 									autoSteer &&
 									hasInputContent &&
 									onEnqueueMessage && (
-										<StandardTooltip content={t("chat:enqueueMessage")}>
+										<StandardTooltip
+											content={
+												imagesLoading ? t("chat:loadingAttachments") : t("chat:enqueueMessage")
+											}>
 											<button
 												aria-label={t("chat:enqueueMessage")}
-												disabled={enqueueDisabled}
-												onClick={enqueueDisabled ? undefined : onEnqueueMessage}
+												disabled={enqueueDisabled || imagesLoading}
+												onClick={
+													enqueueDisabled || imagesLoading ? undefined : onEnqueueMessage
+												}
 												className={cn(
 													"relative inline-flex items-center justify-center",
 													"bg-transparent border-none p-1.5",
@@ -1490,7 +1558,10 @@ export const ChatTextArea = memo(
 									</StandardTooltip>
 								)}
 								{/* Keep the primary action in place as empty Send becomes ready Send or Stop. */}
-								<StandardTooltip content={sendActionLabel}>
+								<StandardTooltip
+									content={
+										imagesLoading && !isStopAction ? t("chat:loadingAttachments") : sendActionLabel
+									}>
 									<button
 										aria-label={sendActionLabel}
 										disabled={sendDisabled}

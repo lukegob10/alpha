@@ -148,9 +148,20 @@ describe("composer typing resources", () => {
 		{ label: "a blank draft", taskId: undefined },
 	])("uses the visible scope and ignores prior replies after switching to $label", ({ taskId }) => {
 		vi.useFakeTimers()
-		const view = render(
-			<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId="task-a" />,
-		)
+		function Composer({ taskId }: { taskId?: string }) {
+			const [inputValue, setInputValue] = useState("")
+			return (
+				<ChatTextArea
+					{...defaultProps}
+					inputValue={inputValue}
+					setInputValue={setInputValue}
+					conversationAlphaMessages={[]}
+					conversationTaskId={taskId}
+				/>
+			)
+		}
+
+		const view = render(<Composer taskId="task-a" />)
 		const typeQuery = (value: string) =>
 			fireEvent.change(screen.getByRole("textbox"), { target: { value, selectionStart: value.length } })
 		const dispatchSearch = () => {
@@ -175,7 +186,7 @@ describe("composer typing resources", () => {
 		reply(first.requestId, "fixture-a.ts")
 		expect(screen.getByRole("option", { name: /fixture-a\.ts/ })).toBeInTheDocument()
 
-		view.rerender(<ChatTextArea {...defaultProps} conversationAlphaMessages={[]} conversationTaskId={taskId} />)
+		view.rerender(<Composer taskId={taskId} />)
 		typeQuery("@fixture-b")
 		reply(first.requestId, "stale-a.ts")
 		expect(screen.queryByRole("option", { name: /(?:fixture|stale)-a\.ts/ })).not.toBeInTheDocument()
@@ -183,6 +194,7 @@ describe("composer typing resources", () => {
 		const second = dispatchSearch()
 		expect(second).toMatchObject({ query: "fixture-b" })
 		expect(second.taskId).toBe(taskId)
+		expect(second.workspaceScope).toBe(taskId ? undefined : true)
 		reply(first.requestId, "stale-a.ts")
 		reply(second.requestId, "fixture-b.ts")
 		expect(screen.queryByRole("option", { name: /stale-a\.ts/ })).not.toBeInTheDocument()

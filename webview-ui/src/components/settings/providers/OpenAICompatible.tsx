@@ -1,5 +1,4 @@
 import { useState, useCallback, useEffect, useRef, type ReactNode } from "react"
-import { useEvent } from "react-use"
 import { Checkbox } from "vscrui"
 import { VSCodeButton, VSCodeTextField } from "@vscode/webview-ui-toolkit/react"
 
@@ -9,7 +8,6 @@ import {
 	type ModelInfo,
 	type ReasoningEffortExtended,
 	type OrganizationAllowList,
-	type ExtensionMessage,
 	azureOpenAiDefaultApiVersion,
 	openAiModelInfoSaneDefaults,
 	openAiCustomReasoningEfforts,
@@ -31,6 +29,7 @@ import { SettingsHelp } from "../SettingsHelp"
 
 type OpenAICompatibleProps = {
 	apiConfiguration: ProviderSettingsWithId
+	models?: Record<string, ModelInfo> | null
 	setApiConfigurationField: <K extends keyof ProviderSettings>(
 		field: K,
 		value: ProviderSettings[K],
@@ -45,6 +44,7 @@ type OpenAICompatibleProps = {
 
 export const OpenAICompatible = ({
 	apiConfiguration,
+	models = null,
 	setApiConfigurationField,
 	organizationAllowList,
 	modelValidationError,
@@ -57,7 +57,6 @@ export const OpenAICompatible = ({
 
 	const [azureApiVersionSelected, setAzureApiVersionSelected] = useState(!!apiConfiguration?.azureApiVersion)
 
-	const [openAiModels, setOpenAiModels] = useState<Record<string, ModelInfo> | null>(null)
 	const configuredOutputTokenLimit =
 		apiConfiguration.openAiCustomModelInfo?.maxTokens ?? openAiModelInfoSaneDefaults.maxTokens
 	const [outputTokenLimitInput, setOutputTokenLimitInput] = useState(
@@ -164,20 +163,6 @@ export const OpenAICompatible = ({
 		[setApiConfigurationField],
 	)
 
-	const onMessage = useCallback((event: MessageEvent) => {
-		const message: ExtensionMessage = event.data
-
-		switch (message.type) {
-			case "openAiModels": {
-				const updatedModels = message.openAiModels ?? []
-				setOpenAiModels(Object.fromEntries(updatedModels.map((item) => [item, openAiModelInfoSaneDefaults])))
-				break
-			}
-		}
-	}, [])
-
-	useEvent("message", onMessage)
-
 	return (
 		<>
 			<VSCodeTextField
@@ -200,7 +185,7 @@ export const OpenAICompatible = ({
 				apiConfiguration={apiConfiguration}
 				setApiConfigurationField={setApiConfigurationField}
 				defaultModelId="gpt-4o"
-				models={openAiModels}
+				models={models}
 				modelIdKey="openAiModelId"
 				serviceName="OpenAI"
 				serviceUrl="https://platform.openai.com"

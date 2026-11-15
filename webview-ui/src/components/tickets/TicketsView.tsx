@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from "react"
 import { ChevronRight } from "lucide-react"
 import { useTranslation } from "react-i18next"
 import {
@@ -118,8 +118,6 @@ export default function TicketsView() {
 	const pendingStatusRef = useRef<string>()
 	const [statusError, setStatusError] = useState<{ id: string; message: string }>()
 	const [parentQuery, setParentQuery] = useState("")
-	const [parentCandidates, setParentCandidates] = useState<TicketSummary[]>([])
-	const [parentSearchError, setParentSearchError] = useState("")
 	const running = useRef(false)
 	const mounted = useRef(true)
 	const [deleteTarget, setDeleteTarget] = useState<{ project: string; ticket: Ticket }>()
@@ -144,8 +142,8 @@ export default function TicketsView() {
 	)
 	const baseline = ticket && ticketDraft(ticket)
 	const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(baseline)
-	const latest = useRef({ project, dirty, id: ticket?.id, revision: ticket?.revision })
-	latest.current = { project, dirty, id: ticket?.id, revision: ticket?.revision }
+	const latest = useRef({ project, dirty, id: ticket?.id, revision: ticket?.revision, list })
+	latest.current = { project, dirty, id: ticket?.id, revision: ticket?.revision, list }
 
 	const request = useCallback(
 		(operation: TicketRequest["operation"], targetProject = latest.current.project) =>
@@ -366,26 +364,43 @@ export default function TicketsView() {
 			active = false
 		}
 	}, [projectAvailable, project, relationTicketId, editing, refresh, request])
+	const parentSearch = useMemo(
+		() =>
+			projectAvailable && searchingParents
+				? { project, query: parentQuery, refresh, ticketId: relationTicketId }
+				: undefined,
+		[projectAvailable, searchingParents, project, parentQuery, refresh, relationTicketId],
+	)
+	const [parentResult, setParentResult] = useState<{
+		search: NonNullable<typeof parentSearch>
+		tickets?: TicketSummary[]
+		error?: string
+	}>()
+	const currentParentResult = parentResult?.search === parentSearch ? parentResult : undefined
+	const parentCandidates = currentParentResult?.tickets ?? []
+	const parentSearchError = currentParentResult?.error
 	useEffect(() => {
-		if (!projectAvailable || !searchingParents) return
+		if (!parentSearch) return
 		let active = true
 		const timer = setTimeout(() => {
-			void request({ action: "list", input: { query: parentQuery, offset: 0, limit: 100 } }, project)
+			void request(
+				{ action: "list", input: { query: parentSearch.query, offset: 0, limit: 100 } },
+				parentSearch.project,
+			)
 				.then((result) => {
 					if (active && result && "tickets" in result && "total" in result) {
-						setParentCandidates(result.tickets)
-						setParentSearchError("")
+						setParentResult({ search: parentSearch, tickets: result.tickets })
 					}
 				})
 				.catch((cause: Error) => {
-					if (active) setParentSearchError(cause.message)
+					if (active) setParentResult({ search: parentSearch, error: cause.message })
 				})
 		}, 150)
 		return () => {
 			active = false
 			clearTimeout(timer)
 		}
-	}, [projectAvailable, project, searchingParents, parentQuery, request])
+	}, [parentSearch, request])
 
 	const accept = (value: Result) => {
 		if (!mounted.current) return
@@ -557,25 +572,28 @@ export default function TicketsView() {
 				target.project,
 			)
 			if (!mounted.current) return
-			ticketChangeSequence.current++
-			latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
+			setDeleteTarget(undefined)
+			if (latest.current.project !== target.project) return
 			// Discard collection reads started before the deletion and any queued navigation back to it.
 			listSequence.current++
 			setNavigation((current) =>
 				current?.project === target.project && current.id === target.ticket.id ? undefined : current,
 			)
-			const remaining = list.tickets.filter((item) => item.id !== target.ticket.id)
-			returnToTicket.current = remaining[0]?.id
-			setList({
-				...list,
-				tickets: remaining,
-				total: Math.max(0, list.total - (remaining.length < list.tickets.length ? 1 : 0)),
+			setList((current) => {
+				const tickets = current.tickets.filter((item) => item.id !== target.ticket.id)
+				return tickets.length === current.tickets.length
+					? current
+					: { ...current, tickets, total: Math.max(0, current.total - 1) }
 			})
-			setTicket(undefined)
-			setDraft(undefined)
-			setEditing(false)
-			setChanged(false)
-			setDeleteTarget(undefined)
+			if (latest.current.id === target.ticket.id) {
+				ticketChangeSequence.current++
+				latest.current = { ...latest.current, id: undefined, revision: undefined, dirty: false }
+				returnToTicket.current = latest.current.list.tickets.find((item) => item.id !== target.ticket.id)?.id
+				setTicket(undefined)
+				setDraft(undefined)
+				setEditing(false)
+				setChanged(false)
+			}
 			setListLoading(true)
 			setRefresh((value) => value + 1)
 		})

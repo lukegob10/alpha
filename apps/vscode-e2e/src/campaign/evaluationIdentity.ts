@@ -4,7 +4,6 @@ import { lstat } from "node:fs/promises"
 import * as path from "node:path"
 import { promisify } from "node:util"
 
-import { fingerprintArtifactPaths } from "./liveGate"
 import { campaignConfigDigest } from "./config"
 import { readBounded, rejectSymlinkComponents } from "../evidence/paths"
 import type { CampaignConfig, CampaignEvaluationIdentity } from "./types"
@@ -50,6 +49,8 @@ export async function captureCampaignEvaluationIdentity(
 	root: string,
 	config: CampaignConfig,
 ): Promise<CampaignEvaluationIdentity> {
+	// Source hashing also bootstraps lanes before shared runtime types are built.
+	const { fingerprintArtifactPaths } = await import("./liveGate.js")
 	const missing: string[] = []
 	const capture = async (name: string, operation: () => Promise<string>) => {
 		try {

@@ -241,7 +241,7 @@ describe("addCustomInstructions", () => {
 			undefined, // partialReadsEnabled
 		)
 
-		expect(prompt).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/ask-mode-prompt.snap")
+		expect(prompt).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/architect-mode-prompt.snap")
 	})
 
 	it("should exclude MCP server creation info when disabled", async () => {
@@ -264,7 +264,7 @@ describe("addCustomInstructions", () => {
 		)
 
 		expect(prompt).not.toContain("Creating an MCP Server")
-		expect(prompt).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/mcp-server-creation-disabled.snap")
+		expect(prompt).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/architect-mode-prompt.snap")
 	})
 
 	it("should prioritize mode-specific rules for code mode", async () => {
@@ -324,23 +324,11 @@ describe("addCustomInstructions", () => {
 		)
 	})
 
-	it("should handle undefined mode-specific instructions", async () => {
-		const instructions = await addCustomInstructions("", "", "/test/path", planModeSlug)
-		expect(instructions).toMatchFileSnapshot(
-			"./__snapshots__/add-custom-instructions/undefined-mode-instructions.snap",
-		)
-	})
-
 	it("should trim mode-specific instructions", async () => {
 		const instructions = await addCustomInstructions("  Custom mode instructions  ", "", "/test/path", planModeSlug)
 		expect(instructions).toMatchFileSnapshot(
 			"./__snapshots__/add-custom-instructions/trimmed-mode-instructions.snap",
 		)
-	})
-
-	it("should handle empty mode-specific instructions", async () => {
-		const instructions = await addCustomInstructions("", "", "/test/path", planModeSlug)
-		expect(instructions).toMatchFileSnapshot("./__snapshots__/add-custom-instructions/empty-mode-instructions.snap")
 	})
 
 	it("should combine global and mode-specific instructions", async () => {

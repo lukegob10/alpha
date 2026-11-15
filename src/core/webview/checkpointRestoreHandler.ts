@@ -2,8 +2,6 @@ import { Task } from "../task/Task"
 import { AlphaProvider } from "./AlphaProvider"
 import { saveTaskMessages } from "../task-persistence"
 import * as vscode from "vscode"
-import pWaitFor from "p-wait-for"
-import { t } from "../../i18n"
 import { awaitTaskCancellationBoundary } from "./TaskCancellationBoundary"
 
 export interface CheckpointRestoreConfig {
@@ -128,21 +126,5 @@ export async function handleCheckpointRestoreOperation(config: CheckpointRestore
 			`Error during checkpoint restore: ${error instanceof Error ? error.message : String(error)}`,
 		)
 		throw error
-	}
-}
-
-/**
- * Common checkpoint restore validation and initialization utility.
- * This can be used by any checkpoint restore flow that needs to wait for initialization.
- */
-export async function waitForAlphaInitialization(provider: AlphaProvider, timeoutMs: number = 3000): Promise<boolean> {
-	try {
-		await pWaitFor(() => provider.getCurrentTask()?.isInitialized === true, {
-			timeout: timeoutMs,
-		})
-		return true
-	} catch (error) {
-		vscode.window.showErrorMessage(t("common:errors.checkpoint_timeout"))
-		return false
 	}
 }

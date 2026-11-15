@@ -1689,12 +1689,34 @@ describe("AlphaProvider", () => {
 		await provider.resolveWebviewView(webviewView)
 		expect(provider.viewLaunched).toBe(false)
 
+		const launch = provider.waitForWebviewLaunch(5_000)
 		const messageHandler = (webviewView.webview.onDidReceiveMessage as any).mock.calls[0][0]
 		await messageHandler({ type: "webviewDidLaunch" })
+		await expect(launch).resolves.toBe(true)
 		expect(provider.viewLaunched).toBe(true)
 
 		await disposeView()
 		expect(provider.viewLaunched).toBe(false)
+	})
+
+	test("waits for launch with one deadline and releases waiters on provider disposal", async () => {
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+		const schedule = vi.spyOn(globalThis, "setTimeout")
+		try {
+			const expires = provider.waitForWebviewLaunch(5_000)
+			await vi.advanceTimersByTimeAsync(5_000)
+			await expect(expires).resolves.toBe(false)
+			expect(schedule.mock.calls.filter(([, ms]) => ms === 50 || ms === 5_000)).toHaveLength(1)
+
+			const pending = provider.waitForWebviewLaunch(5_000)
+			const disposal = provider.dispose()
+			await expect(pending).resolves.toBe(false)
+			await expect(provider.waitForWebviewLaunch(5_000)).resolves.toBe(false)
+			await disposal
+		} finally {
+			schedule.mockRestore()
+			vi.useRealTimers()
+		}
 	})
 
 	test.each([false, true])("ignores stale view disposal after replacement (tab: %s)", async (inTabMode) => {

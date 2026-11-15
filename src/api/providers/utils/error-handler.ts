@@ -109,11 +109,3 @@ export function handleProviderError(
 	const wrapped = new Error(`${providerName} ${messagePrefix} error: ${String(error)}`)
 	return preserveProviderMetadata(wrapped, source)
 }
-
-/**
- * Specialized handler for OpenAI-compatible providers
- * Re-exports with OpenAI-specific defaults for backward compatibility
- */
-export function handleOpenAIError(error: unknown, providerName: string): Error {
-	return handleProviderError(error, providerName, { messagePrefix: "completion" })
-}

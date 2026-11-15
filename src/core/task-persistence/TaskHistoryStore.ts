@@ -787,7 +787,8 @@ export class TaskHistoryStore {
 		}
 
 		if (this.indexWriteTimer) {
-			clearTimeout(this.indexWriteTimer)
+			this.indexWriteTimer.refresh()
+			return
 		}
 
 		this.indexWriteTimer = setTimeout(async () => {
@@ -949,7 +950,8 @@ export class TaskHistoryStore {
 
 						// Debounce the reconciliation triggered by fs.watch
 						if (this.watchDebounce) {
-							clearTimeout(this.watchDebounce)
+							this.watchDebounce.refresh()
+							return
 						}
 						this.watchDebounce = setTimeout(() => {
 							this.watchDebounce = null

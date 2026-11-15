@@ -302,6 +302,41 @@ describe("ticket editor", () => {
 			input: { parentId: parent.id, expectedRevision: "v1" },
 		})
 	})
+	it("renews parent search when tickets change and discards obsolete candidates", async () => {
+		vi.useFakeTimers()
+		vi.mocked(vscode.postTicketMessage).mockImplementation(announceProjects)
+		const parent = { ...ticket, id: "2cf4023f-a15b-47d8-971b-7da490ff043f", name: "Deleted parent" }
+		const current = { ...parent, id: "5e0af557-7afc-4af1-babf-aa946474d0f2", name: "Current parent" }
+		const parentSearch = () =>
+			requests("list").findLast(({ operation }) => operation.action === "list" && operation.input?.limit === 100)!
+		const sendResults = (requestId: string, result: Ticket[]) =>
+			reply({
+				type: "ticketResponse",
+				requestId,
+				result: { tickets: result, total: result.length, invalidFiles: [] },
+			})
+
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "edit" }))
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		sendResults(parentSearch().requestId, [parent])
+		await act(async () => {})
+		expect(screen.getByRole("option", { name: "Deleted parent" })).toBeInTheDocument()
+
+		fireEvent.change(screen.getByRole("textbox", { name: "findParent" }), { target: { value: "parent" } })
+		expect(screen.queryByRole("option", { name: "Deleted parent" })).not.toBeInTheDocument()
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		const stale = parentSearch()
+		reply({ type: "ticketChanged", project: "project" })
+		sendResults(stale.requestId, [parent])
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		expect(parentSearch().requestId).not.toBe(stale.requestId)
+		expect(screen.queryByRole("option", { name: "Deleted parent" })).not.toBeInTheDocument()
+		sendResults(parentSearch().requestId, [current])
+		await act(async () => {})
+		expect(screen.getByRole("option", { name: "Current parent" })).toBeInTheDocument()
+	})
+
 	it("reports parent search failures while preserving the current editor", async () => {
 		vi.mocked(vscode.postTicketMessage).mockImplementation((message) => {
 			announceProjects(message)
@@ -419,6 +454,36 @@ describe("ticket editor", () => {
 		expect(vscode.setState).toHaveBeenLastCalledWith(
 			expect.objectContaining({ ticket: undefined, draft: undefined, editing: false, query: "Original" }),
 		)
+	})
+
+	it("removes a deleted ticket from the latest filtered list", async () => {
+		vi.useFakeTimers()
+		vi.mocked(vscode.getState).mockReturnValue({ project: "project", ticket, draft, query: "Relevant" })
+		vi.mocked(vscode.postTicketMessage).mockImplementation(announceProjects)
+		const old = { ...ticket, id: "2cf4023f-a15b-47d8-971b-7da490ff043f", name: "Old match" }
+		const current = { ...old, id: "5e0af557-7afc-4af1-babf-aa946474d0f2", name: "Current match" }
+		const sendList = (tickets: Ticket[]) =>
+			reply({
+				type: "ticketResponse",
+				requestId: requests("list").at(-1)!.requestId,
+				result: { tickets, total: tickets.length, invalidFiles: [] },
+			})
+		render(<TicketsView />)
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		sendList([ticket, old])
+		await act(async () => {})
+		fireEvent.click(screen.getByRole("button", { name: "delete" }))
+		fireEvent.click(screen.getByRole("button", { name: "deleteAction" }))
+
+		reply({ type: "ticketChanged", project: "project" })
+		await act(() => vi.advanceTimersByTimeAsync(150))
+		sendList([ticket, current])
+		await act(async () => {})
+		reply({ type: "ticketResponse", requestId: requests("delete")[0].requestId, result: ticket })
+		await act(async () => {})
+
+		expect(screen.getByRole("button", { name: /Current match/ })).toBeInTheDocument()
+		expect(screen.queryByRole("button", { name: /Old match|Original/ })).not.toBeInTheDocument()
 	})
 
 	it("reloads the previous page when its last ticket is deleted", async () => {

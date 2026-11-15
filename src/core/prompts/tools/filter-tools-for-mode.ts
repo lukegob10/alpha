@@ -2,12 +2,7 @@ import { restoreTaskMode } from "@alpha-code/types"
 import type OpenAI from "openai"
 import type { ModeConfig, ToolName, ToolGroup, ModelInfo } from "@alpha-code/types"
 import { getModeBySlug, getToolsForMode, planModeSlug } from "../../../shared/modes"
-import {
-	TOOL_GROUPS,
-	ALWAYS_AVAILABLE_TOOLS,
-	TOOL_ALIASES,
-	expandLegacyThreadToolDisables,
-} from "../../../shared/tools"
+import { TOOL_GROUPS, TOOL_ALIASES, expandLegacyThreadToolDisables } from "../../../shared/tools"
 import type { CodeIndexManager } from "../../../services/code-index/manager"
 import type { McpHub } from "../../../services/mcp/McpHub"
 import { isToolAllowedForMode } from "../../../core/tools/validateToolUse"
@@ -314,111 +309,6 @@ export function filterNativeToolsForMode(
 function hasAnyMcpResources(mcpHub: McpHub): boolean {
 	const servers = mcpHub.getServers()
 	return servers.some((server) => server.resources && server.resources.length > 0)
-}
-
-/**
- * Checks if a specific tool is allowed in the current mode.
- * This is useful for dynamically filtering system prompt content.
- *
- * @param toolName - Name of the tool to check
- * @param mode - Current mode slug
- * @param customModes - Custom mode configurations
- * @param experiments - Experiment flags
- * @param codeIndexManager - Code index manager for codebase_search feature check
- * @param settings - Additional settings for tool filtering
- * @returns true if the tool is allowed in the mode, false otherwise
- */
-export function isToolAllowedInMode(
-	toolName: ToolName,
-	mode: string | undefined,
-	customModes: ModeConfig[] | undefined,
-	experiments: Record<string, boolean> | undefined,
-	codeIndexManager?: CodeIndexManager,
-	settings?: Record<string, any>,
-): boolean {
-	const { modeSlug } = resolveEffectiveMode(mode, customModes)
-
-	if (
-		modeSlug === planModeSlug &&
-		!isToolAllowedForMode(
-			resolveToolAlias(toolName) as ToolName,
-			modeSlug,
-			customModes ?? [],
-			undefined,
-			undefined,
-			experiments ?? {},
-		)
-	) {
-		return false
-	}
-
-	// Check if it's an always-available tool
-	if (
-		ALWAYS_AVAILABLE_TOOLS.includes(toolName) ||
-		ALWAYS_AVAILABLE_TOOLS.includes(resolveToolAlias(toolName) as ToolName)
-	) {
-		// But still check for conditional exclusions
-		if (toolName === "codebase_search") {
-			return !!(
-				codeIndexManager &&
-				codeIndexManager.isFeatureEnabled &&
-				codeIndexManager.isFeatureConfigured &&
-				codeIndexManager.isInitialized
-			)
-		}
-		if (toolName === "update_todo_list" || toolName === "update_plan") {
-			return settings?.todoListEnabled !== false
-		}
-		if (toolName === "generate_image") {
-			return false
-		}
-		if (toolName === "run_slash_command") {
-			return false
-		}
-		return true
-	}
-
-	// Check if the tool is allowed by the mode's groups
-	// Resolve to canonical name and check that single value
-	const canonicalTool = resolveToolAlias(toolName)
-	return isToolAllowedForMode(
-		canonicalTool as ToolName,
-		modeSlug,
-		customModes ?? [],
-		undefined,
-		undefined,
-		experiments ?? {},
-	)
-}
-
-/**
- * Gets the list of available tools from a specific tool group for the current mode.
- * This is useful for dynamically building system prompt content based on available tools.
- *
- * @param groupName - Name of the tool group to check
- * @param mode - Current mode slug
- * @param customModes - Custom mode configurations
- * @param experiments - Experiment flags
- * @param codeIndexManager - Code index manager for codebase_search feature check
- * @param settings - Additional settings for tool filtering
- * @returns Array of tool names that are available from the group
- */
-export function getAvailableToolsInGroup(
-	groupName: ToolGroup,
-	mode: string | undefined,
-	customModes: ModeConfig[] | undefined,
-	experiments: Record<string, boolean> | undefined,
-	codeIndexManager?: CodeIndexManager,
-	settings?: Record<string, any>,
-): ToolName[] {
-	const toolGroup = TOOL_GROUPS[groupName]
-	if (!toolGroup) {
-		return []
-	}
-
-	return toolGroup.tools.filter((tool) =>
-		isToolAllowedInMode(tool as ToolName, mode, customModes, experiments, codeIndexManager, settings),
-	) as ToolName[]
 }
 
 /**

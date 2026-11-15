@@ -189,14 +189,6 @@ async function activateExtension(lifecycle: ExtensionLifecycle, startupConfigura
 	lifecycle.terminalStarted = true
 	TerminalRegistry.initialize()
 
-	// Get default commands from configuration.
-	const defaultCommands = vscode.workspace.getConfiguration(Package.name).get<string[]>("allowedCommands") || []
-
-	// Initialize global state if not already set.
-	if (!context.globalState.get("allowedCommands")) {
-		await context.globalState.update("allowedCommands", defaultCommands)
-	}
-
 	const contextProxy = await ContextProxy.getInstance(context)
 	lifecycle.providerStarted = true
 	const provider = new AlphaProvider(context, outputChannel, "sidebar", contextProxy, startupConfigurationReady)

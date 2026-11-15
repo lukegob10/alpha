@@ -3318,8 +3318,8 @@ describe("webviewMessageHandler - slash skill discovery", () => {
 		vi.clearAllMocks()
 	})
 
-	it("lists only skills available in the current task mode and deduplicates names", async () => {
-		vi.mocked(mockAlphaProvider.getCurrentTask).mockReturnValue({
+	it("lists only skills available in the requesting task mode and deduplicates names", async () => {
+		vi.mocked(mockAlphaProvider.getLiveTask).mockReturnValueOnce({
 			cwd: "/mock/workspace",
 			getTaskMode: vi.fn().mockResolvedValue("architect"),
 		} as unknown as ReturnType<AlphaProvider["getCurrentTask"]>)
@@ -3347,14 +3347,20 @@ describe("webviewMessageHandler - slash skill discovery", () => {
 			AlphaProvider["getSkillsManager"]
 		>)
 
-		await webviewMessageHandler(mockAlphaProvider, { type: "requestCommands" })
+		await webviewMessageHandler(mockAlphaProvider, {
+			type: "requestCommands",
+			taskId: "requesting-task",
+			requestId: "skill-catalog",
+		})
 
+		expect(mockAlphaProvider.getLiveTask).toHaveBeenCalledWith("requesting-task")
 		expect(getSkillsForMode).toHaveBeenCalledWith("architect")
 		expect(mockAlphaProvider.getSkillsManager).toHaveBeenCalledWith(
 			expect.objectContaining({ cwd: "/mock/workspace" }),
 		)
 		expect(mockAlphaProvider.postMessageToWebview).toHaveBeenCalledWith({
 			type: "commands",
+			requestId: "skill-catalog",
 			commands: [
 				{
 					name: "review",
@@ -3371,6 +3377,26 @@ describe("webviewMessageHandler - slash skill discovery", () => {
 			],
 		})
 		expect(fs.readdir).not.toHaveBeenCalled()
+	})
+
+	it("uses the workspace draft mode for a scoped command request", async () => {
+		const getSkillsForMode = vi.fn().mockReturnValue([])
+		const host = {
+			...mockAlphaProvider,
+			getCurrentTask: vi.fn(),
+			getSkillsManager: vi.fn(() => ({ getSkillsForMode })),
+			getNewTaskDraftMode: () => "code",
+		} as unknown as AlphaProvider
+		await webviewMessageHandler(host, { type: "requestCommands", requestId: "draft-catalog", workspaceScope: true })
+
+		expect(host.getCurrentTask).not.toHaveBeenCalled()
+		expect(host.getSkillsManager).toHaveBeenCalledWith()
+		expect(getSkillsForMode).toHaveBeenCalledWith("code")
+		expect(host.postMessageToWebview).toHaveBeenCalledWith({
+			type: "commands",
+			requestId: "draft-catalog",
+			commands: [],
+		})
 	})
 
 	it("returns an empty list when no skills manager is available", async () => {

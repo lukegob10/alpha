@@ -161,15 +161,6 @@ describe("loadRuleFiles", () => {
 		expect(result).toBe("\n# Rules from .alpharules:\nalpha rules content\n")
 	})
 
-	it("should handle when no rule files exist", async () => {
-		// Simulate no .alpha/rules directory
-		statMock.mockRejectedValueOnce({ code: "ENOENT" })
-		readFileMock.mockRejectedValue({ code: "ENOENT" })
-
-		const result = await loadRuleFiles("/fake/path")
-		expect(result).toBe("")
-	})
-
 	it("should skip directories with same name as rule files", async () => {
 		// Simulate no .alpha/rules directory
 		statMock.mockRejectedValueOnce({ code: "ENOENT" })

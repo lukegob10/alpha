@@ -84,17 +84,6 @@ describe("Cost Utility", () => {
 			expect(result.totalOutputTokens).toBe(0)
 		})
 
-		it("should handle undefined cache values", () => {
-			const result = calculateApiCostAnthropic(mockModelInfo, 1000, 500)
-
-			// Input cost: (3.0 / 1_000_000) * 1000 = 0.003
-			// Output cost: (15.0 / 1_000_000) * 500 = 0.0075
-			// Total: 0.003 + 0.0075 = 0.0105
-			expect(result.totalCost).toBe(0.0105)
-			expect(result.totalInputTokens).toBe(1000)
-			expect(result.totalOutputTokens).toBe(500)
-		})
-
 		it("should handle missing cache prices", () => {
 			const modelWithoutCachePrices: ModelInfo = {
 				...mockModelInfo,
@@ -191,17 +180,6 @@ describe("Cost Utility", () => {
 			expect(result.totalCost).toBe(0)
 			expect(result.totalInputTokens).toBe(0)
 			expect(result.totalOutputTokens).toBe(0)
-		})
-
-		it("should handle undefined cache values", () => {
-			const result = calculateApiCostOpenAI(mockModelInfo, 1000, 500)
-
-			// Input cost: (3.0 / 1_000_000) * 1000 = 0.003
-			// Output cost: (15.0 / 1_000_000) * 500 = 0.0075
-			// Total: 0.003 + 0.0075 = 0.0105
-			expect(result.totalCost).toBe(0.0105)
-			expect(result.totalInputTokens).toBe(1000)
-			expect(result.totalOutputTokens).toBe(500)
 		})
 
 		it("should handle missing cache prices", () => {

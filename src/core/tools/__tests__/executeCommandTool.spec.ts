@@ -552,7 +552,6 @@ describe("executeCommandTool", () => {
 				Object.assign(new EventEmitter(), {
 					executionId: "",
 					command: "echo test",
-					isHot: true,
 					isSettled: false,
 					hasUnretrievedOutput: vitest.fn(() => true),
 					abort: vitest.fn(),

@@ -41,7 +41,12 @@ import {
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 
 import { BaseProvider } from "./base-provider"
-import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
+import {
+	ApiRequestIdleTimeout,
+	ApiRequestTimeoutError,
+	getApiRequestTimeout,
+	withApiRequestTimeout,
+} from "./utils/timeout-config"
 import { applyCopilotToolPreferences, type ModelToolIdentity } from "./utils/router-tool-preferences"
 import type {
 	SingleCompletionHandler,
@@ -1193,6 +1198,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		let semanticOutputObserved = false
 		let responseStatefulMarker: string | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
+		let streamIdleTimeout: ApiRequestIdleTimeout | undefined
 		let requestFinished = false
 		let requestPhase: VsCodeLmRequestPhase = "model-selection"
 		const onRequestPhase = metadata?.onRequestPhase
@@ -1256,10 +1262,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 				return response
 			})
+			const timeoutMs = getApiRequestTimeout()
 			const response = await withApiRequestTimeout(
 				raceApiStreamAbort(responseAdmission, requestControl.signal),
 				`VS Code LM request for ${client.name}`,
-				getApiRequestTimeout(),
+				timeoutMs,
 				() => requestCancellation.cancel(),
 			)
 			throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
@@ -1269,16 +1276,18 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 
 			// Consume the stream and handle both text and tool call chunks
 			responseIterator ??= response.stream[Symbol.asyncIterator]()
+			streamIdleTimeout = new ApiRequestIdleTimeout(
+				`VS Code LM response stream for ${client.name}`,
+				timeoutMs,
+				() => requestCancellation.cancel(),
+			)
 			requestPhase = "first-response-chunk"
 			notifyRequestPhase()
 
 			while (true) {
 				throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
-				const nextChunk = await withApiRequestTimeout(
+				const nextChunk = await streamIdleTimeout.wait(
 					raceApiStreamAbort(responseIterator.next(), requestControl.signal),
-					`VS Code LM response stream for ${client.name}`,
-					getApiRequestTimeout(),
-					() => requestCancellation.cancel(),
 				)
 				throwIfVsCodeLmRequestAborted(requestControl.signal, requestPhase)
 				if (!nextChunk) {
@@ -1434,6 +1443,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			)
 		} finally {
 			requestFinished = true
+			streamIdleTimeout?.dispose()
 			// Keep observed state on the matching response even if cancellation or a
 			// host error interrupts draining. A predecessor cannot overwrite its successor.
 			if (this.currentRequestCancellation === requestCancellation) {
@@ -1524,6 +1534,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
 		let cancellation: vscode.CancellationTokenSource | undefined
 		let responseIterator: AsyncIterator<unknown> | undefined
+		let streamIdleTimeout: ApiRequestIdleTimeout | undefined
 		let streamCompleted = false
 		let disposeSignalBridge: (() => void) | undefined
 		let requestFinished = false
@@ -1551,23 +1562,24 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				}
 				return response
 			})
+			const timeoutMs = getApiRequestTimeout()
 			const response = await withApiRequestTimeout(
 				awaitSingleCompletion(responseAdmission, metadata),
 				`VS Code LM completion request for ${client.name}`,
-				getApiRequestTimeout(),
+				timeoutMs,
 				() => requestCancellation.cancel(),
 			)
 			let result = ""
 			responseIterator ??= response.stream[Symbol.asyncIterator]()
+			streamIdleTimeout = new ApiRequestIdleTimeout(
+				`VS Code LM completion stream for ${client.name}`,
+				timeoutMs,
+				() => requestCancellation.cancel(),
+			)
 
 			while (true) {
 				throwIfSingleCompletionAborted(metadata)
-				const nextChunk = await withApiRequestTimeout(
-					awaitSingleCompletion(responseIterator.next(), metadata),
-					`VS Code LM completion stream for ${client.name}`,
-					getApiRequestTimeout(),
-					() => requestCancellation.cancel(),
-				)
+				const nextChunk = await streamIdleTimeout.wait(awaitSingleCompletion(responseIterator.next(), metadata))
 
 				if (nextChunk.done) {
 					streamCompleted = true
@@ -1593,6 +1605,7 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 			throw error
 		} finally {
 			requestFinished = true
+			streamIdleTimeout?.dispose()
 			disposeSignalBridge?.()
 			if (!streamCompleted) {
 				if (cancellation && !cancellation.token.isCancellationRequested) {

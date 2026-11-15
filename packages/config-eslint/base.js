@@ -42,3 +42,12 @@ export const config = [
 		},
 	},
 ]
+
+/** @type {import("eslint").Linter.Config} */
+export const promiseOwnership = {
+	languageOptions: { parserOptions: { projectService: true } },
+	rules: {
+		"@typescript-eslint/no-floating-promises": ["error", { checkThenables: true, ignoreVoid: false }],
+		"@typescript-eslint/no-misused-promises": "error",
+	},
+}

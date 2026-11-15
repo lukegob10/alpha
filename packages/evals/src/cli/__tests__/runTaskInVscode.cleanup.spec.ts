@@ -366,6 +366,10 @@ it("captures the root before its initial metrics write yields to child events", 
 	await expect(pending).resolves.toBe("completed")
 	expect(mocks.createMetrics).toHaveBeenCalledOnce()
 	expect(mocks.updateMetrics).toHaveBeenLastCalledWith(11, expect.objectContaining({ cost: 0.015 }))
+	expect(mocks.updateTask).toHaveBeenCalledExactlyOnceWith(
+		expect.any(Number),
+		expect.objectContaining({ taskMetricsId: 11, startedAt: expect.any(Date), finishedAt: expect.any(Date) }),
+	)
 	const receipt = mocks.writeReceipt.mock.calls.find(([file]) => file.endsWith(".cost.json"))!
 	expect(JSON.parse(receipt[1])).toMatchObject({ rootTaskId: "root", observedRuntimeCount: 2 })
 })

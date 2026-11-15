@@ -56,6 +56,7 @@ describe("API - SendMessage Command", () => {
 			getCurrentTaskStack: vi.fn().mockReturnValue([]),
 			getCurrentTask: vi.fn().mockReturnValue(undefined),
 			viewLaunched: true,
+			waitForWebviewLaunch: vi.fn(async () => true),
 		} as unknown as AlphaProvider
 
 		mockLog = vi.fn()
@@ -100,6 +101,7 @@ describe("API - SendMessage Command", () => {
 
 		await api.resumeTask("running-task")
 
+		expect(mockProvider.waitForWebviewLaunch).toHaveBeenCalledWith(5_000)
 		expect(show).toHaveBeenCalledWith("running-task")
 		expect(read).not.toHaveBeenCalled()
 		expect(replace).not.toHaveBeenCalled()

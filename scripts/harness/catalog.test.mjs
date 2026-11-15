@@ -1,13 +1,65 @@
 import assert from "node:assert/strict"
 import { execFileSync } from "node:child_process"
 import { test } from "node:test"
-import { readFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { glob } from "node:fs/promises"
 import { createRequire } from "node:module"
+import os from "node:os"
+import path from "node:path"
 import { fileURLToPath } from "node:url"
 import { lanes, selectLane } from "./catalog.mjs"
 import { expectedTestFiles } from "./lane-evidence.mjs"
 import { releaseValidationPlatforms } from "./release-evidence.mjs"
+
+test("harness discovery and source capture work before generated workspace types exist", { timeout: 60_000 }, () => {
+	const root = fileURLToPath(new URL("../../", import.meta.url))
+	const fixture = mkdtempSync(path.join(os.tmpdir(), "alpha-harness-bootstrap-"))
+	try {
+		const git = (args) =>
+			execFileSync("git", ["-C", fixture, ...args], { encoding: "utf8", timeout: 10_000, windowsHide: true })
+		writeFileSync(path.join(fixture, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+		git(["init", "--quiet"])
+		git(["add", "pnpm-lock.yaml"])
+		git([
+			"-c",
+			"user.name=AlphaBootstrapFixture",
+			"-c",
+			"user.email=alpha-bootstrap@example.invalid",
+			"-c",
+			"commit.gpgSign=false",
+			"-c",
+			"core.hooksPath=.git/alpha-empty-hooks",
+			"commit",
+			"--quiet",
+			"-m",
+			"Bootstrap fixture",
+		])
+		const output = execFileSync(
+			process.execPath,
+			[
+				"--input-type=module",
+				"-e",
+				`import { registerHooks } from "node:module"
+			registerHooks({ resolve(specifier, context, next) {
+				if (specifier === "@alpha-code/types" || specifier.startsWith("@alpha-code/types/")) {
+					const error = new Error("Generated workspace types accessed during bootstrap: " + context.parentURL)
+					error.code = "MODULE_NOT_FOUND"
+					throw error
+				}
+				return next(specifier, context)
+			} })
+			const { main } = await import(${JSON.stringify(new URL("./run.mjs", import.meta.url).href)})
+			const { collectSource } = await import(${JSON.stringify(new URL("./source.mjs", import.meta.url).href)})
+			await collectSource(${JSON.stringify(fixture)})
+			await main(["list"])`,
+			],
+			{ cwd: root, encoding: "utf8", timeout: 55_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true },
+		)
+		assert.ok(JSON.parse(output).turns)
+	} finally {
+		rmSync(fixture, { recursive: true, force: true })
+	}
+})
 
 test(
 	"canonical bundle prepares one cached webview build without duplicate host preparation",

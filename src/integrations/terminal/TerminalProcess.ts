@@ -36,6 +36,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private shellExecutionStarted = false
 	private shellExecutionReported = false
 	private terminationPromise?: Promise<void>
+	private completion?: Promise<void>
 
 	public get hasSubmittedCommand(): boolean {
 		return this.commandSubmitted
@@ -50,22 +51,25 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.once("completed", () => {
 			if (this.terminal.process === this && !this.terminal.running) this.terminal.busy = false
 		})
-		this.once("error", () => {
-			this.stopHotTimer()
-			this.isHot = false
-		})
+	}
 
-		this.once("no_shell_integration", () => {
-			// Submitted command paths publish their own descriptive completion below.
-			// This fallback owns only initialization failures before run() starts.
-			if (this.commandSubmitted) return
-			this.emit("completed", "<no shell integration>")
-			if (this.terminal.process === this) {
-				this.terminal.busy = false
-				this.terminal.setActiveStream(undefined)
-			}
+	public completeShellIntegrationFailure(reason: string): Promise<void> {
+		this.emit("no_shell_integration", reason)
+		return this.finishCompletion("<no shell integration>")
+	}
+
+	public get completionObservers(): Promise<void> | undefined {
+		return this.completion
+	}
+
+	private finishCompletion(output: string, beforeCompletion?: () => void): Promise<void> {
+		this.completion ??= Promise.resolve().then(async () => {
+			beforeCompletion?.()
+			const failure = await this.emitCompletedAndWait(output)
+			if (failure) throw failure
 			this.continue()
 		})
+		return this.completion
 	}
 
 	public get terminal(): Terminal {
@@ -201,7 +205,8 @@ export class TerminalProcess extends BaseTerminalProcess {
 	private async runWithShellIntegration(command: string): Promise<void> {
 		this.terminalClosedSignal.throwIfAborted()
 		this.command = command
-		if (this.completeCancellationBeforeLaunch()) return
+		const cancellation = this.completeCancellationBeforeLaunch()
+		if (cancellation) return cancellation
 
 		const terminal = this.terminal.terminal
 
@@ -220,12 +225,9 @@ export class TerminalProcess extends BaseTerminalProcess {
 				"Command was submitted; output is not available, as shell integration is inactive.",
 			)
 
-			this.emit(
-				"completed",
+			await this.finishCompletion(
 				"<shell integration is not available, so terminal output and command execution status is unknown>",
 			)
-
-			this.emit("continue")
 			return
 		}
 		// Create a promise that resolves when the stream becomes available
@@ -268,8 +270,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 			clearTimeout(streamTimeoutId)
 			if (onStreamAvailable) this.removeListener("stream_available", onStreamAvailable)
 			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
-			this.stopHotTimer()
-			this.isHot = false
 		}
 
 		let commandToExecute = command
@@ -294,8 +294,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 		}
 		for (const dispatch of pendingShellEvents) dispatch()
 
-		this.isHot = true
-
 		// Wait for stream to be available
 		let stream: AsyncIterable<string>
 
@@ -306,14 +304,9 @@ export class TerminalProcess extends BaseTerminalProcess {
 			// Stream timeout or other error occurred
 			console.error("[Terminal Process] Stream error:", error.message)
 
-			// Emit completed event with error message
-			this.emit(
-				"completed",
+			await this.finishCompletion(
 				"<VSCE shell integration stream did not start: terminal output and command execution status is unknown>",
 			)
-
-			// Emit continue event to allow execution to proceed
-			this.emit("continue")
 			return
 		}
 
@@ -391,8 +384,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 				this.emitRemainingBufferIfListening()
 				this.lastEmitTime_ms = now
 			}
-
-			this.startHotTimer(data)
 		}
 
 		if (!transcriptEnded && transcriptMarkerCarry) this.appendOutputTranscript(transcriptMarkerCarry)
@@ -403,8 +394,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 
 		// Wait for shell execution to complete.
 		await this.awaitTerminalOperation(shellExecutionComplete)
-
-		this.isHot = false
 
 		if (commandOutputStarted) {
 			// Emit any remaining output before completing
@@ -419,15 +408,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 			// Emit no_shell_integration event
 			this.emit("no_shell_integration", errorMsg)
 
-			// Emit completed event with error message
-			this.emit(
-				"completed",
+			await this.finishCompletion(
 				"<VSCE shell integration markers not found: terminal output and command execution status is unknown>\n" +
 					`<preOutput>${inspectPreOutput}</preOutput>\n` +
 					"AI MODEL: You MUST notify the user with the information above so they can open a bug report.",
 			)
-
-			this.continue()
 
 			// Return early since we can't process output without shell integration markers
 			return
@@ -442,14 +427,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			this.outputOmissions = this.outputOmissions.filter((omission) => omission.end <= match.length)
 		}
 
-		// For now we don't want this delaying requests since we don't send
-		// diagnostics automatically anymore (previous: "even though the
-		// command is finished, we still want to consider it 'hot' in case
-		// so that api request stalls to let diagnostics catch up").
-		this.stopHotTimer()
-		const completionFailure = await this.emitCompletedAndWait(this.getOutputTranscript())
-		if (completionFailure) throw completionFailure
-		this.emit("continue")
+		await this.finishCompletion(this.getOutputTranscript())
 	}
 
 	private usesWindowsPowerShell(): boolean {
@@ -508,7 +486,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 		let timer: ReturnType<typeof setTimeout> | undefined
 		try {
 			this.abort()
-			if (!this.commandSubmitted) this.completeCancellationBeforeLaunch()
+			const cancellation = this.completeCancellationBeforeLaunch()
+			if (cancellation) {
+				await cancellation
+				return
+			}
 			await Promise.race([
 				exited,
 				new Promise<void>((resolve) => (timer = setTimeout(resolve, INTERRUPT_GRACE_MS))),
@@ -547,13 +529,11 @@ export class TerminalProcess extends BaseTerminalProcess {
 		this.terminal.terminal.sendText("\x03", false)
 	}
 
-	private completeCancellationBeforeLaunch(): boolean {
-		if (!this.aborted || this.commandSubmitted) return false
-		if (this.shellExecutionReported) return true
-		this.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
-		this.emit("completed", "")
-		this.emit("continue")
-		return true
+	private completeCancellationBeforeLaunch(): Promise<void> | undefined {
+		if (!this.aborted || this.commandSubmitted) return undefined
+		return this.finishCompletion("", () => {
+			this.emit("shell_execution_complete", { exitCode: 130, signalName: "SIGINT" })
+		})
 	}
 
 	public override hasUnretrievedOutput(): boolean {

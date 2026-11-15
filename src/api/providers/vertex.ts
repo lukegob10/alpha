@@ -10,13 +10,13 @@ import { type ApiHandlerOptions, shouldUseReasoningBudget } from "../../shared/a
 
 import { getModelParams } from "../transform/model-params"
 
-import { VertexGeminiHandler } from "./gemini"
+import { GeminiTransportHandler } from "./gemini"
 import { SingleCompletionHandler } from "../index"
 import { applyModelToolPreferences } from "./utils/router-tool-preferences"
 
-export class VertexHandler extends VertexGeminiHandler implements SingleCompletionHandler {
+export class VertexHandler extends GeminiTransportHandler implements SingleCompletionHandler {
 	constructor(options: ApiHandlerOptions) {
-		super(options)
+		super(options, { provider: "vertex" })
 	}
 
 	override getModel() {

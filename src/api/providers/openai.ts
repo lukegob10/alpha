@@ -52,7 +52,7 @@ import type {
 } from "../index"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { getApiRequestTimeout } from "./utils/timeout-config"
-import { handleOpenAIError } from "./utils/error-handler"
+import { handleProviderError } from "./utils/error-handler"
 import {
 	buildOpenAiResponsesInput,
 	encodeOpenAiCustomToolInputDelta,
@@ -331,6 +331,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	protected client: OpenAI
 	protected readonly providerName: string = "OpenAI"
 	protected readonly providerId: string = "openai"
+	private readonly usesLegacyAzureInference: boolean
 	private lastReasoningDetails?: unknown[]
 	private responsesResponseId?: string
 	private responsesEncryptedContent?: { encrypted_content: string; id?: string }
@@ -352,46 +353,33 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 		const baseURL = this.options.openAiBaseUrl || "https://api.openai.com/v1"
 		const apiKey = this.options.openAiApiKey ?? "not-provided"
-		const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
-		const urlHost = this._getUrlHost(this.options.openAiBaseUrl)
-		const isAzureOpenAi = urlHost === "azure.com" || urlHost.endsWith(".azure.com") || options.openAiUseAzure
+		const endpoint = URL.parse(baseURL)
+		const host = endpoint?.host ?? ""
+		const isAzureHost = host === "azure.com" || host.endsWith(".azure.com")
+		// Azure's /openai/v1 base URLs use the standard OpenAI SDK on both Azure hostnames.
+		const isAzureV1 = isAzureHost && /\/openai\/v1\/?$/.test(endpoint?.pathname ?? "")
+		this.usesLegacyAzureInference = !isAzureV1 && host.endsWith(".services.ai.azure.com")
 
-		const headers = {
-			...DEFAULT_HEADERS,
-			...(this.options.openAiHeaders || {}),
+		const clientOptions = {
+			baseURL,
+			apiKey,
+			defaultHeaders: { ...DEFAULT_HEADERS, ...this.options.openAiHeaders },
+			timeout: getApiRequestTimeout(),
+			// Shared retry policy owns attempt budgets and server delay advice.
+			maxRetries: 0,
 		}
 
-		const timeout = getApiRequestTimeout()
-
-		if (isAzureAiInference) {
-			// Azure AI Inference Service (e.g., for DeepSeek) uses a different path structure
-			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
-				defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" },
-				timeout,
-				maxRetries: 0,
-			})
-		} else if (isAzureOpenAi) {
-			// Azure API shape slightly differs from the core API shape:
-			// https://github.com/openai/openai-node?tab=readme-ov-file#microsoft-azure-openai
+		if (!isAzureV1 && !this.usesLegacyAzureInference && (isAzureHost || options.openAiUseAzure)) {
 			this.client = new AzureOpenAI({
-				baseURL,
-				apiKey,
+				...clientOptions,
 				apiVersion: this.options.azureApiVersion || azureOpenAiDefaultApiVersion,
-				defaultHeaders: headers,
-				timeout,
-				maxRetries: 0,
 			})
 		} else {
 			this.client = new OpenAI({
-				baseURL,
-				apiKey,
-				defaultHeaders: headers,
-				timeout,
-				// Shared retry policy owns attempt budgets and server delay advice.
-				maxRetries: 0,
+				...clientOptions,
+				...(this.usesLegacyAzureInference
+					? { defaultQuery: { "api-version": this.options.azureApiVersion || "2024-05-01-preview" } }
+					: {}),
 			})
 		}
 	}
@@ -489,7 +477,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			}
 			if (cancelled) throw error
 			// Request admission and asynchronous stream iteration share one metadata-preserving boundary.
-			const failure = handleOpenAIError(error, this.providerName)
+			const failure = handleProviderError(error, this.providerName)
 			const details = providerRecord(failure)
 			if (details?.retryable === undefined) {
 				if (connectionFailure) {
@@ -526,10 +514,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		this.responsesSummary = undefined
 		const { info: modelInfo, reasoning, temperature } = this.getModel()
 		const effectiveReasoning = reasoning
-		const modelUrl = this.options.openAiBaseUrl ?? ""
 		const modelId = this.options.openAiModelId ?? ""
 		const enabledR1Format = this.options.openAiR1FormatEnabled ?? false
-		const isAzureAiInference = this._isAzureAiInference(modelUrl)
 		const deepseekReasoner = modelId.includes("deepseek-reasoner") || enabledR1Format
 		// Tool visibility can change by mode or approval policy; it must not switch
 		// a Codex GPT request between Responses and Chat Completions mid-task.
@@ -654,7 +640,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
 			const stream = await this.client.chat.completions.create(this.customizeChatRequest(requestOptions), {
-				...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(this.usesLegacyAzureInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
@@ -747,7 +733,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
 			const response = await this.client.chat.completions.create(this.customizeChatRequest(requestOptions), {
-				...(this._isAzureAiInference(modelUrl) ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(this.usesLegacyAzureInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
@@ -1636,7 +1622,6 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	async completePrompt(prompt: string, metadata?: ApiHandlerSingleCompletionMetadata): Promise<string> {
 		throwIfSingleCompletionAborted(metadata)
 		try {
-			const isAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 			const model = this.getModel()
 			const modelInfo = model.info
 			const effectiveReasoning = model.reasoning
@@ -1687,7 +1672,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 
 			const response = await awaitSingleCompletion(
 				this.client.chat.completions.create(this.customizeChatRequest(requestOptions), {
-					...(isAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+					...(this.usesLegacyAzureInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
 					...(metadata?.signal ? { signal: metadata.signal } : {}),
 				}),
 				metadata,
@@ -1697,7 +1682,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			return response.choices?.[0]?.message.content || ""
 		} catch (error) {
 			throwIfSingleCompletionAborted(metadata)
-			throw handleOpenAIError(error, this.providerName)
+			throw handleProviderError(error, this.providerName)
 		}
 	}
 
@@ -1743,7 +1728,6 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		const model = this.getModel()
 		const modelInfo = model.info
 		const effectiveReasoning = model.reasoning
-		const methodIsAzureAiInference = this._isAzureAiInference(this.options.openAiBaseUrl)
 		const instructionMessages =
 			metadata?.instructionFragments !== undefined
 				? toOpenAiReasoningInstructionMessages(metadata.instructionFragments)
@@ -1771,7 +1755,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
 			const stream = await this.client.chat.completions.create(this.customizeChatRequest(requestOptions), {
-				...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(this.usesLegacyAzureInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
@@ -1794,7 +1778,7 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 			this.addMaxTokensIfNeeded(requestOptions, modelInfo)
 
 			const response = await this.client.chat.completions.create(this.customizeChatRequest(requestOptions), {
-				...(methodIsAzureAiInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
+				...(this.usesLegacyAzureInference ? { path: OPENAI_AZURE_AI_INFERENCE_PATH } : {}),
 				...(metadata?.signal ? { signal: metadata.signal } : {}),
 			})
 
@@ -1934,22 +1918,8 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 		}
 	}
 
-	protected _getUrlHost(baseUrl?: string): string {
-		try {
-			return new URL(baseUrl ?? "").host
-		} catch (error) {
-			return ""
-		}
-	}
-
 	private _isGrokXAI(baseUrl?: string): boolean {
-		const urlHost = this._getUrlHost(baseUrl)
-		return urlHost.includes("x.ai")
-	}
-
-	protected _isAzureAiInference(baseUrl?: string): boolean {
-		const urlHost = this._getUrlHost(baseUrl)
-		return urlHost.endsWith(".services.ai.azure.com")
+		return URL.parse(baseUrl ?? "")?.host.includes("x.ai") ?? false
 	}
 
 	/**

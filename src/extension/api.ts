@@ -5,7 +5,6 @@ import * as path from "path"
 import * as os from "os"
 
 import * as vscode from "vscode"
-import pWaitFor from "p-wait-for"
 
 import {
 	type AlphaCodeAPI,
@@ -258,7 +257,10 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 
 	public async resumeTask(taskId: string): Promise<void> {
 		await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
-		await this.waitForWebviewLaunch(5_000)
+		const timeoutMs = 5_000
+		if (!(await this.sidebarProvider.waitForWebviewLaunch(timeoutMs))) {
+			this.log(`[API#waitForWebviewLaunch] webview did not launch within ${timeoutMs}ms`)
+		}
 
 		await this.sidebarProvider.showTaskWithId(taskId)
 
@@ -336,20 +338,6 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 
 	public isReady() {
 		return this.sidebarProvider.viewLaunched
-	}
-
-	private async waitForWebviewLaunch(timeoutMs: number): Promise<boolean> {
-		try {
-			await pWaitFor(() => this.sidebarProvider.viewLaunched, {
-				timeout: timeoutMs,
-				interval: 50,
-			})
-
-			return true
-		} catch {
-			this.log(`[API#waitForWebviewLaunch] webview did not launch within ${timeoutMs}ms`)
-			return false
-		}
 	}
 
 	private registerListeners(provider: AlphaProvider) {

@@ -157,7 +157,6 @@ function execCommandResponse(callId: string, command: string) {
 
 class ControlledProcess extends EventEmitter {
 	readonly command: string
-	readonly isHot = true
 	private readonly completion: Promise<void>
 	private resolveCompletion!: () => void
 	private rejectCompletion!: (error: unknown) => void
@@ -505,6 +504,44 @@ function verificationEvents(events: AgentTurnEvent[]) {
 }
 
 describe("ordinary task tool contracts", () => {
+	it.each([
+		["exec_command cmd", execCommandResponse("invalid-nul", "node --version\u0000")],
+		["execute_command command", response("invalid-nul", "node --version\u0000")],
+	] as const)("rejects a NUL in %s before starting a command", async (_name, toolResponse) => {
+		await withTaskHarness(async (harness) => {
+			const terminal = controlledTerminal(harness.workspacePath, (process) =>
+				process.fail(new TypeError('Arguments cannot contain null bytes ("\\0")')),
+			)
+			installTerminal(terminal)
+			terminalRegistryMock.getOrCreateTerminal.mockClear()
+			const suspend = vi.spyOn(harness.task, "suspendAfterCurrentTurn")
+			vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+			const outcome = await createScheduler(harness, []).run(toolResponse)
+
+			expect(outcome.status).toBe("completed")
+			expect(outcome.results).toEqual([
+				expect.objectContaining({
+					callId: "invalid-nul",
+					status: "error",
+					failure: expect.objectContaining({
+						reason: "invalid_arguments",
+						effectsStarted: "no",
+						outcome: "known",
+						recovery: { kind: "repair" },
+					}),
+				}),
+			])
+			expect(harness.toolResults()).toEqual([
+				expect.objectContaining({ tool_use_id: "invalid-nul", is_error: true }),
+			])
+			expect(harness.task.ask).not.toHaveBeenCalled()
+			expect(terminalRegistryMock.getOrCreateTerminal).not.toHaveBeenCalled()
+			expect(harness.provider.reservePrimaryMutation).not.toHaveBeenCalled()
+			expect(suspend).not.toHaveBeenCalled()
+		})
+	})
+
 	it("blocks the failed command retry without suspending independent work", async () => {
 		await withTaskHarness(async (harness) => {
 			Reflect.set(harness.task, "toolRepetitionDetector", new ToolRepetitionDetector(3, { noProgressLimit: 2 }))

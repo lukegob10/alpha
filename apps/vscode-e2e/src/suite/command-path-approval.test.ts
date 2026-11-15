@@ -94,6 +94,7 @@ suite("Command and path approval in the extension host", function () {
 		const observation: Observation = {
 			requests: 0,
 			commands: [
+				{ cmd: "node --version\u0000" },
 				{ cmd: "node alpha-command-check.cjs" },
 				{ cmd: writeSentinel("approved-once") },
 				{ cmd: writeSentinel("approved-again") },
@@ -108,6 +109,11 @@ suite("Command and path approval in the extension host", function () {
 			},
 			(_system, messages, index) => {
 				if (index === 1)
+					assert.ok(
+						JSON.stringify(messages).includes("NUL (U+0000)"),
+						"The next request must receive the input error",
+					)
+				if (index === 2)
 					assert.ok(JSON.stringify(messages).includes("ALPHA_COMMAND_OK"), "The inline script must run")
 			},
 		)
@@ -164,7 +170,7 @@ suite("Command and path approval in the extension host", function () {
 				{ description: "global command auto-approval and one-run path reviews", timeout: 150_000 },
 			)
 			await observation.task!.waitForTermination()
-			assert.equal(observation.requests, 4)
+			assert.equal(observation.requests, observation.commands.length + 1)
 			assert.equal(approvalCount, 2)
 			assert.equal(await fs.readFile(outputPath, "utf8"), "inside")
 			assert.equal((await fs.readFile(sentinel, "utf8")).trim(), "approved-again")

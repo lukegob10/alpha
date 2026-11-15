@@ -40,10 +40,8 @@ export abstract class BaseTerminalProcess
 	public outputArchiveInterrupted = false
 	public command: string = ""
 
-	public isHot: boolean = false
 	public isSettled: boolean = false
 	public isOutputFinalized: boolean = false
-	protected hotTimer: NodeJS.Timeout | null = null
 
 	protected isListening: boolean = true
 	protected lastEmitTime_ms: number = 0
@@ -538,52 +536,5 @@ export abstract class BaseTerminalProcess
 
 	private clampRetrievedIndex(): number {
 		return Math.min(Math.max(0, this.lastRetrievedIndex), this.fullOutput.length)
-	}
-
-	protected startHotTimer(data: string) {
-		this.isHot = true
-
-		if (this.hotTimer) {
-			clearTimeout(this.hotTimer)
-		}
-
-		this.hotTimer = setTimeout(() => (this.isHot = false), BaseTerminalProcess.isCompiling(data) ? 15_000 : 2_000)
-	}
-
-	protected stopHotTimer() {
-		if (this.hotTimer) {
-			clearTimeout(this.hotTimer)
-		}
-
-		this.isHot = false
-	}
-
-	// These markers indicate the command is some kind of local dev
-	// server recompiling the app, which we want to wait for output
-	// of before sending request to Alpha.
-	private static compilingMarkers = ["compiling", "building", "bundling", "transpiling", "generating", "starting"]
-
-	private static compilingMarkerNullifiers = [
-		"compiled",
-		"success",
-		"finish",
-		"complete",
-		"succeed",
-		"done",
-		"end",
-		"stop",
-		"exit",
-		"terminate",
-		"error",
-		"fail",
-	]
-
-	private static isCompiling(data: string): boolean {
-		return (
-			BaseTerminalProcess.compilingMarkers.some((marker) => data.toLowerCase().includes(marker.toLowerCase())) &&
-			!BaseTerminalProcess.compilingMarkerNullifiers.some((nullifier) =>
-				data.toLowerCase().includes(nullifier.toLowerCase()),
-			)
-		)
 	}
 }

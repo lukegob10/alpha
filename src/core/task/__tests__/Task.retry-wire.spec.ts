@@ -158,6 +158,36 @@ function deferred<T = void>() {
 }
 
 describe("request stream steering", () => {
+	it.each([undefined, 10_000])(
+		"reuses the stream timers for 100 reads after the first chunk (budget %s)",
+		async (budget) => {
+			vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
+			const schedule = vi.spyOn(globalThis, "setTimeout")
+			try {
+				const { task, originalHandler } = harness()
+				originalHandler.createMessage.mockImplementationOnce(async function* () {
+					for (let index = 0; index < 100; index++) yield { type: "text", text: String(index) }
+				})
+				const stream = task.attemptApiRequest(0, {
+					skipProviderRateLimit: true,
+					ownerHandlesRetry: true,
+					retryDeadline: budget === undefined ? undefined : Date.now() + budget,
+				})
+				await expect(stream.next()).resolves.toMatchObject({ value: { type: "text", text: "0" } })
+				schedule.mockClear()
+				for (let index = 1; index < 100; index++) {
+					await expect(stream.next()).resolves.toMatchObject({ value: { type: "text", text: String(index) } })
+				}
+				await expect(stream.next()).resolves.toMatchObject({ done: true })
+				expect(schedule.mock.calls.length).toBe(0)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				schedule.mockRestore()
+				vi.useRealTimers()
+			}
+		},
+	)
+
 	it("does not let lifecycle admission latency extend an explicit first-response deadline", async () => {
 		vi.useFakeTimers()
 		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)

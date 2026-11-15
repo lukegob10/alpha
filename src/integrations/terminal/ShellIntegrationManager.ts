@@ -1,3 +1,4 @@
+import * as os from "os"
 import * as path from "path"
 
 import * as vscode from "vscode"
@@ -10,31 +11,16 @@ export class ShellIntegrationManager {
 	 * @param env The environment variables object to modify
 	 * @returns The path to the temporary directory
 	 */
-	public static zshInitTmpDir(env: Record<string, string>): string {
-		// Create a temporary directory with the sticky bit set for security
-		const os = require("os")
-		const path = require("path")
+	public static async zshInitTmpDir(env: Record<string, string>): Promise<string> {
 		const tmpDir = path.join(os.tmpdir(), `alpha-zdotdir-${Math.random().toString(36).substring(2, 15)}`)
-		console.info(`[TerminalRegistry] Creating temporary directory for ZDOTDIR: ${tmpDir}`)
 
 		// Save original ZDOTDIR as ALPHA_ZDOTDIR
 		if (process.env.ZDOTDIR) {
 			env.ALPHA_ZDOTDIR = process.env.ZDOTDIR
 		}
 
-		// Create the temporary directory
-		vscode.workspace.fs
-			.createDirectory(vscode.Uri.file(tmpDir))
-			.then(() => {
-				console.info(`[TerminalRegistry] Created temporary directory for ZDOTDIR at ${tmpDir}`)
-
-				// Create .zshrc in the temporary directory
-				const zshrcPath = `${tmpDir}/.zshrc`
-
-				// Get the path to the shell integration script
-				const shellIntegrationPath = this.getShellIntegrationPath("zsh")
-
-				const zshrcContent = `
+		const shellIntegrationPath = this.getShellIntegrationPath("zsh")
+		const zshrcContent = `
 	source "${shellIntegrationPath}"
 	ZDOTDIR=\${ALPHA_ZDOTDIR:-$HOME}
 	unset ALPHA_ZDOTDIR
@@ -44,23 +30,22 @@ export class ShellIntegrationManager {
 	[ -f "$ZDOTDIR/.zlogin" ] && source "$ZDOTDIR/.zlogin"
 	[ "$ZDOTDIR" = "$HOME" ] && unset ZDOTDIR
 	`
-				console.info(`[TerminalRegistry] Creating .zshrc file at ${zshrcPath} with content:\n${zshrcContent}`)
-				vscode.workspace.fs.writeFile(vscode.Uri.file(zshrcPath), Buffer.from(zshrcContent)).then(
-					// Success handler
-					() => {
-						console.info(`[TerminalRegistry] Successfully created .zshrc file at ${zshrcPath}`)
-					},
-					// Error handler
-					(error: Error) => {
-						console.error(`[TerminalRegistry] Error creating .zshrc file at ${zshrcPath}: ${error}`)
-					},
-				)
-			})
-			.then(undefined, (error: Error) => {
-				console.error(`[TerminalRegistry] Error creating temporary directory at ${tmpDir}: ${error}`)
-			})
-
+		await vscode.workspace.fs.createDirectory(vscode.Uri.file(tmpDir))
+		try {
+			await vscode.workspace.fs.writeFile(vscode.Uri.file(path.join(tmpDir, ".zshrc")), Buffer.from(zshrcContent))
+		} catch (error) {
+			await this.discardZshDirectory(tmpDir)
+			throw error
+		}
 		return tmpDir
+	}
+
+	public static async discardZshDirectory(tmpDir: string): Promise<void> {
+		try {
+			await vscode.workspace.fs.delete(vscode.Uri.file(tmpDir), { recursive: true })
+		} catch (error) {
+			console.error("[TerminalRegistry] Failed to clean up an unused zsh startup directory", error)
+		}
 	}
 
 	/**

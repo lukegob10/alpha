@@ -18,9 +18,19 @@ const receive = (message: Partial<ExtensionMessage>) => {
 	act(() => window.dispatchEvent(new MessageEvent("message", { data: message })))
 }
 
+const initializationRequest = () =>
+	mockPostMessage.mock.calls.findLast(([message]) => message.type === "getWorktreeDefaults")?.[0].requestId
+
 const populate = () => {
-	receive({ type: "worktreeDefaults", suggestedBranch: "worktree/feature", suggestedPath: "/worktrees/submitted" })
-	receive({ type: "branchList", localBranches: ["main"], remoteBranches: [], currentBranch: "main" })
+	const requestId = initializationRequest()
+	expect(requestId).toEqual(expect.any(String))
+	receive({
+		type: "worktreeDefaults",
+		requestId,
+		suggestedBranch: "worktree/feature",
+		suggestedPath: "/worktrees/submitted",
+	})
+	receive({ type: "branchList", requestId, localBranches: ["main"], remoteBranches: [], currentBranch: "main" })
 }
 
 const create = () => {
@@ -120,7 +130,41 @@ describe("CreateWorktreeModal", () => {
 		receive({ type: "worktreeResult", requestId, success: true })
 
 		expect(onClose).not.toHaveBeenCalled()
-		expect(screen.getByRole("button", { name: "worktrees:create" })).toBeEnabled()
+		expect(screen.getByRole("button", { name: "worktrees:create" })).toBeDisabled()
 		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "switchWorktree" }))
+	})
+
+	it("ignores initialization from a closed dialog and keeps edits made before current defaults", () => {
+		const onClose = vi.fn()
+		const view = render(<CreateWorktreeModal open onClose={onClose} />)
+		const old = initializationRequest()
+		view.rerender(<CreateWorktreeModal open={false} onClose={onClose} />)
+		view.rerender(<CreateWorktreeModal open onClose={onClose} />)
+		const current = initializationRequest()
+		expect(current).not.toBe(old)
+
+		receive({
+			type: "branchList",
+			requestId: old,
+			currentBranch: "stale",
+			localBranches: ["stale"],
+			remoteBranches: [],
+		})
+		receive({ type: "worktreeDefaults", requestId: old, suggestedBranch: "stale-name", suggestedPath: "/stale" })
+		expect(screen.getByText("worktrees:loadingBranches")).toBeInTheDocument()
+		expect(screen.queryByDisplayValue("stale-name")).not.toBeInTheDocument()
+
+		fireEvent.change(screen.getByPlaceholderText("worktree/feature-name"), { target: { value: "typed-name" } })
+		fireEvent.change(screen.getByPlaceholderText("/path/to/worktree"), { target: { value: "/typed" } })
+		populate()
+		fireEvent.click(screen.getByRole("button", { name: "worktrees:create" }))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "createWorktree",
+				worktreeBranch: "typed-name",
+				worktreePath: "/typed",
+				worktreeBaseBranch: "main",
+			}),
+		)
 	})
 })

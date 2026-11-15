@@ -2041,14 +2041,13 @@ export class ToolScheduler {
 		const cancellation = new Promise<undefined>((resolve) => {
 			abortListener = () => resolve(undefined)
 			signal.addEventListener("abort", abortListener, { once: true })
-			// Task.abort is a legacy boolean without an event source. Poll only
-			// while an interactive host callback is pending so cancellation can
-			// release the approval lane deterministically in that compatibility path.
-			interval = setInterval(() => {
-				if (this.isCancelled()) {
-					resolve(undefined)
-				}
-			}, 25)
+			// Task supplies its cancellation signal. Custom hosts can also
+			// expose a legacy abort flag or an ownership check through a getter.
+			if (!this.options.signal || this.options.executionHost) {
+				interval = setInterval(() => {
+					if (this.isCancelled()) resolve(undefined)
+				}, 25)
+			}
 		})
 
 		try {

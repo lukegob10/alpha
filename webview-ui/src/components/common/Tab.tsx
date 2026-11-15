@@ -47,28 +47,6 @@ export const TabContent = forwardRef<HTMLDivElement, TabProps>(({ className, chi
 })
 TabContent.displayName = "TabContent"
 
-export const TabList = forwardRef<
-	HTMLDivElement,
-	HTMLAttributes<HTMLDivElement> & {
-		value: string
-		onValueChange: (value: string) => void
-	}
->(({ children, className, value, onValueChange, ...props }, ref) => {
-	return (
-		<div ref={ref} role="tablist" className={cn("flex", className)} {...props}>
-			{React.Children.map(children, (child) => {
-				if (React.isValidElement(child)) {
-					return React.cloneElement(child as React.ReactElement<any>, {
-						isSelected: child.props.value === value,
-						onSelect: () => onValueChange(child.props.value),
-					})
-				}
-				return child
-			})}
-		</div>
-	)
-})
-
 export const TabTrigger = forwardRef<
 	HTMLButtonElement,
 	React.ButtonHTMLAttributes<HTMLButtonElement> & {

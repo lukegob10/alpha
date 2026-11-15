@@ -63,8 +63,6 @@ export interface NativeToolsOptions {
 	includeLegacyMcpResource?: boolean
 	/** Independent primary tasks can inspect and coordinate peer conversations; managed children cannot. */
 	crossTaskRole?: "root" | "child" | "none"
-	/** Historical spelling for includeCreateThreadSchema. */
-	includeCreateTaskSchema?: boolean
 	/** Include create_thread only when the latest human request authorizes a separate task. */
 	includeCreateThreadSchema?: boolean
 	/** Include fork_thread only for an explicit request to retain conversation history. */
@@ -100,8 +98,7 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		mcpResourcesAvailable = false,
 		includeLegacyMcpResource = false,
 		crossTaskRole = "none",
-		includeCreateTaskSchema = false,
-		includeCreateThreadSchema = includeCreateTaskSchema,
+		includeCreateThreadSchema = false,
 		includeForkThreadSchema = false,
 		legacyCrossTaskToolNames = [],
 	} = options
@@ -158,6 +155,3 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(taskKind === "primary" && !planMode ? [updatePlan] : []),
 	] satisfies OpenAI.Chat.ChatCompletionTool[]
 }
-
-// Backward compatibility: export default tools with line ranges enabled
-export const nativeTools = getNativeTools()

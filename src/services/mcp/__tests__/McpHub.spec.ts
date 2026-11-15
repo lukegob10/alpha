@@ -526,6 +526,50 @@ describe("McpHub", () => {
 			expect(globalWatcher.close).not.toHaveBeenCalled()
 		})
 
+		it("joins a file watcher close before releasing the deleted connection", async () => {
+			await mcpHub.waitUntilReady()
+			let finishClose!: () => void
+			const heldClose = new Promise<void>((resolve) => (finishClose = resolve))
+			const chokidar = (await import("chokidar")).default
+			const watcher = chokidar.watch("/test/project-watcher")
+			const close = vi.mocked(watcher.close).mockReturnValueOnce(heldClose)
+			mcpHub["fileWatchers"].set("project:shared", [watcher])
+			const settled = vi.fn()
+			const deletion = mcpHub.deleteConnection("shared", "project").then(settled)
+			const nextDeletion = mcpHub.deleteConnection("shared", "project").then(settled)
+			try {
+				await Promise.resolve()
+				expect(close).toHaveBeenCalledOnce()
+				expect(settled).not.toHaveBeenCalled()
+			} finally {
+				finishClose()
+				await Promise.all([deletion, nextDeletion])
+			}
+			expect(settled).toHaveBeenCalledTimes(2)
+		})
+
+		it("publishes project removal even when the global settings cannot be parsed for ordering", async () => {
+			await mcpHub.waitUntilReady()
+			const publish = vi.mocked(mockProvider.postMessageToWebview!)
+			publish.mockClear()
+			const global = mcpHub.connections[0]
+			mcpHub.connections.push({
+				type: "disconnected",
+				server: { ...global.server, name: "project-only", source: "project" },
+				client: null,
+				transport: null,
+			})
+			vi.mocked(fs.readFile).mockResolvedValueOnce("{")
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+			try {
+				await mcpHub["handleProjectMcpDeletion"](++mcpHub["configRevisions"].project)
+				expect(publish).toHaveBeenCalledWith({ type: "mcpServers", mcpServers: [global.server] })
+				expect(vscode.window.showInformationMessage).toHaveBeenCalled()
+			} finally {
+				warn.mockRestore()
+			}
+		})
+
 		it("installs exactly one live watcher for a new server", async () => {
 			await mcpHub.waitUntilReady()
 			const chokidar = (await import("chokidar")).default

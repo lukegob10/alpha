@@ -3,6 +3,7 @@ import * as os from "os"
 import * as path from "path"
 import * as vscode from "vscode"
 import { managedSubagentWorktreeService } from "@alpha-code/core"
+import { TaskLifecycleState } from "@alpha-code/types"
 import type { ExtensionMessage, HistoryItem, WebviewMessage } from "@alpha-code/types"
 
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
@@ -78,6 +79,7 @@ describe("project chat deletion", () => {
 			taskHistoryMetadataReady: Promise.resolve(),
 			taskHistoryStoreReady: Promise.resolve(),
 			taskHistoryStoreInitialized: true,
+			taskLifecycleHistoryWrites: new Map(),
 			taskSessions: sessions,
 			contextProxy: {
 				globalStorageUri: { fsPath: storage },
@@ -91,6 +93,7 @@ describe("project chat deletion", () => {
 			purgeDeletedAgentControlRoots: vi.fn().mockResolvedValue([]),
 			postStateToWebview: vi.fn().mockResolvedValue(undefined),
 			postMessageToWebview: post,
+			webviewLaunchWaiters: new Set(),
 			isViewLaunched: true,
 			webviewMessageQueue: Promise.resolve(),
 			immediateWebviewOperations: new Set(),
@@ -153,6 +156,37 @@ describe("project chat deletion", () => {
 		expect(vscode.window.showWarningMessage).toHaveBeenCalledOnce()
 	})
 
+	it("joins a queued lifecycle write before deleting a closed chat", async () => {
+		await seed("closing", { status: "active" })
+		const writing = barrier()
+		const releaseWrite = barrier()
+		const deleting = barrier()
+		const originalUpsert = store.upsert.bind(store)
+		const originalDeletion = sessions.runHistoryDeletion.bind(sessions)
+		vi.spyOn(store, "upsert").mockImplementationOnce(async (...args) => {
+			writing.resolve()
+			await releaseWrite.promise
+			return originalUpsert(...args)
+		})
+		vi.spyOn(sessions, "runHistoryDeletion").mockImplementation((ids, operation) => {
+			deleting.resolve()
+			return originalDeletion(ids, operation)
+		})
+		const deleteMany = vi.spyOn(store, "deleteMany")
+		provider["queueTaskLifecycleHistoryStatus"]("closing", TaskLifecycleState.Closed)
+		await writing.promise
+		const removed = provider.deleteTasksWithIds(["closing"])
+		try {
+			await deleting.promise
+			expect(deleteMany).not.toHaveBeenCalled()
+		} finally {
+			releaseWrite.resolve()
+			await removed
+		}
+		expect(store.get("closing")).toBeUndefined()
+		await expect(fs.access(path.dirname(historyPath("closing")))).rejects.toMatchObject({ code: "ENOENT" })
+	})
+
 	it("publishes committed history while cleanup is pending and refuses to reopen deleted metadata", async () => {
 		const selected = await seed("deleted")
 		const kept = await seed("keep")
@@ -164,6 +198,7 @@ describe("project chat deletion", () => {
 			currentWorkspacePath: workspace,
 			taskHistoryStore: peerStore,
 			taskHistoryMetadataReady: Promise.resolve(),
+			webviewLaunchWaiters: new Set(),
 			isViewLaunched: true,
 			scheduleGlobalStateWriteThrough: vi.fn(),
 			postMessageToWebview: peerPost,

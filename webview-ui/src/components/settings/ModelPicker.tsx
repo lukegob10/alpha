@@ -92,8 +92,6 @@ export const ModelPicker = ({
 	const [open, setOpen] = useState(false)
 	const isInitialized = useRef(false)
 	const searchInputRef = useRef<HTMLInputElement>(null)
-	const selectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-	const closeTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
 	const { id: selectedModelId, info: configuredSelectedModelInfo } = useSelectedModel(apiConfiguration)
 
@@ -158,31 +156,13 @@ export const ModelPicker = ({
 
 			// Call the optional change callback
 			onModelChange?.(modelId)
-
-			// Clear any existing timeout
-			if (selectTimeoutRef.current) {
-				clearTimeout(selectTimeoutRef.current)
-			}
-
-			// Delay to ensure the popover is closed before setting the search value.
-			selectTimeoutRef.current = setTimeout(() => setSearchValue(""), 100)
 		},
 		[modelIdKey, setApiConfigurationField, valueTransform, onModelChange],
 	)
 
 	const onOpenChange = useCallback((open: boolean) => {
+		if (open) setSearchValue("")
 		setOpen(open)
-
-		// Abandon the current search if the popover is closed.
-		if (!open) {
-			// Clear any existing timeout
-			if (closeTimeoutRef.current) {
-				clearTimeout(closeTimeoutRef.current)
-			}
-
-			// Clear the search value when closing instead of prefilling it
-			closeTimeoutRef.current = setTimeout(() => setSearchValue(""), 100)
-		}
 	}, [])
 
 	const onClearSearch = useCallback(() => {
@@ -209,18 +189,6 @@ export const ModelPicker = ({
 		setApiConfigurationField(modelIdKey, initialValue as ProviderSettings[ModelIdKey], false)
 		isInitialized.current = true
 	}, [defaultModelId, displayValue, modelIdKey, modelIds, setApiConfigurationField, valueTransform])
-
-	// Cleanup timeouts on unmount to prevent test flakiness
-	useEffect(() => {
-		return () => {
-			if (selectTimeoutRef.current) {
-				clearTimeout(selectTimeoutRef.current)
-			}
-			if (closeTimeoutRef.current) {
-				clearTimeout(closeTimeoutRef.current)
-			}
-		}
-	}, [])
 
 	// Use the shared ESC key handler hook
 	useEscapeKey(open, () => setOpen(false))

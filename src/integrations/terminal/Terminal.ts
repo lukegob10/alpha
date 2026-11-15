@@ -21,10 +21,11 @@ export class Terminal extends BaseTerminal {
 		cwd: string,
 		commandEnv: Record<string, string> = {},
 		readonly shellLaunch?: CommandShellLaunch,
+		zshDirectory?: string,
 	) {
 		super("vscode", id, cwd)
 
-		const env = { ...Terminal.getEnv(), ...commandEnv }
+		const env = { ...Terminal.getEnv(), ...(zshDirectory ? { ZDOTDIR: zshDirectory } : {}), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
 		const commandShell = shellLaunch ?? (terminal ? undefined : getDefaultWindowsCommandShell())
 		this.commandShellFamily = commandShell?.family
@@ -45,8 +46,8 @@ export class Terminal extends BaseTerminal {
 					: {}),
 			})
 
-		if (Terminal.getTerminalZdotdir()) {
-			ShellIntegrationManager.terminalTmpDirs.set(id, env.ZDOTDIR)
+		if (zshDirectory) {
+			ShellIntegrationManager.terminalTmpDirs.set(id, zshDirectory)
 		}
 	}
 
@@ -173,22 +174,24 @@ export class Terminal extends BaseTerminal {
 
 			const timeoutMs = Terminal.getShellIntegrationTimeout()
 			this.waitForShellIntegration(process, timeoutMs)
-				.then((readiness) => {
+				.then(async (readiness) => {
 					if (readiness === "settled" || process.isSettled || process.terminalClosedSignal.aborted) {
 						// The shell can still need its startup script after a command is cancelled.
+						await process.completionObservers
 						resolve()
 						return
 					}
 					ShellIntegrationManager.zshCleanupTmpDir(this.id)
 					if (readiness === "timeout") {
-						process.emit(
-							"no_shell_integration",
+						await process.completeShellIntegrationFailure(
 							t("common:errors.command_shell_integration_timeout", { seconds: timeoutMs / 1_000 }),
 						)
+						resolve()
 						return
 					}
 					// Closing during async completed observers may remove continue listeners.
-					return process.run(command).then(() => resolve())
+					await process.run(command)
+					resolve()
 				})
 				.catch((error: unknown) => {
 					if (process.terminalClosedSignal.aborted) {
@@ -254,11 +257,6 @@ export class Terminal extends BaseTerminal {
 		// when output ends with special characters like '%'
 		if (Terminal.getTerminalZshClearEolMark()) {
 			env.PROMPT_EOL_MARK = ""
-		}
-
-		// Handle ZDOTDIR for zsh if enabled
-		if (Terminal.getTerminalZdotdir()) {
-			env.ZDOTDIR = ShellIntegrationManager.zshInitTmpDir(env)
 		}
 
 		return env

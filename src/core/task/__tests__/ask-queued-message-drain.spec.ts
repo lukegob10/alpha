@@ -41,7 +41,7 @@ describe("Task.ask queued message drain", () => {
 		commandApproval: createSubagentCommandApprovalPolicy(["git"], ["git push"], "7".repeat(64)),
 	}
 
-	it("accepts the first timestamp-correlated reply and rejects a second reply before polling consumes it", async () => {
+	it("accepts the first timestamp-correlated reply and rejects a second reply before the ask consumes it", async () => {
 		const task = await createAskOnlyTask()
 		task["activeAsk"] = { type: "followup", ts: 101 }
 		expect(task.handleWebviewAskResponse("messageResponse", "FIRST", [], undefined, 101)).toBe(true)
@@ -101,6 +101,86 @@ describe("Task.ask queued message drain", () => {
 			}
 		},
 	)
+
+	it("wakes a pending completion ask when queued input arrives without polling", async () => {
+		const task = await createAskOnlyTask()
+		vi.useFakeTimers()
+		const schedule = vi.spyOn(globalThis, "setTimeout")
+		const settled = vi.fn()
+		const pending = task.ask("completion_result", "Done", false).then(settled)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(task["activeAsk"]?.published).toBe(true)
+			expect(schedule.mock.calls.filter(([, delay]) => delay === 100)).toHaveLength(0)
+
+			task.messageQueueService.addMessage("Continue with the next step")
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ response: "messageResponse", text: "Continue with the next step" }),
+			)
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(100)
+			await pending
+			schedule.mockRestore()
+			vi.useRealTimers()
+		}
+	})
+
+	it("consumes a direct reply once when a completion ask is already waiting", async () => {
+		const task = await createAskOnlyTask()
+		Object.assign(task, {
+			providerRef: { deref: () => ({ getState: async () => undefined, isTaskOnScreen: () => true }) },
+		})
+		vi.useFakeTimers()
+		const pending = task.ask("completion_result", "Done", false)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			await task.submitUserMessage("Use the direct reply")
+			await vi.advanceTimersByTimeAsync(100)
+			const result = await pending
+
+			expect(result).toMatchObject({ response: "messageResponse", text: "Use the direct reply" })
+			expect(result.queuedMessageIds).toHaveLength(1)
+			expect(task.messageQueueService.messages).toEqual([])
+			expect(task.messageQueueService.getClaimedMessageIds()).toEqual(result.queuedMessageIds)
+		} finally {
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(100)
+			await pending
+			vi.useRealTimers()
+		}
+	})
+
+	it("waits for an external mutation lease to release an accepted answer", async () => {
+		const task = await createAskOnlyTask()
+		vi.useFakeTimers()
+		const { release } = task["acquireExternalMutationLease"]("applying an edit", {
+			allowed: true,
+			state: "available",
+			reason: "The task is idle.",
+		})
+		const settled = vi.fn()
+		const pending = task.ask("followup", "How should I proceed?", false).then(settled)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(task.handleWebviewAskResponse("messageResponse", "Continue after the edit")).toBe(true)
+			await vi.advanceTimersByTimeAsync(100)
+			expect(settled).not.toHaveBeenCalled()
+
+			release?.()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ response: "messageResponse", text: "Continue after the edit" }),
+			)
+		} finally {
+			release?.()
+			task.handleWebviewAskResponse("noButtonClicked")
+			await vi.advanceTimersByTimeAsync(100)
+			await pending
+			vi.useRealTimers()
+		}
+	})
 
 	it("binds durable ask feedback to the host tool call that opened the ask", async () => {
 		const task = await createAskOnlyTask()

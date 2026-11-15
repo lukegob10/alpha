@@ -25,37 +25,28 @@ export const CreateWorktreeModal = ({
 	const { t } = useAppTranslation()
 
 	// Form state
-	const [branchName, setBranchName] = useState("")
-	const [worktreePath, setWorktreePath] = useState("")
-	const [baseBranch, setBaseBranch] = useState("")
+	const [branchEdit, setBranchEdit] = useState<string>()
+	const [pathEdit, setPathEdit] = useState<string>()
+	const [baseEdit, setBaseEdit] = useState<string>()
 
 	// Data state
 	const [defaults, setDefaults] = useState<WorktreeDefaultsResponse | null>(null)
 	const [branches, setBranches] = useState<BranchInfo | null>(null)
 	const [includeStatus, setIncludeStatus] = useState<WorktreeIncludeStatus | null>(null)
+	const branchName = branchEdit ?? defaults?.suggestedBranch ?? ""
+	const worktreePath = pathEdit ?? defaults?.suggestedPath ?? ""
+	const baseBranch = baseEdit ?? (branches ? branches.currentBranch || "main" : "")
 
 	// UI state
 	const [isCreating, setIsCreating] = useState(false)
 	const [error, setError] = useState<string | null>(null)
+	const initializationRequest = useRef<string>()
+	const browseRequest = useRef<string>()
 	const pendingCreate = useRef<{ requestId: string; path: string; openAfterCreate: boolean }>()
 	const [copyProgress, setCopyProgress] = useState<{
 		bytesCopied: number
 		itemName: string
 	} | null>(null)
-
-	// Fetch defaults and branches on open
-	useEffect(() => {
-		if (open) {
-			setError(null)
-			vscode.postMessage({ type: "getWorktreeDefaults" })
-			vscode.postMessage({ type: "getAvailableBranches" })
-			vscode.postMessage({ type: "getWorktreeIncludeStatus" })
-		} else {
-			pendingCreate.current = undefined
-			setIsCreating(false)
-			setCopyProgress(null)
-		}
-	}, [open])
 
 	// Handle messages from extension
 	useEffect(() => {
@@ -64,25 +55,27 @@ export const CreateWorktreeModal = ({
 			const message = event.data
 			switch (message.type) {
 				case "worktreeDefaults": {
-					const data = message as WorktreeDefaultsResponse
-					setDefaults(data)
-					setBranchName(data.suggestedBranch)
-					setWorktreePath(data.suggestedPath)
+					if (initializationRequest.current && message.requestId === initializationRequest.current) {
+						setDefaults(message as WorktreeDefaultsResponse)
+					}
 					break
 				}
 				case "branchList": {
-					const data = message as BranchInfo
-					setBranches(data)
-					setBaseBranch(data.currentBranch || "main")
+					if (initializationRequest.current && message.requestId === initializationRequest.current) {
+						setBranches(message as BranchInfo)
+					}
 					break
 				}
 				case "worktreeIncludeStatus": {
-					setIncludeStatus(message.worktreeIncludeStatus)
+					if (initializationRequest.current && message.requestId === initializationRequest.current) {
+						setIncludeStatus(message.worktreeIncludeStatus)
+					}
 					break
 				}
 				case "folderSelected": {
-					if (message.path) {
-						setWorktreePath(message.path)
+					if (browseRequest.current && message.requestId === browseRequest.current && message.path) {
+						browseRequest.current = undefined
+						setPathEdit(message.path)
 					}
 					break
 				}
@@ -122,6 +115,31 @@ export const CreateWorktreeModal = ({
 		window.addEventListener("message", handleMessage)
 		return () => window.removeEventListener("message", handleMessage)
 	}, [open, onSuccess, onClose])
+
+	useEffect(() => {
+		if (!open) {
+			setBranchEdit(undefined)
+			setPathEdit(undefined)
+			setBaseEdit(undefined)
+			setDefaults(null)
+			setBranches(null)
+			setIncludeStatus(null)
+			setIsCreating(false)
+			setCopyProgress(null)
+			return
+		}
+		setError(null)
+		const requestId = crypto.randomUUID()
+		initializationRequest.current = requestId
+		vscode.postMessage({ type: "getWorktreeDefaults", requestId })
+		vscode.postMessage({ type: "getAvailableBranches", requestId })
+		vscode.postMessage({ type: "getWorktreeIncludeStatus", requestId })
+		return () => {
+			initializationRequest.current = undefined
+			browseRequest.current = undefined
+			pendingCreate.current = undefined
+		}
+	}, [open])
 
 	const handleCreate = useCallback(() => {
 		if (!open || pendingCreate.current) return
@@ -194,7 +212,7 @@ export const CreateWorktreeModal = ({
 						) : (
 							<SearchableSelect
 								value={baseBranch}
-								onValueChange={setBaseBranch}
+								onValueChange={setBaseEdit}
 								options={branchOptions}
 								placeholder={t("worktrees:selectBranch")}
 								searchPlaceholder={t("worktrees:searchBranch")}
@@ -209,7 +227,7 @@ export const CreateWorktreeModal = ({
 						<label className="text-sm text-vscode-foreground shrink-0">{t("worktrees:branchName")}</label>
 						<Input
 							value={branchName}
-							onChange={(e) => setBranchName(e.target.value)}
+							onChange={(e) => setBranchEdit(e.target.value)}
 							placeholder={defaults?.suggestedBranch || "worktree/feature-name"}
 							className="rounded-full"
 						/>
@@ -221,13 +239,20 @@ export const CreateWorktreeModal = ({
 						<label className="text-sm text-vscode-foreground shrink-0">{t("worktrees:worktreePath")}</label>
 						<Input
 							value={worktreePath}
-							onChange={(e) => setWorktreePath(e.target.value)}
+							onChange={(e) => {
+								browseRequest.current = undefined
+								setPathEdit(e.target.value)
+							}}
 							placeholder={defaults?.suggestedPath || "/path/to/worktree"}
 							className="rounded-full flex-1 pr-9"
 						/>
 						<FolderSearch
 							className="size-4 shrink-0 absolute right-3 cursor-pointer hover:opacity-75 transition-opacity"
-							onClick={() => vscode.postMessage({ type: "browseForWorktreePath" })}
+							onClick={() => {
+								const requestId = crypto.randomUUID()
+								browseRequest.current = requestId
+								vscode.postMessage({ type: "browseForWorktreePath", requestId })
+							}}
 						/>
 					</div>
 

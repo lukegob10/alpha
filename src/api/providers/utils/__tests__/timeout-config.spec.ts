@@ -1,10 +1,38 @@
 // npx vitest run api/providers/utils/__tests__/timeout-config.spec.ts
 
-import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "../timeout-config"
+import {
+	ApiRequestIdleTimeout,
+	ApiRequestTimeoutError,
+	getApiRequestTimeout,
+	withApiRequestTimeout,
+} from "../timeout-config"
 import * as vscode from "vscode"
 
 describe("request timeout attribution", () => {
 	afterEach(() => vitest.useRealTimers())
+	it("rearms a later read after a paused consumer outlives the idle window", async () => {
+		vitest.useFakeTimers()
+		const cancel = vitest.fn()
+		const idle = new ApiRequestIdleTimeout("provider stream", 100, cancel)
+		try {
+			await expect(idle.wait(Promise.resolve("first chunk"))).resolves.toBe("first chunk")
+			await vitest.advanceTimersByTimeAsync(500)
+			expect(cancel).not.toHaveBeenCalled()
+
+			const stalled = expect(idle.wait(new Promise<never>(() => {}))).rejects.toMatchObject({
+				timeoutScope: "provider_idle",
+				timeoutMs: 100,
+			})
+			await vitest.advanceTimersByTimeAsync(99)
+			expect(cancel).not.toHaveBeenCalled()
+			await vitest.advanceTimersByTimeAsync(1)
+			await stalled
+			expect(cancel).toHaveBeenCalledOnce()
+		} finally {
+			idle.dispose()
+		}
+		expect(vitest.getTimerCount()).toBe(0)
+	})
 	it("retains a stable provider timeout code and cancels the underlying request once", async () => {
 		vitest.useFakeTimers()
 		const cancel = vitest.fn()

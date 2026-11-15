@@ -144,21 +144,40 @@ describe("AlphaIgnoreController", () => {
 		/**
 		 * Tests error handling during initialization
 		 */
-		it("should handle errors when loading .alphaignore", async () => {
+		it("fails initialization when the first read cannot establish a policy", async () => {
 			// Setup mocks to simulate error
 			mockReadFile.mockRejectedValue(new Error("Test file read error"))
 
 			// Spy on console.error
 			const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {})
 
-			// Initialize controller - shouldn't throw
-			await controller.initialize()
+			await expect(controller.initialize()).rejects.toThrow("Unable to load .alphaignore policy")
+			expect(controller.validateAccess("src/app.ts")).toBe(false)
 
 			// Verify error was logged
 			expect(consoleSpy).toHaveBeenCalledWith("Unexpected error loading .alphaignore:", expect.any(Error))
 
 			// Cleanup
 			consoleSpy.mockRestore()
+		})
+
+		it("defers readiness to a watcher reload that supersedes the initial read", async () => {
+			let finishReload!: (content: string) => void
+			const reloadGate = new Promise<string>((resolve) => (finishReload = resolve))
+			mockReadFile.mockResolvedValueOnce("").mockReturnValueOnce(reloadGate)
+			const ready = vi.fn()
+			const initializing = controller.initialize().then(ready)
+			const reload = mockWatcher.onDidChange.mock.calls[0][0]()
+			try {
+				await vi.waitFor(() => expect(mockReadFile).toHaveBeenCalledTimes(2))
+				expect(ready).not.toHaveBeenCalled()
+				expect(controller.validateAccess("private-notes.md")).toBe(false)
+			} finally {
+				finishReload("private-notes.md")
+				await Promise.all([initializing, reload])
+			}
+			expect(controller.validateAccess("private-notes.md")).toBe(false)
+			expect(controller.validateAccess("public-notes.md")).toBe(true)
 		})
 
 		it("keeps the last known-good policy while a reload is pending or fails", async () => {

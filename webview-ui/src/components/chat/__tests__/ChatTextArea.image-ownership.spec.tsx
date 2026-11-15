@@ -42,10 +42,12 @@ function Composer({
 	taskId,
 	visible = true,
 	onImageUpdate,
+	onSend = noOp,
 }: {
 	taskId?: string
 	visible?: boolean
 	onImageUpdate?: () => void
+	onSend?: (images: string[]) => void
 }) {
 	const composer = useTaskComposer(taskId)
 	const { updateTaskDraft } = composer
@@ -72,7 +74,7 @@ function Composer({
 				sendingDisabled={false}
 				selectApiConfigDisabled={false}
 				placeholderText="Message"
-				onSend={noOp}
+				onSend={() => onSend(composer.selectedImages)}
 				onSelectImages={noOp}
 				shouldDisableImages={false}
 				mode={defaultModeSlug}
@@ -132,6 +134,23 @@ describe("asynchronous composer image ownership", () => {
 		expect(screen.getByTestId("task-b-images")).toHaveTextContent("[]")
 		expect(screen.getByTestId("new-draft")).toHaveTextContent(`"selectedImages":["${image}"]`)
 		expect(screen.getByTestId("new-draft")).toHaveTextContent('"inputValue":"new chat draft"')
+	})
+
+	it.each(["paste", "drop"] as const)("waits for a pending %s before allowing a submit", async (method) => {
+		const onSend = vi.fn()
+		const view = render(<Composer onSend={onSend} />)
+		const reader = startImageRead(method, view.container)
+		const textbox = screen.getByRole("textbox")
+		const send = screen.getByRole("button", { name: /send/i })
+		expect(send).toBeDisabled()
+		fireEvent.click(send)
+		fireEvent.keyDown(textbox, { key: "Enter" })
+		expect(onSend).not.toHaveBeenCalled()
+
+		await act(async () => reader.finish(image))
+		expect(send).toBeEnabled()
+		fireEvent.click(send)
+		expect(onSend).toHaveBeenCalledExactlyOnceWith([image])
 	})
 
 	it("retains pasted attachments when the composer loses focus or becomes hidden", async () => {

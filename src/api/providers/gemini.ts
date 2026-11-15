@@ -13,9 +13,6 @@ import type { JWTInput } from "google-auth-library"
 
 import {
 	type ModelInfo,
-	type VertexModelId,
-	vertexDefaultModelId,
-	vertexModels,
 	resolveModelParameterApplicability,
 	validateOptionalOutputTokenLimit,
 	snapshotGeminiResponse,
@@ -39,7 +36,7 @@ import {
 	type ApiStreamUsageChunk,
 	type GroundingSource,
 } from "../transform/stream"
-import { getModelParams } from "../transform/model-params"
+import type { GeminiReasoningParams } from "../transform/reasoning"
 
 import type {
 	SingleCompletionHandler,
@@ -48,13 +45,40 @@ import type {
 } from "../index"
 import { awaitSingleCompletion, throwIfSingleCompletionAborted } from "../transform/single-completion"
 import { BaseProvider } from "./base-provider"
-import { ApiRequestTimeoutError, getApiRequestTimeout, withApiRequestTimeout } from "./utils/timeout-config"
-import { applyModelToolPreferences } from "./utils/router-tool-preferences"
+import {
+	ApiRequestIdleTimeout,
+	ApiRequestTimeoutError,
+	getApiRequestTimeout,
+	withApiRequestTimeout,
+} from "./utils/timeout-config"
 
 type GeminiRequestContext = {
 	client: GoogleGenAI
 	model: string
 	httpOptions?: GenerateContentConfig["httpOptions"]
+}
+
+function createGenAiAbortSignal(signal: AbortSignal): AbortSignal {
+	// GenAI 1.47 registers its transport abort listener after async request preparation.
+	// Stop a cancelled request at registration if the event already fired.
+	const transportSignal = AbortSignal.any([signal])
+	const addEventListener = transportSignal.addEventListener.bind(transportSignal)
+	transportSignal.addEventListener = (
+		type: string,
+		listener: EventListenerOrEventListenerObject,
+		options?: boolean | AddEventListenerOptions,
+	) => {
+		if (type === "abort") transportSignal.throwIfAborted()
+		addEventListener(type, listener, options)
+	}
+	return transportSignal
+}
+
+function closeGeminiIterator(iterator: AsyncIterator<GenerateContentResponse>): void {
+	// A blocked SDK read may keep return() pending even after transport cancellation.
+	void Promise.resolve()
+		.then(() => iterator.return?.())
+		.catch(() => undefined)
 }
 
 type ProviderInstructionParts = {
@@ -191,7 +215,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 	private lastResponseId?: string
 	private readonly providerName = "Gemini"
 
-	constructor(options: ApiHandlerOptions, transport: GeminiTransport = { provider: "vertex" }) {
+	constructor(options: ApiHandlerOptions, transport: GeminiTransport) {
 		super()
 
 		this.options = options
@@ -540,6 +564,11 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			}
 			let resultIterator: AsyncIterator<GenerateContentResponse> | undefined
 			let streamIteratorCompleted = false
+			const streamIdleTimeout = new ApiRequestIdleTimeout(
+				`${this.providerName} stream response for ${requestContext.model}`,
+				requestTimeoutMs,
+				(error) => requestAbortController.abort(error),
+			)
 			// @google/genai 1.47 retains httpOptions.timeout for the entire SSE body.
 			// The owned admission/read timers above and below enforce inactivity;
 			// the linked signal preserves explicit caller deadlines and Stop.
@@ -550,7 +579,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				config: {
 					...config,
 					httpOptions,
-					abortSignal: requestAbortController.signal,
+					abortSignal: createGenAiAbortSignal(requestControl.signal),
 				},
 			}
 
@@ -669,8 +698,17 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					return
 				}
 
-				const result = await awaitRequest(
-					requestContext.client.models.generateContentStream(params),
+				const admission = requestContext.client.models.generateContentStream(params).then((result) => {
+					const iterator = result[Symbol.asyncIterator]()
+					if (requestControl.signal.aborted) {
+						closeGeminiIterator(iterator)
+						requestControl.signal.throwIfAborted()
+					}
+					resultIterator = iterator
+					return iterator
+				})
+				const iterator = await awaitRequest(
+					admission,
 					`${this.providerName} stream request for ${requestContext.model}`,
 				)
 
@@ -681,13 +719,10 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				let toolCallCounter = 0
 				let hasContent = false
 
-				resultIterator = result[Symbol.asyncIterator]()
-
 				while (true) {
 					throwIfRequestAborted()
-					const nextChunk = await awaitRequest(
-						resultIterator.next(),
-						`${this.providerName} stream response for ${requestContext.model}`,
+					const nextChunk = await streamIdleTimeout.wait(
+						raceApiStreamAbort(iterator.next(), requestControl.signal),
 					)
 					throwIfRequestAborted()
 
@@ -838,47 +873,22 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 
 				throw error
 			} finally {
+				streamIdleTimeout.dispose()
 				if (resultIterator && !streamIteratorCompleted) {
 					// GenAI 1.47.0 releases its reader lock on return without cancelling the SSE body.
 					requestAbortController.abort()
-					try {
-						void Promise.resolve(resultIterator.return?.()).catch(() => undefined)
-					} catch {
-						// Iterator cleanup is best effort after a failed or cancelled request.
-					}
+					closeGeminiIterator(resultIterator)
 				}
 				requestControl.dispose()
 			}
 		}
 	}
 
-	override getModel() {
-		const modelId = this.options.apiModelId
-		let id: string = modelId && modelId in vertexModels ? (modelId as VertexModelId) : vertexDefaultModelId
-		let info: ModelInfo = vertexModels[id as VertexModelId]
-
-		// Keep newly-released Gemini model IDs usable before the static model catalog is updated.
-		if (modelId?.startsWith("gemini-") && !(modelId in vertexModels)) {
-			id = modelId
-			info = vertexModels["gemini-3.7-flash"]
-		}
-
-		const params = getModelParams({
-			format: "gemini",
-			modelId: id,
-			model: info,
-			settings: this.options,
-			defaultTemperature: info.defaultTemperature ?? 1,
-		})
-
-		info = applyModelToolPreferences({ provider: "vertex", id }, info)
-
-		// The `:thinking` suffix indicates that the model is a "Hybrid"
-		// reasoning model and that reasoning is required to be enabled.
-		// The actual model ID honored by Gemini's API does not have this
-		// suffix.
-		const resolvedId = id.endsWith(":thinking") ? id.replace(":thinking", "") : id
-		return { id: resolvedId, info, ...params, toolIdentity: { provider: "vertex", id: resolvedId } }
+	abstract override getModel(): {
+		id: string
+		info: ModelInfo
+		maxTokens: number | undefined
+		reasoning: GeminiReasoningParams | undefined
 	}
 
 	private extractGroundingSources(groundingMetadata?: GroundingMetadata): GroundingSource[] {
@@ -948,7 +958,7 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 					requestContext.httpOptions,
 					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
 				),
-				abortSignal: requestControl.signal,
+				abortSignal: createGenAiAbortSignal(requestControl.signal),
 				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 				...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
 			}
@@ -1079,6 +1089,3 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 		return totalCost
 	}
 }
-
-// Preserve the established Vertex adapter import while sharing the same protocol implementation.
-export { GeminiTransportHandler as VertexGeminiHandler }

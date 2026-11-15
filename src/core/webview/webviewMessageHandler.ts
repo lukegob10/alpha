@@ -221,14 +221,20 @@ export const webviewMessageHandler = async (
 	}
 
 	const getDiscoveredCommands = async () => {
-		const task = provider.getCurrentTask()
+		const workspaceDraft = message.workspaceScope === true && message.taskId === undefined
+		const task = getTaskForMessage(provider, message, { allowActiveFallback: !workspaceDraft })
+		if (message.taskId !== undefined && !task) return []
 		const skillsManager = task ? await provider.getSkillsManager(task) : provider.getSkillsManager()
 
 		if (!skillsManager) {
 			return []
 		}
 
-		const mode = task ? await task.getTaskMode() : await getCurrentMode()
+		const mode = task
+			? await task.getTaskMode()
+			: workspaceDraft
+				? provider.getNewTaskDraftMode()
+				: await getCurrentMode()
 		return getSkillCommands(skillsManager.getSkillsForMode(mode))
 	}
 
@@ -1247,7 +1253,11 @@ export const webviewMessageHandler = async (
 					message?.values?.openAiHeaders,
 				)
 
-				provider.postMessageToWebview({ type: "openAiModels", openAiModels })
+				await provider.postMessageToWebview({
+					type: "openAiModels",
+					openAiModels,
+					requestId: message.requestId,
+				})
 			}
 
 			break
@@ -1346,7 +1356,7 @@ export const webviewMessageHandler = async (
 		case "searchTickets": {
 			const search = options?.ticketSearch
 			search?.signal.throwIfAborted()
-			const task = getTaskForMessage(provider, message, { allowActiveFallback: true })
+			const task = getTaskForMessage(provider, message, { allowActiveFallback: message.workspaceScope !== true })
 			if (message.taskId && !task) {
 				const request = ticketSearchRequestSchema.safeParse(message)
 				if (request.success)
@@ -1915,11 +1925,15 @@ export const webviewMessageHandler = async (
 		}
 		case "searchFiles": {
 			const signal = options?.fileSearch?.signal
-			const workspacePath = options?.fileSearch?.cwd ?? getCurrentCwd()
 			const isCurrent = () => !signal?.aborted && (options?.isCurrentWebview?.() ?? true)
 			if (!isCurrent()) break
-			// Navigation can change the foreground task while discovery is pending.
-			const currentTask = message.taskId ? provider.getLiveTask(message.taskId) : provider.getCurrentTask()
+			const currentTask = getTaskForMessage(provider, message, {
+				allowActiveFallback: message.workspaceScope !== true,
+			})
+			const workspacePath =
+				message.taskId && !currentTask
+					? undefined
+					: (options?.fileSearch?.cwd ?? currentTask?.cwd ?? provider.cwd)
 
 			if (!workspacePath) {
 				// Handle case where workspace path is not available
@@ -3247,12 +3261,13 @@ export const webviewMessageHandler = async (
 			break
 		}
 		case "requestCommands": {
+			const reply = { type: "commands" as const, ...(message.requestId ? { requestId: message.requestId } : {}) }
 			try {
 				const commandList = await getDiscoveredCommands()
-				await provider.postMessageToWebview({ type: "commands", commands: commandList })
+				await provider.postMessageToWebview({ ...reply, commands: commandList })
 			} catch (error) {
 				provider.log(`Error fetching commands: ${JSON.stringify(error, Object.getOwnPropertyNames(error), 2)}`)
-				await provider.postMessageToWebview({ type: "commands", commands: [] })
+				await provider.postMessageToWebview({ ...reply, commands: [] })
 			}
 			break
 		}
@@ -3933,6 +3948,7 @@ export const webviewMessageHandler = async (
 
 				await provider.postMessageToWebview({
 					type: "branchList",
+					requestId: message.requestId,
 					localBranches,
 					remoteBranches,
 					currentBranch,
@@ -3942,6 +3958,7 @@ export const webviewMessageHandler = async (
 
 				await provider.postMessageToWebview({
 					type: "branchList",
+					requestId: message.requestId,
 					localBranches: [],
 					remoteBranches: [],
 					currentBranch: "",
@@ -3955,12 +3972,18 @@ export const webviewMessageHandler = async (
 		case "getWorktreeDefaults": {
 			try {
 				const { suggestedBranch, suggestedPath } = await handleGetWorktreeDefaults(provider)
-				await provider.postMessageToWebview({ type: "worktreeDefaults", suggestedBranch, suggestedPath })
+				await provider.postMessageToWebview({
+					type: "worktreeDefaults",
+					requestId: message.requestId,
+					suggestedBranch,
+					suggestedPath,
+				})
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error)
 
 				await provider.postMessageToWebview({
 					type: "worktreeDefaults",
+					requestId: message.requestId,
 					suggestedBranch: "",
 					suggestedPath: "",
 					error: errorMessage,
@@ -3973,12 +3996,17 @@ export const webviewMessageHandler = async (
 		case "getWorktreeIncludeStatus": {
 			try {
 				const worktreeIncludeStatus = await handleGetWorktreeIncludeStatus(provider)
-				await provider.postMessageToWebview({ type: "worktreeIncludeStatus", worktreeIncludeStatus })
+				await provider.postMessageToWebview({
+					type: "worktreeIncludeStatus",
+					requestId: message.requestId,
+					worktreeIncludeStatus,
+				})
 			} catch (error) {
 				const errorMessage = error instanceof Error ? error.message : String(error)
 
 				await provider.postMessageToWebview({
 					type: "worktreeIncludeStatus",
+					requestId: message.requestId,
 					worktreeIncludeStatus: {
 						exists: false,
 						hasGitignore: false,
@@ -4066,6 +4094,7 @@ export const webviewMessageHandler = async (
 				if (result && result[0]) {
 					await provider.postMessageToWebview({
 						type: "folderSelected",
+						requestId: message.requestId,
 						path: result[0].fsPath,
 					})
 				}

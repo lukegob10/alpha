@@ -2,8 +2,11 @@ import React from "react"
 import { act, cleanup, render } from "@testing-library/react"
 import type { ProviderSettings } from "@alpha-code/types"
 
+const { openAiCompatible } = vi.hoisted(() => ({
+	openAiCompatible: vi.fn((_props: { models: Record<string, unknown> | null }) => null),
+}))
 vi.mock("@src/components/settings/providers", () => ({
-	OpenAICompatible: () => null,
+	OpenAICompatible: openAiCompatible,
 	Vertex: () => null,
 	VSCodeLM: () => null,
 }))
@@ -89,6 +92,7 @@ describe("ApiOptions model discovery", () => {
 		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "requestOpenAiModels",
+			requestId: expect.any(String),
 			values: {
 				baseUrl: "https://latest.example.com/v1",
 				apiKey: "saved-key",
@@ -98,8 +102,50 @@ describe("ApiOptions model discovery", () => {
 		})
 	})
 
+	it("ignores superseded catalog successes and errors across connection edits", async () => {
+		const first: ProviderSettings = {
+			apiProvider: "openai",
+			openAiBaseUrl: "https://first.example.com/v1",
+			openAiApiKey: "saved-key",
+		}
+		const second = { ...first, openAiBaseUrl: "https://second.example.com/v1" }
+		const view = render(options(first))
+		const models = () => openAiCompatible.mock.lastCall?.[0].models
+		const receive = (requestId: string | undefined, openAiModels: string[]) =>
+			act(() => {
+				window.dispatchEvent(
+					new MessageEvent("message", { data: { type: "openAiModels", requestId, openAiModels } }),
+				)
+			})
+		await act(() => vi.advanceTimersByTimeAsync(250))
+		const old = vi.mocked(vscode.postMessage).mock.lastCall?.[0].requestId
+		view.rerender(options(second))
+		receive(old, ["old-model"])
+		expect(models()).toBeNull()
+
+		await act(() => vi.advanceTimersByTimeAsync(250))
+		const current = vi.mocked(vscode.postMessage).mock.lastCall?.[0].requestId
+		expect(current).toEqual(expect.any(String))
+		expect(current).not.toBe(old)
+		receive(current, ["current-model"])
+		receive(old, [])
+		expect(Object.keys(models() ?? {})).toEqual(["current-model"])
+
+		view.rerender(options({ ...second, openAiApiKey: "" }))
+		receive(current, ["current-model"])
+		expect(models()).toBeNull()
+		await act(() => vi.advanceTimersByTimeAsync(250))
+		expect(vscode.postMessage).toHaveBeenCalledTimes(2)
+	})
+
 	it("cancels pending OpenAI discovery when switching to the bundled Copilot catalog", async () => {
-		const view = render(options({ apiProvider: "openai", openAiBaseUrl: "https://first.example.com/v1" }))
+		const view = render(
+			options({
+				apiProvider: "openai",
+				openAiBaseUrl: "https://first.example.com/v1",
+				openAiApiKey: "saved-key",
+			}),
+		)
 		await act(() => vi.advanceTimersByTimeAsync(100))
 		view.rerender(options({ apiProvider: "vscode-lm" }))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
@@ -111,16 +157,23 @@ describe("ApiOptions model discovery", () => {
 		const view = render(options({ apiProvider: "vscode-lm" }))
 		await act(() => vi.advanceTimersByTimeAsync(250))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
-		view.rerender(options({ apiProvider: "openai", openAiBaseUrl: "https://custom.example.com/v1" }))
+		view.rerender(
+			options({
+				apiProvider: "openai",
+				openAiBaseUrl: "https://custom.example.com/v1",
+				openAiApiKey: "saved-key",
+			}),
+		)
 		await act(() => vi.advanceTimersByTimeAsync(249))
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 		await act(() => vi.advanceTimersByTimeAsync(1))
 		expect(vscode.postMessage).toHaveBeenCalledTimes(1)
 		expect(vscode.postMessage).toHaveBeenCalledWith({
 			type: "requestOpenAiModels",
+			requestId: expect.any(String),
 			values: {
 				baseUrl: "https://custom.example.com/v1",
-				apiKey: undefined,
+				apiKey: "saved-key",
 				customHeaders: {},
 				openAiHeaders: {},
 			},
@@ -128,7 +181,13 @@ describe("ApiOptions model discovery", () => {
 	})
 
 	it("cancels pending OpenAI discovery when the settings editor unmounts", async () => {
-		const view = render(options({ apiProvider: "openai" }))
+		const view = render(
+			options({
+				apiProvider: "openai",
+				openAiBaseUrl: "https://first.example.com/v1",
+				openAiApiKey: "saved-key",
+			}),
+		)
 		await act(() => vi.advanceTimersByTimeAsync(100))
 		view.unmount()
 		await act(() => vi.advanceTimersByTimeAsync(250))

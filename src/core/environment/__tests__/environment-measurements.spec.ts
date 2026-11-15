@@ -23,7 +23,6 @@ vi.mock("../../../integrations/terminal/TerminalRegistry", () => ({
 		getTerminals: vi.fn(() => []),
 		getBackgroundTerminals: vi.fn(() => []),
 		getUnretrievedOutput: vi.fn(() => ""),
-		isProcessHot: vi.fn(() => true),
 	},
 }))
 vi.mock("../../../integrations/terminal/Terminal", () => ({
