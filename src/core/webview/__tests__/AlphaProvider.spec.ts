@@ -757,11 +757,11 @@ describe("AlphaProvider", () => {
 	})
 
 	test("shows the current release announcement once per installation without a reporting consent gate", async () => {
-		const announcementId = "november-2026-v3.2.34-chat-forks"
+		const announcementId = "november-2026-v3.2.35-composer"
 
 		expect(provider.latestAnnouncementId).toBe(announcementId)
 
-		await provider.contextProxy.setValue("lastShownAnnouncementId", "november-2026-v3.2.33-responsive-tasks")
+		await provider.contextProxy.setValue("lastShownAnnouncementId", "november-2026-v3.2.34-chat-forks")
 		const state = await provider.getStateToPostToWebview()
 		expect(state.shouldShowAnnouncement).toBe(true)
 		for (const key of ["telemetrySetting", "telemetryKey", "machineId"]) {

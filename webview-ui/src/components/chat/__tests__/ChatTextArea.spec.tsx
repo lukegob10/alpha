@@ -596,6 +596,24 @@ describe("ChatTextArea", () => {
 			expect(textarea).toHaveAttribute("aria-expanded", "false")
 		})
 
+		it("lets Tab move focus when the slash menu has no selectable suggestion", () => {
+			function Composer() {
+				const [inputValue, setInputValue] = useState("")
+				return <ChatTextArea {...defaultProps} inputValue={inputValue} setInputValue={setInputValue} />
+			}
+
+			const draft = "/unknown-skill"
+			render(<Composer />)
+			const textarea = screen.getByRole("textbox")
+			fireEvent.change(textarea, { target: { value: draft, selectionStart: draft.length } })
+
+			expect(screen.getByRole("listbox")).toBeInTheDocument()
+			expect(screen.queryByRole("option")).not.toBeInTheDocument()
+			expect(fireEvent.keyDown(textarea, { key: "Tab" })).toBe(true)
+			expect(textarea).not.toHaveAttribute("aria-activedescendant")
+			expect(defaultProps.onSend).not.toHaveBeenCalled()
+		})
+
 		it("does not latch mouse interaction state after the menu pointer is released", () => {
 			const { container } = render(<ChatTextArea {...defaultProps} />)
 			const textarea = container.querySelector("textarea")!

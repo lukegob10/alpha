@@ -1,5 +1,7 @@
 import React from "react"
 
+import { Package } from "@alpha/package"
+
 import { render, screen } from "@/utils/test-utils"
 import { TranslationContext } from "@src/i18n/TranslationContext"
 import i18n from "@src/i18n/setup"
@@ -9,12 +11,6 @@ import Announcement from "../Announcement"
 vi.mock("@src/utils/vscode", () => ({
 	vscode: {
 		postMessage: vi.fn(),
-	},
-}))
-
-vi.mock("@alpha/package", () => ({
-	Package: {
-		version: "3.2.34",
 	},
 }))
 
@@ -35,13 +31,13 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Fork a chat from the toolbar, history, or /fork. The new chat starts with the conversation through the last completed reply and uses the same checkout."
+		"File, ticket, and skill suggestions follow the chat you're writing in. Press Tab to move focus when there are no suggestions to select."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
-		expect(screen.getByRole("dialog", { name: "Welcome to Alpha v3.2.34" })).toHaveAccessibleDescription(
-			description,
-		)
+		expect(
+			screen.getByRole("dialog", { name: `Welcome to Alpha v${Package.version}` }),
+		).toHaveAccessibleDescription(description)
 	})
 
 	it("falls back to English release text when a retired locale is requested", () => {

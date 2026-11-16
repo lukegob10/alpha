@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.35
+
+### Patch Changes
+
+- Keep file, ticket, and skill suggestions scoped to the chat or workspace draft that requested them.
+- Let Tab move focus when the composer has no selectable suggestion. Keep pasted and dropped images with their draft
+  while the attachments load.
+- Coordinate chat history deletion with active sessions and pending history writes.
+- Improve cancellation during Gemini streaming, handle stalled VS Code model streams, and route Azure OpenAI v1
+  endpoints through the standard OpenAI client.
+
 ## 3.2.34
 
 ### Patch Changes

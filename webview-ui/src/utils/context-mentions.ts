@@ -125,6 +125,15 @@ export interface ContextMenuQueryItem {
 	argumentHint?: string
 }
 
+export function isContextMenuOptionSelectable(option?: ContextMenuQueryItem): option is ContextMenuQueryItem {
+	return (
+		option !== undefined &&
+		option.type !== ContextMenuOptionType.NoResults &&
+		option.type !== ContextMenuOptionType.URL &&
+		option.type !== ContextMenuOptionType.SectionHeader
+	)
+}
+
 export function getContextMenuOptions(
 	query: string,
 	selectedType: ContextMenuOptionType | null = null,

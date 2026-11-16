@@ -567,7 +567,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Fork a chat from the toolbar, history, or /fork. The new chat starts with the conversation through the last completed reply and uses the same checkout."
+			"description": "File, ticket, and skill suggestions follow the chat you're writing in. Press Tab to move focus when there are no suggestions to select."
 		}
 	},
 	"crossTasks": {

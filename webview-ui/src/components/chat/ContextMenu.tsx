@@ -3,7 +3,7 @@ import { getIconForFilePath, getIconUrlByName, getIconForDirectoryPath } from "v
 import { t } from "i18next"
 import { Settings } from "lucide-react"
 
-import { ContextMenuOptionType, ContextMenuQueryItem } from "@src/utils/context-mentions"
+import { ContextMenuOptionType, ContextMenuQueryItem, isContextMenuOptionSelectable } from "@src/utils/context-mentions"
 import { removeLeadingNonAlphanumeric } from "@src/utils/removeLeadingNonAlphanumeric"
 import { vscode } from "@src/utils/vscode"
 
@@ -237,14 +237,6 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 		return getIconUrlByName(iconName, materialIconsBaseUri)
 	}
 
-	const isOptionSelectable = (option: ContextMenuQueryItem): boolean => {
-		return (
-			option.type !== ContextMenuOptionType.NoResults &&
-			option.type !== ContextMenuOptionType.URL &&
-			option.type !== ContextMenuOptionType.SectionHeader
-		)
-	}
-
 	const handleSettingsClick = (e: React.MouseEvent) => {
 		// Prevent any default behavior
 		e.preventDefault()
@@ -319,15 +311,15 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 							key={`${option.type}-${option.value || index}`}
 							id={`${id}-option-${index}`}
 							data-option-index={index}
-							role={isOptionSelectable(option) ? "option" : "presentation"}
-							aria-selected={isOptionSelectable(option) ? index === selectedIndex : undefined}
-							onClick={() => isOptionSelectable(option) && onSelect(option.type, option.value)}
+							role={isContextMenuOptionSelectable(option) ? "option" : "presentation"}
+							aria-selected={isContextMenuOptionSelectable(option) ? index === selectedIndex : undefined}
+							onClick={() => isContextMenuOptionSelectable(option) && onSelect(option.type, option.value)}
 							style={{
 								padding:
 									option.type === ContextMenuOptionType.SectionHeader
 										? "16px 8px 4px 8px"
 										: "4px 8px",
-								cursor: isOptionSelectable(option) ? "pointer" : "default",
+								cursor: isContextMenuOptionSelectable(option) ? "pointer" : "default",
 								color: "var(--vscode-dropdown-foreground)",
 								display: "flex",
 								alignItems: "center",
@@ -339,14 +331,14 @@ const ContextMenu: React.FC<ContextMenuProps> = ({
 											marginBottom: "2px",
 										}
 									: {}),
-								...(index === selectedIndex && isOptionSelectable(option)
+								...(index === selectedIndex && isContextMenuOptionSelectable(option)
 									? {
 											backgroundColor: "var(--vscode-list-activeSelectionBackground)",
 											color: "var(--vscode-list-activeSelectionForeground)",
 										}
 									: {}),
 							}}
-							onMouseEnter={() => isOptionSelectable(option) && setSelectedIndex(index)}>
+							onMouseEnter={() => isContextMenuOptionSelectable(option) && setSelectedIndex(index)}>
 							<div
 								style={{
 									display: "flex",

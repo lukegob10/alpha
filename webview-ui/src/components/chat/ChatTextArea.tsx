@@ -33,6 +33,7 @@ import {
 	type ContextMenuQueryItem,
 	getContextMenuOptions,
 	insertMention,
+	isContextMenuOptionSelectable,
 	removeMention,
 	shouldShowContextMenu,
 	SearchResult,
@@ -484,6 +485,8 @@ export const ChatTextArea = memo(
 					builtInCommands,
 				],
 			)
+			const selectedOption = contextMenuOptions[selectedMenuIndex]
+			const hasSelectedOption = isContextMenuOptionSelectable(selectedOption)
 
 			useEffect(() => {
 				const handleClickOutside = (event: MouseEvent) => {
@@ -617,7 +620,7 @@ export const ChatTextArea = memo(
 					const isComposing = event.nativeEvent?.isComposing ?? false
 					if (isComposing) return
 					if (showContextMenu) {
-						if (event.key === "Tab" && event.shiftKey) {
+						if (event.key === "Tab" && (event.shiftKey || !hasSelectedOption)) {
 							return
 						}
 
@@ -643,13 +646,7 @@ export const ChatTextArea = memo(
 
 								if (optionsLength === 0) return prevIndex
 
-								// Find selectable options (non-URL types)
-								const selectableOptions = options.filter(
-									(option) =>
-										option.type !== ContextMenuOptionType.URL &&
-										option.type !== ContextMenuOptionType.NoResults &&
-										option.type !== ContextMenuOptionType.SectionHeader,
-								)
+								const selectableOptions = options.filter(isContextMenuOptionSelectable)
 
 								if (selectableOptions.length === 0) return -1 // No selectable options
 
@@ -673,13 +670,7 @@ export const ChatTextArea = memo(
 							!(event.key === "Enter" && inputValue === `/${forkChatCommandName}` && !isEditMode)
 						) {
 							event.preventDefault()
-							const selectedOption = contextMenuOptions[selectedMenuIndex]
-							if (
-								selectedOption &&
-								selectedOption.type !== ContextMenuOptionType.URL &&
-								selectedOption.type !== ContextMenuOptionType.NoResults &&
-								selectedOption.type !== ContextMenuOptionType.SectionHeader
-							) {
+							if (hasSelectedOption) {
 								handleMentionSelect(selectedOption.type, selectedOption.value)
 							}
 							return
@@ -772,6 +763,8 @@ export const ChatTextArea = memo(
 					handleSend,
 					showContextMenu,
 					selectedMenuIndex,
+					selectedOption,
+					hasSelectedOption,
 					handleMentionSelect,
 					selectedType,
 					inputValue,
@@ -1320,7 +1313,7 @@ export const ChatTextArea = memo(
 											searchQuery={searchQuery}
 											onMouseDown={handleMenuMouseDown}
 											onMouseUp={handleMenuMouseUp}
-											selectedIndex={selectedMenuIndex}
+											selectedIndex={hasSelectedOption ? selectedMenuIndex : -1}
 											setSelectedIndex={setSelectedMenuIndex}
 											options={contextMenuOptions}
 										/>
@@ -1376,7 +1369,7 @@ export const ChatTextArea = memo(
 										aria-controls={showContextMenu ? contextMenuId : undefined}
 										aria-expanded={showContextMenu}
 										aria-activedescendant={
-											showContextMenu && selectedMenuIndex >= 0
+											showContextMenu && hasSelectedOption
 												? `${contextMenuId}-option-${selectedMenuIndex}`
 												: undefined
 										}
