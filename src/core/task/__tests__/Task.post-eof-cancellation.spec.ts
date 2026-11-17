@@ -71,7 +71,7 @@ const boundaries = [
 	"reasoning publication",
 	"UI save",
 ] as const
-type Boundary = (typeof boundaries)[number]
+type Boundary = (typeof boundaries)[number] | "request settings"
 
 // Test barriers wrap native methods without changing their contracts or effects.
 type TaskHooks = {
@@ -490,6 +490,13 @@ async function harness(
 		})(),
 	)
 	const input = [{ type: "text" as const, text: "Inspect safely" }]
+	if (boundary === "request settings") {
+		vi.spyOn(provider, "getState").mockImplementationOnce(async () => {
+			boundaryEntered.resolve()
+			await releaseBoundary.promise
+			return state
+		})
+	}
 	const run = options.throughEngine ? task["initiateTaskLoop"](input) : task.runAgentRequests(input)
 	// Use the same ownership join as start/resume without running unrelated startup.
 	task["ownBackgroundLifecycle"](
@@ -543,6 +550,25 @@ afterEach(async () => {
 	for (const storage of new Set(owned.map((fixture) => fixture.storage)))
 		await fs.rm(storage, { recursive: true, force: true })
 	vi.restoreAllMocks()
+})
+
+it("settles cancellation while request settings are still loading", async () => {
+	const fixture = await harness("request settings", { throughEngine: true })
+	try {
+		await Promise.race([
+			fixture.boundaryEntered,
+			fixture.run.then(() => {
+				throw new Error("Task finished before reading request settings")
+			}),
+		])
+		const stop = fixture.task.beginTaskCancellation(true)
+		await stop.termination
+		await fixture.run
+		expect(fixture.attempt).not.toHaveBeenCalled()
+		expect(await fixture.journal.replay()).toMatchObject({ status: "interrupted" })
+	} finally {
+		fixture.releaseBoundary()
+	}
 })
 
 it("closes the durable turn when stopped while preparing the next request", async () => {

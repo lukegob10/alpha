@@ -173,6 +173,7 @@ import {
 	type AgentLifecycleSnapshot,
 	type AlphaSay,
 	type AlphaAsk,
+	type InteractiveAsk,
 	type ToolProgressStatus,
 	type HistoryItem,
 	type CreateTaskOptions,
@@ -1389,6 +1390,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private activeAsk?: {
 		type: AlphaAsk
 		ts: number
+		approvalRequestId?: string
 		toolCallId?: string
 		queuedMessageIds?: string[]
 		pendingDirectReplies?: number
@@ -8008,6 +8010,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			installedAsk = {
 				type,
 				ts,
+				approvalRequestId: toolApprovalRequest?.requestId,
 				toolCallId: this.toolInputContext?.getStore()?.toolCallId,
 				signal,
 				recheckApproval,
@@ -8143,6 +8146,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			type === "completion_result" || type === "resume_task" || type === "resume_completed_task"
 
 		const onAbort = () => {
+			if (isPermissionAsk) {
+				wakeAsk()
+				return
+			}
 			if (
 				this.abort ||
 				!installedAsk ||
@@ -8224,7 +8231,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								currentApproval.timeout !== approval.timeout ||
 								provider.contextProxy.getValue("followupAutoApproveTimeoutMs") !== approval.timeout
 							) {
-								this.markActiveFollowupQuestionWaiting(askTs)
+								this.markActiveInteractiveAskWaiting("followup", askTs)
 								return
 							}
 							const { askResponse, text, images } = approval.fn()
@@ -8234,7 +8241,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								provider?.log(
 									"Skipping automatic question answer because settings could not be revalidated.",
 								)
-								this.markActiveFollowupQuestionWaiting(askTs)
+								this.markActiveInteractiveAskWaiting("followup", askTs)
 							}
 						} finally {
 							if (this.autoApprovalTimeoutRef === timeout) this.autoApprovalTimeoutRef = undefined
@@ -8246,7 +8253,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			const hasAnswerOrLostOwnership = () =>
-				this.abort || taskSignal.aborted || this.askResponse !== undefined || this.lastMessageTs !== askTs
+				this.abort ||
+				taskSignal.aborted ||
+				(isPermissionAsk && signal?.aborted) ||
+				this.askResponse !== undefined ||
+				this.lastMessageTs !== askTs
 			const isMessageQueued = !this.messageQueueService.isEmpty()
 			// Queued messages represent the next conversational turn. Only drain them
 			// at completion/resume boundaries unless the user explicitly steers one.
@@ -8283,23 +8294,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				)
 			}
 
-			const interactive = isInteractiveAsk(type)
 			const resumable = isResumableAsk(type)
-			if (isStatusMutable && (interactive || resumable || isIdleAsk(type))) {
+			if (isStatusMutable && isInteractiveAsk(type)) {
+				this.markActiveInteractiveAskWaiting(type, askTs)
+			} else if (isStatusMutable && (resumable || isIdleAsk(type))) {
 				timeouts.push(
 					setTimeout(() => {
 						if (hasAnswerOrLostOwnership() || this.deferredAskResponse) return
-						if (type === "followup") {
-							this.markActiveFollowupQuestionWaiting(askTs)
-							return
-						}
 						const message = this.findMessageByTimestamp(askTs)
 						if (!message) return
-						if (interactive) {
-							this.interactiveAsk = message
-							this.emit(AlphaCodeEventName.TaskInteractive, this.taskId)
-							provider?.postMessageToWebview({ type: "interactionRequired", taskId: this.taskId })
-						} else if (resumable) {
+						if (resumable) {
 							this.resumableAsk = message
 							this.emit(AlphaCodeEventName.TaskResumable, this.taskId)
 						} else {
@@ -8346,12 +8350,20 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 		}
 
-		if (this.abort || taskSignal.aborted) {
+		if (this.abort || taskSignal.aborted || (isPermissionAsk && signal?.aborted)) {
 			await this.releaseQueuedAskInput(installedAsk)
-			if (this.activeAsk?.ts === askTs) {
+			if (this.activeAsk === installedAsk) {
 				this.activeAsk = undefined
+				if (isPermissionAsk) {
+					if (this.interactiveAsk?.ts === askTs) this.interactiveAsk = undefined
+					this.markApprovalPromptAnswered(this.findMessageByTimestamp(askTs))
+					if (this.taskKind === "subagent") await provider?.clearSubagentApproval?.(this.taskId)
+				}
 			}
-			throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
+			if (this.abort || taskSignal.aborted) {
+				throw new Error(`[Task#ask] task ${this.taskId}.${this.instanceId} aborted`)
+			}
+			return { response: "noButtonClicked" }
 		}
 
 		if (this.lastMessageTs !== askTs) {
@@ -8437,6 +8449,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		request: ToolApprovalRequest,
 		reviewMessage = request.description,
 		onCommandApproved?: (commandExecutionId: string) => void,
+		signal = this.getTaskCancellationSignal(),
 	): Promise<ToolApprovalDecision | undefined> {
 		const parsedRequest = toolApprovalRequestSchema.safeParse(request)
 		if (
@@ -8446,44 +8459,82 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		) {
 			throw new Error("Task received an invalid or mismatched tool approval request.")
 		}
+		if (signal.aborted) return { decision: "abort" }
 		if (this.activeToolApprovalRequest) {
 			throw new Error("Task already has a pending tool approval request.")
 		}
 
-		this.activeToolApprovalRequest = parsedRequest.data
+		const approval = parsedRequest.data
+		this.activeToolApprovalRequest = approval
 		this.activeToolApprovalDecision = undefined
+		// Codex 8011b92b clears turn-owned approval waiters on cancellation.
+		// The scheduler can release its mutex while this ask is still publishing.
+		const cancelApproval = () => {
+			if (this.activeToolApprovalRequest !== approval) return
+			const ask = this.activeAsk
+			if (ask?.approvalRequestId === approval.requestId) {
+				if (this.interactiveAsk?.ts === ask.ts) this.interactiveAsk = undefined
+				this.activeAsk = undefined
+				this.askResponse = undefined
+				this.askResponseText = undefined
+				this.askResponseImages = undefined
+				this.askResponseQueuedMessageIds = undefined
+				this.notifyAskStateChanged()
+				if (this.taskKind === "subagent") {
+					const provider = this.providerRef.deref()
+					void provider?.clearSubagentApproval?.(this.taskId).catch(() => {
+						provider.log("Could not clear the cancelled subagent approval.")
+					})
+				}
+			}
+			if (
+				this.deferredAskResponse?.kind === "toolApproval" &&
+				this.deferredAskResponse.requestId === approval.requestId
+			) {
+				this.deferredAskResponse = undefined
+			}
+			this.activeToolApprovalRequest = undefined
+			this.activeToolApprovalDecision = undefined
+			this.markToolApprovalPromptAnswered(approval.requestId)
+		}
+		signal.addEventListener("abort", cancelApproval, { once: true })
 		try {
-			const reviewedDecision = await this.reviewToolApproval(parsedRequest.data, reviewMessage)
+			const reviewedDecision = await this.reviewToolApproval(approval, reviewMessage, signal)
+			if (signal.aborted) return { decision: "abort" }
 			if (reviewedDecision !== undefined) return reviewedDecision
 
 			const result = await this.ask(
-				parsedRequest.data.askType,
+				approval.askType,
 				reviewMessage,
 				undefined,
 				undefined,
-				parsedRequest.data.forceApproval,
-				parsedRequest.data.requiresExplicitApproval,
-				parsedRequest.data,
-				...(onCommandApproved && parsedRequest.data.askType === "command"
-					? ([onCommandApproved] as const)
-					: []),
+				approval.forceApproval,
+				approval.requiresExplicitApproval,
+				approval,
+				approval.askType === "command" ? onCommandApproved : undefined,
+				signal,
 			)
+			if (signal.aborted) return { decision: "abort" }
 			if (this.activeToolApprovalDecision) {
-				this.markToolApprovalPromptAnswered(parsedRequest.data.requestId)
+				this.markToolApprovalPromptAnswered(approval.requestId)
 				return this.activeToolApprovalDecision
 			}
 			if (result.response === "yesButtonClicked") {
-				this.markToolApprovalPromptAnswered(parsedRequest.data.requestId)
+				this.markToolApprovalPromptAnswered(approval.requestId)
 				return { decision: "approve_once" }
 			}
 			if (result.response === "noButtonClicked") {
-				this.markToolApprovalPromptAnswered(parsedRequest.data.requestId)
+				this.markToolApprovalPromptAnswered(approval.requestId)
 				const feedback = result.text?.trim()
 				return { decision: "deny", ...(feedback ? { feedback } : {}) }
 			}
 			return undefined
+		} catch (error) {
+			if (signal.aborted) return { decision: "abort" }
+			throw error
 		} finally {
-			if (this.activeToolApprovalRequest?.requestId === parsedRequest.data.requestId) {
+			signal.removeEventListener("abort", cancelApproval)
+			if (this.activeToolApprovalRequest === approval) {
 				this.activeToolApprovalRequest = undefined
 				this.activeToolApprovalDecision = undefined
 			}
@@ -8526,11 +8577,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async reviewToolApproval(
 		request: ToolApprovalRequest,
 		reviewMessage: string | undefined,
+		signal: AbortSignal,
 	): Promise<ToolApprovalDecision | undefined> {
 		const reviewer = this.toolApprovalReviewer
 		if (!reviewer) return undefined
 
-		const signal = this.getTaskCancellationSignal()
 		if (signal.aborted) return { decision: "abort" }
 
 		const cancelled = Symbol("approval review cancelled")
@@ -8569,14 +8620,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	private markToolApprovalPromptAnswered(requestId: string): void {
-		const messageIndex = findLastIndex(
-			this.alphaMessages,
-			(message) =>
-				message.type === "ask" && message.toolApprovalRequest?.requestId === requestId && !message.isAnswered,
+		this.markApprovalPromptAnswered(
+			findLast(this.alphaMessages, (message) => message.toolApprovalRequest?.requestId === requestId),
 		)
-		if (messageIndex === -1) return
+	}
 
-		const message = this.alphaMessages[messageIndex]
+	private markApprovalPromptAnswered(message: AlphaMessage | undefined): void {
+		if (message?.type !== "ask" || message.isAnswered) return
 		message.isAnswered = true
 		void this.updateAlphaMessage(message)
 		this.saveAlphaMessages().catch((error) => {
@@ -8588,13 +8638,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	public handleWebviewToolApprovalResponse(requestId: string, decision: ToolApprovalDecision): boolean {
 		const parsedDecision = toolApprovalDecisionSchema.safeParse(decision)
 		const request = this.activeToolApprovalRequest
+		const ask = this.activeAsk
 		if (
 			!parsedDecision.success ||
 			!request ||
 			request.requestId !== requestId ||
 			this.activeToolApprovalDecision ||
-			!this.activeAsk ||
-			this.activeAsk.type !== request.askType ||
+			ask?.approvalRequestId !== requestId ||
+			ask.ts !== this.lastMessageTs ||
+			ask.signal?.aborted ||
+			this.askResponse !== undefined ||
+			this.deferredAskResponse !== undefined ||
 			!request.availableDecisions.includes(
 				parsedDecision.data.decision as (typeof request.availableDecisions)[number],
 			)
@@ -8633,7 +8687,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (this.externalMutationLease) {
-			if (this.deferredAskResponse) return false
 			this.deferredAskResponse = {
 				kind: "toolApproval",
 				requestId,
@@ -8642,8 +8695,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			return true
 		}
 
-		this.activeToolApprovalDecision = parsedDecision.data
-		this.markToolApprovalPromptAnswered(requestId)
 		const askResponse =
 			parsedDecision.data.decision === "approve_once" ||
 			parsedDecision.data.decision === "approve_session" ||
@@ -8651,10 +8702,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			parsedDecision.data.decision === "approve_persistently"
 				? "yesButtonClicked"
 				: "noButtonClicked"
-		this.handleWebviewAskResponse(
-			askResponse,
-			parsedDecision.data.decision === "deny" ? parsedDecision.data.feedback : undefined,
+		if (
+			!this.handleWebviewAskResponse(
+				askResponse,
+				parsedDecision.data.decision === "deny" ? parsedDecision.data.feedback : undefined,
+				undefined,
+				undefined,
+				ask.ts,
+			)
 		)
+			return false
+		this.activeToolApprovalDecision = parsedDecision.data
+		this.markToolApprovalPromptAnswered(requestId)
 		return true
 	}
 
@@ -8704,6 +8763,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		expectedAskTs?: number,
 	): boolean {
 		if (expectedAskTs !== undefined && this.activeAsk?.ts !== expectedAskTs) return false
+		const ask = this.activeAsk
+		if (ask?.signal?.aborted && (ask.type === "tool" || ask.type === "command" || ask.type === "use_mcp_server")) {
+			return false
+		}
 		if (this.askResponse !== undefined || this.deferredAskResponse !== undefined) return false
 		this.goalAskAdmission = undefined
 		this.invalidateGoalContinuation()
@@ -8762,7 +8825,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		// Mark the last tool-approval ask as answered when user approves (or auto-approval)
-		if (askResponse === "yesButtonClicked") {
+		if (askResponse === "yesButtonClicked" && !this.activeAsk?.approvalRequestId) {
 			const lastToolAskIndex = findLastIndex(
 				this.alphaMessages,
 				(msg) => msg.type === "ask" && msg.ask === "tool" && !msg.isAnswered,
@@ -8789,16 +8852,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			clearTimeout(this.autoApprovalTimeoutRef)
 			this.autoApprovalTimeoutRef = undefined
 		}
-		if (notifyQuestionWaiting) this.markActiveFollowupQuestionWaiting()
+		if (notifyQuestionWaiting) this.markActiveInteractiveAskWaiting("followup")
 	}
 
-	private markActiveFollowupQuestionWaiting(expectedAskTs?: number): void {
+	private markActiveInteractiveAskWaiting(expectedType: InteractiveAsk, expectedAskTs?: number): void {
 		const ask = this.activeAsk
 		if (
 			!ask ||
-			ask.type !== "followup" ||
+			ask.type !== expectedType ||
 			!ask.published ||
 			ask.signal?.aborted ||
+			this.taskCancellationController?.signal.aborted ||
 			this.abort ||
 			this.abandoned ||
 			this.didComplete ||
@@ -8813,7 +8877,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (
 			!message ||
 			message.type !== "ask" ||
-			message.ask !== "followup" ||
+			message.ask !== expectedType ||
 			message.partial ||
 			message.isAnswered ||
 			this.interactiveAsk?.ts === ask.ts
@@ -9521,6 +9585,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const ownsStep = this.captureAgentStepOwnership()
 		const goalGeneration = this.goalSteeringGeneration ?? 0
 		const goalRequestGeneration = this.goalController?.getRequestGeneration()
+		const canContinueForHookContext = stagedToolCallId !== undefined || this.isAgentTurnEngineActive
 		const ownershipChanged = () =>
 			!ownsStep() ||
 			this.abandoned ||
@@ -9531,7 +9596,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.hasPendingSteerMessage() ||
 			this.messageQueueService.hasUnconsumedInput() ||
 			this.hasPendingAgentMessages() ||
-			(stagedToolCallId !== undefined && this.hasPendingAsyncLifecycleHookContext())
+			(canContinueForHookContext && this.hasPendingAsyncLifecycleHookContext())
 		const stagedResult = stagedToolCallId
 			? this.userMessageContent.find(
 					(block): block is Anthropic.ToolResultBlockParam =>
@@ -10431,7 +10496,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 
 			// User guidance wins any race with the asynchronous persistence barriers.
-			// A staged completion tool also defers to ready hook feedback in its active turn.
+			// An active turn also defers to ready hook context, including during text completion.
 			// No await occurs between this check and markCompleted().
 			if (superseded())
 				throw new CompletionCommitRejected({
@@ -13357,8 +13422,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private getCompactionWindowPrefillTokens(): number | undefined {
 		for (let index = this.alphaMessages.length - 1; index >= 0; index--) {
 			const message = this.alphaMessages[index]
+			if (message.partial === true) continue
 			const tokens =
-				message.say === "condense_context"
+				message.say === "condense_context" && message.contextCondense?.outcome !== "unchanged"
 					? message.contextCondense?.newContextTokens
 					: message.say === "sliding_window_truncation"
 						? message.contextTruncation?.newContextTokens
@@ -13497,7 +13563,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		const { id: modelId, info: modelInfo } = apiHandler.getModel()
 		const reservedTokens = getModelReservedOutputTokens({ modelId, model: modelInfo, settings: apiConfiguration })
 		const threshold = resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100)
-		const { allowedTokens, triggerTokens } = getContextLimits(modelInfo.contextWindow, reservedTokens, threshold)
+		const { allowedTokens, triggerTokens, compactionInputLimit } = getContextLimits(
+			modelInfo.contextWindow,
+			reservedTokens,
+			threshold,
+			postTurn?.scope ?? state?.autoCondenseContextScope,
+		)
 		const prevContextTokens = await waitForContextPreparation(
 			countContextTokens(
 				getEffectiveApiHistory(history, apiHandler.nativeCompaction?.scope ?? null),
@@ -13520,8 +13591,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		)
 			return
 		const targetTriggerTokens = postTurn
-			? Math.min(triggerTokens, Math.floor((allowedTokens * postTurn.percent) / 100))
-			: triggerTokens
+			? Math.min(compactionInputLimit, Math.floor((allowedTokens * postTurn.percent) / 100))
+			: compactionInputLimit
 		const fixedTokens = await waitForContextPreparation(
 			countContextTokens([], apiHandler, systemPrompt, metadata, countContext),
 		)
@@ -17067,14 +17138,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const aborted = { nextInput: "complete", status: "aborted" } as const
 			const userInputPending = () =>
 				this.hasPendingSteerMessage() || this.messageQueueService.hasUnconsumedInput()
-			const continueWithAgentMessages: AgentTurnContinuation<TaskTurnInput> = {
+			const agentContextPending = () =>
+				this.hasPendingAgentMessages() || this.hasPendingAsyncLifecycleHookContext()
+			const continueWithPendingContext: AgentTurnContinuation<TaskTurnInput> = {
 				nextInput: { userContent: [], includeFileDetails: false },
 				continuationReason: "host-pending-input",
 				requiresContinuation: true,
 			}
 			if (isStopped()) return aborted
 			if (this.didComplete || userInputPending()) return
-			if (this.hasPendingAgentMessages()) return continueWithAgentMessages
+			if (agentContextPending()) return continueWithPendingContext
 			if (shouldCompactAfterTurn(outcome, this.lifecycleHookStoppedThisTurn)) {
 				compactedCompletionStep = true
 				try {
@@ -17098,28 +17171,31 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			if (isStopped()) return aborted
 			if (this.didComplete || userInputPending()) return
-			const decision = await this.waitForCompletionGateDecision()
-			if (isStopped()) return aborted
-			if (this.didComplete || userInputPending()) return
-			if (!decision.allowed) {
-				await this.retractCompletionResult()
-				return continueAfterCompletionRejection(decision)
-			}
-			try {
-				if (await this.returnCompletionToLegacyParent(completionText)) {
-					returnedCompletionToLegacyParent = true
-					return
+			// Legacy handoff can bypass the finalizer's gate check after transcript persistence.
+			if (this.taskKind === "primary" && this.parentTaskId) {
+				const decision = await this.waitForCompletionGateDecision()
+				if (isStopped()) return aborted
+				if (this.didComplete || userInputPending()) return
+				if (!decision.allowed) {
+					await this.retractCompletionResult()
+					return continueAfterCompletionRejection(decision)
 				}
-			} catch (error) {
-				await this.retractCompletionResult()
-				return continueAfterCompletionRejection({
-					allowed: false,
-					modelCanResolveRejection: false,
-					message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
-				})
+				try {
+					if (await this.returnCompletionToLegacyParent(completionText)) {
+						returnedCompletionToLegacyParent = true
+						return
+					}
+				} catch (error) {
+					await this.retractCompletionResult()
+					return continueAfterCompletionRejection({
+						allowed: false,
+						modelCanResolveRejection: false,
+						message: `Cannot finish the delegated child right now: ${error instanceof Error ? error.message : String(error)}`,
+					})
+				}
+				if (isStopped()) return aborted
+				if (this.didComplete || userInputPending()) return
 			}
-			if (isStopped()) return aborted
-			if (this.didComplete || userInputPending()) return
 			const goalGeneration = this.goalSteeringGeneration ?? 0
 			let rejection: CompletionGateDecision | undefined
 			try {
@@ -17127,9 +17203,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				await this.settleGoalStep(this.activeGoalStep)
 				if (isStopped()) return aborted
 				if (this.didComplete || userInputPending()) return
-				if (this.hasPendingAgentMessages()) {
+				if (agentContextPending()) {
 					await this.retractCompletionResult()
-					return continueWithAgentMessages
+					return continueWithPendingContext
 				}
 				if (
 					await this.finalizeTaskCompletion(undefined, (decision) => {
@@ -17147,7 +17223,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			}
 			if (isStopped()) return aborted
 			if (this.didComplete || userInputPending() || goalGeneration !== (this.goalSteeringGeneration ?? 0)) return
-			if (this.hasPendingAgentMessages()) return continueWithAgentMessages
+			if (agentContextPending()) return continueWithPendingContext
 			const goal = await this.getGoal()
 			const activeGoal =
 				goal?.status === "active" && !goal.recoveryDeferred && (await this.getTaskMode()) === "code"
@@ -17819,7 +17895,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						: getApiProtocol(isProviderName(apiProvider) ? apiProvider : undefined, modelId)
 
 				const provider = this.providerRef.deref()
-				let state = provider ? await provider.getState() : undefined
+				let state = provider
+					? await this.waitForRequestControl(provider.getState(), this.getTaskLifetimeCancellationSignal())
+					: undefined
 
 				const showAlphaIgnoredFiles = state?.showAlphaIgnoredFiles ?? false
 				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
@@ -19187,7 +19265,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							if (
 								firstChunkFailure &&
 								!state?.autoApprovalEnabled &&
-								!((category === "context" || retryMetadata.retryable === true) && decision.shouldRetry)
+								!(
+									(category === "context" || providerFailure.retryable === true) &&
+									decision.shouldRetry
+								)
 							) {
 								const askResponse = await this.ask("api_req_failed", retryError.message)
 								// The existing recovery boundary consumes only Retry. Keep a queued
@@ -20543,7 +20624,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		deadlineAt: number,
 	): Promise<void> {
 		if (!response.reasoning || (guard && !guard())) return
-		const text = formatReasoningText(response.reasoning)
+		const text = redactTaskPrivatePaths(this, formatReasoningText(response.reasoning))
 		const previous =
 			this.currentReasoningResponseMessageTs === undefined
 				? undefined
@@ -21017,10 +21098,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			const contextWindow = modelInfo.contextWindow
 
-			const { triggerTokens } = getContextLimits(
+			const autoCondenseContextPercent = state?.autoCondenseContextPercent ?? 100
+			const autoCondenseContextScope = state?.autoCondenseContextScope
+			const { compactionInputLimit } = getContextLimits(
 				contextWindow,
 				maxTokens,
-				resolveCondenseThreshold(state?.autoCondenseContextPercent ?? 100),
+				resolveCondenseThreshold(autoCondenseContextPercent),
+				autoCondenseContextScope,
 			)
 
 			// Log the context window error for debugging
@@ -21121,7 +21205,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						apiHandler,
 						compactionApiHandler: this.getCompactionHandler(apiHandler, compactionApiHandler),
 						autoCondenseContext: true,
-						autoCondenseContextPercent: state?.autoCondenseContextPercent ?? 100,
+						autoCondenseContextPercent,
+						autoCondenseContextScope,
 						forceCompaction: true,
 						systemPrompt,
 						taskId: this.taskId,
@@ -21200,7 +21285,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							apiHandler,
 							systemPrompt,
 							metadata,
-							Math.max(0, triggerTokens - 1),
+							Math.max(0, compactionInputLimit - 1),
 							getEffectiveApiHistory(
 								this.apiConversationHistory,
 								apiHandler.nativeCompaction?.scope ?? null,
@@ -21647,12 +21732,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const contextWindow = modelInfo.contextWindow
 
-				const { allowedTokens, triggerTokens } = getContextLimits(
+				const { allowedTokens, compactionInputLimit } = getContextLimits(
 					contextWindow,
 					maxTokens,
 					resolveCondenseThreshold(autoCondenseContextPercent),
+					autoCondenseContextScope,
 				)
-				const resumeLimit = autoCondenseContext ? Math.max(0, triggerTokens - 1) : allowedTokens
+				const resumeLimit = autoCondenseContext ? Math.max(0, compactionInputLimit - 1) : allowedTokens
 				contextCount = createTokenCountContext(apiHandler, {
 					signal: stepInterruptionSignal,
 					remoteDeadline: contextManagementDeadline,

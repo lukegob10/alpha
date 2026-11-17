@@ -3,7 +3,12 @@ import type { ExtensionMessage, HistoryItem } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
-import type { Task } from "../../task/Task"
+import { Task } from "../../task/Task"
+
+vi.mock("../../task/Task", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../task/Task")>()),
+	Task: vi.fn(),
+}))
 
 const barrier = () => {
 	let resolve!: () => void
@@ -194,6 +199,81 @@ describe("blank-task navigation generations", () => {
 		expect(postTaskState).not.toHaveBeenCalled()
 		expect(post).not.toHaveBeenCalledWith({ type: "invoke", invoke: "newChat" })
 	})
+
+	it.each(["blank draft", "other task", "stopped task"] as const)(
+		"rehydrates a stopped task without changing a newer %s selection",
+		async (destination) => {
+			const { provider, taskSessions, postTaskState, publishTranscript } = createProvider()
+			const profileLookupEntered = barrier()
+			const profileLookupReleased = barrier()
+			const stopped = Object.assign(createTask("stopped"), {
+				instanceId: "old",
+				beginTaskCancellation: () => ({
+					abort: Promise.resolve(),
+					termination: Promise.resolve(),
+					isCurrent: () => taskSessions.getTask("stopped") === stopped,
+				}),
+			})
+			const next = createTask("next")
+			const replacement = createTask(stopped.taskId)
+			const profile = { id: "saved-profile-id", name: "saved-profile", apiProvider: "openai" }
+			const selection = destination === "stopped task" ? next : stopped
+			taskSessions.register(stopped, { focus: selection === stopped })
+			taskSessions.register(next, { focus: selection === next })
+			Object.assign(provider, {
+				currentView: { type: "task", taskId: selection.taskId },
+				taskStack: [stopped, next],
+				taskEventListeners: new WeakMap(),
+				taskCreationCallback: vi.fn(),
+				contextProxy: { getValues: () => ({}) },
+				getProviderSettingsSnapshot: () => ({ apiProvider: "openai" }),
+				updateGlobalState: vi.fn(async () => undefined),
+				providerSettingsManager: {
+					listConfig: async () => {
+						profileLookupEntered.resolve()
+						await profileLookupReleased.promise
+						return [profile]
+					},
+					getProfile: async () => profile,
+				},
+				agentControlStoreReady: Promise.resolve(),
+				agentControlStore: {
+					getAgent: () => undefined,
+					retryPendingMailboxClaimSettlements: async () => undefined,
+				},
+			})
+			vi.spyOn(provider, "getTaskWithId").mockResolvedValue({
+				historyItem: { id: stopped.taskId, apiConfigName: profile.name } as HistoryItem,
+				taskDirPath: "/task",
+				apiConversationHistoryFilePath: "/task/api.json",
+				uiMessagesFilePath: "/task/ui.json",
+				apiConversationHistory: [],
+			})
+			vi.mocked(Task).mockImplementationOnce(function (options) {
+				options.onCreated?.(replacement)
+				return replacement
+			})
+
+			const stopping = provider.cancelTask(stopped.taskId, "webview_stop")
+			const destinationTask =
+				destination === "blank draft" ? undefined : destination === "other task" ? next : stopped
+			try {
+				await Promise.race([profileLookupEntered.promise, stopping])
+				if (destinationTask) await provider.showTaskWithId(destinationTask.taskId)
+				else await provider.startBlankTask()
+				postTaskState.mockClear()
+				publishTranscript.mockClear()
+			} finally {
+				profileLookupReleased.resolve()
+				await stopping
+			}
+
+			expect(provider.getLiveTask(stopped.taskId)).toBe(replacement)
+			expect(provider.getActiveTaskId()).toBe(destinationTask?.taskId)
+			expect(postTaskState).not.toHaveBeenCalled()
+			expect(publishTranscript).not.toHaveBeenCalled()
+		},
+	)
 
 	it("stops a superseded blank transition after its chat action is delivered", async () => {
 		const { provider, taskSessions, postTaskState, post } = createProvider()

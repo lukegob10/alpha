@@ -465,6 +465,76 @@ describe("completion hooks inside the canonical turn", () => {
 		expect(task["retractCompletionResult"]).toHaveBeenCalledOnce()
 	})
 
+	it("delivers hook context that becomes ready during text completion in the same turn", async () => {
+		const { task, controller, events } = fixture()
+		const enteredGate = deferred()
+		const releaseGate = deferred()
+		const releaseHook = deferred()
+		const hooks = new AsyncLifecycleHooks()
+		const history: ApiMessage[] = []
+		const context = { hook_run_id: "late-hook", text: "Check the original answer against this result." }
+		hooks.schedule(
+			"PostToolUse",
+			async () => {
+				await releaseHook.promise
+				return { warnings: [], additionalContext: [context] }
+			},
+			controller.signal,
+		)
+		const provider = task.providerRef.deref()!
+		const rollback = vi.fn(async () => undefined)
+		Object.assign(provider, {
+			prepareTaskCompletionLifecycle: vi.fn(async () => undefined),
+			rollbackTaskCompletionLifecycle: rollback,
+		})
+		Object.assign(task, {
+			apiConversationHistory: history,
+			asyncLifecycleHooks: hooks,
+			flushPendingToolResultsToHistory: vi.fn(async () => true),
+			flushApiConversationHistoryPersistence: vi.fn(async () => undefined),
+			getCompletionGateDecision: vi
+				.fn<Task["getCompletionGateDecision"]>()
+				.mockResolvedValue({ allowed: true, modelCanResolveRejection: true })
+				.mockImplementationOnce(async () => {
+					enteredGate.resolve()
+					await releaseGate.promise
+					return { allowed: true, modelCanResolveRejection: true }
+				}),
+			retractCompletionResult: vi.fn(async () => undefined),
+			stageApiUserMessage: vi.fn((message: ApiMessage) => history.push(message)),
+			saveApiConversationHistory: vi.fn(async () => true),
+			emitFinalTokenUsageUpdate: vi.fn(),
+		})
+		vi.mocked(task.finalizeTaskCompletion).mockImplementation(Task.prototype.finalizeTaskCompletion.bind(task))
+		vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+		vi.mocked(task["runAgentRequests"]).mockImplementationOnce(async () => ({
+			status: "completed",
+			response: createAgentResponse([{ type: "text", text: "First answer." }]),
+		}))
+		vi.mocked(task["runAgentRequests"]).mockImplementationOnce(async (input) => {
+			expect(input).toEqual([])
+			await task["drainAsyncLifecycleHooks"](controller.signal)
+			expect(history[0]?.hook_prompt).toEqual({ event: "PostToolUse", fragments: [context] })
+			return { status: "completed", response: createAgentResponse([{ type: "text", text: "Checked answer." }]) }
+		})
+
+		const running = task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+		await enteredGate.promise
+		releaseHook.resolve()
+		await Promise.all([...hooks["active"].values()])
+		expect(task.hasPendingAsyncLifecycleHookContext()).toBe(true)
+		releaseGate.resolve()
+		await running
+
+		expect(task.isCompleted()).toBe(true)
+		expect(task["runAgentRequests"]).toHaveBeenCalledTimes(2)
+		expect(history).toHaveLength(1)
+		expect(rollback).toHaveBeenCalledExactlyOnceWith(task.taskId)
+		expect(task.ask).not.toHaveBeenCalled()
+		expect(events.filter(({ type }) => type === "turn_started")).toHaveLength(1)
+		expect(events.filter(({ type }) => type === "turn_terminal")).toHaveLength(1)
+	})
+
 	it.each(["Stop", "SubagentStop"] as const)(
 		"resets %s repair state when queued human input starts another canonical turn",
 		async (target) => {

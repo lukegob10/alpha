@@ -4,6 +4,8 @@ import path from "path"
 import { AlphaProvider } from "../AlphaProvider"
 import type { Task } from "../../task/Task"
 import { WorkspaceMutationCancelledError, WorkspaceMutationGate } from "../../task/WorkspaceMutationGate"
+import { applyPatchTool } from "../../tools/ApplyPatchTool"
+import { ToolRegistry } from "../../tools/ToolRegistry"
 
 function deferred<T>() {
 	let resolve!: (value: T) => void
@@ -111,6 +113,52 @@ describe("AlphaProvider workspace mutation cancellation", () => {
 		)
 		expect(run).not.toHaveBeenCalled()
 		await expect(gate.runIfIdle("probe", "no cancelled owner", async () => true)).resolves.toBe(true)
+	})
+
+	it("drops a queued file write when its tool step is interrupted", async () => {
+		const { cancellation, task, gate, provider } = createHarness()
+		const entered = deferred<void>()
+		const release = deferred<void>()
+		const active = gate.run("other-task", "active write", async () => {
+			entered.resolve()
+			await release.promise
+		})
+		await entered.promise
+		const checkpointSave = vi.fn(async () => undefined)
+		Object.assign(task, { providerRef: new WeakRef(provider), checkpointSave })
+		const handleWrite = vi.fn(async () => undefined)
+		const handle = vi.spyOn(applyPatchTool, "handle").mockImplementation(handleWrite)
+		const toolStep = new AbortController()
+		const patch = "*** Begin Patch\n*** Add File: queued.txt\n+content\n*** End Patch"
+		let rejection: unknown
+		const queued = new ToolRegistry()
+			.resolve("apply_patch")!
+			.execute({
+				task,
+				call: { type: "tool_use", id: "queued", name: "apply_patch", params: { patch }, partial: false },
+				callbacks: {
+					askApproval: vi.fn(),
+					handleError: vi.fn(),
+					pushToolResult: vi.fn(),
+					signal: toolStep.signal,
+				},
+			})
+			.catch((error: unknown) => {
+				rejection = error
+			})
+		try {
+			toolStep.abort()
+			await setImmediate()
+			expect(rejection).toBeInstanceOf(WorkspaceMutationCancelledError)
+			expect(cancellation.signal.aborted).toBe(false)
+			expect(gate.runIfIdle("probe", "still owns mutation", async () => undefined)).toBeUndefined()
+		} finally {
+			release.resolve()
+			await Promise.allSettled([active, queued])
+			handle.mockRestore()
+		}
+		expect(checkpointSave).not.toHaveBeenCalled()
+		expect(handleWrite).not.toHaveBeenCalled()
 	})
 
 	it("keeps stopped-task cleanup serialized and eligible to finish", async () => {

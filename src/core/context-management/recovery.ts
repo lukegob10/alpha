@@ -59,7 +59,12 @@ export function resolveCondenseThreshold(globalThreshold?: number): number {
 }
 
 /** The configured trigger cannot exceed the input limit with its safety margin. */
-export function getContextLimits(contextWindow: number, reservedTokens: number, thresholdPercent = 100) {
+export function getContextLimits(
+	contextWindow: number,
+	reservedTokens: number,
+	thresholdPercent = 100,
+	scope: AutoCondenseContextScope = "full-context",
+) {
 	const window = Number.isFinite(contextWindow) ? Math.max(0, contextWindow) : 0
 	const usableTokens = getUsableContextTokens(window, reservedTokens)
 	const allowedTokens = Math.max(0, Math.floor(usableTokens - window * TOKEN_BUFFER_PERCENTAGE))
@@ -67,7 +72,10 @@ export function getContextLimits(contextWindow: number, reservedTokens: number, 
 		allowedTokens,
 		Math.floor((window * resolveCondenseThreshold(thresholdPercent)) / 100),
 	)
-	return { allowedTokens, triggerTokens }
+	// Codex 8011b92b session/context_window.rs budgets after-prefix growth separately
+	// from the full input. A new compacted prefix can exceed the growth trigger.
+	const compactionInputLimit = scope === "after-prefix" ? allowedTokens : triggerTokens
+	return { allowedTokens, triggerTokens, compactionInputLimit }
 }
 
 export type CompactionTargetOptions = {

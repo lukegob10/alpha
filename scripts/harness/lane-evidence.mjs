@@ -16,6 +16,10 @@ import { benchmarkVerdict } from "./audit-benchmarks.mjs"
 const { rejectSymlinkComponents } = tsRequire("../../apps/vscode-e2e/src/evidence/paths.ts", import.meta.url)
 
 export async function expectedTestFiles(root, descriptor, args) {
+	// Vitest treats paths as filters and can succeed when one of several paths matches nothing.
+	if (descriptor.requiredFiles)
+		return descriptor.requiredFiles.map((file) => `${descriptor.packageDir}/${file}`).sort()
+
 	let patterns
 	let exclude = []
 	if (descriptor.runner === "vitest" && descriptor.config) {

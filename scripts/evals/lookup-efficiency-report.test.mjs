@@ -212,6 +212,37 @@ test("retries count from request attempts and never inspect command text", () =>
 	assert.equal(missingAttempt.providerRetries.coverage, "unavailable")
 })
 
+test("counts retries for one-based task attempts and includes synopses in total requests", () => {
+	const report = buildReport(
+		input({
+			trace: [
+				event(1, "model_request_started", { attempt: 1, purpose: "task" }),
+				event(2, "model_request_started", { attempt: 0, purpose: "reasoning-summary" }),
+				event(3, "model_request_started", { attempt: 1, purpose: "task" }),
+				event(4, "model_request_started", { attempt: 2, purpose: "task" }),
+			],
+		}),
+	)
+	assert.equal(report.providerRequests.value, 4)
+	assert.equal(report.providerRetries.value, 1)
+})
+
+test("recognizes one-based task attempts in persisted events from before purpose tags", () => {
+	const report = buildReport(
+		input({
+			trace: [1, 2].map((attempt, index) => ({
+				taskId: "legacy-task",
+				runId: "legacy-run",
+				sequence: index + 1,
+				timestamp: 1_750_000_000_000 + index,
+				event: { type: "model_request_started", attempt },
+			})),
+		}),
+	)
+	assert.equal(report.providerRequests.value, 2)
+	assert.equal(report.providerRetries.value, 1)
+})
+
 test("exec_command and historical command names count as shell search without copying commands", () => {
 	const report = buildReport(
 		input({

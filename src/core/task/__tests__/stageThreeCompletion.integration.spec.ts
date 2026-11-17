@@ -1437,13 +1437,14 @@ describe("Stage Three durable completion integration", () => {
 		}
 	})
 
-	it("allows ordinary text completion without applicable changes", async () => {
+	it("checks a settled text candidate before hooks and at the durable completion boundary", async () => {
 		const harness = await setup()
 
 		await harness.run()
 
 		expect(harness.guardTriggered()).toBe(false)
 		expect(harness.requests).toHaveLength(1)
+		expect(harness.provider.getParentCompletionDecision).toHaveBeenCalledTimes(2)
 		expect(Reflect.get(harness.task, "didComplete")).toBe(true)
 		expect(harness.ask).not.toHaveBeenCalled()
 		expect(harness.completed).toHaveBeenCalledOnce()

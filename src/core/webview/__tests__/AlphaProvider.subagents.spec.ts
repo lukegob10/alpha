@@ -7992,6 +7992,80 @@ If complete, use attempt_completion.
 		).toEqual([expect.objectContaining({ kind: "lifecycle", senderTaskId: first.taskId })])
 	})
 
+	it.each(["failure", "cancellation"] as const)(
+		"does not wait for mailbox results after pre-launch admission %s",
+		async (outcome) => {
+			const provider = makeProviderHarness()
+			const parent = makeParent()
+			const task = parent as unknown as Task
+			const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+			const prepared = await provider.prepareSubagentGroup(task, [
+				{ objective: "Inspect the parser", agent_kind: "review" },
+				{ objective: "Review the dispatcher", agent_kind: "review" },
+			])
+			const [first, second] = prepared.envelopes
+			const admission = new AbortController()
+			const failure = new Error("Second child control write failed")
+			const createAgent = store.createAgent.bind(store)
+			vi.spyOn(store, "createAgent").mockImplementation(async (input) => {
+				if (input.taskId === second.id) {
+					if (outcome === "cancellation") admission.abort(failure)
+					throw failure
+				}
+				return createAgent(input)
+			})
+			await expect(provider.runSubagentGroup(task, prepared, admission.signal)).rejects.toBe(failure)
+			const status = outcome === "failure" ? "failed" : "cancelled"
+			const record = store.getAgent(first.id, parent.taskId)
+			expect(record?.status).toBe(status)
+			expect(store.getUnacknowledgedMailboxEntries(parent.taskId, { kinds: ["result"] })).toEqual([])
+
+			// Fail promptly if the wait enters its blocking path. No real timer is needed.
+			parent.beginAgentWait.mockReturnValue({ signal: AbortSignal.abort(), dispose: vi.fn() })
+			await expect(
+				provider.waitForAgent(task, undefined, { target: first.id, untilTerminal: true }),
+			).resolves.toMatchObject({ timedOut: false, target: { taskId: first.id, status } })
+			await expect(provider.waitForAgent(task, undefined, { untilTerminal: true })).resolves.toEqual({
+				timedOut: false,
+				noActiveAgents: true,
+				events: [],
+			})
+			expect(parent.beginAgentWait).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each([
+		["failed", "never_launched", "Second child control write failed"],
+		["cancelled", "parent_cancelled", "Parent task cancelled before child launch"],
+	] as const)("does not wait for a restored %s pre-launch result", async (status, stopReason, error) => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		const task = parent as unknown as Task
+		const store = Reflect.get(provider, "agentControlStore") as AgentControlStore
+		await Reflect.get(provider, "agentControlStoreReady")
+		await store.ensureRoot({ taskId: parent.taskId })
+		const child = await store.createAgent({
+			taskId: "legacy-rollback-child",
+			parentTaskId: parent.taskId,
+			nickname: "Rolled back",
+			role: "review",
+			objective: "Inspect the parser",
+		})
+		const completedAt = Date.now()
+		await store.updateAgentStatus(
+			child.taskId,
+			status,
+			{ at: completedAt, terminalResult: { status, error, stopReason, completedAt } },
+			parent.taskId,
+		)
+
+		parent.beginAgentWait.mockReturnValue({ signal: AbortSignal.abort(), dispose: vi.fn() })
+		await expect(
+			provider.waitForAgent(task, undefined, { target: child.taskId, untilTerminal: true }),
+		).resolves.toMatchObject({ timedOut: false, target: { taskId: child.taskId, status } })
+		expect(parent.beginAgentWait).not.toHaveBeenCalled()
+	})
+
 	it("waits through the terminal-status publication window until the matching result exists", async () => {
 		const provider = makeProviderHarness()
 		const parent = makeParent()

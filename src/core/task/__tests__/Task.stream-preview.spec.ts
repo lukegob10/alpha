@@ -69,7 +69,7 @@ const cleanups: Array<() => Promise<void>> = []
 const textRows = (messages: readonly AlphaMessage[]) =>
 	messages.filter((message) => message.type === "say" && message.say === "text")
 
-async function harness(script: PreviewScript) {
+async function harness(script: PreviewScript, role: "primary" | "isolated-worker" = "primary") {
 	const temporaryRoot = await fs.realpath(os.tmpdir())
 	const storage = await fs.mkdtemp(path.join(temporaryRoot, "alpha-stream-preview-"))
 	const cwd = path.join(storage, "workspace")
@@ -172,6 +172,7 @@ async function harness(script: PreviewScript) {
 		taskApprovalMode: "ask",
 		toolApprovalReviewer: async () => ({ decision: "approve" }),
 		workspacePath: cwd,
+		...(role === "isolated-worker" ? { taskKind: "subagent", subagentRole: "worker" } : {}),
 		startTask: false,
 		enableCheckpoints: false,
 		presentationModelCalls: false,
@@ -228,6 +229,26 @@ afterEach(async () => {
 })
 
 describe("Task streaming text previews", () => {
+	it("keeps isolated worker paths redacted when reasoning is finalized and saved", async () => {
+		const reasoning = `Checking .${path.sep}notes.txt.`
+		const fixture = await harness(async function* (_attempt, task) {
+			yield { type: "reasoning", text: `Checking ${path.join(task.cwd, "notes.txt")}.` }
+			await task["streamingPreviewQueue"]
+			expect(task.alphaMessages.find((message) => message.say === "reasoning")).toMatchObject({
+				text: reasoning,
+				partial: true,
+			})
+			yield { type: "text", text: "Finished." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		}, "isolated-worker")
+
+		await fixture.run()
+
+		const reasoningRows = (await fixture.uiHistory()).filter((message) => message.say === "reasoning")
+		expect(reasoningRows).toHaveLength(1)
+		expect(reasoningRows[0]).toMatchObject({ text: reasoning, partial: false })
+	})
+
 	it.each(["settled", "in-flight"] as const)(
 		"keeps one anchored text row across %s reasoning presentation",
 		async (presentation) => {

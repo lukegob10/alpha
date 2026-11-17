@@ -11536,7 +11536,6 @@ describe("Alpha", () => {
 			)
 			const task = createTask()
 			task.todoList = [{ id: "late", content: "Late work", status: "completed" }]
-			const finalize = vi.spyOn(task, "finalizeTaskCompletion")
 			const retract = vi.spyOn(task, "retractCompletionResult")
 			const present = task.presentCompletionResult.bind(task)
 			vi.spyOn(task, "presentCompletionResult").mockImplementationOnce(async (...args) => {
@@ -11554,7 +11553,7 @@ describe("Alpha", () => {
 			await (task as any).initiateTaskLoop([{ type: "text", text: "start" }])
 
 			expect(retract).toHaveBeenCalledOnce()
-			expect(finalize).not.toHaveBeenCalled()
+			expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledOnce()
 			expect(requestStep).toHaveBeenCalledTimes(2)
 			expect(requestStep.mock.calls[1]?.[0]).toEqual([
 				expect.objectContaining({
@@ -11749,16 +11748,15 @@ describe("Alpha", () => {
 						task.messageQueueService.addMessage("Please add the missing detail.")
 				})
 				if (boundary === "final gate") {
-					vi.spyOn(task, "waitForCompletionGateDecision")
-						.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
+					mockProvider.getParentCompletionDecision
+						.mockResolvedValueOnce({ allowed: true })
 						.mockImplementationOnce(async () => {
 							task.messageQueueService.addMessage("Please add the missing detail.")
-							return { allowed: true, modelCanResolveRejection: false }
+							return { allowed: true }
 						})
 				} else if (boundary === "finalization") {
-					vi.spyOn(task, "finalizeTaskCompletion").mockImplementationOnce(async () => {
+					mockProvider.prepareTaskCompletionLifecycle.mockImplementationOnce(async () => {
 						task.messageQueueService.addMessage("Please add the missing detail.")
-						return false
 					})
 				}
 				const requestStep = vi
@@ -11778,7 +11776,13 @@ describe("Alpha", () => {
 				])
 				expect(task.messageQueueService.isEmpty()).toBe(true)
 				expect(task.alphaMessages).toContainEqual(
-					expect.objectContaining({ say: "completion_result", text: "Initial answer." }),
+					expect.objectContaining({
+						say: boundary === "presentation" ? "completion_result" : "text",
+						text: "Initial answer.",
+					}),
+				)
+				expect(mockProvider.rollbackTaskCompletionLifecycle).toHaveBeenCalledTimes(
+					boundary === "presentation" ? 0 : 1,
 				)
 			},
 		)
@@ -11866,13 +11870,10 @@ describe("Alpha", () => {
 				}
 				return { response: "yesButtonClicked", text: "", images: [] }
 			})
-			vi.spyOn(task, "waitForCompletionGateDecision")
-				.mockResolvedValueOnce({ allowed: true, modelCanResolveRejection: false })
-				.mockResolvedValueOnce({
-					allowed: false,
-					modelCanResolveRejection: true,
-					message: "Verification failed.",
-				})
+			mockProvider.getParentCompletionDecision.mockResolvedValueOnce({ allowed: true }).mockResolvedValueOnce({
+				allowed: false,
+				message: "Verification failed.",
+			})
 			const say = vi.spyOn(task, "say")
 			const requestStep = vi.spyOn(task, "runAgentRequests").mockImplementationOnce(async () => {
 				task.assistantMessageContent = [{ type: "text", content: "Premature answer.", partial: false }]
@@ -13264,7 +13265,12 @@ describe("Task typed tool approval bridge", () => {
 		])
 	})
 
-	const runApprovalTool = async (task: Task, askType: AlphaAsk, reviewMessage = "Perform the reviewed action") => {
+	const runApprovalTool = async (
+		task: Task,
+		askType: AlphaAsk,
+		reviewMessage = "Perform the reviewed action",
+		signal = task.getTaskCancellationSignal(),
+	) => {
 		const executeEffect = vi.fn()
 		const registry = new ToolRegistry({ includeBuiltIns: false })
 		const descriptor: ToolDescriptor = {
@@ -13292,13 +13298,95 @@ describe("Task typed tool approval bridge", () => {
 			task,
 			registry,
 			mode: "code",
-			signal: task.getTaskCancellationSignal(),
+			signal,
 			validateCall: () => {},
 		}).run(
 			createAgentResponse([{ type: "tool_call", id: "reviewable-call", name: "reviewable_tool", arguments: {} }]),
 		)
 		return { outcome, executeEffect }
 	}
+
+	it("retires a pending typed approval when its scheduler is cancelled", async () => {
+		const task = createTask({ taskApprovalMode: "ask" })
+		const controller = new AbortController()
+		const published = new Promise<string>((resolve) => {
+			task.on(AlphaCodeEventName.Message, function onApproval({ action, message }) {
+				if (action === "created" && message.toolApprovalRequest) {
+					task.off(AlphaCodeEventName.Message, onApproval)
+					resolve(message.toolApprovalRequest.requestId)
+				}
+			})
+		})
+		const pending = runApprovalTool(task, "tool", "Perform the reviewed action", controller.signal)
+		const requestId = await published
+		try {
+			controller.abort(new Error("Approval scheduler cancelled"))
+			const receivedLateAnswer = task.handleWebviewToolApprovalResponse(requestId, { decision: "approve_once" })
+			const { outcome, executeEffect } = await pending
+			expect(outcome.results).toMatchObject([{ callId: "reviewable-call", status: "cancelled" }])
+			expect(executeEffect).not.toHaveBeenCalled()
+			expect(receivedLateAnswer).toBe(false)
+			expect(task.getTaskLifetimeCancellationSignal().aborted).toBe(false)
+			expect(task.hasPendingToolApprovalRequest()).toBe(false)
+			expect(task.getActiveAskTimestamp()).toBeUndefined()
+			expect(
+				task.alphaMessages.find((message) => message.toolApprovalRequest?.requestId === requestId),
+			).toMatchObject({ isAnswered: true })
+		} finally {
+			if (task.hasPendingToolApprovalRequest()) task.denyAsk()
+			await pending
+		}
+	})
+
+	it("keeps a newer typed approval live when a cancelled ask finishes publishing", async () => {
+		const task = createTask({ taskApprovalMode: "ask" })
+		const provider = task["providerRef"].deref()!
+		const controller = new AbortController()
+		const oldApproval = request(task.taskId, { requestId: "old-approval" })
+		const nextApproval = request(task.taskId, { requestId: "next-approval" })
+		let startPublication!: () => void
+		const publicationStarted = new Promise<void>((resolve) => (startPublication = resolve))
+		let finishPublication!: () => void
+		const publication = new Promise<void>((resolve) => (finishPublication = resolve))
+		vi.mocked(provider.postMessageToWebview).mockImplementation(async (message) => {
+			if (
+				message.type === "messageCreated" &&
+				message.alphaMessage?.toolApprovalRequest?.requestId === oldApproval.requestId
+			) {
+				startPublication()
+				await publication
+			}
+		})
+		const old = task.requestToolApproval(oldApproval, undefined, undefined, controller.signal)
+		await publicationStarted
+		controller.abort()
+
+		const nextPublished = new Promise<void>((resolve) => {
+			task.on(AlphaCodeEventName.Message, function onApproval({ action, message }) {
+				if (action === "created" && message.toolApprovalRequest?.requestId === nextApproval.requestId) {
+					task.off(AlphaCodeEventName.Message, onApproval)
+					resolve()
+				}
+			})
+		})
+		const next = task.requestToolApproval(nextApproval)
+		try {
+			await Promise.race([nextPublished, next])
+			finishPublication()
+			await expect(old).resolves.toEqual({ decision: "abort" })
+			expect(task.handleWebviewToolApprovalResponse(oldApproval.requestId, { decision: "approve_once" })).toBe(
+				false,
+			)
+			expect(task.handleWebviewToolApprovalResponse(nextApproval.requestId, { decision: "approve_once" })).toBe(
+				true,
+			)
+			await expect(next).resolves.toEqual({ decision: "approve_once" })
+		} finally {
+			finishPublication()
+			if (task.hasPendingToolApprovalRequest()) task.denyAsk()
+			await Promise.allSettled([old, next])
+		}
+	})
 
 	const denyPublishedApproval = (task: Task) => {
 		task.on(AlphaCodeEventName.Message, function denyAsk({ action, message }) {
@@ -13631,7 +13719,8 @@ describe("Task typed tool approval bridge", () => {
 					expect(type).toBe(approval.askType)
 					expect(text).toBe(approval.description)
 					expect(shownRequest).toEqual(approval)
-					;(task as any).activeAsk = { type, ts: 42 }
+					task["activeAsk"] = { type, ts: 42, approvalRequestId: approval.requestId }
+					task["lastMessageTs"] = 42
 					expect(task.handleWebviewToolApprovalResponse("stale-request", decision)).toBe(false)
 					expect(task.handleWebviewToolApprovalResponse(approval.requestId, decision)).toBe(true)
 					return {
@@ -13645,6 +13734,9 @@ describe("Task typed tool approval bridge", () => {
 			expect(askResponseSpy).toHaveBeenCalledWith(
 				expectedAskResponse,
 				decision.decision === "deny" ? decision.feedback : undefined,
+				undefined,
+				undefined,
+				42,
 			)
 			expect(task.hasPendingToolApprovalRequest()).toBe(false)
 		},
@@ -13657,7 +13749,9 @@ describe("Task typed tool approval bridge", () => {
 		const askSpy = vi
 			.spyOn(task, "ask")
 			.mockImplementation(async (type, _text, _partial, _progress, _protected, _explicit, shownRequest) => {
-				;(task as any).activeAsk = { type, ts: 42 }
+				task["activeAsk"] = { type, ts: 42, approvalRequestId: shownRequest?.requestId }
+				task["lastMessageTs"] = 42
+				task["askResponse"] = undefined
 				if (shownRequest?.requestId === secondApproval.requestId) {
 					expect(
 						task.handleWebviewToolApprovalResponse(firstApproval.requestId, { decision: "approve_once" }),
@@ -13698,7 +13792,8 @@ describe("Task typed tool approval bridge", () => {
 			proposedAmendment: { kind: "exact_command", command: "node scripts/check.js" },
 		})
 		vi.spyOn(task, "ask").mockImplementation(async (type) => {
-			;(task as any).activeAsk = { type, ts: 42 }
+			task["activeAsk"] = { type, ts: 42, approvalRequestId: approval.requestId }
+			task["lastMessageTs"] = 42
 			expect(
 				task.handleWebviewToolApprovalResponse(approval.requestId, {
 					decision: "approve_with_amendment",

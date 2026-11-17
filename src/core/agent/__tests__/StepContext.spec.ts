@@ -161,11 +161,28 @@ describe("StepContext", () => {
 		const instructions = { ...legacy.instructions }
 		const shallow = Object.freeze({ ...legacy, instructions })
 		const before = getStepContextDigests(shallow)
+		const retry = deriveRetryStepContext(shallow)
 		instructions.systemPrompt = "changed prompt"
 		const after = getStepContextDigests(shallow)
 		expect(after.context).not.toBe(before.context)
 		expect(after.prompt).not.toBe(before.prompt)
 		expect(after).toEqual(getStepContextDigests(structuredClone(shallow)))
+		expect(retry.instructions.systemPrompt).toBe(context.instructions.systemPrompt)
+		expect(Object.isFrozen(retry.instructions)).toBe(true)
+	})
+
+	it("reuses the immutable request and its digests when only the retry counter changes", () => {
+		const context = makeContext()
+		const retry = deriveRetryStepContext(context)
+		const digests = getStepContextDigests(retry)
+
+		expect(retry).not.toBe(context)
+		expect(retry).toEqual({ ...context, retryAttempt: 1 })
+		expect(Object.isFrozen(retry)).toBe(true)
+		expect(retry.transcript).toBe(context.transcript)
+		expect(getStepContextDigests(context)).toBe(digests)
+		expect(deriveRetryStepContext(retry, 2).retryAttempt).toBe(2)
+		expect(context.retryAttempt).toBe(0)
 	})
 
 	it("captures an exact immutable request snapshot and redacts credentials", () => {

@@ -384,6 +384,14 @@ export function deriveRetryStepContext(
 		throw new Error("Step context retry attempt cannot move backwards")
 	}
 
+	const capturedDigests = capturedContextDigests.get(context)
+	if (capturedDigests) {
+		// Capture already froze every nested field, and the retry counter does not contribute to the digests.
+		const retryContext = Object.freeze({ ...context, retryAttempt })
+		capturedContextDigests.set(retryContext, capturedDigests)
+		return retryContext
+	}
+
 	return createStepContext({
 		...(context as unknown as CreateStepContextInput),
 		contextId: context.contextId,

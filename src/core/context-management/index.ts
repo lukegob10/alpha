@@ -396,11 +396,16 @@ export async function manageContext({
 	// Calculate the maximum tokens reserved for response
 	const reservedTokens = maxTokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS
 	const threshold = resolveCondenseThreshold(autoCondenseContextPercent)
-	const { allowedTokens, triggerTokens } = getContextLimits(contextWindow, reservedTokens, threshold)
+	const { allowedTokens, triggerTokens, compactionInputLimit } = getContextLimits(
+		contextWindow,
+		reservedTokens,
+		threshold,
+		autoCondenseContextScope,
+	)
 	let targetContextTokens = getCompactionTargetTokens({
 		contextWindow,
 		reservedTokens,
-		triggerTokens: autoCondenseContext ? triggerTokens : allowedTokens,
+		triggerTokens: autoCondenseContext ? compactionInputLimit : allowedTokens,
 	})
 
 	// Provider rejection invalidates the historical estimate. Forced recovery
@@ -466,7 +471,7 @@ export async function manageContext({
 			targetContextTokens = getCompactionTargetTokens({
 				contextWindow,
 				reservedTokens,
-				triggerTokens,
+				triggerTokens: compactionInputLimit,
 				fixedTokens,
 			})
 			// Attempt to intelligently condense the context
@@ -502,7 +507,7 @@ export async function manageContext({
 			if (
 				result.status === "unchanged" &&
 				!forceCompaction &&
-				(result.newContextTokens ?? Infinity) < triggerTokens
+				(result.newContextTokens ?? Infinity) < compactionInputLimit
 			) {
 				return { ...result, prevContextTokens, targetContextTokens }
 			}
@@ -629,7 +634,7 @@ export async function manageContext({
 		targetContextTokens = getCompactionTargetTokens({
 			contextWindow,
 			reservedTokens,
-			triggerTokens: autoCondenseContext ? triggerTokens : allowedTokens,
+			triggerTokens: allowedTokens,
 			fixedTokens,
 			targetPercent: 75,
 		})

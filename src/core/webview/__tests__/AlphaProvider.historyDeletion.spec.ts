@@ -8,6 +8,7 @@ import type { ExtensionMessage, HistoryItem, WebviewMessage } from "@alpha-code/
 
 import { ShadowCheckpointService } from "../../../services/checkpoints/ShadowCheckpointService"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
+import { AgentLifecycleJournal } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { TaskHistoryStore } from "../../task-persistence/TaskHistoryStore"
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
@@ -80,6 +81,7 @@ describe("project chat deletion", () => {
 			taskHistoryStoreReady: Promise.resolve(),
 			taskHistoryStoreInitialized: true,
 			taskLifecycleHistoryWrites: new Map(),
+			agentLifecycleJournals: new Map(),
 			taskSessions: sessions,
 			contextProxy: {
 				globalStorageUri: { fsPath: storage },
@@ -187,6 +189,40 @@ describe("project chat deletion", () => {
 		await expect(fs.access(path.dirname(historyPath("closing")))).rejects.toMatchObject({ code: "ENOENT" })
 	})
 
+	it.each(["single", "batch"] as const)(
+		"does not restore a deleted chat's lifecycle snapshot during view shutdown after %s deletion",
+		async (operation) => {
+			const task = await seed("with-journal")
+			const journal = await AgentLifecycleJournal.open(task.id, storage)
+			await journal.append({
+				version: 1,
+				eventId: "phase-1",
+				taskId: task.id,
+				runId: "run-1",
+				turnId: "turn-1",
+				occurredAt: 1,
+				type: "phase_changed",
+				payload: { phase: "working" },
+			})
+			provider["agentLifecycleJournals"].set(task.id, Promise.resolve(journal))
+			const peerJournal = await AgentLifecycleJournal.open(task.id, storage)
+			const peer = Object.assign(Object.create(AlphaProvider.prototype), {
+				_disposed: true,
+				agentLifecycleJournals: new Map([[task.id, Promise.resolve(peerJournal)]]),
+				log: vi.fn(),
+			}) as AlphaProvider
+			peers.push(peer)
+
+			if (operation === "single") await provider.deleteTaskWithId(task.id)
+			else await provider.deleteTasksWithIds([task.id])
+			await expect(fs.access(path.dirname(historyPath(task.id)))).rejects.toMatchObject({ code: "ENOENT" })
+
+			await provider["closeAgentLifecycleJournals"]()
+			await peer["closeAgentLifecycleJournals"]()
+			await expect(fs.access(path.dirname(historyPath(task.id)))).rejects.toMatchObject({ code: "ENOENT" })
+		},
+	)
+
 	it("publishes committed history while cleanup is pending and refuses to reopen deleted metadata", async () => {
 		const selected = await seed("deleted")
 		const kept = await seed("keep")
@@ -228,6 +264,7 @@ describe("project chat deletion", () => {
 				"Task not found",
 			)
 			await expect(provider.createTaskWithHistoryItem(selected)).rejects.toThrow("being deleted")
+			await expect(provider["getAgentLifecycleJournal"](selected.id)).rejects.toThrow("being deleted")
 			const exported = receive({ type: "exportTaskWithId", text: kept.id })
 			expect(provider["webviewMessageQueue"]).not.toBe(deleting)
 			await exported

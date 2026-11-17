@@ -235,7 +235,12 @@ export class McpHub {
 	private readonly elicitationRouters = new WeakMap<Client, McpElicitationRouter>()
 	private latestCatalogRefresh = new WeakMap<ConnectedMcpConnection, Promise<void>>()
 	private catalogErrors = new WeakMap<ConnectedMcpConnection, string>()
-	private catalogChanges = new Map<ConnectedMcpConnection, { requested: boolean; promise: Promise<void> }>()
+	private catalogChanges = new Map<
+		ConnectedMcpConnection,
+		{ requested: boolean; ready: Promise<void>; publication: Promise<void> }
+	>()
+	private catalogPublication?: Promise<void>
+	private catalogPublicationRequested = false
 	private catalogRevisions = new WeakMap<ConnectedMcpConnection, number>()
 	private declaredServerConfigs = new WeakMap<McpConnection, z.infer<typeof ServerConfigSchema>>()
 
@@ -304,7 +309,7 @@ export class McpHub {
 				await Promise.all(
 					connections.map(async (connection) => {
 						try {
-							await this.catalogChanges.get(connection)?.promise
+							await this.catalogChanges.get(connection)?.ready
 							const refresh = this.latestCatalogRefresh.get(connection)
 							if (refresh) await this.waitForCurrentCatalog(connection, refresh)
 						} catch (error) {
@@ -1278,7 +1283,7 @@ export class McpHub {
 			}
 			this.assertConnectionCurrent(connection, this.connectionControllers.get(connection)?.signal)
 			const queued = this.catalogChanges.get(connection)
-			if (queued) await queued.promise
+			if (queued) await queued.ready
 			this.assertConnectionCurrent(connection, this.connectionControllers.get(connection)?.signal)
 			const latest = this.latestCatalogRefresh.get(connection)
 			if (!latest || latest === refresh) {
@@ -1300,11 +1305,11 @@ export class McpHub {
 		const queued = this.catalogChanges.get(connection)
 		if (queued) {
 			queued.requested = true
-			return queued.promise
+			return queued.publication
 		}
-		const entry = { requested: true, promise: Promise.resolve() }
+		const entry = { requested: true, ready: Promise.resolve(), publication: Promise.resolve() }
 		this.catalogChanges.set(connection, entry)
-		entry.promise = (async () => {
+		entry.ready = (async () => {
 			// A microtask boundary coalesces a burst without retaining timers after disposal.
 			await Promise.resolve()
 			try {
@@ -1316,15 +1321,36 @@ export class McpHub {
 						if (this.catalogChanges.get(connection) !== entry || entry.requested) continue
 						console.error(`Failed to refresh MCP catalog for ${connection.server.name}:`, error)
 					}
-					if (!this.isDisposed && this.connections.includes(connection)) {
-						await this.notifyWebviewOfServerChanges()
-					}
 				}
 			} finally {
 				if (this.catalogChanges.get(connection) === entry) this.catalogChanges.delete(connection)
 			}
 		})()
-		return entry.promise
+		// The inference fence ends at catalog settlement. Publishing to a view may wait on settings I/O.
+		entry.publication = entry.ready.then(async () => {
+			if (!this.isDisposed && this.connections.includes(connection)) await this.queueCatalogPublication()
+		})
+		return entry.publication
+	}
+
+	private queueCatalogPublication(): Promise<void> {
+		this.catalogPublicationRequested = true
+		this.catalogPublication ??= Promise.resolve().then(async () => {
+			try {
+				// Keep one active send and coalesce changes while the view is receiving it.
+				while (this.catalogPublicationRequested && !this.isDisposed) {
+					this.catalogPublicationRequested = false
+					try {
+						await this.notifyWebviewOfServerChanges()
+					} catch (error) {
+						console.error("Failed to publish MCP catalog to webviews:", error)
+					}
+				}
+			} finally {
+				this.catalogPublication = undefined
+			}
+		})
+		return this.catalogPublication
 	}
 
 	/** Publish a catalog only after every required page and identity check succeeds. */
@@ -1835,6 +1861,7 @@ export class McpHub {
 			}
 		}
 
+		if (this.isDisposed) return
 		// Sort connections: first project servers in their defined order, then global servers in their defined order
 		// This ensures that when servers have the same name, project servers are prioritized
 		const sortedConnections = [...this.connections].sort((a, b) => {

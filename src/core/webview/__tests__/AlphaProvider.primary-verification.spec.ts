@@ -1091,6 +1091,25 @@ describe("AlphaProvider primary verification", () => {
 		expect(primaryObligation().verificationRequirements).toBeUndefined()
 	})
 
+	it("revalidates durable primary evidence after the task loses its live command history", async () => {
+		await recordPrimaryMutation()
+		const passed = await recordCurrentEvidence(await captureCurrentVerification())
+		expect(passed.verification).toMatchObject({ assurance: "process", status: "passed" })
+
+		// A resumed task retains its ledger and starts with an empty execution map.
+		commandEvidence = []
+		await provider.recordParentVerificationEvidence(parent)
+		expect(primaryObligation()).toEqual(passed)
+
+		await fs.writeFile(path.join(workspace, "src/a.ts"), "export const value = 2\n")
+		await provider.recordParentVerificationEvidence(parent)
+		const current = primaryObligation()
+		expect(current.contentVersion).toBeGreaterThan(passed.contentVersion!)
+		expect(current.verification).toBeUndefined()
+		expect(provider.getVerificationProgressState(parent).evidenceFingerprint).toBeUndefined()
+		expect(store.getParentCompletionDecision(parent.taskId).allowed).toBe(true)
+	})
+
 	it("keeps execution cwd confined while allowing explicitly associated sibling files", async () => {
 		const primary = await recordPrimaryMutation()
 		await fs.mkdir(path.join(workspace, "tools"))

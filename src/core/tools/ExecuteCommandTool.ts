@@ -3,8 +3,6 @@ import * as path from "path"
 import { randomUUID } from "crypto"
 import * as vscode from "vscode"
 
-import delay from "delay"
-
 import {
 	CommandExecutionStatus,
 	DEFAULT_TERMINAL_OUTPUT_PREVIEW_SIZE,
@@ -1577,7 +1575,7 @@ export async function executeCommandInTerminal(
 	let resolveOnCompleted: (() => void) | undefined
 	let rejectOnCompleted: ((error: CommandOutputBookkeepingError) => void) | undefined
 	let onCompletedInvoked = false
-	let missingOutputCompletionTimer: NodeJS.Timeout | undefined
+	let outputDrainTimeout: NodeJS.Timeout | undefined
 	let backgroundResultReturned = false
 	let outputBookkeepingFailure: CommandOutputBookkeepingError | undefined
 	let outputBookkeepingFailureHandling: Promise<void> | undefined
@@ -1610,21 +1608,21 @@ export async function executeCommandInTerminal(
 	// Observe immediately for adapters that do not await async callbacks, while
 	// retaining the original promise for the foreground join.
 	void onCompletedPromise.catch(() => undefined)
-	const scheduleMissingOutputCompletionFailure = () => {
-		if (onCompletedInvoked || outputBookkeepingFailure || missingOutputCompletionTimer) return
-		// Both terminal providers synchronously emit `completed` (which invokes
-		// onCompleted) in the same turn or the microtask immediately following the
-		// shell outcome. Yield one timer turn so that supported ordering can settle,
-		// then fail closed instead of retaining an unjoinable output promise.
-		missingOutputCompletionTimer = setTimeout(() => {
-			missingOutputCompletionTimer = undefined
-			if (onCompletedInvoked || outputBookkeepingFailure) return
-			outputBookkeepingFailure = new CommandOutputBookkeepingError(
-				new Error(t("common:errors.command_output_bookkeeping_incomplete")),
-			)
-			rejectOnCompleted?.(outputBookkeepingFailure)
-			void handleBackgroundOutputBookkeepingFailure()
-		}, 0)
+	let resumeAfterFailedOutputDrain!: () => void
+	const failedOutputDrain = new Promise<void>((resolve) => (resumeAfterFailedOutputDrain = resolve))
+	const clearOutputDrainTimeout = () => {
+		clearTimeout(outputDrainTimeout)
+		outputDrainTimeout = undefined
+	}
+	const failMissingOutputCompletion = () => {
+		clearOutputDrainTimeout()
+		if (!exitDetails || onCompletedInvoked || commandTerminalOutcomeFenced) return
+		outputBookkeepingFailure ??= new CommandOutputBookkeepingError(
+			new Error(t("common:errors.command_output_bookkeeping_incomplete")),
+		)
+		rejectOnCompleted?.(outputBookkeepingFailure)
+		resumeAfterFailedOutputDrain()
+		void handleBackgroundOutputBookkeepingFailure()
 	}
 
 	let createdProcess: AlphaTerminalProcess | undefined
@@ -1713,6 +1711,8 @@ export async function executeCommandInTerminal(
 				// mutation receipt. Closing its archive must not replace that error.
 				if (!terminalProcessFailure) void handleBackgroundOutputBookkeepingFailure()
 				throw outputBookkeepingFailure
+			} finally {
+				failMissingOutputCompletion()
 			}
 		},
 		onLine: (lines: string, process: AlphaTerminalProcess) => {
@@ -1757,8 +1757,7 @@ export async function executeCommandInTerminal(
 		onCompleted: async (output: string | undefined, process: AlphaTerminalProcess) => {
 			onCompletedInvoked = true
 			stopBackgroundPreview()
-			clearTimeout(missingOutputCompletionTimer)
-			missingOutputCompletionTimer = undefined
+			clearOutputDrainTimeout()
 			try {
 				clearTimeout(pendingCommandOutputEmitTimer)
 				pendingCommandOutputEmitTimer = undefined
@@ -1806,7 +1805,10 @@ export async function executeCommandInTerminal(
 			// never settle that reservation again or overwrite the failed outcome.
 			if (commandMutationFailureHandling || commandTerminalOutcomeFenced) return
 			if (toolCallId) task.markCommandExecutionExitObserved?.(toolCallId, physicalExecutionId)
-			scheduleMissingOutputCompletionFailure()
+			// Codex 8011b92b unified_exec observes exit and output closure separately.
+			// The VS Code shell can exit before its stream and archive finish draining.
+			if (!onCompletedInvoked && !outputDrainTimeout)
+				outputDrainTimeout = setTimeout(failMissingOutputCompletion, Terminal.getShellIntegrationTimeout())
 			commandMutationCompletion = observeCommandMutationFailure(
 				(async () => {
 					const fileChanges = await ensureMutationReceipt()
@@ -2026,9 +2028,8 @@ export async function executeCommandInTerminal(
 		terminalProcessFailure = new CommandExecutionLifecycleError("await-command-process", error)
 		if (!onCompletedInvoked) {
 			// Process disposal owns this failure. Settle the output join now so the
-			// missing-completion timer cannot finalize the same command a second time.
-			clearTimeout(missingOutputCompletionTimer)
-			missingOutputCompletionTimer = undefined
+			// drain deadline cannot finalize the same command a second time.
+			clearOutputDrainTimeout()
 			outputBookkeepingFailure ??= new CommandOutputBookkeepingError(error)
 			rejectOnCompleted?.(outputBookkeepingFailure)
 		}
@@ -2164,7 +2165,7 @@ export async function executeCommandInTerminal(
 	}
 
 	try {
-		const racers: Promise<void>[] = [process]
+		const racers: Promise<void>[] = [process, failedOutputDrain]
 
 		// Agent timeout: transition to background (command keeps running)
 		if (agentTimeout > 0) {
@@ -2181,7 +2182,11 @@ export async function executeCommandInTerminal(
 		}
 
 		// User timeout: abort the command (existing behavior)
-		if (commandExecutionTimeout > 0) {
+		if (commandExecutionTimeout > 0 && !exitDetails) {
+			// This ceiling owns the physical process. Output draining has its own
+			// bound once the shell has exited.
+			process.once("shell_execution_complete", clearUserTimeout)
+			process.once("terminal_closed", clearUserTimeout)
 			racers.push(
 				new Promise<void>((_, reject) => {
 					userTimeoutId = setTimeout(() => {
@@ -2299,8 +2304,6 @@ export async function executeCommandInTerminal(
 		if (keepUserTimeout) {
 			// Reader completion/error does not prove physical exit. Keep the hard
 			// ceiling on that original command until its shell exits or closes.
-			process.once("shell_execution_complete", clearUserTimeout)
-			process.once("terminal_closed", clearUserTimeout)
 			process.on("completed", clearUserTimeoutIfInactive)
 			process.on("error", clearUserTimeoutIfInactive)
 		} else {
@@ -2344,9 +2347,6 @@ export async function executeCommandInTerminal(
 		throw shellError
 	}
 
-	// A live command can still be publishing its preview when it yields. Once
-	// exit is known, the explicit output and mutation joins own finalization.
-	if (!presentation && !exitDetails) await delay(50)
 	if (terminalProcessFailure) {
 		await terminalProcessFailureHandling
 		throw terminalProcessFailure
@@ -2366,7 +2366,6 @@ export async function executeCommandInTerminal(
 		}
 	}
 
-	const displayOutput = result || latestCompressedOutput || ""
 	const sessionId =
 		!completed &&
 		!exitDetails &&
@@ -2376,6 +2375,11 @@ export async function executeCommandInTerminal(
 		terminal.running
 			? commandSessionRegistry.register(task, process)
 			: undefined
+	// Codex 8011b92b unified_exec snapshots buffered output at yield. Snapshot
+	// Alpha's received output without waiting for UI delivery or consuming a receipt.
+	const runningOutput = sessionId !== undefined ? process.getOutputPreview?.() : undefined
+	const displayOutput =
+		result || (runningOutput && Terminal.compressTerminalOutput(runningOutput)) || latestCompressedOutput
 	if (toolCallId && (message || (!completed && !exitDetails))) {
 		await project("evidence", () => {
 			task.markCommandExecutionBackgrounded?.(toolCallId, physicalExecutionId)

@@ -129,19 +129,16 @@ describe("primary question ownership", () => {
 		["code", "auto"],
 		["architect", "ask"],
 		["architect", "auto"],
-	] as const)("keeps an offscreen %s/%s question pending for its matching user reply", async (mode, approvalMode) => {
+	] as const)("immediately announces an offscreen %s/%s question", async (mode, approvalMode) => {
 		const { task, say, postMessageToWebview } = createQuestionTask(mode, approvalMode)
 		task.messageQueueService.addMessage("Keep this guidance for the next turn")
 		const request = requestQuestion(task)
 		try {
-			await vi.advanceTimersByTimeAsync(2_100)
+			await vi.advanceTimersByTimeAsync(0)
 			expect(request.isSettled()).toBe(false)
 			expect(request.callbacks.pushToolResult).not.toHaveBeenCalled()
 			expect(say).not.toHaveBeenCalled()
-			expect(postMessageToWebview).toHaveBeenCalledWith({
-				type: "interactionRequired",
-				taskId: task.taskId,
-			})
+			expectQuestionWaiting(task, postMessageToWebview)
 			expect(task.alphaMessages).toHaveLength(1)
 			expect(task.alphaMessages[0]).toMatchObject({ type: "ask", ask: "followup" })
 			expect(task.alphaMessages[0]?.isAnswered).not.toBe(true)
@@ -206,6 +203,46 @@ describe("primary question ownership", () => {
 			await cancelRequest(request)
 		}
 	})
+
+	it.each(["deny", "abort"] as const)(
+		"immediately announces a manual tool approval and clears it on %s",
+		async (decision) => {
+			const { task, postMessageToWebview } = createQuestionTask("code", "auto")
+			const controller = new AbortController()
+			const requestId = "pending-tool-approval"
+			const pending = task.requestToolApproval(
+				{
+					requestId,
+					taskId: task.taskId,
+					callId: "call-1",
+					toolName: "create_thread",
+					askType: "tool",
+					description: JSON.stringify({ tool: "create_thread" }),
+					forceApproval: false,
+					requiresExplicitApproval: true,
+					availableDecisions: ["approve_once", "deny", "abort"],
+				},
+				undefined,
+				undefined,
+				controller.signal,
+			)
+			void pending.catch(() => undefined)
+			try {
+				await vi.advanceTimersByTimeAsync(0)
+				expectQuestionWaiting(task, postMessageToWebview)
+				expect(task.interactiveAsk?.ask).toBe("tool")
+				if (decision === "abort") controller.abort()
+				else expect(task.handleWebviewToolApprovalResponse(requestId, { decision })).toBe(true)
+				await expect(pending).resolves.toEqual({ decision })
+				expect(task.taskStatus).toBe(TaskStatus.Running)
+				expect(task.getActiveAskTimestamp()).toBeUndefined()
+				expect(task.alphaMessages.at(-1)?.isAnswered).toBe(true)
+			} finally {
+				controller.abort()
+				await pending.catch(() => undefined)
+			}
+		},
+	)
 
 	it("keeps a foreground question owned by the user after task selection changes", async () => {
 		const { task, say, select } = createQuestionTask("architect", "auto", true)
@@ -536,11 +573,13 @@ describe("primary question ownership", () => {
 			await vi.advanceTimersByTimeAsync(5_000)
 			expect(provider.getState).toHaveBeenCalledTimes(2)
 			expect(request.isSettled()).toBe(false)
+			expect(postMessageToWebview).not.toHaveBeenCalled()
 			state.followupAutoApproveTimeoutMs = 0
 			replacement = requestQuestion(task)
 			await vi.advanceTimersByTimeAsync(0)
 			const replacementTs = task.getActiveAskTimestamp()
 			expect(replacementTs).toBe(task.alphaMessages[1]?.ts)
+			expectQuestionWaiting(task, postMessageToWebview)
 			settings.resolve({ ...state, followupAutoApproveTimeoutMs: 5_000 })
 			await vi.advanceTimersByTimeAsync(100)
 			await request.pending
@@ -548,8 +587,7 @@ describe("primary question ownership", () => {
 			expect(replacement.callbacks.pushToolResult).not.toHaveBeenCalled()
 			expect(say).not.toHaveBeenCalled()
 			expect(task.getActiveAskTimestamp()).toBe(replacementTs)
-			expect(postMessageToWebview).not.toHaveBeenCalled()
-			expect(task.interactiveAsk).toBeUndefined()
+			expectQuestionWaiting(task, postMessageToWebview)
 		} finally {
 			settings.resolve(state)
 			await cancelRequest(request)

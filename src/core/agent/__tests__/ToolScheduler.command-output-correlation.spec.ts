@@ -207,6 +207,7 @@ describe("command approval presentation receipts", () => {
 			undefined,
 			undefined,
 			expect.any(Function),
+			expect.any(AbortSignal),
 		)
 	})
 
@@ -248,14 +249,19 @@ describe("command approval presentation receipts", () => {
 		expect(effects).toEqual([])
 	})
 
-	it("retains the legacy boolean callback's typed approval path and argument shape", async () => {
+	it("passes cancellation to the legacy boolean callback's typed approval without a receipt observer", async () => {
 		const { host, effects, run } = fixture(true)
 		const requestToolApproval = vi.fn(async (_request: ToolApprovalRequest, _message?: string) => ({
 			decision: "approve_once" as const,
 		}))
 		host.requestToolApproval = requestToolApproval
 		await run()
-		expect(requestToolApproval.mock.calls[0]).toHaveLength(2)
+		expect(requestToolApproval).toHaveBeenCalledExactlyOnceWith(
+			expect.objectContaining({ description: "git status" }),
+			"git status",
+			undefined,
+			expect.any(AbortSignal),
+		)
 		expect(effects).toEqual(["same-provider-id"])
 	})
 })

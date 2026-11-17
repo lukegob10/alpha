@@ -645,7 +645,7 @@ describe("Task recovery through provider adapters", () => {
 		expect(fixture.task.ask).toHaveBeenCalledWith("resume_task")
 	})
 
-	it("honors the native Anthropic Retry-After header before the next request", async () => {
+	it.each([false, true])("honors native Anthropic Retry-After (auto-approval=%s)", async (autoApproval) => {
 		const retryAfterMs = 60_000
 		const scope = nock("https://api.anthropic.com")
 			.post("/v1/messages")
@@ -674,13 +674,14 @@ describe("Task recovery through provider adapters", () => {
 				apiProvider: "anthropic",
 			},
 		)
-		fixture.live.autoApprovalEnabled = true
+		fixture.live.autoApprovalEnabled = autoApproval
 		const pace = vi.spyOn(fixture.hooks, "waitForProviderPacingDelay").mockImplementation(async () => {
 			expect(fixture.createMessage).toHaveBeenCalledOnce()
 		})
 		vi.useFakeTimers({ toFake: ["Date"] })
 		try {
 			await fixture.run()
+			expect(fixture.task.ask).not.toHaveBeenCalled()
 			expect(fixture.events).toContainEqual(expect.objectContaining({ type: "retry", delayMs: retryAfterMs }))
 			expect(pace).toHaveBeenCalledExactlyOnceWith(retryAfterMs, expect.any(AbortSignal), undefined)
 			expect(fixture.createMessage).toHaveBeenCalledTimes(2)
@@ -1009,10 +1010,11 @@ describe("Task canonical response admission", () => {
 				{ type: "response_terminal", status: "completed" },
 			])
 			expect(fixture.events.filter((event) => event.type === "turn_completed")).toHaveLength(1)
-			expect(fixture.task.waitForCompletionGateDecision).toHaveBeenCalledTimes(2)
+			// The final gate is owned by the mocked finalizer. Only pre-Stop admission is observable here.
+			expect(fixture.task.waitForCompletionGateDecision).toHaveBeenCalledOnce()
 			expect(completionHooks).toHaveBeenCalledOnce()
 			expect(fixture.task.finalizeTaskCompletion).toHaveBeenCalledOnce()
-			expect(completionTrace).toEqual(["gate", "stop", "present", "gate", "finalize"])
+			expect(completionTrace).toEqual(["gate", "stop", "present", "finalize"])
 		},
 	)
 

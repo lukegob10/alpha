@@ -965,7 +965,7 @@ describe("Task command approval row receipts", () => {
 	})
 
 	it.each(["no-observer", "non-command"] as const)(
-		"preserves the existing seven ask arguments for %s typed approval",
+		"forwards the cancellation signal without a command receipt observer for %s approval",
 		async (kind) => {
 			const fixture = createTask()
 			const request = commandApproval(fixture.task.taskId)
@@ -982,7 +982,17 @@ describe("Task command approval row receipts", () => {
 				kind === "non-command" ? receipt : undefined,
 			)
 			expect(ask).toHaveBeenCalledTimes(1)
-			expect(ask.mock.calls[0]).toHaveLength(7)
+			expect(ask.mock.calls[0]).toEqual([
+				request.askType,
+				request.description,
+				undefined,
+				undefined,
+				request.forceApproval,
+				request.requiresExplicitApproval,
+				request,
+				undefined,
+				fixture.task.getTaskCancellationSignal(),
+			])
 			expect(receipt).not.toHaveBeenCalled()
 		},
 	)

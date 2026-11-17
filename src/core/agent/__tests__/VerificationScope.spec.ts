@@ -548,6 +548,31 @@ describe("verification scope observations", () => {
 		expect(diffs.map(({ path }) => path)).toEqual(["a.ts"])
 	})
 
+	it("keeps mutation evidence when the optional diff runs out of compute time", async () => {
+		const original = Array.from({ length: 64 }, (_, index) => `old ${index}\n`).join("")
+		const replacement = Array.from({ length: 64 }, (_, index) => `new ${index}\n`).join("")
+		await write("rewrite.ts", original)
+		const before = await captureWorkspaceMutationState(root)
+		const baseline = await captureWorkspaceMutationDiffBaseline(root, before)
+		await write("rewrite.ts", replacement)
+		const after = await captureWorkspaceMutationState(root, before)
+		const changes = await compareWorkspaceMutationState(root, before, after)
+
+		// jsdiff checks wall time between edit distances. Advance its clock only
+		// for presentation so the regression has no timing or workload threshold.
+		let wallTime = Date.now()
+		const clock = vi.spyOn(Date, "now").mockImplementation(() => (wallTime += 10))
+		try {
+			await expect(createWorkspaceMutationDiffs(root, before, changes, baseline, () => 0)).resolves.toEqual([])
+		} finally {
+			clock.mockRestore()
+		}
+		expect(changes).toEqual({
+			changedPaths: ["rewrite.ts"],
+			files: { "rewrite.ts": fingerprintContent(replacement) },
+		})
+	})
+
 	it("refuses unbounded non-Git trees and symlinks while accepting content-preserving initialization", async () => {
 		await fs.symlink(outside, path.join(root, "escape"), "junction")
 		await expect(captureWorkspaceMutationState(root)).rejects.toThrow("symlinks")

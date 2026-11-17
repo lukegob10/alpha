@@ -147,6 +147,33 @@ describe("bounded context recovery policy", () => {
 		expect(handler.createMessage).not.toHaveBeenCalled()
 	})
 
+	it("can summarize grown context when mandatory input exceeds the after-prefix growth limit", async () => {
+		const handler = createCountingHandler()
+		const messages: ApiMessage[] = [
+			{ role: "user", content: "Preserve the public API." },
+			{ role: "assistant", content: "Implementation details. ".repeat(20) },
+			{ role: "user", content: "Continue" },
+		]
+		const result = await manageContext({
+			messages,
+			totalTokens: 600,
+			contextWindow: 1_000,
+			maxTokens: 100,
+			apiHandler: handler,
+			autoCondenseContext: true,
+			autoCondenseContextPercent: 5,
+			autoCondenseContextScope: "after-prefix",
+			prefillContextTokens: 500,
+			systemPrompt: "S".repeat(80),
+			taskId: "after-prefix-recovery",
+		})
+		expect(result.status).toBe("reduced")
+		expect(result.targetContextTokens).toBe(260)
+		expect(result.newContextTokens).toBeGreaterThan(80)
+		expect(result.newContextTokens).toBeLessThanOrEqual(260)
+		expect(handler.createMessage).toHaveBeenCalledOnce()
+	})
+
 	it.each([false, true])(
 		"recounts stale over-limit usage before truncating fitting input (forced=%s)",
 		async (forceCompaction) => {

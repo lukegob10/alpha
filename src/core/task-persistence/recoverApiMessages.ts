@@ -76,7 +76,6 @@ export async function recoverApiMessages({
 		const problem = invalidPersistedApiMessages(messages)
 		if (problem) return reject(`Recovered history is invalid: ${problem}`)
 		if (messages.length === 0) return reject("Recovery cannot replace history with an empty transcript")
-		const calls = new Set<string>()
 		const pending = new Set<string>()
 		try {
 			for (const message of messages) {
@@ -88,8 +87,8 @@ export async function recoverApiMessages({
 						if (message.role !== "assistant")
 							return reject("Recovery found a tool call outside assistant history")
 						const canonicalId = sanitizeToolUseId(call)
-						if (calls.has(canonicalId)) return reject("Recovery found duplicate tool calls")
-						calls.add(canonicalId)
+						// A provider may reuse a call ID once its previous result has closed it.
+						if (pending.has(canonicalId)) return reject("Recovery found duplicate pending tool calls")
 						pending.add(canonicalId)
 					}
 					if (

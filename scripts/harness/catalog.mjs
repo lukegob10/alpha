@@ -2,6 +2,25 @@
 import { readFileSync } from "node:fs"
 import { hostVsixTarget } from "../../src/lancedb-native.mjs"
 
+const turnContractFiles = [
+	"core/agent/__tests__/AgentTurnEngine.spec.ts",
+	"core/agent/__tests__/AgentTurnEngine.continuation-diagnostics.spec.ts",
+	"core/agent/__tests__/AgentRetryPolicy.spec.ts",
+	"core/agent/__tests__/AgentTurnEventLog.spec.ts",
+	"core/agent/__tests__/IncidentDiagnostics.spec.ts",
+	"core/task/__tests__/completionDiagnostics.spec.ts",
+	"core/task/__tests__/Task.continuation-diagnostics.spec.ts",
+	"core/task/__tests__/Task.spec.ts",
+	"core/task/__tests__/Task.approval-mode-updates.spec.ts",
+	"core/task/__tests__/Task.completion-obligations.spec.ts",
+	"core/task/__tests__/Task.turn-completion-hooks.spec.ts",
+	"core/task/__tests__/stageThreeCompletion.integration.spec.ts",
+	"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
+	"core/tools/__tests__/ExecuteCommand.lifecycle.spec.ts",
+	"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
+	"core/condense/__tests__/index.spec.ts",
+]
+
 export const lanes = {
 	static: {
 		exclusiveBuild: true,
@@ -48,30 +67,12 @@ export const lanes = {
 		proves: "Stopping, continuation, bounded retry and command/result integrity; not live-model proportionality",
 		commands: [
 			["--filter", "@alpha-code/types", "build"],
-			[
-				"--dir",
-				"src",
-				"test",
-				"--maxWorkers=2",
-				"core/agent/__tests__/AgentTurnEngine.spec.ts",
-				"core/agent/__tests__/AgentTurnEngine.continuation-diagnostics.spec.ts",
-				"core/agent/__tests__/AgentRetryPolicy.spec.ts",
-				"core/agent/__tests__/AgentTurnEventLog.spec.ts",
-				"core/agent/__tests__/IncidentDiagnostics.spec.ts",
-				"core/task/__tests__/completionDiagnostics.spec.ts",
-				"core/task/__tests__/Task.continuation-diagnostics.spec.ts",
-				"core/task/__tests__/Task.spec.ts",
-				"core/task/__tests__/Task.approval-mode-updates.spec.ts",
-				"core/task/__tests__/Task.completion-obligations.spec.ts",
-				"core/task/__tests__/Task.turn-completion-hooks.spec.ts",
-				"core/task/__tests__/stageThreeCompletion.integration.spec.ts",
-				"core/tools/__tests__/ManageCommandTool.astra-audit.spec.ts",
-				"core/tools/__tests__/ExecuteCommand.lifecycle.spec.ts",
-				"core/webview/__tests__/AlphaProvider.primary-verification.spec.ts",
-				"core/condense/__tests__/index.spec.ts",
-			],
+			["--dir", "src", "test", "--maxWorkers=2", ...turnContractFiles],
 		],
-		receipts: [null, { runner: "vitest", packageDir: "src", requireAllTests: true }],
+		receipts: [
+			null,
+			{ runner: "vitest", packageDir: "src", requireAllTests: true, requiredFiles: turnContractFiles },
+		],
 	},
 	tooling: {
 		exclusiveBuild: true,

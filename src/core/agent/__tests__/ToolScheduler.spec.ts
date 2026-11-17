@@ -1414,7 +1414,12 @@ describe("ToolScheduler", () => {
 			expect(requestToolApproval).not.toHaveBeenCalled()
 		} else {
 			expect(outcome.results).toMatchObject([{ status: "success" }])
-			expect(requestToolApproval).toHaveBeenCalledWith(expect.objectContaining({ description: command }), command)
+			expect(requestToolApproval).toHaveBeenCalledWith(
+				expect.objectContaining({ description: command }),
+				command,
+				undefined,
+				expect.any(AbortSignal),
+			)
 		}
 	})
 
@@ -4085,7 +4090,17 @@ describe("ToolScheduler", () => {
 			validateCall: () => {},
 		}).run(response({ id: "spawn-explicit", name: "spawn_agent" }))
 
-		expect(ask).toHaveBeenCalledWith("tool", '{"tool":"spawnAgent"}', false, undefined, false, true)
+		expect(ask).toHaveBeenCalledWith(
+			"tool",
+			'{"tool":"spawnAgent"}',
+			false,
+			undefined,
+			false,
+			true,
+			undefined,
+			undefined,
+			expect.any(AbortSignal),
+		)
 		expect(outcome.results[0].status).toBe("denied")
 	})
 

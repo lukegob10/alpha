@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
@@ -12,6 +12,43 @@ import { lanes } from "./catalog.mjs"
 
 const root = fileURLToPath(new URL("../../", import.meta.url))
 const prefix = "alpha-vitest-diagnostics-"
+
+test("the turns gate rejects passing receipts that omit a required file", async () => {
+	const temporaryRoot = await realpath(os.tmpdir())
+	const directory = await mkdtemp(path.join(temporaryRoot, "alpha-turn-inventory-"))
+	try {
+		const selectedTest = path.join(directory, "src/core/agent/__tests__/AgentTurnEngine.spec.ts")
+		await mkdir(path.dirname(selectedTest), { recursive: true })
+		await writeFile(selectedTest, "// inventory fixture\n")
+		const collector = await configureLaneEvidence({
+			lane: lanes.turns,
+			name: "turns",
+			root: directory,
+			directory,
+			id: "missing-turn-contracts",
+		})
+		const index = collector.commands.length - 1
+		await writeFile(
+			path.join(directory, `step-${index}.raw.json`),
+			JSON.stringify({
+				success: true,
+				numTotalTests: 1,
+				numPassedTests: 1,
+				numFailedTests: 0,
+				numPendingTests: 0,
+				numTodoTests: 0,
+				testResults: [{ name: selectedTest, assertionResults: [{ status: "passed" }] }],
+			}),
+		)
+		const result = await collector.verify({ index, args: collector.commands[index], step: {} })
+		assert.equal(result.status, "failed")
+		assert.equal(result.reason, "incomplete_test_inventory")
+	} finally {
+		assert.equal(path.dirname(directory), temporaryRoot)
+		assert.ok(path.basename(directory).startsWith("alpha-turn-inventory-"))
+		await rm(directory, { recursive: true, force: true })
+	}
+})
 
 for (const [name, finalIndex, descriptor] of [
 	["rendered", 1, { runner: "extension-host", suite: "rendered" }],

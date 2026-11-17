@@ -6,6 +6,7 @@ import i18next from "i18next"
 import common from "../../../i18n/locales/en/common.json"
 import type { Task } from "../../task/Task"
 import type { ToolCallbacks } from "../../tools/BaseTool"
+import { createToolFailure } from "../../tools/ToolFailure"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
 import type { AgentToolCall } from "../AgentResponse"
 import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerOptions } from "../ToolScheduler"
@@ -385,6 +386,68 @@ describe("scheduler lifecycle hooks preserve policy and completed effects", () =
 			])
 			expect(outcome.results[1].content).toContain("Stopping repeated")
 			expect(state.userMessageContent.map(({ tool_use_id }) => tool_use_id)).toEqual(["first", "second"])
+		},
+	)
+
+	it.each(["previous result", "effect fence"] as const)(
+		"skips only the scoped retry's pre-tool hook when blocked at the %s",
+		async (stage) => {
+			let blocked = false
+			const failure = createToolFailure({
+				reason: "outcome_unknown",
+				scopeKind: "operation",
+				scopeIdentity: "write original content",
+				effectsStarted: "unknown",
+				outcome: "unknown",
+				recovery: { kind: "verify-outcome" },
+			})
+			const retryInput = { path: path.join(process.cwd(), "file.ts"), content: "Original content" }
+			const preToolUse = vi.fn<NonNullable<ToolSchedulerOptions["preToolUse"]>>(async (call) =>
+				call.id === "rewrite" ? { updatedInput: retryInput } : {},
+			)
+			const beforeEffect = vi.fn<NonNullable<ToolSchedulerOptions["beforeEffect"]>>(async (call) => {
+				if (stage === "effect fence" && call.id === "retry") blocked = true
+			})
+			const { scheduler, state, effect, call } = fixture(
+				{ preToolUse, beforeEffect },
+				async ({ call, callbacks }) => {
+					if (call.id === "first") callbacks.setResultMetadata?.({ status: "error", failure })
+					callbacks.pushToolResult(`Finished ${call.id}`)
+				},
+			)
+			const getToolRetryBlock: NonNullable<ToolExecutionHost["getToolRetryBlock"]> = (_name, args) => {
+				if (!blocked || !args || typeof args !== "object" || !("content" in args)) return undefined
+				return args.content === retryInput.content ? failure : undefined
+			}
+			Object.assign(state, { getToolRetryBlock })
+			state.recordToolCallForStopping.mockImplementationOnce(() => {
+				if (stage === "previous result") blocked = true
+			})
+
+			const outcome = await scheduler.run([
+				call("first"),
+				call("retry"),
+				call("rewrite", { content: "Rewritten by hook" }),
+				call("independent", { path: path.join(process.cwd(), "other.ts"), content: "Independent content" }),
+			])
+
+			expect(preToolUse.mock.calls.map(([call]) => call.id)).toEqual(["first", "rewrite", "independent"])
+			expect(beforeEffect.mock.calls.filter(([call]) => call.id === "retry")).toHaveLength(
+				stage === "effect fence" ? 1 : 0,
+			)
+			expect(effect.mock.calls.map(([{ call }]) => call.id)).toEqual(["first", "independent"])
+			expect(outcome.results).toEqual([
+				expect.objectContaining({ callId: "first", status: "error" }),
+				expect.objectContaining({ callId: "retry", status: "error", retryBlocked: true, failure }),
+				expect.objectContaining({ callId: "rewrite", status: "error", retryBlocked: true, failure }),
+				expect.objectContaining({ callId: "independent", status: "success" }),
+			])
+			expect(state.userMessageContent.map(({ tool_use_id }) => tool_use_id)).toEqual([
+				"first",
+				"retry",
+				"rewrite",
+				"independent",
+			])
 		},
 	)
 

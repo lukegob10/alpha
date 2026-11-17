@@ -1381,6 +1381,33 @@ describe("Task post-turn compaction", () => {
 		expect(Reflect.get(reloaded, "getCompactionWindowPrefillTokens").call(reloaded)).toBe(125)
 	})
 
+	it("ignores unchanged and partial compaction receipts when restoring the after-prefix baseline", () => {
+		const { task } = harness()
+		task.alphaMessages = [
+			{ ts: 1, type: "say", say: "api_req_started", text: JSON.stringify({ tokensIn: 125, tokensOut: 50 }) },
+			{
+				ts: 2,
+				type: "say",
+				say: "condense_context",
+				contextCondense: {
+					outcome: "unchanged",
+					cost: 0,
+					prevContextTokens: 500,
+					newContextTokens: 500,
+					summary: "",
+				},
+			},
+			{
+				ts: 3,
+				type: "say",
+				say: "condense_context",
+				partial: true,
+				contextCondense: { cost: 0, prevContextTokens: 650, newContextTokens: 210, summary: "Pending summary" },
+			},
+		]
+		expect(Reflect.get(task, "getCompactionWindowPrefillTokens").call(task)).toBe(125)
+	})
+
 	it("persists a reduced active history that reloads with its rewind archive", async () => {
 		const { task, api, provider, save, history } = harness()
 		api.getModel = () => ({
@@ -1543,6 +1570,60 @@ describe("Task context recovery admission", () => {
 				{ isNonInteractive: true },
 				expect.objectContaining({ newContextTokens: 93_000 }),
 			)
+			if (trigger === "automatic") expect(api.createMessage).toHaveBeenCalledOnce()
+		},
+	)
+
+	it.each([
+		["manual", 7_000, true],
+		["automatic", 7_000, true],
+		["forced", 7_000, true],
+		["automatic", 105_000, false],
+	] as const)(
+		"checks the full input budget for %s after-prefix compaction with %i environment tokens (fits=%s)",
+		async (trigger, environmentTokens, fits) => {
+			const { task, api, provider, history, save } = harness(NEAR_LIMIT_CONTEXT_TOKENS)
+			provider.getState.mockResolvedValue({
+				autoCondenseContextPercent: 5,
+				autoCondenseContextScope: "after-prefix",
+			})
+			api.countTokens.mockImplementation(async (blocks) => {
+				const text = JSON.stringify(blocks)
+				if (text.includes("Original request")) return 96_000
+				if (text.includes("System prompt")) return 8_000
+				if (text.includes("Fresh environment")) return environmentTokens
+				return 100
+			})
+			const result = {
+				...compactedResult(history),
+				prevContextTokens: NEAR_LIMIT_CONTEXT_TOKENS,
+				status: "reduced" as const,
+				targetContextTokens: 30_000,
+			}
+			vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+			vi.mocked(manageContext).mockResolvedValueOnce(result)
+			vi.mocked(Reflect.get(task, "refreshEnvironmentContext")).mockImplementation(async () => {
+				task.apiConversationHistory.push({ role: "user", content: "Fresh environment", ts: 20 })
+			})
+
+			const running = runRecovery(task, trigger)
+			if (!fits) {
+				await expect(running).rejects.toMatchObject({ name: "ContextRecoveryExhaustedError" })
+				expect(api.createMessage).not.toHaveBeenCalled()
+				return
+			}
+			await running
+
+			const compactionReceipt = vi.mocked(task.say).mock.calls.find(([type]) => type === "condense_context")?.[7]
+			expect(compactionReceipt?.newContextTokens).toBe(15_300)
+			expect(save).toHaveBeenCalledOnce()
+			if (trigger === "manual") {
+				expect(vi.mocked(summarizeConversation).mock.calls[0][0].maxContextTokens).toBeGreaterThan(8_000)
+			} else {
+				expect(manageContext).toHaveBeenCalledWith(
+					expect.objectContaining({ autoCondenseContextScope: "after-prefix" }),
+				)
+			}
 			if (trigger === "automatic") expect(api.createMessage).toHaveBeenCalledOnce()
 		},
 	)

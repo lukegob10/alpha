@@ -67,6 +67,28 @@ it("requires explicit recovery, preserves exact original bytes, tool pairs and o
 	expect((await store.read()).messages).toEqual(retained)
 })
 
+it("preserves separate completed occurrences of a reused call ID", async () => {
+	const retained = [
+		{ role: "user", content: "Inspect the first file" },
+		{
+			role: "assistant",
+			content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "first" } }],
+		},
+		{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused", content: "first content" }] },
+		{ role: "user", content: "Inspect the second file" },
+		{
+			role: "assistant",
+			content: [{ type: "tool_use", id: "reused", name: "read_file", input: { path: "second" } }],
+		},
+		{ role: "user", content: [{ type: "tool_result", tool_use_id: "reused", content: "second content" }] },
+	]
+	const source = JSON.stringify([retained[0], null, ...retained.slice(1)])
+	const result = await recover(source)
+
+	expect(await fs.readFile(result.archivePath, "utf8")).toBe(source)
+	expect(await readApiMessages({ taskId, globalStoragePath: directory })).toEqual(retained)
+})
+
 it.each([
 	["truncated JSON", '[{"role":"user","content":"hello"},'],
 	[
@@ -103,6 +125,34 @@ it.each([
 		JSON.stringify([
 			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "x" }] },
 			{ role: "unknown" },
+		]),
+	],
+	[
+		"duplicate pending call",
+		JSON.stringify([
+			{
+				role: "assistant",
+				content: [
+					{ type: "tool_use", id: "call", name: "read_file", input: { path: "first" } },
+					{ type: "tool_use", id: "call", name: "read_file", input: { path: "second" } },
+				],
+			},
+			null,
+			{ role: "user", content: [{ type: "tool_result", tool_use_id: "call", content: "ambiguous" }] },
+		]),
+	],
+	[
+		"second result without a new call",
+		JSON.stringify([
+			{ role: "assistant", content: [{ type: "tool_use", id: "call", name: "read_file", input: {} }] },
+			null,
+			{
+				role: "user",
+				content: [
+					{ type: "tool_result", tool_use_id: "call", content: "first" },
+					{ type: "tool_result", tool_use_id: "call", content: "duplicate" },
+				],
+			},
 		]),
 	],
 ])("retains the original and does not publish a candidate for %s", async (_label, source) => {

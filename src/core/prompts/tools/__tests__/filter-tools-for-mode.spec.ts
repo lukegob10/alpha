@@ -2,6 +2,7 @@
 
 import type OpenAI from "openai"
 
+import { validateToolUse } from "../../../tools/validateToolUse"
 import { filterMcpToolsForMode, filterNativeToolsForMode, resolveToolAlias } from "../filter-tools-for-mode"
 
 function makeTool(name: string): OpenAI.Chat.ChatCompletionTool {
@@ -301,6 +302,37 @@ describe("filterNativeToolsForMode - bounded sub-agents", () => {
 				"use_mcp_tool",
 			]),
 		)
+	})
+
+	it("keeps model tool preferences within the active mode's execution authority", () => {
+		const command = makeTool("exec_command")
+		const patch = makeTool("apply_patch")
+		const rename = makeTool("set_thread_title")
+		const tools = [makeTool("read_file"), command, patch, rename]
+		const modelInfo = {
+			includedTools: ["apply_patch", "set_thread_title"],
+			excludedTools: ["read_file"],
+		}
+
+		expect(() =>
+			validateToolUse(
+				"set_thread_title",
+				"architect",
+				[],
+				undefined,
+				undefined,
+				undefined,
+				modelInfo.includedTools,
+			),
+		).toThrow('Tool "set_thread_title" is not allowed in architect mode.')
+		expect(filterNativeToolsForMode(tools, "architect", undefined, undefined, undefined, { modelInfo })).toEqual([
+			command,
+		])
+		expect(filterNativeToolsForMode(tools, "code", undefined, undefined, undefined, { modelInfo })).toEqual([
+			command,
+			patch,
+			rename,
+		])
 	})
 
 	it("ignores a persisted architect replacement when deriving native candidates", () => {

@@ -864,10 +864,15 @@ function getToolDescription(call: ToolUse): string {
 	}
 }
 
-async function runWorkspaceMutation(task: Task, label: string, run: () => Promise<void>): Promise<void> {
+async function runWorkspaceMutation(
+	task: Task,
+	label: string,
+	admissionSignal: AbortSignal | undefined,
+	run: () => Promise<void>,
+): Promise<void> {
 	const provider = task.providerRef.deref()
 	if (provider) {
-		await provider.runWorkspaceMutation(task, label, run)
+		await provider.runWorkspaceMutation(task, label, run, { admissionSignal })
 		return
 	}
 	await run()
@@ -887,11 +892,13 @@ async function checkpointBeforeMutation(task: Task): Promise<void> {
 }
 
 function executeBaseTool<TName extends BuiltInToolName>(tool: BaseTool<TName>, name: TName) {
-	return async ({ task, call, callbacks }: ToolExecutionContext): Promise<void> => {
+	return async ({ task, call, callbacks, signal }: ToolExecutionContext): Promise<void> => {
 		const run = () => tool.handle(task, call as ToolUse<TName>, callbacks)
 		if (WORKSPACE_TOOLS.has(name) || name === "new_task") {
-			await runWorkspaceMutation(task, name === "new_task" ? "new_task_checkpoint" : name, async () => {
-				if (task.abort) {
+			const mutationLabel = name === "new_task" ? "new_task_checkpoint" : name
+			const admissionSignal = signal ?? callbacks.signal
+			await runWorkspaceMutation(task, mutationLabel, admissionSignal, async () => {
+				if (task.abort || admissionSignal?.aborted) {
 					callbacks.setResultMetadata?.({ status: "cancelled" })
 					callbacks.pushToolResult(
 						JSON.stringify({ status: "cancelled", message: "Tool execution was cancelled." }),

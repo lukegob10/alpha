@@ -143,12 +143,18 @@ export function traceFromPersistedAgentTurns(records) {
 		const nested = row.event && typeof row.event === "object" ? row.event : null
 		if (!nested || typeof nested.type !== "string") return []
 		const { type, ...payload } = nested
+		// Task's persisted log used one-based attempts before it added purpose tags.
+		const legacyTaskStart =
+			type === "model_request_started" &&
+			payload.purpose === undefined &&
+			typeof row.taskId === "string" &&
+			typeof row.runId === "string"
 		return [
 			{
 				sequence: finiteCount(row.sequence) ? row.sequence : index + 1,
 				timestamp: normalizeTimestamp(row.timestamp),
 				type: type.startsWith("agent.turn.") ? type : `agent.turn.${type}`,
-				payload,
+				payload: legacyTaskStart ? { ...payload, purpose: "task" } : payload,
 			},
 		]
 	})
@@ -218,11 +224,17 @@ function providerReasoningTokens(input, events, annotations, coverage) {
 }
 
 function countRetries(events, coverage) {
-	const started = events.filter(({ type }) => type === "agent.turn.model_request_started")
+	const attempts = events
+		.filter(({ type }) => type === "agent.turn.model_request_started")
+		.map(({ payload }) => record(payload))
+		.filter(({ purpose }) => purpose !== "reasoning-summary")
+		// Already-normalized, untagged traces follow the original zero-based contract.
+		.map(({ attempt, purpose }) => ({ attempt, firstAttempt: purpose === "task" ? 1 : 0 }))
 	const retryEvents = events.filter(({ type }) => type === "agent.turn.retry")
-	const attempts = started.map((event) => record(event.payload).attempt)
-	if (started.length === 0) return count(retryEvents.length, coverage)
-	if (attempts.every(finiteCount)) return count(attempts.filter((attempt) => attempt > 0).length, coverage)
+	if (attempts.length === 0) return count(retryEvents.length, coverage)
+	if (attempts.every(({ attempt, firstAttempt }) => finiteCount(attempt) && attempt >= firstAttempt)) {
+		return count(attempts.filter(({ attempt, firstAttempt }) => attempt > firstAttempt).length, coverage)
+	}
 	if (retryEvents.length > 0) return count(retryEvents.length, coverage)
 	const usageRetries = events.filter(
 		({ type, payload }) => type === "agent.turn.request_usage" && record(payload).retry === true,

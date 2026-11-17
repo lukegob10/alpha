@@ -143,6 +143,7 @@ type ToolExecutionHostAsk = (
 	requiresExplicitApproval?: boolean,
 	toolApprovalRequest?: ToolApprovalRequest,
 	onCommandApproval?: (commandExecutionId: string) => void,
+	signal?: AbortSignal,
 ) => Promise<ToolApprovalResponse>
 
 /** Full review text stays separate from bounded metadata and is never truncated. */
@@ -150,6 +151,7 @@ type ToolExecutionHostApproval = (
 	request: ToolApprovalRequest,
 	reviewMessage?: string,
 	onCommandApproval?: (commandExecutionId: string) => void,
+	signal?: AbortSignal,
 ) => Promise<ToolApprovalDecision | undefined>
 
 function describeToolApproval(toolName: string, askType: AlphaAsk, message: string | undefined): string | undefined {
@@ -896,22 +898,33 @@ export class ToolScheduler {
 			!this.options.preToolUse ||
 			(item.toolCall?.name === "write_stdin" && typeof item.toolCall.nativeArgs?.session_id === "number") ||
 			this.preHookCompleted.has(item.call.id) ||
+			item.preparationResult ||
 			item.validationError ||
 			!item.descriptor ||
-			!item.toolCall ||
-			this.isCancelled()
+			!item.toolCall
 		) {
 			return item
 		}
-		// PreToolUse can run a command before the tool itself reaches admission.
-		const isSuspended = () =>
-			this.executionHost.shouldStopRepeatedToolCall?.(
-				getSchedulerToolIdentity(this.options.registry, item.call.name),
-				item.toolCall?.nativeArgs ?? item.call.arguments,
-			) === true
-		if (isSuspended()) return item
+		// Codex 8011b92b admits calls before PreToolUse. Alpha also applies its
+		// scoped retry gate before a user-installed hook can run a command.
+		const skipHook = () => {
+			if (
+				this.isCancelled() ||
+				this.executionHost.shouldStopRepeatedToolCall?.(
+					getSchedulerToolIdentity(this.options.registry, item.call.name),
+					item.toolCall?.nativeArgs ?? item.call.arguments,
+				) === true
+			) {
+				return true
+			}
+			const retryBlock = this.retryBlockResult(item.call)
+			if (!retryBlock) return false
+			item.preparationResult = retryBlock
+			return true
+		}
+		if (skipHook()) return item
 		await this.checkEffectFence(item.call)
-		if (this.isCancelled() || isSuspended()) return item
+		if (skipHook()) return item
 		this.preHookCompleted.add(item.call.id)
 		let outcome: Awaited<ReturnType<NonNullable<ToolSchedulerOptions["preToolUse"]>>>
 		try {
@@ -2693,9 +2706,12 @@ export class ToolScheduler {
 						}
 						if (typedApprovalHost && approvalRequest) {
 							const response = await this.raceCancellation(() =>
-								onCommandApproval
-									? typedApprovalHost(approvalRequest, partialMessage, onCommandApproval)
-									: typedApprovalHost(approvalRequest, partialMessage),
+								typedApprovalHost(
+									approvalRequest,
+									partialMessage,
+									onCommandApproval,
+									this.executionSignal,
+								),
 							)
 							if (response !== undefined) {
 								const parsed = toolApprovalDecisionSchema.safeParse(response)
@@ -2714,25 +2730,16 @@ export class ToolScheduler {
 									)
 								}
 								if (this.executionHost.ask) {
-									if (onCommandApproval) {
-										return this.executionHost.ask(
-											type,
-											partialMessage,
-											false,
-											progressStatus,
-											forceApproval || false,
-											explicitApproval[0],
-											undefined,
-											onCommandApproval,
-										)
-									}
 									return this.executionHost.ask(
 										type,
 										partialMessage,
 										false,
 										progressStatus,
 										forceApproval || false,
-										...explicitApproval,
+										explicitApproval[0],
+										undefined,
+										onCommandApproval,
+										this.executionSignal,
 									)
 								}
 								throw new Error("Tool execution host does not provide an approval callback.")

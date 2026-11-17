@@ -420,6 +420,59 @@ describe("VS Code LM canonical contracts", () => {
 		})
 	})
 
+	it.each(["host error", "cancellation"] as const)(
+		"handles already-observed host usage on %s",
+		async (failureMode) => {
+			const controller = new AbortController()
+			const failure = new Error("host iterator failed after usage")
+			sendRequest.mockResolvedValueOnce({
+				stream: (async function* () {
+					yield new vscode.LanguageModelTextPart("Partial response.")
+					yield new vscode.LanguageModelDataPart(
+						new TextEncoder().encode(
+							JSON.stringify({
+								prompt_tokens: 321,
+								completion_tokens: 45,
+								prompt_tokens_details: { cached_tokens: 30 },
+								completion_tokens_details: { reasoning_tokens: 12 },
+							}),
+						),
+						"usage",
+					)
+					if (failureMode === "cancellation") controller.abort()
+					throw failure
+				})(),
+			})
+			const chunks: ApiStreamChunk[] = []
+			const collect = async () => {
+				for await (const chunk of handler.createMessage("Instructions", messages, {
+					taskId: "lm-contract",
+					signal: controller.signal,
+				})) {
+					chunks.push(chunk)
+				}
+			}
+			if (failureMode === "cancellation") {
+				await expect(collect()).rejects.toThrow("Request cancelled by user")
+				expect(chunks).toEqual([{ type: "text", text: "Partial response." }])
+			} else {
+				await expect(collect()).rejects.toBe(failure)
+				expect(chunks).toEqual([
+					{ type: "text", text: "Partial response." },
+					{
+						type: "usage",
+						usageSource: "provider",
+						inputTokens: 321,
+						outputTokens: 45,
+						cacheReadTokens: 30,
+						reasoningTokens: 12,
+					},
+				])
+			}
+			expect(cancellationSources[0]!.token.isCancellationRequested).toBe(true)
+		},
+	)
+
 	it("isolates thinking and opaque state when a cancelled request is followed by a stalled successor", async () => {
 		vi.useFakeTimers()
 		const oldMarker = new TextEncoder().encode("cancelled-state")

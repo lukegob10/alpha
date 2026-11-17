@@ -9,6 +9,7 @@ import type { Task } from "../../task/Task"
 import { ExecaTerminal } from "../../../integrations/terminal/ExecaTerminal"
 import { ExecaTerminalProcess } from "../../../integrations/terminal/ExecaTerminalProcess"
 import { OutputInterceptor } from "../../../integrations/terminal/OutputInterceptor"
+import { Terminal } from "../../../integrations/terminal/Terminal"
 import { TerminalRegistry } from "../../../integrations/terminal/TerminalRegistry"
 import type { AlphaTerminalCallbacks, AlphaTerminalProcess } from "../../../integrations/terminal/types"
 import { executeCommandInTerminal } from "../ExecuteCommandTool"
@@ -145,12 +146,15 @@ async function createFixture(
 		reportArchiveOutput: (chunk: string) =>
 			callbacks.onOutput?.(chunk, process as unknown as AlphaTerminalProcess, lifetime.signal),
 		reportOutput: (line: string) => callbacks.onLine(line, process as unknown as AlphaTerminalProcess),
+		reportOutputClosed: () => callbacks.onOutputClosed?.(process as unknown as AlphaTerminalProcess),
 		reportShellIntegrationFailure: () =>
 			callbacks.onNoShellIntegration?.("command output unavailable", process as unknown as AlphaTerminalProcess),
 		finishProcess: async (joinObservers = false) => {
-			terminal.running = false
-			callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
-			process.emit("shell_execution_complete", { exitCode: 0 })
+			if (terminal.running) {
+				terminal.running = false
+				callbacks.onShellExecutionComplete({ exitCode: 0 }, process as unknown as AlphaTerminalProcess)
+				process.emit("shell_execution_complete", { exitCode: 0 })
+			}
 			await callbacks.onCompleted("finished", process as unknown as AlphaTerminalProcess)
 			process.isSettled = true
 			terminal.busy = false
@@ -312,6 +316,7 @@ describe("primary command timeout mutation receipts", () => {
 		await fixture.launch
 		await vi.advanceTimersByTimeAsync(1_100)
 		await execution
+		getOutputPreview.mockClear()
 		fixture.provider.postMessageToWebview.mockClear()
 		for (let index = 0; index < 100; index++) {
 			preview = `progress ${index}`
@@ -345,6 +350,7 @@ describe("primary command timeout mutation receipts", () => {
 		await fixture.launch
 		await vi.advanceTimersByTimeAsync(1_100)
 		await execution
+		getOutputPreview.mockClear()
 		let releaseUi!: () => void
 		const blockedUi = new Promise<void>((resolve) => (releaseUi = resolve))
 		fixture.provider.postMessageToWebview.mockImplementation((message: { text?: string }) =>
@@ -563,6 +569,60 @@ describe("primary command timeout mutation receipts", () => {
 		}
 	})
 
+	it.each([0, 100])(
+		"joins a healthy output drain after shell exit with a %s ms hard timeout",
+		async (hardTimeout) => {
+			const fixture = await createFixture()
+			vi.useFakeTimers()
+			const execution = executeCommandInTerminal(fixture.task, {
+				executionId: "delayed-drain",
+				toolCallId: "delayed-drain-call",
+				command: "command",
+				terminalShellIntegrationDisabled: false,
+				commandExecutionTimeout: hardTimeout,
+			})
+			void execution.catch(() => undefined)
+			try {
+				await fixture.launch
+				fixture.reportShellExit()
+				await vi.advanceTimersByTimeAsync(150)
+				await fixture.finishProcess()
+				await expect(execution).resolves.toEqual([false, expect.stringContaining("Exit code: 0")])
+				expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+				expect(fixture.task.failCommandExecution).not.toHaveBeenCalled()
+				expect(fixture.process.abort).not.toHaveBeenCalled()
+			} finally {
+				fixture.releaseProcess()
+			}
+		},
+	)
+
+	it("fails a stalled post-exit output drain at the shell integration deadline", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers()
+		vi.spyOn(Terminal, "getShellIntegrationTimeout").mockReturnValue(300)
+		const failure = vi.fn()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "stalled-drain",
+			toolCallId: "stalled-drain-call",
+			command: "command",
+			terminalShellIntegrationDisabled: false,
+		}).catch(failure)
+		try {
+			await fixture.launch
+			fixture.reportShellExit()
+			await vi.advanceTimersByTimeAsync(299)
+			expect(failure).not.toHaveBeenCalled()
+			await vi.advanceTimersByTimeAsync(1)
+			await vi.waitFor(() => expect(failure).toHaveBeenCalledOnce())
+			expect(fixture.process.abort).not.toHaveBeenCalled()
+			expect(fixture.task.completeCommandExecution).not.toHaveBeenCalled()
+		} finally {
+			fixture.releaseProcess()
+			await execution
+		}
+	})
+
 	it("settles output ownership once when a yielded command's terminal closes after shell exit", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
@@ -635,6 +695,12 @@ describe("primary command timeout mutation receipts", () => {
 	it("settles the physical reservation when the hard timeout fires after the command yielded", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+		const onCommandResult = vi.fn()
+		const captureUnretrievedOutput = vi.fn()
+		Object.assign(fixture.process, {
+			getOutputPreview: () => "output received before yield",
+			captureUnretrievedOutput,
+		})
 		const execution = executeCommandInTerminal(fixture.task, {
 			executionId: "background-timeout",
 			toolCallId: "background-timeout-call",
@@ -642,13 +708,19 @@ describe("primary command timeout mutation receipts", () => {
 			terminalShellIntegrationDisabled: true,
 			agentTimeout: 1_000,
 			commandExecutionTimeout: 2_000,
+			onCommandResult,
 		})
-		await fixture.launch
-		await vi.advanceTimersByTimeAsync(1_100)
-		await execution
-		expect(fixture.process.abort).not.toHaveBeenCalled()
-		expect(fixture.store.getVerificationObligations()[0]?.mutationReservations).toHaveLength(1)
 		try {
+			await fixture.launch
+			await vi.advanceTimersByTimeAsync(1_000)
+			expect(onCommandResult).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ output: "output received before yield", session_id: expect.any(Number) }),
+			)
+			await execution
+			expect(captureUnretrievedOutput).not.toHaveBeenCalled()
+			expect(fixture.process.abort).not.toHaveBeenCalled()
+			expect(fixture.store.getVerificationObligations()[0]?.mutationReservations).toHaveLength(1)
+
 			await vi.advanceTimersByTimeAsync(1_000)
 			expect(fixture.process.abort).toHaveBeenCalledOnce()
 			expect(fixture.task.failCommandExecution).toHaveBeenCalledWith(
@@ -1065,8 +1137,7 @@ describe("primary command timeout mutation receipts", () => {
 			await vi.advanceTimersByTimeAsync(1_100)
 			await execution
 			fixture.reportShellExit()
-			// This is the collector's missing-completion timer, not a delay for log delivery.
-			await vi.advanceTimersByTimeAsync(0)
+			await fixture.reportOutputClosed()
 			await projectionAttempt
 			await vi.advanceTimersByTimeAsync(0)
 			await vi.waitFor(() => expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce())

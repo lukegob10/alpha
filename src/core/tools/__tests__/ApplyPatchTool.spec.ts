@@ -316,7 +316,7 @@ describe("ApplyPatchTool", () => {
 				"moved.txt",
 				"old\n",
 				false,
-				true,
+				{ delayMs: 0 },
 				0,
 				{ exists: false },
 				expect.any(Function),
@@ -977,6 +977,48 @@ describe("ApplyPatchTool", () => {
 		})
 		expect(mockedFs.unlink).toHaveBeenCalledWith(expect.stringContaining("source.txt"))
 		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it("removes the source of a move before waiting for diagnostics", async () => {
+		const missing = Object.assign(new Error("missing"), { code: "ENOENT" })
+		mockedFs.readFile.mockImplementation(async (filePath) => {
+			if (path.basename(String(filePath)) === "moved.txt") throw missing
+			return "old\n"
+		})
+		const task = createTask(() => true, { diagnosticsEnabled: true, writeDelayMs: 1000 })
+		task.diffViewProvider = new DiffViewProvider(task.cwd, task)
+		const callbacks = createCallbacks()
+		const moved = vscode.Uri.file(path.resolve(task.cwd, "moved.txt"))
+		const problem = {
+			range: new vscode.Range(0, 0, 0, 1),
+			message: "Diagnostic after source removal",
+			severity: vscode.DiagnosticSeverity.Error,
+		} satisfies vscode.Diagnostic
+		vi.mocked(vscode.languages.getDiagnostics).mockImplementation(() =>
+			mockedFs.unlink.mock.calls.length > 0 ? [[moved, [problem]]] : [],
+		)
+		const patch =
+			"*** Begin Patch\n*** Update File: source.txt\n*** Move to: moved.txt\n@@\n-old\n+new\n*** End Patch"
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+		try {
+			const startedAt = performance.now()
+			let removedAfterMs: number | undefined
+			mockedFs.unlink.mockImplementationOnce(async () => {
+				removedAfterMs = performance.now() - startedAt
+			})
+			const result = new ApplyPatchTool()
+				.execute({ patch }, task, callbacks)
+				.then(() => performance.now() - startedAt)
+			await vi.advanceTimersByTimeAsync(1000)
+
+			expect(await result).toBe(1000)
+			expect(removedAfterMs).toBe(0)
+			expect(callbacks.setResultMetadata).toHaveBeenCalledExactlyOnceWith({ status: "success" })
+			expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).problems).toContain(problem.message)
+		} finally {
+			vi.useRealTimers()
+		}
 	})
 
 	it.each(

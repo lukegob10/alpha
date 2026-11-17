@@ -96,7 +96,7 @@ interface ModelToolCustomizationResult {
  *
  * This function filters tools based on model configuration:
  * 1. Removes tools specified in modelInfo.excludedTools
- * 2. Adds tools from modelInfo.includedTools (only if they belong to allowed groups)
+ * 2. Adds modelInfo.includedTools from allowed groups in Code
  *
  * @param allowedTools - Set of tools already allowed by mode configuration
  * @param modeConfig - Current mode configuration to check tool groups
@@ -122,8 +122,9 @@ export function applyModelToolCustomization(
 		})
 	}
 
-	// Apply included tools (add to allowed set, but only if they belong to an allowed group)
-	if (modelInfo.includedTools && modelInfo.includedTools.length > 0) {
+	// Codex 8011b92b filters its catalog by ToolPolicy before exposure. Plan's
+	// host validator supplies the complete candidate set.
+	if (modeConfig.slug !== planModeSlug && modelInfo.includedTools?.length) {
 		// Build a map of tool -> group for all tools in TOOL_GROUPS (including customTools)
 		const toolToGroup = new Map<string, ToolGroup>()
 		for (const [groupName, groupConfig] of Object.entries(TOOL_GROUPS)) {

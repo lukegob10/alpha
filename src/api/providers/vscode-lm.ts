@@ -1433,6 +1433,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 				throw new Error("Alpha <Language Model API>: Request cancelled by user")
 			}
 
+			// Codex 8011b92b retains billed usage on incomplete responses. The VS Code
+			// host can deliver usage before a separate stream error.
+			if (!streamCompleted && reportedUsage) {
+				yield { type: "usage", usageSource: "provider", ...reportedUsage }
+			}
+
 			if (error instanceof Error) {
 				throw normalizeVsCodeLmStreamError(error, requestPhase, semanticOutputObserved)
 			}

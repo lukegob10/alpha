@@ -203,7 +203,7 @@ function realMcpHost(options: BuildToolsOptions, servers: McpServer[]) {
 	return { executionHost, requests, hub }
 }
 
-function holdMcpCatalogRefresh(hub: McpHub) {
+function holdMcpCatalogRefresh(hub: McpHub, publish: () => Promise<void> = async () => {}) {
 	const started = deferred()
 	const tools = deferred<McpTool[]>()
 	const catalogs = hub as unknown as {
@@ -218,7 +218,7 @@ function holdMcpCatalogRefresh(hub: McpHub) {
 	})
 	vi.spyOn(catalogs, "fetchResourcesList").mockResolvedValue([])
 	vi.spyOn(catalogs, "fetchResourceTemplatesList").mockResolvedValue([])
-	vi.spyOn(catalogs, "notifyWebviewOfServerChanges").mockResolvedValue()
+	vi.spyOn(catalogs, "notifyWebviewOfServerChanges").mockImplementation(publish)
 	const connection = hub.connections[0]
 	if (connection.type !== "connected") throw new Error("Expected connected MCP fixture")
 	const notification = hub["queueCatalogRefresh"](connection)
@@ -285,6 +285,52 @@ describe("notified MCP catalog captures", () => {
 		nextHost.taskFacade = executionHost.taskFacade
 		const current = await execute(next, [call(target, {}, "new-after-refresh")], { executionHost: nextHost })
 		expect(current.outcome.results[0].status).toBe("success")
+	})
+
+	it("captures refreshed tools while webview publication is held and isolates publication failure", async () => {
+		const { server, options } = fixture(1)
+		const { hub } = realMcpHost(options, [server])
+		const original = await capture(options)
+		const publicationStarted = deferred()
+		const releasePublication = deferred()
+		const publicationError = new Error("MCP view unavailable")
+		const errorLog = vi.spyOn(console, "error").mockImplementation(() => {})
+		const publish = vi
+			.fn<() => Promise<void>>()
+			.mockResolvedValue()
+			.mockImplementationOnce(() => {
+				publicationStarted.resolve()
+				return releasePublication.promise
+			})
+		const refresh = holdMcpCatalogRefresh(hub, publish)
+		let nextNotification: Promise<void> | undefined
+		await refresh.started
+		const successor = capture(options)
+		const refreshedTool = { ...server.tools![0], description: "Updated calendar operation." }
+		refresh.tools.resolve([refreshedTool])
+		await publicationStarted.promise
+
+		try {
+			expect(hub.getServerCatalogRevision(server)).toBeDefined()
+			const next = await successor
+			expect(next).not.toBe(original)
+			expect(next.resolve(target)?.schema).toMatchObject({
+				function: { description: expect.stringContaining(refreshedTool.description) },
+			})
+			const connection = hub.connections[0]
+			if (connection.type !== "connected") throw new Error("Expected connected MCP fixture")
+			nextNotification = hub["queueCatalogRefresh"](connection)
+			expect(await capture(options)).not.toBe(next)
+			expect(publish).toHaveBeenCalledTimes(1)
+
+			releasePublication.reject(publicationError)
+			await Promise.all([refresh.notification, nextNotification])
+			expect(publish).toHaveBeenCalledTimes(2)
+			expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("publish MCP catalog"), publicationError)
+		} finally {
+			releasePublication.resolve()
+			await Promise.allSettled([successor, refresh.notification, nextNotification])
+		}
 	})
 
 	it("releases a cancelled capture without cancelling the shared notified refresh", async () => {

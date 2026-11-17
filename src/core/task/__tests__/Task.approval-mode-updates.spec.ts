@@ -24,6 +24,7 @@ function fixture(mode: ApprovalMode = "ask") {
 	const provider = {
 		getState: vi.fn(async () => ({ ...state })),
 		isTaskOnScreen: () => true,
+		postMessageToWebview: vi.fn(),
 		log: vi.fn(),
 	}
 	const policy = createToolPolicySnapshot({ visibleTools: [], approvalMode: mode })
@@ -146,7 +147,7 @@ describe("explicit task approval-mode updates", () => {
 	})
 
 	it("revalidates a mode change received while the permission prompt is being published", async () => {
-		const { task } = fixture()
+		const { task, provider } = fixture()
 		const publication = deferred<void>()
 		vi.mocked(task["addToAlphaMessages"]).mockImplementationOnce(async (message) => {
 			task.alphaMessages.push(message)
@@ -159,6 +160,7 @@ describe("explicit task approval-mode updates", () => {
 			publication.resolve()
 			await vi.advanceTimersByTimeAsync(100)
 			expect(ask.result()).toMatchObject({ response: "yesButtonClicked" })
+			expect(provider.postMessageToWebview).not.toHaveBeenCalled()
 		} finally {
 			publication.resolve()
 			await finish(task, ask.pending)

@@ -241,8 +241,12 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					: undefined
 			const diagnosticsEnabled = state?.diagnosticsEnabled !== false && state?.includeDiagnosticMessages !== false
 			const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
+			// A move has two filesystem effects. Collect diagnostics after the source cleanup.
 			const deferredDiagnostics: WriteDiagnosticsBatch | undefined =
-				diagnosticsEnabled && batch.length > 1 ? { delayMs: writeDelayMs } : undefined
+				diagnosticsEnabled &&
+				(batch.length > 1 || batch.some((entry) => entry.expectedMoveFileState !== undefined))
+					? { delayMs: writeDelayMs }
+					: undefined
 			const diagnostics: PatchWriteDiagnostics = {
 				mode: deferredDiagnostics ?? diagnosticsEnabled,
 				delayMs: writeDelayMs,

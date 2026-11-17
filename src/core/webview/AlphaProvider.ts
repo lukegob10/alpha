@@ -398,6 +398,7 @@ const MANAGED_AGENT_TREE_TEXT_LIMIT = 1_000
 const WAIT_AGENT_RESULT_SOURCE = "managed_agent_mailbox"
 const acquiringWaitAgentClaims = new Set<string>()
 const BLOCKING_SUBAGENT_RESULT_DELIVERY = "delegate_task"
+const SUBAGENT_ADMISSION_ROLLBACK_DELIVERY = "admission_rollback"
 
 const getTaskModeForSwitch = async (task: Task): Promise<string | undefined> => {
 	if (typeof task.getTaskMode === "function") {
@@ -2408,7 +2409,11 @@ export class AlphaProvider
 				this.newTaskDraftMode = defaultModeSlug
 				task.emit(AlphaCodeEventName.TaskFocused)
 				if (!ownsRestoredTask()) return this.getLiveTask(task.taskId) ?? task
-			} else if (!shouldFocus && this.getActiveTaskId() === task.taskId) {
+			} else if (
+				!shouldFocus &&
+				this.taskNavigationGeneration === navigationGeneration &&
+				this.getActiveTaskId() === task.taskId
+			) {
 				this.taskSessions.clearFocus()
 			}
 
@@ -3918,6 +3923,11 @@ export class AlphaProvider
 				this.log(`[deleteTasksWithIds] Checkpoint cleanup failed for ${id}: ${String(error)}`)
 			}
 			try {
+				// A cached journal writes its snapshot on close. Join every view's
+				// close while the deletion reservation still fences this identity.
+				for (const provider of this.getHostProviders()) {
+					if (provider.agentLifecycleJournals?.has(id)) await provider.closeAgentLifecycleJournals(id)
+				}
 				const directory = await resolveExistingTaskDirectoryInStorage(storageBasePath, id)
 				await fs.rm(directory, { recursive: true, force: true })
 			} catch (error) {
@@ -4443,6 +4453,11 @@ export class AlphaProvider
 
 	/** Open and replay one task's canonical lifecycle journal exactly once. */
 	private async getAgentLifecycleJournal(taskId: string): Promise<AgentLifecycleJournal> {
+		// Let an owner finish cancellation writes, then fence new journal opens
+		// until all views' cached journals and the task directory are removed.
+		if (this.taskSessions.isHistoryDeleting(taskId) && !this.getLiveTask(taskId)) {
+			throw new Error("Task history is being deleted")
+		}
 		const existing = this.agentLifecycleJournals.get(taskId)
 		if (existing) return existing
 
@@ -4868,22 +4883,21 @@ export class AlphaProvider
 		this.log(`Lifecycle runtime for ${request.taskId} does not expose snapshot resync`)
 	}
 
-	private async closeAgentLifecycleJournals(): Promise<void> {
-		const journals = await Promise.allSettled(this.agentLifecycleJournals.values())
+	private async closeAgentLifecycleJournals(taskId?: string): Promise<void> {
+		const ids = taskId === undefined ? [...this.agentLifecycleJournals.keys()] : [taskId]
 		await Promise.all(
-			journals.map(async (result) => {
-				if (result.status === "rejected") {
-					this.log(`Failed to open lifecycle journal during disposal: ${String(result.reason)}`)
-					return
-				}
+			ids.map(async (id) => {
+				const opening = this.agentLifecycleJournals.get(id)
+				if (!opening) return
 				try {
-					await result.value.close()
+					await (await opening).close()
 				} catch (error) {
-					this.log(`Failed to close lifecycle journal during disposal: ${String(error)}`)
+					this.log(`Failed to close lifecycle journal for ${id}: ${String(error)}`)
+				} finally {
+					if (this.agentLifecycleJournals.get(id) === opening) this.agentLifecycleJournals.delete(id)
 				}
 			}),
 		)
-		this.agentLifecycleJournals.clear()
 	}
 
 	/**
@@ -9106,6 +9120,7 @@ export class AlphaProvider
 				preserveExisting: true,
 				requireExplicitResume: true,
 				background: !this.isTaskSelected(task.taskId),
+				navigationGeneration: this.taskNavigationGeneration,
 				cancellation,
 			},
 		)
@@ -9188,14 +9203,21 @@ export class AlphaProvider
 		task: Task,
 		label: string,
 		run: () => Promise<T>,
-		options: { allowStoppedTask?: boolean } = {},
+		options: { allowStoppedTask?: boolean; admissionSignal?: AbortSignal } = {},
 	): Promise<T> {
+		const lifetimeSignal = options.allowStoppedTask ? undefined : task.getTaskLifetimeCancellationSignal()
+		const { admissionSignal } = options
+		// Cancel queued step work without releasing an active mutation before settlement.
+		const signal =
+			lifetimeSignal && admissionSignal
+				? AbortSignal.any([lifetimeSignal, admissionSignal])
+				: (lifetimeSignal ?? admissionSignal)
 		return this.workspaceMutationGate.run(
 			task.taskId,
 			label,
 			run,
 			() => !options.allowStoppedTask && task.abort,
-			options.allowStoppedTask ? undefined : task.getTaskLifetimeCancellationSignal(),
+			signal,
 		)
 	}
 
@@ -10385,6 +10407,25 @@ export class AlphaProvider
 		)
 	}
 
+	private expectsSubagentTerminalMailboxResult(record: AgentRecord): boolean {
+		if (
+			this.isBlockingSubagentResultDelivered(record) ||
+			record.terminalResult?.metadata?.delivery === SUBAGENT_ADMISSION_ROLLBACK_DELIVERY
+		) {
+			return false
+		}
+		// Older rollbacks have no delivery marker. The provisional row never
+		// started, and its terminal cause describes the failed or cancelled admission.
+		const stopReason = record.terminalResult?.stopReason
+		return (
+			record.startedAt !== undefined ||
+			!(
+				(record.status === "failed" && stopReason === "never_launched") ||
+				(record.status === "cancelled" && stopReason === "parent_cancelled")
+			)
+		)
+	}
+
 	/** Persist a delegate_task terminal state without creating unread mailbox work. */
 	private async persistBlockingSubagentTerminalState(
 		prepared: PreparedSubagentGroup,
@@ -11164,7 +11205,13 @@ export class AlphaProvider
 			parentTaskId: parent.taskId,
 			rootTaskId,
 		})) {
-			if (obligation.origin === "primary" && !explicitlyAssociated.has(obligation.changeSetId)) continue
+			// Durable receipts can outlive the task's in-memory execution history.
+			if (
+				obligation.origin === "primary" &&
+				!obligation.verification &&
+				!explicitlyAssociated.has(obligation.changeSetId)
+			)
+				continue
 			if (obligation.contentVersion === undefined || obligation.appliedAt === undefined) continue
 			if (obligation.scopeUnresolved || obligation.mutationReservations?.length) continue
 			let files: Awaited<ReturnType<typeof captureVerificationContent>>
@@ -11858,11 +11905,13 @@ export class AlphaProvider
 			: untilTerminal
 				? visibleAgents.filter((record) => record.parentTaskId === parent.taskId)
 				: []
-		const inactiveTerminalCandidates = terminalCandidates.filter(
-			(record) => !("pending" === record.status || "running" === record.status || "cancelling" === record.status),
+		const terminalMailboxCandidates = terminalCandidates.filter(
+			(record) =>
+				!("pending" === record.status || "running" === record.status || "cancelling" === record.status) &&
+				this.expectsSubagentTerminalMailboxResult(record),
 		)
 		const terminalEventTimes = new Map(
-			inactiveTerminalCandidates.map((record) => [record.taskId, record.finishedAt ?? record.updatedAt]),
+			terminalMailboxCandidates.map((record) => [record.taskId, record.finishedAt ?? record.updatedAt]),
 		)
 		const publishedTerminalTaskIds = new Set<string>()
 		let afterSequence = 0
@@ -11884,8 +11933,8 @@ export class AlphaProvider
 			if (page.entries.length < 1_000) break
 			afterSequence = page.nextSequence
 		}
-		const terminalPublicationPending = inactiveTerminalCandidates.some(
-			(record) => !this.isBlockingSubagentResultDelivered(record) && !publishedTerminalTaskIds.has(record.taskId),
+		const terminalPublicationPending = terminalMailboxCandidates.some(
+			(record) => !publishedTerminalTaskIds.has(record.taskId),
 		)
 		if (
 			matchingActiveAgents.length === 0 &&
@@ -13653,6 +13702,7 @@ export class AlphaProvider
 							error: failure?.message ?? "Parent task cancelled before child launch",
 							completedAt,
 							stopReason: failure ? "never_launched" : "parent_cancelled",
+							metadata: { delivery: SUBAGENT_ADMISSION_ROLLBACK_DELIVERY },
 						},
 					},
 					record.rootTaskId,

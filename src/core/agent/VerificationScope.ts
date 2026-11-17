@@ -3,7 +3,7 @@ import { createHash } from "crypto"
 import fs from "fs/promises"
 import path from "path"
 import { promisify } from "util"
-import { createTwoFilesPatch } from "diff"
+import { formatPatch, structuredPatch, type PatchOptions } from "diff"
 
 import type { ToolUse } from "../../shared/tools"
 import { getPatchPaths } from "../tools/apply-patch/parser"
@@ -24,6 +24,7 @@ const MAX_PRESENTATION_FILE_BYTES = 128 * 1_024
 const MAX_PRESENTATION_TOTAL_BYTES = 512 * 1_024
 const MAX_PRESENTATION_FILES = 64
 const MAX_PRESENTATION_DURATION_MS = 2_000
+const MAX_PRESENTATION_DIFF_COMPUTE_MS = 50
 
 export type VerificationContent = Record<string, string>
 
@@ -657,7 +658,8 @@ export async function createWorkspaceMutationDiffs(
 			if (remainingTimeMs() === 0) break
 			const absolute = resolveContainedPath(workspace.root, candidate, workspaceRoot)
 			const finalBytes = await readBoundedFile(workspace.root, absolute, MAX_FILE_BYTES)
-			if (remainingTimeMs() === 0) break
+			const diffTimeoutMs = Math.min(MAX_PRESENTATION_DIFF_COMPUTE_MS, remainingTimeMs())
+			if (diffTimeoutMs === 0) break
 			const finalHash = finalBytes ? createHash("sha256").update(finalBytes).digest("hex") : "missing"
 			if (finalHash !== changes.files[candidate]) continue
 			if (
@@ -670,14 +672,20 @@ export async function createWorkspaceMutationDiffs(
 			const finalContent = decodePresentationContent(finalBytes ?? null)
 			if (originalContent === undefined || finalContent === undefined) continue
 			if (originalContent === finalContent) continue
-			const diff = sanitizeUnifiedDiff(
-				createTwoFilesPatch(
-					originalBytes ? candidate : "/dev/null",
-					finalBytes ? candidate : "/dev/null",
-					originalContent,
-					finalContent,
-				),
+			// Small files can still have a large edit distance. Bound the synchronous
+			// diff on the extension host; jsdiff 5 supports timeout in structuredPatch.
+			const diffOptions: PatchOptions & { timeout: number } = { timeout: diffTimeoutMs }
+			const patch = structuredPatch(
+				originalBytes ? candidate : "/dev/null",
+				finalBytes ? candidate : "/dev/null",
+				originalContent,
+				finalContent,
+				undefined,
+				undefined,
+				diffOptions,
 			)
+			if (!patch) continue
+			const diff = sanitizeUnifiedDiff(formatPatch(patch))
 			if (diff.length > MAX_PRESENTATION_FILE_BYTES * 2) continue
 			const diffStats = computeDiffStats(diff)
 			if (!diffStats || (diffStats.added === 0 && diffStats.removed === 0)) continue
