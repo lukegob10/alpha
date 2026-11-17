@@ -26,6 +26,7 @@ class InstructionDiscoveryScriptedAI {
 	getModel() {
 		return {
 			id: this.id,
+			instructionModelId: "gpt-5.5",
 			info: { contextWindow: 16_000, maxTokens: 1_000, supportsImages: false, supportsPromptCache: false },
 		}
 	}
@@ -70,7 +71,15 @@ suite("Alpha project instruction discovery acceptance", function () {
 		const ancestorOverride = path.join(ownedRoot, "AGENTS.override.md")
 		const ancestorLocal = path.join(ownedRoot, "AGENTS.local.md")
 		const workspaceInstructions = path.join(workspacePath, "AGENTS.md")
-		const instructionFiles = [ancestorStandard, ancestorOverride, ancestorLocal, workspaceInstructions]
+		const ancestorAlphaRule = path.join(ownedRoot, ".alpha", "rules", "no-comments.md")
+		const noCommentsRule = "Do not add comments to source code."
+		const instructionFiles = [
+			ancestorStandard,
+			ancestorOverride,
+			ancestorLocal,
+			workspaceInstructions,
+			ancestorAlphaRule,
+		]
 		const originalFiles = new Map<string, Buffer | undefined>()
 		for (const filePath of instructionFiles) {
 			try {
@@ -96,6 +105,8 @@ suite("Alpha project instruction discovery acceptance", function () {
 			await fs.writeFile(ancestorOverride, ancestorOverridePrefix)
 			await fs.writeFile(ancestorLocal, localGuidance)
 			await fs.writeFile(workspaceInstructions, "CWD😀tail")
+			await fs.mkdir(path.dirname(ancestorAlphaRule), { recursive: true })
+			await fs.writeFile(ancestorAlphaRule, noCommentsRule)
 
 			const model = new InstructionDiscoveryScriptedAI()
 			const configuration: AlphaCodeSettings = {
@@ -104,6 +115,7 @@ suite("Alpha project instruction discovery acceptance", function () {
 				fakeAi: model,
 				mode: "code",
 				customInstructions: "Alpha global guidance",
+				enableSubfolderRules: false,
 				autoApprovalEnabled: true,
 				requestDelaySeconds: 0,
 				writeDelayMs: 0,
@@ -132,6 +144,20 @@ suite("Alpha project instruction discovery acceptance", function () {
 				const request = model.requests[0]
 				assert.ok(request, "The task must send one provider request")
 				const renderedRequest = `${request.systemPrompt}\n${JSON.stringify(request.messages)}`
+				assert.ok(
+					request.systemPrompt.includes("succinct code comments"),
+					"The pinned model default is present",
+				)
+				assert.ok(
+					request.systemPrompt.includes(
+						"User and project coding conventions override built-in style defaults.",
+					),
+					"The request must give the project coding convention precedence over the model default",
+				)
+				assert.ok(
+					request.systemPrompt.includes(noCommentsRule),
+					"The repository rule must reach the request from above the opened workspace",
+				)
 				assert.ok(
 					renderedRequest.includes("Alpha global guidance"),
 					"Alpha global instructions must still reach the model",

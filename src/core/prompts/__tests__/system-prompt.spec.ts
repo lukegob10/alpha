@@ -936,7 +936,7 @@ describe("SYSTEM_PROMPT", () => {
 		// Requirement-based acceptance guidance adds 346 local tokens; model calls remain agent-selected.
 		// Clarifying expected behavior before substantial implementation adds another 29 tokens in this fixture.
 		// Scope verification to implementation and direct informational answers using 24 additional tokens.
-		expect(newTokenCount).toBe(4790)
+		expect(newTokenCount).toBe(4801)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

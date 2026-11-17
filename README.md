@@ -97,9 +97,14 @@ reports `SessionStart` source `fork`; later cold restores report `resume`. These
 queue and short `Interrupt` timeout. Providers without a developer role receive hook context in its original position
 with an explicit origin label.
 
-Project instructions share a 32 KiB UTF-8 budget. Set `alpha.projectDocMaxBytes` in user settings to change it, up to
-1 MiB; `0` disables project instruction files. Alpha warns when it truncates a file or skips deeper guidance. Workspace
-settings cannot widen this budget. Plan can discover and load skills while its tools continue to enforce read-only work.
+Put repository coding conventions in Markdown files under `.alpha/rules/`. Alpha loads them from the repository root
+through the opened workspace folder, including when you open a nested folder. Use `.alpha/rules-code/` for Code mode
+only. These conventions override Alpha's built-in style defaults.
+
+`AGENTS.md`-style project instructions share a 32 KiB UTF-8 budget. Set `alpha.projectDocMaxBytes` in user settings to
+change it, up to 1 MiB. Set it to `0` to disable those files. Alpha warns when it truncates a file or skips deeper
+guidance. Workspace settings cannot widen this budget. Plan can discover and load skills while its tools continue to
+enforce read-only work.
 
 Default Windows keyboard shortcuts:
 

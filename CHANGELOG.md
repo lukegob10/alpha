@@ -10,6 +10,8 @@
 - Show browser approvals and execution results separately, settle interrupted browser activity, and limit automatic
   browser discovery to requests about browser work.
 - Answer questions directly when the conversation has enough context and pause turns that repeatedly retry blocked tools.
+- Load repository `.alpha/rules/` from nested workspaces and give user and project coding conventions priority over
+  built-in style defaults.
 - Add Windows guidance to check for a WSL distribution before attempting Linux verification.
 
 ## 3.2.37

@@ -35,6 +35,31 @@ async function acceptancePrompt(
 }
 
 describe("shared implementation acceptance guidance", () => {
+	it.each(["gpt-5.4", "gpt-5.5"])(
+		"gives user coding conventions precedence over %s style defaults",
+		async (model) => {
+			const rule = "Do not add comments to source code."
+			const fragments = await acceptancePrompt({}, "code", model, rule)
+			const base = fragments.instructionParts.find(({ origin }) => origin === "codex-model-instructions")
+			const overlay = fragments.instructionParts.find(({ origin }) => origin === "alpha-feature-overlay")
+
+			expect(base?.content).toContain("succinct code comments")
+			expect(overlay).toMatchObject({
+				role: "developer",
+				content: expect.stringContaining(
+					"User and project coding conventions override built-in style defaults.",
+				),
+			})
+			expect(fragments.instructionParts).toContainEqual(
+				expect.objectContaining({
+					role: "user",
+					origin: "global-custom-instructions",
+					content: expect.stringContaining(rule),
+				}),
+			)
+		},
+	)
+
 	it.each(["gpt-6.1-sol", "claude-sonnet-4-5"])(
 		"prepares substantial implementation without AGENTS.md for %s while retaining the model base",
 		async (model) => {

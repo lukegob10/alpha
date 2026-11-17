@@ -119,6 +119,42 @@ describe("custom instruction assembly discovery", () => {
 		expect(executeRipgrep).not.toHaveBeenCalled()
 	})
 
+	it("loads ancestor Alpha rules when a nested folder is opened, even with subfolder and agent rules disabled", async () => {
+		await write("workspace/.git", "repository marker")
+		await write("workspace/a/nested/.alpha/rules/rule.md", "nested generic")
+		await write(".alpha/rules/rule.md", "outside the repository")
+		cwd = path.join(cwd, "a", "nested")
+
+		const prompt = await assemble(false, false)
+
+		expect(prompt.match(/^\w+ generic$/gm)).toEqual([
+			"global generic",
+			"project generic",
+			"a generic",
+			"nested generic",
+		])
+		expect(prompt.match(/^\w+ mode$/gm)).toEqual(["global mode", "project mode", "a mode"])
+		expect(prompt).not.toContain("outside the repository")
+		expect(prompt).not.toContain("z generic")
+		expect(prompt).not.toContain("root agent")
+		expect(executeRipgrep).not.toHaveBeenCalled()
+	})
+
+	it("ignores ancestor Alpha rule directories linked outside the project", async () => {
+		await write("workspace/.git", "repository marker")
+		await write("outside/rules/rule.md", "outside the repository")
+		const link = path.join(cwd, "a", "nested", ".alpha")
+		await fs.mkdir(path.dirname(link))
+		await fs.symlink(path.join(fixture, "outside"), link, process.platform === "win32" ? "junction" : "dir")
+		cwd = path.join(path.dirname(link), "opened")
+		await fs.mkdir(cwd)
+
+		const prompt = await assemble(false, false)
+
+		expect(prompt).toContain("project generic")
+		expect(prompt).not.toContain("outside the repository")
+	})
+
 	it("retains root rules after discovery failure and retries discovery on the next assembly", async () => {
 		vi.mocked(executeRipgrep).mockRejectedValueOnce(new Error("Discovery unavailable"))
 		const first = await assemble()

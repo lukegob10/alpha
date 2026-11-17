@@ -307,7 +307,7 @@ function formatDirectoryContent(files: Array<{ filename: string; content: string
 }
 
 interface InstructionDirectories {
-	alpha: string[]
+	alpha: { directory: string; trustRoot: string }[]
 	agents: string[]
 	agentTrustRoot: string
 }
@@ -321,9 +321,15 @@ async function captureInstructionDirectories(
 		? await getAllConfigDirectoriesForCwd(cwd)
 		: getConfigDirectoriesForCwd(cwd)
 	const projectInstructions = await getProjectInstructionDirectoriesForCwd(cwd, discoveryOptions)
+	const alpha = alphaDirectories.map((directory) => ({ directory, trustRoot: getRuleTrustRoot(cwd, directory) }))
+	const ancestorAlphaDirectories = projectInstructions.directories.slice(0, -1).map((directory) => ({
+		directory: path.join(directory, ".alpha"),
+		trustRoot: projectInstructions.root,
+	}))
+	alpha.splice(1, 0, ...ancestorAlphaDirectories)
 
 	return {
-		alpha: alphaDirectories,
+		alpha,
 		// Project instructions follow the captured project boundary through cwd. Alpha's
 		// optional .alpha subfolder rule discovery remains scoped below cwd.
 		agents: [
@@ -342,26 +348,17 @@ async function captureInstructionDirectories(
 	}
 }
 
-/**
- * Load rule files from global, project-local, and optionally subfolder directories
- * Rules are loaded in order: global first, then project-local, then subfolders (alphabetically)
- *
- * @param cwd - Current working directory (project root)
- * @param enableSubfolderRules - Whether to include rules from subdirectories (default: false)
- */
 export async function loadRuleFiles(cwd: string, enableSubfolderRules: boolean = false): Promise<string> {
 	return loadRuleFilesFromDirectories(cwd, await captureInstructionDirectories(cwd, enableSubfolderRules))
 }
 
 async function loadRuleFilesFromDirectories(cwd: string, directories: InstructionDirectories): Promise<string> {
 	const rules: string[] = []
-	const { alpha: alphaDirectories } = directories
 
-	// Check for .alpha/rules/ directories in order (global, project-local, and optionally subfolders)
-	for (const alphaDir of alphaDirectories) {
-		const rulesDir = path.join(alphaDir, "rules")
+	for (const { directory, trustRoot } of directories.alpha) {
+		const rulesDir = path.join(directory, "rules")
 		if (await directoryExists(rulesDir)) {
-			const files = await readTextFilesFromDirectory(rulesDir, getRuleTrustRoot(cwd, alphaDir))
+			const files = await readTextFilesFromDirectory(rulesDir, trustRoot)
 			if (files.length > 0) {
 				const content = formatDirectoryContent(files, cwd)
 				rules.push(content)
@@ -397,13 +394,11 @@ async function loadModeRuleFilesFromDirectories(
 
 	if (mode) {
 		const modeRules: string[] = []
-		const { alpha: alphaDirectories } = directories
 
-		// Read Alpha directories in their captured precedence order.
-		for (const alphaDir of alphaDirectories) {
-			const modeRulesDir = path.join(alphaDir, `rules-${mode}`)
+		for (const { directory, trustRoot } of directories.alpha) {
+			const modeRulesDir = path.join(directory, `rules-${mode}`)
 			if (await directoryExists(modeRulesDir)) {
-				const files = await readTextFilesFromDirectory(modeRulesDir, getRuleTrustRoot(cwd, alphaDir))
+				const files = await readTextFilesFromDirectory(modeRulesDir, trustRoot)
 				if (files.length > 0) {
 					const content = formatDirectoryContent(files, cwd)
 					modeRules.push(content)
