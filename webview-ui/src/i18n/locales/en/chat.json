@@ -567,7 +567,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "File, ticket, and skill suggestions follow the chat you're writing in. Press Tab to move focus when there are no suggestions to select."
+			"description": "Multi-file patches report new editor problems once the files are saved. Verified read-only ripgrep searches skip workspace change scans."
 		}
 	},
 	"crossTasks": {

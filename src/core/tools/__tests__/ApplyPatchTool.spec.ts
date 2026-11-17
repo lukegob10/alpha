@@ -826,6 +826,51 @@ describe("ApplyPatchTool", () => {
 		)
 	})
 
+	it.each([
+		{ configuredMs: 0, expectedMs: 100 },
+		{ configuredMs: 1000, expectedMs: 1000 },
+	])("waits $expectedMs ms once for a three-file patch with $configuredMs ms configured", async (fixture) => {
+		mockedFileExists.mockResolvedValue(false)
+		mockedFs.readFile.mockRejectedValue(Object.assign(new Error("Missing fixture file"), { code: "ENOENT" }))
+		const task = createTask(() => true, { diagnosticsEnabled: true, writeDelayMs: fixture.configuredMs })
+		task.diffViewProvider = new DiffViewProvider(task.cwd, task)
+		const callbacks = createCallbacks()
+		const problem = {
+			range: new vscode.Range(0, 0, 0, 1),
+			message: "Final patch diagnostic",
+			severity: vscode.DiagnosticSeverity.Error,
+		} satisfies vscode.Diagnostic
+		const diagnostics = vi
+			.spyOn(vscode.languages, "getDiagnostics")
+			.mockImplementation(() =>
+				mockedFs.writeFile.mock.calls.length === 3
+					? [[vscode.Uri.file(path.resolve(task.cwd, "third.txt")), [problem]]]
+					: [],
+			)
+		const patch = [
+			"*** Begin Patch",
+			...["first", "second", "third"].flatMap((name) => [`*** Add File: ${name}.txt`, `+${name}`]),
+			"*** End Patch",
+		].join("\n")
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+		try {
+			const startedAt = performance.now()
+			const result = new ApplyPatchTool()
+				.execute({ patch }, task, callbacks)
+				.then(() => performance.now() - startedAt)
+			await vi.advanceTimersByTimeAsync(4000)
+
+			expect(mockedFs.writeFile).toHaveBeenCalledTimes(3)
+			expect(await result).toBe(fixture.expectedMs)
+			expect(diagnostics).toHaveBeenCalledTimes(2)
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "success" })
+			expect(JSON.parse(callbacks.pushToolResult.mock.calls[0][0]).problems).toContain(problem.message)
+		} finally {
+			vi.useRealTimers()
+			diagnostics.mockRestore()
+		}
+	})
+
 	it("rejects a dirty destination document before move approval despite a legacy false setting", async () => {
 		mockedFs.readFile.mockImplementation(async (filePath: any) => {
 			if (String(filePath).endsWith("moved.txt")) {

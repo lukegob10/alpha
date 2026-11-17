@@ -150,6 +150,28 @@ describe("Task request preflight latency", () => {
 		}
 	})
 
+	it("publishes only the step start for a fresh working phase", async () => {
+		const { task, api, log, captureRequest } = harness()
+		Reflect.deleteProperty(task, "ensureCanonicalLifecycleStepStarted")
+		Reflect.deleteProperty(task, "publishCanonicalLifecyclePhase")
+		Reflect.set(task, "canonicalLifecycleStartedSteps", new Set())
+		Reflect.set(task, "getCanonicalLifecycleSnapshot", () => undefined)
+		const publish = vi.fn(async (_type: string, _payload: { phase: string }) => {})
+		Reflect.set(task, "enqueueCanonicalLifecycleEvent", publish)
+		const capture = captureRequest()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(publish.mock.calls.map(([type, payload]) => [type, payload.phase])).toEqual([
+				["step_started", "working"],
+			])
+		} finally {
+			await vi.runAllTimersAsync()
+			await capture
+			await log.close()
+		}
+	})
+
 	it.each(["ensureCanonicalLifecycleStepStarted", "publishCanonicalLifecyclePhase"] as const)(
 		"still awaits the canonical %s barrier before provider dispatch",
 		async (method) => {

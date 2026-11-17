@@ -219,9 +219,10 @@ describe("DiffViewProvider", () => {
 		expect(mockTask.say).toHaveBeenCalledOnce()
 		if (partial) {
 			expect(result.notice).toContain("Read the current file")
-			expect(result.notice).not.toContain("You do not need to re-read")
+			expect(result.notice).not.toContain("The save is complete")
 		} else {
-			expect(result.notice).toContain("You do not need to re-read")
+			expect(result.notice).toContain("The save is complete at the reported path with the changes already shown.")
+			expect(result.notice).not.toContain("Proceed with the task")
 		}
 	})
 
@@ -579,7 +580,7 @@ describe("DiffViewProvider", () => {
 			)
 
 			// Verify diagnostics were checked after delay
-			expect(mockDelay).toHaveBeenCalledWith(2000)
+			expect(mockDelay).toHaveBeenCalledWith(2000, { signal: expect.any(AbortSignal) })
 			expect(vscode.languages.getDiagnostics).toHaveBeenCalled()
 
 			// Verify result
@@ -605,7 +606,7 @@ describe("DiffViewProvider", () => {
 		it.each([
 			{ configuredMs: 0, expectedMs: 100 },
 			{ configuredMs: 1000, expectedMs: 1000 },
-		])("shares the background diagnostics window with the configured $configuredMs ms delay", async (fixture) => {
+		])("waits $expectedMs ms for background diagnostics with $configuredMs ms configured", async (fixture) => {
 			const actualDelay = await vi.importActual<typeof import("delay")>("delay")
 			vi.mocked(delay).mockImplementationOnce(actualDelay.default)
 			vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
@@ -641,10 +642,8 @@ describe("DiffViewProvider", () => {
 			const fs = await import("fs/promises")
 			expect(fs.writeFile).toHaveBeenCalledWith(`${mockCwd}/test.ts`, "new content", "utf-8")
 
-			// Verify delay was NOT called
 			expect(mockDelay).not.toHaveBeenCalled()
-			// getDiagnostics is called once for pre-diagnostics, but not for post-diagnostics
-			expect(vscode.languages.getDiagnostics).toHaveBeenCalledTimes(1)
+			expect(vscode.languages.getDiagnostics).not.toHaveBeenCalled()
 		})
 
 		it("should handle negative delay values", async () => {
@@ -656,8 +655,7 @@ describe("DiffViewProvider", () => {
 				content: "file content",
 			})
 
-			// Verify delay was called with 0 (safe minimum)
-			expect(mockDelay).toHaveBeenCalledWith(0)
+			expect(mockDelay).toHaveBeenCalledWith(0, { signal: expect.any(AbortSignal) })
 		})
 
 		it("should store results for formatFileWriteResponse", async () => {
@@ -878,7 +876,7 @@ describe("DiffViewProvider", () => {
 			const result = await diffViewProvider.saveChanges(true, 3000)
 
 			// Verify delay was called with correct duration
-			expect(mockDelay).toHaveBeenCalledWith(3000)
+			expect(mockDelay).toHaveBeenCalledWith(3000, { signal: expect.any(AbortSignal) })
 			expect(vscode.languages.getDiagnostics).toHaveBeenCalled()
 			expect(result.newProblemsMessage).toBe("")
 		})
@@ -907,8 +905,7 @@ describe("DiffViewProvider", () => {
 
 			const result = await diffViewProvider.saveChanges()
 
-			// Verify default behavior (enabled=true, delay=2000ms)
-			expect(mockDelay).toHaveBeenCalledWith(1000)
+			expect(mockDelay).toHaveBeenCalledWith(1000, { signal: expect.any(AbortSignal) })
 			expect(vscode.languages.getDiagnostics).toHaveBeenCalled()
 			expect(result.newProblemsMessage).toBe("")
 		})
@@ -923,7 +920,7 @@ describe("DiffViewProvider", () => {
 			const result = await diffViewProvider.saveChanges(true, 5000)
 
 			// Verify custom delay was used
-			expect(mockDelay).toHaveBeenCalledWith(5000)
+			expect(mockDelay).toHaveBeenCalledWith(5000, { signal: expect.any(AbortSignal) })
 			expect(vscode.languages.getDiagnostics).toHaveBeenCalled()
 		})
 

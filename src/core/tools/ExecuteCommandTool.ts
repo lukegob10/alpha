@@ -149,8 +149,6 @@ async function finalizeCommandMutationReceipt(
 	physicalExecutionId: string,
 	onIncomplete: () => void,
 ): Promise<WorkspaceMutationDiff[]> {
-	if (!requiresWorkspaceMutationReceipt(task)) return []
-
 	let changes: Awaited<ReturnType<typeof compareWorkspaceMutationState>> | undefined
 	if (mutationBaseline) {
 		try {
@@ -1182,7 +1180,7 @@ export type ExecuteCommandOptions = {
 	terminalShellIntegrationDisabled?: boolean
 	commandExecutionTimeout?: number
 	agentTimeout?: number
-	/** Host-only audited transport; never read from model parameters. */
+	/** Direct argv from the host's audited read-only preparation. */
 	directCommand?: DirectTerminalCommand
 	beforeLaunch?: () => Promise<void>
 	/** Cancels admission; a successfully launched resumable process belongs to the task. */
@@ -1367,6 +1365,8 @@ export async function executeCommandInTerminal(
 			: tty === false || isManagedCommandAgent || terminalShellIntegrationDisabled
 				? "execa"
 				: "vscode"
+	const trackWorkspaceMutation =
+		requiresWorkspaceMutationReceipt(task) && !(directCommand && terminalProvider === "execa")
 	const provider = capturedProvider ?? (await task.providerRef.deref())
 	const postStatus = (status: CommandExecutionStatus): Promise<void> => {
 		const slot =
@@ -1453,6 +1453,7 @@ export async function executeCommandInTerminal(
 			throw error
 		})
 	const ensureMutationReceipt = (): Promise<WorkspaceMutationDiff[]> => {
+		if (!trackWorkspaceMutation) return Promise.resolve([])
 		mutationReceiptCompletion ??= observeCommandMutationFailure(
 			finalizeCommandMutationReceipt(task, provider, mutationBaseline, diffBaseline, physicalExecutionId, () => {
 				workspaceObservationIncomplete = true
@@ -1891,7 +1892,7 @@ export async function executeCommandInTerminal(
 		}
 	}
 
-	if (requiresWorkspaceMutationReceipt(task)) {
+	if (trackWorkspaceMutation) {
 		try {
 			mutationBaseline = await captureWorkspaceMutationState(task.cwd)
 			try {
@@ -1909,7 +1910,7 @@ export async function executeCommandInTerminal(
 			releaseTerminalReservation()
 			return cancellationResult()
 		}
-		if (requiresWorkspaceMutationReceipt(task)) {
+		if (trackWorkspaceMutation) {
 			const owner = provider
 			if (!owner) throw new Error("Primary mutation ledger is unavailable")
 			await owner.reservePrimaryMutation(task, physicalExecutionId)

@@ -249,19 +249,21 @@ describe("ordinary command captured policy", () => {
 
 	it.each([false, true])("keeps a launched command task-owned after handoff (prepared: %s)", async (prepared) => {
 		const test = fixture()
-		vi.mocked(compareWorkspaceMutationState).mockResolvedValueOnce({
-			changedPaths: ["owned.txt"],
-			files: { "owned.txt": "changed" },
-		})
-		vi.mocked(createWorkspaceMutationDiffs).mockResolvedValueOnce([
-			{
-				path: "owned.txt",
-				diff: "owned diff",
-				diffStats: { added: 1, removed: 0 },
-				originalContent: "",
-				finalContent: "changed",
-			},
-		])
+		if (!prepared) {
+			vi.mocked(compareWorkspaceMutationState).mockResolvedValueOnce({
+				changedPaths: ["owned.txt"],
+				files: { "owned.txt": "changed" },
+			})
+			vi.mocked(createWorkspaceMutationDiffs).mockResolvedValueOnce([
+				{
+					path: "owned.txt",
+					diff: "owned diff",
+					diffStats: { added: 1, removed: 0 },
+					originalContent: "",
+					finalContent: "changed",
+				},
+			])
+		}
 		vi.useFakeTimers()
 		const execution = runCommand(test, prepared, test.callbacks)
 		await test.launched.promise
@@ -278,15 +280,21 @@ describe("ordinary command captured policy", () => {
 		await test.finish()
 		await vi.advanceTimersByTimeAsync(0)
 		expect(test.taskState.completeCommandExecution).toHaveBeenCalledOnce()
-		expect(test.taskState.say).toHaveBeenCalledWith(
-			"tool",
-			expect.stringContaining('"path":"owned.txt"'),
-			undefined,
-			false,
-			undefined,
-			undefined,
-			expect.objectContaining({ isNonInteractive: true }),
-		)
+		if (prepared) {
+			expect(test.provider.reservePrimaryMutation).not.toHaveBeenCalled()
+			expect(test.provider.releasePrimaryMutation).not.toHaveBeenCalled()
+			expect(test.provider.recordPrimaryMutation).not.toHaveBeenCalled()
+		} else {
+			expect(test.taskState.say).toHaveBeenCalledWith(
+				"tool",
+				expect.stringContaining('"path":"owned.txt"'),
+				undefined,
+				false,
+				undefined,
+				undefined,
+				expect.objectContaining({ isNonInteractive: true }),
+			)
+		}
 		commandSessionRegistry.release(test.task, sessionId)
 	})
 })

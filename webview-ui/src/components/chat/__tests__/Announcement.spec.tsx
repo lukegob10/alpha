@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"File, ticket, and skill suggestions follow the chat you're writing in. Press Tab to move focus when there are no suggestions to select."
+		"Multi-file patches report new editor problems once the files are saved. Verified read-only ripgrep searches skip workspace change scans."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

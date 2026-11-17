@@ -16,11 +16,16 @@ import type { ToolResponse, ToolUse } from "../../shared/tools"
 import { parsePatch, ParseError, processAllHunks } from "./apply-patch"
 import type { ApplyPatchFileChange } from "./apply-patch"
 import { getTaskReadablePath, isTaskPathOutsideWorkspace } from "./taskPathPresentation"
-import type { ExpectedFileState } from "../../integrations/editor/DiffViewProvider"
+import type { ExpectedFileState, WriteDiagnosticsBatch } from "../../integrations/editor/DiffViewProvider"
 import { t } from "../../i18n"
 
 interface ApplyPatchParams {
 	patch: string
+}
+
+interface PatchWriteDiagnostics {
+	mode: boolean | WriteDiagnosticsBatch
+	delayMs: number
 }
 
 interface ApplyPatchChangeOutcome {
@@ -230,6 +235,18 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 					batchApproved = true
 				}
 			}
+			const state =
+				!stopped && batch.some(({ change }) => change.type !== "delete")
+					? await task.providerRef.deref()?.getState()
+					: undefined
+			const diagnosticsEnabled = state?.diagnosticsEnabled !== false && state?.includeDiagnosticMessages !== false
+			const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
+			const deferredDiagnostics: WriteDiagnosticsBatch | undefined =
+				diagnosticsEnabled && batch.length > 1 ? { delayMs: writeDelayMs } : undefined
+			const diagnostics: PatchWriteDiagnostics = {
+				mode: deferredDiagnostics ?? diagnosticsEnabled,
+				delayMs: writeDelayMs,
+			}
 			for (const [index, entry] of prepared.entries()) {
 				if (!entry) continue
 				const file = files[index]
@@ -271,6 +288,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 							callbacks,
 							isWriteProtected,
 							markApplied,
+							diagnostics,
 							batchApproved,
 						)
 					} else if (change.type === "delete") {
@@ -294,6 +312,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 							callbacks,
 							isWriteProtected,
 							markApplied,
+							diagnostics,
 							expectedMoveFileState,
 							batchApproved,
 						)
@@ -323,6 +342,21 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				}
 			}
 
+			let problems: string | undefined
+			if (deferredDiagnostics?.before && !isPatchCancelled(task, callbacks)) {
+				try {
+					problems = await task.diffViewProvider.collectWriteDiagnostics(
+						deferredDiagnostics.before,
+						deferredDiagnostics.delayMs,
+						callbacks.signal ?? task.getTaskCancellationSignal(),
+					)
+				} catch (error) {
+					if (!isPatchCancelled(task, callbacks)) {
+						problems = `Post-save diagnostics could not be collected: ${error instanceof Error ? error.message : error}`
+					}
+				}
+			}
+			if (status === "success" && isPatchCancelled(task, callbacks)) status = "cancelled"
 			callbacks.setResultMetadata?.({ status })
 			if (status === "success") {
 				task.consecutiveMistakeCount = 0
@@ -332,7 +366,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				task.didToolFailInCurrentTurn = true
 				task.recordToolError("apply_patch")
 			}
-			pushToolResult(JSON.stringify({ files }))
+			pushToolResult(JSON.stringify({ files, problems: problems || undefined }))
 		} catch (error) {
 			await handleError("apply patch", error as Error)
 			await task.diffViewProvider.reset()
@@ -379,6 +413,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
 		onApplied: () => void,
+		diagnostics: PatchWriteDiagnostics,
 		preapproved = false,
 	): Promise<ApplyPatchChangeOutcome> {
 		const { askApproval } = callbacks
@@ -401,11 +436,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		task.diffViewProvider.originalContent = undefined
 
 		const diff = formatResponse.createPrettyPatch(relPath, "", newContent)
-
-		const provider = task.providerRef.deref()
-		const state = await provider?.getState()
-		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
-		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
 
 		const sanitizedDiff = sanitizeUnifiedDiff(diff || "")
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
@@ -436,7 +466,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				: { status: "denied", result: "Changes were rejected by the user." }
 		}
 
-		await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
+		await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnostics.mode, diagnostics.delayMs, {
 			exists: false,
 		})
 
@@ -567,6 +597,7 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 		callbacks: ToolCallbacks,
 		isWriteProtected: boolean,
 		onApplied: () => void,
+		diagnostics: PatchWriteDiagnostics,
 		expectedMoveFileState?: ExpectedFileState,
 		preapproved = false,
 	): Promise<ApplyPatchChangeOutcome> {
@@ -645,12 +676,6 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 			)
 		}
 
-		// Resolve write diagnostics only after all raw baselines have been captured.
-		const provider = task.providerRef.deref()
-		const state = await provider?.getState()
-		const diagnosticsEnabled = state?.diagnosticsEnabled ?? true
-		const writeDelayMs = state?.writeDelayMs ?? DEFAULT_WRITE_DELAY_MS
-
 		const sanitizedDiff = sanitizeUnifiedDiff(diff)
 		const diffStats = computeDiffStats(sanitizedDiff) || undefined
 
@@ -698,8 +723,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				effectiveMovePath,
 				newContent,
 				false,
-				diagnosticsEnabled,
-				writeDelayMs,
+				diagnostics.mode,
+				diagnostics.delayMs,
 				expectedMoveFileState,
 				validateMoveAccess,
 			)
@@ -761,8 +786,8 @@ export class ApplyPatchTool extends BaseTool<"apply_patch"> {
 				relPath,
 				newContent,
 				false,
-				diagnosticsEnabled,
-				writeDelayMs,
+				diagnostics.mode,
+				diagnostics.delayMs,
 				expectedSourceFileState,
 			)
 

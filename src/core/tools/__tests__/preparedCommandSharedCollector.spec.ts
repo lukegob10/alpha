@@ -569,7 +569,7 @@ describe("prepared commands through the shared collector", () => {
 		},
 	)
 
-	it("preserves rg no-match exit one as a numeric shared-collector result", async () => {
+	it("settles an audited rg read with numeric exit one and no workspace mutation receipt", async () => {
 		const child = controlledChild()
 		children.push(child)
 		const current = await owner("prepared-exit-one")
@@ -587,6 +587,8 @@ describe("prepared commands through the shared collector", () => {
 		])
 		expect(current.events).toEqual(["no-match"])
 		expect(current.task.completeCommandExecution).toHaveBeenCalledOnce()
+		expect(current.provider.reservePrimaryMutation).not.toHaveBeenCalled()
+		expect(current.provider.releasePrimaryMutation).not.toHaveBeenCalled()
 	})
 
 	it("joins a failed raw reader before publishing one truthful terminal error", async () => {

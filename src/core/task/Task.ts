@@ -5254,7 +5254,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				if (options.deferResultCommit && !ownsEarlyRead()) {
 					throw new TaskPersistenceError("The deferred read no longer owns its lifecycle step.")
 				}
-				await this.appendAgentTurnEvent(
+				const telemetry = this.appendAgentTurnEvent(
 					event,
 					(hookInvocation ? hookStep : earlyReadStep)?.snapshot.context,
 					hookInvocation
@@ -5263,6 +5263,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							? { ...earlyReadIdentity, correlationId: earlyReadIdentity.stepId }
 							: undefined,
 				)
+				if (event.type === "progress" || event.type === "tool_batch_started") return
+				await telemetry
 				assertHookBoundary()
 				if (options.deferResultCommit && !ownsEarlyRead()) {
 					throw new TaskPersistenceError("The deferred read lifecycle publication was superseded.")
@@ -5726,9 +5728,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private async ensureCanonicalLifecycleStepStarted(
 		step: CurrentAgentStep,
 		guard?: CanonicalLifecycleEventGuard,
-	): Promise<void> {
-		if (guard && !guard()) return
-		if (this.canonicalLifecycleStartedSteps.has(step.stepId)) return
+	): Promise<boolean> {
+		if (guard && !guard()) return false
+		if (this.canonicalLifecycleStartedSteps.has(step.stepId)) return false
 		const recovered = this.getCanonicalLifecycleSnapshot()
 		if (
 			recovered &&
@@ -5737,11 +5739,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			recovered.steps.some((candidate) => candidate.stepId === step.stepId)
 		) {
 			this.canonicalLifecycleStartedSteps.add(step.stepId)
-			return
+			return false
 		}
 		this.canonicalLifecycleStartedSteps.add(step.stepId)
 		await this.enqueueCanonicalLifecycleEvent("step_started", { phase: "working" }, step.stepId, guard)
 		if (guard && !guard()) this.canonicalLifecycleStartedSteps.delete(step.stepId)
+		return true
 	}
 
 	private async publishCanonicalLifecycleStepStatus(
@@ -22109,9 +22112,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			!stepInterruptionSignal?.aborted &&
 			(requestAdmissionDeadline === undefined || Date.now() < requestAdmissionDeadline)
 		const lifecyclePreflight = (async () => {
-			await this.ensureCanonicalLifecycleStepStarted(step, lifecyclePreflightIsCurrent)
+			const started = await this.ensureCanonicalLifecycleStepStarted(step, lifecyclePreflightIsCurrent)
 			if (!lifecyclePreflightIsCurrent()) return
-			await this.publishCanonicalLifecyclePhase("working", lifecyclePreflightIsCurrent)
+			if (!started) await this.publishCanonicalLifecyclePhase("working", lifecyclePreflightIsCurrent)
 			if (!lifecyclePreflightIsCurrent()) return
 			// Optional telemetry captures identity when queued and drains at turn/cancellation fences.
 			// Its storage latency must not delay provider admission after the canonical lifecycle above.

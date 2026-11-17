@@ -26,6 +26,11 @@ export const DIFF_VIEW_LABEL_CHANGES = "Original ↔ Alpha's Changes"
  */
 export type ExpectedFileState = { exists: false } | { exists: true; content: string }
 
+export interface WriteDiagnosticsBatch {
+	before?: [vscode.Uri, vscode.Diagnostic[]][]
+	delayMs: number
+}
+
 export class DiffViewProvider {
 	// Properties to store the results of saveChanges
 	newProblemsMessage?: string
@@ -241,14 +246,9 @@ export class DiffViewProvider {
 
 		// Build notices array
 		const notices = [
-			...(options.partial
-				? [
-						"Only part of the requested edit was applied. Read the current file before correcting the remaining changes.",
-					]
-				: [
-						"You do not need to re-read the file, as you have seen all changes",
-						"Proceed with the task using these changes as the new baseline.",
-					]),
+			options.partial
+				? "Only part of the requested edit was applied. Read the current file before correcting the remaining changes."
+				: "The save is complete at the reported path with the changes already shown.",
 			...(this.userEdits
 				? [
 						"If the user's edits have addressed part of the task or changed the requirements, adjust your approach accordingly.",
@@ -508,7 +508,7 @@ export class DiffViewProvider {
 		relPath: string,
 		content: string,
 		openFile: boolean = true,
-		diagnosticsEnabled: boolean = true,
+		diagnostics: boolean | WriteDiagnosticsBatch = true,
 		writeDelayMs: number = DEFAULT_WRITE_DELAY_MS,
 		expectedFileState: ExpectedFileState,
 		validateBeforeWrite?: () => void,
@@ -534,8 +534,10 @@ export class DiffViewProvider {
 		assertActiveEdit()
 		assertAccessAllowed()
 
-		// Get diagnostics before editing the file
-		if (!this.isEditing) this.preDiagnostics = vscode.languages.getDiagnostics()
+		const batch = typeof diagnostics === "object" ? diagnostics : undefined
+		const before = diagnostics
+			? (batch?.before ?? (this.isEditing && !batch ? this.preDiagnostics : vscode.languages.getDiagnostics()))
+			: undefined
 
 		// Create parent directories before checking the target. This cannot create
 		// the target itself, and the exclusive create below closes the remaining
@@ -567,6 +569,7 @@ export class DiffViewProvider {
 			throw error
 		}
 
+		if (batch) batch.before = before
 		const postWriteWarnings: string[] = []
 		let diagnosticsDelayMs = Math.max(0, writeDelayMs)
 		const recordPostWriteWarning = (message: string, error: unknown) => {
@@ -589,49 +592,26 @@ export class DiffViewProvider {
 						`The file '${relPath}' was written, but its open editor has unsaved changes.`,
 					)
 				}
-			} else if (diagnosticsEnabled) {
+			} else if (diagnostics) {
 				const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(absolutePath))
+				// Give a background document time to start producing diagnostics.
+				diagnosticsDelayMs = Math.max(diagnosticsDelayMs, 100)
 				if (doc.isDirty) {
 					postWriteWarnings.push(
 						`The file '${relPath}' was written, but its open editor has unsaved changes.`,
 					)
 				}
-
-				// Give background document diagnostics at least 100 ms to start.
-				// The configured diagnostics wait can cover the same interval.
-				diagnosticsDelayMs = Math.max(diagnosticsDelayMs, 100)
 			}
 		} catch (error) {
 			recordPostWriteWarning(`The file '${relPath}' was written, but the editor could not be refreshed`, error)
 		}
+		if (batch) batch.delayMs = Math.max(batch.delayMs, diagnosticsDelayMs)
 
 		let newProblemsMessage = ""
 
-		if (diagnosticsEnabled) {
+		if (before && !batch) {
 			try {
-				await delay(diagnosticsDelayMs)
-
-				const postDiagnostics = vscode.languages
-					.getDiagnostics()
-					.filter(
-						([uri]) =>
-							!this.previewPath || uri.scheme !== "file" || !arePathsEqual(uri.fsPath, this.previewPath),
-					)
-
-				// Get diagnostic settings from state
-				const task = this.taskRef.deref()
-				const state = await task?.providerRef.deref()?.getState()
-				const includeDiagnosticMessages = state?.includeDiagnosticMessages ?? true
-				const maxDiagnosticMessages = state?.maxDiagnosticMessages ?? 50
-
-				const newProblems = await diagnosticsToProblemsString(
-					getNewDiagnostics(this.preDiagnostics, postDiagnostics),
-					[vscode.DiagnosticSeverity.Error],
-					this.cwd,
-					includeDiagnosticMessages,
-					maxDiagnosticMessages,
-				)
-
+				const newProblems = await this.collectWriteDiagnostics(before, diagnosticsDelayMs, signal)
 				newProblemsMessage =
 					newProblems.length > 0 ? `\n\nNew problems detected after saving the file:\n${newProblems}` : ""
 			} catch (error) {
@@ -657,6 +637,29 @@ export class DiffViewProvider {
 			userEdits: undefined,
 			finalContent: content,
 		}
+	}
+
+	async collectWriteDiagnostics(
+		before: [vscode.Uri, vscode.Diagnostic[]][],
+		writeDelayMs: number,
+		signal?: AbortSignal,
+	): Promise<string> {
+		const state = await this.taskRef.deref()?.providerRef.deref()?.getState()
+		if (state?.includeDiagnosticMessages === false) return ""
+		await delay(writeDelayMs, { signal })
+		signal?.throwIfAborted()
+		const after = vscode.languages
+			.getDiagnostics()
+			.filter(
+				([uri]) => !this.previewPath || uri.scheme !== "file" || !arePathsEqual(uri.fsPath, this.previewPath),
+			)
+		return diagnosticsToProblemsString(
+			getNewDiagnostics(before, after),
+			[vscode.DiagnosticSeverity.Error],
+			this.cwd,
+			true,
+			state?.maxDiagnosticMessages ?? 50,
+		)
 	}
 
 	async assertExpectedFileState(

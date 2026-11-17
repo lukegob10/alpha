@@ -245,7 +245,7 @@ describe("ApplyDiffTool", () => {
 			expect(output).toContain("SEARCH/REPLACE block 1 (original start line: 2)")
 			expect(output).toContain("identical")
 			expect(output).toContain("Do not reapply successful blocks")
-			expect(output).not.toContain("You do not need to re-read")
+			expect(output).not.toContain("The save is complete")
 			expect(published).toEqual([expect.objectContaining({ is_error: true })])
 			expect(task.didEditFile).toBe(true)
 			expect(task.recordToolError).toHaveBeenCalledWith("apply_diff", expect.stringContaining("identical"))

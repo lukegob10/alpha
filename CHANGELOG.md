@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.36
+
+### Patch Changes
+
+- Collect editor diagnostics once after a multi-file patch, with a cancellable wait and a 100 ms minimum for
+  background files.
+- Skip workspace mutation scans for audited `rg` reads and retain their command sessions after handoff.
+- Remove a duplicate working-phase event before model requests and queue progress telemetry off the tool startup path.
+
 ## 3.2.35
 
 ### Patch Changes

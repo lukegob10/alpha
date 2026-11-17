@@ -193,7 +193,7 @@ describe("request stream steering", () => {
 		vi.spyOn(requestTimeout, "getApiRequestTimeout").mockReturnValue(100)
 		const { task, originalHandler } = harness()
 		vi.mocked(task["ensureCanonicalLifecycleStepStarted"]).mockImplementationOnce(
-			() => new Promise<void>((resolve) => setTimeout(resolve, 80)),
+			() => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 80)),
 		)
 		originalHandler.createMessage.mockImplementationOnce(async function* () {
 			await new Promise<void>((resolve) => setTimeout(resolve, 90))

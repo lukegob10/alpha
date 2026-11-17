@@ -553,10 +553,10 @@ describe("command reads through the built-in registry and real subprocesses", ()
 			for (const [index, entry] of evidence.entries()) {
 				expect(entry).toMatchObject({ status: "succeeded", exitCode: 0 })
 				expect(entry.executionId).toMatch(new RegExp(`^${approvals[index].ts}:[\\da-f-]+$`))
-				expect(provider.reservePrimaryMutation).toHaveBeenNthCalledWith(index + 1, task, entry.executionId)
-				expect(provider.releasePrimaryMutation).toHaveBeenNthCalledWith(index + 1, task, entry.executionId)
 			}
 			expect(host.askApproval).toHaveBeenCalledTimes(2)
+			expect(provider.reservePrimaryMutation).not.toHaveBeenCalled()
+			expect(provider.releasePrimaryMutation).not.toHaveBeenCalled()
 			expect(provider.recordPrimaryMutation).not.toHaveBeenCalled()
 		} finally {
 			restoreClock?.()
