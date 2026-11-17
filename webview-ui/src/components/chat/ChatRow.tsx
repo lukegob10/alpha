@@ -11,7 +11,12 @@ import type {
 	AlphaAskUseMcpServer,
 	AlphaSayTool,
 } from "@alpha-code/types"
-import { codebaseSearchResultSchema, followUpDataSchema, userInputResponseDataSchema } from "@alpha-code/types"
+import {
+	browserToolNames,
+	codebaseSearchResultSchema,
+	followUpDataSchema,
+	userInputResponseDataSchema,
+} from "@alpha-code/types"
 
 import { Mode } from "@alpha/modes"
 import { parseProposedPlan } from "@alpha/plan-mode"
@@ -638,9 +643,15 @@ const ChatRowContentInner = ({
 			<ErrorRow {...props} />
 		</ActivityStep>
 	)
+	const renderToolApprovalDetails = () => (
+		<ToolApprovalDetails
+			text={message.text}
+			isPending={isLast && messageActionsDisabled && !message.partial && !message.isAnswered}
+		/>
+	)
 
 	if (message.ask === "tool" && isTaskOperationApproval(message.text)) {
-		return <ToolApprovalDetails text={message.text} />
+		return renderToolApprovalDetails()
 	}
 
 	if (tool) {
@@ -1304,11 +1315,11 @@ const ChatRowContentInner = ({
 					</ActivityStep>
 				)
 			default:
-				return message.ask === "tool" ? <ToolApprovalDetails text={message.text} /> : null
+				return message.ask === "tool" ? renderToolApprovalDetails() : null
 		}
 	}
 
-	if (message.ask === "tool") return <ToolApprovalDetails text={message.text} />
+	if (message.ask === "tool") return renderToolApprovalDetails()
 
 	switch (message.type) {
 		case "say":
@@ -1721,6 +1732,10 @@ const ChatRowContentInner = ({
 						<article
 							className="group"
 							aria-label={t(isTurnCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+							<div aria-hidden="true" style={headerStyle}>
+								{icon}
+								{title}
+							</div>
 							<Markdown
 								markdown={message.text}
 								partial={message.partial}
@@ -1787,21 +1802,11 @@ const ChatRowContentInner = ({
 						case "ticket":
 							return <TicketActivity tool={sayTool} />
 						case "browserAction": {
-							const labels: Record<NonNullable<AlphaSayTool["action"]>, string> = {
-								open_browser_page: "Open browser page",
-								list_browser_pages: "List browser pages",
-								read_page: "Read browser page",
-								screenshot_page: "Capture browser page",
-								navigate_page: "Navigate browser page",
-								click_element: "Click browser element",
-								type_in_page: "Type in browser page",
-								hover_element: "Hover over browser element",
-								drag_element: "Drag browser element",
-								handle_dialog: "Handle browser dialog",
-								run_playwright_code: "Run browser automation",
-							}
 							const status = sayTool.status ?? "completed"
-							const label = sayTool.action ? labels[sayTool.action] : "Use integrated browser"
+							const label =
+								sayTool.action && browserToolNames.includes(sayTool.action)
+									? t(`chat:browserActions.actions.${sayTool.action}`)
+									: t("chat:browserActions.useIntegratedBrowser")
 							const detail = sayTool.url ?? sayTool.element ?? sayTool.pageId
 							const browserIcon =
 								status === "running" ? (
@@ -2172,6 +2177,10 @@ const ChatRowContentInner = ({
 							<article
 								className="group"
 								aria-label={t(isTurnCompleted ? "chat:taskCompleted" : "chat:completionReport")}>
+								<div aria-hidden="true" style={headerStyle}>
+									{icon}
+									{title}
+								</div>
 								<Markdown
 									markdown={message.text}
 									partial={message.partial}

@@ -245,6 +245,8 @@ export interface ToolSchedulerResult {
 	waitOutcome?: ToolResultMetadata["waitOutcome"]
 	opaqueResultFingerprint?: string
 	failure?: ToolFailureMetadata
+	/** Set only when the scheduler refuses a scoped retry before dispatch. */
+	retryBlocked?: true
 	durationMs: number
 }
 
@@ -901,8 +903,15 @@ export class ToolScheduler {
 		) {
 			return item
 		}
+		// PreToolUse can run a command before the tool itself reaches admission.
+		const isSuspended = () =>
+			this.executionHost.shouldStopRepeatedToolCall?.(
+				getSchedulerToolIdentity(this.options.registry, item.call.name),
+				item.toolCall?.nativeArgs ?? item.call.arguments,
+			) === true
+		if (isSuspended()) return item
 		await this.checkEffectFence(item.call)
-		if (this.isCancelled()) return item
+		if (this.isCancelled() || isSuspended()) return item
 		this.preHookCompleted.add(item.call.id)
 		let outcome: Awaited<ReturnType<NonNullable<ToolSchedulerOptions["preToolUse"]>>>
 		try {
@@ -3082,8 +3091,12 @@ export class ToolScheduler {
 				if (cancelled) {
 					collector.push(formatFailureResult("Tool execution was cancelled.", "cancelled"))
 				} else {
-					await this.executionHost.say("error", `Error ${action}:\n${error.message}`)
 					collector.push(formatResponse.toolError(errorString))
+					try {
+						await this.executionHost.say("error", `Error ${action}:\n${error.message}`)
+					} catch {
+						console.warn(`[ToolScheduler] Could not publish the error for ${prepared.call.name}.`)
+					}
 				}
 			},
 			pushToolResult: (content: ToolResponse) => collector.push(content),
@@ -3634,7 +3647,10 @@ export class ToolScheduler {
 		const denied =
 			failure?.outcome === "known" && (failure.reason === "policy_denied" || failure.reason === "approval_denied")
 		return failure
-			? resultForError(call, formatToolFailureGuidance(failure), denied ? "denied" : "error", failure)
+			? {
+					...resultForError(call, formatToolFailureGuidance(failure), denied ? "denied" : "error", failure),
+					retryBlocked: true,
+				}
 			: undefined
 	}
 

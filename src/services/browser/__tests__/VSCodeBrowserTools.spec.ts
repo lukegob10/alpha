@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import * as vscode from "vscode"
 
 const vscodeMock = vi.hoisted(() => ({
 	tools: [] as Array<{ name: string }>,
@@ -63,6 +64,7 @@ vi.mock("vscode", () => {
 			WorkspaceFolder: 3,
 		},
 		CancellationTokenSource,
+		CancellationError: class CancellationError extends Error {},
 		LanguageModelTextPart,
 		LanguageModelDataPart,
 		LanguageModelToolCallPart: class {},
@@ -176,6 +178,38 @@ describe("VSCodeBrowserTools", () => {
 			/read_page.*reported an error/,
 		)
 		expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+	})
+
+	it.each([
+		["typed", () => new vscode.CancellationError()],
+		["serialized", () => Object.assign(new Error("Canceled"), { name: "Canceled" })],
+	])("identifies %s host cancellation when the caller did not abort", async (_transport, makeCancellation) => {
+		vscodeMock.tools.push({ name: "read_page" })
+		const signal = new AbortController().signal
+		const hostCancellation = makeCancellation()
+		vscodeMock.invokeTool.mockRejectedValue(hostCancellation)
+
+		await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" }, signal)).rejects.toMatchObject({
+			name: "VSCodeBrowserToolCancellation",
+			cause: hostCancellation,
+		})
+		expect(signal.aborted).toBe(false)
+		expect(vscodeMock.dispose).toHaveBeenCalledOnce()
+	})
+
+	it("retains an ordinary host error that happens to mention cancellation", async () => {
+		vscodeMock.tools.push({ name: "read_page" })
+		const failure = new Error("Canceled")
+		vscodeMock.invokeTool.mockRejectedValue(failure)
+
+		await expect(invokeVSCodeBrowserTool("read_page", { pageId: "page-1" })).rejects.toBe(failure)
+	})
+
+	it("classifies the lack of a host browser implementation before dispatch", async () => {
+		await expect(invokeVSCodeBrowserTool("list_browser_pages", {})).rejects.toMatchObject({
+			reason: "capability_unavailable",
+		})
+		expect(vscodeMock.invokeTool).not.toHaveBeenCalled()
 	})
 
 	it.each([undefined, false, "true"])(

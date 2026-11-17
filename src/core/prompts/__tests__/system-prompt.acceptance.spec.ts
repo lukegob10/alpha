@@ -47,20 +47,33 @@ describe("shared implementation acceptance guidance", () => {
 				"Reuse requirements already clear in the conversation or task context; resolve only material gaps within the requested scope",
 			)
 			expect(prompt).toContain("in existing task context; no separate document or agent is required")
-			expect(prompt).toContain("Could these checks pass while the requested behavior is wrong?")
+			expect(prompt).toContain(
+				"Before reporting an implementation complete, consider whether the checks could pass while the requested behavior is wrong.",
+			)
 			expect(prompt).toContain("requirement, check, observed result, and remaining gap")
 			expect(prompt).toContain("mocks, excluded state, and unexercised supported conditions")
-			expect(prompt).toContain("Questions and trivial edits do not need an extra review phase")
+			expect(prompt).toContain("Trivial edits need no extra review or acceptance paperwork.")
 			expect(fragments.instructionParts[0]?.content).toBe(resolveCodexModelPrompt(model).instructions)
 			expect(fragments.instructionParts.map(({ content }) => content).join("")).toBe(prompt)
 		},
 	)
 
+	it("guides the model to answer directly when the conversation is sufficient", async () => {
+		const prompt = renderSystemPromptFragments(await acceptancePrompt({}, "code", "copilot/gpt-5.6-sol"))
+		expect(prompt).toContain(
+			"For questions that only request an answer, respond directly when the conversation provides enough evidence.",
+		)
+		expect(prompt).toContain("Gather missing evidence as needed.")
+		expect(prompt).not.toContain("Before claiming completion, ask")
+	})
+
 	it("keeps combined acceptance with the parent and checks the integrated workspace", async () => {
 		const prompt = renderSystemPromptFragments(await acceptancePrompt())
 		expect(prompt).toContain("parent goal, shared constraints, and dependency contracts")
 		expect(prompt).toContain("combined user workflow in the final integrated workspace")
-		expect(prompt).toContain("Reuse relevant results while their code, inputs, and environment remain valid")
+		expect(prompt).toContain(
+			"For implementation, reuse relevant results while their code, inputs, and environment remain valid",
+		)
 		expect(prompt).toContain("Correct confirmed failures and rerun the failed and affected checks")
 	})
 

@@ -350,7 +350,8 @@ describe("ToolScheduler progress observation", () => {
 		}).run(calls("fixture_command_alias", 2))
 		expect(execute).toHaveBeenCalledTimes(1)
 		expect(outcome.results).toHaveLength(2)
-		expect(outcome.results[1]).toMatchObject({ status: "error", failure })
+		expect(outcome.results[0].retryBlocked).toBeUndefined()
+		expect(outcome.results[1]).toMatchObject({ status: "error", failure, retryBlocked: true })
 	})
 	it("preserves a trusted failure and its corrective action when blocking a retry before dispatch", async () => {
 		const host = makeHost()

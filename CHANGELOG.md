@@ -1,5 +1,17 @@
 # Changelog
 
+## 3.2.38
+
+### Patch Changes
+
+- Route standalone requests for a new chat to the separate-chat tool and remove the subagent fallback for those requests.
+- Wait for active subagents before starting the missing workspace receipt timeout. Explain how to continue after a checkpoint
+  restore when a receipt is still missing.
+- Show browser approvals and execution results separately, settle interrupted browser activity, and limit automatic
+  browser discovery to requests about browser work.
+- Answer questions directly when the conversation has enough context and pause turns that repeatedly retry blocked tools.
+- Add Windows guidance to check for a WSL distribution before attempting Linux verification.
+
 ## 3.2.37
 
 ### Patch Changes

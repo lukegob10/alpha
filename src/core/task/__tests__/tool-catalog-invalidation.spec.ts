@@ -319,6 +319,48 @@ describe("TaskToolCatalogCache effective input invalidation", () => {
 		expect(browserRemoved.isCallable("read_page")).toBe(false)
 	})
 
+	it("offers shared browser page listing for browser work and drops it on an ordinary follow-up", async () => {
+		const { options } = createFixture()
+		options.apiConfiguration = { apiProvider: "vscode-lm" }
+		testState.browserToolNames = ["open_browser_page", "read_page", "list_browser_pages"]
+
+		const ordinaryQuestion = { ...options, userRequestText: "Does this work the same way on Linux?" }
+		const initial = await capture(ordinaryQuestion)
+		expect(initial.isCallable("open_browser_page")).toBe(true)
+		expect(functionNames(initial)).not.toContain("list_browser_pages")
+		expect(initial.isCallable("list_browser_pages")).toBe(false)
+
+		for (const userRequestText of [
+			"List my shared browser tabs.",
+			"Inspect the website in the integrated browser.",
+		]) {
+			const browserWork = await capture({ ...options, userRequestText })
+			expect(functionNames(browserWork)).toContain("list_browser_pages")
+			expect(browserWork.isCallable("list_browser_pages")).toBe(true)
+		}
+		const followUp = await capture(ordinaryQuestion)
+		expect(followUp.digest).toBe(initial.digest)
+		expect(followUp.isCallable("list_browser_pages")).toBe(false)
+	})
+
+	it("retains a historical browser listing schema for replay without offering another call", async () => {
+		const { options } = createFixture()
+		testState.browserToolNames = ["list_browser_pages"]
+		const result = await capture({
+			...options,
+			includeAllToolsWithRestrictions: true,
+			userRequestText: "What did we decide?",
+			discoveryHistory: [
+				{
+					role: "assistant",
+					content: [{ type: "tool_use", id: "prior-list", name: "list_browser_pages", input: {} }],
+				},
+			],
+		})
+		expect(functionNames(result)).toContain("list_browser_pages")
+		expect(result.isCallable("list_browser_pages")).toBe(false)
+	})
+
 	it.each(["openai", "vertex", "vscode-lm"] as const)(
 		"exposes configured hybrid search on Code and Plan for %s without hiding command inspection",
 		async (apiProvider) => {

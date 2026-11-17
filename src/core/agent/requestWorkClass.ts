@@ -39,7 +39,7 @@ const BROWSER_ACTION_REQUEST_RE =
 const BROWSER_USE_REQUEST_RE =
 	/(?:^|[.!?;\n]\s*)(?:(?:please|then|also|now|let's)\s+)*(?:(?:can|could|would)\s+you\s+|(?:i|we)\s+(?:want|need)\s+(?:you\s+to|to)\s+|(?:i|we)(?:'d| would)\s+like\s+to\s+)?use\b[\s\S]{0,100}\b(?:browser|web(?:\s+(?:page|site))?|website|site|page|url|link)\b/i
 
-function hasBrowserInteractionIntent(text: string): boolean {
+export function hasBrowserInteractionIntent(text: string): boolean {
 	return (
 		BROWSER_INTERACTION_ACTION_RE.test(text) &&
 		BROWSER_REFERENCE_RE.test(text) &&

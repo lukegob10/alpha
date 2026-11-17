@@ -567,7 +567,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha checks for workspace changes faster after commands, skips unnecessary token counts, and keeps model responses streaming during reasoning updates."
+			"description": "Alpha routes new-chat requests more reliably, shows what browser actions need approval, and gives active subagents time to finish before checking for missing workspace receipts."
 		}
 	},
 	"crossTasks": {
@@ -743,6 +743,31 @@
 		"message": "Message",
 		"workspace": "Workspace",
 		"reason": "Reason"
+	},
+	"browserActions": {
+		"approvalRequest": "Browser approval request",
+		"awaitingApproval": "Awaiting browser approval",
+		"useIntegratedBrowser": "Use integrated browser",
+		"actions": {
+			"open_browser_page": "Open browser page",
+			"list_browser_pages": "List browser pages",
+			"read_page": "Read browser page",
+			"screenshot_page": "Capture browser page",
+			"navigate_page": "Navigate browser page",
+			"click_element": "Click browser element",
+			"type_in_page": "Type in browser page",
+			"hover_element": "Hover over browser element",
+			"drag_element": "Drag browser element",
+			"handle_dialog": "Handle browser dialog",
+			"run_playwright_code": "Run browser automation"
+		},
+		"fields": {
+			"url": "URL",
+			"pageId": "Page ID",
+			"element": "Element",
+			"code": "Browser automation code",
+			"selectFiles": "Files to share"
+		}
 	},
 	"taskAttention": {
 		"waiting": "{{name}} needs your input",

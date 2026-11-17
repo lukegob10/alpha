@@ -935,7 +935,8 @@ describe("SYSTEM_PROMPT", () => {
 		// Ticket filtering/deletion guidance adds 97 tokens in this same fixture.
 		// Requirement-based acceptance guidance adds 346 local tokens; model calls remain agent-selected.
 		// Clarifying expected behavior before substantial implementation adds another 29 tokens in this fixture.
-		expect(newTokenCount).toBe(4766)
+		// Scope verification to implementation and direct informational answers using 24 additional tokens.
+		expect(newTokenCount).toBe(4790)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 

@@ -140,6 +140,10 @@ class CrossTaskAcceptanceAI {
 						metadata?.tools?.some((tool) => tool.function?.name === "create_thread"),
 						"The launch-thread request must expose create_thread to the model",
 					)
+					assert.ok(
+						!metadata?.tools?.some((tool) => tool.function?.name === "spawn_agent"),
+						"A standalone launch-thread request must exclude spawn_agent",
+					)
 					chunk = {
 						type: "tool_call",
 						id: `${taskId}-create-child`,
@@ -847,7 +851,7 @@ suite("Cross-task deterministic Extension Host acceptance", function () {
 			}
 			taskIds.root = await api.startNewTask({
 				configuration,
-				text: "can you launch a test thread",
+				text: "Can you do this in a new chat?",
 			})
 			await waitUntilCompleted({
 				api,

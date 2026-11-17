@@ -943,6 +943,67 @@ describe("Stage Three durable completion integration", () => {
 		}
 	})
 
+	async function setupChildWithPendingReceipt() {
+		const harness = await setup(true)
+		harness.useManagedCompletionDecision()
+		const childId = "shared-workspace-child"
+		const token = "child-workspace-edit"
+		await harness.store.createAgent({
+			taskId: childId,
+			parentTaskId: TASK_ID,
+			rootTaskId: TASK_ID,
+			nickname: "Shared Workspace Child",
+			role: "explore",
+			objective: "Finish and record a shared workspace edit",
+			status: "running",
+		})
+		await harness.store.reservePrimaryMutation(TASK_ID, TASK_ID, harness.storagePath, token)
+		return { harness, childId, token }
+	}
+
+	it("waits for a managed child with a pending workspace receipt past the orphan deadline", async () => {
+		const { harness, childId, token } = await setupChildWithPendingReceipt()
+		const { running } = await observePendingCandidate(harness)
+		try {
+			await vi.advanceTimersByTimeAsync(31_000)
+			harness.assertNotCompleted()
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			expect(harness.requests).toHaveLength(1)
+		} finally {
+			await harness.store.releasePrimaryMutation(TASK_ID, TASK_ID, token)
+			await harness.store.updateAgentStatus(childId, "completed", {}, TASK_ID)
+			await vi.advanceTimersByTimeAsync(1_000)
+			await running
+		}
+		expect(harness.completed).toHaveBeenCalledOnce()
+		expect(harness.requests).toHaveLength(1)
+	})
+
+	it("starts the orphan deadline after the last managed child stops with the receipt missing", async () => {
+		const { harness, childId, token } = await setupChildWithPendingReceipt()
+		const { running } = await observePendingCandidate(harness)
+		try {
+			await vi.advanceTimersByTimeAsync(31_000)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			await harness.store.updateAgentStatus(childId, "failed", {}, TASK_ID)
+			await vi.advanceTimersByTimeAsync(29_000)
+			expect(harness.ask).not.toHaveBeenCalledWith("resume_task")
+			await vi.advanceTimersByTimeAsync(2_000)
+			expect(harness.ask).toHaveBeenCalledWith("resume_task")
+			await running
+			harness.assertRecoverableStop()
+			expect(harness.task.getCompletionStageMetrics()).toMatchObject({ lastReasonCode: "runtime_timeout" })
+			expect(harness.store.getVerificationObligations({ parentTaskId: TASK_ID })).toContainEqual(
+				expect.objectContaining({ mutationReservations: [token] }),
+			)
+			expect(harness.requests).toHaveLength(1)
+		} finally {
+			harness.cancel()
+			await vi.advanceTimersByTimeAsync(1_000)
+			await running
+		}
+	})
+
 	it("bounds a stuck verification publisher during text completion without another model request", async () => {
 		const harness = await setup()
 		const publication = deferred()

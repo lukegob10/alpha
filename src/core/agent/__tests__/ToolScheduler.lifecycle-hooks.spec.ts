@@ -354,6 +354,40 @@ describe("scheduler lifecycle hooks preserve policy and completed effects", () =
 		expect(effect).not.toHaveBeenCalled()
 	})
 
+	it.each(["previous result", "effect fence"] as const)(
+		"skips the next pre-tool hook when suspension starts at the %s",
+		async (stage) => {
+			let suspended = false
+			const preToolUse = vi.fn<NonNullable<ToolSchedulerOptions["preToolUse"]>>(async () => ({}))
+			const { scheduler, state, effect, call } = fixture(
+				{
+					preToolUse,
+					beforeEffect: async (call) => {
+						if (stage === "effect fence" && call.id === "second") suspended = true
+					},
+				},
+				async ({ callbacks }) => {
+					callbacks.setResultMetadata?.({ status: "error" })
+					callbacks.pushToolResult("The first tool failed")
+				},
+			)
+			Object.assign(state, { shouldStopRepeatedToolCall: () => suspended })
+			state.recordToolCallForStopping.mockImplementation((_name, _args, status) => {
+				if (stage === "previous result" && status === "error") suspended = true
+			})
+			const outcome = await scheduler.run([call("first"), call("second")])
+
+			expect(preToolUse.mock.calls.map(([call]) => call.id)).toEqual(["first"])
+			expect(effect).toHaveBeenCalledOnce()
+			expect(outcome.results.map(({ callId, status }) => [callId, status])).toEqual([
+				["first", "error"],
+				["second", "error"],
+			])
+			expect(outcome.results[1].content).toContain("Stopping repeated")
+			expect(state.userMessageContent.map(({ tool_use_id }) => tool_use_id)).toEqual(["first", "second"])
+		},
+	)
+
 	it("retains the first completed effect when cancellation rejects a later pre-tool hook", async () => {
 		const controller = new AbortController()
 		let entered!: () => void

@@ -44,6 +44,7 @@ import { parseProposedPlan } from "../../../shared/plan-mode"
 import { getNativeTools } from "../../prompts/tools/native-tools"
 import { createTaskToolSurface } from "../../tools/TaskToolSurface"
 import { ToolRegistry, type ToolDescriptor } from "../../tools/ToolRegistry"
+import { createToolFailure } from "../../tools/ToolFailure"
 import { ToolRepetitionDetector } from "../../tools/ToolRepetitionDetector"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { captureEnvironmentDetails } from "../../environment/getEnvironmentDetails"
@@ -10099,7 +10100,7 @@ describe("Alpha", () => {
 				})
 			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn").mockImplementation(async () => {
 				order.push("effects")
-				return { status: "completed" }
+				return { status: "completed", results: [] }
 			})
 			const surface = createTaskToolSurface({ registry: new ToolRegistry(), mode: "code" })
 			vi.spyOn(task, "attemptApiRequest").mockImplementation((_retryAttempt, options) =>
@@ -10136,6 +10137,146 @@ describe("Alpha", () => {
 			)
 			expect(persist).toHaveBeenCalledOnce()
 			sampled.transaction.release()
+		})
+
+		it.each(["blocked", "mixed", "steered"] as const)("handles the %s retry sequence", async (sequence) => {
+			const task = createTask()
+			const inspect = sequence === "mixed"
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			mockProvider.getVerificationProgressState = vi.fn().mockReturnValue(undefined)
+			vi.spyOn(task, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "saveApiConversationHistory").mockResolvedValue(true)
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task as any, "assertCurrentProviderTranscriptBeforeEffects").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			vi.spyOn(task, "waitForCompletionGateDecision").mockResolvedValue({
+				allowed: true,
+				modelCanResolveRejection: true,
+			})
+			const ask = vi.spyOn(task, "ask").mockImplementation(async (type) => {
+				if (type === "resume_task") task.abort = true
+				return { response: "yesButtonClicked" }
+			})
+			const registry = new ToolRegistry({ includeBuiltIns: false })
+			const builtIns = new ToolRegistry({
+				nativeTools: getNativeTools({ availableBrowserToolNames: ["list_browser_pages", "read_page"] }),
+			})
+			const listPages = vi.fn<ToolDescriptor["execute"]>(async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({
+					status: "error",
+					failure: createToolFailure({
+						reason: "outcome_unknown",
+						scopeKind: "operation",
+						scopeIdentity: "list_browser_pages",
+						effectsStarted: "unknown",
+						outcome: "unknown",
+						recovery: { kind: "verify-outcome" },
+					}),
+				})
+				callbacks.pushToolResult("The browser action outcome is unknown.")
+			})
+			const readPage = vi.fn<ToolDescriptor["execute"]>(async ({ callbacks }) => {
+				callbacks.setResultMetadata?.({ status: "success" })
+				callbacks.pushToolResult("Read the existing page.")
+			})
+			registry.register({ ...builtIns.resolve("list_browser_pages")!, execute: listPages })
+			registry.register({ ...builtIns.resolve("read_page")!, execute: readPage })
+			const surface = createTaskToolSurface({ registry, mode: "code" })
+			const toolSteps = inspect ? 4 : 3
+			let requests = 0
+			if (sequence === "steered") {
+				const flush = task.flushPendingToolResultsToHistory.bind(task)
+				vi.spyOn(task, "flushPendingToolResultsToHistory").mockImplementation(async (...args) => {
+					const persisted = await flush(...args)
+					if (requests === 3) await task.steerUserMessage("Use the information already available.")
+					return persisted
+				})
+			}
+			vi.spyOn(task, "attemptApiRequest").mockImplementation((_attempt, options) =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					requests++
+					const turnId = task["agentTurnId"]
+					const step = {
+						stepId: `${turnId}:step-${requests}`,
+						turnId,
+						requestId: `browser-request-${requests}`,
+						attemptId: `browser-attempt-${requests}`,
+						surface,
+						snapshot: {
+							context: {
+								contextId: "browser-retry-context",
+								provider: { apiProtocol: "openai" },
+								policy: surface.policy,
+								mode: { slug: "code" },
+							},
+							runtime: { getHandler: () => task.api },
+						},
+					}
+					Object.assign(task, { currentAgentStep: step, currentTaskToolSurface: surface })
+					options?.onStepCaptured?.(task["currentAgentStep"])
+					await task["ensureCanonicalLifecycleStepStarted"](task["currentAgentStep"]!)
+					if (requests > toolSteps) {
+						yield { type: "text", text: "I have an answer." }
+						return
+					}
+					yield { type: "tool_call", id: `browser-${requests}`, name: "list_browser_pages", arguments: "{}" }
+					if (inspect && requests === 3) {
+						yield {
+							type: "tool_call",
+							id: "browser-inspection",
+							name: "read_page",
+							arguments: JSON.stringify({ pageId: "existing-page" }),
+						}
+					}
+				})(),
+			)
+
+			await task["initiateTaskLoop"]([{ type: "text", text: "Check the browser." }])
+
+			expect(listPages).toHaveBeenCalledOnce()
+			expect(readPage).toHaveBeenCalledTimes(inspect ? 1 : 0)
+			expect(requests).toBe(inspect ? 5 : sequence === "steered" ? 4 : 3)
+			expect(ask.mock.calls.filter(([type]) => type === "resume_task")).toHaveLength(
+				sequence === "blocked" ? 1 : 0,
+			)
+			const finalMessage = task.alphaMessages.at(-1)
+			expect(finalMessage).toMatchObject(
+				sequence === "blocked"
+					? { say: "text", text: enCommon.errors.task_recovery_blocked_retries }
+					: { say: "completion_result", text: "I have an answer." },
+			)
+			if (sequence === "steered") {
+				expect(task.apiConversationHistory).toContainEqual(
+					expect.objectContaining({
+						role: "user",
+						input_origin: "human",
+						content: expect.arrayContaining([
+							expect.objectContaining({
+								type: "text",
+								text: expect.stringContaining("Use the information already available."),
+							}),
+						]),
+					}),
+				)
+			}
+			const receipts = task.apiConversationHistory.flatMap((message) =>
+				Array.isArray(message.content)
+					? message.content.filter(
+							(block): block is Anthropic.ToolResultBlockParam => block.type === "tool_result",
+						)
+					: [],
+			)
+			expect(receipts.map(({ tool_use_id, is_error }) => [tool_use_id, is_error === true])).toEqual([
+				["browser-1", true],
+				["browser-2", true],
+				["browser-3", true],
+				...(inspect
+					? [
+							["browser-inspection", false],
+							["browser-4", true],
+						]
+					: []),
+			])
 		})
 
 		it.each([
@@ -10187,7 +10328,7 @@ describe("Alpha", () => {
 				})
 			const execute = vi.spyOn(task as any, "executeCanonicalToolCallsForTurn").mockImplementation(async () => {
 				events.push("effects")
-				return { status: "completed" }
+				return { status: "completed", results: [] }
 			})
 			const surface = createTaskToolSurface({
 				registry: new ToolRegistry({ nativeTools: getNativeTools() }),

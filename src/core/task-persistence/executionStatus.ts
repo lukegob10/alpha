@@ -1,4 +1,5 @@
-import type { AlphaMessage, CommandExecutionStatus, McpExecutionStatus } from "@alpha-code/types"
+import { safeJsonParse } from "@alpha-code/core"
+import type { AlphaMessage, AlphaSayTool, CommandExecutionStatus, McpExecutionStatus } from "@alpha-code/types"
 import { commandExecutionStatusSchema, mcpExecutionStatusSchema } from "@alpha-code/types"
 
 const MAX_PREVIEW_CHARS = 100_000
@@ -86,7 +87,7 @@ export function projectMcpExecutionStatus(
 /** Codex d4a341b replay.rs replays typed outcomes; a cold Alpha host cannot revive prior processes. */
 export function reconcileExecutionStatuses(
 	messages: AlphaMessage[],
-	isLive: (message: AlphaMessage, kind: "command" | "mcp") => boolean,
+	isLive: (message: AlphaMessage, kind: "command" | "mcp" | "browser") => boolean,
 ): AlphaMessage[] {
 	return messages.map((message) => {
 		const command = commandExecutionStatusSchema.safeParse(message.commandExecutionStatus)
@@ -116,6 +117,16 @@ export function reconcileExecutionStatuses(
 					toolCallId: mcp.data.toolCallId,
 					status: "cancelled",
 				},
+			}
+		}
+		if (message.type === "say" && message.say === "tool") {
+			const browser = safeJsonParse<AlphaSayTool>(message.text)
+			if (browser?.tool === "browserAction" && browser.status === "running" && !isLive(message, "browser")) {
+				result = {
+					...result,
+					text: JSON.stringify({ ...browser, status: "cancelled" }),
+					partial: false,
+				}
 			}
 		}
 		return result

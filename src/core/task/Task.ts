@@ -702,6 +702,8 @@ interface TaskStepExecutionResult {
 	response?: AgentResponse
 	reason?: string
 	error?: unknown
+	/** Every tool call in this model step was refused by the scheduler's scoped retry guard. */
+	onlyBlockedToolRetries?: true
 	/** Runtime-only provider-neutral transaction; never part of persisted task state. */
 	transaction?: TaskStepTransaction
 	/** Process-local admission only; failed canonical output remains failed in history. */
@@ -6961,9 +6963,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			requireExisting,
 		})
 		return reconcileExecutionStatuses(messages, (message, kind) => {
-			if (kind === "mcp") {
+			if (kind === "mcp" || kind === "browser") {
 				if (!this.currentAgentStep || this.abort) return false
-				const callId = message.toolCallId ?? message.mcpExecutionStatus?.toolCallId
+				const callId =
+					message.toolCallId ?? (kind === "mcp" ? message.mcpExecutionStatus?.toolCallId : undefined)
 				const lifecycle = this.getCanonicalLifecycleSnapshot()
 				return Boolean(
 					callId &&
@@ -7161,6 +7164,64 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (ownership && !ownership.guard()) return
 		const publishedMessage = this.findCurrentAlphaMessage(message)
 		if (publishedMessage) this.emit(AlphaCodeEventName.Message, { action: "updated", message: publishedMessage })
+	}
+
+	/** Browser activity belongs to the admitted call, even if another message arrives during its host invocation. */
+	public canDispatchBrowserTool(): boolean {
+		return !this.abort && !this.abandoned && this.isCurrentApiConversationHistoryOwner()
+	}
+
+	public async beginBrowserToolActivity(
+		text: string,
+		toolCallId?: string,
+	): Promise<((terminalText: string) => Promise<void>) | undefined> {
+		const guard = () => !this.abandoned && this.isCurrentApiConversationHistoryOwner()
+		if (!this.canDispatchBrowserTool()) return undefined
+		const ownership = { guard, provider: this.providerRef.deref() }
+		const ts = this.reserveUiMessageTimestamp()
+		const turn = this.toolInputContext?.getStore()?.turn ?? this.captureMessageTurn()
+		const running = await this.commitAlphaMessageMutation(
+			ts,
+			"browser activity",
+			() => ({
+				ts,
+				type: "say",
+				say: "tool",
+				text: redactTaskPrivatePaths(this, text),
+				partial: true,
+				...(toolCallId ? { toolCallId: sanitizeToolUseId(toolCallId) } : {}),
+			}),
+			undefined,
+			undefined,
+			ownership,
+			turn,
+			true,
+		)
+		if (!running) return undefined
+		if (!this.abort) this.lastMessageTs = Math.max(this.lastMessageTs ?? 0, ts)
+		try {
+			await this.publishAlphaMessageCreated(running.message, undefined, ownership)
+		} catch {
+			// The saved row can still be settled even when the webview is disconnected.
+			console.warn("[Task] Could not publish running browser activity.")
+		}
+		return async (terminalText) => {
+			if (!guard() || !this.findMessageByTimestamp(ts)?.partial) return
+			const settled = await this.commitAlphaMessageMutation(
+				ts,
+				"terminal browser activity",
+				(message) =>
+					message?.partial
+						? { ...message, text: redactTaskPrivatePaths(this, terminalText), partial: false }
+						: undefined,
+				undefined,
+				undefined,
+				ownership,
+				turn,
+				true,
+			)
+			if (settled) await this.updateAlphaMessage(settled.message, ownership)
+		}
 	}
 
 	/** Separate presentation transport, with the same observable provider creation boundary as task work. */
@@ -10483,12 +10544,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			const unavailable = obligations.some((item) => item.scopeUnresolved)
 			const receiptPending = obligations.some((item) => item.mutationReservations?.length)
 			const resultsPending = (decision.unconsumedResultCount ?? 0) > 0
-			const descendantsPending = (decision.activeDescendantCount ?? 0) > 0 && !resultsPending
+			const descendantsPending = (decision.activeDescendantCount ?? 0) > 0 && (receiptPending || !resultsPending)
+			// A shared-workspace child can settle a receipt in its parent's ledger.
+			// Give active descendants time to finish before starting the orphan deadline.
 			const waitReason = !unavailable
-				? receiptPending
-					? "receipt_pending"
-					: descendantsPending
-						? "descendants_running"
+				? descendantsPending
+					? "descendants_running"
+					: receiptPending
+						? "receipt_pending"
 						: undefined
 				: undefined
 			// Earlier command diagnostics cannot override a current receipt/child wait.
@@ -16108,6 +16171,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let acceptedToolCallIds = new Set<string>()
 		let hasUnreadAsyncHookContext = false
 		let unsignalledReasoningSteps = 0
+		let previousStepOnlyBlockedToolRetries = false
+		const hasRetryRecoveryInput = () =>
+			this.hasPendingSteerMessage() || this.hasPendingAgentMessages() || hasUnreadAsyncHookContext
 		let goalWasActiveThisTurn = false
 		let goalTurnHadActivity = false
 		let goalTurnHadEmptyFinal = false
@@ -16145,8 +16211,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			},
 			sampleStep: async (input) => {
 				compactedCompletionStep = false
-				if (input.inputOrigin === "human" || this.pendingSteerMessage || this.steerMessageAwaitingPersistence)
+				if (input.inputOrigin === "human" || this.hasPendingSteerMessage()) {
 					goalTurnHadActivity = true
+					previousStepOnlyBlockedToolRetries = false
+				}
 				if (pendingOpeningMessageTs !== undefined) {
 					const timestamp = pendingOpeningMessageTs
 					pendingOpeningMessageTs = undefined
@@ -16455,30 +16523,49 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (!ownsCompletedStep()) return ownershipLostResult
 					goalTurnHadActivity ||= hasUnreadAsyncHookContext
 				}
-				const suspension = this.pendingTurnSuspension
+				const onlyBlockedToolRetries =
+					stepResult.status === "completed" &&
+					stepResult.onlyBlockedToolRetries === true &&
+					!hasRetryRecoveryInput()
+				// Let the first refused batch reach the model so it can choose another approach.
+				const retrySuspension =
+					!this.pendingTurnSuspension &&
+					!this.abort &&
+					onlyBlockedToolRetries &&
+					previousStepOnlyBlockedToolRetries
+				previousStepOnlyBlockedToolRetries = onlyBlockedToolRetries
+				const suspension =
+					this.pendingTurnSuspension ??
+					(retrySuspension
+						? { reason: t("common:errors.task_recovery_blocked_retries"), kind: "blocked" as const }
+						: undefined)
 				if (suspension) {
 					this.pendingTurnSuspension = undefined
 					const persisted = await this.flushPendingToolResultsToHistory()
 					if (!ownsCompletedStep()) return ownershipLostResult
-					const terminalReason = stepResult.reason ?? suspension.reason
-					const terminalStatus =
-						stepResult.status === "failed" || stepResult.status === "aborted"
-							? stepResult.status
-							: "incomplete"
-					if (suspension.kind === "blocked" && persisted && stepResult.status === "completed") {
-						// Finalize the streamed report as ordinary text; resume keeps the task and its debt open.
-						await this.say("text", terminalReason, undefined, false)
+					if (retrySuspension && persisted && hasRetryRecoveryInput()) {
+						previousStepOnlyBlockedToolRetries = false
 					} else {
-						await this.say(
-							"error",
-							persisted
-								? terminalReason
-								: `${terminalReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
-						)
+						const terminalReason = stepResult.reason ?? suspension.reason
+						const terminalStatus =
+							stepResult.status === "failed" || stepResult.status === "aborted"
+								? stepResult.status
+								: "incomplete"
+						if (suspension.kind === "blocked" && persisted && stepResult.status === "completed") {
+							// Finalize the streamed report as ordinary text; resume keeps the task and its debt open.
+							await this.say("text", terminalReason, undefined, false)
+						} else {
+							await this.say(
+								"error",
+								persisted
+									? terminalReason
+									: `${terminalReason}\n\nThe completion error could not be persisted; the task was paused without another model request.`,
+							)
+						}
+						if (!ownsCompletedStep()) return ownershipLostResult
+						recoveryExplanationPublished = true
+						return { status: terminalStatus, reason: terminalReason, error: stepResult.error }
 					}
-					if (!ownsCompletedStep()) return ownershipLostResult
-					recoveryExplanationPublished = true
-					return { status: terminalStatus, reason: terminalReason, error: stepResult.error }
 				}
 				const goalStep = completedStep?.goalAccounting
 				const stepGoal = await goalStep?.controller.get()
@@ -16801,6 +16888,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				this.lifecycleHookStoppedThisTurn = false
 				unsignalledReasoningSteps = 0
+				previousStepOnlyBlockedToolRetries = false
 				let outcome = await engine.run(input)
 				if (!ownsTurnAndSample()) return outcome
 				if (
@@ -19919,6 +20007,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const executeEffects = async (): Promise<TaskStepExecutionResult> => {
 						if (!ownsResponseStep()) return supersededResponseResult()
 						if (hasAssistantContent || responseRequiresContinuation || hasAuthoritativeCompletion) {
+							let onlyBlockedToolRetries = false
 							// All canonical calls are complete and execution is now owned by the
 							// serial scheduler. It commits tool results to the next user message
 							// only after the assistant history write above has completed.
@@ -20035,6 +20124,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 											response: canonicalResponse,
 										}
 									}
+									onlyBlockedToolRetries =
+										schedulerOutcome.results.length === canonicalResponse!.toolCalls.length &&
+										schedulerOutcome.results.every((result) => result.retryBlocked === true)
 								}
 							}
 							if (!ownsResponseStep()) return supersededResponseResult()
@@ -20085,7 +20177,11 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							// Return after one complete model/tool turn. AgentTurnEngine owns
 							// continuation sequencing; keeping this method to one step makes
 							// the assistant-response/tool-result boundary explicit.
-							return { status: "completed", response: this.currentAgentResponse }
+							return {
+								status: "completed",
+								response: this.currentAgentResponse,
+								...(onlyBlockedToolRetries ? { onlyBlockedToolRetries: true } : {}),
+							}
 						}
 						return { status: "completed", response: canonicalResponse }
 					}

@@ -1,20 +1,33 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { invokeVSCodeBrowserTool } from "../../../services/browser/VSCodeBrowserTools"
+import {
+	invokeVSCodeBrowserTool,
+	validateVSCodeBrowserToolInvocation,
+	VSCodeBrowserToolCancellation,
+	VSCodeBrowserToolPreflightError,
+} from "../../../services/browser/VSCodeBrowserTools"
 import { ToolScheduler, type ToolExecutionHost, type ToolSchedulerOptions } from "../../agent/ToolScheduler"
 import { NativeToolCallParser } from "../../assistant-message/NativeToolCallParser"
 import type { Task } from "../../task/Task"
 import { createTaskToolSurface } from "../TaskToolSurface"
 import { ToolRegistry } from "../ToolRegistry"
-import { handleDialogTool, openBrowserPageTool, readPageTool } from "../VSCodeBrowserTool"
+import { handleDialogTool, listBrowserPagesTool, openBrowserPageTool, readPageTool } from "../VSCodeBrowserTool"
 
-vi.mock("../../../services/browser/VSCodeBrowserTools", () => ({
+vi.mock("../../../services/browser/VSCodeBrowserTools", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../services/browser/VSCodeBrowserTools")>()),
 	invokeVSCodeBrowserTool: vi.fn(),
+	validateVSCodeBrowserToolInvocation: vi.fn(),
 }))
 
 function harness(signal?: AbortSignal) {
+	const say = vi.fn<Task["say"]>(async () => undefined)
 	const task = {
-		say: vi.fn(async () => undefined),
+		say,
+		canDispatchBrowserTool: vi.fn(() => true),
+		beginBrowserToolActivity: vi.fn(async (text: string) => {
+			await say("tool", text, undefined, true)
+			return (terminalText: string) => say("tool", terminalText, undefined, false)
+		}),
 		consecutiveMistakeCount: 2,
 		recordToolUsage: vi.fn(),
 	} as any
@@ -46,11 +59,11 @@ function scheduledBrowser() {
 	const timeline: string[] = []
 	const cwd = process.cwd()
 	const task = {
+		...harness().task,
 		taskId: "browser-effect-admission",
 		cwd,
 		taskKind: "primary",
 		consecutiveMistakeCount: 0,
-		say: vi.fn(async () => undefined),
 	} as unknown as Task
 	const host: ToolExecutionHost = {
 		taskId: task.taskId,
@@ -151,6 +164,56 @@ describe("VSCodeBrowserTool", () => {
 		expect(callbacks.pushToolResult).toHaveBeenCalledWith("Page contents")
 	})
 
+	it("keeps a browser approval separate from running activity", async () => {
+		const { task, callbacks } = harness()
+		callbacks.askApproval.mockResolvedValue(false)
+
+		await listBrowserPagesTool.execute({}, task, callbacks)
+
+		const approval = JSON.parse(callbacks.askApproval.mock.calls[0][1])
+		expect(approval).toEqual({ tool: "browserAction", action: "list_browser_pages" })
+		expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
+	})
+
+	it("retains the successful host result when browser activity publication rejects", async () => {
+		const { task, callbacks } = harness()
+		vi.mocked(invokeVSCodeBrowserTool).mockResolvedValue("Pages listed")
+		task.say.mockImplementation(async (_type: string, text: string) => {
+			if (JSON.parse(text).status === "completed") throw new Error("Webview disconnected")
+		})
+
+		await listBrowserPagesTool.execute({}, task, callbacks)
+
+		expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith("Pages listed")
+		expect(callbacks.setResultMetadata).toHaveBeenLastCalledWith({ status: "success" })
+		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it.each([false, true])(
+		"does not dispatch after losing Task ownership during activity (rejects=%s)",
+		async (rejects) => {
+			const cancellation = new AbortController()
+			const { task, callbacks } = harness(cancellation.signal)
+			const settle = vi.fn(async () => undefined)
+			task.beginBrowserToolActivity.mockImplementation(async () => {
+				task.canDispatchBrowserTool.mockReturnValue(false)
+				if (rejects) throw new Error("Browser activity persistence failed")
+				return settle
+			})
+
+			await listBrowserPagesTool.execute({}, task, callbacks)
+
+			expect(cancellation.signal.aborted).toBe(false)
+			expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
+			expect(callbacks.pushToolResult).toHaveBeenCalledExactlyOnceWith(expect.stringContaining("cancelled"))
+			expect(callbacks.setResultMetadata).toHaveBeenCalledWith({
+				status: "cancelled",
+				failure: expect.objectContaining({ reason: "cancelled", effectsStarted: "no", outcome: "known" }),
+			})
+			if (!rejects) expect(settle).toHaveBeenCalledWith(expect.stringContaining('"status":"cancelled"'))
+		},
+	)
+
 	it.each([
 		{ params: { selectFiles: ["/workspace/test.txt"] }, needsReview: true },
 		{ params: { selectFiles: [] }, needsReview: false },
@@ -170,6 +233,9 @@ describe("VSCodeBrowserTool", () => {
 				undefined,
 				needsReview,
 			)
+			if (needsReview) {
+				expect(JSON.parse(callbacks.askApproval.mock.calls[0][1]).selectFiles).toEqual(params.selectFiles)
+			}
 			expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
 		},
 	)
@@ -192,19 +258,33 @@ describe("VSCodeBrowserTool", () => {
 	})
 
 	it("returns a cancellation result without reporting a regular tool error", async () => {
-		vi.mocked(invokeVSCodeBrowserTool).mockRejectedValue(new Error("Cancelled"))
 		const controller = new AbortController()
-		controller.abort()
+		vi.mocked(invokeVSCodeBrowserTool).mockImplementation(async () => {
+			controller.abort()
+			throw new Error("Cancelled")
+		})
 		const { task, callbacks } = harness(controller.signal)
 
 		await readPageTool.execute({ pageId: "page-1" }, task, callbacks)
 
-		expect(presentations(task)[0]).toMatchObject({
+		expect(presentations(task)[1]).toMatchObject({
 			payload: { action: "read_page", status: "cancelled" },
 			partial: false,
 		})
 		expect(callbacks.pushToolResult).toHaveBeenCalledWith(expect.stringContaining("cancelled"))
 		expect(callbacks.handleError).not.toHaveBeenCalled()
+	})
+
+	it("does not publish activity or request approval when already cancelled", async () => {
+		const signal = AbortSignal.abort()
+		const { task, callbacks } = harness(signal)
+
+		await listBrowserPagesTool.execute({}, task, callbacks)
+
+		expect(callbacks.askApproval).not.toHaveBeenCalled()
+		expect(task.beginBrowserToolActivity).not.toHaveBeenCalled()
+		expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
+		expect(callbacks.setResultMetadata).toHaveBeenCalledWith({ status: "cancelled" })
 	})
 })
 
@@ -288,6 +368,61 @@ describe("VSCodeBrowserTool scheduler admission", () => {
 
 		expect(fixture.timeline).toEqual(["approval", "effect-start", "host"])
 		expect(outcome.results).toMatchObject([{ status: "success" }])
+	})
+
+	it("retains the browser's original error when publishing the generic error row rejects", async () => {
+		const fixture = scheduledBrowser()
+		vi.mocked(invokeVSCodeBrowserTool).mockRejectedValue(new Error("Browser host rejected the action"))
+		fixture.host.say = vi.fn(async () => {
+			throw new Error("Webview disconnected")
+		})
+
+		const outcome = await fixture.run()
+
+		expect(outcome.results).toMatchObject([
+			{ status: "error", content: expect.stringContaining("Browser host rejected the action") },
+		])
+		expect(outcome.results[0]?.content).not.toContain("Webview disconnected")
+	})
+
+	it.each(["invalid_arguments", "capability_unavailable"] as const)(
+		"records %s as a known preflight failure without approval or host effects",
+		async (reason) => {
+			const fixture = scheduledBrowser()
+			vi.mocked(validateVSCodeBrowserToolInvocation).mockImplementationOnce(() => {
+				throw new VSCodeBrowserToolPreflightError(reason, "Browser action unavailable")
+			})
+
+			const outcome = await fixture.run()
+
+			expect(fixture.host.requestToolApproval).not.toHaveBeenCalled()
+			expect(fixture.onEffectStart).not.toHaveBeenCalled()
+			expect(invokeVSCodeBrowserTool).not.toHaveBeenCalled()
+			expect(outcome.results).toMatchObject([
+				{
+					status: "error",
+					failure: { reason, effectsStarted: "no", outcome: "known" },
+					content: expect.stringContaining("Browser action unavailable"),
+				},
+			])
+		},
+	)
+
+	it("records a host confirmation cancellation without an Alpha cancellation signal", async () => {
+		const fixture = scheduledBrowser()
+		vi.mocked(invokeVSCodeBrowserTool).mockRejectedValue(new VSCodeBrowserToolCancellation())
+
+		const outcome = await fixture.run()
+
+		expect(fixture.onEffectStart).toHaveBeenCalledOnce()
+		expect(fixture.host.say).not.toHaveBeenCalledWith("error", expect.anything())
+		expect(outcome.results).toMatchObject([
+			{
+				status: "cancelled",
+				content: expect.stringContaining("outcome is unknown"),
+				failure: { reason: "outcome_unknown", effectsStarted: "unknown", outcome: "unknown" },
+			},
+		])
 	})
 
 	it("does not invoke the host when Stop wins during effect admission", async () => {

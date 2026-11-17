@@ -224,6 +224,8 @@ describe("file mutation receipt settlement", () => {
 			expect(decision.reasonCode).toBe("runtime_timeout")
 			expect(decision.message).toContain("No active operation is tracked for the missing receipt")
 			expect(decision.message).toContain("Get detailed error info")
+			expect(decision.message).toContain("Restoring a checkpoint leaves this chat waiting for the same receipt.")
+			expect(decision.message).toContain("review the workspace files and use New Chat")
 			expect(decision.message).not.toContain("Resume after the existing operation settles")
 			expect(reloaded.getSnapshot().verificationObligations[0]?.mutationReservations).toEqual(["html-edit"])
 		} finally {

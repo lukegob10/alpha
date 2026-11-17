@@ -23,22 +23,26 @@ export function getSystemInfoSection(
 ): string {
 	// windows-release (used by os-name) launches WMIC/PowerShell synchronously.
 	// Prompt construction must not block checkpoint/process callbacks in the host.
+	const platform = os.platform()
 	let osInfo: string
 	try {
-		osInfo = os.platform() === "win32" ? `Windows (kernel ${os.release()})` : osName()
+		osInfo = platform === "win32" ? `Windows (kernel ${os.release()})` : osName()
 	} catch (error) {
 		// Keep prompt construction available when descriptive metadata is unavailable.
-		const platform = os.platform()
 		const release = os.release()
 		osInfo = `${platform} ${release}`
 	}
+	const wslGuidance =
+		platform === "win32"
+			? "\nBefore using WSL for Linux verification, run wsl.exe --list --verbose and confirm the required distribution is listed. If WSL or the required distribution is unavailable, report that you could not verify on Linux."
+			: ""
 
 	let details = `====
 
 SYSTEM INFORMATION
 
 Operating System: ${osInfo}
-Default Shell: ${commandShell}${getCommandSyntax(commandShell)}
+Default Shell: ${commandShell}${getCommandSyntax(commandShell)}${wslGuidance}
 Home Directory: ${os.homedir().toPosix()}
 Current Workspace Directory: ${cwd.toPosix()}
 

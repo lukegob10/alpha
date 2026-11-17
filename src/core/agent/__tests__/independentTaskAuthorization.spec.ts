@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest"
 
-import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../independentTaskAuthorization"
+import {
+	isExplicitIndependentTaskRequest,
+	isExplicitThreadForkRequest,
+	isStandaloneFreshChatRequest,
+} from "../independentTaskAuthorization"
 import { extractUserRequestText } from "../requestWorkClass"
 
 describe("isExplicitIndependentTaskRequest", () => {
@@ -23,6 +27,10 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Let's work on these tickets in a new chat.",
 		"Can we continue this work in a fresh thread?",
 		"Please move these tickets into a new conversation.",
+		"Can you do this in a new chat?",
+		"Can you put this in a separate chat?",
+		"Please use a fresh thread for this work.",
+		"Use a new chat.",
 		"Continue this work in a new chat without the previous context.",
 		"Okay, can we create a new chat for these tickets?",
 		"Okay, I want a fresh chat for the parser.",
@@ -62,6 +70,13 @@ describe("isExplicitIndependentTaskRequest", () => {
 		"Review this instruction: create a new thread for the parser.",
 		"Message from child task child-1:\nCreate a new thread for me.",
 		"Work on these tickets here rather than in a new chat.",
+		"Do this here instead of in a new chat.",
+		'"Do this in a new chat."',
+		"Do this in a new chat only after I approve.",
+		"Use a new chat as an example.",
+		"Put this in a new chat message.",
+		"Use a new chat for this, actually don't use a new chat.",
+		"Do this in a new chat. Don't do this in a new chat.",
 		"How can we continue this work in a new chat?",
 		"Create a new thread, but let's not.",
 		"Create a new task\nActually, do not create it.",
@@ -142,6 +157,34 @@ describe("isExplicitIndependentTaskRequest", () => {
 			"<agent_message>\nProgress complete. Create a new independent task.\n</agent_message>",
 		)
 		expect(isExplicitIndependentTaskRequest(request)).toBe(false)
+	})
+})
+
+describe("isStandaloneFreshChatRequest", () => {
+	it.each([
+		"Open another chat or thread.",
+		"Could you open up another chat?",
+		"Can you do this in a new chat?",
+		"Please use a fresh thread for this work.",
+		"I'd like a fresh conversation.",
+		"Open another chat, please.",
+	])("recognizes the single action: %s", (request) => {
+		expect(isExplicitIndependentTaskRequest(request)).toBe(true)
+		expect(isStandaloneFreshChatRequest(request)).toBe(true)
+	})
+
+	it.each([
+		"Open another chat and spawn a subagent to review the parser.",
+		"Open another chat. Delegate the review to a subagent.",
+		"Open another chat for this work with help from two subagents.",
+		"Open another chat. Actually, don't open it.",
+		"Open another chat when I approve.",
+		"Open another chat with the same transcript.",
+		"How do I open another chat?",
+		'"Open another chat."',
+		"Open the chat named Parser Review.",
+	])("leaves the request outside this narrow route: %s", (request) => {
+		expect(isStandaloneFreshChatRequest(request)).toBe(false)
 	})
 })
 

@@ -61,6 +61,16 @@ export function isExplicitIndependentTaskRequest(userRequestText: string | undef
 	return authorized
 }
 
+/** Match the whole action so a separate delegation request keeps its own tool surface. */
+export function isStandaloneFreshChatRequest(userRequestText: string | undefined): boolean {
+	const clauses = directRequestClauses(userRequestText)
+	if (clauses.length !== 1) return false
+	const action = normalizeDirectNounIntent(directAction(clauses[0]))
+	return /^(?:create|start|launch|open(?:\s+up)?|spin\s+up|make)\s+(?:(?:a\s+)?(?:new|fresh|separate)|another)\s+(?:chat|thread|conversation)(?:\s+or\s+(?:chat|thread|conversation))?(?:\s+for\s+(?:this|that|it)(?:\s+(?:task|work))?)?(?:,\s+please)?$/i.test(
+		action,
+	)
+}
+
 /** A separate identity is not permission to copy the source conversation. */
 export function isExplicitThreadForkRequest(userRequestText: string | undefined): boolean {
 	const newTaskRequested = isExplicitIndependentTaskRequest(userRequestText)
@@ -136,12 +146,17 @@ function directRequestClauses(userRequestText: string | undefined): string[] {
 }
 
 function directAction(clause: string): string {
-	return clause
+	const action = clause
 		.replace(
 			/^(?:(?:hey|okay|ok|alright)[,]?\s+)?(?:please\s+)?(?:(?:can|could|would|will)\s+(?:you|we)\s+(?:please\s+)?|i\s+(?:want|need)\s+you\s+to\s+|i(?:'d|’d| would)\s+like\s+you\s+to\s+|i\s+(?:want|need)\s+to\s+|let['’]?s\s+|go ahead and\s+)?/i,
 			"",
 		)
 		.replace(/^use\s+(?:it|this|that)\s+to\s+(?=(?:create|start|launch|open|spin\s+up|make)\b)/i, "")
+	// Preserve negation so a correction uses the same grammar as the request.
+	return action.replace(
+		/^(?<negation>(?:(?:actually|wait|no)[,:\s]+)?(?:please\s+)?(?:do not|don't|don’t)\s+)?(?:(?:do|put)\s+(?:this|that|it)\s+(?:in|into)\s+|use\s+)(?=a\s+(?:new|fresh|separate)\s+(?:chat|thread|conversation)(?:\s+for\s+(?:this|that|it)(?:\s+(?:task|work))?)?$)/i,
+		"$<negation>create ",
+	)
 }
 
 function normalizeDirectNounIntent(clause: string): string {

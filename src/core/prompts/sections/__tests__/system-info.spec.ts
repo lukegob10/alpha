@@ -39,6 +39,7 @@ describe("getSystemInfoSection", () => {
 		expect(result).toContain(`Home Directory: ${mockHomeDir}`)
 		expect(result).toContain(`Current Workspace Directory: ${mockCwd}`)
 		expect(result).toContain(`current workspace directory ('${mockCwd}')`)
+		expect(result).not.toContain("wsl.exe")
 	})
 
 	it("should fallback to platform and release when os-name throws error", () => {
@@ -66,6 +67,14 @@ describe("getSystemInfoSection", () => {
 		expect(result).toContain("Operating System: Windows (kernel 10.0.19043)")
 		getSystemInfoSection(mockCwd)
 		expect(mockOsName).not.toHaveBeenCalled()
+	})
+
+	it("guides Linux verification through an installed WSL distribution on Windows", () => {
+		vi.mocked(os.platform).mockReturnValue("win32")
+		const result = getSystemInfoSection(mockCwd, "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
+
+		expect(result).toContain("run wsl.exe --list --verbose and confirm the required distribution is listed")
+		expect(result).toContain("report that you could not verify on Linux")
 	})
 
 	it("reports the actual command shell when it differs from the VS Code profile", () => {

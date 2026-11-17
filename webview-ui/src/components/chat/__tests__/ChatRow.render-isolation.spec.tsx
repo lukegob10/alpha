@@ -175,6 +175,7 @@ describe("ChatRow render isolation", () => {
 			const { rerender } = render(row(environment))
 			const label = terminalStatus === "completed" ? "chat:taskCompleted" : "chat:completionReport"
 			expect(screen.getByRole("article", { name: label })).toBeInTheDocument()
+			expect(screen.getByText(label)).toBeVisible()
 			expect(screen.getByText(message.text!)).toBeInTheDocument()
 			const completed = { ...environment.currentTaskItem!, status: "completed" as const }
 			rerender(row({ ...environment, currentTaskItem: completed }))
@@ -189,11 +190,10 @@ describe("ChatRow render isolation", () => {
 		},
 	)
 
-	it("keeps a partial completion report neutral before its terminal row is accepted", () => {
+	it.each(["say", "ask"] as const)("keeps a partial completion %s neutral before accepting it", (type) => {
 		const message: AlphaMessage = {
 			ts: 2,
-			type: "say",
-			say: "completion_result",
+			...(type === "say" ? { type: "say", say: "completion_result" } : { type: "ask", ask: "completion_result" }),
 			text: "Still streaming",
 			partial: true,
 			turn: { runId: "run-one", turnId: "turn-one", terminalStatus: "completed" },
@@ -215,6 +215,7 @@ describe("ChatRow render isolation", () => {
 			/>,
 		)
 		expect(screen.getByRole("article", { name: "chat:completionReport" })).toBeInTheDocument()
+		expect(screen.getByText("chat:completionReport")).toBeVisible()
 		expect(screen.queryByRole("article", { name: "chat:taskCompleted" })).not.toBeInTheDocument()
 	})
 

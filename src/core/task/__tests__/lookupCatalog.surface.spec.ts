@@ -482,6 +482,73 @@ describe("request-independent tool authority", () => {
 		},
 	)
 
+	it("routes a standalone fresh-chat request in Code without delegating", async () => {
+		for (const apiProvider of ["vscode-lm", "vertex"] as const) {
+			const replay = apiProvider === "vertex"
+			const base = options({
+				apiConfiguration: { apiProvider },
+				includeAllToolsWithRestrictions: replay,
+				crossTaskRole: "root",
+				discoveryHistory: [
+					{
+						role: "assistant",
+						content: [{ type: "tool_use", id: "prior-spawn", name: "spawn_agent", input: {} }],
+					},
+				],
+			})
+			const standalone = "Open another chat or thread."
+			const mixed = "Open another chat and spawn a subagent to review the parser."
+			const before = await buildNativeToolsArrayWithRestrictions({ ...base, userRequestText: mixed })
+			expect(before.surface?.isCallable("create_thread"), apiProvider).toBe(true)
+			expect(before.surface?.isCallable("spawn_agent"), apiProvider).toBe(true)
+
+			const fresh = await buildNativeToolsArrayWithRestrictions({ ...base, userRequestText: standalone })
+			expect(namesOf(fresh.tools), apiProvider).toContain("create_thread")
+			expect(fresh.surface?.isCallable("create_thread"), apiProvider).toBe(true)
+			expect(fresh.surface?.isCallable("fork_thread"), apiProvider).toBe(false)
+			expect(fresh.surface?.isCallable("spawn_agent"), apiProvider).toBe(false)
+			expect(fresh.surface?.resolve("spawn_agent"), apiProvider).toBeUndefined()
+			expect(namesOf(fresh.tools).includes("spawn_agent"), apiProvider).toBe(replay)
+			if (replay) expect(fresh.allowedFunctionNames).not.toContain("spawn_agent")
+
+			const after = await buildNativeToolsArrayWithRestrictions({ ...base, userRequestText: mixed })
+			expect(after.surface?.isCallable("spawn_agent"), apiProvider).toBe(true)
+
+			for (const restrictions of [
+				{ disabledTools: ["create_thread"] },
+				{ allowedToolNames: ["spawn_agent"] },
+				{ policy: createToolPolicySnapshot({ visibleTools: ["spawn_agent"] }) },
+			]) {
+				const denied = await buildNativeToolsArrayWithRestrictions({
+					...base,
+					...restrictions,
+					userRequestText: standalone,
+				})
+				expect(denied.surface?.isCallable("create_thread"), apiProvider).toBe(false)
+				expect(denied.surface?.isCallable("spawn_agent"), apiProvider).toBe(false)
+			}
+		}
+	})
+
+	it("avoids delegation when Plan cannot open a requested fresh chat", async () => {
+		const base = options({
+			mode: "architect",
+			apiConfiguration: { apiProvider: "vscode-lm" },
+			crossTaskRole: "root",
+		})
+		const result = await buildNativeToolsArrayWithRestrictions({
+			...base,
+			userRequestText: "Open another chat or thread.",
+		})
+		expect(result.surface?.isCallable("create_thread")).toBe(false)
+		expect(result.surface?.isCallable("spawn_agent")).toBe(false)
+		const delegation = await buildNativeToolsArrayWithRestrictions({
+			...base,
+			userRequestText: "Spawn a subagent to review the plan.",
+		})
+		expect(delegation.surface?.isCallable("spawn_agent")).toBe(true)
+	})
+
 	it("keeps a historical fork declaration for restricted-provider replay without allowing a new fork", async () => {
 		const result = await buildNativeToolsArrayWithRestrictions(
 			options({

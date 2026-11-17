@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Alpha checks for workspace changes faster after commands, skips unnecessary token counts, and keeps model responses streaming during reasoning updates."
+		"Alpha routes new-chat requests more reliably, shows what browser actions need approval, and gives active subagents time to finish before checking for missing workspace receipts."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

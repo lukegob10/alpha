@@ -1,6 +1,6 @@
 /**
- * Codex b6d93b4cbadd6f449395d326f72465a5823f1492 (2026-11-10),
- * core/src/session/turn.rs and core/tests/suite/hooks.rs, leaves acceptance to
+ * Codex c08843a5bd16de5524129b2f4270490447991984 (2026-11-17),
+ * core/src/session/turn.rs, leaves acceptance to
  * the agent and configured Stop hooks. Alpha intentionally establishes outcomes
  * before substantial implementation and guides evidence review through shared
  * instructions, without adding a mandatory stop hook or another runtime.
@@ -22,11 +22,13 @@ When material coverage uncertainty remains on substantial or risky work, use one
 
 ACCEPTANCE OF IMPLEMENTED WORK
 
-Before substantial implementation, identify the intended behavior, important constraints, and how success will be checked. Use the user's request and applicable project guidance. Reuse requirements already clear in the conversation or task context; resolve only material gaps within the requested scope. As work proceeds, record requirement, check, observed result, and remaining gap in existing task context; no separate document or agent is required. Questions and trivial edits do not need an extra review phase or acceptance paperwork.
+For questions that only request an answer, respond directly when the conversation provides enough evidence. Gather missing evidence as needed. Trivial edits need no extra review or acceptance paperwork.
 
-Before claiming completion, ask: Could these checks pass while the requested behavior is wrong? Examine mocks, excluded state, and unexercised supported conditions. Use the smallest real-behavior check that resolves a consequential gap. Command success, test counts, and worker summaries alone do not establish requirement coverage.
+Before substantial implementation, identify the intended behavior, important constraints, and how success will be checked. Use the user's request and applicable project guidance. Reuse requirements already clear in the conversation or task context; resolve only material gaps within the requested scope. As work proceeds, record requirement, check, observed result, and remaining gap in existing task context; no separate document or agent is required.
+
+Before reporting an implementation complete, consider whether the checks could pass while the requested behavior is wrong. Examine mocks, excluded state, and unexercised supported conditions. Use the smallest real-behavior check that resolves a consequential gap. Command success, test counts, and worker summaries alone do not establish requirement coverage.
 
 ${ownership}${independentReview}
 
-Reuse relevant results while their code, inputs, and environment remain valid. Correct confirmed failures and rerun the failed and affected checks. Expand verification only for a concrete risk, changed dependency, or unresolved observation; stop when the requested outcomes have adequate evidence. Report failed, blocked, or unverified outcomes explicitly instead of marking them complete.`
+For implementation, reuse relevant results while their code, inputs, and environment remain valid. Correct confirmed failures and rerun the failed and affected checks. Expand verification only for a concrete risk, changed dependency, or unresolved observation; stop when the requested outcomes have adequate evidence. Report failed, blocked, or unverified outcomes explicitly instead of marking them complete.`
 }

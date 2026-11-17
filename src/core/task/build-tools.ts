@@ -32,8 +32,13 @@ import { buildTaskToolSurface as captureTaskToolSurface, type TaskToolSurface } 
 import { canonicalizeToolName, ToolRegistry, type ToolRegistryOptions, type TaskReadGrant } from "../tools/ToolRegistry"
 import { isToolAllowed, type ToolPolicyInput, type ToolPolicySnapshot } from "../agent/ToolPolicy"
 import { digestValue } from "../agent/StepContext"
-import { isExplicitIndependentTaskRequest, isExplicitThreadForkRequest } from "../agent/independentTaskAuthorization"
+import {
+	isExplicitIndependentTaskRequest,
+	isExplicitThreadForkRequest,
+	isStandaloneFreshChatRequest,
+} from "../agent/independentTaskAuthorization"
 import { toolNamesReferencedInHistory } from "../agent/lookupToolCatalog"
+import { hasBrowserInteractionIntent } from "../agent/requestWorkClass"
 import type { ApiMessage } from "../task-persistence/apiMessages"
 import type { McpHub } from "../../services/mcp/McpHub"
 import { buildMcpToolName, parseMcpToolName } from "../../utils/mcp-name"
@@ -415,6 +420,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		taskKind === "primary" &&
 		crossTaskRole !== "none" &&
 		isExplicitIndependentTaskRequest(options.userRequestText)
+	const preferFreshChat = allowIndependentTaskCreation && isStandaloneFreshChatRequest(options.userRequestText)
 	const allowIndependentTaskFork =
 		!diagnosticSession &&
 		taskKind === "primary" &&
@@ -458,6 +464,20 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		? []
 		: [...(mcpHub?.getServers() ?? [])].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
 	const availableBrowserToolNames = diagnosticSession ? [] : [...getAvailableVSCodeBrowserToolNames()].sort()
+	// VS Code 1.141.0 registers page listing as an extension context helper. Offer
+	// it for browser work and keep old declarations when a provider needs replay.
+	const browserRequest = options.userRequestText ?? ""
+	const allowBrowserPageListing =
+		availableBrowserToolNames.includes("list_browser_pages") &&
+		(taskKind === "subagent" ||
+			hasBrowserInteractionIntent(browserRequest) ||
+			/\b(?:browser\s+(?:tabs?|pages?)|(?:open|current|existing|shared)\s+(?:tabs?|pages?)|list_browser_pages)\b/i.test(
+				browserRequest,
+			))
+	const includeBrowserPageListingSchema =
+		allowBrowserPageListing ||
+		(includeAllToolsWithRestrictions === true &&
+			historyContainsToolName(options.discoveryHistory, "list_browser_pages"))
 	const namedAgentTypes = diagnosticSession
 		? []
 		: Object.entries(provider.contextProxy?.getValues?.().subagentAgentTypes ?? {})
@@ -492,6 +512,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 				enableAgentLifecycleTools,
 				crossTaskRole,
 				allowIndependentTaskCreation,
+				preferFreshChat,
 				allowIndependentTaskFork,
 				legacyCrossTaskToolNames,
 				namedAgentTypes,
@@ -515,6 +536,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 					: undefined,
 				legacyDiscoverToolsInHistory: historyContainsToolName(options.discoveryHistory, "discover_tools"),
 				availableBrowserToolNames,
+				allowBrowserPageListing,
 				codeIndex: [
 					codeIndexManager?.isFeatureEnabled,
 					codeIndexManager?.isFeatureConfigured,
@@ -545,7 +567,9 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			diagnosticSession,
 			memoryToolsEnabled: options.memoryToolsEnabled === true,
 			supportsImages,
-			availableBrowserToolNames,
+			availableBrowserToolNames: availableBrowserToolNames.filter(
+				(name) => name !== "list_browser_pages" || includeBrowserPageListingSchema,
+			),
 			taskKind,
 			mcpResourcesAvailable: servers.length > 0,
 			includeLegacyMcpResource:
@@ -606,6 +630,7 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 			return (
 				(name !== "create_thread" || allowIndependentTaskCreation) &&
 				(name !== "fork_thread" || allowIndependentTaskFork) &&
+				(name !== "list_browser_pages" || allowBrowserPageListing) &&
 				!legacyCrossTaskToolNames.includes(name) &&
 				name !== "access_mcp_resource" &&
 				(canDiscover || (name !== "tool_search" && name !== "discover_tools"))
@@ -636,9 +661,11 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 		const taskAllowedNames = allowedToolNames ? new Set(allowedToolNames.map(canonicalizeToolName)) : undefined
 		// Request classification may guide planning, but cannot narrow execution
 		// authority: a lookup or skill can require an authorized follow-up edit.
-		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter(
-			(tool) => !taskAllowedNames || taskAllowedNames.has(canonicalizeToolName(getToolName(tool))),
-		)
+		const filteredTools = [...filteredNativeTools, ...filteredMcpTools, ...nativeCustomTools].filter((tool) => {
+			const name = canonicalizeToolName(getToolName(tool))
+			// A standalone request for an independent chat has its own lifecycle.
+			return (!preferFreshChat || name !== "spawn_agent") && (!taskAllowedNames || taskAllowedNames.has(name))
+		})
 		const nativeNames = new Set(taskNativeTools.map((tool) => canonicalizeToolName(getToolName(tool))))
 		const disabledNames = new Set(disabledTools.map(canonicalizeToolName))
 		const availableSources = [...filteredMcpTools, ...nativeCustomTools]
