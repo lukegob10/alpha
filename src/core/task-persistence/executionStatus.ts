@@ -36,13 +36,9 @@ export function projectCommandExecutionStatus(
 	if (status.status === "output") return { ...message, commandExecutionOutput: preview(status.output) }
 	// Only the producer's positive no-submission proof may reopen a failed transport.
 	if (terminal && !(confirmedPrelaunchFallback && status.status === "fallback" && previous.status === "error")) return
-	const retained =
-		status.status === "started"
-			? { ...status, command: preview(status.command) }
-			: status.status === "error" && status.error !== undefined
-				? { ...status, error: preview(status.error) }
-				: status
-	return { ...message, commandExecutionStatus: retained, toolCallId: message.toolCallId ?? status.toolCallId }
+	if (status.status === "started") status.command = preview(status.command)
+	else if (status.status === "error" && status.error !== undefined) status.error = preview(status.error)
+	return { ...message, commandExecutionStatus: status, toolCallId: message.toolCallId ?? status.toolCallId }
 }
 
 export function projectMcpExecutionStatus(
@@ -61,24 +57,23 @@ export function projectMcpExecutionStatus(
 	const status = parsed.data
 	const previous = message.mcpExecutionStatus
 	if (previous?.toolCallId && status.toolCallId && previous.toolCallId !== status.toolCallId) return
-	const terminal = previous && ["completed", "error", "cancelled"].includes(previous.status)
-	if (terminal) return
+	if (previous && ["completed", "error", "cancelled"].includes(previous.status)) return
 	if (status.status === "output")
 		return {
 			...message,
 			mcpExecutionResponse: preview((message.mcpExecutionResponse ?? "") + preview(status.response)),
 		}
-	const response = status.status === "completed" ? status.response : undefined
 	// Keep one bounded preview; the existing response transcript owns the full output.
-	const retained =
-		status.status === "completed"
-			? { ...status, response: undefined }
-			: status.status === "error" && status.error !== undefined
-				? { ...status, error: preview(status.error) }
-				: status
+	let response: string | undefined
+	if (status.status === "completed") {
+		response = status.response
+		status.response = undefined
+	} else if (status.status === "error" && status.error !== undefined) {
+		status.error = preview(status.error)
+	}
 	return {
 		...message,
-		mcpExecutionStatus: retained,
+		mcpExecutionStatus: status,
 		toolCallId: message.toolCallId ?? status.toolCallId,
 		...(response !== undefined ? { mcpExecutionResponse: preview(response) } : {}),
 	}

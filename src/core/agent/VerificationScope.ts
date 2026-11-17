@@ -156,39 +156,32 @@ export async function captureVerificationContent(
 export function extractMutationPaths(block: ToolUse): string[] | undefined {
 	const args = block.nativeArgs as Record<string, unknown> | undefined
 	const parameter = (name: "path" | "file_path" | "patch") => args?.[name] ?? block.params[name]
-	let paths: string[]
-	switch (block.name) {
+	const tool = block.name
+	let candidate: unknown
+	switch (tool) {
 		case "write_to_file":
 		case "apply_diff":
-		case "generate_image": {
-			const candidate = parameter("path")
-			if (typeof candidate !== "string" || !candidate)
-				throw new VerificationScopeError("Mutation path is missing")
-			paths = block.name === "generate_image" ? getImageOutputPaths(candidate) : [candidate]
+		case "generate_image":
+			candidate = parameter("path")
 			break
-		}
 		case "edit":
 		case "edit_file":
 		case "search_replace":
-		case "search_and_replace": {
-			const candidate = parameter("file_path")
-			if (typeof candidate !== "string" || !candidate)
-				throw new VerificationScopeError("Mutation path is missing")
-			paths = [candidate]
+		case "search_and_replace":
+			candidate = parameter("file_path")
 			break
-		}
 		case "apply_patch": {
 			const patch = parameter("patch")
 			if (typeof patch !== "string" || Buffer.byteLength(patch) > MAX_FILE_BYTES) {
 				throw new VerificationScopeError("Mutation patch is missing or exceeds the bound")
 			}
-			paths = getPatchPaths(patch)
-			break
+			return boundedPaths(getPatchPaths(patch))
 		}
 		default:
 			return undefined
 	}
-	return boundedPaths(paths)
+	if (typeof candidate !== "string" || !candidate) throw new VerificationScopeError("Mutation path is missing")
+	return boundedPaths(tool === "generate_image" ? getImageOutputPaths(candidate) : [candidate])
 }
 
 export interface CommandVerificationScope {

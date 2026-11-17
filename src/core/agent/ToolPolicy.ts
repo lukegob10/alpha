@@ -137,29 +137,26 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 	)
 	const executionInput = input.execution ?? {}
 	const commandInput = executionInput.command ?? {}
-	const execution: ToolExecutionPolicy = {
+	const execution: ToolExecutionPolicy = Object.freeze({
 		sandboxMode: executionInput.sandboxMode === "read-only" ? "read-only" : "workspace-write",
-		workspaceRoots: uniqueNames(executionInput.workspaceRoots ?? []),
+		workspaceRoots: Object.freeze(uniqueNames(executionInput.workspaceRoots ?? [])),
 		...(executionInput.outsideWorkspace === "approval" ? { outsideWorkspace: "approval" as const } : {}),
-		command: {
-			allowedPrefixes: uniqueCommandRules(commandInput.allowedPrefixes ?? []),
-			deniedPrefixes: uniqueCommandRules(commandInput.deniedPrefixes ?? []),
+		command: Object.freeze({
+			allowedPrefixes: Object.freeze(uniqueCommandRules(commandInput.allowedPrefixes ?? [])),
+			deniedPrefixes: Object.freeze(uniqueCommandRules(commandInput.deniedPrefixes ?? [])),
 			userTimeoutMs: Math.max(0, Math.floor(commandInput.userTimeoutMs ?? 0)),
-			timeoutAllowlist: uniqueCommandRules(commandInput.timeoutAllowlist ?? []),
-		},
+			timeoutAllowlist: Object.freeze(uniqueCommandRules(commandInput.timeoutAllowlist ?? [])),
+		}),
 		cancellation: "abort-process",
-	}
-	const approvalMode =
-		input.approvalMode === "ask" || input.approvalMode === "auto" || input.approvalMode === "bypass"
-			? input.approvalMode
-			: "ask"
+	})
+	const { approvalMode } = input
 	const summary = formatToolPolicySummary(execution, outputLimits)
 	const normalized = {
 		visibleTools: Object.freeze(visibleTools),
 		allowedTools: Object.freeze(allowedTools),
 		disabledTools: Object.freeze(disabledTools),
 		approval: Object.freeze({
-			mode: approvalMode,
+			mode: approvalMode === "auto" || approvalMode === "bypass" ? approvalMode : "ask",
 			autoApprovalEnabled: input.autoApprovalEnabled === true,
 			liveRevalidation: true,
 			reviewPolicy: createToolReviewPolicySnapshot(input.reviewPolicy),
@@ -170,16 +167,7 @@ export function createToolPolicySnapshot(input: ToolPolicyInput): ToolPolicySnap
 			),
 		),
 		outputLimits: Object.freeze(outputLimits),
-		execution: Object.freeze({
-			...execution,
-			workspaceRoots: Object.freeze([...execution.workspaceRoots]),
-			command: Object.freeze({
-				...execution.command,
-				allowedPrefixes: Object.freeze([...execution.command.allowedPrefixes]),
-				deniedPrefixes: Object.freeze([...execution.command.deniedPrefixes]),
-				timeoutAllowlist: Object.freeze([...execution.command.timeoutAllowlist]),
-			}),
-		}),
+		execution,
 		summary,
 	}
 

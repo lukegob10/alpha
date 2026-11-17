@@ -4,6 +4,16 @@ import type { AgentResponseItem } from "../AgentResponse"
 // history remains untouched; only adjacent lifecycle display fragments merge.
 const MAX_FRAGMENT_TEXT = 4_000
 
+function hasReasoningMetadata(item: Extract<AgentResponseItem, { type: "reasoning" }>): boolean {
+	return (
+		item.encryptedContent !== undefined ||
+		item.redactedData !== undefined ||
+		item.vscodeLmThinking !== undefined ||
+		item.geminiResponse !== undefined ||
+		item.summary !== undefined
+	)
+}
+
 export function* lifecycleResponseItems(
 	items: readonly AgentResponseItem[],
 	stepId: string,
@@ -32,34 +42,23 @@ export function* lifecycleResponseItems(
 			while (index + 1 < items.length) {
 				const next = items[index + 1]
 				if (covered.has(index + 1) || publishedIds.has(`${stepId}:item-${index + 1}`)) break
-				if (next.type !== responseItem.type || (next.type !== "text" && next.type !== "reasoning")) break
+				if (next.type !== responseItem.type) break
+				if (next.id !== responseItem.id || next.outputIndex !== responseItem.outputIndex) break
 				if (
 					next.type === "text" &&
 					responseItem.type === "text" &&
 					((responseItem.phase !== undefined &&
 						responseItem.id === undefined &&
 						responseItem.outputIndex === undefined) ||
-						next.id !== responseItem.id ||
-						next.phase !== responseItem.phase ||
-						next.outputIndex !== responseItem.outputIndex)
+						next.phase !== responseItem.phase)
 				)
 					break
 				if (
 					next.type === "reasoning" &&
 					responseItem.type === "reasoning" &&
 					(next.signature !== responseItem.signature ||
-						next.id !== responseItem.id ||
-						next.outputIndex !== responseItem.outputIndex ||
-						next.encryptedContent !== undefined ||
-						responseItem.encryptedContent !== undefined ||
-						next.redactedData !== undefined ||
-						responseItem.redactedData !== undefined ||
-						next.vscodeLmThinking !== undefined ||
-						responseItem.vscodeLmThinking !== undefined ||
-						next.geminiResponse !== undefined ||
-						responseItem.geminiResponse !== undefined ||
-						next.summary !== undefined ||
-						responseItem.summary !== undefined)
+						hasReasoningMetadata(next) ||
+						hasReasoningMetadata(responseItem))
 				)
 					break
 				if (responseItem.text.length + next.text.length > MAX_FRAGMENT_TEXT) break

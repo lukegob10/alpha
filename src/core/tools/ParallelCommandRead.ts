@@ -45,16 +45,12 @@ export async function classifyCommandRead(
 	let pathsOnly = false
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index]
-		if (!pathsOnly && arg === "--") {
-			pathsOnly = true
-			continue
-		}
 		if (!pathsOnly && arg.startsWith("-")) {
-			if (subcommand === "log" && arg === "-n" && /^\d+$/.test(args[index + 1] ?? "")) {
+			if (arg === "--") {
+				pathsOnly = true
+			} else if (subcommand === "log" && arg === "-n" && /^\d+$/.test(args[index + 1] ?? "")) {
 				index++
-				continue
-			}
-			if (!allowed.test(arg)) return undefined
+			} else if (!allowed.test(arg)) return undefined
 		} else if (!arg || path.isAbsolute(arg) || arg.split("/").includes("..")) return undefined
 	}
 	return {
@@ -132,20 +128,14 @@ function explicitFileTargets(args: readonly string[]): readonly string[] | undef
 	const positionals: string[] = []
 	for (let index = 0; index < args.length; index++) {
 		const value = args[index]
-		if (!optionsEnded && value === "--") {
+		if (optionsEnded || !value.startsWith("-")) {
+			positionals.push(value)
+		} else if (value === "--") {
 			optionsEnded = true
-			continue
-		}
-		if (!optionsEnded && (value === "-e" || value === "--regexp")) {
+		} else if (value === "-e" || value === "--regexp") {
 			if (args[++index] === undefined) return undefined
 			explicitPattern = true
-			continue
-		}
-		if (!optionsEnded && value.startsWith("-")) {
-			if (!flags.has(value)) return undefined
-			continue
-		}
-		positionals.push(value)
+		} else if (!flags.has(value)) return undefined
 	}
 	// rg accepts -e after positional files. Decide their role only after every
 	// regexp option was consumed, so an earlier ignored file cannot disappear.

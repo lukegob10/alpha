@@ -16254,6 +16254,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		let returnedCompletionToLegacyParent = false
 		let taskCompletionFailure: { error: unknown } | undefined
 		let completionGoalAtAdmission: TaskGoal | undefined
+		const rejectGoalSample = (status: "incomplete" | "exhausted", reason: string) => {
+			activeStep = { result: { status, reason }, legacyDidEndLoop: false }
+			return { response: createAgentResponse([]), status, reason, step: activeStep }
+		}
 		const host: AgentTurnStagedHost<TaskTurnInput, TaskTurnStep> = {
 			shouldAbort: () => this.abort || this.getTaskLifetimeCancellationSignal().aborted || !ownsTurnAndSample(),
 			onContinuation: (diagnostic) => this.recordModelContinuation(diagnostic),
@@ -16308,17 +16312,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.goalTurnCompletionText = undefined
 				const inheritedGoal = await this.inheritedGoalBinding
 				if (this.goalChildRequiresAdmission) {
-					const result: TaskStepExecutionResult = {
-						status: "incomplete",
-						reason: "Reopen this saved child through its parent before continuing.",
-					}
-					activeStep = { result, legacyDidEndLoop: false }
-					return {
-						response: createAgentResponse([]),
-						status: result.status,
-						reason: result.reason,
-						step: activeStep,
-					}
+					return rejectGoalSample(
+						"incomplete",
+						"Reopen this saved child through its parent before continuing.",
+					)
 				}
 				if (inheritedGoal) {
 					const owner = await inheritedGoal.controller.get()
@@ -16332,20 +16329,12 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							inheritedGoal.requestGeneration,
 						)
 					) {
-						const result: TaskStepExecutionResult = {
-							status:
-								owner?.status === "budget_limited" || owner?.status === "usage_limited"
-									? "exhausted"
-									: "incomplete",
-							reason: "The owning goal stopped or changed before this child request.",
-						}
-						activeStep = { result, legacyDidEndLoop: false }
-						return {
-							response: createAgentResponse([]),
-							status: result.status,
-							reason: result.reason,
-							step: activeStep,
-						}
+						return rejectGoalSample(
+							owner?.status === "budget_limited" || owner?.status === "usage_limited"
+								? "exhausted"
+								: "incomplete",
+							"The owning goal stopped or changed before this child request.",
+						)
 					}
 				}
 				const goalAccounting = await this.beginGoalStep()
@@ -16354,33 +16343,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					(!(await input.goalAdmission.canWake()) || !input.goalAdmission.isStillCurrent())
 				) {
 					this.goalRequestAdmissionRevoked = true
-					const result: TaskStepExecutionResult = {
-						status: "incomplete",
-						reason: "Goal input was superseded before sampling.",
-					}
-					activeStep = { result, legacyDidEndLoop: false }
-					return {
-						response: createAgentResponse([]),
-						status: result.status,
-						reason: result.reason,
-						step: activeStep,
-					}
+					return rejectGoalSample("incomplete", "Goal input was superseded before sampling.")
 				}
 				if (
 					inheritedGoal &&
 					!inheritedGoal.controller.isRequestCurrent(inheritedGoal.goalId, inheritedGoal.requestGeneration)
 				) {
-					const result: TaskStepExecutionResult = {
-						status: "incomplete",
-						reason: "The owning goal request admission was revoked.",
-					}
-					activeStep = { result, legacyDidEndLoop: false }
-					return {
-						response: createAgentResponse([]),
-						status: result.status,
-						reason: result.reason,
-						step: activeStep,
-					}
+					return rejectGoalSample("incomplete", "The owning goal request admission was revoked.")
 				}
 				this.activeGoalStep = goalAccounting
 				this.goalHostAdmission = input.goalAdmission ?? this.goalHostAdmission
@@ -16641,20 +16610,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				const goalStep = completedStep?.goalAccounting
 				const stepGoal = await goalStep?.controller.get()
 				if (!ownsCompletedStep()) return ownershipLostResult
-				if (stepGoal && stepGoal.goalId === goalStep?.goalId && stepGoal.status !== "active") {
-					if (stepGoal.status === "budget_limited" || stepGoal.status === "usage_limited") {
+				if (stepGoal && stepGoal.goalId === goalStep?.goalId) {
+					const limitReached = stepGoal.status === "budget_limited" || stepGoal.status === "usage_limited"
+					if (limitReached || stepGoal.status === "paused" || stepGoal.status === "blocked") {
 						const persisted = await this.flushPendingToolResultsToHistory()
 						if (!ownsCompletedStep()) return ownershipLostResult
 						if (!persisted)
 							return { status: "failed", reason: "Goal tool results could not be durably saved." }
-						return { status: "exhausted", reason: "The goal reached its configured work limit." }
-					}
-					if (stepGoal.status === "paused" || stepGoal.status === "blocked") {
-						const persisted = await this.flushPendingToolResultsToHistory()
-						if (!ownsCompletedStep()) return ownershipLostResult
-						if (!persisted)
-							return { status: "failed", reason: "Goal tool results could not be durably saved." }
-						return { status: "incomplete", reason: "The goal is paused or blocked." }
+						return limitReached
+							? { status: "exhausted", reason: "The goal reached its configured work limit." }
+							: { status: "incomplete", reason: "The goal is paused or blocked." }
 					}
 				}
 				const hasVisiblePrimaryText =

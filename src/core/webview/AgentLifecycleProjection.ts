@@ -72,7 +72,6 @@ export interface AgentLifecycleProjectionResult {
 
 interface ProjectedTaskState {
 	snapshot?: AgentLifecycleSnapshot
-	needsSnapshot: boolean
 	resyncRequest?: AgentLifecycleSnapshotResyncRequest
 }
 
@@ -161,11 +160,9 @@ function eventPhase(event: AgentLifecycleEvent): AgentLifecycleSnapshot["phase"]
 function reducerErrorReason(error: AgentLifecycleReducerError): AgentLifecycleResyncReason | undefined {
 	switch (error.code) {
 		case "sequence_gap":
-			return "sequence_gap"
 		case "duplicate_event_conflict":
-			return "duplicate_event_conflict"
 		case "duplicate_sequence":
-			return "duplicate_sequence"
+			return error.code
 		case "task_mismatch":
 		case "run_mismatch":
 		case "turn_mismatch":
@@ -201,7 +198,7 @@ export class AgentLifecycleProjector {
 	}
 
 	needsSnapshotResync(taskId: string): boolean {
-		return this.states.get(taskId)?.needsSnapshot === true
+		return this.states.get(taskId)?.resyncRequest !== undefined
 	}
 
 	clear(taskId?: string): void {
@@ -216,21 +213,11 @@ export class AgentLifecycleProjector {
 	ingestEvent(value: unknown): AgentLifecycleProjectionResult {
 		const { taskId: envelopeTaskId, event: candidate } = eventFromMessage(value)
 		const parsed = agentLifecycleEventSchema.safeParse(candidate)
-		if (!parsed.success) {
-			const taskId = envelopeTaskId
-			if (taskId) {
-				const request = this.markResync(taskId, {
-					taskId,
-					reason: "invalid_event",
-				})
-				return result("resync_required", { taskId, request, error: parsed.error })
-			}
-			return result("invalid", { taskId, error: parsed.error })
-		}
+		if (!parsed.success) return this.rejectInvalidPayload(envelopeTaskId, "invalid_event", parsed.error)
 
 		const event = parsed.data
 		if (envelopeTaskId !== undefined && envelopeTaskId !== event.taskId) {
-			const request = this.markResync(event.taskId, {
+			const request = this.markResync({
 				taskId: event.taskId,
 				runId: event.runId,
 				turnId: event.turnId,
@@ -243,77 +230,49 @@ export class AgentLifecycleProjector {
 
 		let state = this.states.get(event.taskId)
 		if (!state) {
-			state = { needsSnapshot: false }
+			state = {}
 			this.states.set(event.taskId, state)
 		}
-		let baseSnapshot = state.snapshot
-		let previousSnapshot = baseSnapshot
 
 		// Once a gap or conflict has been observed, no later delta is trusted
 		// until the host supplies a complete snapshot.
-		if (state.needsSnapshot) {
-			const request =
-				state.resyncRequest ??
-				this.markResync(event.taskId, {
-					taskId: event.taskId,
-					runId: event.runId,
-					turnId: event.turnId,
-					receivedSequence: event.sequence,
-					eventId: event.eventId,
-					reason: "sequence_gap",
-				})
-			return result("resync_required", { taskId: event.taskId, event, request })
-		}
-
-		if (!baseSnapshot) {
-			if (event.sequence !== 1) {
-				const request = this.markResync(event.taskId, {
-					taskId: event.taskId,
-					runId: event.runId,
-					turnId: event.turnId,
-					expectedSequence: 1,
-					receivedSequence: event.sequence,
-					eventId: event.eventId,
-					reason: "sequence_gap",
-				})
-				return result("resync_required", { taskId: event.taskId, event, request })
-			}
-		}
+		if (state.resyncRequest)
+			return result("resync_required", { taskId: event.taskId, event, request: state.resyncRequest })
 
 		// A new run can legitimately restart sequence numbers after a terminal
 		// turn. An active turn changing identity is a conflict and requires a
 		// snapshot rather than an inferred reset.
-		if (baseSnapshot && (baseSnapshot.runId !== event.runId || baseSnapshot.turnId !== event.turnId)) {
-			if (event.sequence !== 1 || baseSnapshot.status === "in_progress") {
-				const request = this.markResync(event.taskId, {
+		let previousSnapshot = state.snapshot
+		if (!previousSnapshot || previousSnapshot.runId !== event.runId || previousSnapshot.turnId !== event.turnId) {
+			if (event.sequence !== 1 || previousSnapshot?.status === "in_progress") {
+				const request = this.markResync({
 					taskId: event.taskId,
 					runId: event.runId,
 					turnId: event.turnId,
 					expectedSequence: 1,
 					receivedSequence: event.sequence,
 					eventId: event.eventId,
-					reason: "identity_conflict",
+					reason: previousSnapshot ? "identity_conflict" : "sequence_gap",
 				})
 				return result("resync_required", { taskId: event.taskId, event, request })
 			}
-			baseSnapshot = undefined
+			previousSnapshot = undefined
 		}
 
-		if (!baseSnapshot) {
-			baseSnapshot = createAgentLifecycleSnapshot({
+		const baseSnapshot =
+			previousSnapshot ??
+			createAgentLifecycleSnapshot({
 				taskId: event.taskId,
 				runId: event.runId,
 				turnId: event.turnId,
 				phase: eventPhase(event),
 			})
-			previousSnapshot = undefined
-		}
 
 		const reduced = tryReduceAgentLifecycleEvent(baseSnapshot, event)
 		if (!reduced.ok) {
 			const reason = reducerErrorReason(reduced.error)
 			if (reason) {
-				const request = this.markResync(event.taskId, {
+				const request = this.markResync({
 					taskId: event.taskId,
 					runId: event.runId,
 					turnId: event.turnId,
@@ -347,20 +306,11 @@ export class AgentLifecycleProjector {
 	ingestSnapshot(value: unknown): AgentLifecycleProjectionResult {
 		const { taskId: envelopeTaskId, snapshot: candidate } = snapshotFromMessage(value)
 		const parsed = agentLifecycleSnapshotSchema.safeParse(candidate)
-		if (!parsed.success) {
-			if (envelopeTaskId) {
-				const request = this.markResync(envelopeTaskId, {
-					taskId: envelopeTaskId,
-					reason: "invalid_snapshot",
-				})
-				return result("resync_required", { taskId: envelopeTaskId, request, error: parsed.error })
-			}
-			return result("invalid", { taskId: envelopeTaskId, error: parsed.error })
-		}
+		if (!parsed.success) return this.rejectInvalidPayload(envelopeTaskId, "invalid_snapshot", parsed.error)
 
 		const snapshot = parsed.data
 		if (envelopeTaskId !== undefined && envelopeTaskId !== snapshot.taskId) {
-			const request = this.markResync(snapshot.taskId, {
+			const request = this.markResync({
 				taskId: snapshot.taskId,
 				runId: snapshot.runId,
 				turnId: snapshot.turnId,
@@ -369,7 +319,7 @@ export class AgentLifecycleProjector {
 			return result("resync_required", { taskId: snapshot.taskId, request })
 		}
 
-		const state = this.states.get(snapshot.taskId) ?? { needsSnapshot: false }
+		const state: ProjectedTaskState = this.states.get(snapshot.taskId) ?? {}
 		const previous = state.snapshot
 		if (
 			previous &&
@@ -379,7 +329,6 @@ export class AgentLifecycleProjector {
 		) {
 			// A delayed response to an older resync request must not roll a trusted
 			// snapshot backwards.
-			this.states.set(snapshot.taskId, state)
 			return result("ignored", {
 				taskId: snapshot.taskId,
 				snapshot: cloneSnapshot(previous),
@@ -388,7 +337,6 @@ export class AgentLifecycleProjector {
 		}
 
 		state.snapshot = cloneSnapshot(snapshot)
-		state.needsSnapshot = false
 		state.resyncRequest = undefined
 		this.states.set(snapshot.taskId, state)
 		const nextSnapshot = cloneSnapshot(snapshot)
@@ -400,13 +348,20 @@ export class AgentLifecycleProjector {
 		})
 	}
 
-	private markResync(
-		taskId: string,
-		request: AgentLifecycleSnapshotResyncRequest,
-	): AgentLifecycleSnapshotResyncRequest {
-		const state = this.states.get(taskId) ?? { needsSnapshot: false }
-		if (state.needsSnapshot && state.resyncRequest) return state.resyncRequest
-		state.needsSnapshot = true
+	private rejectInvalidPayload(
+		taskId: string | undefined,
+		reason: "invalid_event" | "invalid_snapshot",
+		error: unknown,
+	): AgentLifecycleProjectionResult {
+		if (!taskId) return result("invalid", { taskId, error })
+		const request = this.markResync({ taskId, reason })
+		return result("resync_required", { taskId, request, error })
+	}
+
+	private markResync(request: AgentLifecycleSnapshotResyncRequest): AgentLifecycleSnapshotResyncRequest {
+		const { taskId } = request
+		const state: ProjectedTaskState = this.states.get(taskId) ?? {}
+		if (state.resyncRequest) return state.resyncRequest
 		state.resyncRequest = request
 		this.states.set(taskId, state)
 		this.notifyResyncRequired(request)

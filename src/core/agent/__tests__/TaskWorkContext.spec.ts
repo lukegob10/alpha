@@ -119,12 +119,15 @@ describe("task acceptance evidence", () => {
 	})
 	it("preserves legacy receipt evidence when the plan is reworded after reload", async () => {
 		const context = await run()
+		const canonicalDigest = context.receipts[0].definitionDigest
 		context.receipts[0].definitionDigest = digestValue(plan.checks[0])
 		const restored = restoreWorkContext(context)
 		expect(await getOutstandingAcceptanceChecks(restored, root)).toEqual([])
 		const replacement = structuredClone(plan)
 		replacement.checks[0].description = "A clearer label for the same check"
-		expect(await getOutstandingAcceptanceChecks(replaceWorkPlan(restored, replacement), root)).toEqual([])
+		const updated = replaceWorkPlan(restored, replacement)
+		expect(updated.receipts[0].definitionDigest).toBe(canonicalDigest)
+		expect(await getOutstandingAcceptanceChecks(updated, root)).toEqual([])
 	})
 	it.each(["command", "cwd", "paths", "reusable"] as const)("invalidates evidence when %s changes", async (field) => {
 		const context = await run()

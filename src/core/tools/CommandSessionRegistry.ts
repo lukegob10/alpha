@@ -63,6 +63,8 @@ type TaskCommandSessions = {
 	executions: WeakMap<AlphaTerminalProcess, Map<string, CommandExecutionOwnership>>
 }
 
+const COMMAND_SETTLEMENT_EVENTS = ["completed", "finalized", "shell_execution_complete", "terminal_closed"] as const
+
 /** Session IDs identify one physical command, even when its terminal is reused. */
 export class CommandSessionRegistry {
 	private nextSessionId = 1
@@ -201,16 +203,12 @@ export class CommandSessionRegistry {
 		}
 		session.output = output
 		const taskRef = new WeakRef(task)
-		void completion
-			.then(
-				() => this.outputSettled(taskRef, session, output),
-				() => this.outputSettled(taskRef, session, output),
-			)
-			.catch(() => {
-				// Housekeeping must not create an unhandled rejection or replace
-				// the original archive outcome exposed through the captured promise.
-				console.error("[CommandSessionRegistry] Output finalization housekeeping failed")
-			})
+		const settleOutput = () => this.outputSettled(taskRef, session, output)
+		void completion.then(settleOutput, settleOutput).catch(() => {
+			// Housekeeping must not create an unhandled rejection or replace
+			// the original archive outcome exposed through the captured promise.
+			console.error("[CommandSessionRegistry] Output finalization housekeeping failed")
+		})
 	}
 
 	private outputMayRetire(output: TrackedTaskCommandOutput): boolean {
@@ -285,16 +283,10 @@ export class CommandSessionRegistry {
 			prune()
 		}
 		session.removeObservers = () => {
-			process.off("completed", prune)
-			process.off("finalized", prune)
-			process.off("shell_execution_complete", prune)
-			process.off("terminal_closed", prune)
+			COMMAND_SETTLEMENT_EVENTS.forEach((event) => process.off(event, prune))
 			process.off("output_receipt_released", receiptReleased)
 		}
-		process.on("completed", prune)
-		process.on("finalized", prune)
-		process.on("shell_execution_complete", prune)
-		process.on("terminal_closed", prune)
+		COMMAND_SETTLEMENT_EVENTS.forEach((event) => process.on(event, prune))
 		process.on("output_receipt_released", receiptReleased)
 		this.outputOwners.set(process, session)
 		this.pruneSettled(task)

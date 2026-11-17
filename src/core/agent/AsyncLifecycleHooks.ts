@@ -45,7 +45,6 @@ export class AsyncLifecycleHooks {
 		if (
 			this.closed ||
 			lifetimeSignal.aborted ||
-			this.failures.length > 0 ||
 			this.queued.length + this.active.size + this.completed.length >= MAX_OUTSTANDING
 		)
 			return false
@@ -107,7 +106,7 @@ export class AsyncLifecycleHooks {
 	}
 
 	private pump(): void {
-		while (!this.closed && this.failures.length === 0 && this.active.size < MAX_CONCURRENCY && this.queued.length) {
+		while (!this.closed && this.active.size < MAX_CONCURRENCY && this.queued.length) {
 			const hook = this.queued.shift()!
 			const completion = Promise.resolve()
 				.then(async () => {

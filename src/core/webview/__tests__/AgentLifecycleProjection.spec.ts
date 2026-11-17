@@ -105,7 +105,10 @@ describe("AgentLifecycleProjector", () => {
 		expect(requests).toEqual([{ taskId: ids.taskId, reason: "sequence_gap" }])
 
 		// A late delta cannot silently fill the gap or move the trusted state.
-		expect(projector.ingestEvent(phaseEvent("event-2", 2, "planning")).kind).toBe("resync_required")
+		const blocked = projector.ingestEvent(phaseEvent("event-2", 2, "planning"))
+		expect(blocked.kind).toBe("resync_required")
+		expect(blocked.request).toBe(gap.request)
+		expect(requests).toHaveLength(1)
 		expect(projector.getSnapshot(ids.taskId)?.lastSequence).toBe(1)
 
 		const source = new AgentLifecycleProjector()

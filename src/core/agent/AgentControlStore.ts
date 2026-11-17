@@ -1929,26 +1929,7 @@ export class AgentControlStore {
 				}
 			}
 			const record = this.applyAgentStatusTransition(draft, target, status, input, rootTaskId)
-
-			const recipient = this.requireOpenAddress(draft, eventInput.recipient, eventInput.rootTaskId)
-			const sender = eventInput.sender
-				? this.requireOwnedAddress(draft, eventInput.sender, recipient.rootTaskId, "publish an event")
-				: undefined
-			if (!sender) this.assertTreeOwned(draft, recipient.rootTaskId, "publish an event")
-			const event: AgentMailboxEntry = {
-				eventId: eventInput.eventId ?? randomUUID(),
-				sequence: draft.nextSequence++,
-				rootTaskId: recipient.rootTaskId,
-				senderTaskId: sender?.taskId,
-				senderPath: sender?.path,
-				recipientTaskId: recipient.taskId,
-				recipientPath: recipient.path,
-				kind: eventInput.kind,
-				name: eventInput.name,
-				payload: eventInput.payload ? clone(eventInput.payload) : undefined,
-				createdAt: eventInput.createdAt ?? this.now(),
-			}
-			draft.mailbox.push(event)
+			const event = this.appendNewMailboxEvent(draft, eventInput)
 			return { record: clone(record), event: clone(event), appended: true }
 		})
 	}
@@ -2950,6 +2931,10 @@ export class AgentControlStore {
 			}
 		}
 
+		return { entry: clone(this.appendNewMailboxEvent(draft, input)), appended: true }
+	}
+
+	private appendNewMailboxEvent(draft: AgentControlState, input: AppendAgentMailboxEventInput): AgentMailboxEntry {
 		const recipient = this.requireOpenAddress(draft, input.recipient, input.rootTaskId)
 		const sender = input.sender
 			? this.requireOwnedAddress(draft, input.sender, recipient.rootTaskId, "publish an event")
@@ -2969,7 +2954,7 @@ export class AgentControlStore {
 			createdAt: input.createdAt ?? this.now(),
 		}
 		draft.mailbox.push(entry)
-		return { entry: clone(entry), appended: true }
+		return entry
 	}
 
 	getHumanReadSequence(rootTaskId: string): number {

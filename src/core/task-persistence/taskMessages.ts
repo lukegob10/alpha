@@ -28,7 +28,6 @@ function hasTaskMessageEnvelope(value: unknown): boolean {
 	const message = value as Record<string, unknown>
 	// Check stable fields without stripping unknown metadata or rejecting legacy ask/say variants.
 	return (
-		typeof message.ts === "number" &&
 		Number.isFinite(message.ts) &&
 		(message.type === "ask" || message.type === "say") &&
 		(message.text === undefined || typeof message.text === "string") &&

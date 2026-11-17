@@ -1913,22 +1913,8 @@ export class ToolScheduler {
 			this.retainDeferredResults(calls, completeResults)
 		} else if (this.options.preserveAbortedResults) {
 			for (const [index, result] of completeResults.entries()) {
-				const added = this.executionHost.pushToolResultToUserContent({
-					type: "tool_result",
-					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content, result.truncated),
-					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
-				})
-				if (!added) continue
-				await this.options.onEvent?.({
-					type: "tool_result",
-					callId: result.callId,
-					name: result.name,
-					status: result.status,
-					output: result.content,
-					truncated: result.truncated,
-					timedOut: result.timedOut,
-				})
+				if (!this.pushToolResultReceipt(result)) continue
+				await this.emitToolResultEvent(result)
 				const commandCategory = this.verificationCategory(calls[index])
 				const verificationStatus =
 					result.executionStatus ?? (result.status === "success" ? undefined : result.status)
@@ -1983,24 +1969,8 @@ export class ToolScheduler {
 		if (this.options.deferResultCommit) {
 			this.retainDeferredResults(calls, completeResults)
 		} else {
-			for (const [index, result] of completeResults.entries()) {
-				const added = this.executionHost.pushToolResultToUserContent({
-					type: "tool_result",
-					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content, result.truncated),
-					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
-				})
-				if (added) {
-					await this.options.onEvent?.({
-						type: "tool_result",
-						callId: result.callId,
-						name: result.name,
-						status: result.status,
-						output: result.content,
-						truncated: result.truncated,
-						timedOut: result.timedOut,
-					})
-				}
+			for (const result of completeResults) {
+				if (this.pushToolResultReceipt(result)) await this.emitToolResultEvent(result)
 			}
 		}
 		if (!this.options.deferResultCommit) this.executionHost.userMessageContentReady = true
@@ -3371,22 +3341,9 @@ export class ToolScheduler {
 				if (!(error instanceof ToolEffectFenceError)) throw error
 				return this.failedOutcome(results, calls, error, batchSize, parallelBatchCount, startedAt)
 			}
-			this.executionHost.pushToolResultToUserContent({
-				type: "tool_result",
-				tool_use_id: sanitizeToolUseId(result.callId),
-				content: getToolResultContent(result.content, result.truncated),
-				is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
-			})
+			this.pushToolResultReceipt(result)
 			committed.push(result)
-			await this.options.onEvent?.({
-				type: "tool_result",
-				callId: result.callId,
-				name: result.name,
-				status: result.status,
-				output: result.content,
-				truncated: result.truncated,
-				timedOut: result.timedOut,
-			})
+			await this.emitToolResultEvent(result)
 			const commandCategory = this.verificationCategory(calls[index])
 			const verificationStatus =
 				result.executionStatus ?? (result.status === "success" ? undefined : result.status)
@@ -3472,22 +3429,9 @@ export class ToolScheduler {
 					observationError ??= error
 				}
 				options.assertOwnership?.()
-				this.executionHost.pushToolResultToUserContent({
-					type: "tool_result",
-					tool_use_id: sanitizeToolUseId(result.callId),
-					content: getToolResultContent(result.content, result.truncated),
-					is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
-				})
+				this.pushToolResultReceipt(result)
 				if (!this.deferredResultEventIds.has(callId)) {
-					await this.options.onEvent?.({
-						type: "tool_result",
-						callId: result.callId,
-						name: result.name,
-						status: result.status,
-						output: result.content,
-						truncated: result.truncated,
-						timedOut: result.timedOut,
-					})
+					await this.emitToolResultEvent(result)
 					options.assertOwnership?.()
 					this.deferredResultEventIds.add(callId)
 				}
@@ -3600,6 +3544,27 @@ export class ToolScheduler {
 				return retained
 			}),
 		}
+	}
+
+	private pushToolResultReceipt(result: ToolSchedulerResult): boolean {
+		return this.executionHost.pushToolResultToUserContent({
+			type: "tool_result",
+			tool_use_id: sanitizeToolUseId(result.callId),
+			content: getToolResultContent(result.content, result.truncated),
+			is_error: result.status === "error" || result.status === "denied" || result.status === "cancelled",
+		})
+	}
+
+	private emitToolResultEvent(result: ToolSchedulerResult): void | Promise<void> {
+		return this.options.onEvent?.({
+			type: "tool_result",
+			callId: result.callId,
+			name: result.name,
+			status: result.status,
+			output: result.content,
+			truncated: result.truncated,
+			timedOut: result.timedOut,
+		})
 	}
 
 	private async emitBatchFinished(outcome: ToolSchedulerOutcome): Promise<void> {

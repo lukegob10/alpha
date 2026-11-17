@@ -27,21 +27,23 @@ function scriptCategory(script: string): VerificationCategory | undefined {
 
 const PACKAGE_VALUE_FLAGS = new Set(["--dir", "--prefix", "--cwd", "--filter", "--workspace", "-C", "-F"])
 const PACKAGE_BOOLEAN_FLAGS = new Set(["--silent", "--no-install", "--yes", "-y", "-s"])
+const POSIX_ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+// Help, discovery and optional/no-op invocations do not establish verification.
+const NON_VERIFICATION_FLAG =
+	/^(?:--(?:help|version|if-present|ignore-scripts|dry-run|no-run|list|listTests|listFilesOnly|showConfig|collect-only|co|fixtures|markers|init|show-config|show-settings|print-config|env-info)|-[hV])(?:=|$)/i
 
 function packageCommandIndex(args: string[], start: number): number | undefined {
 	let index = start
 	while (args[index]?.startsWith("-")) {
 		const [flag, value] = args[index].split("=", 2)
 		if (PACKAGE_VALUE_FLAGS.has(flag)) {
-			if (value !== undefined) {
-				if (!value) return undefined
+			if (value === undefined) {
+				const operand = args[index + 1]
+				if (!operand || operand.startsWith("-")) return undefined
 				index++
-			} else {
-				if (!args[index + 1] || args[index + 1].startsWith("-")) return undefined
-				index += 2
-			}
-		} else if (PACKAGE_BOOLEAN_FLAGS.has(flag) && value === undefined) index++
-		else return undefined
+			} else if (!value) return undefined
+		} else if (!PACKAGE_BOOLEAN_FLAGS.has(flag) || value !== undefined) return undefined
+		index++
 	}
 	return args[index] ? index : undefined
 }
@@ -69,22 +71,12 @@ function classifyInvocation(
 	}
 	if (executable === "env" && platform === "posix") {
 		let index = args[1] === "-i" ? 2 : 1
-		while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[index] ?? "")) index++
+		while (POSIX_ENV_ASSIGNMENT.test(args[index] ?? "")) index++
 		return args[index] && !args[index].startsWith("-")
 			? classifyInvocation(args.slice(index), platform, depth + 1)
 			: undefined
 	}
-	// Help, discovery and optional/no-op invocations do not establish verification.
-	if (
-		args
-			.slice(1)
-			.some((argument) =>
-				/^(?:--(?:help|version|if-present|ignore-scripts|dry-run|no-run|list|listTests|listFilesOnly|showConfig|collect-only|co|fixtures|markers|init|show-config|show-settings|print-config|env-info)|-[hV])(?:=|$)/i.test(
-					argument,
-				),
-			)
-	)
-		return undefined
+	if (args.slice(1).some((argument) => NON_VERIFICATION_FLAG.test(argument))) return undefined
 
 	if (["npm", "pnpm", "yarn", "npx"].includes(executable)) {
 		let index = packageCommandIndex(args, 1)
@@ -109,8 +101,8 @@ function classifyInvocation(
 		return args[1] === "list" || args[1] === "init" ? undefined : "test"
 	}
 	if (executable === "node") return args[1] === "--test" ? "test" : undefined
-	if (executable === "go") return args[1] === "test" ? "test" : args[1] === "build" ? "build" : undefined
-	if (executable === "cargo") return args[1] === "test" ? "test" : args[1] === "build" ? "build" : undefined
+	if (executable === "go" || executable === "cargo")
+		return args[1] === "test" || args[1] === "build" ? args[1] : undefined
 	if (executable === "ruff") return args[1] === "check" ? "lint" : undefined
 	if (executable === "eslint") return "lint"
 	if (executable === "prettier")
@@ -140,7 +132,7 @@ export function classifyVerificationCommand(
 		const tokens = shellCommandArgumentTokens(rawTokens)
 		let index = 0
 		if (platform === "posix") {
-			while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index]?.value ?? "")) index++
+			while (POSIX_ENV_ASSIGNMENT.test(tokens[index]?.value ?? "")) index++
 		}
 		const invocation = tokens.slice(index)
 		if (!invocation.length || invocation.some((token) => token.dynamic)) return undefined

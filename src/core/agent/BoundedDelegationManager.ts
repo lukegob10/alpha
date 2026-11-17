@@ -148,7 +148,7 @@ export class BoundedDelegationManager {
 		parentSignal?: AbortSignal,
 		onStarted?: () => void,
 	): Promise<InternalTaskResult> {
-		const rootKey = this.getRootKey(envelope)
+		const rootKey = envelope.rootTaskId ?? envelope.parentTaskId
 		const controller = new AbortController()
 		const run = { controller, completionAccepted: false }
 		this.activeRuns.set(envelope.id, run)
@@ -170,16 +170,16 @@ export class BoundedDelegationManager {
 		let acquired = false
 		const started = Date.now()
 		try {
-			if (controller.signal.aborted) throw controller.signal.reason
+			controller.signal.throwIfAborted()
 			// Capture admission policy once. Cleanup for another run must not invoke
 			// a caller's resolver again or replace a queued run's frozen limit.
 			await this.acquire(rootKey, this.getMaxConcurrency(envelope), controller.signal)
 			acquired = true
-			if (controller.signal.aborted) throw controller.signal.reason
+			controller.signal.throwIfAborted()
 			onStarted?.()
 			// A lifecycle observer may synchronously cancel the run in response to
 			// the started notification. Do not invoke the child runner in that case.
-			if (controller.signal.aborted) throw controller.signal.reason
+			controller.signal.throwIfAborted()
 			const result = await this.runner(envelope, controller.signal, () => {
 				run.completionAccepted = true
 			})
@@ -244,18 +244,14 @@ export class BoundedDelegationManager {
 			for (const dependency of item.dependencies)
 				if (!ids.has(dependency)) throw new Error(`Unknown child dependency: ${dependency}`)
 		// Validate the entire graph before any runner can create side effects.
-		const scheduled = new Set<string>()
 		const batches: InternalTaskEnvelope[][] = []
 		while (remaining.size) {
 			const ready = [...remaining.values()]
-				.filter((item) => item.dependencies.every((id) => scheduled.has(id)))
+				.filter((item) => item.dependencies.every((id) => !remaining.has(id)))
 				.sort((a, b) => a.id.localeCompare(b.id))
 			if (!ready.length) throw new Error("Cyclic child dependencies")
 			batches.push(ready)
-			for (const item of ready) {
-				scheduled.add(item.id)
-				remaining.delete(item.id)
-			}
+			for (const item of ready) remaining.delete(item.id)
 		}
 		const results = new Map<string, InternalTaskResult>()
 		for (const ready of batches) {
@@ -269,25 +265,25 @@ export class BoundedDelegationManager {
 		}
 		return envelopes.map((item) => results.get(item.id)!)
 	}
-	private async acquire(rootKey: string, maxConcurrency: number, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted) throw signal.reason
+	private async acquire(rootKey: string, maxConcurrency: number, signal: AbortSignal): Promise<void> {
+		signal.throwIfAborted()
 		if (this.getActive(rootKey) < maxConcurrency) {
 			this.activeByRoot.set(rootKey, this.getActive(rootKey) + 1)
 			return
 		}
 		await new Promise<void>((resolve, reject) => {
 			const wake = () => {
-				signal?.removeEventListener("abort", cancel)
+				signal.removeEventListener("abort", cancel)
 				this.activeByRoot.set(rootKey, this.getActive(rootKey) + 1)
 				resolve()
 			}
 			const cancel = () => {
 				const i = this.pending.findIndex((entry) => entry.wake === wake)
 				if (i >= 0) this.pending.splice(i, 1)
-				reject(signal?.reason)
+				reject(signal.reason)
 			}
 			this.pending.push({ rootKey, maxConcurrency, wake })
-			signal?.addEventListener("abort", cancel, { once: true })
+			signal.addEventListener("abort", cancel, { once: true })
 		})
 	}
 	private release(rootKey: string): void {
@@ -299,10 +295,6 @@ export class BoundedDelegationManager {
 			(entry) => entry.rootKey === rootKey && this.getActive(rootKey) < entry.maxConcurrency,
 		)
 		if (nextIndex >= 0) this.pending.splice(nextIndex, 1)[0].wake()
-	}
-
-	private getRootKey(envelope: InternalTaskEnvelope): string {
-		return envelope.rootTaskId ?? envelope.parentTaskId
 	}
 
 	private getActive(rootKey: string): number {

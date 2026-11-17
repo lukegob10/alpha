@@ -29,7 +29,7 @@ export function formatBackgroundCommandContext(evidence: Iterable<CommandExecuti
 			execution_id: item.executionId,
 			status: item.status,
 			exit_code: item.exitCode ?? null,
-			...(item.signalName ? { signal: item.signalName.slice(0, 64) } : {}),
+			signal: item.signalName ? item.signalName.slice(0, 64) : undefined,
 		}),
 	)
 	// Escaped identifiers can be several times larger than their source strings.
@@ -37,9 +37,6 @@ export function formatBackgroundCommandContext(evidence: Iterable<CommandExecuti
 	let rowBytes = rows.reduce((total, row) => total + Buffer.byteLength(row, "utf8") + 1, 0)
 	const rowBudget = MAX_CONTEXT_BYTES - Buffer.byteLength(CONTEXT_HEADER, "utf8") - 128
 	while (rowBytes > rowBudget) rowBytes -= Buffer.byteLength(rows.shift()!, "utf8") + 1
-	return [
-		CONTEXT_HEADER,
-		...rows,
-		...(total > rows.length ? [`${total - rows.length} additional outcomes omitted by the context limit.`] : []),
-	].join("\n")
+	if (total > rows.length) rows.push(`${total - rows.length} additional outcomes omitted by the context limit.`)
+	return [CONTEXT_HEADER, ...rows].join("\n")
 }

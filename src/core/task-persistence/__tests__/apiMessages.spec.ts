@@ -26,7 +26,11 @@ describe("apiMessages.readApiMessages", () => {
 			globalStoragePath: tmpBaseDir,
 		})
 
-		await expect(read).rejects.toMatchObject({ code: "invalid_messages" })
+		await expect(read).rejects.toMatchObject({
+			code: "invalid_messages",
+			message: "Invalid API conversation history JSON",
+			cause: expect.any(SyntaxError),
+		})
 		expect(await fs.readFile(filePath, "utf8")).toBe("<<<corrupt data>>>")
 	})
 
@@ -45,6 +49,11 @@ describe("apiMessages.readApiMessages", () => {
 		})
 
 		await expect(read).rejects.toBeInstanceOf(ProviderTranscriptStoreError)
+		await expect(read).rejects.toMatchObject({
+			code: "invalid_messages",
+			message: "Invalid legacy API conversation history JSON",
+			cause: expect.any(SyntaxError),
+		})
 
 		// The corrupted fallback file should NOT be deleted
 		const stillExists = await fs

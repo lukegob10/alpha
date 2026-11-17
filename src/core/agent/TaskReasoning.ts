@@ -174,10 +174,9 @@ function resolvePreference(
 			// declared capabilities instead of forwarding arbitrary reasoning tokens.
 			const fallback = resolveDefaultPreference(capabilities, configuration, model)
 			return {
-				effective: fallback.effective,
+				...fallback,
 				fallbackReason:
 					fallback.fallbackReason ?? (capabilities.kind === "unavailable" ? "unavailable" : "unsupported"),
-				patch: fallback.patch,
 			}
 		}
 	}
@@ -196,30 +195,11 @@ function resolveEffortPreference(
 		}
 	}
 
-	if (capabilities.kind === "budget") {
+	if (capabilities.kind === "budget" || capabilities.kind === "binary" || capabilities.kind === "effort") {
 		const fallback = resolveDefaultPreference(capabilities, configuration, model)
 		return {
-			effective: fallback.effective,
-			fallbackReason: fallback.fallbackReason ?? "budget-only",
-			patch: fallback.patch,
-		}
-	}
-
-	if (capabilities.kind === "binary") {
-		const fallback = resolveDefaultPreference(capabilities, configuration, model)
-		return {
-			effective: fallback.effective,
-			fallbackReason: fallback.fallbackReason ?? "unsupported",
-			patch: fallback.patch,
-		}
-	}
-
-	if (capabilities.kind === "effort") {
-		const fallback = resolveDefaultPreference(capabilities, configuration, model)
-		return {
-			effective: fallback.effective,
-			fallbackReason: fallback.fallbackReason ?? "unsupported",
-			patch: fallback.patch,
+			...fallback,
+			fallbackReason: fallback.fallbackReason ?? (capabilities.kind === "budget" ? "budget-only" : "unsupported"),
 		}
 	}
 
@@ -234,11 +214,7 @@ function resolveDefaultPreference(
 	capabilities: TaskReasoningCapabilities,
 	configuration: ProviderSettings,
 	model: TaskReasoningModel,
-): {
-	effective: TaskReasoningPreference
-	fallbackReason?: TaskReasoningFallbackReason
-	patch: Partial<ProviderSettings>
-} {
+): PreferenceResolution {
 	if (!capabilities.canDisable && (capabilities.kind === "budget" || capabilities.kind === "effort")) {
 		return activeResolution(capabilities, configuration, model.info, "required")
 	}
@@ -252,47 +228,27 @@ function resolveDefaultPreference(
 		const hasExplicitEnable = configuration.enableReasoningEffort === true
 		const efforts = capabilities.efforts ?? []
 		const validConfiguredEffort =
-			configuredEffort !== undefined &&
-			configuredEffort !== "disable" &&
-			efforts.includes(configuredEffort as ReasoningEffortExtended)
+			configuredEffort !== undefined && efforts.includes(configuredEffort as ReasoningEffortExtended)
 
 		// VS Code LM only emits a reasoning option when the enable flag is set.
 		// Preserve Default's omitted request rather than turning a profile preview
 		// into an explicit host override before live model preparation.
-		if (configuration.apiProvider === "vscode-lm" && !hasExplicitEnable) {
-			if (configuredEffort !== undefined && configuredEffort !== "disable" && !validConfiguredEffort) {
-				return {
-					effective: { kind: "off" },
-					fallbackReason: "unsupported",
-					patch: disabledPatch(),
-				}
-			}
-			return { effective: { kind: "default" }, patch: {} }
-		}
-
-		const effort = selectEffort(configuration, model.info, efforts, hasExplicitEnable)
+		const useHostDefault = configuration.apiProvider === "vscode-lm" && !hasExplicitEnable
+		const effort = useHostDefault ? undefined : selectEffort(configuration, model.info, efforts, hasExplicitEnable)
 		if (!effort) {
-			if (configuredEffort !== undefined && configuredEffort !== "disable") {
-				return {
-					effective: { kind: "off" },
-					fallbackReason: "unsupported",
-					patch: disabledPatch(),
-				}
+			if (configuredEffort === undefined || (useHostDefault && validConfiguredEffort)) {
+				return { effective: { kind: "default" }, patch: {} }
 			}
-			return { effective: { kind: "default" }, patch: {} }
+			return { effective: { kind: "off" }, fallbackReason: "unsupported", patch: disabledPatch() }
 		}
 
 		// An omitted setting lets adapters use their catalogued model default.
 		// Only materialize a patch when a legacy selection is invalid.
-		if (
-			configuration.reasoningEffort === undefined &&
-			!hasExplicitEnable &&
-			model.info.reasoningEffort === undefined
-		) {
-			return { effective: { kind: "default" }, patch: {} }
-		}
 		if (configuration.reasoningEffort === undefined && !hasExplicitEnable) {
-			return { effective: { kind: "effort", effort }, patch: {} }
+			return {
+				effective: model.info.reasoningEffort === undefined ? { kind: "default" } : { kind: "effort", effort },
+				patch: {},
+			}
 		}
 		if (hasExplicitEnable && validConfiguredEffort) {
 			return { effective: { kind: "effort", effort }, patch: {} }
@@ -306,19 +262,8 @@ function resolveDefaultPreference(
 		}
 	}
 
-	if (capabilities.kind === "budget") {
-		return configuration.enableReasoningEffort
-			? { effective: { kind: "on" }, patch: {} }
-			: { effective: { kind: "off" }, patch: {} }
-	}
-
-	if (capabilities.kind === "binary") {
-		return configuration.enableReasoningEffort
-			? { effective: { kind: "on" }, patch: {} }
-			: { effective: { kind: "off" }, patch: {} }
-	}
-
-	return { effective: { kind: "off" }, patch: {} }
+	const supportsToggle = capabilities.kind === "budget" || capabilities.kind === "binary"
+	return { effective: { kind: supportsToggle && configuration.enableReasoningEffort ? "on" : "off" }, patch: {} }
 }
 
 function resolveOnPreference(
@@ -326,7 +271,7 @@ function resolveOnPreference(
 	configuration: ProviderSettings,
 	modelInfo: ModelInfo,
 ): PreferenceResolution {
-	if (capabilities.kind === "budget") {
+	if (capabilities.kind === "budget" || capabilities.kind === "binary") {
 		return { effective: { kind: "on" }, patch: activeBinaryPatch() }
 	}
 
@@ -339,11 +284,6 @@ function resolveOnPreference(
 		if (effort) {
 			return { effective: { kind: "effort", effort }, patch: activeEffortPatch(effort) }
 		}
-		return { effective: { kind: "off" }, fallbackReason: "unavailable", patch: disabledPatch() }
-	}
-
-	if (capabilities.kind === "binary") {
-		return { effective: { kind: "on" }, patch: activeBinaryPatch() }
 	}
 
 	return {

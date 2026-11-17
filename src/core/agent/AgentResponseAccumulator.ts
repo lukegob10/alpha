@@ -644,30 +644,29 @@ export class AgentResponseAccumulator {
 		onToolCallReadyForPreflight?: (call: AgentToolCall) => Promise<void> | void,
 		onToolCallCompleted?: (call: AgentToolCall) => Promise<void> | void,
 	): Promise<void> {
-		await this.announceToolCallForPreflight(pending, onToolCallReadyForPreflight)
-		await this.announceToolCallCompleted(pending, onToolCallCompleted)
+		// Await provisional preflight before checking the completed call again.
+		// Tool effects still require successful stream completion and durable assistant history.
+		await this.announceToolCall(pending, "preflight", onToolCallReadyForPreflight)
+		await this.announceToolCall(pending, "completed", onToolCallCompleted)
 	}
 
-	/**
-	 * Notify a separate observer once a provider completion marker has yielded a
-	 * valid call with a stable persisted ID. This reports stream state only; it
-	 * does not authorize or execute the tool, and canonical items remain buffered
-	 * until finish().
-	 */
-	private async announceToolCallCompleted(
+	private async announceToolCall(
 		pending: PendingToolCall,
-		onToolCallCompleted?: (call: AgentToolCall) => Promise<void> | void,
+		stage: "preflight" | "completed",
+		onToolCall?: (call: AgentToolCall) => Promise<void> | void,
 	): Promise<void> {
+		if (!onToolCall) return
+		const completed = stage === "completed"
+		if (completed ? this.completedToolCallIds.has(pending.id) || !pending.ended : pending.preflightAnnounced) {
+			return
+		}
 		if (
-			!onToolCallCompleted ||
-			this.completedToolCallIds.has(pending.id) ||
-			!pending.ended ||
 			this.responseOutcome?.status === "failed" ||
 			this.responseOutcome?.status === "incomplete" ||
 			this.responseOutcome?.status === "cancelled" ||
 			pending.syntheticId ||
 			!pending.id.trim() ||
-			sanitizeToolUseId(pending.id) !== pending.id ||
+			(completed && sanitizeToolUseId(pending.id) !== pending.id) ||
 			!pending.name.trim()
 		) {
 			return
@@ -683,51 +682,12 @@ export class AgentResponseAccumulator {
 		const conflictingEmittedId = this.emittedNormalizedToolIds.get(normalizedId)
 		if (conflictingPending || (conflictingEmittedId && conflictingEmittedId !== pending.id)) return
 
-		this.completedToolCallIds.add(pending.id)
-		await onToolCallCompleted({
-			type: "tool_call",
-			id: pending.id,
-			name: pending.name,
-			arguments: parsed.value,
-			...(pending.providerItem ? { providerItem: snapshotProviderResponseItem(pending.providerItem) } : {}),
-		})
-	}
-
-	/**
-	 * Expose only stable, complete calls to pure host preflight while the provider
-	 * is still streaming. This notification is provisional: callers must wait for
-	 * successful stream completion and the persisted assistant boundary before
-	 * scheduling any tool effect.
-	 */
-	private async announceToolCallForPreflight(
-		pending: PendingToolCall,
-		onToolCallReadyForPreflight?: (call: AgentToolCall) => Promise<void> | void,
-	): Promise<void> {
-		if (
-			!onToolCallReadyForPreflight ||
-			pending.preflightAnnounced ||
-			this.responseOutcome?.status === "failed" ||
-			this.responseOutcome?.status === "incomplete" ||
-			this.responseOutcome?.status === "cancelled" ||
-			pending.syntheticId ||
-			!pending.id.trim() ||
-			!pending.name.trim()
-		) {
-			return
+		if (completed) {
+			this.completedToolCallIds.add(pending.id)
+		} else {
+			pending.preflightAnnounced = true
 		}
-
-		const parsed = parseToolArguments(pending.arguments, pending.name)
-		if (!parsed.ok) return
-
-		const normalizedId = sanitizeToolUseId(pending.id)
-		const conflictingPending = [...this.pendingTools.values()].find(
-			(candidate) => candidate !== pending && sanitizeToolUseId(candidate.id) === normalizedId,
-		)
-		const conflictingEmittedId = this.emittedNormalizedToolIds.get(normalizedId)
-		if (conflictingPending || (conflictingEmittedId && conflictingEmittedId !== pending.id)) return
-
-		pending.preflightAnnounced = true
-		await onToolCallReadyForPreflight({
+		await onToolCall({
 			type: "tool_call",
 			id: pending.id,
 			name: pending.name,

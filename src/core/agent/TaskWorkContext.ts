@@ -24,7 +24,7 @@ function matchesDefinition(receipt: AcceptanceReceipt, check: AcceptanceCheck): 
 }
 
 async function captureInputs(workspace: string, paths: string[], canRead?: CanRead) {
-	if (paths.some((file) => canRead && !canRead(path.resolve(workspace, file))))
+	if (canRead && paths.some((file) => !canRead(path.resolve(workspace, file))))
 		throw new VerificationScopeError("Check input is ignored")
 	return captureVerificationContent(workspace, paths)
 }
@@ -43,14 +43,9 @@ export function replaceWorkPlan(context: TaskWorkContext | undefined, plan: Task
 			const previous = context?.plan?.checks.find((check) => check.id === receipt.checkId)
 			const next = plan.checks.find((check) => check.id === receipt.checkId)
 			// Upgrade legacy full-definition digests only against their original plan.
-			if (
-				!previous ||
-				!next ||
-				!matchesDefinition(receipt, previous) ||
-				checkDefinitionDigest(previous) !== checkDefinitionDigest(next)
-			)
-				return []
-			return [{ ...receipt, definitionDigest: checkDefinitionDigest(next) }]
+			if (!previous || !next || !matchesDefinition(receipt, previous)) return []
+			const definitionDigest = checkDefinitionDigest(previous)
+			return definitionDigest === checkDefinitionDigest(next) ? [{ ...receipt, definitionDigest }] : []
 		}),
 	}
 }
@@ -172,7 +167,7 @@ export async function getOutstandingAcceptanceChecks(
 	for (const check of context.plan?.checks ?? []) {
 		const receipt = context.receipts.find((item) => matchesDefinition(item, check))
 		let reason: string | undefined
-		if (!receipt || receipt.status !== "passed") {
+		if (receipt?.status !== "passed") {
 			reason = receipt?.status ?? "not run"
 			if (receipt?.diagnostic) reason += ` (${receipt.diagnostic})`
 		} else {

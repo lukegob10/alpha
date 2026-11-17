@@ -132,11 +132,6 @@ function normalizeRetryAfterMs(retryAfterMs: number | undefined): number | undef
 	return Math.ceil(retryAfterMs)
 }
 
-function normalizeElapsedMs(elapsedMs: number | undefined): number {
-	if (elapsedMs === undefined || !Number.isFinite(elapsedMs)) return 0
-	return Math.max(0, elapsedMs)
-}
-
 function normalizeRandomValue(random: number): number {
 	if (!Number.isFinite(random)) return 0
 	return Math.min(1, Math.max(0, random))
@@ -174,7 +169,7 @@ export class AgentRetryPolicy {
 					normalizePositiveInteger(
 						options.maxAttemptsByCategory?.[category],
 						options.maxAttempts === undefined
-							? (DEFAULT_AGENT_RETRY_POLICY.maxAttemptsByCategory[category] ?? this.maxAttempts)
+							? DEFAULT_AGENT_RETRY_POLICY.maxAttemptsByCategory[category]
 							: this.maxAttempts,
 					),
 				),
@@ -212,15 +207,12 @@ export class AgentRetryPolicy {
 		const normalizedAttempt = normalizeAttempt(attempt)
 		const providerDelay = normalizeRetryAfterMs(retryAfterMs)
 		if (providerDelay !== undefined) return providerDelay
-		const exponent = normalizedAttempt - 1
-		const exponentialCeiling = this.baseDelayMs * 2 ** exponent
+		const exponentialCeiling = this.baseDelayMs * 2 ** (normalizedAttempt - 1)
 		const boundedCeiling = Math.min(
 			this.maxDelayMs,
 			Number.isFinite(exponentialCeiling) ? exponentialCeiling : this.maxDelayMs,
 		)
-		const exponentialDelay =
-			this.jitter === "full" ? boundedCeiling * normalizeRandomValue(this.random()) : boundedCeiling
-		return exponentialDelay
+		return this.jitter === "full" ? boundedCeiling * normalizeRandomValue(this.random()) : boundedCeiling
 	}
 
 	/** Resolve retry/exhaustion, output guards, and delay in one stable result. */
@@ -240,7 +232,7 @@ export class AgentRetryPolicy {
 		} else if (totalAttempt >= this.maxAttempts || attempt >= this.getMaxAttempts(request.category)) {
 			reason = "attempts"
 		} else {
-			const elapsedMs = normalizeElapsedMs(request.elapsedMs)
+			const elapsedMs = normalizeNonNegativeNumber(request.elapsedMs, 0)
 			if (elapsedMs >= this.maxElapsedMs) {
 				reason = "elapsed-budget"
 			} else {
@@ -298,22 +290,15 @@ export function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<v
 		let timer: ReturnType<typeof setTimeout> | undefined
 		const deadline = performance.now() + normalizedDelayMs
 
-		const cleanup = () => {
+		const settle = (complete: () => void) => {
+			if (settled) return
+			settled = true
 			if (timer !== undefined) clearTimeout(timer)
 			signal?.removeEventListener("abort", onAbort)
+			complete()
 		}
-		const finish = () => {
-			if (settled) return
-			settled = true
-			cleanup()
-			resolve()
-		}
-		const onAbort = () => {
-			if (settled) return
-			settled = true
-			cleanup()
-			reject(getAbortReason(signal!))
-		}
+		const finish = () => settle(resolve)
+		const onAbort = () => settle(() => reject(getAbortReason(signal!)))
 		const schedule = () => {
 			const remainingMs = Math.ceil(deadline - performance.now())
 			if (remainingMs <= 0) return finish()

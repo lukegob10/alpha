@@ -106,86 +106,71 @@ export async function readApiMessages({
 
 	if (await fileExistsAtPath(filePath)) {
 		const fileContent = await fs.readFile(filePath)
-		let parsedData: unknown
-		try {
-			parsedData = JSON.parse(fileContent.toString("utf8"))
-		} catch (error) {
-			throw new ProviderTranscriptStoreError(
-				"invalid_messages",
-				"Invalid API conversation history JSON",
-				taskId,
-				{
-					cause: error,
-				},
-			)
-		}
-		assertValidHistory(parsedData, taskId)
+		const messages = parseHistory(fileContent, taskId, "Invalid API conversation history JSON")
 		onRead?.(preconditionForBytes(fileContent))
-		return parsedData
-	} else {
-		return withLegacyTranscriptMigration(filePath, taskId, async (existingAuthority) => {
-			if (existingAuthority !== undefined) {
-				onRead?.(existingAuthority.precondition)
-				return existingAuthority.messages
-			}
-			const oldPath = path.join(taskDir, "claude_messages.json")
+		return messages
+	}
 
-			if (await fileExistsAtPath(oldPath)) {
-				const fileContent = await fs.readFile(oldPath, "utf8")
-				let parsedData: unknown
-				let migratedPrecondition: ApiMessagesWritePrecondition = { missing: true }
-				try {
-					parsedData = JSON.parse(fileContent)
-				} catch (error) {
-					throw new ProviderTranscriptStoreError(
-						"invalid_messages",
-						"Invalid legacy API conversation history JSON",
-						taskId,
-						{
-							cause: error,
-						},
-					)
-				}
-				assertValidHistory(parsedData, taskId)
-				try {
-					// Commit the replacement before removing the fallback. resumeTaskFromHistory
-					// reads twice, so deleting the only durable copy here loses the task.
-					const receipt = await writeApiMessages({
-						messages: parsedData,
-						taskId,
-						globalStoragePath,
-						onlyIfMissing: true,
-					})
-					migratedPrecondition = { digest: receipt.digest, byteLength: receipt.byteLength }
-					await fs.unlink(oldPath)
-				} catch (error) {
-					// An admission conflict is not permission to serve an obsolete prefix.
-					if (error instanceof ProviderTranscriptStoreError) throw error
-					// Keep serving the parsed fallback and retain whichever durable copy
-					// remains. A later read can safely retry the idempotent migration.
-					console.warn(
-						`[readApiMessages] Failed to migrate OLD API conversation history file. TaskId: ${taskId}, Old path: ${oldPath}, New path: ${filePath}, Error: ${error}`,
-					)
-				}
+	return withLegacyTranscriptMigration(filePath, taskId, async (existingAuthority) => {
+		if (existingAuthority !== undefined) {
+			onRead?.(existingAuthority.precondition)
+			return existingAuthority.messages
+		}
 
-				onRead?.(migratedPrecondition)
-				return parsedData
-			}
+		const oldPath = path.join(taskDir, "claude_messages.json")
+		if (!(await fileExistsAtPath(oldPath))) {
 			onRead?.({ missing: true })
 			return []
-		})
-	}
+		}
+
+		const messages = parseHistory(
+			await fs.readFile(oldPath, "utf8"),
+			taskId,
+			"Invalid legacy API conversation history JSON",
+		)
+		let migratedPrecondition: ApiMessagesWritePrecondition = { missing: true }
+		try {
+			// Commit the replacement before removing the fallback. resumeTaskFromHistory
+			// reads twice, so deleting the only durable copy here loses the task.
+			const receipt = await writeApiMessages({
+				messages,
+				taskId,
+				globalStoragePath,
+				onlyIfMissing: true,
+			})
+			migratedPrecondition = { digest: receipt.digest, byteLength: receipt.byteLength }
+			await fs.unlink(oldPath)
+		} catch (error) {
+			// An admission conflict is not permission to serve an obsolete prefix.
+			if (error instanceof ProviderTranscriptStoreError) throw error
+			// Keep serving the parsed fallback and retain whichever durable copy
+			// remains. A later read can safely retry the idempotent migration.
+			console.warn(
+				`[readApiMessages] Failed to migrate OLD API conversation history file. TaskId: ${taskId}, Old path: ${oldPath}, New path: ${filePath}, Error: ${error}`,
+			)
+		}
+
+		onRead?.(migratedPrecondition)
+		return messages
+	})
 }
 
-function preconditionForBytes(contents: Buffer | string): ApiMessagesWritePrecondition {
+function preconditionForBytes(contents: Buffer | string) {
 	return {
 		digest: crypto.createHash("sha256").update(contents).digest("hex"),
 		byteLength: Buffer.byteLength(contents),
 	}
 }
 
-function assertValidHistory(value: unknown, taskId: string): asserts value is ApiMessage[] {
-	const problem = invalidPersistedApiMessages(value)
+function parseHistory(contents: Buffer | string, taskId: string, jsonError: string): ApiMessage[] {
+	let messages: unknown
+	try {
+		messages = JSON.parse(contents.toString())
+	} catch (error) {
+		throw new ProviderTranscriptStoreError("invalid_messages", jsonError, taskId, { cause: error })
+	}
+
+	const problem = invalidPersistedApiMessages(messages)
 	if (problem) {
 		throw new ProviderTranscriptStoreError(
 			"invalid_messages",
@@ -193,6 +178,7 @@ function assertValidHistory(value: unknown, taskId: string): asserts value is Ap
 			taskId,
 		)
 	}
+	return messages as ApiMessage[]
 }
 
 export async function saveApiMessages(input: {
@@ -221,8 +207,7 @@ async function writeApiMessages({
 	// change either the intended snapshot or its receipt. Canonical bytes match
 	// the existing in-memory digest fence, including unknown provider metadata.
 	const contents = serializeProviderTranscript(messages)
-	const digest = crypto.createHash("sha256").update(contents).digest("hex")
-	const byteLength = Buffer.byteLength(contents)
+	const { digest, byteLength } = preconditionForBytes(contents)
 	const commitId = crypto.randomUUID()
 	const taskDir = await getTaskDirectoryPath(globalStoragePath, taskId)
 	const filePath = path.join(taskDir, GlobalFileNames.apiConversationHistory)
