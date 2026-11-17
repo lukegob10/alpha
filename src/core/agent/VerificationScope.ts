@@ -342,22 +342,40 @@ async function readGitHead(cwd: string): Promise<string | null> {
 	}
 }
 
+async function joinObservationPair<T, U>(first: Promise<T>, second: Promise<U>): Promise<[T, U]> {
+	// A failed observation must not release its caller while a sibling Git process
+	// still owns the workspace. Preserve the original failure order after draining.
+	const [left, right] = await Promise.allSettled([first, second] as const)
+	if (left.status === "rejected") throw left.reason
+	if (right.status === "rejected") throw right.reason
+	return [left.value, right.value]
+}
+
 /** Bounded Git-visible state only; unknown/non-Git/submodule/oversized observations fail closed. */
 export async function captureGitMutationState(workspaceRoot: string): Promise<GitMutationState> {
 	const root = await fs.realpath(workspaceRoot)
-	const gitRoot = await fs.realpath((await gitObservation(root, ["rev-parse", "--show-toplevel"])).trim())
-	if (gitRoot !== root) throw new VerificationScopeError("Git observation requires the workspace repository root")
-	const head = await readGitHead(root)
-	const status = await gitObservation(root, [
-		"status",
-		"--porcelain=v1",
-		"-z",
-		"--untracked-files=all",
-		"--no-renames",
-		"--ignore-submodules=none",
-	])
+	const [, head] = await joinObservationPair(
+		gitObservation(root, ["rev-parse", "--show-toplevel"]).then(async (value) => {
+			const gitRoot = await fs.realpath(value.trim())
+			if (gitRoot !== root)
+				throw new VerificationScopeError("Git observation requires the workspace repository root")
+		}),
+		readGitHead(root),
+	)
+	// Inventory reads are independent, but remain between the opening HEAD and
+	// the closing HEAD after content capture. Neither fence can run ahead of them.
+	const [status, trackedFlags] = await joinObservationPair(
+		gitObservation(root, [
+			"status",
+			"--porcelain=v1",
+			"-z",
+			"--untracked-files=all",
+			"--no-renames",
+			"--ignore-submodules=none",
+		]),
+		gitObservation(root, ["ls-files", "-v", "-z"]),
+	)
 	// Status omits tracked files marked assume-unchanged/skip-worktree; their bytes remain task inputs.
-	const trackedFlags = await gitObservation(root, ["ls-files", "-v", "-z"])
 	const hiddenTrackedPaths = trackedFlags
 		.split("\0")
 		.filter(Boolean)

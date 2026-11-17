@@ -3,6 +3,11 @@ import type { Task } from "../task/Task"
 export interface PresentAssistantMessageOptions {
 	/** Fence pending webview updates from a later canonical response. */
 	previewEpoch?: number
+	onReasoningPreview?: (messageTs: number) => void
+}
+
+export function formatReasoningText(text: string): string {
+	return text.includes("**") ? text.replace(/([.!?])\*\*([^*\n]+)\*\*/g, "$1\n\n**$2**") : text
 }
 
 function isCurrentStreamingPreview(alphaTask: Task, options: PresentAssistantMessageOptions): boolean {
@@ -19,7 +24,7 @@ function throwIfAborted(alphaTask: Task): void {
 type PresentationLockState = Task & { presentAssistantMessageLockOwner?: unknown }
 
 /**
- * Preview streamed assistant text in order. Tool blocks are always skipped:
+ * Preview streamed assistant text and reasoning in order. Tool blocks are always skipped:
  * only the scheduler may execute the persisted canonical response.
  */
 export async function presentAssistantMessage(alphaTask: Task, options: PresentAssistantMessageOptions = {}) {
@@ -61,7 +66,7 @@ async function presentAssistantMessageContent(alphaTask: Task, options: PresentA
 		}
 
 		const block = alphaTask.assistantMessageContent[alphaTask.currentStreamingContentIndex]
-		if (block.type !== "text") {
+		if (block.type !== "text" && block.type !== "reasoning") {
 			alphaTask.currentStreamingContentIndex++
 			continue
 		}
@@ -70,11 +75,14 @@ async function presentAssistantMessageContent(alphaTask: Task, options: PresentA
 		const { content, partial, previewMessageTs } = block
 		if (!alphaTask.didRejectTool) {
 			// Strip streamed thinking tags before the markdown renderer sees them.
-			const visibleText = content.replace(/<thinking>\s?/g, "").replace(/\s?<\/thinking>/g, "")
+			const visibleText =
+				block.type === "reasoning"
+					? formatReasoningText(content)
+					: content.replace(/<thinking>\s?/g, "").replace(/\s?<\/thinking>/g, "")
 			if (options.previewEpoch === undefined) {
-				await alphaTask.say("text", visibleText, undefined, partial)
+				await alphaTask.say(block.type, visibleText, undefined, partial)
 			} else {
-				await alphaTask.say("text", visibleText, undefined, partial, undefined, undefined, {
+				await alphaTask.say(block.type, visibleText, undefined, partial, undefined, undefined, {
 					previewEpoch: options.previewEpoch,
 					previewMessageTs,
 					onCreated: (message) => {
@@ -84,14 +92,26 @@ async function presentAssistantMessageContent(alphaTask: Task, options: PresentA
 			}
 			if (!isCurrentStreamingPreview(alphaTask, options)) return
 			throwIfAborted(alphaTask)
+			if (block.type === "reasoning" && block.previewMessageTs !== undefined) {
+				options.onReasoningPreview?.(block.previewMessageTs)
+			}
 		}
 
 		if (partial && !alphaTask.didRejectTool) {
 			// Keep the lock owner's promise alive for updates queued during say().
 			// The outer loop also checks after this async boundary for a final delta.
-			if (!alphaTask.presentAssistantMessageHasPendingUpdates) return
-			alphaTask.presentAssistantMessageHasPendingUpdates = false
-			continue
+			if (alphaTask.presentAssistantMessageHasPendingUpdates) {
+				alphaTask.presentAssistantMessageHasPendingUpdates = false
+				continue
+			}
+			// Reasoning can be displayed while its preceding text item remains open.
+			// The pump revisits that anchored text row when a continuation arrives.
+			if (
+				block.type !== "text" ||
+				alphaTask.assistantMessageContent[alphaTask.currentStreamingContentIndex + 1]?.type !== "reasoning"
+			) {
+				return
+			}
 		}
 
 		if (alphaTask.currentStreamingContentIndex === alphaTask.assistantMessageContent.length - 1) {

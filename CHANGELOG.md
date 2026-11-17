@@ -1,5 +1,14 @@
 # Changelog
 
+## 3.2.37
+
+### Patch Changes
+
+- Run independent Git checks together when detecting workspace changes around shell commands.
+- Skip provider token counts for text and text-only tool results when the request is safely below context limits.
+- Keep reading model responses while reasoning updates are delivered to the UI, and keep interleaved assistant text in
+  the same chat message.
+
 ## 3.2.36
 
 ### Patch Changes

@@ -228,6 +228,56 @@ afterEach(async () => {
 })
 
 describe("Task streaming text previews", () => {
+	it.each(["settled", "in-flight"] as const)(
+		"keeps one anchored text row across %s reasoning presentation",
+		async (presentation) => {
+			let firstTextTs: number | undefined
+			let enterReasoning!: () => void
+			const reasoningEntered = new Promise<void>((resolve) => {
+				enterReasoning = resolve
+			})
+			let releaseReasoning!: () => void
+			const reasoningReleased = new Promise<void>((resolve) => {
+				releaseReasoning = resolve
+			})
+			const fixture = await harness(async function* (_attempt, task) {
+				yield { type: "reasoning", text: "Checking the request." }
+				yield { type: "text", text: "I" }
+				await task["streamingPreviewQueue"]
+				firstTextTs = textRows(task.alphaMessages).at(-1)?.ts
+				expect(firstTextTs).toBeDefined()
+				yield { type: "reasoning", text: "The ticket is available." }
+				if (presentation === "settled") await task["streamingPreviewQueue"]
+				else await reasoningEntered
+				yield { type: "text", text: " checked the ticket." }
+				releaseReasoning()
+				await task["streamingPreviewQueue"]
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+			})
+			if (presentation === "in-flight") {
+				const say = fixture.task.say.bind(fixture.task)
+				vi.spyOn(fixture.task, "say").mockImplementation(async (...args) => {
+					const publication = say(...args)
+					if (args[0] === "reasoning" && args[1]?.includes("The ticket is available.")) {
+						enterReasoning()
+						await reasoningReleased
+					}
+					return publication
+				})
+			}
+			try {
+				await fixture.run()
+			} finally {
+				releaseReasoning()
+			}
+			expect(textRows(await fixture.uiHistory()).map(({ ts, text, partial }) => ({ ts, text, partial }))).toEqual(
+				[{ ts: firstTextTs, text: "I checked the ticket.", partial: false }],
+			)
+			expect(fixture.createMessage).toHaveBeenCalledOnce()
+			expect(fixture.effect).not.toHaveBeenCalled()
+		},
+	)
+
 	it.each(["complete", "incremental"] as const)(
 		"keeps text around a %s tool call distinct and executes its provider ID once",
 		async (format) => {
@@ -237,6 +287,7 @@ describe("Task streaming text previews", () => {
 				if (attempt === 1) {
 					yield { type: "text", text: "First. " }
 					await task["streamingPreviewQueue"]
+					yield { type: "reasoning", text: "Preparing the command." }
 					const toolChunks: ApiStreamChunk[] =
 						format === "complete"
 							? [{ type: "tool_call", id: callId, name: "exec_command", arguments: args }]
@@ -246,6 +297,7 @@ describe("Task streaming text previews", () => {
 									{ type: "tool_call_end", id: callId },
 								]
 					yield* toolChunks
+					yield { type: "reasoning", text: "Waiting for the command result." }
 					yield { type: "text", text: "Second." }
 				} else {
 					yield { type: "text", text: "Final." }

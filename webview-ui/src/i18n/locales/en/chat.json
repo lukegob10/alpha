@@ -567,7 +567,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Multi-file patches report new editor problems once the files are saved. Verified read-only ripgrep searches skip workspace change scans."
+			"description": "Alpha checks for workspace changes faster after commands, skips unnecessary token counts, and keeps model responses streaming during reasoning updates."
 		}
 	},
 	"crossTasks": {

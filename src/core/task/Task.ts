@@ -334,7 +334,7 @@ import { restoreTodoListForTask } from "../tools/UpdateTodoListTool"
 import { FileContextTracker } from "../context-tracking/FileContextTracker"
 import { AlphaIgnoreController } from "../ignore/AlphaIgnoreController"
 import { AlphaProtectedController } from "../protect/AlphaProtectedController"
-import { type AssistantMessageContent, presentAssistantMessage } from "../assistant-message"
+import { type AssistantMessageContent, formatReasoningText, presentAssistantMessage } from "../assistant-message"
 import { NativeToolCallParser, type ToolCallStreamEvent } from "../assistant-message/NativeToolCallParser"
 import { AgentResponseAccumulator } from "../agent/AgentResponseAccumulator"
 import { classifyRequestWorkClass, extractUserRequestText } from "../agent/requestWorkClass"
@@ -369,6 +369,7 @@ import { digestValue, type StepContext } from "../agent/StepContext"
 import {
 	getCompactionTargetTokens,
 	getContextLimits,
+	getContextManagementLastMessageTokens,
 	isPostTurnCondenseDue,
 	manageContext,
 	resolveCondenseThreshold,
@@ -1440,6 +1441,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private streamingPreviewQueue: Promise<void> = Promise.resolve()
 	private streamingPreviewRequestVersion = 0
 	private streamingPreviewPumpOwner?: symbol
+	private streamingPreviewDirtyIndex?: number
+	private currentReasoningResponseMessageTs?: number
 	private backgroundUsageDrainEpoch = 0
 	private backgroundUsageDrainAbortController?: AbortController
 	userMessageContent: (Anthropic.TextBlockParam | Anthropic.ImageBlockParam | Anthropic.ToolResultBlockParam)[] = []
@@ -1478,6 +1481,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 	private invalidateStreamingPreviewEpoch(): void {
 		this.streamingPreviewEpoch += 1
+		this.streamingPreviewDirtyIndex = undefined
 	}
 
 	/**
@@ -1527,15 +1531,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	/**
-	 * Coalesce best-effort streaming text previews behind one tracked pump.
+	 * Coalesce best-effort streaming text and reasoning previews behind one tracked pump.
 	 *
 	 * Providers can emit many small text deltas while one webview update is still
 	 * in flight. Chaining one presentation promise per delta turns that burst into
 	 * a serialized backlog at the tool boundary. The version counter retains only
 	 * one trailing presentation of the latest accumulated text.
 	 */
-	private scheduleStreamingPreview(): void {
+	private scheduleStreamingPreview(dirtyIndex?: number): void {
 		const epoch = this.streamingPreviewEpoch
+		if (dirtyIndex !== undefined) {
+			this.streamingPreviewDirtyIndex = Math.min(this.streamingPreviewDirtyIndex ?? dirtyIndex, dirtyIndex)
+		}
 		this.streamingPreviewRequestVersion += 1
 		if (this.streamingPreviewPumpOwner) return
 
@@ -1550,8 +1557,24 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			) {
 				presentedVersion = this.streamingPreviewRequestVersion
 				if (!this.isStreamingPreviewEpochCurrent(epoch)) return
+				// Only the pump moves its cursor: a reasoning publication may still be
+				// awaiting transport when a later delta changes an earlier text row.
+				if (this.streamingPreviewDirtyIndex !== undefined) {
+					this.currentStreamingContentIndex = Math.min(
+						this.currentStreamingContentIndex,
+						this.streamingPreviewDirtyIndex,
+					)
+					this.streamingPreviewDirtyIndex = undefined
+				}
 				try {
-					await presentAssistantMessage(this, { previewEpoch: epoch })
+					await presentAssistantMessage(this, {
+						previewEpoch: epoch,
+						onReasoningPreview: (messageTs) => {
+							if (this.isStreamingPreviewEpochCurrent(epoch)) {
+								this.summarizeReasoning(this.findMessageByTimestamp(messageTs))
+							}
+						},
+					})
 				} catch (error) {
 					// Preview output is non-authoritative.  A provider turn must still be
 					// able to complete when a webview update rejects or is superseded.
@@ -1576,6 +1599,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.streamingPreviewQueue = queuedPreview
 	}
 
+	private finalizeStreamingPreviewSegment(): void {
+		for (let index = this.assistantMessageContent.length - 1; index >= 0; index--) {
+			const block = this.assistantMessageContent[index]
+			if (block.type !== "text" && block.type !== "reasoning") break
+			if (!block.partial) continue
+			block.partial = false
+			this.streamingPreviewDirtyIndex = Math.min(this.streamingPreviewDirtyIndex ?? index, index)
+		}
+	}
+
 	/**
 	 * Join all previews currently queued before a turn boundary mutates shared
 	 * streaming state. Preview work is non-authoritative, so every boundary uses a
@@ -1583,13 +1616,17 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	 * harmless and the queue is detached so a provider turn cannot be permanently
 	 * chained behind a hung webview operation.
 	 */
-	private async drainStreamingPreviews(reason: string, guard?: CanonicalLifecycleEventGuard): Promise<void> {
+	private async drainStreamingPreviews(
+		reason: string,
+		guard?: CanonicalLifecycleEventGuard,
+		deadlineAt = Date.now() + STREAMING_PREVIEW_DRAIN_TIMEOUT_MS,
+	): Promise<void> {
 		if (guard && !guard()) return
 		const cancellationSignal = this.getTaskLifetimeCancellationSignal()
 		let cancelDeadline: () => void = () => {}
 		const deadline = new Promise<"timed-out" | "cancelled">((resolve) => {
 			let settled = false
-			const timer = setTimeout(() => finish("timed-out"), STREAMING_PREVIEW_DRAIN_TIMEOUT_MS)
+			const timer = setTimeout(() => finish("timed-out"), Math.max(0, deadlineAt - Date.now()))
 			const onAbort = () => finish("cancelled")
 			const cleanup = () => {
 				clearTimeout(timer)
@@ -1838,12 +1875,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// Initialize streaming in NativeToolCallParser
 				NativeToolCallParser.startStreamingToolCall(event.id, event.name as ToolName, this.taskId)
 
-				// Before adding a new tool, finalize any preceding text block
-				// This prevents the text block from blocking tool presentation
-				const lastBlock = this.assistantMessageContent[this.assistantMessageContent.length - 1]
-				if (lastBlock?.type === "text" && lastBlock.partial) {
-					lastBlock.partial = false
-				}
+				// Tool calls close the text item, including text behind reasoning previews.
+				this.finalizeStreamingPreviewSegment()
 
 				// Track the index where this tool will be stored
 				const toolUseIndex = this.assistantMessageContent.length
@@ -13886,7 +13919,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				stateUpdate,
 				undefined,
 				capturedTurn,
-				options.onCreated,
+				(message) => {
+					if (
+						type === "reasoning" &&
+						options.previewEpoch !== undefined &&
+						this.isStreamingPreviewEpochCurrent(options.previewEpoch)
+					) {
+						this.currentReasoningResponseMessageTs = message.ts
+					}
+					options.onCreated?.(message)
+				},
 			)
 		if (
 			options.contextCondenseErrorCost !== undefined &&
@@ -13996,7 +14038,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		if (partial !== undefined) {
 			const commandOutputExecutionId =
 				type === "command_output" ? options.commandExecutionId || undefined : undefined
-			const isAssistantPreview = type === "text" && options.previewEpoch !== undefined
+			const isAssistantPreview = (type === "text" || type === "reasoning") && options.previewEpoch !== undefined
 			// Codex TUI 81b995a6 (chatwidget/streaming.rs) consolidates each streamed
 			// item in its own row. Other text, reasoning and tool output can arrive meanwhile.
 			const lastMessage = isAssistantPreview
@@ -18061,6 +18103,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					}
 					this.currentRequestSignal = undefined
 					this.currentAssistantResponseMessageTs = undefined
+					this.currentReasoningResponseMessageTs = undefined
 					this.didCompleteReadingStream = false
 					this.userMessageContentReady = false
 					this.didRejectTool = false
@@ -18503,19 +18546,19 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								case "reasoning": {
 									if (!chunk.text) break
 									reasoningMessage += chunk.text
-									// Only apply formatting if the message contains sentence-ending punctuation followed by **
-									let formattedReasoning = reasoningMessage
-									if (reasoningMessage.includes("**")) {
-										// Add line breaks before **Title** patterns that appear after sentence endings
-										// This targets section headers like "...end of sentence.**Title Here**"
-										// Handles periods, exclamation marks, and question marks
-										formattedReasoning = reasoningMessage.replace(
-											/([.!?])\*\*([^*\n]+)\*\*/g,
-											"$1\n\n**$2**",
-										)
+									const lastBlock = this.assistantMessageContent.at(-1)
+									if (lastBlock?.type === "reasoning" && lastBlock.partial) {
+										lastBlock.content = reasoningMessage
+									} else {
+										this.assistantMessageContent.push({
+											type: "reasoning",
+											content: reasoningMessage,
+											partial: true,
+										})
 									}
-									await this.say("reasoning", formattedReasoning, undefined, true)
-									this.summarizeReasoning(this.getLastNonAgentMessage())
+									// Codex 05ae1b0f, session/mod.rs: UI events enqueue without a
+									// renderer acknowledgement. Keep renderer latency off stream reads.
+									this.scheduleStreamingPreview()
 									break
 								}
 								case "usage":
@@ -18570,8 +18613,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								}
 
 								case "tool_call": {
-									const preceding = this.assistantMessageContent.at(-1)
-									if (preceding?.type === "text") preceding.partial = false
+									this.finalizeStreamingPreviewSegment()
 									// Legacy: Handle complete tool calls (for backward compatibility)
 									// Convert native tool call to ToolUse format
 									const toolUse = NativeToolCallParser.parseToolCall({
@@ -18599,13 +18641,21 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 								case "text": {
 									assistantMessage += chunk.text
 
-									// Native tool calling: text chunks are plain text.
-									// Create or update a text content block directly
-									const lastBlock =
-										this.assistantMessageContent[this.assistantMessageContent.length - 1]
-									if (lastBlock?.type === "text" && lastBlock.partial) {
-										lastBlock.content += chunk.text
+									// Reasoning can interleave within the same provider text item.
+									// Only a tool boundary closes its anchored UI row.
+									let textIndex = this.assistantMessageContent.length - 1
+									while (
+										textIndex >= 0 &&
+										this.assistantMessageContent[textIndex].type === "reasoning"
+									) {
+										this.assistantMessageContent[textIndex].partial = false
+										textIndex--
+									}
+									const textBlock = this.assistantMessageContent[textIndex]
+									if (textBlock?.type === "text" && textBlock.partial) {
+										textBlock.content += chunk.text
 									} else {
+										textIndex = this.assistantMessageContent.length
 										this.assistantMessageContent.push({
 											type: "text",
 											content: chunk.text,
@@ -18615,7 +18665,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 									}
 									// Presentation only previews text; the persisted canonical response
 									// reaches the serial ToolScheduler after streaming completes.
-									this.scheduleStreamingPreview()
+									this.scheduleStreamingPreview(textIndex)
 									break
 								}
 							}
@@ -19186,15 +19236,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 
 					this.didCompleteReadingStream = true
-					for (const block of this.assistantMessageContent) {
-						if (block.type === "text") block.partial = false
-					}
+					this.finalizeStreamingPreviewSegment()
 					this.scheduleStreamingPreview()
 
 					// The canonical response is the only source allowed to mutate effects.
 					// Drain the preview queue before finalizing/replacing its shared parser
 					// state, then close this preview epoch before persistence and scheduling.
-					await this.drainStreamingPreviews("stream completion", ownsResponseStep)
+					const previewDeadlineAt = Date.now() + STREAMING_PREVIEW_DRAIN_TIMEOUT_MS
+					await this.drainStreamingPreviews("stream completion", ownsResponseStep, previewDeadlineAt)
 					if (!ownsResponseStep()) return supersededResponseResult()
 					this.invalidateStreamingPreviewEpoch()
 
@@ -19329,7 +19378,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							)
 						}) ||
 							streamToolSurface !== this.currentTaskToolSurface)
-					await this.applyCanonicalAgentResponse(canonicalResponse, ownsResponseStep)
+					await this.applyCanonicalAgentResponse(canonicalResponse, ownsResponseStep, previewDeadlineAt)
 					if (!ownsResponseStep()) return supersededResponseResult()
 					if (taskWasCancelled()) return await cancelResponseBeforeCommit()
 					assistantMessage = canonicalResponse.text
@@ -19344,24 +19393,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					// Note: updateApiReqMsg() is now called from within drainStreamInBackgroundToFindAllUsage
 					// to ensure usage data is captured even when the stream is interrupted. The background task
 					// uses local variables to accumulate usage data before atomically updating the shared state.
-
-					// Complete the reasoning message if it exists
-					// We can't use say() here because the reasoning message may not be the last message
-					// (other messages like text blocks or tool uses may have been added after it during streaming)
-					if (reasoningMessage) {
-						const lastReasoningIndex = findLastIndex(
-							this.alphaMessages,
-							(m) => m.type === "say" && m.say === "reasoning",
-						)
-
-						if (lastReasoningIndex !== -1 && this.alphaMessages[lastReasoningIndex].partial) {
-							this.alphaMessages[lastReasoningIndex].partial = false
-							await this.updateAlphaMessage(this.alphaMessages[lastReasoningIndex])
-							if (!ownsResponseStep()) return supersededResponseResult()
-							if (taskWasCancelled()) return await cancelResponseBeforeCommit()
-							this.summarizeReasoning(this.alphaMessages[lastReasoningIndex])
-						}
-					}
 
 					await this.saveAlphaMessages()
 					if (!ownsResponseStep()) return supersededResponseResult()
@@ -20410,18 +20441,67 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		return createAgentResponse(items)
 	}
 
+	private async finalizeCanonicalReasoningPreview(
+		response: AgentResponse,
+		guard: CanonicalLifecycleEventGuard | undefined,
+		deadlineAt: number,
+	): Promise<void> {
+		if (!response.reasoning || (guard && !guard())) return
+		const text = formatReasoningText(response.reasoning)
+		const previous =
+			this.currentReasoningResponseMessageTs === undefined
+				? undefined
+				: this.findMessageByTimestamp(this.currentReasoningResponseMessageTs)
+		const existingReasoning = previous?.type === "say" && previous.say === "reasoning" ? previous : undefined
+		if (existingReasoning?.text === text && existingReasoning.partial === false) return
+		let message: AlphaMessage
+		if (existingReasoning) {
+			message = existingReasoning
+			message.text = text
+			message.partial = false
+		} else {
+			const turn = this.captureMessageTurn()
+			message = {
+				ts: this.reserveUiMessageTimestamp(),
+				type: "say",
+				say: "reasoning",
+				text,
+				partial: false,
+				...(turn ? { turn } : {}),
+			}
+			this.alphaMessages.push(message)
+			this.currentReasoningResponseMessageTs = message.ts
+		}
+		// Preserve the complete canonical row even when its best-effort preview
+		// exhausted the shared boundary deadline. The caller still saves the transcript.
+		if (Date.now() >= deadlineAt) return
+		const epoch = this.streamingPreviewEpoch
+		const ownsProjection = () => epoch === this.streamingPreviewEpoch && (!guard || guard())
+		const ownership = { guard: ownsProjection, provider: this.providerRef.deref() }
+		const publication = existingReasoning
+			? this.updateAlphaMessage(message, ownership)
+			: this.publishAlphaMessageCreated(message, undefined, ownership)
+		this.streamingPreviewQueue = publication.catch((error) => {
+			if (ownsProjection()) console.error(`[Task#${this.taskId}] Failed to present completed reasoning:`, error)
+		})
+		await this.drainStreamingPreviews("canonical reasoning", guard, deadlineAt)
+		if (ownsProjection()) this.summarizeReasoning(message)
+	}
+
 	/** Replace the parser's preview with the immutable provider-normalized output. */
 	private async applyCanonicalAgentResponse(
 		response: AgentResponse,
 		guard?: CanonicalLifecycleEventGuard,
+		previewDeadlineAt = Date.now() + STREAMING_PREVIEW_DRAIN_TIMEOUT_MS,
 	): Promise<void> {
 		if (guard && !guard()) return
 		// Keep this boundary safe for future callers as well as the live stream
 		// path. A canonical response must never race a late preview presenter.
-		if (guard) await this.drainStreamingPreviews("canonical response", guard)
-		else await this.drainStreamingPreviews("canonical response")
+		await this.drainStreamingPreviews("canonical response", guard, previewDeadlineAt)
 		if (guard && !guard()) return
 		this.invalidateStreamingPreviewEpoch()
+		await this.finalizeCanonicalReasoningPreview(response, guard, previewDeadlineAt)
+		if (guard && !guard()) return
 		this.currentAgentResponse = response
 		this.assistantMessageContent = []
 
@@ -21485,18 +21565,22 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// This allows us to show an in-progress indicator to the user
 				// We use the centralized willManageContext helper to avoid duplicating threshold logic
 				const lastMessage = this.apiConversationHistory[this.apiConversationHistory.length - 1]
-				const lastMessageContent = lastMessage?.content
-				let lastMessageTokens = 0
-				if (lastMessageContent) {
-					lastMessageTokens = Array.isArray(lastMessageContent)
-						? await waitForBoundedPreflight(contextCount.countTokens(lastMessageContent, apiHandler))
-						: await waitForBoundedPreflight(
-								contextCount.countTokens(
-									[{ type: "text", text: lastMessageContent as string }],
-									apiHandler,
-								),
-							)
-				}
+				const lastMessageTokens = await waitForBoundedPreflight(
+					getContextManagementLastMessageTokens(
+						lastMessage?.content,
+						{
+							totalTokens: contextTokens,
+							contextWindow,
+							maxTokens,
+							autoCondenseContext,
+							autoCondenseContextPercent,
+							autoCondenseContextScope,
+							prefillContextTokens,
+						},
+						apiHandler,
+						contextCount,
+					),
+				)
 				assertPreflightWithinBudget()
 
 				const contextManagementWillRun = willManageContext({

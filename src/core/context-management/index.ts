@@ -212,6 +212,53 @@ export function willManageContext({
 		: prevContextTokens > allowedTokens
 }
 
+/** A safe text ceiling can rule out compaction without waiting for a provider tokenizer. */
+export async function getContextManagementLastMessageTokens(
+	content: ApiMessage["content"] | undefined,
+	options: Omit<WillManageContextOptions, "lastMessageTokens">,
+	apiHandler: ApiHandler,
+	countContext: TokenCountContext,
+): Promise<number> {
+	countContext.signal?.throwIfAborted()
+	const blocks = Array.isArray(content) ? content : [{ type: "text" as const, text: content ?? "" }]
+	if (blocks.every((block) => block?.type === "text" && block.text === "")) return 0
+	const textOnly = blocks.every(
+		(block) =>
+			(block?.type === "text" && typeof block.text === "string") ||
+			(block?.type === "tool_result" &&
+				(block.content === undefined ||
+					typeof block.content === "string" ||
+					(Array.isArray(block.content) &&
+						block.content.every((part) => part?.type === "text" && typeof part.text === "string")))),
+	)
+	if (
+		textOnly &&
+		Number.isFinite(options.totalTokens) &&
+		options.totalTokens >= 0 &&
+		Number.isFinite(options.contextWindow) &&
+		options.contextWindow > 0 &&
+		(options.maxTokens == null || (Number.isFinite(options.maxTokens) && options.maxTokens >= 0)) &&
+		options.autoCondenseContextPercent === resolveCondenseThreshold(options.autoCondenseContextPercent) &&
+		(options.prefillContextTokens === undefined ||
+			(Number.isFinite(options.prefillContextTokens) && options.prefillContextTokens >= 0))
+	) {
+		let ceiling: number | undefined
+		try {
+			// Codex 05ae1b0f (2026-11-17), context_manager/history.rs estimates unsampled
+			// text locally. Alpha uses whole serialized UTF-8 bytes (not bytes / 4) only
+			// to prove that compaction cannot be needed. Media and opaque state stay exact.
+			ceiling = Buffer.byteLength(JSON.stringify(blocks), "utf8")
+		} catch {
+			// Keep malformed/non-serializable input under the existing counter's rules.
+		}
+		if (ceiling !== undefined && !willManageContext({ ...options, lastMessageTokens: ceiling })) {
+			// This bound is not an exact count and must never enter the tokenizer cache.
+			return ceiling
+		}
+	}
+	return countContext.countTokens(blocks, apiHandler)
+}
+
 /**
  * Context Management: Conditionally manages the conversation context when approaching limits.
  *
@@ -372,10 +419,20 @@ export async function manageContext({
 		)
 	} else {
 		// Estimate tokens for the last message (which is always a user message).
-		const lastMessageContent = messages[messages.length - 1]?.content ?? ""
-		const lastMessageTokens = Array.isArray(lastMessageContent)
-			? await estimateTokenCount(lastMessageContent, apiHandler, operation)
-			: await estimateTokenCount([{ type: "text", text: lastMessageContent as string }], apiHandler, operation)
+		const lastMessageTokens = await getContextManagementLastMessageTokens(
+			messages[messages.length - 1]?.content,
+			{
+				totalTokens,
+				contextWindow,
+				maxTokens,
+				autoCondenseContext,
+				autoCondenseContextPercent,
+				autoCondenseContextScope,
+				prefillContextTokens,
+			},
+			apiHandler,
+			operation,
+		)
 		prevContextTokens = totalTokens + lastMessageTokens
 	}
 	metadata?.signal?.throwIfAborted()

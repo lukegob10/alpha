@@ -243,7 +243,7 @@ describe("operation-scoped context token counting", () => {
 		expect(countTokens).toHaveBeenCalledTimes(3)
 	})
 
-	it("stops context management instead of proceeding on a zero undercount", async () => {
+	it("stops context management instead of proceeding on a required zero undercount", async () => {
 		const countTokens = vi.fn(async () => 0)
 		const handler = createHandler(countTokens)
 		const messages: ApiMessage[] = [
@@ -254,7 +254,8 @@ describe("operation-scoped context token counting", () => {
 
 		const result = await manageContext({
 			messages,
-			totalTokens: 500,
+			// Near the threshold, the text ceiling cannot replace an authoritative count.
+			totalTokens: 1_580,
 			contextWindow: 2_000,
 			maxTokens: 200,
 			apiHandler: handler,

@@ -172,6 +172,23 @@ describe("Task request preflight latency", () => {
 		}
 	})
 
+	it("dispatches a recurring small-text step without waiting for the provider tokenizer", async () => {
+		const { task, api, log, dispatchTimes, captureRequest } = harness()
+		Reflect.set(task, "getTokenUsage", () => ({ contextTokens: 1_000 }))
+		api.countTokens.mockImplementation(() => new Promise<number>(() => undefined))
+		const capture = captureRequest()
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(dispatchTimes).toEqual([0])
+			expect(api.countTokens).not.toHaveBeenCalled()
+		} finally {
+			await vi.runAllTimersAsync()
+			await capture
+			await log.close()
+		}
+	})
+
 	it.each(["ensureCanonicalLifecycleStepStarted", "publishCanonicalLifecyclePhase"] as const)(
 		"still awaits the canonical %s barrier before provider dispatch",
 		async (method) => {

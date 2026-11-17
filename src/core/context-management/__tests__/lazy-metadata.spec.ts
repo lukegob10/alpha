@@ -61,8 +61,9 @@ describe("context management tool metadata admission", () => {
 		const { options, messages, prepareTools, countTokens } = fixture()
 		const result = await manageContext(options)
 		expect(result.messages).toBe(messages)
-		expect(result.prevContextTokens).toBe(110)
-		expect(countTokens).toHaveBeenCalledOnce()
+		// Below the threshold, the conservative text ceiling avoids a remote count.
+		expect(result.prevContextTokens).toBe(100 + Buffer.byteLength(JSON.stringify([{ type: "text", text: "Five" }])))
+		expect(countTokens).not.toHaveBeenCalled()
 		expect(prepareTools).not.toHaveBeenCalled()
 		expect(condense.summarizeConversation).not.toHaveBeenCalled()
 	})
@@ -129,10 +130,10 @@ describe("context management tool metadata admission", () => {
 		},
 	)
 
-	it("rejects invalid provider counts without preparing tools", async () => {
+	it("rejects invalid required provider counts without preparing tools", async () => {
 		const { options, prepareTools, countTokens } = fixture()
 		countTokens.mockResolvedValue(Number.NaN)
-		expect((await manageContext(options)).status).toBe("no_progress")
+		expect((await manageContext({ ...options, totalTokens: 490 })).status).toBe("no_progress")
 		expect(prepareTools).not.toHaveBeenCalled()
 	})
 

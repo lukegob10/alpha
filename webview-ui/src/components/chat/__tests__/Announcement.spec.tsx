@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Multi-file patches report new editor problems once the files are saved. Verified read-only ripgrep searches skip workspace change scans."
+		"Alpha checks for workspace changes faster after commands, skips unnecessary token counts, and keeps model responses streaming during reasoning updates."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

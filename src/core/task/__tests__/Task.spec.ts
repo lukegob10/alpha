@@ -9099,6 +9099,144 @@ describe("Alpha", () => {
 			expect(completed).toHaveBeenCalledOnce()
 		})
 
+		it("reads the next provider chunk while a reasoning preview transport is stalled", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const previewEntered = deferred()
+			const releasePreview = deferred()
+			let followingChunkRequested = false
+			mockProvider.postTaskMessageToWebview = vi.fn(async (_type, _taskId, message: AlphaMessage) => {
+				if (message.say === "reasoning" && message.partial) {
+					previewEntered.resolve()
+					await releasePreview.promise
+				}
+			})
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					yield { type: "reasoning", text: "Inspecting the requested code." }
+					followingChunkRequested = true
+					yield { type: "text", text: "The next provider item is already available." }
+				})(),
+			)
+
+			const run = task.runAgentRequests([{ type: "text", text: "Review the code." }], false)
+			try {
+				await previewEntered.promise
+				// The gate stays closed through a full event-loop turn. Rendering must not
+				// prevent consumption of an already-available provider item.
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				expect(followingChunkRequested).toBe(true)
+			} finally {
+				releasePreview.resolve()
+				await run
+				task.dispose()
+			}
+		})
+
+		it("coalesces a reasoning burst while preserving its final text and provider signature", async () => {
+			const task = createTask()
+			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })
+			vi.spyOn(task as any, "getTaskMode").mockResolvedValue("code")
+			vi.spyOn(task as any, "appendAgentTurnEvent").mockResolvedValue(undefined)
+			vi.spyOn(task.diffViewProvider, "reset").mockResolvedValue(undefined)
+			const previewEntered = deferred()
+			const releasePreview = deferred()
+			const deliveries: Array<{ text?: string; partial?: boolean }> = []
+			let chunksRead = 0
+			mockProvider.postTaskMessageToWebview = vi.fn(async (_type, _taskId, message: AlphaMessage) => {
+				if (message.say !== "reasoning") return
+				deliveries.push({ text: message.text, partial: message.partial })
+				if (deliveries.length === 1) {
+					previewEntered.resolve()
+					await releasePreview.promise
+				}
+			})
+			const chunks = Array.from({ length: 100 }, (_, index) => `Finding ${index}. `)
+			vi.spyOn(task, "attemptApiRequest").mockImplementation(() =>
+				(async function* (): AsyncGenerator<ApiStreamChunk> {
+					for (const text of chunks) {
+						chunksRead++
+						yield { type: "reasoning", text }
+					}
+					yield { type: "reasoning", text: "", signature: "retained-reasoning-signature" }
+					yield { type: "text", text: "Review complete." }
+				})(),
+			)
+			const run = task.runAgentRequests([{ type: "text", text: "Review the code." }], false)
+			try {
+				await previewEntered.promise
+				await new Promise<void>((resolve) => setImmediate(resolve))
+				expect(chunksRead).toBe(100)
+				expect(deliveries).toHaveLength(1)
+			} finally {
+				releasePreview.resolve()
+				await run
+				task.dispose()
+			}
+			expect(deliveries).toHaveLength(2)
+			expect(deliveries.at(-1)).toEqual({ text: chunks.join(""), partial: false })
+			expect(task.alphaMessages.filter((message) => message.say === "reasoning")).toEqual([
+				expect.objectContaining({ text: chunks.join(""), partial: false }),
+			])
+			const result = await run
+			if (typeof result === "boolean") throw new Error("Expected the completed step response")
+			expect(result.response?.reasoning).toBe(chunks.join(""))
+			expect(JSON.stringify(task.apiConversationHistory)).toContain("retained-reasoning-signature")
+		})
+
+		it.each(["timeout", "cancelled"] as const)(
+			"preserves complete reasoning once across %s and repeated canonical finalization",
+			async (ending) => {
+				const task = createTask()
+				const previewEntered = deferred()
+				const releasePreview = deferred()
+				const summarize = vi.spyOn(task as any, "summarizeReasoning")
+				mockProvider.postTaskMessageToWebview = vi.fn(async (_type, _taskId, message: AlphaMessage) => {
+					if (message.say !== "reasoning") return
+					previewEntered.resolve()
+					await releasePreview.promise
+				})
+				task.assistantMessageContent = [{ type: "reasoning", content: "First.", partial: true }]
+				task["scheduleStreamingPreview"]()
+				await previewEntered.promise
+				const response = createAgentResponse([{ type: "reasoning", text: "First.**More** Complete." }])
+				vi.useFakeTimers()
+				try {
+					const startedAt = Date.now()
+					if (ending === "cancelled") {
+						task.abort = true
+						task["taskCancellationController"].abort(new Error("Stop requested"))
+					}
+					let finalized = false
+					const finalize = task["applyCanonicalAgentResponse"](response).then(() => {
+						finalized = true
+					})
+					if (ending === "timeout") {
+						await vi.advanceTimersByTimeAsync(999)
+						expect(finalized).toBe(false)
+						await vi.advanceTimersByTimeAsync(1)
+					}
+					await finalize
+					await task["applyCanonicalAgentResponse"](response)
+					expect(Date.now() - startedAt).toBe(ending === "timeout" ? 1000 : 0)
+					expect(task.alphaMessages.filter((message) => message.say === "reasoning")).toEqual([
+						expect.objectContaining({ text: "First.\n\n**More** Complete.", partial: false }),
+					])
+					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledTimes(ending === "timeout" ? 1 : 2)
+					expect(summarize).not.toHaveBeenCalled()
+				} finally {
+					vi.useRealTimers()
+					releasePreview.resolve()
+					await new Promise<void>((resolve) => setImmediate(resolve))
+					task.dispose()
+				}
+				expect(summarize).not.toHaveBeenCalled()
+			},
+		)
+
 		it("keeps a clean legacy text-only EOF completed", async () => {
 			const task = createTask()
 			mockProvider.getState = vi.fn().mockResolvedValue({ autoApprovalEnabled: true })

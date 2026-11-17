@@ -7,7 +7,8 @@ import { customToolRegistry } from "@alpha-code/core"
 import type { CustomToolDefinition } from "@alpha-code/types"
 
 type PreviewBlock = {
-	type: "text" | "tool_use" | "mcp_tool_use"
+	type: "text" | "reasoning" | "tool_use" | "mcp_tool_use"
+	previewMessageTs?: number
 	id?: string
 	name?: string
 	params?: Record<string, unknown>
@@ -207,6 +208,50 @@ describe("presentAssistantMessage preview", () => {
 		expect(task.userMessageContent).toEqual([])
 		expect(task.currentStreamingContentIndex).toBe(1)
 		expect(task.presentAssistantMessageLocked).toBe(false)
+	})
+
+	it("presents interleaved reasoning and text in order with exact reasoning row identity", async () => {
+		const task = createTask([
+			{ type: "reasoning", content: "First.**Review**", partial: false, previewMessageTs: 10 },
+			{ type: "text", content: "Inspecting files.", partial: false, previewMessageTs: 11 },
+			createNativeToolBlock("read-between-messages"),
+			{ type: "reasoning", content: "Second finding.", partial: false, previewMessageTs: 12 },
+			{ type: "text", content: "Finished.", partial: false, previewMessageTs: 13 },
+		])
+		const summarize = vi.fn()
+		await presentAssistantMessage(task as unknown as Task, { previewEpoch: 1, onReasoningPreview: summarize })
+
+		expect(task.say.mock.calls.map(([type, text, , partial]) => ({ type, text, partial }))).toEqual([
+			{ type: "reasoning", text: "First.\n\n**Review**", partial: false },
+			{ type: "text", text: "Inspecting files.", partial: false },
+			{ type: "reasoning", text: "Second finding.", partial: false },
+			{ type: "text", text: "Finished.", partial: false },
+		])
+		expect(summarize.mock.calls).toEqual([[10], [12]])
+		expect(readFileHandle).not.toHaveBeenCalled()
+	})
+
+	it("does not summarize reasoning after its pending presentation loses epoch ownership", async () => {
+		const task = createTask([
+			{ type: "reasoning", content: "Older reasoning", partial: true, previewMessageTs: 10 },
+		])
+		const entered = deferred()
+		const release = deferred()
+		task.say.mockImplementation(async () => {
+			entered.resolve()
+			await release.promise
+			return undefined
+		})
+		const summarize = vi.fn()
+		const preview = presentAssistantMessage(task as unknown as Task, {
+			previewEpoch: 1,
+			onReasoningPreview: summarize,
+		})
+		await entered.promise
+		task.isStreamingPreviewEpochCurrent.mockReturnValue(false)
+		release.resolve()
+		await preview
+		expect(summarize).not.toHaveBeenCalled()
 	})
 
 	it("presents text after skipped tools and preserves partial/final order for late updates", async () => {
