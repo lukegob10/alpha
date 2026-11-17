@@ -68,14 +68,13 @@ const boundaries = [
 	"early read tail",
 	"finish",
 	"apply",
-	"reasoning update",
+	"reasoning publication",
 	"UI save",
 ] as const
 type Boundary = (typeof boundaries)[number]
 
 // Test barriers wrap native methods without changing their contracts or effects.
 type TaskHooks = {
-	updateAlphaMessage: Task["updateAlphaMessage"]
 	saveAlphaMessages: Task["saveAlphaMessages"]
 	scheduleStreamingPreview: Task["scheduleStreamingPreview"]
 	deliverAgentMessages: Task["deliverAgentMessages"]
@@ -140,7 +139,7 @@ async function harness(
 		getVerificationProgressState: () => ({ stateFingerprint: "post-eof-cancellation" }),
 		postStateToWebview: vi.fn(async () => undefined),
 		postStateToWebviewWithoutTaskHistory: vi.fn(async () => undefined),
-		postMessageToWebview: vi.fn(async () => undefined),
+		postMessageToWebview: vi.fn<AlphaProvider["postMessageToWebview"]>(async () => undefined),
 		postTaskQueueToWebview: vi.fn(async () => undefined),
 		log: vi.fn(),
 	}
@@ -187,7 +186,6 @@ async function harness(
 	vi.spyOn(task, "say").mockImplementation(async (say, text, _images, partial) => {
 		task.alphaMessages.push({ ts: task.alphaMessages.length + 1, type: "say", say, text, partial })
 	})
-	vi.spyOn(hooks, "updateAlphaMessage").mockResolvedValue(undefined)
 	vi.spyOn(hooks, "saveAlphaMessages").mockResolvedValue(true)
 	vi.spyOn(task, "emitFinalTokenUsageUpdate").mockImplementation(() => undefined)
 	vi.spyOn(hooks, "scheduleStreamingPreview").mockImplementation(() => undefined)
@@ -371,10 +369,15 @@ async function harness(
 			}
 		})
 	}
-	if (boundary === "reasoning update") {
+	if (boundary === "reasoning publication") {
 		let held = false
-		vi.mocked(task["updateAlphaMessage"]).mockImplementation(async (message) => {
-			if (!held && message.say === "reasoning" && !message.partial && task["currentAgentResponse"]) {
+		provider.postMessageToWebview.mockImplementation(async (event) => {
+			if (
+				!held &&
+				(event.type === "messageCreated" || event.type === "messageUpdated") &&
+				event.alphaMessage?.say === "reasoning" &&
+				event.alphaMessage.partial === false
+			) {
 				held = true
 				boundaryEntered.resolve()
 				await releaseBoundary.promise
@@ -454,7 +457,7 @@ async function harness(
 			yield { type: "text", text: "Checking.", id: "message-progress", phase: "commentary", outputIndex: 0 }
 			yield {
 				type: "reasoning",
-				text: boundary === "reasoning update" ? "Checking safety." : "",
+				text: boundary === "reasoning publication" ? "Checking safety." : "",
 				encryptedContent: opaqueState,
 				id: "reasoning-one",
 				summary: [],

@@ -63,6 +63,7 @@ function createTask() {
 		userMessageContentReady: false,
 		recordToolUsage: vi.fn(),
 		scheduleStreamingPreview: vi.fn(),
+		finalizeStreamingPreviewSegment: Task.prototype["finalizeStreamingPreviewSegment"],
 		say: vi.fn().mockResolvedValue(undefined),
 		ask: vi.fn().mockResolvedValue({ response: "yesButtonClicked" }),
 		pushToolResultToUserContent(result: Anthropic.ToolResultBlockParam) {
