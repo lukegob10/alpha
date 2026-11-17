@@ -81,7 +81,10 @@ function compactedResult(messages: ApiMessage[]): SummarizeResponse {
 	}
 }
 
-function harness() {
+// Keep tests of provider counts close enough to the 128K context limit to require a count.
+const NEAR_LIMIT_CONTEXT_TOKENS = 120_000
+
+function harness(contextTokens = 100) {
 	const api = {
 		getModel: () => ({ id: "test-model", info: { contextWindow: 128_000, maxTokens: 4096 } as ModelInfo }),
 		countTokens: vi.fn<ApiHandler["countTokens"]>(async (blocks) =>
@@ -147,7 +150,7 @@ function harness() {
 		],
 		getTaskMode: vi.fn(async () => "code"),
 		getSystemPrompt: vi.fn(async () => "System prompt"),
-		getTokenUsage: vi.fn(() => ({ contextTokens: 100 })),
+		getTokenUsage: vi.fn(() => ({ contextTokens })),
 		getTaskAllowedToolNames: () => undefined,
 		shouldExposeAgentLifecycleTools: () => false,
 		getFilesReadByAlphaSafely: vi.fn(async () => undefined),
@@ -928,7 +931,7 @@ describe("Task proportional context preflight", () => {
 	})
 
 	it("rejects invalid authoritative counts even when the preview says compaction is unnecessary", async () => {
-		const { task, api, save } = harness()
+		const { task, api, save } = harness(NEAR_LIMIT_CONTEXT_TOKENS)
 		api.countTokens.mockResolvedValue(Number.NaN)
 
 		await expect(runRecovery(task, "automatic")).rejects.toMatchObject({
@@ -943,8 +946,8 @@ describe("Task proportional context preflight", () => {
 	})
 
 	it("prepares compaction metadata when an uncached recount overturns the preview", async () => {
-		const { task, api, save } = harness()
-		api.countTokens.mockResolvedValueOnce(Number.NaN).mockResolvedValueOnce(130_000)
+		const { task, api, save } = harness(NEAR_LIMIT_CONTEXT_TOKENS)
+		api.countTokens.mockResolvedValueOnce(Number.NaN).mockResolvedValueOnce(10)
 
 		await runRecovery(task, "automatic")
 
@@ -1638,7 +1641,7 @@ describe("Task context recovery admission", () => {
 	afterEach(() => vi.restoreAllMocks())
 
 	it("reuses one operation context from newest-message estimation through final compaction measurement", async () => {
-		const { task, api, history } = harness()
+		const { task, api, history } = harness(NEAR_LIMIT_CONTEXT_TOKENS)
 		const result = {
 			...compactedResult(history),
 			prevContextTokens: 100,
@@ -1679,7 +1682,7 @@ describe("Task context recovery admission", () => {
 	})
 
 	it("cancels a pending newest-message count without compaction or a late history commit", async () => {
-		const { task, api, save, history } = harness()
+		const { task, api, save, history } = harness(NEAR_LIMIT_CONTEXT_TOKENS)
 		const countStarted = deferred<void>()
 		const countFinished = deferred<number>()
 		let countSignal: AbortSignal | undefined
