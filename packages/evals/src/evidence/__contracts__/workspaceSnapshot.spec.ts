@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
+import { setImmediate } from "node:timers/promises"
 
 import {
 	collectWorkspaceEvidence,
@@ -12,6 +13,43 @@ import {
 import { ExecaHarnessProcessRunner } from "../../orchestration/processRunner"
 
 describe("final workspace reconstruction", () => {
+	it("waits for in-flight workspace commands before rejecting a failed capture", async () => {
+		let finishDiff!: () => void
+		const diff = new Promise<void>((resolve) => {
+			finishDiff = resolve
+		})
+		const failure = new Error("Workspace status capture failed")
+		const store = { put: vi.fn(), get: vi.fn() }
+		const captured = collectWorkspaceEvidence({
+			attemptId: "attempt",
+			workspace: process.cwd(),
+			processRunner: {
+				run: async ({ args }) => {
+					if (args[0] === "status") throw failure
+					if (args[0] === "diff") await diff
+					return {
+						exitCode: 0,
+						stdout: "",
+						stderr: "",
+						durationMs: 0,
+						timedOut: false,
+						outputTruncated: false,
+					}
+				},
+			},
+			store,
+			stopReason: "completed",
+		}).catch((error: unknown) => error)
+
+		try {
+			expect(await Promise.race([captured, setImmediate("pending")])).toBe("pending")
+		} finally {
+			finishDiff()
+		}
+		expect(await captured).toBe(failure)
+		expect(store.put).not.toHaveBeenCalled()
+	})
+
 	it("refuses to retain configured multiline secrets in final file bytes", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-snapshot-secret-"))
 		const workspace = path.join(root, "source")

@@ -32,7 +32,7 @@ export type WorkspaceEvidenceInput = {
 }
 
 export async function collectWorkspaceEvidence(input: WorkspaceEvidenceInput): Promise<ArtifactDescriptor[]> {
-	const [diff, status, snapshot] = await Promise.all([
+	const captures = [
 		runGit(input, [
 			"diff",
 			"--binary",
@@ -41,7 +41,12 @@ export async function collectWorkspaceEvidence(input: WorkspaceEvidenceInput): P
 		]),
 		runGit(input, ["status", "--short", "--untracked-files=all"]),
 		captureWorkspaceSnapshot(input),
-	])
+	] as const
+	const [diff, status, snapshot] = await Promise.all(captures).catch(async (error: unknown) => {
+		// The caller may dispose the workspace as soon as capture settles.
+		await Promise.allSettled(captures)
+		throw error
+	})
 	const evidence: RequiredEvidence = {
 		final_diff: diff,
 		git_status: status,
