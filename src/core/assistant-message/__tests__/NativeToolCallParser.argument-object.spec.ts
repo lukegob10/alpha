@@ -21,7 +21,7 @@ describe("native tool argument objects", () => {
 				name: "navigate_code",
 				arguments: JSON.stringify({ ...args, ...overrides }),
 			})
-		expect(parse({})?.nativeArgs).toEqual(args)
+		expect(parse({})).toMatchObject({ type: "tool_use", nativeArgs: args })
 		for (const invalid of [{ operation: "rename" }, { line: 0 }, { column: 1.5 }, { path: "" }, { editor: true }]) {
 			expect(parse(invalid)).toBeNull()
 		}
@@ -35,7 +35,10 @@ describe("native tool argument objects", () => {
 				name: "edit",
 				arguments: JSON.stringify({ ...args, ...overrides }),
 			})
-		expect(parse({ replace_all: "true" })?.nativeArgs).toEqual({ ...args, replace_all: true })
+		expect(parse({ replace_all: "true" })).toMatchObject({
+			type: "tool_use",
+			nativeArgs: { ...args, replace_all: true },
+		})
 		for (const invalid of [
 			{ file_path: {} },
 			{ old_string: ["a"] },

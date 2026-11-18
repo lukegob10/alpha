@@ -697,6 +697,29 @@ describe("DiffViewProvider", () => {
 			expect(fs.writeFile).not.toHaveBeenCalled()
 		})
 
+		it("distinguishes a literal replacement character from changed invalid UTF-8 bytes", async () => {
+			const fs = await import("fs/promises")
+			const original = "a\uFFFDb"
+			const changed = Buffer.from([0x61, 0xff, 0x62])
+			vi.mocked(fs.readFile).mockImplementationOnce(async (_file, options) =>
+				typeof options === "string" ? changed.toString("utf8") : changed,
+			)
+			await expect(
+				diffViewProvider.saveDirectly("test.ts", "new content", false, false, 0, {
+					exists: true,
+					content: original,
+				}),
+			).rejects.toThrow("file changed while approval was pending")
+			expect(fs.writeFile).not.toHaveBeenCalled()
+			vi.mocked(fs.readFile).mockResolvedValueOnce(Buffer.from(original))
+			await expect(
+				diffViewProvider.assertExpectedFileState(`${mockCwd}/test.ts`, "test.ts", {
+					exists: true,
+					content: original,
+				}),
+			).resolves.toBeUndefined()
+		})
+
 		it("rejects an expected existing file that disappeared", async () => {
 			const fs = await import("fs/promises")
 			const error = Object.assign(new Error("missing"), { code: "ENOENT" })
