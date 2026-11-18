@@ -96,6 +96,7 @@ interface ContractTask {
 	approveAsk(): void
 	queueUserMessageDurably(text: string, images: string[], receiptId: string): Promise<boolean>
 	steerQueuedUserMessage(messageId: string, expectedTurnId: string): Promise<void>
+	deliverAgentMessages(): Promise<void>
 	resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -675,6 +676,62 @@ suite("Alpha VS Code LM exact-host contract", function () {
 		} finally {
 			fixture.releaseAll()
 			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onTaskCompleted)
+			await cleanupReadProof()
+		}
+	})
+
+	test("steers after a tool result commits and starts the next call without a Continue prompt", async () => {
+		const provider = getHostProvider()
+		const cleanupReadProof = await createReadProofFile()
+		const guidance = "Use the existing read and answer in one sentence."
+		fixture.reset("tool-followup", { holdRequestIndexes: [0, 1] })
+		let completed = 0
+		const onCompleted = () => completed++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Find the workspace proof and report it.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 1)
+			const task = provider.getLiveTask(taskId)!
+			const turnId = provider.getAgentLifecycleSnapshot(taskId)?.turnId
+			assert.ok(turnId)
+			const deliver = task.deliverAgentMessages
+			try {
+				// Hold the next provider admission at the first await after its tool result is durable.
+				task.deliverAgentMessages = async () => {
+					task.deliverAgentMessages = deliver
+					await deliver.call(task)
+					assert.ok(await task.queueUserMessageDurably(guidance, [], "steer-after-result"))
+					await task.steerQueuedUserMessage("steer-after-result", turnId)
+				}
+				fixture.releaseRequest(0)
+				await waitFor(() => fixture.getRequests().length >= 2 || task.taskAsk?.ask === "resume_task", {
+					timeout: 15_000,
+					interval: 25,
+					description: "the steered request or its recovery prompt",
+					onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+				})
+				assert.deepEqual(
+					task.alphaMessages?.filter(({ say }) => say === "error").map(({ text }) => text),
+					[],
+				)
+				assert.notEqual(task.taskAsk?.ask, "resume_task")
+				assert.equal(provider.getAgentLifecycleSnapshot(taskId)?.turnId, turnId)
+				const request = fixture.getRequests()[1]!
+				assert.equal(JSON.stringify(request.messages).split(guidance).length - 1, 1)
+				assert.ok(getToolResultText(request, "alpha-e2e-command-read-1").includes(READ_PROOF))
+				fixture.releaseRequest(1)
+				await acceptCompletionBoundary(provider, fixture, taskId, () => completed, 1)
+				await task.waitForTermination()
+				assert.equal(fixture.getRequests().length, 2)
+			} finally {
+				task.deliverAgentMessages = deliver
+			}
+		} finally {
+			fixture.releaseAll()
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			await cleanupReadProof()
 		}
 	})
