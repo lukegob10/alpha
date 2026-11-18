@@ -461,6 +461,19 @@ describe("ExecaTerminalProcess", () => {
 			expect(mockTerminal.setActiveStream).toHaveBeenCalledWith(expect.any(Object), mockPid)
 			expect(mockTerminal.setActiveStream).toHaveBeenLastCalledWith(undefined)
 		})
+
+		it("skips POSIX PID refinement after a short command has settled", async () => {
+			const originalPlatform = process.platform
+			Object.defineProperty(process, "platform", { value: "linux" })
+			try {
+				await terminalProcess.run("echo test")
+				await vitest.advanceTimersByTimeAsync(100)
+
+				expect(discoverMock).not.toHaveBeenCalled()
+			} finally {
+				Object.defineProperty(process, "platform", { value: originalPlatform })
+			}
+		})
 	})
 
 	describe("trimRetrievedOutput", () => {
@@ -861,6 +874,26 @@ describe("ExecaTerminalProcess", () => {
 			} finally {
 				Object.defineProperty(process, "platform", { value: "win32" })
 				warning.mockRestore()
+				processKill.mockRestore()
+			}
+		})
+
+		it("keeps POSIX PID refinement for a pending abort after the command settles", async () => {
+			const processKill = vitest.spyOn(process, "kill").mockImplementation(() => true)
+			Object.defineProperty(process, "platform", { value: "linux" })
+			try {
+				const run = terminalProcess.run("echo test")
+				const abort = terminalProcess.abort()
+				await run
+				expect(discoverMock).not.toHaveBeenCalled()
+
+				await vitest.advanceTimersByTimeAsync(100)
+				await abort
+
+				expect(discoverMock).toHaveBeenCalledTimes(2)
+				expect(processKill).toHaveBeenCalledExactlyOnceWith(mockPid, "SIGKILL")
+			} finally {
+				Object.defineProperty(process, "platform", { value: "win32" })
 				processKill.mockRestore()
 			}
 		})

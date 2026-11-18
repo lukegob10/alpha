@@ -300,6 +300,34 @@ describe("primary command timeout mutation receipts", () => {
 		},
 	)
 
+	it("keeps collecting command output after an acknowledgement until the process exits", async () => {
+		const fixture = await createFixture()
+		fixture.task.ask = vi.fn().mockResolvedValue({ response: "yesButtonClicked" })
+		Object.assign(fixture.process, { getOutputPreview: vi.fn(() => "") })
+		const onCommandResult = vi.fn()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "acknowledged-output",
+			command: "command",
+			onCommandResult,
+		})
+		await fixture.launch
+		fixture.reportOutput("started\n")
+		await Promise.resolve()
+		fixture.reportOutput("verifying\n")
+		await fixture.finishProcess()
+		await execution
+
+		const statuses = fixture.provider.postMessageToWebview.mock.calls
+			.map(([message]) => message)
+			.filter((message) => message.type === "commandExecutionStatus")
+			.map((message) => JSON.parse(message.text))
+		expect(statuses).toContainEqual(
+			expect.objectContaining({ status: "output", output: expect.stringContaining("verifying") }),
+		)
+		expect(fixture.process.continue).not.toHaveBeenCalled()
+		expect(onCommandResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ exit_code: 0 }))
+	})
+
 	it("publishes bounded background progress without consuming session output or reopening a user ask", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers()

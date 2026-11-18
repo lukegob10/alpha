@@ -1,6 +1,6 @@
 import type { ReactNode } from "react"
 import type { ExtensionState } from "@alpha-code/types"
-import { CalendarClock, Ellipsis, GitFork, LayoutDashboard, Settings, SquarePen, Ticket } from "lucide-react"
+import { CalendarClock, Ellipsis, GitFork, Settings, SquarePen, Ticket } from "lucide-react"
 
 import {
 	Button,
@@ -16,12 +16,10 @@ import AlphaHero from "@/components/welcome/AlphaHero"
 export interface ChatToolbarProps {
 	navigation?: ReactNode
 	renderContext: ExtensionState["renderContext"]
-	debug: boolean
 	onNewChat: () => void
 	onForkChat?: () => void
 	onOpenSettings: () => void
 	onOpenTickets: () => void
-	onOpenIncidents: () => void
 	onOpenScheduledTasks: () => void
 }
 
@@ -31,12 +29,10 @@ const controlClassName =
 const ChatToolbar = ({
 	navigation,
 	renderContext,
-	debug,
 	onNewChat,
 	onForkChat,
 	onOpenSettings,
 	onOpenTickets,
-	onOpenIncidents,
 	onOpenScheduledTasks,
 }: ChatToolbarProps) => {
 	const { t } = useAppTranslation()
@@ -100,12 +96,6 @@ const ChatToolbar = ({
 						</DropdownMenuTrigger>
 					</StandardTooltip>
 					<DropdownMenuContent align="end" sideOffset={4}>
-						{debug && (
-							<DropdownMenuItem onSelect={onOpenIncidents}>
-								<LayoutDashboard aria-hidden="true" />
-								{t("common:chatToolbar.incidentDashboard")}
-							</DropdownMenuItem>
-						)}
 						<DropdownMenuItem onSelect={onOpenScheduledTasks}>
 							<CalendarClock aria-hidden="true" />
 							{t("common:chatToolbar.scheduledTasks")}

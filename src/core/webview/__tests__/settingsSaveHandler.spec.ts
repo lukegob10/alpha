@@ -324,7 +324,7 @@ describe("correlated preference saves", () => {
 			.spyOn(vscode.workspace, "getConfiguration")
 			.mockReturnValue({ get: () => false, update } as unknown as vscode.WorkspaceConfiguration)
 		const save = request({ soundEnabled: true }, { soundEnabled: false })
-		save.settingsSave!.debug = { expected: false, value: true }
+		save.settingsSave!.terminalInheritEnv = { expected: false, value: true }
 		try {
 			await handleSettingsUpdate(test.provider, save)
 			expect(test.postMessageToWebview).toHaveBeenLastCalledWith({
@@ -366,20 +366,25 @@ describe("correlated preference saves", () => {
 		})
 	})
 
-	it("reports committed debug configuration if a later state publication fails", async () => {
+	it("reports a committed terminal environment preference if a later state publication fails", async () => {
 		const test = fixture()
 		const update = vi.fn().mockResolvedValue(undefined)
 		const configuration = vi
 			.spyOn(vscode.workspace, "getConfiguration")
 			.mockReturnValue({ get: () => false, update } as unknown as vscode.WorkspaceConfiguration)
 		const save = request({})
-		save.settingsSave!.debug = { expected: false, value: true }
+		save.settingsSave!.terminalInheritEnv = { expected: false, value: true }
 		vi.mocked(test.provider.postStateToWebview).mockRejectedValueOnce(new Error("transport unavailable"))
 		try {
 			await handleSettingsUpdate(test.provider, save)
 			expect(test.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 				type: "settingsSaved",
-				settingsSaveResult: { requestId: "save-1", status: "error", error: "saveFailed", debugApplied: true },
+				settingsSaveResult: {
+					requestId: "save-1",
+					status: "error",
+					error: "saveFailed",
+					terminalInheritEnvApplied: true,
+				},
 			})
 		} finally {
 			configuration.mockRestore()

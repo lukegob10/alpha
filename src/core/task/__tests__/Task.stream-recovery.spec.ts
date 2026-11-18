@@ -25,6 +25,7 @@ import { AgentRetryPolicy } from "../../agent/AgentRetryPolicy"
 import { createAgentResponse } from "../../agent/AgentResponse"
 import { AgentResponseAccumulator } from "../../agent/AgentResponseAccumulator"
 import type { AgentStepSnapshot } from "../../agent/AgentStepContextBuilder"
+import { readAgentTurnEvents } from "../../agent/AgentTurnEventLog"
 import type { AgentTurnEvent } from "../../agent/AgentTurnEvents"
 import { AgentLifecycleJournal, type AgentLifecycleEventInput } from "../../agent/lifecycle/AgentLifecycleJournal"
 import { readApiMessages, saveApiMessages, type ApiMessage } from "../../task-persistence/apiMessages"
@@ -1568,6 +1569,103 @@ describe("Task committed partial stream recovery", () => {
 			expect((await fixture.journal.replay())?.terminalToolCallIds).toEqual(["accepted-call"])
 		},
 	)
+
+	it("starts the next request with durable tool results while the preceding diagnostic write is pending", async () => {
+		const callId = "read-before-diagnostic-flush"
+		const nextRequest = deferred()
+		const diagnosticAwaited = deferred()
+		const releaseDiagnostic = deferred()
+		let terminalToolCallsAtNextRequest: string[] | undefined
+		const fixture = await harness(async function* (attempt) {
+			if (attempt === 1) {
+				yield { type: "tool_call", id: callId, name: "read_file", arguments: "{}" }
+				yield { type: "tool_call_end", id: callId }
+				yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+				return
+			}
+			terminalToolCallsAtNextRequest = fixture.journal.getSnapshot()?.terminalToolCallIds
+			nextRequest.resolve()
+			yield { type: "text", text: "The read is complete." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+
+		vi.mocked(fixture.hooks.appendAgentTurnEvent).mockRestore()
+		vi.mocked(fixture.hooks.flushAgentTurnEvents).mockRestore()
+		const log = fixture.task["agentTurnEventLog"]
+		const append = fixture.hooks.appendAgentTurnEvent.bind(fixture.task)
+		let diagnosticHeld = false
+		fixture.hooks.appendAgentTurnEvent = (...args) => {
+			if (diagnosticHeld || args[0].type !== "response_terminal" || args[0].status !== "completed") {
+				return append(...args)
+			}
+			diagnosticHeld = true
+			log["writeQueue"] = log["writeQueue"].then(() => releaseDiagnostic.promise)
+			const write = append(...args)
+			// Observe a direct wait without making the negative case depend on a wall-clock timeout.
+			return new Proxy(write, {
+				get(target, key) {
+					if (key === "then") {
+						return (fulfilled: () => void, rejected: (error: unknown) => void) => {
+							diagnosticAwaited.resolve()
+							return target.then(fulfilled, rejected)
+						}
+					}
+					return Reflect.get(target, key, target)
+				},
+			})
+		}
+
+		const readDiagnostics = () =>
+			readAgentTurnEvents(fixture.task.taskId, fixture.provider.context.globalStorageUri.fsPath)
+		const running = fixture.run()
+		try {
+			expect(
+				await Promise.race([
+					nextRequest.promise.then(() => "next request"),
+					diagnosticAwaited.promise.then(() => "diagnostic awaited"),
+					running.then(() => "task ended"),
+				]),
+			).toBe("next request")
+			expect(diagnosticHeld).toBe(true)
+			expect(terminalToolCallsAtNextRequest).toEqual([callId])
+			const receipts = (await fixture.history()).flatMap((message) =>
+				Array.isArray(message.content) ? message.content.filter((block) => block.type === "tool_result") : [],
+			)
+			const receipt = expect.objectContaining({
+				type: "tool_result",
+				tool_use_id: callId,
+				content: "read completed",
+			})
+			expect(receipts).toEqual([receipt])
+			expect(fixture.createMessage.mock.calls[1][1]).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ role: "user", content: expect.arrayContaining([receipt]) }),
+				]),
+			)
+			expect((await readDiagnostics()).some(({ event }) => event.type === "response_terminal")).toBe(false)
+		} finally {
+			releaseDiagnostic.resolve()
+			await running
+		}
+
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect(fixture.effect).toHaveBeenCalledOnce()
+		expect(fixture.createMessage).toHaveBeenCalledTimes(2)
+		expect(
+			(await readDiagnostics())
+				.map(({ event }) => event.type)
+				.filter(
+					(type) =>
+						type === "model_request_started" || type === "response_terminal" || type === "turn_completed",
+				),
+		).toEqual([
+			"model_request_started",
+			"response_terminal",
+			"model_request_started",
+			"response_terminal",
+			"turn_completed",
+		])
+	})
 
 	it.each(["throw", "EOF"] as const)(
 		"refuses recovery after unfinished tool intent followed by %s even when no canonical call survives",

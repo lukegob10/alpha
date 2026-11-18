@@ -572,6 +572,7 @@ const DEFAULT_USAGE_COLLECTION_TIMEOUT_MS = 5000 // 5 seconds
 const STREAMING_PREVIEW_DRAIN_TIMEOUT_MS = 1000
 const MAX_CONTEXT_WINDOW_RETRIES = 3 // Maximum retries for context window errors
 const MAX_AUTOMATIC_MISTAKE_RECOVERIES = 1
+const modelRequestStateOptions = { includeTaskHistory: false, includeScheduledTasks: false }
 
 function getBoundedRequestDeadline(
 	configuredTimeoutMs: number | undefined,
@@ -1139,6 +1140,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	private contextCondenseAbortController?: AbortController
 	private postTurnCompactionAbortController?: AbortController
 	private generatedTitleAbortController?: AbortController
+	private pendingInitialTaskTitle?: string
 	private readonly taskCancellationController = new AbortController()
 	private reasoningSummaries?: ReasoningSummary
 	private agentWaitAbortController?: AbortController
@@ -7081,7 +7083,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.observeUiMessageTimestamps([message])
 		this.alphaMessages.push(message)
 		onCreated?.(message)
-		await this.publishAlphaMessageCreated(message, stateUpdate)
+		const publication = this.publishAlphaMessageCreated(message, stateUpdate)
+		if (message.type === "say" && message.say === "reasoning" && !requiredPersistenceContext) {
+			// Live reasoning can grow while its queued transcript and history save settles.
+			void this.saveAlphaMessages()
+			await publication
+			return
+		}
+		await publication
 		const saved = await this.saveAlphaMessages()
 		if (!saved && requiredPersistenceContext) throw new Error(`Unable to persist ${requiredPersistenceContext}.`)
 	}
@@ -7101,6 +7110,13 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			// Avoid resending large, mostly-static fields (notably taskHistory) on every chat message update.
 			// taskHistory is maintained in-memory in the webview and updated via taskHistoryItemUpdated.
 			await provider?.postStateToWebviewWithoutTaskHistory()
+		} else if (
+			typeof provider?.postBackgroundTaskMessageToWebview === "function" &&
+			!currentMessage.partial &&
+			((currentMessage.type === "say" && currentMessage.say === "api_req_started") ||
+				(currentMessage.type === "ask" && currentMessage.ask === "command" && currentMessage.isAnswered))
+		) {
+			provider.postBackgroundTaskMessageToWebview(this.taskId, currentMessage)
 		} else {
 			if (typeof provider?.postTaskMessageToWebview === "function") {
 				await provider.postTaskMessageToWebview("messageCreated", this.taskId, currentMessage)
@@ -7244,7 +7260,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 		const provider = this.providerRef.deref()
 		if (!provider || typeof provider.updateGeneratedTaskTitle !== "function") return Promise.resolve()
-		if (!provider.taskHistoryStore.get(this.taskId)) return Promise.resolve()
+		const history = provider.taskHistoryStore.get(this.taskId)
+		if (!history || history.displayName || history.generatedTitle) return Promise.resolve()
 		if (this.generatedTitleAbortController) return Promise.resolve()
 		const titleController = new AbortController()
 		this.generatedTitleAbortController = titleController
@@ -7282,7 +7299,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 	}
 
 	public cancelAutomaticTaskTitle(): void {
+		this.pendingInitialTaskTitle = undefined
 		this.generatedTitleAbortController?.abort(new Error("The task was renamed"))
+	}
+
+	private maybeStartInitialTaskTitle(chunk: ApiStreamChunk | undefined): void {
+		if (!this.pendingInitialTaskTitle || !chunk || !isApiStreamSemanticChunk(chunk)) return
+		const titleInput = this.pendingInitialTaskTitle
+		this.pendingInitialTaskTitle = undefined
+		void this.scheduleInitialTaskTitle(titleInput)
 	}
 
 	private reportedProviderTimeoutSteps?: WeakSet<CurrentAgentStep>
@@ -7618,7 +7643,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (type === "command_output") {
-			return { response: "messageResponse" }
+			// Acknowledge the output without sending the user response that yields the command.
+			return { response: "yesButtonClicked" }
 		}
 
 		if (type === "mistake_limit_reached") {
@@ -11350,12 +11376,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				// so do not wait for an event that has already been emitted.
 				if (process.isSettled === true && !physicallyRunning.has(process)) return
 				// A failed output reader can settle before the underlying shell exits.
+				// Forced disposal then reports physical exit via terminal_closed.
 				const finishEvent = process.isSettled ? "shell_execution_complete" : "completed"
 
 				let finish!: () => void
 				const settled = new Promise<void>((resolve) => {
 					finish = resolve
 					process.once(finishEvent, finish)
+					process.once("terminal_closed", finish)
 					process.once("error", finish)
 				})
 				let timeout: ReturnType<typeof setTimeout> | undefined
@@ -11377,6 +11405,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				} finally {
 					if (timeout) clearTimeout(timeout)
 					process.removeListener(finishEvent, finish)
+					process.removeListener("terminal_closed", finish)
 					process.removeListener("error", finish)
 				}
 			}),
@@ -14269,9 +14298,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 					if (options.commandExecutionId) lastMessage.commandExecutionId = options.commandExecutionId
 
-					// Instead of streaming partialMessage events, we do a save
-					// and post like normal to persist to disk.
-					await this.saveAlphaMessages()
+					// A closing reasoning preview can be followed by more streamed output.
+					const save = this.saveAlphaMessages()
+					if (type !== "reasoning" || !isAssistantPreview) await save
 
 					// More performant than an entire `postStateToWebview`.
 					await this.updateAlphaMessage(lastMessage).catch((error) => {
@@ -14557,9 +14586,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 			const openingMessageTs = await this.sayOpeningInput("text", task, images, undefined, "task")
 			const firstUserMessage = this.alphaMessages[0]
-			void this.scheduleInitialTaskTitle(
-				firstUserMessage?.text?.trim() || (images?.length ? "Review the attached image" : ""),
-			)
+			this.pendingInitialTaskTitle =
+				firstUserMessage?.text?.trim() || (images?.length ? "Review the attached image" : undefined)
 
 			// Internal sub-agents never receive MCP authority, so avoid initializing
 			// or counting foreground MCP servers for their isolated task startup.
@@ -14627,6 +14655,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				return
 			}
 			throw error
+		} finally {
+			this.pendingInitialTaskTitle = undefined
 		}
 	}
 
@@ -17861,7 +17891,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 
 				const provider = this.providerRef.deref()
 				let state = provider
-					? await this.waitForRequestControl(provider.getState(), this.getTaskLifetimeCancellationSignal())
+					? await this.waitForRequestControl(
+							provider.getState(modelRequestStateOptions),
+							this.getTaskLifetimeCancellationSignal(),
+						)
 					: undefined
 
 				const showAlphaIgnoredFiles = state?.showAlphaIgnoredFiles ?? false
@@ -17940,7 +17973,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					const targetMode = getModeBySlug(slashCommandMode, state?.customModes)
 					if (targetMode) {
 						await provider.setTaskMode(this.taskId, slashCommandMode)
-						state = await provider.getState()
+						state = await provider.getState(modelRequestStateOptions)
 					}
 				}
 
@@ -20177,7 +20210,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							}
 							if (!ownsResponseStep()) return supersededResponseResult()
 							this.userMessageContentReady = true
-							await this.appendAgentTurnEvent(
+							void this.appendAgentTurnEvent(
 								{ type: "response_terminal", status: "completed" },
 								streamLifecycleStep?.snapshot.context,
 							)
@@ -20614,18 +20647,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.alphaMessages.push(message)
 			this.currentReasoningResponseMessageTs = message.ts
 		}
-		// Preserve the complete canonical row even when its best-effort preview
-		// exhausted the shared boundary deadline. The caller still saves the transcript.
-		if (Date.now() >= deadlineAt) return
 		const epoch = this.streamingPreviewEpoch
 		const ownsProjection = () => epoch === this.streamingPreviewEpoch && (!guard || guard())
 		const ownership = { guard: ownsProjection, provider: this.providerRef.deref() }
 		const publication = existingReasoning
 			? this.updateAlphaMessage(message, ownership)
 			: this.publishAlphaMessageCreated(message, undefined, ownership)
-		this.streamingPreviewQueue = publication.catch((error) => {
+		const settled = publication.catch((error) => {
 			if (ownsProjection()) console.error(`[Task#${this.taskId}] Failed to present completed reasoning:`, error)
 		})
+		// Publish the complete row even when a stalled preview used the boundary's wait budget.
+		if (Date.now() >= deadlineAt) return
+		this.streamingPreviewQueue = settled
 		await this.drainStreamingPreviews("canonical reasoning", guard, deadlineAt)
 		if (ownsProjection()) this.summarizeReasoning(message)
 	}
@@ -21558,7 +21591,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				? this.currentAgentStep
 				: undefined)
 		const retainedRequest = retainedStep?.getRequest()
-		const pendingState = options.state === undefined ? this.providerRef.deref()?.getState() : undefined
+		const pendingState =
+			options.state === undefined ? this.providerRef.deref()?.getState(modelRequestStateOptions) : undefined
 		const state = options.state ?? (pendingState ? await waitForBoundedPreflight(pendingState) : undefined)
 		assertPreflightWithinBudget()
 		const capturedExecution =
@@ -22507,6 +22541,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.throwIfStepInterrupted(abortSignal)
 				throwIfAbsoluteDeadlineExceeded(requestDeadline)
 				streamCompleted = firstChunk.done === true
+				if (!firstChunk.done) this.maybeStartInitialTaskTitle(firstChunk.value)
 				yield firstChunk.value
 			} catch (error) {
 				const failure = abortSignal.reason instanceof ApiStreamDeadlineError ? abortSignal.reason : error
@@ -22752,7 +22787,10 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				this.throwIfStepInterrupted(abortSignal)
 				throwIfAbsoluteDeadlineExceeded(requestDeadline)
 				streamCompleted = chunk.done === true
-				if (!chunk.done) yield chunk.value
+				if (!chunk.done) {
+					this.maybeStartInitialTaskTitle(chunk.value)
+					yield chunk.value
+				}
 			}
 		} catch (error) {
 			this.recordProviderRequestTimeout(error, activeRequestStep)

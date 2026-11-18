@@ -71,9 +71,7 @@ const ensureCodeFenceLanguage = () => {
 }
 
 const StyledMarkdown = styled.div`
-	* {
-		font-weight: 400;
-	}
+	font-weight: 400;
 
 	strong {
 		font-weight: 600;
@@ -178,11 +176,23 @@ const StyledMarkdown = styled.div`
 		margin: 0.75em 0;
 	}
 
-	> :first-child {
+	blockquote {
+		margin: 0.85em 0;
+		padding: 0.45em 0.85em;
+		border-inline-start: 2px solid
+			var(--vscode-contrastBorder, var(--vscode-textBlockQuote-border, var(--border-subtle)));
+		border-start-end-radius: 6px;
+		border-end-end-radius: 6px;
+		background: var(--vscode-textBlockQuote-background, var(--surface-raised));
+	}
+
+	> :first-child,
+	blockquote > :first-child {
 		margin-top: 0;
 	}
 
-	> :last-child {
+	> :last-child,
+	blockquote > :last-child {
 		margin-bottom: 0;
 	}
 
@@ -199,6 +209,14 @@ const StyledMarkdown = styled.div`
 		padding: 0.5em 1em;
 	}
 
+	.markdown-code-block {
+		--code-block-background: var(--vscode-textCodeBlock-background, var(--surface-raised));
+		margin: 1em 0;
+		overflow: hidden;
+		border: 1px solid var(--border-subtle, var(--vscode-panel-border));
+		border-radius: 8px;
+	}
+
 	a {
 		color: var(--vscode-textLink-foreground);
 		text-decoration: none;
@@ -209,21 +227,23 @@ const StyledMarkdown = styled.div`
 		}
 	}
 
+	:is(h1, h2, h3, h4, h5, h6) {
+		margin: 1.15em 0 0.45em;
+		font-weight: 600;
+		line-height: 1.3;
+	}
+
 	h1 {
 		font-size: 1.65em;
 		font-weight: 700;
-		margin: 1.35em 0 0.5em;
 	}
 
 	h2 {
 		font-size: 1.35em;
-		font-weight: 500;
-		margin: 1.35em 0 0.5em;
 	}
 
 	h3 {
 		font-size: 1.2em;
-		font-weight: 500;
 	}
 
 	/* Table styles for remark-gfm */
@@ -249,7 +269,7 @@ const StyledMarkdown = styled.div`
 
 	th,
 	td {
-		padding: 10px 14px;
+		padding: 8px 12px;
 		text-align: left;
 		vertical-align: top;
 		overflow-wrap: anywhere;
@@ -359,9 +379,8 @@ const MarkdownBlock = memo(({ markdown, partial = false }: MarkdownBlockProps) =
 				const match = /language-(\w+)/.exec(className)
 				const language = match ? match[1] : "text"
 
-				// Wrap CodeBlock in a div to ensure proper separation
 				return (
-					<div style={{ margin: "1em 0" }}>
+					<div className="markdown-code-block">
 						<CodeBlock source={codeString} language={language} partial={partial} />
 					</div>
 				)

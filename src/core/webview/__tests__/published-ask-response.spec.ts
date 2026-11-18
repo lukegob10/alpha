@@ -58,9 +58,11 @@ describe("published ask response admission", () => {
 	afterEach(() => vi.useRealTimers())
 
 	it.each<AlphaAsk>(["followup", "completion_result", "resume_task", "resume_completed_task"])(
-		"accepts a reply to %s before delayed attention status is populated",
+		"accepts a reply to %s before attention status is populated",
 		async (askType) => {
 			vi.useFakeTimers()
+			const publication = deferred()
+			const finishPublication = deferred()
 			const task = Object.assign(Object.create(Task.prototype), {
 				taskId: "published-ask-task",
 				instanceId: "published-ask-instance",
@@ -71,7 +73,12 @@ describe("published ask response admission", () => {
 				alphaMessages: [] as AlphaMessage[],
 				messageQueueService: new MessageQueueService(),
 				providerRef: { deref: () => undefined },
-				addToAlphaMessages: vi.fn(async (message: AlphaMessage) => task.alphaMessages.push(message)),
+				addToAlphaMessages: vi.fn(async (message: AlphaMessage) => {
+					task.alphaMessages.push(message)
+					// The client can see the ask before the host finishes publishing its state.
+					publication.resolve()
+					await finishPublication.promise
+				}),
 				saveAlphaMessages: vi.fn(async () => undefined),
 				updateAlphaMessage: vi.fn(async () => undefined),
 				cancelAutoApprovalTimeout: vi.fn(),
@@ -87,8 +94,15 @@ describe("published ask response admission", () => {
 			const pending = task.ask(askType, "Ready for a reply", false)
 			void pending.catch(() => undefined)
 			try {
-				await vi.waitFor(() => expect(task["activeAsk"]?.type).toBe(askType))
+				await Promise.race([
+					publication.promise,
+					pending.then(() => {
+						throw new Error("Ask settled before its message was published")
+					}),
+				])
 				const publishedAsk = task.alphaMessages.at(-1)!
+				expect(publishedAsk.ask).toBe(askType)
+				expect(task.getActiveAskTimestamp()).toBe(publishedAsk.ts)
 				expect(task.taskAsk).toBeUndefined()
 				await webviewMessageHandler(provider, {
 					type: "askResponse",
@@ -98,11 +112,13 @@ describe("published ask response admission", () => {
 					text: "Continue with this answer",
 					images: [],
 				})
+				finishPublication.resolve()
 				await expect(pending).resolves.toMatchObject({
 					response: "messageResponse",
 					text: "Continue with this answer",
 				})
 			} finally {
+				finishPublication.resolve()
 				task.abort = true
 				await vi.advanceTimersByTimeAsync(100)
 				await pending.catch(() => undefined)

@@ -443,14 +443,14 @@ suite("Alpha Extension", function () {
 		await vscode.window.tabGroups.close(tabs)
 	})
 
-	test("Native sidebar actions are scoped and incident commands open one dashboard tab", async () => {
+	test("Native sidebar actions stay scoped after the incident dashboard is removed", async () => {
 		const extension = vscode.extensions.getExtension(process.env.ALPHA_E2E_EXTENSION_ID!)
 		assert.ok(extension)
 		const menus = extension.packageJSON.contributes?.menus as
 			| Record<string, Array<{ command: string; group?: string; when?: string }>>
 			| undefined
 		const paletteAction = menus?.commandPalette?.find((item) => item.command === "alpha.openIncidents")
-		assert.equal(paletteAction?.when, "config.alpha.debug")
+		assert.equal(paletteAction, undefined)
 		const toolbarCommands = new Set([
 			"alpha.sidebarNewChat",
 			"alpha.sidebarSettings",
@@ -467,11 +467,6 @@ suite("Alpha Extension", function () {
 			{ command: "alpha.sidebarNewChat", group: "navigation@1", when: "view == alpha.SidebarProvider" },
 			{ command: "alpha.sidebarSettings", group: "navigation@2", when: "view == alpha.SidebarProvider" },
 			{ command: "alpha.openTickets", group: "navigation@3", when: "view == alpha.SidebarProvider" },
-			{
-				command: "alpha.openIncidents",
-				group: "overflow@0",
-				when: "view == alpha.SidebarProvider && config.alpha.debug",
-			},
 			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
 		])
 		for (const command of ["alpha.sidebarNewChat", "alpha.sidebarSettings", "alpha.sidebarScheduledTasks"]) {
@@ -485,40 +480,11 @@ suite("Alpha Extension", function () {
 			"Editor title must not duplicate the webview fallback controls",
 		)
 
-		const configuration = vscode.workspace.getConfiguration("alpha")
-		const priorDebug = configuration.inspect<boolean>("debug")?.globalValue
-		const incidentTabs = () =>
-			vscode.window.tabGroups.all
-				.flatMap((group) => group.tabs)
-				.filter(
-					(tab) =>
-						tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.incidents"),
-				)
-		try {
-			await configuration.update("debug", true, vscode.ConfigurationTarget.Global)
-			assert.equal(vscode.workspace.getConfiguration("alpha").get("debug"), true)
-			const opened = new Promise<void>((resolve, reject) => {
-				const listener = vscode.window.tabGroups.onDidChangeTabs(() => {
-					if (incidentTabs().length > 0) {
-						clearTimeout(timeout)
-						listener.dispose()
-						resolve()
-					}
-				})
-				const timeout = setTimeout(() => {
-					listener.dispose()
-					reject(new Error("Incident dashboard tab did not open"))
-				}, 10000)
-			})
-			await vscode.commands.executeCommand("alpha.openIncidents")
-			await opened
-			await vscode.commands.executeCommand("alpha.openIncidents")
-			assert.equal(incidentTabs().length, 1)
-		} finally {
-			await configuration.update("debug", priorDebug, vscode.ConfigurationTarget.Global)
-			const tabs = incidentTabs()
-			if (tabs.length > 0) await vscode.window.tabGroups.close(tabs)
-		}
+		const commands = await vscode.commands.getCommands(true)
+		assert.ok(!commands.includes("alpha.openIncidents"))
+		assert.ok(commands.includes("alpha.exportDiagnostics"))
+		assert.equal(vscode.workspace.getConfiguration("alpha").inspect("debug")?.defaultValue, undefined)
+		await assert.rejects(async () => vscode.commands.executeCommand("alpha.openIncidents"), /not found/i)
 	})
 
 	test("legacy provider setups remain readable and reject execution without disrupting the host", async () => {
@@ -564,7 +530,6 @@ suite("Alpha Extension", function () {
 			"historyButtonClicked",
 			"scheduledTasksButtonClicked",
 			"openTickets",
-			"openIncidents",
 			"newTask",
 			"setCustomStoragePath",
 			"importSettings",
@@ -589,6 +554,7 @@ suite("Alpha Extension", function () {
 		const retiredCommands = [
 			"sidebarMarketplace",
 			"marketplaceButtonClicked",
+			"openIncidents",
 			"goalSeekButtonClicked",
 			"explainCode",
 			"fixCode",

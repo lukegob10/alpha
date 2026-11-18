@@ -150,6 +150,25 @@ describe("command-read classification and session execution boundary", () => {
 		return descriptor.prepareParallelCommand(context, capturedPolicy)
 	}
 
+	it("rejects unsupported command shapes before resolving workspace paths", async () => {
+		const realpath = vi.spyOn(fs, "realpath")
+		for (const command of ["git status --short", "rg needle", "rg --files src"]) {
+			const { args, policy: capturedPolicy } = native(command)
+			expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(false)
+		}
+		expect(realpath).not.toHaveBeenCalled()
+	})
+
+	it("resolves an explicit target once for inspection and once for file identity per capture", async () => {
+		const realpath = vi.spyOn(fs, "realpath")
+		const { args, policy: capturedPolicy } = native('"rg" -n needle src/example.ts')
+
+		expect(await isParallelCommandReadReady(context.task, args, capturedPolicy)).toBe(true)
+		expect(realpath.mock.calls.filter(([target]) => target === path.join(root, "src", "example.ts"))).toHaveLength(
+			2,
+		)
+	})
+
 	it.each([undefined, false])(
 		"admits a trusted explicit-file rg pipe with tty=%s without spawning during preparation",
 		async (tty) => {
@@ -178,7 +197,12 @@ describe("command-read classification and session execution boundary", () => {
 				),
 			).toBe(true)
 			expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
-			const prepared = await prepareWithRegistry(context, capturedPolicy)
+			const preflight = surface.resolve("exec_command")?.getCommandReadPreflight?.(context, capturedPolicy)
+			const approve = await preflight?.(context.signal)
+			expect(context.callbacks.askCommandApproval).not.toHaveBeenCalled()
+			expect(context.task.getCommandExecutionEvidence()).toEqual([])
+			expect(execa).not.toHaveBeenCalled()
+			const prepared = await approve?.(context.callbacks)
 			try {
 				expect(prepared?.scope).toBe(root)
 				expect(prepared?.run).toBeTypeOf("function")

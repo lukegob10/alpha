@@ -101,7 +101,7 @@ function harness() {
 			// This fixture exercises provider admission without executing tools.
 		}
 	}
-	return { task, api, log, records, dispatchTimes, captureRequest, cancellation }
+	return { task, api, provider, log, records, dispatchTimes, captureRequest, cancellation }
 }
 
 describe("Task request preflight latency", () => {
@@ -115,11 +115,15 @@ describe("Task request preflight latency", () => {
 	})
 
 	it("dispatches before optional journal writes while retaining their order, identity, and flush fence", async () => {
-		const { task, api, log, records, dispatchTimes, captureRequest } = harness()
+		const { task, api, provider, log, records, dispatchTimes, captureRequest } = harness()
 		const capture = captureRequest()
 		try {
 			await vi.advanceTimersByTimeAsync(0)
 			expect(api.createMessage).toHaveBeenCalledOnce()
+			expect(provider.getState).toHaveBeenCalledExactlyOnceWith({
+				includeTaskHistory: false,
+				includeScheduledTasks: false,
+			})
 			expect(dispatchTimes).toEqual([0])
 			expect(records).toEqual([])
 			const metadata = api.createMessage.mock.calls[0][2]!

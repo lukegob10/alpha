@@ -633,6 +633,19 @@ describe("readWithIndentation", () => {
 	})
 
 	describe("bidirectional expansion", () => {
+		it("keeps an unbalanced selection in file order and trims blank boundaries", () => {
+			const lines = Array.from({ length: 10_000 }, (_, index) => `  line ${index}`)
+			const result = readWithIndentation(["", ...lines, " "].join("\n"), {
+				anchorLine: 9_000,
+				includeSiblings: true,
+				limit: 10_002,
+			})
+
+			expect(result.includedRanges).toEqual([[2, 10_001]])
+			expect(result.returnedLines).toBe(10_000)
+			expect(result.content.split("\n").map((line) => line.split(" | ")[1])).toEqual(lines)
+		})
+
 		it("should expand both up and down from anchor", () => {
 			const result = readWithIndentation(SIMPLE_CODE, {
 				anchorLine: 3, // console.log("hello") - in the middle

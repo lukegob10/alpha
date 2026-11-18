@@ -272,11 +272,9 @@ export class ReadFileTool extends BaseTool<"read_file"> {
 
 			// Phase 3: Process approved files
 			const imageMemoryTracker = new ImageMemoryTracker()
-			const state = await task.providerRef.deref()?.getState()
-			const {
-				maxImageFileSize = DEFAULT_MAX_IMAGE_FILE_SIZE_MB,
-				maxTotalImageSize = DEFAULT_MAX_TOTAL_IMAGE_SIZE_MB,
-			} = state ?? {}
+			const provider = task.providerRef.deref()
+			const maxImageFileSize = provider?.getValue("maxImageFileSize") ?? DEFAULT_MAX_IMAGE_FILE_SIZE_MB
+			const maxTotalImageSize = provider?.getValue("maxTotalImageSize") ?? DEFAULT_MAX_TOTAL_IMAGE_SIZE_MB
 
 			for (const fileResult of fileResults) {
 				if (fileResult.status !== "approved") continue

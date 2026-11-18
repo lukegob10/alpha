@@ -260,7 +260,8 @@ describe("AgentLifecycleJournal", () => {
 			},
 		})
 
-		const probe = await fs.open(await journal.getEventsFilePath(), "a")
+		const eventsPath = await journal.getEventsFilePath()
+		const probe = await fs.open(eventsPath, "a")
 		const fileHandlePrototype = Object.getPrototypeOf(probe)
 		await probe.close()
 		const originalSync = fileHandlePrototype.sync
@@ -276,6 +277,7 @@ describe("AgentLifecycleJournal", () => {
 			markSyncStarted()
 			return syncGate.then(() => originalSync.call(this))
 		})
+		const access = vi.spyOn(fs, "access").mockClear()
 		let acknowledged = false
 		const append = journal.append(
 			{
@@ -296,10 +298,13 @@ describe("AgentLifecycleJournal", () => {
 		expect(acknowledged).toBe(false)
 		releaseSync()
 		await append
+		const existenceChecks = access.mock.calls.filter(([filePath]) => filePath === eventsPath)
 		expect(sync).toHaveBeenCalledOnce()
 		expect(acknowledged).toBe(true)
 		sync.mockRestore()
+		access.mockRestore()
 		await journal.close()
+		expect(existenceChecks).toHaveLength(process.platform === "win32" ? 0 : 1)
 	})
 
 	it("flushes an append that was submitted immediately before close", async () => {

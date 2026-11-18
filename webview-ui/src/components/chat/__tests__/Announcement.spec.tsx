@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Alpha routes new-chat requests more reliably, shows what browser actions need approval, and gives active subagents time to finish before checking for missing workspace receipts."
+		"This update makes chat text and code blocks easier to scan, prepares independent read-only commands in parallel, and removes the Incident Dashboard and its Settings toggle."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

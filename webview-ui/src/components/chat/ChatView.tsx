@@ -3563,7 +3563,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					key={visibleCurrentTaskId ?? "new-chat"}
 					{...chatToolbarActions}
 					renderContext={extensionState.renderContext}
-					debug={extensionState.debug === true}
 					onNewChat={startBlankTask}
 					onForkChat={canForkChat ? () => forkCurrentChat() : undefined}
 					navigation={

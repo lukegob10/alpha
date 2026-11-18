@@ -33,6 +33,7 @@ describe("atomic replacement under filesystem contention", () => {
 
 		expect(fs.open).toHaveBeenCalledWith(expect.stringContaining(".snapshot.json.new_"), "wx", 0o600)
 		expect(await fs.readFile(filePath, "utf8")).toBe("private replacement")
+		expect(fs.rm).not.toHaveBeenCalled()
 		if (process.platform !== "win32") expect((await fs.stat(filePath)).mode & 0o777).toBe(0o600)
 	})
 

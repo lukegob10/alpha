@@ -195,21 +195,9 @@ export async function getWorkingState(cwd: string): Promise<string> {
  */
 export async function getGitStatus(cwd: string, maxFiles: number = 20, signal?: AbortSignal): Promise<string | null> {
 	try {
-		const isInstalled = await checkGitInstalled(signal)
-		if (!isInstalled) {
-			return null
-		}
-
-		const isRepo = await checkGitRepo(cwd, signal)
-		if (!isRepo) {
-			return null
-		}
-
-		// Use porcelain v1 format with branch info
 		signal?.throwIfAborted()
-		const { stdout } = signal
-			? await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd, signal })
-			: await execAsync("git status --porcelain=v1 --branch", { cwd })
+		const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd, signal })
+		signal?.throwIfAborted()
 
 		if (!stdout.trim()) {
 			return null
@@ -237,7 +225,12 @@ export async function getGitStatus(cwd: string, maxFiles: number = 20, signal?: 
 		return output.join("\n")
 	} catch (error) {
 		signal?.throwIfAborted()
-		console.error("Error getting git status:", error)
+		// Only diagnose a status failure inside a repository. Most status calls
+		// succeed without a separate repository probe.
+		if ((error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT" && (await checkGitRepo(cwd, signal))) {
+			console.error("Error getting git status:", error)
+		}
+		signal?.throwIfAborted()
 		return null
 	}
 }

@@ -634,6 +634,12 @@ async function appendLifecycleEventLine(filePath: string, line: string, durable:
 		return
 	}
 
+	// Only the parent-directory sync needs to know if the append created the file.
+	if (process.platform === "win32") {
+		await syncLifecycleEventFile(filePath, line)
+		return
+	}
+
 	let fileExisted = true
 	try {
 		await fs.access(filePath)

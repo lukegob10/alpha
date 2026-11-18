@@ -53,6 +53,7 @@ import { validateToolUse } from "../tools/validateToolUse"
 import type { AgentResponse, AgentToolCall } from "./AgentResponse"
 import type { AgentTurnEvent } from "./AgentTurnEvents"
 import type {
+	CommandReadApproval,
 	PreparedCommandRead,
 	PreparedToolRead,
 	TaskReadGrant,
@@ -115,7 +116,7 @@ export interface ToolSchedulerOptions {
 	onEvent?: (event: AgentTurnEvent) => void | Promise<void>
 	/** Safe by default. Parallel work is opt-in at the scheduler boundary. */
 	executionMode?: ToolExecutionMode
-	/** Maximum active calls and prepared calls in one window (hard capped at 16). */
+	/** Maximum concurrent tool calls or command preflights, capped at 16. */
 	maxConcurrency?: number
 }
 
@@ -535,6 +536,8 @@ function getVerificationCategory(call: AgentToolCall): "test" | "build" | "lint"
 	const command = typeof args.cmd === "string" ? args.cmd : typeof args.command === "string" ? args.command : ""
 	return classifyVerificationCommand(command)
 }
+
+type ToolPreparation = { kind: "command"; preflight?: Promise<CommandReadApproval | undefined> } | { kind: "mcp" }
 
 interface PreparedCall {
 	index: number
@@ -1235,7 +1238,40 @@ export class ToolScheduler {
 		}
 	}
 
-	private async prepareRead(item: PreparedCall): Promise<void> {
+	private startCommandReadPreflights(
+		calls: readonly PreparedCall[],
+		start: number,
+		limit: number,
+		pending: Map<PreparedCall, Promise<CommandReadApproval | undefined>>,
+	): void {
+		const policy = this.options.policy
+		if (!policy || this.options.deferResultCommit || this.options.requirePreparedCommandRead) return
+		const end = Math.min(calls.length, start + Math.min(limit, this.maxConcurrency))
+		if (end - start < 2) return
+		const signal = this.executionSignal
+		for (let index = start; index < end; index++) {
+			const item = calls[index]
+			if (
+				this.isCancelled() ||
+				item.readPrepared ||
+				item.validationError ||
+				!item.toolCall ||
+				!this.canPrepareParallelCommand(item)
+			)
+				break
+			const plan = item.descriptor?.getCommandReadPreflight?.(
+				{ task: this.toolTask, call: item.toolCall },
+				policy,
+			)
+			if (!plan) break
+			const preflight = Promise.resolve().then(() => plan(signal))
+			// A later preflight may reject before its ordered approval turn.
+			void preflight.catch(() => undefined)
+			pending.set(item, preflight)
+		}
+	}
+
+	private async prepareRead(item: PreparedCall, preflight?: Promise<CommandReadApproval | undefined>): Promise<void> {
 		if (item.readPrepared || item.validationError || !item.toolCall || !item.descriptor) return
 		item.readPrepared = true
 		if (this.options.requirePreparedCommandRead && canonicalizeToolName(item.call.name) === "exec_command") {
@@ -1244,7 +1280,7 @@ export class ToolScheduler {
 				item.preparationDenied = true
 				return
 			}
-			const result = await this.executeCall(item, true)
+			const result = await this.executeCall(item, { kind: "command" })
 			item.preparationDurationMs = result.durationMs
 			if (result.status !== "success") {
 				item.preparationResult = result
@@ -1263,7 +1299,7 @@ export class ToolScheduler {
 			return
 		}
 		if (this.canPrepareParallelCommand(item)) {
-			const result = await this.executeCall(item, true)
+			const result = await this.executeCall(item, { kind: "command", preflight })
 			item.preparationDurationMs = result.durationMs
 			if (result.status !== "success") item.preparationResult = result
 			if (item.commandRead) item.scope = item.commandRead.scope
@@ -1271,7 +1307,7 @@ export class ToolScheduler {
 			return
 		}
 		if (this.canPrepareParallelMcpRead(item)) {
-			const result = await this.executeCall(item, false, true)
+			const result = await this.executeCall(item, { kind: "mcp" })
 			item.preparationDurationMs = result.durationMs
 			if (result.status !== "success") {
 				item.preparationResult = result
@@ -1452,6 +1488,11 @@ export class ToolScheduler {
 		}
 		let runFailed = false
 		const failedCommandCleanups = new Set<PreparedCall>()
+		const commandPreflights = new Map<PreparedCall, Promise<CommandReadApproval | undefined>>()
+		const drainCommandPreflights = async (): Promise<void> => {
+			await Promise.allSettled(commandPreflights.values())
+			commandPreflights.clear()
+		}
 		const disposeRemainingCommandReads = async (): Promise<void> => {
 			// Retained finalizers own speculative output until commit/discard. All
 			// other prepared commands, including calls cancelled before run, are joined.
@@ -1554,6 +1595,20 @@ export class ToolScheduler {
 
 			let cursor = 0
 			let parallelBatchCount = 0
+			const maxQueuedReads = this.maxConcurrency * 4
+			const prepareWindowRead = async (index: number, remaining: number): Promise<void> => {
+				const item = prepared[index]
+				if (!item.readPrepared && commandPreflights.size === 0) {
+					this.startCommandReadPreflights(prepared, index, remaining, commandPreflights)
+				}
+				const preflight = commandPreflights.get(item)
+				await this.prepareRead(item, preflight)
+				if (preflight) {
+					// Cancellation or a scoped retry stop can skip the approval path.
+					await preflight.catch(() => undefined)
+					commandPreflights.delete(item)
+				}
+			}
 			while (cursor < prepared.length) {
 				if (this.isCancelled()) {
 					this.fillCancelledResults(results, calls, cursor)
@@ -1614,10 +1669,14 @@ export class ToolScheduler {
 					continue
 				}
 				try {
-					await this.prepareRead(item)
+					await prepareWindowRead(cursor, maxQueuedReads)
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
 					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+				}
+				const parallel = this.isSelectableParallel(item)
+				if (commandPreflights.size && (item.preparationResult || item.validationError || !parallel)) {
+					await drainCommandPreflights()
 				}
 				if (item.preparationResult) continue
 				if (item.validationError) {
@@ -1630,15 +1689,17 @@ export class ToolScheduler {
 					cursor++
 					continue
 				}
-				if (this.isSelectableParallel(item)) {
+				if (parallel) {
 					const parallelItems: PreparedCall[] = []
-					// Settle approvals before starting reads, with a bounded queue that can
-					// replenish free workers while an earlier independent read is still live.
-					const maxQueuedReads = this.maxConcurrency * 4
+					// Overlap identity checks for consecutive audited candidates.
+					// Settle approvals in order before launching the bounded read window.
 					while (cursor < prepared.length && parallelItems.length < maxQueuedReads) {
 						const candidate = prepared[cursor]
 						try {
-							await this.prepareRead(candidate)
+							// A mixed window can end at a scope conflict, which would discard lookahead.
+							const remaining = maxQueuedReads - parallelItems.length
+							const lookahead = parallelItems.every((read) => read.commandRead) ? remaining : 1
+							await prepareWindowRead(cursor, lookahead)
 						} catch (error) {
 							if (!(error instanceof ToolEffectFenceError)) throw error
 							return this.failedOutcome(
@@ -1673,6 +1734,9 @@ export class ToolScheduler {
 						parallelItems.push(candidate)
 						cursor += 1
 					}
+					// A failed check can expose a serial command. Join and forget later
+					// snapshots before any execution can change their workspace.
+					if (commandPreflights.size) await drainCommandPreflights()
 					parallelBatchCount += 1
 					this.parallelToolCount += parallelItems.length
 
@@ -1799,6 +1863,7 @@ export class ToolScheduler {
 			runFailed = true
 			throw error
 		} finally {
+			if (commandPreflights.size) await drainCommandPreflights()
 			await disposeRemainingCommandReads()
 		}
 	}
@@ -1832,7 +1897,7 @@ export class ToolScheduler {
 			active.set(index, execution)
 		}
 
-		// Codex admits parallel calls independently (upstream b75d1e8, tools/parallel.rs).
+		// Codex admits parallel calls independently (upstream 3aaa23a4, tools/parallel.rs).
 		// Keep Alpha's bounded workers, preapproved queue, and ordered effect evidence.
 		while (nextIndex < items.length || active.size > 0) {
 			while (
@@ -2353,12 +2418,10 @@ export class ToolScheduler {
 		return prepared
 	}
 
-	private async executeCall(
-		prepared: PreparedCall,
-		prepareCommand = false,
-		prepareMcpRead = false,
-	): Promise<ToolSchedulerResult> {
+	private async executeCall(prepared: PreparedCall, preparation?: ToolPreparation): Promise<ToolSchedulerResult> {
 		const startedAt = performance.now()
+		const prepareCommand = preparation?.kind === "command"
+		const prepareMcpRead = preparation?.kind === "mcp"
 		if (this.isCancelled()) {
 			return this.cancelledResultFor(prepared.call)
 		}
@@ -3118,15 +3181,18 @@ export class ToolScheduler {
 			let execution: Promise<void> | undefined
 			await this.admissionMutex.run(async () => {
 				if (this.isCancelled()) return
-				// Advisory progress cannot hold cancellation behind a blocked presenter.
-				// The durable effect fence and terminal receipts keep their joined ordering.
-				await this.raceCancellation(async () => {
-					await this.options.onEvent?.({
-						type: "progress",
-						callId: prepared.call.id,
-						text: `Running ${prepared.call.name}`,
+				// Command preparation settles approval without launching a process.
+				// Publish running progress only when admitting the command to execute.
+				if (!prepareCommand) {
+					// Advisory progress must release admission when cancellation wins.
+					await this.raceCancellation(async () => {
+						await this.options.onEvent?.({
+							type: "progress",
+							callId: prepared.call.id,
+							text: `Running ${prepared.call.name}`,
+						})
 					})
-				})
+				}
 				if (this.isCancelled()) return
 				await this.checkEffectFence(prepared.call)
 				// A sibling can fail its effect-start fence while this admission waits.
@@ -3147,15 +3213,21 @@ export class ToolScheduler {
 				}
 				executionAdmitted = true
 				execution = prepareCommand
-					? prepared.descriptor!.prepareParallelCommand!(
-							{
-								task: this.toolTask,
-								call: prepared.toolCall!,
-								mode: this.options.mode,
-								signal: this.executionSignal,
-								callbacks,
-							},
-							this.options.policy!,
+					? (preparation.preflight
+							? preparation.preflight.then((approve) => {
+									if (this.isCancelled()) return undefined
+									return approve?.(callbacks)
+								})
+							: prepared.descriptor!.prepareParallelCommand!(
+									{
+										task: this.toolTask,
+										call: prepared.toolCall!,
+										mode: this.options.mode,
+										signal: this.executionSignal,
+										callbacks,
+									},
+									this.options.policy!,
+								)
 						).then((read) => {
 							prepared.commandRead = read
 							if (read) {

@@ -4,7 +4,6 @@ import { describe, expect, it, vi } from "vitest"
 import { fireEvent, render, screen } from "@/utils/test-utils"
 import settingsLocale from "@/i18n/locales/en/settings.json"
 
-import { DebugSettings } from "../DebugSettings"
 import { NotificationSettings } from "../NotificationSettings"
 import { UISettings } from "../UISettings"
 
@@ -49,12 +48,6 @@ const cases: HelpCase[] = [
 		label: settingsLocale.notifications.sound.label,
 		helpText: settingsLocale.notifications.sound.description,
 		renderSetting: (onChange) => <NotificationSettings embedded setCachedStateField={onChange} />,
-	},
-	{
-		name: "diagnostics",
-		label: settingsLocale.about.debugMode.label,
-		helpText: settingsLocale.about.debugMode.description,
-		renderSetting: (onChange) => <DebugSettings debug={false} setDebug={onChange} />,
 	},
 ]
 

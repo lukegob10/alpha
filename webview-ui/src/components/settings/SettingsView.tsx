@@ -185,7 +185,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		id?: string
 		generation: SettingsCachedState
 		patch: ReturnType<typeof createSettingsPatch>
-		debugChanged: boolean
 		progress: SettingsSaveProgress
 		timeout: ReturnType<typeof setTimeout>
 	}>()
@@ -288,8 +287,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 							? (Object.keys(pending.patch.updatedSettings) as Array<keyof GlobalSettings>)
 							: (response.data.appliedKeys ?? [])
 					const savedKeys = appliedKeys.filter((key) => Object.hasOwn(pending.patch.updatedSettings, key))
-					const debugApplied =
-						pending.debugChanged && (response.data.status === "success" || response.data.debugApplied)
 					const acknowledged = Object.fromEntries(
 						savedKeys.map((key) => [key, Reflect.get(pending.generation, key)]),
 					)
@@ -299,10 +296,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 						pending.patch.updatedSettings,
 						savedKeys,
 					)
-					if (debugApplied) {
-						savedState.current = { ...savedState.current, debug: pending.generation.debug }
-						savedProjection.current = { ...savedProjection.current, debug: pending.generation.debug }
-					}
 				}
 			} else if (event.data?.type === "apiConfigurationSaved") {
 				const response = providerProfileSaveResultSchema.safeParse(event.data.apiConfigurationSaveResult)
@@ -647,17 +640,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 		})
 	}, [])
 
-	const setDebug = useCallback((debug: boolean) => {
-		setCachedState((prevState) => {
-			if (prevState.debug === debug) {
-				return prevState
-			}
-
-			setChangeDetected(true)
-			return { ...prevState, debug }
-		})
-	}, [])
-
 	const setCustomSupportPromptsField = useCallback((prompts: Record<string, string | undefined>) => {
 		setCachedState((prevState) => {
 			const previousStr = JSON.stringify(prevState.customSupportPrompts)
@@ -692,8 +674,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 				deniedCommands: savedState.current.deniedCommands,
 			},
 		)
-		const debugChanged = (cachedState.debug ?? false) !== (savedState.current.debug ?? false)
-		const settingsChanged = Object.keys(patch.updatedSettings).length > 0 || debugChanged
+		const settingsChanged = Object.keys(patch.updatedSettings).length > 0
 		const profileChanged = !deepEqual(apiConfiguration, savedState.current.apiConfiguration ?? {})
 		if (!settingsChanged && !profileChanged) {
 			setChangeDetected(false)
@@ -711,7 +692,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			id: cachedApiConfigIdentity.id,
 			generation: cachedState,
 			patch,
-			debugChanged,
 			progress: createSettingsSaveProgress(requestId, {
 				settings: settingsChanged,
 				profile: profileChanged,
@@ -731,14 +711,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					settingsSave: {
 						requestId,
 						expectedSettings: patch.expectedSettings,
-						...(debugChanged
-							? {
-									debug: {
-										expected: savedProjection.current.debug ?? false,
-										value: cachedState.debug ?? false,
-									},
-								}
-							: {}),
 					},
 				})
 			}
@@ -1048,7 +1020,6 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 					values={cachedState}
 					setCachedStateField={setCachedStateField}
 					setCustomSupportPrompts={setCustomSupportPromptsField}
-					setDebug={setDebug}
 				/>
 			)}
 		</>

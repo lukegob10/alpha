@@ -864,6 +864,86 @@ describe("Alpha", () => {
 			expect(titleHandler.dispose).toHaveBeenCalledOnce()
 		})
 
+		it.each([
+			{ outcome: "waits for semantic output", renamed: false },
+			{ outcome: "is skipped after a rename during startup", renamed: true },
+		])("automatic title $outcome", async ({ renamed }) => {
+			const task = new Task({
+				provider: mockProvider,
+				apiConfiguration: mockApiConfig,
+				task: "Could you please fix chat naming?",
+				startTask: false,
+			})
+			const requests: string[] = []
+			let signalPreflight!: () => void
+			const preflightReached = new Promise<void>((resolve) => (signalPreflight = resolve))
+			let releasePreflight!: (prompt: string) => void
+			const preflight = new Promise<string>((resolve) => (releasePreflight = resolve))
+			let signalLifecycleFrame!: () => void
+			const lifecycleFrame = new Promise<void>((resolve) => (signalLifecycleFrame = resolve))
+			let releaseSemanticOutput!: () => void
+			const semanticOutput = new Promise<void>((resolve) => (releaseSemanticOutput = resolve))
+			let signalTitleSaved!: () => void
+			const titleSaved = new Promise<void>((resolve) => (signalTitleSaved = resolve))
+			vi.spyOn(mockProvider.taskHistoryStore, "get").mockReturnValue({ id: task.taskId })
+			mockProvider.updateGeneratedTaskTitle = vi.fn(async () => signalTitleSaved())
+			const createTitleHandler = vi.spyOn(task, "createReasoningSummaryHandler").mockReturnValue({
+				streamCapabilities: { cancellation: true },
+				getModel: () => task.api.getModel(),
+				countTokens: async () => 1,
+				async *createMessage() {
+					requests.push("title")
+					yield { type: "text", text: "Fix chat naming" }
+				},
+			})
+			vi.spyOn(task.api, "createMessage").mockImplementation(async function* () {
+				requests.push("task")
+				yield { type: "lifecycle", phase: "connected", status: "starting" }
+				await semanticOutput
+				yield { type: "text", text: "I will inspect the title handling." }
+				yield { type: "text", text: "I found the title request." }
+			})
+			Object.assign(task, {
+				getSystemPrompt: () => {
+					signalPreflight()
+					return preflight
+				},
+				initiateTaskLoop: async (content: Anthropic.Messages.ContentBlockParam[]) => {
+					task.apiConversationHistory = [{ role: "user", content }]
+					for await (const chunk of task.attemptApiRequest(0, { ownerHandlesRetry: true })) {
+						if (chunk?.type === "lifecycle") signalLifecycleFrame()
+					}
+				},
+			})
+			const startup = (task as unknown as { startTask(task: string): Promise<void> }).startTask(
+				"Could you please fix chat naming?",
+			)
+			try {
+				await Promise.race([preflightReached, startup])
+				expect(requests).toHaveLength(0)
+				releasePreflight("test instructions")
+				await Promise.race([lifecycleFrame, startup])
+				expect(requests).toEqual(["task"])
+				expect(createTitleHandler).not.toHaveBeenCalled()
+				if (renamed) task.cancelAutomaticTaskTitle()
+			} finally {
+				releasePreflight("test instructions")
+				releaseSemanticOutput()
+				await startup
+			}
+			if (renamed) {
+				expect(createTitleHandler).not.toHaveBeenCalled()
+				expect(mockProvider.updateGeneratedTaskTitle).not.toHaveBeenCalled()
+				return
+			}
+			await titleSaved
+			expect(requests).toEqual(["task", "title"])
+			expect(mockProvider.updateGeneratedTaskTitle).toHaveBeenCalledExactlyOnceWith(
+				task.taskId,
+				"Fix chat naming",
+			)
+		})
+
 		it("does not request generated titles for managed sub-agents", async () => {
 			const alphaTask = new Task({
 				provider: mockProvider,
@@ -9195,8 +9275,10 @@ describe("Alpha", () => {
 				const previewEntered = deferred()
 				const releasePreview = deferred()
 				const summarize = vi.spyOn(task as any, "summarizeReasoning")
+				const deliveries: AlphaMessage[] = []
 				mockProvider.postTaskMessageToWebview = vi.fn(async (_type, _taskId, message: AlphaMessage) => {
 					if (message.say !== "reasoning") return
+					deliveries.push(structuredClone(message))
 					previewEntered.resolve()
 					await releasePreview.promise
 				})
@@ -9226,7 +9308,14 @@ describe("Alpha", () => {
 					expect(task.alphaMessages.filter((message) => message.say === "reasoning")).toEqual([
 						expect.objectContaining({ text: "First.\n\n**More** Complete.", partial: false }),
 					])
-					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledTimes(ending === "timeout" ? 1 : 2)
+					expect(deliveries).toEqual([
+						expect.objectContaining({ text: "First.", partial: true }),
+						expect.objectContaining({
+							ts: deliveries[0].ts,
+							text: "First.\n\n**More** Complete.",
+							partial: false,
+						}),
+					])
 					expect(summarize).not.toHaveBeenCalled()
 				} finally {
 					vi.useRealTimers()

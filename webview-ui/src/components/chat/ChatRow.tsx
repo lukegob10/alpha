@@ -1610,7 +1610,7 @@ const ChatRowContentInner = ({
 										? "w-full rounded-xl bg-vscode-editor-background text-vscode-editor-foreground"
 										: userInputResponse
 											? "w-full rounded-lg border border-vscode-panel-border bg-vscode-editor-background px-4 py-3"
-											: "user-message cursor-text px-4 py-3",
+											: "user-message cursor-text",
 								)}>
 								{isEditing ? (
 									<div

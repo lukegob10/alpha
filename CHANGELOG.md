@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.39
+
+### Patch Changes
+
+- Prepare independent read-only commands together and run them in parallel after approval, with results delivered in
+  their original order.
+- Reduce repeated work in model request preparation, file reads, and command output handling.
+- Improve cancellation, recovery, and completion checks across agent turns.
+- Improve the readability of chat text and code blocks.
+- Remove the Incident Dashboard, its Settings toggle, and the raw API and UI history buttons.
+
 ## 3.2.38
 
 ### Patch Changes

@@ -102,6 +102,7 @@ export async function atomicWriteText(
 			await fs.rm(absolutePath, { force: true })
 			await fs.rename(temporaryPath, absolutePath)
 		}
+		ownsTemporary = false
 	} finally {
 		if (ownsTemporary) await fs.rm(temporaryPath, { force: true }).catch(() => undefined)
 	}

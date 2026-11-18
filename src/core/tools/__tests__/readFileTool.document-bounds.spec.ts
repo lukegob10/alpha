@@ -153,10 +153,8 @@ function createMockTask(options: MockTaskOptions = {}) {
 		},
 		providerRef: {
 			deref: vi.fn().mockReturnValue({
-				getState: vi.fn().mockResolvedValue({
-					maxImageFileSize,
-					maxTotalImageSize,
-				}),
+				getValue: (key: "maxImageFileSize" | "maxTotalImageSize") =>
+					({ maxImageFileSize, maxTotalImageSize })[key],
 			}),
 		},
 	}

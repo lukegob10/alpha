@@ -175,10 +175,10 @@ function createMockTask(options: MockTaskOptions = {}) {
 		},
 		providerRef: {
 			deref: vi.fn().mockReturnValue({
-				getState: vi.fn().mockResolvedValue({
-					maxImageFileSize,
-					maxTotalImageSize,
-				}),
+				getState: vi.fn().mockResolvedValue({ maxImageFileSize, maxTotalImageSize }),
+				getValue: vi.fn(
+					(key: "maxImageFileSize" | "maxTotalImageSize") => ({ maxImageFileSize, maxTotalImageSize })[key],
+				),
 			}),
 		},
 	}
@@ -219,6 +219,7 @@ describe("ReadFileTool", () => {
 			const task = createMockTask()
 			const callbacks = createMockCallbacks()
 			await readFileTool.execute({ files: [{ path: "a.ts" }, { path: "b.ts" }] }, task as any, callbacks)
+			expect(task.providerRef.deref().getState).not.toHaveBeenCalled()
 			const observations = callbacks.setResultMetadata.mock.calls.at(-1)?.[0].trustedProgress
 			expect(observations).toHaveLength(2)
 			expect(observations[0].scope).not.toBe(observations[1].scope)
@@ -630,6 +631,7 @@ describe("ReadFileTool", () => {
 
 			await readFileTool.execute({ path: "large-image.png" }, mockTask as any, callbacks)
 
+			expect(mockedValidateImageForProcessing.mock.calls[0]?.slice(2, 4)).toEqual([1, 20])
 			expect(mockedProcessImageFile).not.toHaveBeenCalled()
 			expect(mockTask.fileContextTracker.trackFileContext).toHaveBeenCalledExactlyOnceWith(
 				"large-image.png",

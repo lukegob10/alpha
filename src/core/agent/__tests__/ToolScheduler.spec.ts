@@ -2616,7 +2616,7 @@ describe("ToolScheduler", () => {
 			consecutiveMistakeCount: 0,
 			alphaIgnoreController: { validateAccess: () => true },
 			fileContextTracker: { trackFileContext: async () => {} },
-			providerRef: { deref: () => ({ getState: async () => ({}) }) },
+			providerRef: { deref: () => ({ getValue: () => undefined }) },
 			recordToolError: () => {},
 		})
 

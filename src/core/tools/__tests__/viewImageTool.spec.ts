@@ -53,7 +53,7 @@ describe("view_image registry adapter", () => {
 			api: { getModel: () => ({ info: { supportsImages: options.supportsImages ?? true } }) },
 			alphaIgnoreController: { validateAccess: vi.fn(() => options.alphaIgnoreAllowed ?? true) },
 			fileContextTracker: { trackFileContext },
-			providerRef: { deref: () => ({ getState: async () => ({}) }) },
+			providerRef: { deref: () => ({ getValue: () => undefined }) },
 			say,
 			askKind: "primary",
 			abort: false,
