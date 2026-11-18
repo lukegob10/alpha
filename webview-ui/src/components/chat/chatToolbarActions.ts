@@ -5,6 +5,5 @@ import { vscode } from "@/utils/vscode"
 export const chatToolbarActions = {
 	onOpenSettings: () => vscode.postMessage({ type: "switchTab", tab: "settings" }),
 	onOpenTickets: () => vscode.postMessage({ type: "openTickets" }),
-	onOpenIncidents: () => vscode.postMessage({ type: "openIncidentDashboard" }),
 	onOpenScheduledTasks: () => vscode.postMessage({ type: "switchTab", tab: "scheduledTasks" }),
-} satisfies Omit<ChatToolbarProps, "navigation" | "renderContext" | "debug" | "onNewChat">
+} satisfies Omit<ChatToolbarProps, "navigation" | "renderContext" | "onNewChat">

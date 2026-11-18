@@ -37,7 +37,7 @@ function harness(content: string, budget = 32_000) {
 		api: { getModel: () => ({ info: {} }) },
 		alphaIgnoreController: { validateAccess: () => true },
 		fileContextTracker: { trackFileContext: vi.fn() },
-		providerRef: { deref: () => ({ getState: async () => ({}) }) },
+		providerRef: { deref: () => ({ getValue: () => undefined }) },
 		say: vi.fn(),
 	}
 	const callbacks = {

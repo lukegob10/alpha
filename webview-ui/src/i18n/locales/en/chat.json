@@ -123,8 +123,6 @@
 		"sharingDisabledByOrganization": "Sharing disabled by organization",
 		"shareSuccessOrganization": "Organization link copied to clipboard",
 		"shareSuccessPublic": "Public link copied to clipboard",
-		"openApiHistory": "Open API History",
-		"openUiHistory": "Open UI History",
 		"backToParentTask": "Parent task"
 	},
 	"unpin": "Unpin",
@@ -567,7 +565,7 @@
 			"goToSettingsButton": "Go to Settings"
 		},
 		"release": {
-			"description": "Alpha routes new-chat requests more reliably, shows what browser actions need approval, and gives active subagents time to finish before checking for missing workspace receipts."
+			"description": "This update makes chat text and code blocks easier to scan, prepares independent read-only commands in parallel, and removes the Incident Dashboard and its Settings toggle."
 		}
 	},
 	"crossTasks": {

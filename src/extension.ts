@@ -1,7 +1,6 @@
 import { registerBuiltinSkillInspection } from "./services/skills/builtinSkillInspection"
 import { TicketPanel } from "./services/tickets/TicketPanel"
 import { TicketStore } from "./services/tickets/TicketStore"
-import { IncidentPanel } from "./core/webview/IncidentPanel"
 import * as vscode from "vscode"
 import { registerHtmlDocumentViewer } from "./core/webview/html-document"
 import * as path from "path"
@@ -226,12 +225,9 @@ async function activateExtension(lifecycle: ExtensionLifecycle, startupConfigura
 
 	const ticketPanel = new TicketPanel(context, provider)
 	context.subscriptions.push(ticketPanel, { dispose: () => TicketStore.disposeSearchCaches() })
-	const incidentPanel = new IncidentPanel(context, provider)
-	context.subscriptions.push(incidentPanel)
 	context.subscriptions.push(
 		vscode.commands.registerCommand("alpha.openTickets", (target?: unknown) => ticketPanel.open(target)),
 	)
-	context.subscriptions.push(vscode.commands.registerCommand("alpha.openIncidents", () => incidentPanel.open()))
 	const scheduledTaskService = new ScheduledTaskService(context, provider, outputChannel)
 	context.subscriptions.push(scheduledTaskService)
 	provider.setScheduledTaskService(scheduledTaskService)

@@ -60,7 +60,6 @@ const createProvider = (taskSessions = new TaskSessionRegistry()) => {
 		getAgentLifecycleJournal: async () => ({ getSnapshot: () => undefined }),
 		taskHistoryStore: { get: () => undefined },
 		contextProxy: { getValues: () => ({}) },
-		isIncidentDashboardEnabled: () => false,
 		postMessageToWebview: post,
 		log: vi.fn(),
 	})

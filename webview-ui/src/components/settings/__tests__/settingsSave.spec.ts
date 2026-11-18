@@ -235,7 +235,7 @@ describe("complete settings save acknowledgement", () => {
 				status: "error",
 				error: "saveFailed",
 				appliedKeys: ["soundEnabled"],
-				debugApplied: true,
+				terminalInheritEnvApplied: true,
 			},
 		})
 		const completed = acknowledgeSettingsSave(failed, profileSuccess)
@@ -247,7 +247,7 @@ describe("complete settings save acknowledgement", () => {
 				status: "error",
 				error: "saveFailed",
 				appliedKeys: ["soundEnabled"],
-				debugApplied: true,
+				terminalInheritEnvApplied: true,
 			},
 		})
 	})

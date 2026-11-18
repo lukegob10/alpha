@@ -5,11 +5,9 @@ import ChatToolbar, { type ChatToolbarProps } from "../ChatToolbar"
 
 const createProps = (overrides: Partial<ChatToolbarProps> = {}): ChatToolbarProps => ({
 	renderContext: "editor",
-	debug: false,
 	onNewChat: vi.fn(),
 	onOpenSettings: vi.fn(),
 	onOpenTickets: vi.fn(),
-	onOpenIncidents: vi.fn(),
 	onOpenScheduledTasks: vi.fn(),
 	...overrides,
 })
@@ -54,7 +52,6 @@ describe("ChatToolbar", () => {
 		expect(props.onNewChat).toHaveBeenCalledTimes(1)
 		expect(props.onOpenSettings).toHaveBeenCalledTimes(1)
 		expect(props.onOpenTickets).toHaveBeenCalledTimes(1)
-		expect(props.onOpenIncidents).not.toHaveBeenCalled()
 	})
 
 	it("limits the standard More menu to Scheduled Tasks", () => {
@@ -67,24 +64,6 @@ describe("ChatToolbar", () => {
 		expect(props.onOpenScheduledTasks).toHaveBeenCalledTimes(1)
 		expect(screen.queryByRole("menu")).not.toBeInTheDocument()
 		expect(screen.queryByRole("menuitem", { name: "Marketplace" })).not.toBeInTheDocument()
-		expect(props.onOpenIncidents).not.toHaveBeenCalled()
-	})
-
-	it("gates Incident Dashboard with the current developer setting", () => {
-		const props = createProps({ debug: true })
-		const { rerender } = render(<ChatToolbar {...props} />)
-		openMenu()
-
-		expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual([
-			"Alpha: Incident Dashboard",
-			"Scheduled Tasks",
-		])
-		fireEvent.click(screen.getByRole("menuitem", { name: "Alpha: Incident Dashboard" }))
-		expect(props.onOpenIncidents).toHaveBeenCalledTimes(1)
-		openMenu()
-		rerender(<ChatToolbar {...props} debug={false} />)
-		expect(screen.queryByRole("menuitem", { name: "Alpha: Incident Dashboard" })).not.toBeInTheDocument()
-		expect(screen.getAllByRole("menuitem")).toHaveLength(1)
 	})
 
 	it("supports keyboard menu navigation, selection, Escape, and focus return", async () => {

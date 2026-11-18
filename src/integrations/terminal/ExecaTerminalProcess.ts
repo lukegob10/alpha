@@ -138,6 +138,11 @@ export class ExecaTerminalProcess extends BaseTerminalProcess {
 				if (!directCommand && this.pid && process.platform !== "win32") {
 					this.pidUpdatePromise = new Promise<void>((resolve) => {
 						setTimeout(() => {
+							// Stop can still need the sampled descendant after the shell exits.
+							if (physicalProcessSettled && !this.abortPromise) {
+								resolve()
+								return
+							}
 							void getDescendantPids(this.pid!, PID_UPDATE_TIMEOUT_MS)
 								.then((children) => {
 									const actualPid = children[0]

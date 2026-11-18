@@ -200,7 +200,7 @@
 		--shadow-accent: none;
 		--control-primary-background: var(--vscode-foreground);
 		--control-primary-foreground: var(--vscode-editor-background);
-		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 52%, var(--vscode-editor-background));
+		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 12%, var(--chat-background));
 		--user-message-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
 		--chat-background: var(--vscode-editor-background);
 		--chat-foreground: var(--vscode-editor-foreground, var(--vscode-foreground));
@@ -217,12 +217,8 @@
 		--chat-foreground: #ededed;
 		--chat-surface: #292929;
 		--chat-link: #a0a4ff;
-		--user-message-background: #313477;
+		--user-message-background: color-mix(in srgb, var(--chat-link) 16%, var(--chat-surface));
 		--user-message-foreground: #f3f2ff;
-	}
-
-	.vscode-light {
-		--user-message-background: color-mix(in srgb, var(--alpha-brand-violet) 12%, var(--vscode-editor-background));
 	}
 
 	.vscode-high-contrast,
@@ -327,6 +323,11 @@
 	.activity-trace-toggle {
 		padding-inline: 0.625rem;
 		border: 1px solid transparent;
+	}
+
+	.activity-trace-toggle:is(:hover, [aria-expanded="true"]),
+	button.activity-row-header:hover {
+		background: var(--alpha-accent-soft);
 	}
 
 	.activity-trace-toggle[aria-busy="true"] {
@@ -478,11 +479,12 @@
 		max-width: 92%;
 		margin-left: auto;
 		margin-right: 0;
+		padding: 0.625rem 0.75rem;
 		text-align: start;
 		background: var(--user-message-background);
 		color: var(--user-message-foreground);
-		border: 1px solid var(--vscode-contrastBorder, transparent);
-		border-radius: 1.25rem;
+		border: 1px solid var(--vscode-contrastBorder, color-mix(in srgb, currentColor 12%, transparent));
+		border-radius: 1rem;
 		line-height: 1.6;
 	}
 

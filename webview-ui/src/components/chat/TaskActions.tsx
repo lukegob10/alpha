@@ -4,10 +4,9 @@ import { useTranslation } from "react-i18next"
 import type { HistoryItem } from "@alpha-code/types"
 
 import { vscode } from "@/utils/vscode"
-import { useShellState } from "@/context/ExtensionStateContext"
 
 import { DeleteTaskDialog } from "../history/DeleteTaskDialog"
-import { DownloadIcon, Trash2Icon, FileJsonIcon, MessageSquareCodeIcon } from "lucide-react"
+import { DownloadIcon, Trash2Icon } from "lucide-react"
 import { LucideIconButton } from "./LucideIconButton"
 
 interface TaskActionsProps {
@@ -18,7 +17,6 @@ interface TaskActionsProps {
 export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 	const [deleteTaskId, setDeleteTaskId] = useState<string | null>(null)
 	const { t } = useTranslation()
-	const { debug } = useShellState()
 
 	return (
 		<div className="flex flex-row items-center -ml-0.5 mt-1 gap-1">
@@ -50,20 +48,6 @@ export const TaskActions = ({ item, buttonsDisabled }: TaskActionsProps) => {
 							open
 						/>
 					)}
-				</>
-			)}
-			{debug && item?.id && (
-				<>
-					<LucideIconButton
-						icon={FileJsonIcon}
-						title={t("chat:task.openApiHistory")}
-						onClick={() => vscode.postMessage({ type: "openDebugApiHistory", taskId: item.id })}
-					/>
-					<LucideIconButton
-						icon={MessageSquareCodeIcon}
-						title={t("chat:task.openUiHistory")}
-						onClick={() => vscode.postMessage({ type: "openDebugUiHistory", taskId: item.id })}
-					/>
 				</>
 			)}
 		</div>

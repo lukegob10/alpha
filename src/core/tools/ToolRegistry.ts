@@ -75,7 +75,7 @@ import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
 import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
-import { isParallelCommandReadReady, prepareParallelCommand } from "./ParallelCommandRead"
+import { getParallelCommandReadPreflight, isParallelCommandReadReady } from "./ParallelCommandRead"
 import { followupTaskTool } from "./FollowupTaskTool"
 import { interruptAgentTool } from "./InterruptAgentTool"
 import { listAgentsTool } from "./ListAgentsTool"
@@ -162,6 +162,9 @@ export interface PreparedCommandRead {
 	commit?: () => void
 }
 
+export type CommandReadApproval = (callbacks: ToolCallbacks) => Promise<PreparedCommandRead | undefined>
+export type CommandReadPreflight = (signal?: AbortSignal) => Promise<CommandReadApproval | undefined>
+
 export interface ToolDescriptor {
 	name: string
 	/** Opaque captured executor authority; session grants cannot transfer to a replacement executor. */
@@ -186,7 +189,12 @@ export interface ToolDescriptor {
 		policy: ToolPolicySnapshot,
 		signal?: AbortSignal,
 	) => Promise<PreparedToolRead | undefined>
-	/** Serial approval/preflight, followed by an isolated read and an ordered finalizer. */
+	/** Plan identity checks that can run before approval. Unsupported invocations have no plan. */
+	getCommandReadPreflight?: (
+		context: Pick<ToolExecutionContext, "task" | "call">,
+		policy: ToolPolicySnapshot,
+	) => CommandReadPreflight | undefined
+	/** Serial approval, followed by an isolated read and an ordered finalizer. */
 	prepareParallelCommand?: (
 		context: ToolExecutionContext,
 		policy: ToolPolicySnapshot,
@@ -398,6 +406,16 @@ function normalizeExecCommandInvocation(
 			: {}),
 	}
 	return { params: nativeParams, callbacks: withMaxOutputTokens(callbacks, maxOutputTokens, usesExecCommandArgs) }
+}
+
+function getExecCommandReadPreflight(
+	{ task, call }: Pick<ToolExecutionContext, "task" | "call">,
+	policy: ToolPolicySnapshot,
+): CommandReadPreflight | undefined {
+	const args = { ...call.nativeArgs }
+	return getParallelCommandReadPreflight(task, args, policy, (callbacks) =>
+		normalizeExecCommandInvocation(args, callbacks),
+	)
 }
 
 const execCommandToolAdapter = new ExecCommandToolAdapter(executeCommandTool)
@@ -1347,15 +1365,19 @@ export class ToolRegistry {
 			...(name === "exec_command"
 				? {
 						isParallelCommandReadReady,
-						prepareParallelCommand: (context: ToolExecutionContext, policy: ToolPolicySnapshot) =>
-							prepareParallelCommand(
-								context,
+						getCommandReadPreflight: getExecCommandReadPreflight,
+						prepareParallelCommand: async (context: ToolExecutionContext, policy: ToolPolicySnapshot) => {
+							const args = { ...context.call.nativeArgs }
+							const invocation = normalizeExecCommandInvocation(args, context.callbacks)
+							const preflight = getParallelCommandReadPreflight(
+								context.task,
+								args,
 								policy,
-								normalizeExecCommandInvocation(
-									{ ...(context.call.nativeArgs ?? {}) },
-									context.callbacks,
-								),
-							),
+								() => invocation,
+							)
+							const approve = await preflight?.(context.signal)
+							return approve?.(context.callbacks)
+						},
 					}
 				: {}),
 			execute: customExecute ?? executeBaseTool(tool, name),

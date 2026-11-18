@@ -62,7 +62,6 @@ import type { WorktreeIncludeStatus } from "./worktree.js"
 import type { SubagentChangeSetActionCapability, SubagentChangeSetActionResult } from "./subagent.js"
 import type { BrowserToolName } from "./browser.js"
 import type { ToolApprovalDecision } from "./tool-approval.js"
-import type { IncidentDashboardSnapshot, IncidentDashboardTurnDetail } from "./incident-dashboard.js"
 import type { TaskApprovalModeUpdate, TaskApprovalModeUpdateResult } from "./task-approval-mode.js"
 import type { ApprovalMode } from "./approval-mode.js"
 import type { SearchFilesOutputMode, SearchFilesQueryResult } from "./tool-params.js"
@@ -477,8 +476,6 @@ export interface ExtensionMessage {
 		| "checkpointInitWarning"
 		| "fileSearchResults"
 		| "ticketSearchResults"
-		| "incidentDashboardUpdate"
-		| "incidentDashboardTurnDetail"
 		| "toggleApiConfigPin"
 		| "acceptInput"
 		| "sendAndSteer"
@@ -528,9 +525,6 @@ export interface ExtensionMessage {
 		| "subagentChangeSetActionCapability"
 		| "subagentChangeSetActionResult"
 		| "taskOpenResult"
-	snapshot?: IncidentDashboardSnapshot
-	turnId?: string
-	detail?: IncidentDashboardTurnDetail
 	text?: string
 	chatGptAuthStatus?: ChatGptAuthStatus
 	taskId?: string
@@ -838,7 +832,6 @@ export type ExtensionState = Pick<
 	scheduledTasks?: ScheduledTask[]
 	scheduledTaskRuns?: ScheduledTaskRun[]
 	taskReasoning?: TaskReasoningProjection
-	debug?: boolean
 
 	/**
 	 * Monotonically increasing sequence number for transcript snapshots and
@@ -986,7 +979,6 @@ interface WebviewMessageBase {
 		| "searchTickets"
 		| "openTicket"
 		| "openTickets"
-		| "openIncidentDashboard"
 		| "toggleApiConfigPin"
 		| "hasOpenedModeSelector"
 		| "lockApiConfigAcrossModes"
@@ -1028,14 +1020,11 @@ interface WebviewMessageBase {
 		| "allowedCommands"
 		| "getTaskWithAggregatedCosts"
 		| "deniedCommands"
-		| "openDebugApiHistory"
-		| "openDebugUiHistory"
 		| "downloadErrorDiagnostics"
 		| "refreshCustomTools"
 		| "requestModes"
 		| "implementPlan"
 		| "switchMode"
-		| "debugSetting"
 		// Worktree messages
 		| "listWorktrees"
 		| "createWorktree"
@@ -1063,10 +1052,6 @@ interface WebviewMessageBase {
 		| "runScheduledTaskNow"
 		| "duplicateScheduledTask"
 		| "requestScheduledTaskSkills"
-		| "incidentDashboardReady"
-		| "incidentDashboardRequestTurnDetail"
-		| "startDebuggingTurn"
-		| "startDebuggingTask"
 	text?: string
 	taskId?: string
 	/** Scope a composer lookup to the workspace draft during a task transition. */
@@ -1208,9 +1193,6 @@ export type WebviewMessage =
 	| (Omit<WebviewMessageBase, "type"> & z.infer<typeof chatGptAuthActionSchema>)
 	| (Omit<WebviewMessageBase, "type" | "taskId"> & z.infer<typeof forkChatRequestSchema>)
 	| (Omit<WebviewMessageBase, "type"> & { type: "renameTask"; taskRenameRequest: TaskRenameRequest })
-	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTask"; alertId: string })
-	| (Omit<WebviewMessageBase, "type"> & { type: "incidentDashboardRequestTurnDetail"; turnId: string })
-	| (Omit<WebviewMessageBase, "type"> & { type: "startDebuggingTurn"; turnId: string })
 	| (Omit<WebviewMessageBase, "type" | "value"> & { type: "updateVSCodeSetting"; value?: number | boolean })
 	| (Omit<WebviewMessageBase, "type" | "taskId" | "approvalRequestId" | "toolApprovalDecision"> & {
 			type: "toolApprovalResponse"
@@ -1279,9 +1261,6 @@ export type WebviewMessage =
 				| "setTaskApprovalMode"
 				| "renameApiConfiguration"
 				| "upsertApiConfiguration"
-				| "startDebuggingTask"
-				| "incidentDashboardRequestTurnDetail"
-				| "startDebuggingTurn"
 			>
 	  })
 

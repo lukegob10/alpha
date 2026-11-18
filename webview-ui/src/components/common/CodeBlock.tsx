@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useCallback, useState } from "react"
+import { memo, useEffect, useRef, useCallback, useState, useSyncExternalStore } from "react"
 import styled from "styled-components"
 import { useCopyToClipboard } from "@src/utils/clipboard"
 import { getHighlighter, normalizeLanguage } from "@src/utils/highlighter"
@@ -9,8 +9,8 @@ import { ChevronDown, ChevronUp, Copy, Check } from "lucide-react"
 import { useAppTranslation } from "@src/i18n/TranslationContext"
 import { StandardTooltip } from "@/components/ui"
 
-export const CODE_BLOCK_BG_COLOR = "var(--vscode-editor-background, --vscode-sideBar-background, rgb(30 30 30))"
-export const WRAPPER_ALPHA = "cc" // 80% opacity
+export const CODE_BLOCK_BG_COLOR =
+	"var(--code-block-background, var(--vscode-editor-background, var(--vscode-sideBar-background)))"
 
 // Configuration constants
 export const WINDOW_SHADE_SETTINGS = {
@@ -24,6 +24,38 @@ export const SCROLL_SNAP_TOLERANCE = 20
 const CHAT_TRANSCRIPT_SCROLLER_SELECTOR = '[data-chat-transcript-scroller="true"]'
 const MAX_HIGHLIGHT_CHARACTERS = 100_000
 const MAX_HIGHLIGHT_LINES = 1_000
+
+type SyntaxTheme = "github-light" | "github-dark"
+const syntaxThemeListeners = new Set<() => void>()
+let syntaxThemeObserver: MutationObserver | undefined
+
+function getSyntaxTheme(): SyntaxTheme | undefined {
+	const classes = document.body.classList
+	if (classes.contains("vscode-high-contrast") || classes.contains("vscode-high-contrast-light")) return undefined
+	return classes.contains("vscode-light") ? "github-light" : "github-dark"
+}
+
+function subscribeToSyntaxTheme(listener: () => void): () => void {
+	syntaxThemeListeners.add(listener)
+	if (!syntaxThemeObserver) {
+		let theme = getSyntaxTheme()
+		// A single observer covers mounted blocks. Retokenize only when the host kind changes.
+		syntaxThemeObserver = new MutationObserver(() => {
+			const next = getSyntaxTheme()
+			if (next === theme) return
+			theme = next
+			for (const notify of syntaxThemeListeners) notify()
+		})
+		syntaxThemeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] })
+	}
+	return () => {
+		syntaxThemeListeners.delete(listener)
+		if (syntaxThemeListeners.size === 0) {
+			syntaxThemeObserver?.disconnect()
+			syntaxThemeObserver = undefined
+		}
+	}
+}
 
 /*
 overflowX: auto + inner div with padding results in an issue where the top/left/bottom padding renders but the right padding inside does not count as overflow as the width of the element is not exceeded. Once the inner div is outside the boundaries of the parent it counts as overflow.
@@ -84,7 +116,7 @@ const CodeBlockButtonWrapper = styled.div`
 	right: var(--copy-button-right, 8px);
 	height: auto;
 	z-index: 40;
-	background: ${CODE_BLOCK_BG_COLOR}${WRAPPER_ALPHA};
+	background: color-mix(in srgb, ${CODE_BLOCK_BG_COLOR} 80%, transparent);
 	overflow: visible;
 	pointer-events: none;
 	opacity: var(--copy-button-opacity, 0);
@@ -196,9 +228,11 @@ const CodeBlock = memo(
 		const wordWrap = initialWordWrap
 		const [windowShade, setWindowShade] = useState(initialWindowShade)
 		const currentLanguage = normalizeLanguage(language)
+		const syntaxTheme = useSyncExternalStore(subscribeToSyntaxTheme, getSyntaxTheme)
 		const [highlightedCode, setHighlightedCode] = useState<{
 			source: string
 			language: string
+			theme: SyntaxTheme
 			node: React.ReactNode
 		} | null>(null)
 		const [showCollapseButton, setShowCollapseButton] = useState(true)
@@ -213,6 +247,7 @@ const CodeBlock = memo(
 
 		const sourceText = source || ""
 		const shouldHighlight =
+			syntaxTheme !== undefined &&
 			!partial &&
 			sourceText.length <= MAX_HIGHLIGHT_CHARACTERS &&
 			sourceText.split("\n", MAX_HIGHLIGHT_LINES + 1).length <= MAX_HIGHLIGHT_LINES
@@ -222,18 +257,18 @@ const CodeBlock = memo(
 			</pre>
 		)
 		const displayedCode =
-			shouldHighlight && highlightedCode?.source === sourceText && highlightedCode.language === currentLanguage
+			shouldHighlight &&
+			highlightedCode?.source === sourceText &&
+			highlightedCode.language === currentLanguage &&
+			highlightedCode.theme === syntaxTheme
 				? highlightedCode.node
 				: fallback
 
 		// Streaming and oversized fences stay complete plain text; tokenizing them
 		// can create hundreds of thousands of syntax nodes on the renderer thread.
 		useEffect(() => {
+			if (!shouldHighlight || !syntaxTheme) return
 			let cancelled = false
-			if (!shouldHighlight)
-				return () => {
-					cancelled = true
-				}
 
 			const highlight = async () => {
 				const highlighter = await getHighlighter(currentLanguage)
@@ -241,7 +276,7 @@ const CodeBlock = memo(
 
 				const hast = await highlighter.codeToHast(sourceText, {
 					lang: currentLanguage || "txt",
-					theme: document.body.className.toLowerCase().includes("light") ? "github-light" : "github-dark",
+					theme: syntaxTheme,
 					transformers: [
 						{
 							pre(node) {
@@ -274,7 +309,12 @@ const CodeBlock = memo(
 						// Don't override components - let them render as-is to maintain exact output
 					})
 
-					setHighlightedCode({ source: sourceText, language: currentLanguage, node: reactElement })
+					setHighlightedCode({
+						source: sourceText,
+						language: currentLanguage,
+						theme: syntaxTheme,
+						node: reactElement,
+					})
 				} catch (error) {
 					console.error("[CodeBlock] Error converting HAST to JSX:", error)
 				}
@@ -288,7 +328,7 @@ const CodeBlock = memo(
 			return () => {
 				cancelled = true
 			}
-		}, [sourceText, currentLanguage, shouldHighlight])
+		}, [sourceText, currentLanguage, shouldHighlight, syntaxTheme])
 
 		useEffect(() => {
 			return () => {

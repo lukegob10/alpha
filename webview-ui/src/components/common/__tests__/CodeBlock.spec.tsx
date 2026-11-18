@@ -150,25 +150,28 @@ describe("CodeBlock", () => {
 		expect(screen.getByText(/const x = 1/)).toBeInTheDocument()
 	})
 
-	it("handles theme switching", async () => {
+	it("updates an already highlighted block when the host theme changes", async () => {
 		const code = "const x = 1;"
-
-		await act(async () => {
-			const { rerender } = render(<CodeBlock source={code} language="typescript" />)
-
-			// Simulate light theme
-			document.body.className = "light"
-			rerender(<CodeBlock source={code} language="typescript" />)
-		})
-
-		expect(screen.getByText(/\[light-theme\]/)).toBeInTheDocument()
-
-		await act(async () => {
-			document.body.className = "dark"
+		const bodyClass = document.body.className
+		try {
+			document.body.className = "vscode-dark"
 			render(<CodeBlock source={code} language="typescript" />)
-		})
+			await screen.findByText(/\[dark-theme\]/)
 
-		expect(screen.getByText(/\[dark-theme\]/)).toBeInTheDocument()
+			await act(async () => {
+				document.body.className = "vscode-light"
+			})
+			await screen.findByText(/\[light-theme\]/)
+			expect(screen.queryByText(/\[dark-theme\]/)).not.toBeInTheDocument()
+
+			await act(async () => {
+				document.body.className = "vscode-high-contrast-light"
+			})
+			expect(screen.getByText(code)).toBeInTheDocument()
+			expect(screen.queryByText(/\[light-theme\]/)).not.toBeInTheDocument()
+		} finally {
+			document.body.className = bodyClass
+		}
 	})
 
 	it("handles invalid language gracefully", async () => {

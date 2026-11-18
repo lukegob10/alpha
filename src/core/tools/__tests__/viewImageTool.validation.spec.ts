@@ -96,10 +96,7 @@ describe("view_image decode validation", () => {
 			fileContextTracker: { trackFileContext },
 			providerRef: {
 				deref: () => ({
-					getState: async () => ({
-						maxImageFileSize: options.maxImageFileSize ?? 5,
-						maxTotalImageSize: options.maxTotalImageSize ?? 20,
-					}),
+					getValue: (key: "maxImageFileSize" | "maxTotalImageSize") => options[key],
 				}),
 			},
 			ask,

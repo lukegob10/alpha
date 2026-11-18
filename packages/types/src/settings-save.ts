@@ -26,7 +26,6 @@ export const settingsSaveRequestSchema = z
 	.object({
 		requestId: requestIdSchema,
 		expectedSettings: expectedSettingsSchema,
-		debug: booleanSettingChangeSchema.optional(),
 		terminalInheritEnv: booleanSettingChangeSchema.optional(),
 	})
 	.strict()
@@ -49,7 +48,6 @@ export const settingsSaveResultSchema = z.discriminatedUnion("status", [
 						: value,
 				z.array(globalSettingsSchema.keyof()).optional(),
 			),
-			debugApplied: z.boolean().optional(),
 			terminalInheritEnvApplied: z.boolean().optional(),
 		})
 		.strict(),

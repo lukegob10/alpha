@@ -53,7 +53,6 @@ vi.mock("@src/components/chat/ChatView", async () => {
 					<ChatToolbar
 						{...chatToolbarActions}
 						renderContext={mockUseExtensionState().renderContext}
-						debug={mockUseExtensionState().debug === true}
 						onNewChat={mockChatCommands.startNewChat}
 					/>
 					<input aria-label="Draft" defaultValue="" />
@@ -690,17 +689,14 @@ describe("App", () => {
 	})
 
 	it("dispatches the owning toolbar's typed host routes from secondary views", async () => {
-		mockUseExtensionState.mockReturnValue({ ...mockUseExtensionState(), debug: true })
 		render(<AppWithProviders />)
 		act(() => triggerMessage("settingsButtonClicked"))
 		await screen.findByTestId("settings-view")
 		vi.mocked(vscode.postMessage).mockClear()
 		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.settings" }))
 		fireEvent.click(screen.getByRole("button", { name: "common:chatToolbar.tickets" }))
-		for (const label of ["incidentDashboard", "scheduledTasks"]) {
-			fireEvent.keyDown(screen.getByRole("button", { name: "common:chatToolbar.more" }), { key: "Enter" })
-			fireEvent.click(screen.getByRole("menuitem", { name: `common:chatToolbar.${label}` }))
-		}
+		fireEvent.keyDown(screen.getByRole("button", { name: "common:chatToolbar.more" }), { key: "Enter" })
+		fireEvent.click(screen.getByRole("menuitem", { name: "common:chatToolbar.scheduledTasks" }))
 		const actionMessages = vi
 			.mocked(vscode.postMessage)
 			.mock.calls.map(([message]) => message)
@@ -708,7 +704,6 @@ describe("App", () => {
 		expect(actionMessages).toEqual([
 			{ type: "switchTab", tab: "settings" },
 			{ type: "openTickets" },
-			{ type: "openIncidentDashboard" },
 			{ type: "switchTab", tab: "scheduledTasks" },
 		])
 	})

@@ -2,7 +2,7 @@ import path from "path"
 import fs from "fs/promises"
 
 import { isCommandDeniedByPolicy, isPathAllowed, type ToolPolicySnapshot } from "../agent/ToolPolicy"
-import type { PreparedCommandRead, ToolExecutionContext } from "./ToolRegistry"
+import type { CommandReadPreflight, ToolExecutionContext } from "./ToolRegistry"
 import { canonicalRgInspection, tokenizeSingleCommand } from "./CommandExploration"
 import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
 import { ToolReadDeniedError, type ToolCallbacks } from "./BaseTool"
@@ -155,22 +155,23 @@ function launchEnvironment(): Record<string, string> | undefined {
 	return env
 }
 
-async function readIgnoreContent(root: string): Promise<string | undefined> {
+async function readIgnoreContent(root: string, signal?: AbortSignal): Promise<string | undefined> {
 	try {
+		signal?.throwIfAborted()
 		const target = path.join(root, ".alphaignore")
 		if ((await fs.stat(target)).size > 1_048_576) throw new Error("Ignore configuration requires ordinary handling")
-		return await fs.readFile(target, "utf8")
+		return await fs.readFile(target, { encoding: "utf8", signal })
 	} catch (error) {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return undefined
 		throw error
 	}
 }
 
-async function captureRgRead(
+function planRgRead(
 	task: ToolExecutionContext["task"],
 	args: Readonly<Record<string, unknown>>,
 	policy: ToolPolicySnapshot,
-): Promise<CapturedRgRead | undefined> {
+) {
 	// Historical command/timeout spellings retain their configured transport.
 	if (
 		typeof args.cmd !== "string" ||
@@ -183,33 +184,55 @@ async function captureRgRead(
 	if (task.abort || !policy.allowedTools.includes("exec_command") || policy.disabledTools.includes("exec_command"))
 		return undefined
 	const command = args.cmd
-	const taskId = task.taskId
 	if (isCommandDeniedByPolicy(policy, command)) return undefined
+	const tokens = tokenizeSingleCommand(command)
+	if (!tokens || !/^rg(?:\.exe)?$/.test(tokens[0])) return undefined
+	const ripgrepArgs = ["--no-config", ...tokens.slice(1)]
+	const targetArguments = explicitFileTargets(ripgrepArgs)
+	if (!targetArguments) return undefined
+	const requestedCwd = typeof args.workdir === "string" ? args.workdir : typeof args.cwd === "string" ? args.cwd : "."
+	return (signal?: AbortSignal) =>
+		captureRgRead(task, policy, { command, ripgrepArgs, targetArguments, requestedCwd }, signal).catch(
+			() => undefined,
+		)
+}
+
+async function captureRgRead(
+	task: ToolExecutionContext["task"],
+	policy: ToolPolicySnapshot,
+	invocation: {
+		command: string
+		ripgrepArgs: string[]
+		targetArguments: readonly string[]
+		requestedCwd: string
+	},
+	signal?: AbortSignal,
+): Promise<CapturedRgRead | undefined> {
+	signal?.throwIfAborted()
+	if (task.abort) return undefined
+	const { command, ripgrepArgs, targetArguments, requestedCwd } = invocation
+	const taskId = task.taskId
 	const environment = launchEnvironment()
 	if (!environment) return undefined
 	const environmentIdentity = JSON.stringify(environment)
 	const root = await fs.realpath(task.cwd)
-	const requestedCwd = typeof args.workdir === "string" ? args.workdir : typeof args.cwd === "string" ? args.cwd : "."
 	const cwd = await fs.realpath(path.resolve(task.cwd, requestedCwd))
 	if (!isPathWithinRoot(root, cwd) || !isPathAllowed(policy, cwd, root)) return undefined
 	const roots = await Promise.all(policy.execution.workspaceRoots.map((directory) => fs.realpath(directory)))
 	if (roots.length === 0 || !roots.some((directory) => isPathWithinRoot(directory, cwd))) return undefined
-	const invocation = await classifyCommandRead(command, root, cwd)
-	if (!invocation || invocation.executable !== "rg") return undefined
-	const targetArguments = explicitFileTargets(invocation.args)
-	if (!targetArguments) return undefined
-	const semantics = await canonicalRgInspection(invocation.args, root, cwd)
+	const semantics = await canonicalRgInspection(ripgrepArgs, root, cwd)
 	if (!semantics) return undefined
 	const ignore = task.alphaIgnoreController
 	if (ignore?.validateCommand(command)) return undefined
 	const ignoreContent = ignore?.alphaIgnoreContent
-	const diskIgnoreContent = await readIgnoreContent(root)
+	const diskIgnoreContent = await readIgnoreContent(root, signal)
 	if (diskIgnoreContent !== ignoreContent) return undefined
 	if (ignoreContent?.trim() && typeof ignore?.validateAccess !== "function") return undefined
 	const protectedFiles = task.alphaProtectedController
-	const captureTargets = async () => {
+	const captureTargets = async (targetSignal?: AbortSignal) => {
 		const targets: Array<readonly [string, string, number, number]> = []
 		for (const argument of targetArguments) {
+			targetSignal?.throwIfAborted()
 			const lexical = path.resolve(cwd, argument)
 			const real = await fs.realpath(lexical)
 			const stat = await fs.stat(real)
@@ -230,7 +253,8 @@ async function captureRgRead(
 		}
 		return targets
 	}
-	const targetsIdentity = JSON.stringify(await captureTargets())
+	const targetsIdentity = JSON.stringify(await captureTargets(signal))
+	signal?.throwIfAborted()
 	const policyIdentity = JSON.stringify(policy)
 	const { resolution, overlay } = await resolveRipgrepLaunchEnvironment(environment)
 	if (!resolution || resolution.source === "system" || !path.isAbsolute(resolution.path)) return undefined
@@ -255,7 +279,7 @@ async function captureRgRead(
 		scope: cwd,
 		command,
 		executable,
-		args: Object.freeze([...invocation.args]),
+		args: Object.freeze(ripgrepArgs),
 		env,
 		revalidate: async () => {
 			const currentEnvironment = launchEnvironment()
@@ -303,7 +327,7 @@ async function captureRgRead(
 				currentStat.mtimeMs,
 				currentStat.ctimeMs,
 			])
-			const currentInspection = await canonicalRgInspection(invocation.args, currentRoot, currentCwd)
+			const currentInspection = await canonicalRgInspection(ripgrepArgs, currentRoot, currentCwd)
 			const currentTargetsIdentity = JSON.stringify(await captureTargets())
 			if (
 				currentRoot !== root ||
@@ -327,43 +351,36 @@ export async function isParallelCommandReadReady(
 	policy: ToolPolicySnapshot,
 ): Promise<boolean> {
 	try {
-		return (await captureRgRead(task, args, policy)) !== undefined
+		return (await planRgRead(task, args, policy)?.()) !== undefined
 	} catch {
 		return false
 	}
 }
 
-export async function prepareParallelCommand(
-	context: ToolExecutionContext,
+export function getParallelCommandReadPreflight(
+	task: ToolExecutionContext["task"],
+	args: Readonly<Record<string, unknown>>,
 	policy: ToolPolicySnapshot,
-	invocation?: { readonly params: ExecuteCommandParams; readonly callbacks: ToolCallbacks },
-): Promise<PreparedCommandRead | undefined> {
-	if (!invocation) return undefined
-	const args = context.call.nativeArgs
-	if (!args || typeof args !== "object") return undefined
-	let captured: CapturedRgRead | undefined
-	try {
-		captured = await captureRgRead(context.task, { ...args }, policy)
-	} catch {
-		return undefined
+	normalizeInvocation: (callbacks: ToolCallbacks) => { params: ExecuteCommandParams; callbacks: ToolCallbacks },
+): CommandReadPreflight | undefined {
+	const capture = planRgRead(task, args, policy)
+	if (!capture) return undefined
+	return async (signal) => {
+		const captured = await capture(signal)
+		if (!captured || signal?.aborted) return undefined
+		return async (callbacks) => {
+			if (callbacks.signal?.aborted || task.abort) return undefined
+			const invocation = normalizeInvocation(callbacks)
+			const approved = await executeCommandTool.prepareApprovedRead(
+				invocation.params,
+				task,
+				invocation.callbacks,
+				{
+					directCommand: { executable: captured.executable, args: captured.args, env: captured.env },
+					beforeLaunch: captured.revalidate,
+				},
+			)
+			return approved ? { scope: captured.scope, ...approved } : undefined
+		}
 	}
-	if (!captured || context.signal?.aborted) return undefined
-	const approved = await executeCommandTool.prepareApprovedRead(
-		invocation.params,
-		context.task,
-		invocation.callbacks,
-		{
-			directCommand: { executable: captured.executable, args: captured.args, env: captured.env },
-			beforeLaunch: captured.revalidate,
-		},
-	)
-	return approved
-		? {
-				scope: captured.scope,
-				run: approved.run,
-				dispose: approved.dispose,
-				commit: approved.commit,
-				settleRejectedRun: approved.settleRejectedRun,
-			}
-		: undefined
 }

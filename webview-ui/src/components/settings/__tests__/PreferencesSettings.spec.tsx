@@ -5,7 +5,6 @@ import { fireEvent, render, screen, waitFor, within } from "@/utils/test-utils"
 import { vscode } from "@/utils/vscode"
 
 import { PreferencesSettings, type PreferencesSettingsValues } from "../PreferencesSettings"
-import { DebugSettings } from "../DebugSettings"
 import { revealSettingDetails } from "../settingsNavigation"
 
 vi.mock("@/i18n/TranslationContext", () => ({
@@ -291,27 +290,6 @@ describe("PreferencesSettings", () => {
 			"0.4",
 		)
 		expect(setCachedStateField).not.toHaveBeenCalled()
-		expect(vscode.postMessage).not.toHaveBeenCalled()
-	})
-})
-
-describe("relocated diagnostics preferences", () => {
-	beforeEach(() => vi.clearAllMocks())
-
-	it("resynchronizes diagnostics without writing and keeps it in Advanced", () => {
-		const setDebug = vi.fn()
-		const { container, rerender } = render(<DebugSettings debug={false} setDebug={setDebug} />)
-
-		rerender(<DebugSettings debug setDebug={setDebug} />)
-		expect(screen.getByRole("checkbox", { name: "settings:about.debugMode.label" })).toBeChecked()
-		expect(setDebug).not.toHaveBeenCalled()
-		expect(container.querySelector('[data-setting-id="about-debug-mode"]')).toHaveAttribute(
-			"data-setting-section",
-			"advanced",
-		)
-
-		fireEvent.click(screen.getByRole("checkbox", { name: "settings:about.debugMode.label" }))
-		expect(setDebug).toHaveBeenCalledExactlyOnceWith(false)
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 })

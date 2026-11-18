@@ -645,6 +645,52 @@ describe("Task UI message identity reservation", () => {
 })
 
 describe("Task approved command presentation (new API controls)", () => {
+	it.each(["request", "command"] as const)("saves a passive %s row while its delivery is pending", async (kind) => {
+		const fixture = createTask()
+		const delivery = barrier()
+		const posted = barrier()
+		const allowSave = barrier()
+		const save = fixture.saveAlphaMessages.getMockImplementation()!
+		fixture.saveAlphaMessages.mockImplementationOnce(async () => {
+			await allowSave.promise
+			return save()
+		})
+		const postTaskMessageToWebview = vi.fn(async (_type: string, _taskId: string, _message: AlphaMessage) => {
+			posted.release()
+			await delivery.promise
+		})
+		const postBackgroundTaskMessageToWebview = vi.fn((taskId: string, message: AlphaMessage) => {
+			void postTaskMessageToWebview("messageCreated", taskId, message)
+		})
+		Reflect.set(fixture.task, "providerRef", {
+			deref: () => ({ postTaskMessageToWebview, postBackgroundTaskMessageToWebview }),
+		})
+		Reflect.set(fixture.task, "publishAlphaMessageCreated", Task.prototype["publishAlphaMessageCreated"])
+		const settled = vi.fn()
+		const work =
+			kind === "request"
+				? fixture.task.say("api_req_started", '{"apiProtocol":"openai"}')
+				: fixture.task.presentApprovedCommand("rg proof src")
+		const admitted = work.then(settled)
+		try {
+			await posted.promise
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(fixture.saveAlphaMessages).toHaveBeenCalledOnce()
+			expect(settled).not.toHaveBeenCalled()
+			allowSave.release()
+			await admitted
+			expect(fixture.persisted).toEqual([fixture.messages])
+			expect(postBackgroundTaskMessageToWebview).toHaveBeenCalledExactlyOnceWith(
+				fixture.task.taskId,
+				fixture.messages[0],
+			)
+		} finally {
+			allowSave.release()
+			delivery.release()
+			await admitted
+		}
+	})
+
 	it("persists an answered redacted command without changing an unrelated active ask", async () => {
 		const fixture = createTask()
 		const activeAsk = { type: "followup", ts: 900, toolCallId: "question-call" }

@@ -1348,11 +1348,6 @@ export const webviewMessageHandler = async (
 		case "openTickets":
 			await vscode.commands.executeCommand("alpha.openTickets")
 			break
-		case "openIncidentDashboard":
-			if (vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false)) {
-				await vscode.commands.executeCommand("alpha.openIncidents")
-			}
-			break
 		case "searchTickets": {
 			const search = options?.ticketSearch
 			search?.signal.throwIfAborted()
@@ -2747,13 +2742,6 @@ export const webviewMessageHandler = async (
 				})
 			}
 			break
-		case "debugSetting": {
-			await vscode.workspace
-				.getConfiguration(Package.name)
-				.update("debug", message.bool ?? false, vscode.ConfigurationTarget.Global)
-			await provider.postStateToWebview()
-			break
-		}
 		case "saveCodeIndexSettingsAtomic": {
 			if (!message.codeIndexSettings) {
 				break
@@ -3746,62 +3734,6 @@ export const webviewMessageHandler = async (
 					provider.log(`Error opening markdown preview: ${errorMessage}`)
 					vscode.window.showErrorMessage(`Failed to open markdown preview: ${errorMessage}`)
 				}
-			}
-			break
-		}
-
-		case "openDebugApiHistory":
-		case "openDebugUiHistory": {
-			const currentTask = getTaskForMessage(provider, message, { allowActiveFallback: true })
-			if (!currentTask) {
-				vscode.window.showErrorMessage("No active task to view history for")
-				break
-			}
-
-			try {
-				const { getTaskDirectoryPath } = await import("../../utils/storage")
-				const globalStoragePath = provider.contextProxy.globalStorageUri.fsPath
-				const taskDirPath = await getTaskDirectoryPath(globalStoragePath, currentTask.taskId)
-
-				const fileName =
-					message.type === "openDebugApiHistory" ? "api_conversation_history.json" : "ui_messages.json"
-				const sourceFilePath = path.join(taskDirPath, fileName)
-
-				// Check if file exists
-				if (!(await fileExistsAtPath(sourceFilePath))) {
-					vscode.window.showErrorMessage(`File not found: ${fileName}`)
-					break
-				}
-
-				// Read the source file
-				const content = await fs.readFile(sourceFilePath, "utf8")
-				let jsonContent: unknown
-
-				try {
-					jsonContent = JSON.parse(content)
-				} catch {
-					vscode.window.showErrorMessage(`Failed to parse ${fileName}`)
-					break
-				}
-
-				// Prettify the JSON
-				const prettifiedContent = JSON.stringify(jsonContent, null, 2)
-
-				// Create a temporary file
-				const tmpDir = os.tmpdir()
-				const timestamp = Date.now()
-				const tempFileName = `alpha-debug-${message.type === "openDebugApiHistory" ? "api" : "ui"}-${currentTask.taskId.slice(0, 8)}-${timestamp}.json`
-				const tempFilePath = path.join(tmpDir, tempFileName)
-
-				await fs.writeFile(tempFilePath, prettifiedContent, "utf8")
-
-				// Open the temp file in VS Code
-				const doc = await vscode.workspace.openTextDocument(tempFilePath)
-				await vscode.window.showTextDocument(doc, { preview: true })
-			} catch (error) {
-				const errorMessage = error instanceof Error ? error.message : String(error)
-				provider.log(`Error opening debug history: ${errorMessage}`)
-				vscode.window.showErrorMessage(`Failed to open debug history: ${errorMessage}`)
 			}
 			break
 		}

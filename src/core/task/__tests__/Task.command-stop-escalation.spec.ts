@@ -46,10 +46,19 @@ describe("task cancellation of owned VS Code commands", () => {
 		vi.useRealTimers()
 	})
 
-	it.each([false, true])(
-		"escalates an ignored interrupt and joins terminal close (background=%s)",
-		async (background) => {
+	it.each([
+		{ background: false, outputReaderFailed: false },
+		{ background: true, outputReaderFailed: false },
+		{ background: true, outputReaderFailed: true },
+	])(
+		"joins terminal close after an ignored interrupt (background=$background, outputReaderFailed=$outputReaderFailed)",
+		async ({ background, outputReaderFailed }) => {
 			const fixture = runningCommand()
+			if (outputReaderFailed) {
+				fixture.command.emit("error", new Error("Output reader failed"))
+				expect(fixture.command.isSettled).toBe(true)
+				expect(fixture.terminal.running).toBe(true)
+			}
 			const foreign = {
 				executionId: "another-execution",
 				abort: vi.fn(),
@@ -82,15 +91,18 @@ describe("task cancellation of owned VS Code commands", () => {
 				expect(foreign.abort).not.toHaveBeenCalled()
 				expect(foreign.terminate).not.toHaveBeenCalled()
 				fixture.command.notifyTerminalClosed()
-				await stopping
+				await vi.advanceTimersByTimeAsync(0)
 				expect(settled).toHaveBeenCalledOnce()
+				await stopping
 				expect(task.getCommandExecutionEvidence()).toEqual([
 					expect.objectContaining({ toolCallId: "owned-call", status: "cancelled" }),
 				])
 				expect(vi.getTimerCount()).toBe(0)
 			} finally {
 				await fixture.finish()
-				await stopping
+				const cleanup = stopping.catch(() => undefined)
+				await vi.runAllTimersAsync()
+				await cleanup
 			}
 		},
 	)

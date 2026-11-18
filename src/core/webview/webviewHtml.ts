@@ -5,7 +5,7 @@ import * as vscode from "vscode"
 import { getNonce } from "./getNonce"
 import { getUri } from "./getUri"
 
-export type WebviewUiView = "app" | "tickets" | "incidents"
+export type WebviewUiView = "app" | "tickets"
 
 const HMR_PROBE_TIMEOUT_MS = 1_000
 const DEFAULT_VITE_PORT = "5173"

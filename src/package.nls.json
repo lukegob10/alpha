@@ -47,13 +47,11 @@
 	"settings.apiRequestTimeout.description": "Maximum seconds without provider response activity (0 disables this inactivity timeout, default: 600s). Progressing responses can continue beyond this window. Explicit caller and context deadlines still apply.",
 	"settings.newTaskRequireTodos.description": "Require todos parameter when creating new tasks with the new_task tool",
 	"settings.codeIndex.embeddingBatchSize.description": "The batch size for embedding operations during code indexing. Adjust this based on your API provider's limits. Default is 60.",
-	"settings.debug.description": "Enable debug mode to show the incident dashboard and additional buttons for viewing API conversation history and UI messages as prettified JSON in temporary files.",
 	"settings.debugProxy.enabled.description": "**Enable Debug Proxy** — Route all outbound network requests through a proxy for MITM debugging. Only active when running in debug mode (F5).",
 	"settings.debugProxy.serverUrl.description": "Proxy URL (e.g., `http://127.0.0.1:8888`). Only used when **Debug Proxy** is enabled.",
 	"settings.debugProxy.tlsInsecure.description": "Legacy setting. TLS certificate verification remains enabled for debug proxies.",
 	"settings.debugProxy.tlsInsecure.deprecationMessage": "debugProxy.tlsInsecure is deprecated. TLS verification remains enabled; trust the proxy CA before launching the development host.",
 	"command.openTickets.title": "Alpha: Tickets",
-	"command.openIncidents.title": "Alpha: Incident Dashboard",
 	"command.exportDiagnostics.title": "Alpha: Export Chat Diagnostics",
 	"command.recoverTaskHistory.title": "Alpha: Recover Task History",
 	"command.previewHtmlDocument.title": "Preview HTML Document"

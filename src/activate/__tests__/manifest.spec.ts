@@ -11,6 +11,7 @@ type ExtensionManifest = {
 		}>
 		keybindings: Array<{ command: string; key: string; mac?: string; when?: string; args?: string }>
 		menus: Record<string, Array<{ command: string; group?: string; when?: string }>>
+		configuration: { properties: Record<string, unknown> }
 	}
 }
 
@@ -41,6 +42,7 @@ describe("extension command manifest", () => {
 			"alpha.terminalAddToContext",
 			"alpha.terminalFixCommand",
 			"alpha.terminalExplainCommand",
+			"alpha.openIncidents",
 		]
 		const commands = manifest.contributes.commands.map(({ command }) => command)
 		const menuCommands = Object.values(manifest.contributes.menus).flatMap((entries) =>
@@ -56,6 +58,11 @@ describe("extension command manifest", () => {
 
 	it("activates to restore editor chat panels after a window reload", () => {
 		expect(manifest.activationEvents).toContain("onWebviewPanel:alpha.TabPanelProvider")
+	})
+
+	it("removes the incident dashboard activation and debug preference", () => {
+		expect(manifest.activationEvents).not.toContain("onWebviewPanel:alpha.incidents")
+		expect(Object.hasOwn(manifest.contributes.configuration.properties, "alpha.debug")).toBe(false)
 	})
 
 	it("exposes scoped agent hotkeys without taking over Enter or Plan/Code switching", () => {
@@ -120,11 +127,6 @@ describe("extension command manifest", () => {
 			{ command: "alpha.sidebarNewChat", group: "navigation@1", when: "view == alpha.SidebarProvider" },
 			{ command: "alpha.sidebarSettings", group: "navigation@2", when: "view == alpha.SidebarProvider" },
 			{ command: "alpha.openTickets", group: "navigation@3", when: "view == alpha.SidebarProvider" },
-			{
-				command: "alpha.openIncidents",
-				group: "overflow@0",
-				when: "view == alpha.SidebarProvider && config.alpha.debug",
-			},
 			{ command: "alpha.sidebarScheduledTasks", group: "overflow@1", when: "view == alpha.SidebarProvider" },
 		])
 		for (const { command } of manifest.contributes.menus["view/title"]) {
@@ -137,10 +139,6 @@ describe("extension command manifest", () => {
 				when: "false",
 			})
 		}
-		expect(manifest.contributes.menus.commandPalette).toContainEqual({
-			command: "alpha.openIncidents",
-			when: "config.alpha.debug",
-		})
 	})
 
 	it("provides visible zoom controls only in the native SVG preview", () => {

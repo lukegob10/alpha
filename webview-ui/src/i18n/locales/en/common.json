@@ -8,7 +8,6 @@
 		"settings": "Settings",
 		"tickets": "Alpha Tickets",
 		"more": "More actions",
-		"incidentDashboard": "Alpha: Incident Dashboard",
 		"scheduledTasks": "Scheduled Tasks"
 	},
 	"errorBoundary": {

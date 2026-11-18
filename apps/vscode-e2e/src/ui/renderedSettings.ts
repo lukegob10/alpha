@@ -163,13 +163,14 @@ export async function exerciseRenderedSettings(
 				"(()=>{const panel=d.querySelector('[data-testid=settings-content]');return panel.scrollWidth<=panel.clientWidth+1})()",
 			)
 			await check(`(()=>{const groups=[...d.querySelectorAll('[data-settings-page-card=advanced] > [data-settings-group]')];
-				return groups.map(e=>e.getAttribute('data-settings-group')).join('|')==='context|recovery|diagnostics'&&
+				return groups.map(e=>e.getAttribute('data-settings-group')).join('|')==='context|recovery'&&
 					groups.every(e=>!e.closest('details')&&e.querySelector(':scope > h4')?.checkVisibility())})()`)
-			for (const id of ["context-open-tabs", "checkpoints-enable", "about-debug-mode"]) {
+			for (const id of ["context-open-tabs", "checkpoints-enable"]) {
 				await check(
 					`d.querySelector('[data-settings-page-card=advanced] [data-setting-id="${id}"]')?.checkVisibility()===true`,
 				)
 			}
+			await check("!d.querySelector('[data-setting-id=about-debug-mode]')")
 		}
 		await settlePaint()
 		await evaluate("(d.querySelector('[data-testid=settings-content]').scrollTop=0,true)")
@@ -248,12 +249,10 @@ export async function exerciseRenderedSettings(
 			await go(section)
 			await capture(`settings-${theme}-${section}`)
 			if (section === "advanced") {
-				for (const group of ["recovery", "diagnostics"]) {
-					await evaluate(
-						`(d.querySelector('[data-settings-page-card=advanced] [data-settings-group="${group}"] > h4').scrollIntoView({block:'start',behavior:'instant'}),true)`,
-					)
-					await capture(`settings-${theme}-advanced-${group}`)
-				}
+				await evaluate(
+					"(d.querySelector('[data-settings-page-card=advanced] [data-settings-group=recovery] > h4').scrollIntoView({block:'start',behavior:'instant'}),true)",
+				)
+				await capture(`settings-${theme}-advanced-recovery`)
 			}
 		}
 	}

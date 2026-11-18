@@ -18,6 +18,8 @@ function fixture(
 	let active = 0
 	let peak = 0
 	const trace: string[] = []
+	const onProgress = vi.fn<(callId?: string) => void | Promise<void>>()
+	const getCommandReadPreflight = vi.fn<NonNullable<ToolDescriptor["getCommandReadPreflight"]>>()
 	const cwd = path.resolve(os.tmpdir(), "command-batch-fixture")
 	const host: ToolExecutionHost = {
 		taskId: "batch",
@@ -56,6 +58,7 @@ function fixture(
 			requiresApproval: true,
 			parallelCommandRead: true,
 		},
+		getCommandReadPreflight,
 		prepareParallelCommand: async (context) => {
 			if (preparation === "unavailable") return undefined
 			if (preparation === "mutation" && context.call.id === "command-4") return undefined
@@ -92,6 +95,9 @@ function fixture(
 		preserveAbortedResults: true,
 		requirePreparedCommandRead,
 		deferResultCommit,
+		onEvent: (event) => {
+			if (event.type === "progress") return onProgress(event.callId)
+		},
 	})
 	const calls = Array.from({ length: count }, (_, index) => ({
 		type: "tool_call" as const,
@@ -101,7 +107,40 @@ function fixture(
 			? { cmd: "git status", yield_time_ms: 10_000 }
 			: { command: "git status" },
 	}))
-	return { scheduler, calls, host, trace, controller, registry, descriptor, peak: () => peak, active: () => active }
+	return {
+		scheduler,
+		calls,
+		host,
+		trace,
+		controller,
+		registry,
+		descriptor,
+		onProgress,
+		getCommandReadPreflight,
+		peak: () => peak,
+		active: () => active,
+	}
+}
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((done) => {
+		resolve = done
+	})
+	return { promise, resolve }
+}
+
+function installPreflight(
+	test: ReturnType<typeof fixture>,
+	check: (id: string, signal?: AbortSignal) => Promise<boolean>,
+) {
+	test.getCommandReadPreflight.mockImplementation(({ task, call }, policy) => async (signal) => {
+		if (!(await check(call.id!, signal))) return undefined
+		return (callbacks) => {
+			test.trace.push(`approve:${call.id}`)
+			return test.descriptor.prepareParallelCommand!({ task, call, callbacks, signal }, policy)
+		}
+	})
 }
 
 describe("approved command batches", () => {
@@ -123,6 +162,126 @@ describe("approved command batches", () => {
 		expect(test.active()).toBe(0)
 		expect(elapsed).toBe(mode === "serial" ? 1_200 : 300)
 		expect(test.peak()).toBe(mode === "serial" ? 1 : 4)
+	})
+
+	it("measures time to the first spawn across command approvals and progress publication", async () => {
+		vi.useFakeTimers()
+		const startedAt = Date.now()
+		let firstSpawnMs: number | undefined
+		const test = fixture("selective-parallel", 4, "read", () => {
+			firstSpawnMs ??= Date.now() - startedAt
+			return 100
+		})
+		const approval = vi.mocked(test.host.askApproval!)
+		const approve = approval.getMockImplementation()!
+		approval.mockImplementation(async (...args) => {
+			await new Promise<void>((resolve) => setTimeout(resolve, 5))
+			return approve(...args)
+		})
+		test.onProgress.mockImplementation(() => new Promise<void>((resolve) => setTimeout(resolve, 5)))
+
+		const pending = test.scheduler.run(test.calls)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		const elapsedMs = Date.now() - startedAt
+		console.info(
+			JSON.stringify({ commands: 4, firstSpawnMs, elapsedMs, progressEvents: test.onProgress.mock.calls.length }),
+		)
+		expect(firstSpawnMs).toBe(25)
+		expect(elapsedMs).toBe(140)
+		expect(test.onProgress.mock.calls.map(([callId]) => callId)).toEqual(test.calls.map(({ id }) => id))
+		expect(approval).toHaveBeenCalledTimes(4)
+		expect(test.trace.slice(0, 4)).toEqual(Array(4).fill("approval"))
+		expect(outcome.results.map(({ callId }) => callId)).toEqual(test.calls.map(({ id }) => id))
+		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
+	})
+
+	it("overlaps a bounded set of checks and consumes approvals in model order", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 6)
+		const checks = new Map(test.calls.map(({ id }) => [id, deferred()]))
+		const checked: string[] = []
+		installPreflight(test, async (id) => {
+			checked.push(id)
+			await checks.get(id)!.promise
+			return true
+		})
+		const approval = vi.mocked(test.host.askApproval!)
+
+		const pending = test.scheduler.run(test.calls)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(checked).toEqual(test.calls.slice(0, 4).map(({ id }) => id))
+		checks.get("command-1")!.resolve()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(approval).not.toHaveBeenCalled()
+		checks.get("command-0")!.resolve()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(approval).toHaveBeenCalledTimes(2)
+		expect(test.trace.filter((event) => event.startsWith("approve:"))).toEqual([
+			"approve:command-0",
+			"approve:command-1",
+		])
+		expect(test.active()).toBe(0)
+
+		for (const gate of checks.values()) gate.resolve()
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+		expect(checked).toEqual(test.calls.map(({ id }) => id))
+		expect(approval).toHaveBeenCalledTimes(6)
+		expect(test.trace.filter((event) => event.startsWith("approve:"))).toEqual(
+			test.calls.map(({ id }) => `approve:${id}`),
+		)
+		expect(test.peak()).toBe(4)
+		expect(outcome.results.map(({ callId }) => callId)).toEqual(test.calls.map(({ id }) => id))
+		expect(outcome.results.every(({ status }) => status === "success")).toBe(true)
+	})
+
+	it("rechecks later candidates after inconclusive isolation exposes a serial command", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 4)
+		installPreflight(test, async (id) => {
+			test.trace.push(`check:${id}`)
+			return id !== "command-1"
+		})
+		const pending = test.scheduler.run(test.calls)
+		await vi.runAllTimersAsync()
+		const outcome = await pending
+
+		const serialStart = test.trace.indexOf("start:command-1")
+		const serialEnd = test.trace.indexOf("end:command-1")
+		expect(test.trace.indexOf("end:command-0")).toBeLessThan(serialStart)
+		for (const id of ["command-2", "command-3"]) {
+			expect(test.trace.indexOf(`check:${id}`)).toBeLessThan(serialStart)
+			expect(test.trace.lastIndexOf(`check:${id}`)).toBeGreaterThan(serialEnd)
+			expect(test.trace.indexOf(`start:${id}`)).toBeGreaterThan(serialEnd)
+		}
+		expect(test.host.askApproval).toHaveBeenCalledTimes(4)
+		expect(outcome.results.map(({ status }) => status)).toEqual(Array(4).fill("success"))
+	})
+
+	it("joins cancelled checks before closing each call without approval or execution", async () => {
+		vi.useFakeTimers()
+		const test = fixture("selective-parallel", 6)
+		const checked: string[] = []
+		const cancelled: string[] = []
+		installPreflight(test, async (id, signal) => {
+			checked.push(id)
+			await new Promise<void>((resolve) => signal!.addEventListener("abort", () => resolve(), { once: true }))
+			cancelled.push(id)
+			return false
+		})
+		const pending = test.scheduler.run(test.calls)
+		await vi.advanceTimersByTimeAsync(0)
+		expect(checked).toEqual(test.calls.slice(0, 4).map(({ id }) => id))
+		test.controller.abort()
+		const outcome = await pending
+
+		expect(cancelled).toEqual(checked)
+		expect(test.host.askApproval).not.toHaveBeenCalled()
+		expect(test.trace).toEqual([])
+		expect(outcome.status).toBe("aborted")
+		expect(outcome.results.map(({ status }) => status)).toEqual(Array(6).fill("cancelled"))
+		expect(test.host.userMessageContent).toHaveLength(6)
 	})
 
 	it("joins out-of-order processes before publishing their outputs in model-call order", async () => {
@@ -206,6 +365,7 @@ describe("approved command batches", () => {
 		expect(outcome.results.map((result) => result.status)).toEqual(["denied", "success"])
 		expect(test.host.askApproval).toHaveBeenCalledTimes(2)
 		expect(test.trace).not.toContain("start:command-0")
+		expect(test.onProgress.mock.calls).toEqual([["command-1"]])
 	})
 
 	it("reuses the exact approval for a serial compatibility fallback", async () => {
@@ -217,6 +377,7 @@ describe("approved command batches", () => {
 		expect(test.peak()).toBe(1)
 		expect(test.host.askApproval).toHaveBeenCalledTimes(2)
 		expect(outcome.results.every((result) => result.status === "success")).toBe(true)
+		expect(test.onProgress.mock.calls).toEqual([["command-0"], ["command-1"]])
 	})
 
 	it("keeps unavailable isolated reads eligible for ordinary serial execution after provider EOF", async () => {

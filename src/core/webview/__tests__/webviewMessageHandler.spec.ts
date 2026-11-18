@@ -252,19 +252,20 @@ describe("chat rename and toolbar host messages", () => {
 		expect(vscode.commands.executeCommand).toHaveBeenCalledWith("alpha.openTickets")
 	})
 
-	it.each([false, true])("gates Incident Dashboard on the actual debug configuration (%s)", async (enabled) => {
-		const config = vi
-			.spyOn(vscode.workspace, "getConfiguration")
-			.mockReturnValue({ get: vi.fn(() => enabled) } as unknown as vscode.WorkspaceConfiguration)
-		try {
-			await webviewMessageHandler(host, { type: "openIncidentDashboard" })
-			expect(config).toHaveBeenCalledWith("alpha")
-			if (enabled) expect(vscode.commands.executeCommand).toHaveBeenCalledWith("alpha.openIncidents")
-			else expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
-		} finally {
-			config.mockRestore()
-		}
-	})
+	it.each(["openIncidentDashboard", "debugSetting", "openDebugApiHistory", "openDebugUiHistory"])(
+		"ignores retired webview messages for %s",
+		async (type) => {
+			const config = vi.spyOn(vscode.workspace, "getConfiguration")
+			try {
+				await webviewMessageHandler(host, { type, bool: true, taskId: "chat-1" } as unknown as WebviewMessage)
+				expect(config).not.toHaveBeenCalled()
+				expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+				expect(host.postMessageToWebview).not.toHaveBeenCalled()
+			} finally {
+				config.mockRestore()
+			}
+		},
+	)
 })
 
 describe("provider profile Save messages", () => {

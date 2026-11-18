@@ -3,7 +3,7 @@
 	"displayName": "%extension.displayName%",
 	"description": "%extension.description%",
 	"publisher": "AlphaInc",
-	"version": "3.2.38",
+	"version": "3.2.39",
 	"icon": "assets/icons/icon.png",
 	"galleryBanner": {
 		"color": "#617A91",
@@ -47,7 +47,6 @@
 		"onWebviewPanel:alpha.TabPanelProvider",
 		"onWebviewPanel:alpha.htmlDocument",
 		"onWebviewPanel:alpha.tickets",
-		"onWebviewPanel:alpha.incidents",
 		"onLanguage",
 		"onStartupFinished"
 	],
@@ -131,11 +130,6 @@
 					"light": "assets/icons/chat-actions/tickets-light.svg",
 					"dark": "assets/icons/chat-actions/tickets-dark.svg"
 				}
-			},
-			{
-				"command": "alpha.openIncidents",
-				"title": "%command.openIncidents.title%",
-				"icon": "$(pulse)"
 			},
 			{
 				"command": "alpha.exportDiagnostics",
@@ -263,10 +257,6 @@
 				{
 					"command": "alpha.sidebarScheduledTasks",
 					"when": "false"
-				},
-				{
-					"command": "alpha.openIncidents",
-					"when": "config.alpha.debug"
 				}
 			],
 			"explorer/context": [
@@ -291,11 +281,6 @@
 					"command": "alpha.openTickets",
 					"group": "navigation@3",
 					"when": "view == alpha.SidebarProvider"
-				},
-				{
-					"command": "alpha.openIncidents",
-					"group": "overflow@0",
-					"when": "view == alpha.SidebarProvider && config.alpha.debug"
 				},
 				{
 					"command": "alpha.sidebarScheduledTasks",
@@ -788,11 +773,6 @@
 					"minimum": 1,
 					"maximum": 200,
 					"description": "%settings.codeIndex.embeddingBatchSize.description%"
-				},
-				"alpha.debug": {
-					"type": "boolean",
-					"default": false,
-					"description": "%settings.debug.description%"
 				},
 				"alpha.debugProxy.enabled": {
 					"type": "boolean",

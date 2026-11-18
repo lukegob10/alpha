@@ -770,6 +770,58 @@ describe("AlphaProvider host ownership", () => {
 		)
 	})
 
+	it("dispatches a passive row to both selected views without joining a slow peer", async () => {
+		const host = storage()
+		const first = makeProvider(host)
+		const second = makeProvider(host)
+		const task = makeTask("shared")
+		await first.addTaskToStack(task)
+		await second.focusTask(task.taskId)
+		const peerTransport = vi.mocked(second.postMessageToWebview)
+		peerTransport.mockClear()
+		const release = barrier()
+		let peerSettled = false
+		peerTransport.mockImplementationOnce(async () => {
+			await release.promise
+			peerSettled = true
+		})
+		const row = { ts: 1, type: "say" as const, say: "api_req_started" as const, text: "pending" }
+
+		try {
+			expect(first.postBackgroundTaskMessageToWebview(task.taskId, row)).toBeUndefined()
+			expect(first.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "messageCreated", taskId: task.taskId, alphaMessage: row }),
+			)
+			await first.postTaskMessageToWebview("messageUpdated", task.taskId, { ...row, text: "finished" })
+			expect(peerSettled).toBe(false)
+			const [created, updated] = peerTransport.mock.calls.map(([message]) => message)
+			expect(created).toMatchObject({ type: "messageCreated", taskId: task.taskId, alphaMessage: row })
+			expect(updated).toMatchObject({ type: "messageUpdated", taskId: task.taskId })
+			expect(updated.alphaMessagesSeq).toBeGreaterThan(created.alphaMessagesSeq!)
+		} finally {
+			release.resolve()
+		}
+	})
+
+	it("consumes an exceptional transport rejection for a passive row", async () => {
+		const provider = makeProvider(storage())
+		const task = makeTask("target")
+		await provider.addTaskToStack(task)
+		const logged = barrier()
+		vi.mocked(provider.log).mockImplementationOnce(() => logged.resolve())
+		vi.mocked(provider.postMessageToWebview).mockRejectedValueOnce(new Error("private transport detail"))
+
+		provider.postBackgroundTaskMessageToWebview(task.taskId, {
+			ts: 1,
+			type: "ask",
+			ask: "command",
+			isAnswered: true,
+		})
+
+		await logged.promise
+		expect(provider.log).toHaveBeenCalledWith("Failed to publish background task message")
+	})
+
 	it.each(["messages", "todos"] as const)(
 		"reserves %s broadcast sequences across views before a transport yields",
 		async (surface) => {

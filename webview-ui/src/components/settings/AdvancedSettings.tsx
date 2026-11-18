@@ -7,7 +7,6 @@ import { cn } from "@/lib/utils"
 
 import { CheckpointSettings } from "./CheckpointSettings"
 import { ContextManagementSettings } from "./ContextManagementSettings"
-import { DebugSettings } from "./DebugSettings"
 import type { SettingsCachedState, SetSettingsCachedStateField } from "./managed-agent-settings"
 import { Section } from "./Section"
 import { SectionHeader } from "./SectionHeader"
@@ -33,14 +32,12 @@ export type AdvancedSettingsValues = Pick<
 	| "customSupportPrompts"
 	| "enableCheckpoints"
 	| "checkpointTimeout"
-	| "debug"
 >
 
 export interface AdvancedSettingsProps extends HTMLAttributes<HTMLDivElement> {
 	values: AdvancedSettingsValues
 	setCachedStateField: SetSettingsCachedStateField
 	setCustomSupportPrompts?: (prompts: Record<string, string | undefined>) => void
-	setDebug?: (debug: boolean) => void
 	embedded?: boolean
 }
 
@@ -48,7 +45,6 @@ export const AdvancedSettings = ({
 	values,
 	setCachedStateField,
 	setCustomSupportPrompts,
-	setDebug,
 	embedded = false,
 	className,
 	...props
@@ -104,16 +100,6 @@ export const AdvancedSettings = ({
 						enableCheckpoints={values.enableCheckpoints}
 						checkpointTimeout={values.checkpointTimeout}
 						setCachedStateField={setCachedStateField}
-					/>
-				</div>
-
-				<div className="min-w-0 border-t border-[var(--border-subtle)] pt-6" data-settings-group="diagnostics">
-					<h4 className="m-0 mb-3 text-base font-semibold text-vscode-foreground">
-						{t("settings:advanced.diagnostics")}
-					</h4>
-					<DebugSettings
-						debug={values.debug}
-						setDebug={setDebug ?? ((debug) => setCachedStateField("debug", debug))}
 					/>
 				</div>
 			</Section>

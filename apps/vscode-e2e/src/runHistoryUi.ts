@@ -621,9 +621,9 @@ export async function runHistoryUi(executable: string, output: string, expectedH
 		const alphaMenuEntries = menuEntries.filter((label) =>
 			["Alpha: Incident Dashboard", "Scheduled Tasks"].includes(label),
 		)
-		assert.ok(
-			JSON.stringify(alphaMenuEntries) === JSON.stringify(["Scheduled Tasks"]) ||
-				JSON.stringify(alphaMenuEntries) === JSON.stringify(["Alpha: Incident Dashboard", "Scheduled Tasks"]),
+		assert.deepEqual(
+			alphaMenuEntries,
+			["Scheduled Tasks"],
 			`Only approved toolbar entries remain: ${JSON.stringify(menuEntries)}`,
 		)
 		assert.ok(

@@ -15,7 +15,6 @@ import {
 import type { AlphaProvider } from "./AlphaProvider"
 import { Terminal } from "../../integrations/terminal/Terminal"
 import { changeLanguage } from "../../i18n"
-import { Package } from "../../shared/package"
 import { experimentDefault } from "../../shared/experiments"
 
 type SettingKey = keyof GlobalSettings
@@ -180,15 +179,12 @@ async function validateExpectedSettings(provider: AlphaProvider, patch: GlobalSe
 		)
 			conflicts.push(key)
 	}
-	for (const [name, change, current] of [
-		["debug", request.debug, vscode.workspace.getConfiguration(Package.name).get<boolean>("debug", false)],
-		[
-			"terminalInheritEnv",
-			request.terminalInheritEnv,
-			vscode.workspace.getConfiguration().get<boolean>("terminal.integrated.inheritEnv", true),
-		],
-	] as const) {
-		if (change && current !== change.expected && current !== change.value) conflicts.push(name)
+	const terminalInheritEnv = request.terminalInheritEnv
+	if (terminalInheritEnv) {
+		const current = vscode.workspace.getConfiguration().get<boolean>("terminal.integrated.inheritEnv", true)
+		if (current !== terminalInheritEnv.expected && current !== terminalInheritEnv.value) {
+			conflicts.push("terminalInheritEnv")
+		}
 	}
 	if (conflicts.length) throw new SettingsConflictError(conflicts)
 	return (key: SettingKey, value: unknown) => {
@@ -222,17 +218,10 @@ export async function handleSettingsUpdate(provider: AlphaProvider, message: Web
 		result = { requestId: rawRequestId, status: "error", error: "invalid" }
 	} else {
 		const appliedKeys: SettingKey[] = []
-		let debugApplied = false
 		let terminalInheritEnvApplied = false
 		try {
 			const assertCurrent = await validateExpectedSettings(provider, patch.data, request.data)
 			await applySettings(provider, patch.data, assertCurrent, true, (key) => appliedKeys.push(key))
-			if (request.data.debug) {
-				await vscode.workspace
-					.getConfiguration(Package.name)
-					.update("debug", request.data.debug.value, vscode.ConfigurationTarget.Global)
-				debugApplied = true
-			}
 			if (request.data.terminalInheritEnv) {
 				await vscode.workspace
 					.getConfiguration()
@@ -251,7 +240,6 @@ export async function handleSettingsUpdate(provider: AlphaProvider, message: Web
 					? { requestId: rawRequestId, status: "error", error: "conflict", conflictingKeys: error.keys }
 					: { requestId: rawRequestId, status: "error", error: "saveFailed" }
 			if (appliedKeys.length) result.appliedKeys = appliedKeys
-			if (debugApplied) result.debugApplied = true
 			if (terminalInheritEnvApplied) result.terminalInheritEnvApplied = true
 		}
 	}

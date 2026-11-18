@@ -46,14 +46,32 @@ describe("settings Save wire compatibility", () => {
 		const request = {
 			requestId: "host-preference",
 			expectedSettings: { soundEnabled: false },
-			debug: { expected: false, value: true },
+			terminalInheritEnv: { expected: false, value: true },
 		}
 
 		expect(settingsSaveRequestSchema.parse(request)).toEqual(request)
 		expect(
 			settingsSaveRequestSchema.safeParse({
 				...request,
-				debug: { expected: false, value: true, setting: "arbitrary.host.setting" },
+				terminalInheritEnv: { expected: false, value: true, setting: "arbitrary.host.setting" },
+			}).success,
+		).toBe(false)
+	})
+
+	it("rejects a retired debug preference or receipt", () => {
+		expect(
+			settingsSaveRequestSchema.safeParse({
+				requestId: "retired-debug",
+				expectedSettings: {},
+				debug: { expected: false, value: true },
+			}).success,
+		).toBe(false)
+		expect(
+			settingsSaveResultSchema.safeParse({
+				requestId: "retired-debug",
+				status: "error",
+				error: "saveFailed",
+				debugApplied: true,
 			}).success,
 		).toBe(false)
 	})

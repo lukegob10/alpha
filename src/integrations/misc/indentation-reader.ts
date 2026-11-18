@@ -148,20 +148,6 @@ function isComment(line: LineRecord): boolean {
 }
 
 /**
- * Trim empty lines from the front and back of a line array.
- */
-function trimEmptyLines(lines: LineRecord[]): void {
-	// Trim from front
-	while (lines.length > 0 && lines[0].isBlank) {
-		lines.shift()
-	}
-	// Trim from back
-	while (lines.length > 0 && lines[lines.length - 1].isBlank) {
-		lines.pop()
-	}
-}
-
-/**
  * Format lines with line numbers, applying truncation to long lines.
  */
 export function formatWithLineNumbers(
@@ -287,19 +273,20 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 		}
 	}
 
-	// Bidirectional expansion from anchor (Codex algorithm)
-	const result: LineRecord[] = [lines[anchorIdx]]
+	// The selected lines form a contiguous range throughout expansion.
+	let first = anchorIdx
+	let last = anchorIdx
 	let i = anchorIdx - 1 // Up cursor
 	let j = anchorIdx + 1 // Down cursor
 	let iMinCount = 0 // Count of min-indent lines seen going up
 	let jMinCount = 0 // Count of min-indent lines seen going down
 
-	while (result.length < finalLimit) {
+	while (last - first + 1 < finalLimit) {
 		let progressed = false
 
 		// Expand upward
 		if (i >= 0 && effectiveIndents[i] >= minIndent) {
-			result.unshift(lines[i])
+			first = i
 			progressed = true
 
 			// Handle sibling exclusion at min indent
@@ -311,7 +298,7 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 					iMinCount++
 				} else {
 					// Reject this line - remove it and stop expanding up
-					result.shift()
+					first++
 					progressed = false
 					i = -1 // Stop expanding up
 				}
@@ -322,18 +309,18 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 			i = -1 // Stop expanding up (hit lower indent)
 		}
 
-		if (result.length >= finalLimit) break
+		if (last - first + 1 >= finalLimit) break
 
 		// Expand downward
 		if (j < lines.length && effectiveIndents[j] >= minIndent) {
-			result.push(lines[j])
+			last = j
 			progressed = true
 
 			// Handle sibling exclusion at min indent
 			if (effectiveIndents[j] === minIndent && !includeSiblings) {
 				if (jMinCount > 0) {
 					// Already saw one min-indent block going down, reject this
-					result.pop()
+					last--
 					progressed = false
 					j = lines.length // Stop expanding down
 				}
@@ -349,7 +336,9 @@ export function readWithIndentation(content: string, options: IndentationReadOpt
 	}
 
 	// Trim leading/trailing empty lines
-	trimEmptyLines(result)
+	while (first <= last && lines[first].isBlank) first++
+	while (first <= last && lines[last].isBlank) last--
+	const result = lines.slice(first, last + 1)
 
 	// Check if we were truncated
 	const wasTruncated = result.length >= finalLimit || i >= 0 || j < lines.length

@@ -65,8 +65,7 @@ const tabsByMessageAction: Partial<Record<NonNullable<ExtensionMessage["action"]
 }
 
 const App = () => {
-	const { didHydrateState, showWelcome, shouldShowAnnouncement, renderContext, currentTaskId, debug } =
-		useShellState()
+	const { didHydrateState, showWelcome, shouldShowAnnouncement, renderContext, currentTaskId } = useShellState()
 	const { t } = useAppTranslation()
 	const didReportUiReady = useRef(false)
 
@@ -314,7 +313,6 @@ const App = () => {
 					<ChatToolbar
 						{...chatToolbarActions}
 						renderContext={renderContext}
-						debug={debug === true}
 						onNewChat={startNewChat}
 						navigation={
 							<span className="min-w-0 truncate px-1 text-vscode-foreground">

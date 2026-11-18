@@ -40,13 +40,12 @@ const initialValues = {
 	customSupportPrompts: { CONDENSE: "Retain my recovery notes.", ENHANCE: "Unrelated custom prompt" },
 	enableCheckpoints: true,
 	checkpointTimeout: 20,
-	debug: false,
 } satisfies AdvancedSettingsValues
 
 describe("AdvancedSettings", () => {
 	beforeEach(() => vi.clearAllMocks())
 
-	it("shows context, recovery and diagnostics in one card without terminal setup or automatic writes", () => {
+	it("shows context and recovery in one card without terminal setup or automatic writes", () => {
 		const setCachedStateField = vi.fn()
 		const { container } = render(
 			<AdvancedSettings values={initialValues} setCachedStateField={setCachedStateField} />,
@@ -55,23 +54,20 @@ describe("AdvancedSettings", () => {
 		expect(screen.getAllByRole("heading", { level: 3, hidden: true })).toHaveLength(1)
 		expect(screen.getByRole("heading", { name: "settings:sections.advanced" })).toBeInTheDocument()
 		const groups = Array.from(container.querySelectorAll("[data-settings-group]"))
-		expect(groups).toHaveLength(3)
+		expect(groups).toHaveLength(2)
 		const pageCard = container.querySelector('[data-settings-page-card="advanced"]')
 		expect(pageCard).toBeInTheDocument()
 		expect(container.querySelectorAll(".surface-raised")).toHaveLength(1)
-		expect(groups.map((group) => group.getAttribute("data-settings-group"))).toEqual([
-			"context",
-			"recovery",
-			"diagnostics",
-		])
+		expect(groups.map((group) => group.getAttribute("data-settings-group"))).toEqual(["context", "recovery"])
 		for (const group of groups) {
 			expect(group.closest(".surface-raised")).toBe(pageCard)
 			expect(group.closest("details")).toBeNull()
 			expect(group.querySelector("h4")).toBeVisible()
 		}
-		for (const settingId of ["context-open-tabs", "checkpoints-enable", "about-debug-mode"]) {
+		for (const settingId of ["context-open-tabs", "checkpoints-enable"]) {
 			expect(container.querySelector(`[data-setting-id="${settingId}"]`)).toBeVisible()
 		}
+		expect(container.querySelector('[data-setting-id="about-debug-mode"]')).not.toBeInTheDocument()
 		expect(container.querySelector('[data-setting-id^="terminal-"]')).not.toBeInTheDocument()
 		expect(screen.queryByText("settings:advanced.terminal")).not.toBeInTheDocument()
 		expect(screen.getByTestId("condense-prompt-textarea")).not.toBeVisible()
@@ -85,7 +81,7 @@ describe("AdvancedSettings", () => {
 		expect(screen.queryByRole("heading", { level: 3, hidden: true })).not.toBeInTheDocument()
 		expect(screen.queryByText("settings:advanced.description")).not.toBeInTheDocument()
 		const groups = Array.from(container.querySelectorAll("[data-settings-group]"))
-		expect(groups).toHaveLength(3)
+		expect(groups).toHaveLength(2)
 		for (const group of groups) {
 			expect(group.closest("details")).toBeNull()
 			expect(group.querySelector("h4")).toBeVisible()
@@ -93,18 +89,11 @@ describe("AdvancedSettings", () => {
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
-	it("routes recovery and debug changes through buffered callbacks without applying settings", () => {
+	it("routes recovery changes through the buffered callback until save", () => {
 		const setCachedStateField = vi.fn()
-		const setDebug = vi.fn()
-		render(
-			<AdvancedSettings values={initialValues} setCachedStateField={setCachedStateField} setDebug={setDebug} />,
-		)
+		render(<AdvancedSettings values={initialValues} setCachedStateField={setCachedStateField} />)
 		fireEvent.click(screen.getByRole("checkbox", { name: "settings:checkpoints.enable.label" }))
 		expect(setCachedStateField).toHaveBeenCalledExactlyOnceWith("enableCheckpoints", false)
-
-		fireEvent.click(screen.getByRole("checkbox", { name: "settings:about.debugMode.label" }))
-		expect(setDebug).toHaveBeenCalledExactlyOnceWith(true)
-		expect(setCachedStateField).toHaveBeenCalledTimes(1)
 		expect(vscode.postMessage).not.toHaveBeenCalled()
 	})
 
