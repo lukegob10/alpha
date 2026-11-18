@@ -3,6 +3,7 @@ import path from "path"
 import type OpenAI from "openai"
 
 import {
+	getVscodeLlmExactModelId,
 	openAiModelInfoSaneDefaults,
 	restoreTaskMode,
 	type ProviderSettings,
@@ -151,7 +152,7 @@ const AGENT_LIFECYCLE_TOOLS = new Set(["list_agents", "wait_agent", "send_messag
 const CHILD_SCOPED_AGENT_TOOLS = new Set(["spawn_agent", "list_provider_profiles", ...AGENT_LIFECYCLE_TOOLS])
 
 // Bump when native schemas or provider projection rules change. Dynamic schemas are fingerprinted below.
-const TOOL_CATALOG_SCHEMA_VERSION = 21
+const TOOL_CATALOG_SCHEMA_VERSION = 22
 
 const ASYNC_USER_INPUT_CATALOG_NAMES = new Set(["request_user_input_async", "send_user_message_async"])
 
@@ -564,6 +565,13 @@ async function buildToolCatalog(options: BuildToolsOptions): Promise<BuildToolsR
 
 		// Build native tools with dynamic read_file tool based on settings.
 		const nativeTools = getNativeTools({
+			// Codex f2d3086682 uses apply_patch. Exact-text edits supplement it only on the measured Copilot route.
+			includeExactEdit:
+				mode === "code" &&
+				modelIdentity.provider === "vscode-lm" &&
+				modelIdentity.vendor === "copilot" &&
+				modelPreference === "edit" &&
+				getVscodeLlmExactModelId(modelIdentity) === "claude-haiku-5.5",
 			diagnosticSession,
 			memoryToolsEnabled: options.memoryToolsEnabled === true,
 			supportsImages,

@@ -413,6 +413,8 @@ test("reissued checks are measured without treating one post-edit validation as 
 		repeatedChecks: 0,
 	})
 	assert.equal(qualityWorkCounters([check, call("apply_patch", "failed", true), check]).repeatedChecks, 1)
+	assert.equal(qualityWorkCounters([check, call("edit", "applied"), check]).repeatedChecks, 0)
+	assert.equal(qualityWorkCounters([check, call("edit", "failed", true), check]).repeatedChecks, 1)
 })
 
 test("correct but wasteful candidates retain separate correctness evidence for before/after cost comparison", () => {

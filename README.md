@@ -24,6 +24,8 @@ Open **About Alpha** from the settings footer for version information and settin
   chat composer to switch modes.
 - Search and edit files, run commands, and inspect whole-turn or per-file diffs in Alpha Diff. Agent file edits run in
   the background; open a file or diff whenever you want to review it.
+- In Code and Plan, GPT and Claude can look up definitions and references through the workspace's VS Code language
+  providers. In Code, GitHub Copilot's Claude Haiku 5.5 can also make targeted exact-text edits with the usual write approval.
 - Keep concurrent task sessions and delegate bounded work to managed agents while other sessions run in the background.
 - Use **Fork chat** in the chat toolbar or history menu, or type `/fork` in a chat. Add a name with `/fork <name>`.
   The new chat uses the same checkout and inherits the conversation through its latest completed reply.

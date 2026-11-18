@@ -1,6 +1,6 @@
 import * as assert from "assert"
 import { randomUUID } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { readFile, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import * as vscode from "vscode"
 
@@ -15,12 +15,90 @@ import {
 
 import { assertRequestedHostVersion, setDefaultSuiteTimeout } from "./test-utils"
 import { waitFor } from "./utils"
+import { assertFeatureToolResult, FeatureScriptedAI } from "../scenarios/featureWorkflowFixture"
 
 suite("Alpha Extension", function () {
 	setDefaultSuiteTimeout(this)
 
 	test("Runs on the requested VS Code version", () => {
 		assertRequestedHostVersion(vscode.version, process.env.ALPHA_E2E_EXPECTED_VSCODE_VERSION)
+	})
+
+	test("resolves definitions and references through a real task and VS Code language providers", async () => {
+		const workspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		assert.ok(workspace)
+		const file = `alpha-navigation-${randomUUID()}.navtest`
+		const fixture = join(workspace, file)
+		const selector = { scheme: "file", pattern: `**/${file}` }
+		const source = new vscode.Position(1, 4)
+		const target = new vscode.Position(0, 2)
+		const definition = vscode.languages.registerDefinitionProvider(selector, {
+			provideDefinition(document, position) {
+				assert.ok(position.isEqual(source))
+				return new vscode.Location(document.uri, target)
+			},
+		})
+		const references = vscode.languages.registerReferenceProvider(selector, {
+			provideReferences(document, position) {
+				assert.ok(position.isEqual(target))
+				return [new vscode.Location(document.uri, source)]
+			},
+		})
+		const model = new FeatureScriptedAI(({ ordinal }) => {
+			if (ordinal === 1)
+				return { name: "navigate_code", arguments: { operation: "definition", path: file, line: 2, column: 5 } }
+			if (ordinal === 2)
+				return { name: "navigate_code", arguments: { operation: "references", path: file, line: 1, column: 3 } }
+			return undefined
+		})
+		const api = globalThis.api
+		const configuration = api.getConfiguration()
+		const host = (
+			api as unknown as { sidebarProvider: { getLiveTask(id: string): { didComplete: boolean } | undefined } }
+		).sidebarProvider
+		try {
+			await writeFile(fixture, "  symbol\n    symbol", { flag: "wx" })
+			const id = await api.startNewTask({
+				text: "Find the symbol definition, then its references.",
+				presentationModelCalls: false,
+				configuration: {
+					...configuration,
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "code",
+					approvalMode: "auto",
+					autoApprovalEnabled: true,
+					alwaysAllowReadOnly: true,
+					enableCheckpoints: false,
+					requestDelaySeconds: 0,
+				},
+			})
+			await waitFor(() => host.getLiveTask(id)?.didComplete === true, {
+				timeout: 30_000,
+				description: "code navigation task",
+			})
+			model.assertHealthy()
+			assert.equal(model.requests.length, 3)
+			for (const [index, position] of [target, source].entries()) {
+				const receipt = assertFeatureToolResult(
+					model.requests[index + 1]!.messages,
+					`${model.id}-${index + 1}`,
+					{ error: false },
+				)
+				assert.equal(typeof receipt.content, "string")
+				assert.deepStrictEqual(JSON.parse(receipt.content as string), {
+					locations: [{ path: file, line: position.line + 1, column: position.character + 1 }],
+					truncated: false,
+				})
+			}
+		} finally {
+			definition.dispose()
+			references.dispose()
+			model.dispose()
+			await api.clearCurrentTask()
+			await api.setConfiguration(configuration)
+			await rm(fixture, { force: true })
+		}
 	})
 
 	test("saves interleaved assistant text as one completed row", async () => {

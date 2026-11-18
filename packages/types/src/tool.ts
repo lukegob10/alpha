@@ -37,6 +37,7 @@ export const toolNames = [
 	"write_stdin",
 	"read_file",
 	"view_image",
+	"navigate_code",
 	"read_command_output",
 	"write_to_file",
 	"apply_diff",

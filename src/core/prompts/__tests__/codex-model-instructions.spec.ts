@@ -101,7 +101,6 @@ describe("pinned Codex model instructions", () => {
 
 	it.each([
 		undefined,
-		"claude-sonnet-4.6",
 		"gemini-2.5-pro",
 		"gpt-5.3-codex",
 		"custom-gpt-5.6-sol-wrapper",
@@ -122,6 +121,17 @@ describe("pinned Codex model instructions", () => {
 		expect(resolveCodexModelPrompt("openai/gpt-5.6-sol").promptSlug).toBe("gpt-5.6")
 		expect(resolveCodexModelPrompt("private-provider_gpt-5.5").promptSlug).toBe("gpt-5.5")
 	})
+
+	it.each(["claude-sonnet-4.6", "copilot/claude-haiku-5.5", "vscode-lm:Claude-Opus-5.5"])(
+		"uses Alpha identity and native tools in the Claude fallback for %s",
+		(id) => {
+			const { instructions, promptSlug } = resolveCodexModelPrompt(id)
+			expect(promptSlug).toBe(DEFAULT_CODEX_MODEL_PROMPT)
+			expect(instructions).toContain("You are Alpha Code")
+			expect(instructions).toContain("# Using skills")
+			expect(instructions).not.toMatch(/based on GPT-6|functions\.exec|As Codex,/)
+		},
+	)
 
 	it.each(
 		codexModelIds.flatMap(([modelId, promptSlug]) => [

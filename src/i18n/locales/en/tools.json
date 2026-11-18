@@ -1,4 +1,8 @@
 {
+	"navigateCode": {
+		"definition": "Find the symbol definition in this workspace",
+		"references": "Find symbol references in this workspace"
+	},
 	"mcpElicitation": {
 		"question": "MCP server {{serverName}} requests information: {{message}}\nReply with a JSON object matching this form, or cancel to withhold the information:\n{{schema}}"
 	},

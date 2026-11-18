@@ -99,6 +99,16 @@ function resolvePromptSlug(modelId: string): CodexModelPromptSlug | undefined {
 
 export const DEFAULT_CODEX_MODEL_PROMPT: CodexModelPromptSlug = "gpt-6-sol"
 
+// Derive this once from the pinned fallback, retaining the shared skills and collaboration instructions.
+const CLAUDE_BASE_INSTRUCTIONS = CODEX_MODEL_INSTRUCTIONS[DEFAULT_CODEX_MODEL_PROMPT].replace(
+	"You are Codex, an agent based on GPT-6.",
+	"You are Alpha Code, a coding agent in VS Code.",
+)
+	.replace("As Codex,", "As Alpha Code,")
+	.split("\n")
+	.filter((line) => !line.includes("functions.exec"))
+	.join("\n")
+
 export interface ResolvedCodexModelPrompt {
 	requestedModelId: string | undefined
 	matchedModelId: string | undefined
@@ -118,6 +128,9 @@ export function resolveCodexModelPrompt(modelId?: string): ResolvedCodexModelPro
 		matchedModelId: matchedPromptSlug ? matchedModelId : undefined,
 		promptSlug,
 		isFallback: matchedPromptSlug === undefined,
-		instructions: CODEX_MODEL_INSTRUCTIONS[promptSlug],
+		instructions:
+			!matchedPromptSlug && matchedModelId && /(?:^|[/:])(?:copilot-)?claude-/.test(matchedModelId)
+				? CLAUDE_BASE_INSTRUCTIONS
+				: CODEX_MODEL_INSTRUCTIONS[promptSlug],
 	}
 }

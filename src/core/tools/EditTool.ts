@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import { isUtf8 } from "node:buffer"
 
 import { type AlphaSayTool, DEFAULT_WRITE_DELAY_MS } from "@alpha-code/types"
 
@@ -66,6 +67,7 @@ export class EditTool extends BaseTool<"edit"> {
 			const accessAllowed = task.alphaIgnoreController?.validateAccess(relPath)
 
 			if (!accessAllowed) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				await task.say("alphaignore_error", relPath)
 				pushToolResult(formatResponse.alphaIgnoreError(relPath))
 				return
@@ -86,10 +88,11 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			let originalFileContent: string
+			let bytes: Buffer
 			try {
-				originalFileContent = await fs.readFile(absolutePath, "utf8")
-			} catch (error) {
+				bytes = await fs.readFile(absolutePath, { signal: callbacks.signal })
+			} catch {
+				callbacks.signal?.throwIfAborted()
 				task.consecutiveMistakeCount++
 				task.recordToolError("edit")
 				const errorMessage = `Failed to read file '${relPath}'. Please verify file permissions and try again.`
@@ -98,7 +101,12 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			// Normalize line endings to LF for consistent matching
+			if (!isUtf8(bytes) || bytes.includes(0)) {
+				task.recordToolError("edit")
+				pushToolResult(formatResponse.toolError("Exact-text editing requires a UTF-8 text file."))
+				return
+			}
+			const originalFileContent = bytes.toString("utf8")
 			const projection = fileEditContent(originalFileContent)
 			const fileContent = projection.content
 
@@ -106,10 +114,8 @@ export class EditTool extends BaseTool<"edit"> {
 			const normalizedOld = normalizeToLF(oldString)
 			const normalizedNew = normalizeToLF(newString)
 
-			// Count occurrences of old_string in file content
-			const matchCount = fileContent.split(normalizedOld).length - 1
-
-			if (matchCount === 0) {
+			const firstMatch = fileContent.indexOf(normalizedOld)
+			if (firstMatch === -1) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("edit", "no_match")
 				pushToolResult(
@@ -120,13 +126,12 @@ export class EditTool extends BaseTool<"edit"> {
 				return
 			}
 
-			// Uniqueness check when replace_all is not enabled
-			if (!replaceAll && matchCount > 1) {
+			if (!replaceAll && fileContent.indexOf(normalizedOld, firstMatch + 1) !== -1) {
 				task.consecutiveMistakeCount++
 				task.recordToolError("edit")
 				pushToolResult(
 					formatResponse.toolError(
-						`Found ${matchCount} matches of 'old_string' in the file. Use 'replace_all: true' to replace all occurrences, or provide more context in 'old_string' to make it unique.`,
+						"Found multiple matches of 'old_string'. Include more context for a unique match, or use 'replace_all: true' to replace every occurrence.",
 					),
 				)
 				return
@@ -180,8 +185,9 @@ export class EditTool extends BaseTool<"edit"> {
 			} satisfies AlphaSayTool)
 
 			const didApprove = await askApproval("tool", completeMessage, undefined, isWriteProtected)
-
+			callbacks.signal?.throwIfAborted()
 			if (!didApprove) {
+				callbacks.setResultMetadata?.({ status: "denied" })
 				pushToolResult("Changes were rejected by the user.")
 				await task.diffViewProvider.reset()
 				return
@@ -189,10 +195,20 @@ export class EditTool extends BaseTool<"edit"> {
 
 			// Approval is shown inline. Preserve the raw baseline when committing
 			// without opening an editor; matching used a normalized projection.
-			await task.diffViewProvider.saveDirectly(relPath, newContent, false, diagnosticsEnabled, writeDelayMs, {
-				exists: true,
-				content: originalFileContent,
-			})
+			await task.diffViewProvider.saveDirectly(
+				relPath,
+				newContent,
+				false,
+				diagnosticsEnabled,
+				writeDelayMs,
+				{ exists: true, content: originalFileContent },
+				() => {
+					callbacks.signal?.throwIfAborted()
+					if (!isWriteProtected && task.alphaProtectedController?.isWriteProtected(relPath)) {
+						throw new Error("The file became write-protected after approval. Request a new edit.")
+					}
+				},
+			)
 
 			// Track file edit operation
 			if (relPath) {

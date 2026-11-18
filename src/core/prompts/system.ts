@@ -184,10 +184,8 @@ function getAlphaToolContractSection(
 	isPlanMode = false,
 	subagentInheritsPermissions = false,
 ): string {
-	const patchToolGuidance =
-		"Prefer the supplied apply_patch tool for file patches, passing patch text in its declared input. Alpha also routes a complete standalone apply_patch heredoc in exec_command through the same patch tool and policy. Do not search for an apply_patch executable."
 	if (subagentRole || isPlanMode) {
-		const sharedToolUse = getSharedToolUseSection(
+		return getSharedToolUseSection(
 			subagentRole,
 			subagentHasInheritedSkills,
 			subagentCanDelegate,
@@ -195,9 +193,6 @@ function getAlphaToolContractSection(
 			isPlanMode,
 			subagentInheritsPermissions,
 		)
-		return subagentRole === "worker" || subagentInheritsPermissions
-			? `${sharedToolUse}\n\n${patchToolGuidance}`
-			: sharedToolUse
 	}
 	const delegationGuidance =
 		subagentDelegationPolicy === "explicit-only"
@@ -212,7 +207,7 @@ function getAlphaToolContractSection(
 
 ALPHA TOOL CONTRACT
 
-Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions. ${patchToolGuidance}
+Use only provider-native tools supplied by Alpha for this turn. Their names, schemas, and host-enforced policy define the available actions and arguments. A tool name mentioned in the Codex instructions is callable only when the same tool is supplied by Alpha. Follow Alpha's active mode, workspace scope, and tool restrictions.
 
 Use multiple supplied native tool calls in the same assistant response for independent reads, searches, and read-only commands whose inputs are known. No batching wrapper is needed. Alpha settles approvals and returns all results before the next model request. Keep dependent work, mutations, interactive terminal input, and lifecycle barriers sequential; call tools that require isolation alone.${delegationGuidance}`
 }

@@ -23416,7 +23416,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(name === "wait_agent" ||
 				name === "write_stdin" ||
 				(canonicalName === "manage_command" && argumentRecord?.action === "wait"))
-		const read = ["read_file", "list_files", "search_files", "codebase_search"].includes(name) || commandRead
+		const read =
+			["read_file", "list_files", "search_files", "codebase_search", "navigate_code"].includes(name) ||
+			commandRead
 		const trustedExploration =
 			canonicalName === "exec_command" && status === "success" ? result?.trustedExploration : undefined
 		const state = this.providerRef?.deref()?.getVerificationProgressState?.(this)

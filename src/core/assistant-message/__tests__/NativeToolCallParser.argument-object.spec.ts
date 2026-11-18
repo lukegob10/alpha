@@ -13,6 +13,39 @@ describe("native tool argument objects", () => {
 		vi.restoreAllMocks()
 	})
 
+	it("validates navigation operations and one-based positions before dispatch", () => {
+		const args = { operation: "references", path: "source.ts", line: 1, column: 2 }
+		const parse = (overrides: Record<string, unknown>) =>
+			NativeToolCallParser.parseToolCall({
+				id: "call",
+				name: "navigate_code",
+				arguments: JSON.stringify({ ...args, ...overrides }),
+			})
+		expect(parse({})?.nativeArgs).toEqual(args)
+		for (const invalid of [{ operation: "rename" }, { line: 0 }, { column: 1.5 }, { path: "" }, { editor: true }]) {
+			expect(parse(invalid)).toBeNull()
+		}
+	})
+
+	it("requires text edit arguments and retains legacy string booleans", () => {
+		const args = { file_path: "source.ts", old_string: "abc", new_string: "" }
+		const parse = (overrides: Record<string, unknown>) =>
+			NativeToolCallParser.parseToolCall({
+				id: "call",
+				name: "edit",
+				arguments: JSON.stringify({ ...args, ...overrides }),
+			})
+		expect(parse({ replace_all: "true" })?.nativeArgs).toEqual({ ...args, replace_all: true })
+		for (const invalid of [
+			{ file_path: {} },
+			{ old_string: ["a"] },
+			{ new_string: null },
+			{ replace_all: "other" },
+		]) {
+			expect(parse(invalid)).toBeNull()
+		}
+	})
+
 	it.each(["[]", "[{}]", '"unexpected"', "0", "false", "null"])(
 		"rejects non-object arguments: %s",
 		(argumentsJson) => {

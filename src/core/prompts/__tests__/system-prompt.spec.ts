@@ -55,11 +55,7 @@ import {
 	SYSTEM_PROMPT,
 	SYSTEM_PROMPT_FRAGMENTS,
 } from "../system"
-import {
-	CODEX_MODEL_INSTRUCTIONS,
-	DEFAULT_CODEX_MODEL_PROMPT,
-	resolveCodexModelPrompt,
-} from "../codex-model-instructions"
+import { CODEX_MODEL_INSTRUCTIONS, resolveCodexModelPrompt } from "../codex-model-instructions"
 import { CODEX_RUNTIME_PROMPT_SHA256, resolveCodexRuntimeInstructions } from "../codex-runtime-instructions"
 import { selectInheritedInstructionFragments } from "../inherited-instructions"
 import { McpHub } from "../../../services/mcp/McpHub"
@@ -605,7 +601,7 @@ describe("SYSTEM_PROMPT", () => {
 		},
 	)
 
-	it("tells Copilot GPT-5.6 Sol to call the native patch tool and reports the command shell", async () => {
+	it("guides Copilot GPT-5.6 Sol to the supplied tools and reports the command shell", async () => {
 		const fragments = await SYSTEM_PROMPT_FRAGMENTS(
 			mockContext,
 			"/test/path",
@@ -633,8 +629,8 @@ describe("SYSTEM_PROMPT", () => {
 		)?.content
 		const environment = fragments.instructionParts.find(({ origin }) => origin === "system-environment")?.content
 
-		expect(toolContract).toContain("Prefer the supplied apply_patch tool")
-		expect(toolContract).toContain("routes a complete standalone apply_patch heredoc")
+		expect(toolContract).toContain("tools supplied by Alpha for this turn")
+		expect(toolContract).not.toContain("apply_patch")
 		expect(environment).toContain("Default Shell: C:\\Windows\\System32\\cmd.exe")
 		expect(environment).toContain("cmd.exe uses double quotes; single quotes are literal characters")
 		expect(environment).toContain("Do not assume Unix head/tail are installed")
@@ -675,7 +671,7 @@ describe("SYSTEM_PROMPT", () => {
 	})
 
 	it.each(["claude-sonnet-4.6", "gemini-2.5-pro"])(
-		"uses GPT-6 Sol base and matching Codex/Alpha fragments for provider model id %s",
+		"uses the resolved model base and shared Alpha instructions for provider model id %s",
 		async (modelId) => {
 			const build = async (requestedModelId: string) =>
 				SYSTEM_PROMPT_FRAGMENTS(
@@ -704,10 +700,8 @@ describe("SYSTEM_PROMPT", () => {
 			const fragments = await build(modelId)
 			const gpt6SolFragments = await build("gpt-6-sol")
 
-			expect(fragments.instructionParts[0]?.content).toBe(CODEX_MODEL_INSTRUCTIONS[DEFAULT_CODEX_MODEL_PROMPT])
-			expect(fragments.instructionParts.map(({ role, origin, content }) => ({ role, origin, content }))).toEqual(
-				gpt6SolFragments.instructionParts.map(({ role, origin, content }) => ({ role, origin, content })),
-			)
+			expect(fragments.instructionParts[0]?.content).toBe(resolveCodexModelPrompt(modelId).instructions)
+			expect(fragments.instructionParts.slice(1)).toEqual(gpt6SolFragments.instructionParts.slice(1))
 		},
 	)
 
@@ -930,13 +924,13 @@ describe("SYSTEM_PROMPT", () => {
 		const newTokenCount = encoder.encode(renderSystemPromptFragments(fragments), undefined, []).length
 
 		// Previous Alpha-only base prompt: 2,158 o200k tokens. Blindly appending the 3,552-token GPT-5.6 base costs 5,710.
-		// Codex-compatible patch routing guidance adds 48 local tokens to the captured Code prompt.
+		// Editor guidance lives on the advertised tool schemas, saving 48 tokens in this fixed Code prompt.
 		// Direct native batching guidance adds 67 tokens; no wrapper tool or duplicate model prompt is needed.
 		// Ticket filtering/deletion guidance adds 97 tokens in this same fixture.
 		// Requirement-based acceptance guidance adds 346 local tokens; model calls remain agent-selected.
 		// Clarifying expected behavior before substantial implementation adds another 29 tokens in this fixture.
 		// Scope verification to implementation and direct informational answers using 24 additional tokens.
-		expect(newTokenCount).toBe(4801)
+		expect(newTokenCount).toBe(4753)
 		expect(newTokenCount).toBeLessThan(5710)
 	})
 
