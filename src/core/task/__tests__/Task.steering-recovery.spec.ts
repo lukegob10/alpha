@@ -46,6 +46,9 @@ it.each(["before the first chunk", "after a proposed edit"] as const)(
 			expect(lifecycle?.turnId).toBe(turnId)
 			expect(lifecycle?.effectStartedToolCallIds).toEqual([])
 			expect(lifecycle?.terminalToolCallIds).toEqual(hasCall ? [callId] : [])
+			expect(lifecycle?.items.filter((item) => item.type === "tool_result").map((item) => item.status)).toEqual(
+				hasCall ? ["cancelled"] : [],
+			)
 			const blocks = next.messages?.flatMap(({ content }) => (typeof content === "string" ? [] : content)) ?? []
 			expect(blocks.filter((block) => block.type === "tool_use")).toHaveLength(hasCall ? 1 : 0)
 			expect(blocks.filter((block) => block.type === "tool_result")).toEqual(

@@ -933,7 +933,8 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				.map((event) => event.payload.item)
 				.filter((item) => item.toolCallId === callId)
 			assert.equal(results.length, 1)
-			assert.equal(results[0]!.status, tail === "steer" ? "cancelled" : "success")
+			// Once the effect has started, a cancellation without committed output has an indeterminate result.
+			assert.equal(results[0]!.status, tail === "steer" ? "indeterminate" : "success")
 			if (tail === "fail") {
 				assert.ok(Array.isArray(history))
 				assert.equal(
