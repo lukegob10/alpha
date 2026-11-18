@@ -1142,7 +1142,7 @@ export class AlphaProvider
 	private webviewAcceptsTaskMessages = false
 	private webviewLaunchWaiters?: Set<(launched: boolean) => void>
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.39-chat-delivery"
+	public readonly latestAnnouncementId = "november-2026-v3.2.40-steering-and-claude"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

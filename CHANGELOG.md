@@ -1,5 +1,16 @@
 # Changelog
 
+## 3.2.40
+
+### Patch Changes
+
+- Keep the same turn running when you steer between tool calls. The next model call receives your guidance once
+  along with any saved tool result. Interrupted command reads no longer leave the task waiting after the command exits.
+- Let GPT and Claude look up definitions and references through VS Code language providers in both Code and Plan.
+- Let Claude Haiku 5.5 on GitHub Copilot make targeted text edits in Code using the usual write approval.
+  Alpha also checks for file encoding changes before applying a pending edit.
+- Keep live reasoning visible in an open chat while another chat view is still loading.
+
 ## 3.2.39
 
 ### Patch Changes

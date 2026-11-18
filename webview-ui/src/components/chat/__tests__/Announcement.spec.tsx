@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"This update makes chat text and code blocks easier to scan, prepares independent read-only commands in parallel, and removes the Incident Dashboard and its Settings toggle."
+		"Use Steer to redirect a running task between tool calls. GPT and Claude can now find definitions and references in your workspace. Claude Haiku 5.5 on GitHub Copilot can make targeted edits."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
