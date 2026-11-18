@@ -5,7 +5,7 @@ export default {
 	function: {
 		name: "edit",
 		description:
-			"Prefer this tool for a targeted change in an existing file. Match the original text and indentation exactly. Include enough context for one match, or set replace_all to change every occurrence.",
+			"Replace exact text in one existing UTF-8 file. The editor preserves the BOM and line-ending style. Include enough context for one match, or use replace_all. For changes spanning files, prefer one multi-file patch when available.",
 		parameters: {
 			type: "object",
 			properties: {

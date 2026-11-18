@@ -690,6 +690,13 @@ describe("TaskToolCatalogCache", () => {
 		expect(haiku.isCallable("edit")).toBe(true)
 		expect(haiku.isCallable("apply_patch")).toBe(true)
 		expect(haiku.isCallable("navigate_code")).toBe(true)
+		expect(haiku.schemas.find((tool) => tool.type === "function" && tool.function.name === "edit")).toMatchObject({
+			function: {
+				description: expect.stringContaining(
+					"For changes spanning files, prefer one multi-file patch when available.",
+				),
+			},
+		})
 		for (const overrides of [
 			{ family: "claude-sonnet-5.5" },
 			{ family: "claude-opus-5.5" },
