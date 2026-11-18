@@ -707,7 +707,7 @@ describe("Task.ask queued message drain", () => {
 		expect((task as any).messageQueueService.messages[0]?.text).toBe("1+1=?")
 	})
 
-	it("auto-continues command output when the task is off-screen", async () => {
+	it("acknowledges off-screen command output without sending a user message", async () => {
 		const task = await createAskOnlyTask()
 		;(task as any).providerRef = {
 			deref: () => ({
@@ -718,7 +718,7 @@ describe("Task.ask queued message drain", () => {
 
 		const result = await task.ask("command_output", "command is still running...", false)
 
-		expect(result.response).toBe("messageResponse")
+		expect(result.response).toBe("yesButtonClicked")
 		expect(result.text).toBeUndefined()
 	})
 

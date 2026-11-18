@@ -1743,9 +1743,9 @@ export async function executeCommandInTerminal(
 			void (async () => {
 				try {
 					const { response, text, images } = await task.ask("command_output", "")
-					runInBackground = true
 
 					if (response === "messageResponse") {
+						runInBackground = true
 						if (text || images?.length) message = { text, images }
 						process.continue()
 					}

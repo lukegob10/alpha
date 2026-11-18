@@ -7636,7 +7636,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		}
 
 		if (type === "command_output") {
-			return { response: "messageResponse" }
+			// Acknowledge the output without sending the user response that yields the command.
+			return { response: "yesButtonClicked" }
 		}
 
 		if (type === "mistake_limit_reached") {
