@@ -238,17 +238,16 @@ async function writeFileToState(filePath: unknown, content: unknown, options?: {
 }
 
 function configureFileSystem() {
-	vi.mocked(fs.readFile).mockImplementation(async (filePath) => {
+	vi.mocked(fs.readFile).mockImplementation(async (filePath, options) => {
 		const normalizedPath = canonicalPath(filePath)
-		if (normalizedPath !== targetPath && testState.previewFiles.has(normalizedPath)) {
-			return testState.previewFiles.get(normalizedPath) as any
-		}
-
-		if (normalizedPath !== targetPath || !testState.diskExists) {
+		const content =
+			normalizedPath === targetPath && testState.diskExists
+				? testState.diskContent
+				: testState.previewFiles.get(normalizedPath)
+		if (content === undefined) {
 			throw Object.assign(new Error("missing"), { code: "ENOENT" })
 		}
-
-		return testState.diskContent as any
+		return typeof options === "string" || options?.encoding ? content : Buffer.from(content)
 	})
 	vi.mocked(fs.writeFile).mockImplementation(writeFileToState as any)
 	vi.mocked(fs.unlink).mockImplementation(async (filePath) => {

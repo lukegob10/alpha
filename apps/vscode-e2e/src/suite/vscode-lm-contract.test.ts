@@ -94,6 +94,9 @@ interface ContractTask {
 	taskAsk?: { ask?: string }
 	alphaMessages?: Array<{ ask?: string; say?: string; text?: string; partial?: boolean }>
 	approveAsk(): void
+	queueUserMessageDurably(text: string, images: string[], receiptId: string): Promise<boolean>
+	steerQueuedUserMessage(messageId: string, expectedTurnId: string): Promise<void>
+	deliverAgentMessages(): Promise<void>
 	resumeCompletedTaskFollowup(text: string, images?: string[]): Promise<void>
 	waitForTermination(): Promise<void>
 	flushApiConversationHistoryPersistence(): Promise<void>
@@ -677,13 +680,70 @@ suite("Alpha VS Code LM exact-host contract", function () {
 		}
 	})
 
-	const verifyHeldReadTail = async (failTail: boolean) => {
+	test("steers after a tool result commits and starts the next call without a Continue prompt", async () => {
+		const provider = getHostProvider()
+		const cleanupReadProof = await createReadProofFile()
+		const guidance = "Use the existing read and answer in one sentence."
+		fixture.reset("tool-followup", { holdRequestIndexes: [0, 1] })
+		let completed = 0
+		const onCompleted = () => completed++
+		globalThis.api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const taskId = await globalThis.api.startNewTask({
+				configuration: createCommandReadConfiguration(),
+				text: "Find the workspace proof and report it.",
+			})
+			await waitForRequestCount(provider, fixture, taskId, 1)
+			const task = provider.getLiveTask(taskId)!
+			const turnId = provider.getAgentLifecycleSnapshot(taskId)?.turnId
+			assert.ok(turnId)
+			const deliver = task.deliverAgentMessages
+			try {
+				// Hold the next provider admission at the first await after its tool result is durable.
+				task.deliverAgentMessages = async () => {
+					task.deliverAgentMessages = deliver
+					await deliver.call(task)
+					assert.ok(await task.queueUserMessageDurably(guidance, [], "steer-after-result"))
+					await task.steerQueuedUserMessage("steer-after-result", turnId)
+				}
+				fixture.releaseRequest(0)
+				await waitFor(() => fixture.getRequests().length >= 2 || task.taskAsk?.ask === "resume_task", {
+					timeout: 15_000,
+					interval: 25,
+					description: "the steered request or its recovery prompt",
+					onTimeout: () => getTaskDiagnostics(provider, fixture, taskId),
+				})
+				assert.deepEqual(
+					task.alphaMessages?.filter(({ say }) => say === "error").map(({ text }) => text),
+					[],
+				)
+				assert.notEqual(task.taskAsk?.ask, "resume_task")
+				assert.equal(provider.getAgentLifecycleSnapshot(taskId)?.turnId, turnId)
+				const request = fixture.getRequests()[1]!
+				assert.equal(JSON.stringify(request.messages).split(guidance).length - 1, 1)
+				assert.ok(getToolResultText(request, "alpha-e2e-command-read-1").includes(READ_PROOF))
+				fixture.releaseRequest(1)
+				await acceptCompletionBoundary(provider, fixture, taskId, () => completed, 1)
+				await task.waitForTermination()
+				assert.equal(fixture.getRequests().length, 2)
+			} finally {
+				task.deliverAgentMessages = deliver
+			}
+		} finally {
+			fixture.releaseAll()
+			globalThis.api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await cleanupReadProof()
+		}
+	})
+
+	const verifyHeldReadTail = async (tail: "complete" | "fail" | "steer") => {
 		const provider = getHostProvider()
 		const callId = "alpha-e2e-command-read-1"
+		const guidance = "Use the result already available and answer the revised question."
 		// Force bounded output to spill so physical execution can be observed independently of UI publication.
 		const proofLines = 400
 		const cleanupReadProof = await createReadProofFile(proofLines)
-		fixture.reset(failTail ? "tool-followup-tail-error" : "tool-followup-tail", {
+		fixture.reset(tail === "fail" ? "tool-followup-tail-error" : "tool-followup-tail", {
 			holdAfterToolCallRequestIndexes: [0],
 		})
 		let completedCount = 0
@@ -779,8 +839,15 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				"A tool-result request must wait for the assistant response boundary",
 			)
 
+			const turnId = provider.getAgentLifecycleSnapshot(taskId)?.turnId
+			if (tail === "steer") {
+				const task = provider.getLiveTask(taskId)!
+				assert.ok(turnId)
+				assert.ok(await task.queueUserMessageDurably(guidance, [], "held-read-steer"))
+				await task.steerQueuedUserMessage("held-read-steer", turnId)
+			}
 			fixture.releaseToolCallTail(0)
-			if (failTail) {
+			if (tail === "fail") {
 				await waitFor(
 					() =>
 						fixture.getRequests().length >= 2 ||
@@ -797,6 +864,17 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			await waitForRequestCount(provider, fixture, taskId, 2)
 			const toolResultRequest = fixture.getRequests()[1]
 			assert.ok(toolResultRequest, "The follow-up request containing the read result was not recorded")
+			if (tail === "steer") {
+				assert.equal(JSON.stringify(toolResultRequest.messages).split(guidance).length - 1, 1)
+				assert.equal(provider.getAgentLifecycleSnapshot(taskId)?.turnId, turnId)
+				assert.ok(
+					!provider
+						.getLiveTask(taskId)
+						?.alphaMessages?.some(
+							({ ask, say }) => ask === "resume_task" || ask === "api_req_failed" || say === "error",
+						),
+				)
+			}
 			const callMessageIndex = toolResultRequest.messages.findIndex((message) =>
 				message.parts.some((part) => part.kind === "tool_call" && part.callId === callId),
 			)
@@ -814,17 +892,23 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				(part) => part.kind === "tool_result" && part.callId === callId,
 			)
 			assert.ok(resultPart?.content?.some((part) => part.kind === "text" && Boolean(part.value)))
-			assert.ok(
-				getToolResultText(toolResultRequest, callId).includes(READ_PROOF),
-				"The persisted exec_command result omitted content read from the workspace fixture",
-			)
+			const resultText = getToolResultText(toolResultRequest, callId)
+			if (tail === "steer") {
+				// The read's deferred result was still unpublished when the user interrupted its request.
+				assert.match(resultText, /cancelled|cancellation/i)
+			} else {
+				assert.ok(
+					resultText.includes(READ_PROOF),
+					"The persisted exec_command result omitted the workspace proof",
+				)
+			}
 			assert.equal(
 				provider
 					.getLiveTask(taskId)
 					?.alphaMessages?.filter(({ say, text }) => say === "command_output" && text?.includes(READ_PROOF))
 					.length,
-				1,
-				"The deferred read presentation must publish exactly once after provider completion",
+				tail === "steer" ? 0 : 1,
+				"The read presentation must reflect the terminal result",
 			)
 
 			await acceptCompletionBoundary(provider, fixture, taskId, () => completedCount, 1)
@@ -849,8 +933,9 @@ suite("Alpha VS Code LM exact-host contract", function () {
 				.map((event) => event.payload.item)
 				.filter((item) => item.toolCallId === callId)
 			assert.equal(results.length, 1)
-			assert.equal(results[0]!.status, "success")
-			if (failTail) {
+			// Once the effect has started, a cancellation without committed output has an indeterminate result.
+			assert.equal(results[0]!.status, tail === "steer" ? "indeterminate" : "success")
+			if (tail === "fail") {
 				assert.ok(Array.isArray(history))
 				assert.equal(
 					history.filter(
@@ -881,9 +966,11 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			await cleanupReadProof()
 		}
 	}
-	test("starts one audited read before the held LM tail completes", () => verifyHeldReadTail(false))
+	test("starts one audited read before the held LM tail completes", () => verifyHeldReadTail("complete"))
 	test("persists one completed read when the held LM tail fails and reloads a healthy continuation", () =>
-		verifyHeldReadTail(true))
+		verifyHeldReadTail("fail"))
+	test("continues the same turn with queued steering and a tool receipt while the LM tail is held", () =>
+		verifyHeldReadTail("steer"))
 
 	test("settles Alpha cancellation on the requested host and starts a healthy recovery task", async () => {
 		const provider = getHostProvider()

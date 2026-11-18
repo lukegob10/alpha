@@ -9275,8 +9275,10 @@ describe("Alpha", () => {
 				const previewEntered = deferred()
 				const releasePreview = deferred()
 				const summarize = vi.spyOn(task as any, "summarizeReasoning")
+				const deliveries: AlphaMessage[] = []
 				mockProvider.postTaskMessageToWebview = vi.fn(async (_type, _taskId, message: AlphaMessage) => {
 					if (message.say !== "reasoning") return
+					deliveries.push(structuredClone(message))
 					previewEntered.resolve()
 					await releasePreview.promise
 				})
@@ -9306,7 +9308,14 @@ describe("Alpha", () => {
 					expect(task.alphaMessages.filter((message) => message.say === "reasoning")).toEqual([
 						expect.objectContaining({ text: "First.\n\n**More** Complete.", partial: false }),
 					])
-					expect(mockProvider.postTaskMessageToWebview).toHaveBeenCalledTimes(ending === "timeout" ? 1 : 2)
+					expect(deliveries).toEqual([
+						expect.objectContaining({ text: "First.", partial: true }),
+						expect.objectContaining({
+							ts: deliveries[0].ts,
+							text: "First.\n\n**More** Complete.",
+							partial: false,
+						}),
+					])
 					expect(summarize).not.toHaveBeenCalled()
 				} finally {
 					vi.useRealTimers()

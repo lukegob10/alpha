@@ -72,9 +72,7 @@ describe("editTool", () => {
 
 	// Mocked functions
 	const mockedFileExistsAtPath = fileExistsAtPath as MockedFunction<typeof fileExistsAtPath>
-	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<
-		(path: string, encoding: string) => Promise<string>
-	>
+	const mockedFsReadFile = fs.readFile as unknown as MockedFunction<(path: string) => Promise<Buffer>>
 	const mockedGetReadablePath = getReadablePath as MockedFunction<typeof getReadablePath>
 	const mockedPathResolve = path.resolve as MockedFunction<typeof path.resolve>
 	const mockedPathIsAbsolute = path.isAbsolute as MockedFunction<typeof path.isAbsolute>
@@ -91,7 +89,7 @@ describe("editTool", () => {
 		mockedPathResolve.mockReturnValue(absoluteFilePath)
 		mockedPathIsAbsolute.mockReturnValue(false)
 		mockedFileExistsAtPath.mockResolvedValue(true)
-		mockedFsReadFile.mockResolvedValue(testFileContent)
+		mockedFsReadFile.mockResolvedValue(Buffer.from(testFileContent))
 		mockedGetReadablePath.mockReturnValue("test/path.txt")
 
 		mockTask.cwd = "/"
@@ -157,7 +155,8 @@ describe("editTool", () => {
 		} = {},
 		options: {
 			fileExists?: boolean
-			fileContent?: string
+			fileContent?: string | Buffer
+			signal?: AbortSignal
 			isPartial?: boolean
 			accessAllowed?: boolean
 		} = {},
@@ -168,7 +167,7 @@ describe("editTool", () => {
 		const accessAllowed = options.accessAllowed ?? true
 
 		mockedFileExistsAtPath.mockResolvedValue(fileExists)
-		mockedFsReadFile.mockResolvedValue(fileContent)
+		mockedFsReadFile.mockResolvedValue(Buffer.from(fileContent))
 		mockTask.alphaIgnoreController.validateAccess.mockReturnValue(accessAllowed)
 
 		const defaultParams = {
@@ -209,6 +208,7 @@ describe("editTool", () => {
 			askApproval: mockAskApproval,
 			handleError: mockHandleError,
 			pushToolResult: mockPushToolResult,
+			signal: options.signal,
 		})
 
 		return toolResult
@@ -228,7 +228,50 @@ describe("editTool", () => {
 			true,
 			1000,
 			{ exists: true, content: originalContent },
+			expect.any(Function),
 		)
+	})
+
+	it.each([Buffer.from([0x61, 0xff]), Buffer.from("a\0b")])(
+		"rejects non-text bytes before approval",
+		async (bytes) => {
+			const result = await executeEditTool({ old_string: "a", new_string: "b" }, { fileContent: bytes })
+			expect(result).toContain("UTF-8")
+			expect(mockAskApproval).not.toHaveBeenCalled()
+			expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+		},
+	)
+
+	it("rejects an ambiguous overlapping match", async () => {
+		const result = await executeEditTool({ old_string: "aa", new_string: "b" }, { fileContent: "aaa" })
+		expect(result).toContain("matches")
+		expect(mockAskApproval).not.toHaveBeenCalled()
+	})
+
+	it("checks cancellation when approval settles", async () => {
+		const controller = new AbortController()
+		mockAskApproval.mockImplementationOnce(async () => {
+			controller.abort()
+			return true
+		})
+		await executeEditTool({}, { signal: controller.signal })
+		expect(mockAskApproval).toHaveBeenCalledOnce()
+		expect(mockTask.diffViewProvider.saveDirectly).not.toHaveBeenCalled()
+		expect(mockTask.recordToolUsage).not.toHaveBeenCalled()
+	})
+
+	it("rechecks a newly protected target immediately before the approved write", async () => {
+		mockTask.diffViewProvider.saveDirectly.mockImplementationOnce((...args: unknown[]) => {
+			mockTask.alphaProtectedController.isWriteProtected.mockReturnValue(true)
+			const validate = args.at(-1) as () => void
+			validate()
+		})
+		await executeEditTool()
+		expect(mockHandleError).toHaveBeenCalledWith(
+			"edit",
+			expect.objectContaining({ message: expect.stringMatching(/write-protected/) }),
+		)
+		expect(mockTask.recordToolUsage).not.toHaveBeenCalled()
 	})
 
 	it("rejects mixed endings without requesting approval or saving", async () => {
@@ -283,6 +326,7 @@ describe("editTool", () => {
 				true,
 				1000,
 				{ exists: true, content: originalContent },
+				expect.any(Function),
 			)
 			expect(mockAskApproval).toHaveBeenCalledTimes(1)
 		})
@@ -296,7 +340,7 @@ describe("editTool", () => {
 			)
 
 			expect(result).toContain("Error:")
-			expect(result).toContain("3 matches")
+			expect(result).toContain("multiple matches")
 			expect(result).toContain("replace_all")
 			expect(mockTask.consecutiveMistakeCount).toBe(1)
 			expect(mockTask.recordToolError).toHaveBeenCalledWith("edit")
@@ -431,6 +475,7 @@ describe("editTool", () => {
 					false,
 					175,
 					{ exists: true, content: rawBaseline },
+					expect.any(Function),
 				)
 				expect(mockTask.didEditFile).toBe(true)
 				expect(mockTask.diffViewProvider.saveChanges).not.toHaveBeenCalled()
@@ -490,7 +535,6 @@ describe("editTool", () => {
 
 		it("passes the raw baseline to direct saves after normalizing for matching", async () => {
 			const rawBaseline = "Line 1\r\nLine 2\r\nLine 3"
-			mockedFsReadFile.mockResolvedValue(rawBaseline)
 			mockTask.providerRef.deref().getState.mockResolvedValue({
 				diagnosticsEnabled: true,
 				writeDelayMs: 1000,
@@ -506,6 +550,7 @@ describe("editTool", () => {
 				true,
 				1000,
 				{ exists: true, content: rawBaseline },
+				expect.any(Function),
 			)
 		})
 
@@ -516,7 +561,7 @@ describe("editTool", () => {
 				experiments: { preventFocusDisruption: false },
 			})
 			mockAskApproval.mockImplementation(async () => {
-				mockedFsReadFile.mockResolvedValue("Line 1\nLine 2\nconcurrent edit")
+				mockedFsReadFile.mockResolvedValue(Buffer.from("Line 1\nLine 2\nconcurrent edit"))
 				return true
 			})
 			mockTask.diffViewProvider.saveDirectly.mockImplementation(
@@ -528,8 +573,8 @@ describe("editTool", () => {
 					_delay: number,
 					expected: { exists: boolean; content?: string },
 				) => {
-					const current = await mockedFsReadFile(absoluteFilePath, "utf8")
-					if (current !== expected.content) {
+					const current = await mockedFsReadFile(absoluteFilePath)
+					if (current.toString("utf8") !== expected.content) {
 						throw new Error("Cannot save: the file changed while approval was pending")
 					}
 				},

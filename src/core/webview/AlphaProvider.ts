@@ -1139,6 +1139,7 @@ export class AlphaProvider
 	private currentTaskTodosSeq = 0
 
 	private webviewLaunched = false
+	private webviewAcceptsTaskMessages = false
 	private webviewLaunchWaiters?: Set<(launched: boolean) => void>
 	public settingsImportedAt?: number
 	public readonly latestAnnouncementId = "november-2026-v3.2.39-chat-delivery"
@@ -2528,6 +2529,7 @@ export class AlphaProvider
 		const onReceiveMessage = (message: WebviewMessage) => {
 			if (!isCurrentWebview()) return
 			const messageType = message && typeof message === "object" ? message.type : undefined
+			if (messageType === "webviewDidLaunch") this.webviewAcceptsTaskMessages = true
 			if (messageType === "webviewError") {
 				if (reportedWebviewErrors.size >= 10) return
 				const diagnostic = webviewErrorMessageSchema.safeParse(message)
@@ -4100,10 +4102,15 @@ export class AlphaProvider
 		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
 		const liveTask = this.taskSessions.getMetadataForTask(taskId)
 		const publications: Promise<void>[] = []
+		const isAssistantPreview =
+			alphaMessage.type === "say" &&
+			(alphaMessage.say === "reasoning" || (alphaMessage.say === "text" && alphaMessage.partial !== undefined))
 		// Reserve every view's sequence before a transport can yield, keeping an
 		// older broadcast from superseding a newer update on a later view.
 		for (const provider of this.getHostProviders()) {
 			if (provider._disposed) continue
+			// VS Code queues posts until the webview starts. Its launch snapshot supplies the transcript.
+			if (isAssistantPreview && !provider.webviewAcceptsTaskMessages) continue
 			const alphaMessagesSeq = ++provider.alphaMessagesSeq
 			publications.push(
 				provider.postMessageToWebview({ type, taskId, alphaMessage, alphaMessagesSeq, liveTask }).then(() => {
@@ -5978,6 +5985,7 @@ export class AlphaProvider
 
 	set isViewLaunched(launched: boolean) {
 		this.webviewLaunched = launched
+		this.webviewAcceptsTaskMessages = launched
 		if (launched) this.webviewLaunchWaiters?.forEach((finish) => finish(true))
 	}
 

@@ -74,6 +74,7 @@ import {
 import { delegateTaskTool } from "./DelegateTaskTool"
 import { editFileTool } from "./EditFileTool"
 import { editTool } from "./EditTool"
+import { navigateCodeTool } from "./NavigateCodeTool"
 import { executeCommandTool, type ExecuteCommandParams } from "./ExecuteCommandTool"
 import { getParallelCommandReadPreflight, isParallelCommandReadReady } from "./ParallelCommandRead"
 import { followupTaskTool } from "./FollowupTaskTool"
@@ -739,6 +740,7 @@ const TOOL_NAMES = [
 	"new_task",
 	"read_command_output",
 	"view_image",
+	"navigate_code",
 	"search_replace",
 	"skill",
 	"update_plan",
@@ -838,6 +840,7 @@ function getToolDescription(call: ToolUse): string {
 			return `[${call.name} for '${value("command") ?? ""}']`
 		case "read_file":
 		case "view_image":
+		case "navigate_code":
 			return `[${call.name} for '${value("path") ?? ""}']`
 		case "write_to_file":
 		case "edit":
@@ -1158,6 +1161,7 @@ export class ToolRegistry {
 		this.registerBuiltIn("cancel_agent", cancelAgentTool, schemas)
 		this.registerBuiltIn("close_agent", closeAgentTool, schemas)
 		this.registerBuiltIn("edit", editTool, schemas)
+		this.registerBuiltIn("navigate_code", navigateCodeTool, schemas)
 		this.registerBuiltIn("edit_file", editFileTool, schemas)
 		this.registerBuiltIn("exec_command", execCommandToolAdapter, schemas)
 		this.registerBuiltIn("open_browser_page", openBrowserPageTool, schemas)

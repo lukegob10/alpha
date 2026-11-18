@@ -1,6 +1,16 @@
 /**
  * Tool parameter type definitions for native protocol
  */
+import { z } from "zod"
+
+export const navigateCodeParamsSchema = z.strictObject({
+	operation: z.enum(["definition", "references"]),
+	path: z.string().min(1),
+	line: z.number().int().positive(),
+	column: z.number().int().positive(),
+})
+
+export type NavigateCodeParams = z.infer<typeof navigateCodeParamsSchema>
 
 /**
  * Read mode for the read_file tool.

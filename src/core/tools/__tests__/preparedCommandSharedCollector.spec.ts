@@ -770,6 +770,9 @@ describe("prepared commands through the shared collector", () => {
 					siblingChild.write("3:needle sibling still owned\n").then(() => "sibling-progress"),
 				]),
 			).toBe("sibling-progress")
+			expect(current.task.getCommandExecutionEvidence()).toContainEqual(
+				expect.objectContaining({ toolCallId: "original", status: "running" }),
+			)
 			originalChild.finish(137, "SIGKILL")
 		}
 		await cleanup
@@ -783,6 +786,13 @@ describe("prepared commands through the shared collector", () => {
 		expect(vi.mocked(current.task.say).mock.calls.filter(([type]) => type === "command_output")).toEqual([])
 		expect(current.provider.postMessageToWebview).not.toHaveBeenCalled()
 		expect(current.task.completeCommandExecution).not.toHaveBeenCalled()
+		expect(current.task.getCommandExecutionEvidence()).toContainEqual(
+			expect.objectContaining({
+				toolCallId: "original",
+				executionId: original?.executionId,
+				status: "cancelled",
+			}),
+		)
 		if (action === "discard") {
 			await current.scheduler.commitDeferredResults()
 			expect(current.host.userMessageContent).toEqual([])

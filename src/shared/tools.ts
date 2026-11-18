@@ -242,6 +242,7 @@ export type NativeToolArgs = BrowserToolArgs & {
 	tool_search: ToolSearchParams
 	read_file: import("@alpha-code/types").ReadFileToolParams
 	view_image: ViewImageParams
+	navigate_code: import("@alpha-code/types").NavigateCodeParams
 	read_command_output: { artifact_id: string; search?: string; offset?: number; limit?: number }
 	manage_command:
 		| {
@@ -576,6 +577,7 @@ export const TOOL_DISPLAY_NAMES: Record<ToolName, string> = {
 	write_stdin: "control task commands",
 	read_file: "read files",
 	view_image: "view images",
+	navigate_code: "find symbol definitions and references",
 	read_command_output: "read command output",
 	write_to_file: "write files",
 	apply_diff: "apply changes",
@@ -662,6 +664,7 @@ export const TOOL_GROUPS: Record<ToolGroup, ToolGroupConfig> = {
 			"get_goal",
 			"read_file",
 			"view_image",
+			"navigate_code",
 			"search_files",
 			"list_files",
 			"codebase_search",

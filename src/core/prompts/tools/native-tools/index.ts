@@ -4,6 +4,8 @@ import accessMcpResource from "./access_mcp_resource"
 import { mcpResourceTools } from "./mcp_resources"
 import readDiagnosticEvidence from "./read_diagnostic_evidence"
 import applyPatch from "./apply_patch"
+import edit from "./edit"
+import navigateCode from "./navigate_code"
 import requestUserInput from "./request_user_input"
 import requestUserInputAsync from "./request_user_input_async"
 import codebaseSearch from "./codebase_search"
@@ -37,6 +39,8 @@ export type { ReadFileToolOptions } from "./read_file"
  * Options for customizing the native tools array.
  */
 export interface NativeToolsOptions {
+	/** Copilot Haiku's preferred editor for existing files. Mode and task policy still filter both editors. */
+	includeExactEdit?: boolean
 	/** Expose only the redacted diagnostic evidence reader for a host-created diagnostic task. */
 	diagnosticSession?: boolean
 	/** Captured, opt-in root-task authority to access the host-local memory namespace. */
@@ -122,6 +126,8 @@ export function getNativeTools(options: NativeToolsOptions = {}): OpenAI.Chat.Ch
 		...(mcpResourcesAvailable ? mcpResourceTools : []),
 		...(includeLegacyMcpResource ? [accessMcpResource] : []),
 		applyPatch,
+		...(options.includeExactEdit ? [edit] : []),
+		navigateCode,
 		codebaseSearch,
 		...(includeRequestUserInput ? [requestUserInput] : []),
 		...(includeRequestUserInputAsync && taskKind === "primary" ? [requestUserInputAsync] : []),

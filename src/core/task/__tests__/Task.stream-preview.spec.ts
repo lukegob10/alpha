@@ -229,6 +229,59 @@ afterEach(async () => {
 })
 
 describe("Task streaming text previews", () => {
+	it("continues updating the same live reasoning row while its initial history publication is pending", async () => {
+		const historyEntered = deferred()
+		const releaseHistory = deferred()
+		const suffixConsumed = deferred()
+		const releaseStream = deferred()
+		const fixture = await harness(async function* () {
+			yield { type: "reasoning", text: "The" }
+			await historyEntered.promise
+			yield { type: "reasoning", text: " first check is still running." }
+			suffixConsumed.resolve()
+			await releaseStream.promise
+			yield { type: "text", text: "Finished." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		const provider = fixture.task.providerRef.deref()!
+		const deliveries: AlphaMessage[] = []
+		vi.mocked(provider.postMessageToWebview).mockImplementation(async (message) => {
+			if (message.alphaMessage?.say === "reasoning") deliveries.push(structuredClone(message.alphaMessage))
+		})
+		let historyBlocked = false
+		provider.publishTaskHistoryUpdate = vi.fn(async () => {
+			if (historyBlocked || !deliveries.some((message) => message.text === "The")) return
+			historyBlocked = true
+			historyEntered.resolve()
+			await releaseHistory.promise
+		})
+
+		const run = fixture.run()
+		try {
+			await suffixConsumed.promise
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(deliveries).toHaveLength(2)
+			expect(deliveries[0]).toMatchObject({ text: "The", partial: true })
+			expect(deliveries[1]).toMatchObject({
+				ts: deliveries[0].ts,
+				text: "The first check is still running.",
+				partial: true,
+			})
+		} finally {
+			releaseHistory.resolve()
+			releaseStream.resolve()
+			await run
+		}
+		expect(fixture.task.isCompleted()).toBe(true)
+		expect((await fixture.uiHistory()).filter((message) => message.say === "reasoning")).toEqual([
+			expect.objectContaining({
+				ts: deliveries[0].ts,
+				text: "The first check is still running.",
+				partial: false,
+			}),
+		])
+	})
+
 	it("keeps isolated worker paths redacted when reasoning is finalized and saved", async () => {
 		const reasoning = `Checking .${path.sep}notes.txt.`
 		const fixture = await harness(async function* (_attempt, task) {
@@ -370,3 +423,11 @@ describe("Task streaming text previews", () => {
 		])
 	})
 })
+
+function deferred() {
+	let resolve!: () => void
+	const promise = new Promise<void>((finish) => {
+		resolve = finish
+	})
+	return { promise, resolve }
+}

@@ -28,7 +28,9 @@ describe("command tool schemas", () => {
 		const parameters = parametersOf()
 
 		expect(tool.name).toBe("exec_command")
-		expect(tool.description).toContain("standalone apply_patch heredoc is routed through the patch tool")
+		expect(tool.description).toContain("prefer a supplied native editing tool")
+		expect(tool.description).not.toContain("apply_patch")
+		expect(applyPatch.function.description).toContain("standalone apply_patch heredoc")
 		expect(tool.strict).toBe(false)
 		expect(parameters.required).toEqual(["cmd"])
 		expect(parameters.properties).toMatchObject({

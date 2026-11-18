@@ -699,9 +699,12 @@ export class DiffViewProvider {
 			}
 		}
 
-		let currentContent: string
+		let unchanged: boolean
 		try {
-			currentContent = await fs.readFile(absolutePath, "utf-8")
+			// Invalid UTF-8 also decodes to U+FFFD. A baseline containing the literal character needs a byte comparison.
+			unchanged = expectedState.content.includes("\uFFFD")
+				? (await fs.readFile(absolutePath)).equals(Buffer.from(expectedState.content, "utf8"))
+				: (await fs.readFile(absolutePath, "utf-8")) === expectedState.content
 		} catch (error) {
 			if (isFileNotFoundError(error)) {
 				throw createDirectSaveConflict(relPath, "the file was deleted while approval was pending")
@@ -711,7 +714,7 @@ export class DiffViewProvider {
 		}
 
 		assertEditorUnchanged()
-		if (currentContent !== expectedState.content) {
+		if (!unchanged) {
 			throw createDirectSaveConflict(relPath, "the file changed while approval was pending")
 		}
 	}

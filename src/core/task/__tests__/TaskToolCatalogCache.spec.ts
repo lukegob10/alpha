@@ -680,6 +680,48 @@ describe("TaskToolCatalogCache", () => {
 		},
 	)
 
+	it("reserves the additional exact-text editor for Copilot Haiku 5.5 within the captured policy", async () => {
+		const { options } = fixture(0)
+		options.apiConfiguration = { apiProvider: "vscode-lm" }
+		const identity = { provider: "vscode-lm", vendor: "copilot", family: "claude-haiku-5.5", id: "opaque" }
+		options.modelIdentity = identity
+		options.modelInfo = openAiModelInfoSaneDefaults
+		const haiku = await capture(options)
+		expect(haiku.isCallable("edit")).toBe(true)
+		expect(haiku.isCallable("apply_patch")).toBe(true)
+		expect(haiku.isCallable("navigate_code")).toBe(true)
+		expect(haiku.schemas.find((tool) => tool.type === "function" && tool.function.name === "edit")).toMatchObject({
+			function: {
+				description: expect.stringContaining(
+					"For changes spanning files, prefer one multi-file patch when available.",
+				),
+			},
+		})
+		for (const overrides of [
+			{ family: "claude-sonnet-5.5" },
+			{ family: "claude-opus-5.5" },
+			{ family: "gpt-6-luna" },
+			{ family: "claude-haiku-4.5" },
+			{ id: "gpt-6-luna" },
+			{ vendor: "another-vendor" },
+		]) {
+			const other = await capture({ ...options, modelIdentity: { ...identity, ...overrides } })
+			expect(other.isCallable("edit")).toBe(false)
+			expect(other.isCallable("apply_patch")).toBe(true)
+			expect(other.isCallable("navigate_code")).toBe(true)
+		}
+		const plan = await capture({ ...options, mode: planModeSlug })
+		expect(plan.isCallable("edit")).toBe(false)
+		expect(plan.isCallable("apply_patch")).toBe(false)
+		expect(plan.isCallable("navigate_code")).toBe(true)
+		const disabled = await capture({ ...options, disabledTools: ["edit", "navigate_code"] })
+		expect(disabled.isCallable("edit")).toBe(false)
+		expect(disabled.isCallable("navigate_code")).toBe(false)
+		const child = await capture({ ...options, taskKind: "subagent", allowedToolNames: ["exec_command"] })
+		expect(child.isCallable("edit")).toBe(false)
+		expect(child.isCallable("navigate_code")).toBe(false)
+	})
+
 	it("reuses the same Codex catalog across model preference metadata", async () => {
 		const { options } = fixture(0)
 		options.apiConfiguration = { apiProvider: "vscode-lm" }

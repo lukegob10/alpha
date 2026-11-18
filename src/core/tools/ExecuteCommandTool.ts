@@ -464,6 +464,11 @@ export class ExecuteCommandTool extends BaseTool<"execute_command"> {
 			) {
 				commandSessionRegistry.release(task, sessionId)
 			}
+			// Discarding the buffered result also drops its exit callback. Only confirmed cleanup can close
+			// the matching command's evidence and wake a turn waiting for that command to finish.
+			if (rejectedProjectionRevoked && !task.abandoned && callbacks.toolCallId) {
+				task.failCommandExecution?.(callbacks.toolCallId, "cancelled", physicalExecutionId)
+			}
 			return true
 		}
 		const dispose = (retainFailure = false): Promise<void> => {

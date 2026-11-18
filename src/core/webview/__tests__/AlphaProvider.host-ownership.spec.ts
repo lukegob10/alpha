@@ -803,6 +803,48 @@ describe("AlphaProvider host ownership", () => {
 		}
 	})
 
+	it("keeps a live reasoning row moving while another webview is initializing", async () => {
+		const host = storage()
+		const first = makeProvider(host)
+		const second = makeProvider(host)
+		const task = makeTask("shared")
+		await first.addTaskToStack(task)
+		await second.focusTask(task.taskId)
+		first.isViewLaunched = true
+		const peerTransport = vi.mocked(second.postMessageToWebview)
+		peerTransport.mockClear()
+		const release = barrier()
+		peerTransport.mockImplementationOnce(() => release.promise)
+		const row = { ts: 1, type: "say" as const, say: "reasoning" as const, text: "The", partial: true }
+		let sent = false
+		const initial = first.postTaskMessageToWebview("messageCreated", task.taskId, row).then(() => {
+			sent = true
+		})
+
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(sent).toBe(true)
+			expect(peerTransport).not.toHaveBeenCalled()
+			const continuation = { ...row, text: "The first check is still running." }
+			await first.postTaskMessageToWebview("messageUpdated", task.taskId, continuation)
+			expect(first.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "messageUpdated", alphaMessage: continuation }),
+			)
+			expect(peerTransport).not.toHaveBeenCalled()
+
+			peerTransport.mockReset().mockResolvedValue(undefined)
+			second.isViewLaunched = true
+			const complete = { ...continuation, partial: false }
+			await first.postTaskMessageToWebview("messageUpdated", task.taskId, complete)
+			expect(peerTransport).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "messageUpdated", alphaMessage: complete }),
+			)
+		} finally {
+			release.resolve()
+			await initial
+		}
+	})
+
 	it("consumes an exceptional transport rejection for a passive row", async () => {
 		const provider = makeProvider(storage())
 		const task = makeTask("target")

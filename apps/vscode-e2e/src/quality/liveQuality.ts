@@ -549,7 +549,7 @@ export function qualityWorkCounters(calls: readonly QualityCall[]) {
 	let repeatedChecks = 0
 	const seen = new Set<string>()
 	for (const call of calls) {
-		if (["apply_patch", "apply_diff", "write_to_file", "edit_file"].includes(call.name) && !call.isError)
+		if (["apply_patch", "apply_diff", "write_to_file", "edit_file", "edit"].includes(call.name) && !call.isError)
 			seen.clear()
 		if (!["exec_command", "execute_command", "shell"].includes(call.name)) continue
 		commandCount++

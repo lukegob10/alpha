@@ -12,6 +12,7 @@ import {
 	type FileEntry,
 	type SearchFilesQuery,
 	discoverToolsParamsSchema,
+	navigateCodeParamsSchema,
 	toolSearchParamsSchema,
 	subagentSpawnAgentArgsSchema,
 	listProviderProfilesParamsSchema,
@@ -831,6 +832,12 @@ export class NativeToolCallParser {
 				}
 				break
 
+			case "navigate_code": {
+				const parsed = navigateCodeParamsSchema.safeParse(partialArgs)
+				if (parsed.success) nativeArgs = parsed.data
+				break
+			}
+
 			case "attempt_completion":
 				if (partialArgs.result && this.isAttemptCompletionOutcome(partialArgs.outcome)) {
 					nativeArgs = {
@@ -1393,6 +1400,12 @@ export class NativeToolCallParser {
 					}
 					break
 
+				case "navigate_code": {
+					const parsed = navigateCodeParamsSchema.safeParse(args)
+					if (parsed.success) nativeArgs = parsed.data as NativeArgsFor<TName>
+					break
+				}
+
 				case "attempt_completion":
 					if (args.result && this.isAttemptCompletionOutcome(args.outcome)) {
 						nativeArgs = {
@@ -1434,20 +1447,23 @@ export class NativeToolCallParser {
 					break
 
 				case "edit":
-				case "search_and_replace":
+				case "search_and_replace": {
+					const replaceAll = this.coerceOptionalBoolean(args.replace_all)
 					if (
-						args.file_path !== undefined &&
-						args.old_string !== undefined &&
-						args.new_string !== undefined
+						typeof args.file_path === "string" &&
+						typeof args.old_string === "string" &&
+						typeof args.new_string === "string" &&
+						(args.replace_all === undefined || replaceAll !== undefined)
 					) {
 						nativeArgs = {
 							file_path: args.file_path,
 							old_string: args.old_string,
 							new_string: args.new_string,
-							replace_all: this.coerceOptionalBoolean(args.replace_all),
+							replace_all: replaceAll,
 						} as NativeArgsFor<TName>
 					}
 					break
+				}
 
 				case "ask_followup_question":
 					if (args.question !== undefined && args.follow_up !== undefined) {

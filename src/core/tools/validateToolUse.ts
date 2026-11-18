@@ -35,6 +35,7 @@ const PLAN_MODE_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
 	"memories_search",
 	"read_file",
 	"view_image",
+	"navigate_code",
 	"search_files",
 	"list_files",
 	"codebase_search",

@@ -7083,7 +7083,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 		this.observeUiMessageTimestamps([message])
 		this.alphaMessages.push(message)
 		onCreated?.(message)
-		await this.publishAlphaMessageCreated(message, stateUpdate)
+		const publication = this.publishAlphaMessageCreated(message, stateUpdate)
+		if (message.type === "say" && message.say === "reasoning" && !requiredPersistenceContext) {
+			// Live reasoning can grow while its queued transcript and history save settles.
+			void this.saveAlphaMessages()
+			await publication
+			return
+		}
+		await publication
 		const saved = await this.saveAlphaMessages()
 		if (!saved && requiredPersistenceContext) throw new Error(`Unable to persist ${requiredPersistenceContext}.`)
 	}
@@ -14291,9 +14298,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					if (queuedMessageIds) lastMessage.queuedMessageIds = queuedMessageIds
 					if (options.commandExecutionId) lastMessage.commandExecutionId = options.commandExecutionId
 
-					// Instead of streaming partialMessage events, we do a save
-					// and post like normal to persist to disk.
-					await this.saveAlphaMessages()
+					// A closing reasoning preview can be followed by more streamed output.
+					const save = this.saveAlphaMessages()
+					if (type !== "reasoning" || !isAssistantPreview) await save
 
 					// More performant than an entire `postStateToWebview`.
 					await this.updateAlphaMessage(lastMessage).catch((error) => {
@@ -18056,7 +18063,6 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				if ((currentItem.retryAttempt ?? 0) === 0) await this.deliverAgentMessages()
 				this.assertLifecycleHookOwnership(lifecycleInputInvocation.guard)
-				await this.persistLifecycleHookContexts(lifecycleInputInvocation.guard, stepInterruptionSignal)
 
 				// Persist locally produced tool and child results before entering the
 				// interruptible provider throttle. The same profile lane still serializes
@@ -18067,6 +18073,8 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 				}
 				const pacingWaitCountBefore = this.requestPacingWaitCount
 				try {
+					// Input is already durable. A steer during hook-context persistence uses the same handoff as pacing.
+					await this.persistLifecycleHookContexts(lifecycleInputInvocation.guard, stepInterruptionSignal)
 					// Settle admitted Worker effects at the shared model-step boundary.
 					// Quarantined proposals remain available without pausing inference.
 					await this.waitForPendingSubagentChangeSetReviews()
@@ -18080,7 +18088,14 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 					this.throwIfStepInterrupted(stepInterruptionSignal)
 				} catch (error) {
 					const pendingSteer = this.pendingSteerMessage
-					if (!pendingSteer) throw error
+					if (
+						!pendingSteer ||
+						!(error instanceof SteerRequestInterruptError) ||
+						this.abort ||
+						this.getTaskLifetimeCancellationSignal().aborted
+					) {
+						throw error
+					}
 
 					consumePendingSteer(pendingSteer)
 					await this.presentSteeringInput(pendingSteer)
@@ -18486,7 +18501,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						earlyReadDispatchTail = Promise.all([earlyReadDispatchTail, settled]).then(() => undefined)
 					}
 					let cancelledResponsePromise: Promise<TaskStepExecutionResult> | undefined
-					const cancelResponseBeforeCommit = (): Promise<TaskStepExecutionResult> => {
+					const cancelResponseBeforeCommit = (
+						steering?: SteerRequestInterruptError,
+					): Promise<TaskStepExecutionResult> => {
 						cancelledResponsePromise ??= (async () => {
 							recoverCancelledResponse = undefined
 							earlyReadLaneClosed = true
@@ -18502,7 +18519,7 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							this.emitFinalTokenUsageUpdate()
 							await earlyReadDispatchTail
 							if (!ownsResponseStep()) return ownershipLostResult
-							const reason = "The provider request was cancelled."
+							const reason = steering?.message ?? "The provider request was cancelled."
 							const outcome = { status: "cancelled" as const, reason, retryable: false }
 							// finish() is cached. A cancellation arriving during finalization
 							// changes the outcome while preserving the finalized provider items.
@@ -18523,8 +18540,15 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 							if (this.abort || this.getTaskLifetimeCancellationSignal().aborted) {
 								this.abortReason ??= "user_cancelled"
 							}
+							// Steering keeps the turn active only after the interrupted response and its results are durable.
+							const canContinue =
+								steering &&
+								!taskWasCancelled() &&
+								persistence.assistantPersisted &&
+								persistence.receiptsPersisted &&
+								!persistence.error
 							return {
-								status: "aborted",
+								status: canContinue ? "completed" : persistence.status,
 								reason: persistence.reason,
 								...(persistence.error ? { error: persistence.error } : {}),
 								response: canonicalResponse,
@@ -19051,10 +19075,16 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 						if (!this.abandoned) {
 							const pendingSteer = this.pendingSteerMessage
 
-							if (pendingSteer) {
-								consumePendingSteer(pendingSteer)
+							if (pendingSteer && error instanceof SteerRequestInterruptError) {
 								await abortStream("user_cancelled", undefined, ownsResponseStep)
 								if (!ownsResponseStep()) return supersededResponseResult()
+								if (taskWasCancelled()) return await cancelResponseBeforeCommit()
+								if (semanticOutputObserved || toolIntentObserved) {
+									const settled = await cancelResponseBeforeCommit(error)
+									if (!ownsResponseStep()) return supersededResponseResult()
+									if (settled.status !== "completed") return settled
+								}
+								consumePendingSteer(pendingSteer)
 								await this.presentSteeringInput(pendingSteer)
 
 								stack.push({
@@ -20640,18 +20670,18 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			this.alphaMessages.push(message)
 			this.currentReasoningResponseMessageTs = message.ts
 		}
-		// Preserve the complete canonical row even when its best-effort preview
-		// exhausted the shared boundary deadline. The caller still saves the transcript.
-		if (Date.now() >= deadlineAt) return
 		const epoch = this.streamingPreviewEpoch
 		const ownsProjection = () => epoch === this.streamingPreviewEpoch && (!guard || guard())
 		const ownership = { guard: ownsProjection, provider: this.providerRef.deref() }
 		const publication = existingReasoning
 			? this.updateAlphaMessage(message, ownership)
 			: this.publishAlphaMessageCreated(message, undefined, ownership)
-		this.streamingPreviewQueue = publication.catch((error) => {
+		const settled = publication.catch((error) => {
 			if (ownsProjection()) console.error(`[Task#${this.taskId}] Failed to present completed reasoning:`, error)
 		})
+		// Publish the complete row even when a stalled preview used the boundary's wait budget.
+		if (Date.now() >= deadlineAt) return
+		this.streamingPreviewQueue = settled
 		await this.drainStreamingPreviews("canonical reasoning", guard, deadlineAt)
 		if (ownsProjection()) this.summarizeReasoning(message)
 	}
@@ -23409,7 +23439,9 @@ export class Task extends EventEmitter<TaskEvents> implements TaskLike {
 			(name === "wait_agent" ||
 				name === "write_stdin" ||
 				(canonicalName === "manage_command" && argumentRecord?.action === "wait"))
-		const read = ["read_file", "list_files", "search_files", "codebase_search"].includes(name) || commandRead
+		const read =
+			["read_file", "list_files", "search_files", "codebase_search", "navigate_code"].includes(name) ||
+			commandRead
 		const trustedExploration =
 			canonicalName === "exec_command" && status === "success" ? result?.trustedExploration : undefined
 		const state = this.providerRef?.deref()?.getVerificationProgressState?.(this)
