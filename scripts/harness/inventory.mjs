@@ -563,6 +563,7 @@ export const hostTestInventory = [
 			"claude-copilot-live.test",
 			"command-file-diff-live.test",
 			"command-wait-steering-live.test",
+			"copilot-editing-live.test",
 			"file-tools-live.test",
 			"harness-quality-live.test",
 			"live-quality.test",
