@@ -95,7 +95,50 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks())
 
-describe("steering during pre-sampling lifecycle hooks", () => {
+describe("steering before a provider request", () => {
+	it("delivers queued steering that arrives after the original input commits, before provider admission", async () => {
+		const { task, queue, history } = fixture()
+		vi.mocked(readCompletionHookConfig).mockReturnValue({ stop: [], subagentStop: [] })
+		const onPersisted = vi.fn()
+		vi.mocked(task["deliverAgentMessages"]).mockImplementationOnce(async () => {
+			expect(onPersisted).toHaveBeenCalledOnce()
+			await queue.addMessageDurably("Use the revised instructions", [], "steer")
+			await task.steerQueuedUserMessage("steer")
+		})
+
+		await expect(
+			task.runAgentRequests(task["buildUserMessageContent"]("Original instructions"), false, onPersisted, {
+				inputOrigin: "human",
+			}),
+		).rejects.toBe(providerBoundary)
+
+		expect(history.map(({ content }) => content)).toEqual([
+			[{ type: "text", text: "<user_message>\nOriginal instructions\n</user_message>" }],
+			[{ type: "text", text: "<user_message>\nUse the revised instructions\n</user_message>" }],
+		])
+		expect(history[1]?.queued_message_ids).toEqual(["steer"])
+		expect(onPersisted).toHaveBeenCalledOnce()
+		expect(queue.hasUnconsumedInput()).toBe(false)
+	})
+
+	it("retains the steer and surfaces a real preparation failure before the next request", async () => {
+		const { task, queue, history } = fixture()
+		vi.mocked(readCompletionHookConfig).mockReturnValue({ stop: [], subagentStop: [] })
+		const failure = new Error("Unable to persist the tool receipt")
+		vi.mocked(task["waitForPendingSubagentChangeSetReviews"]).mockImplementationOnce(async () => {
+			await queue.addMessageDurably("Revised instructions", [], "steer")
+			await task.steerQueuedUserMessage("steer")
+			throw failure
+		})
+
+		await expect(
+			task.runAgentRequests(task["buildUserMessageContent"]("Original instructions"), false),
+		).rejects.toBe(failure)
+		expect(history).toHaveLength(1)
+		expect(task.hasPendingSteerMessage()).toBe(true)
+		expect(queue.getClaimedMessageIds()).toEqual(["steer"])
+	})
+
 	it.each(["SessionStart", "UserPromptSubmit"] as const)(
 		"keeps the original input and consumes steering once when %s admission is interrupted",
 		async (event) => {

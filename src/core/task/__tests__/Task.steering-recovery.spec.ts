@@ -1,6 +1,68 @@
 import { createManagedPublicLifecycleHarness } from "../../webview/__tests__/managedPublicLifecycleHarness"
 import { webviewMessageHandler } from "../../webview/webviewMessageHandler"
 
+it.each(["before the first chunk", "after a proposed edit"] as const)(
+	"carries a queued steer into the active turn %s without asking for Continue",
+	async (boundary) => {
+		const { root, provider, queueTurn, cleanup } = await createManagedPublicLifecycleHarness()
+		const guidance = "Leave the file alone and explain the change."
+		const callId = "proposed-edit"
+		const hasCall = boundary === "after a proposed edit"
+		const interrupted = queueTurn(root.taskId, "Superseded response", undefined, {
+			beforeHold: hasCall
+				? [
+						{
+							type: "tool_call",
+							id: callId,
+							name: "apply_patch",
+							arguments: JSON.stringify({
+								patch: "*** Begin Patch\n*** Add File: unused.txt\n+unused\n*** End Patch",
+							}),
+						},
+						{ type: "tool_call_end", id: callId },
+					]
+				: [],
+		})
+		const next = queueTurn(root.taskId, "The proposed edit was skipped.")
+		try {
+			root.start()
+			await interrupted.progressed
+			const turnId = provider.getAgentLifecycleSnapshot(root.taskId)?.turnId
+			expect(turnId).toBeDefined()
+			await webviewMessageHandler(provider, {
+				type: "queueMessage",
+				taskId: root.taskId,
+				requestId: "steer",
+				text: guidance,
+			})
+			await webviewMessageHandler(provider, {
+				type: "steerQueuedMessage",
+				taskId: root.taskId,
+				expectedTurnId: turnId,
+				text: "steer",
+			})
+			await next.entered
+			const lifecycle = provider.getAgentLifecycleSnapshot(root.taskId)
+			expect(lifecycle?.turnId).toBe(turnId)
+			expect(lifecycle?.effectStartedToolCallIds).toEqual([])
+			expect(lifecycle?.terminalToolCallIds).toEqual(hasCall ? [callId] : [])
+			const blocks = next.messages?.flatMap(({ content }) => (typeof content === "string" ? [] : content)) ?? []
+			expect(blocks.filter((block) => block.type === "tool_use")).toHaveLength(hasCall ? 1 : 0)
+			expect(blocks.filter((block) => block.type === "tool_result")).toEqual(
+				hasCall ? [expect.objectContaining({ tool_use_id: callId, is_error: true })] : [],
+			)
+			expect(JSON.stringify(next.messages).split(guidance)).toHaveLength(2)
+			expect(
+				root.alphaMessages.some(
+					(m) => m.say === "error" || m.ask === "resume_task" || m.ask === "api_req_failed",
+				),
+			).toBe(false)
+		} finally {
+			await cleanup()
+		}
+	},
+)
+
 it.each(["sendAndSteer", "steerQueuedMessage"] as const)(
 	"delivers accepted %s input once on Continue after request preparation fails",
 	async (command) => {
