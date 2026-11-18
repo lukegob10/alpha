@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.2.41
+
+### Patch Changes
+
+- Add the built-in `$alpha-tickets` skill. Select it in chat to turn a spec into a ticket draft, review a backlog,
+  or verify completed work against a ticket's success criteria. Draft and review in Plan or Code, and save ticket
+  changes in Code with the usual approvals.
+
 ## 3.2.40
 
 ### Patch Changes

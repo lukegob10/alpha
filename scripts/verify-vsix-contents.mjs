@@ -124,6 +124,8 @@ try {
 const requiredEntries = [
 	"extension.vsixmanifest",
 	"extension/package.json",
+	"extension/assets/skills/alpha-tickets/SKILL.md",
+	"extension/assets/skills/alpha-tickets/agents/openai.yaml",
 	"extension/assets/skills/debug/SKILL.md",
 	"extension/assets/skills/review-agent/SKILL.md",
 	"extension/assets/skills/review-agent/agents/openai.yaml",

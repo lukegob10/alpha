@@ -50,6 +50,9 @@ the changes before adding copies or updating matching IDs. Copies receive fresh 
 within the import, and start in backlog by default. Conversations are not included. The chart records observed daily
 counts from first use; parent tickets are not counted again as work, and canceled tickets are excluded from scope.
 
+Use `$alpha-tickets` in chat to draft tickets from a spec, review and maintain a backlog, or verify work against a
+ticket’s success criteria. Draft and review in Plan or Code mode. Save native ticket changes in Code mode.
+
 In chat, ask Alpha to list or delete tickets directly. A group deletion uses one approval and the revisions returned by
 the ticket list; it preserves linked conversations and rejects stale or incomplete parent/child selections before
 deleting anything.

@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Use Steer to redirect a running task between tool calls. GPT and Claude can now find definitions and references in your workspace. Claude Haiku 5.5 on GitHub Copilot can make targeted edits."
+		"Type $alpha-tickets in chat to draft tickets from a spec, review your backlog, or check completed work against its success criteria. Draft in Plan or Code and save ticket changes in Code."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

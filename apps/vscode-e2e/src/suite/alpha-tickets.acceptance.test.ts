@@ -48,7 +48,7 @@ class TicketsScriptedAI {
 	readonly requests: Array<{ messages: unknown[]; tools: unknown[] }> = []
 
 	async *createMessage(
-		_systemPrompt: string,
+		systemPrompt: string,
 		messages: unknown[],
 		metadata?: { taskId?: string; attemptId?: string; tools?: unknown[] },
 	) {
@@ -61,6 +61,8 @@ class TicketsScriptedAI {
 		this.requests.push({ messages: structuredClone(messages), tools: structuredClone(tools) })
 
 		if (this.requests.length === 1) {
+			assert.doesNotMatch(systemPrompt, /<name>alpha-tickets<\/name>/, "The workflow is opt-in")
+			assert.doesNotMatch(JSON.stringify(messages), /# Alpha Tickets workflow/)
 			const names = tools.flatMap((tool) => {
 				if (!tool || typeof tool !== "object" || !("function" in tool)) return []
 				const fn = (tool as { function?: { name?: unknown } }).function
@@ -144,6 +146,59 @@ suite("Alpha Tickets eager tool acceptance", function () {
 			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
 			await api.clearCurrentTask().catch(() => undefined)
 			await api.setConfiguration(original)
+		}
+	})
+
+	test("loads the selected built-in workflow for a spec draft in Plan mode", async () => {
+		assert.equal(vscode.version, "1.141.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider: TicketHost }).sidebarProvider
+		const original = api.getConfiguration()
+		const completions: string[] = []
+		const onCompleted = (taskId: string) => completions.push(taskId)
+		const model = new FeatureScriptedAI(() => undefined)
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const taskId = await api.startNewTask({
+				configuration: {
+					...original,
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "architect",
+					approvalMode: "ask",
+					requestDelaySeconds: 0,
+					enableCheckpoints: false,
+				},
+				text: [
+					"Use $alpha-tickets to draft a ticket set in chat.",
+					"The CSV export includes only rows matching the active filter.",
+					"Canceling a replacement preserves the previous export byte-for-byte.",
+				].join("\n"),
+			})
+			await waitFor(
+				() => {
+					const task = provider.getLiveTask(taskId)
+					if (task?.taskAsk?.ask === "completion_result") task.approveAsk()
+					return completions.filter((id) => id === taskId).length === 1
+				},
+				{ timeout: 60_000, description: "the selected Alpha Tickets draft task to complete once" },
+			)
+			model.assertHealthy()
+			assert.equal(model.requests.length, 1)
+			const request = model.requests[0]!
+			assert.doesNotMatch(request.system, /<name>alpha-tickets<\/name>/)
+			const content = JSON.stringify(request.messages)
+			assert.match(content, /Skill: alpha-tickets.*Source: builtin.*# Alpha Tickets workflow/)
+			assert.match(content, /## Work on and close a ticket/)
+			assert.match(content, /preserves the previous export byte-for-byte/)
+			for (const name of ["list_tickets", "read_ticket"]) assert.ok(request.tools.includes(name), name)
+			for (const name of TICKET_TOOLS.slice(2)) assert.ok(!request.tools.includes(name), name)
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await api.clearCurrentTask().catch(() => undefined)
+			await api.setConfiguration(original)
+			model.dispose()
 		}
 	})
 

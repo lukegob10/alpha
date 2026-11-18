@@ -122,6 +122,24 @@ describe("explicit skill identity selection", () => {
 		})
 	})
 
+	it("discovers the bundled Alpha Tickets workflow as opt-in in both modes", async () => {
+		const source = path.join(__dirname, "../../../assets/skills/alpha-tickets")
+		const installed = path.join(extension, "assets", "skills", "alpha-tickets")
+		await fs.cp(source, installed, { recursive: true })
+		await manager.discoverSkills()
+
+		for (const mode of ["code", "architect"]) {
+			expect(manager.getSkillsForMode(mode)).toEqual([
+				expect.objectContaining({ name: "alpha-tickets", source: "builtin", allowImplicitInvocation: false }),
+			])
+			expect(manager.getImplicitSkillsForMode(mode)).toEqual([])
+			expect(await manager.getExplicitSkillContent("builtin:alpha-tickets", mode)).toMatchObject({
+				path: path.join(installed, "SKILL.md"),
+				instructions: expect.stringContaining("# Alpha Tickets workflow"),
+			})
+		}
+	})
+
 	it("rejects equally specific qualified identities instead of guessing between overlapping modes", async () => {
 		await writeSkill(path.join(cwd, ".alpha", "skills-code"), "review", ["code", "architect"])
 		const exact = await writeSkill(path.join(cwd, ".alpha", "skills-architect"), "review", ["architect", "code"])
