@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.42
+
+### Patch Changes
+
+- Package the built-in `$alpha-tickets` skill for all six supported platforms. The in-app announcement shows how to
+  select the bundled skill explicitly with `$builtin:alpha-tickets` to review a backlog against a spec.
+
 ## 3.2.41
 
 ### Patch Changes

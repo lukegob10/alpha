@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"Type $alpha-tickets in chat to draft tickets from a spec, review your backlog, or check completed work against its success criteria. Draft in Plan or Code and save ticket changes in Code."
+		"To review a backlog, enter “$builtin:alpha-tickets check these tickets against the spec” in chat. Use Plan or Code for the review and Code to save changes."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()
