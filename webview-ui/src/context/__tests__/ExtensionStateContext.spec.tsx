@@ -103,11 +103,12 @@ const BackgroundActivityTestComponent = () => {
 }
 
 const WelcomeStateTestComponent = () => {
-	const { showWelcome, currentTaskId } = useExtensionState()
+	const { showWelcome, currentTaskId, setApiConfiguration } = useExtensionState()
 	return (
 		<>
 			<div data-testid="show-welcome">{String(showWelcome)}</div>
 			<div data-testid="current-task-id">{currentTaskId ?? ""}</div>
+			<button onClick={() => setApiConfiguration({ apiProvider: "openai-codex" })}>Edit provider</button>
 		</>
 	)
 }
@@ -438,6 +439,9 @@ describe("ExtensionStateContext", () => {
 		})
 		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
 
+		fireEvent.click(screen.getByRole("button", { name: "Edit provider" }))
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("true")
+
 		act(() => {
 			dispatchExtensionState({
 				apiConfiguration: { apiProvider: "vscode-lm", vsCodeLmModelSelector: { id: "fixture-model" } },
@@ -467,6 +471,37 @@ describe("ExtensionStateContext", () => {
 			expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
 		},
 	)
+
+	it.each([true, false])("keeps provider setup tied to the accepted configuration (configured: %s)", (configured) => {
+		render(
+			<ExtensionStateContextProvider>
+				<WelcomeStateTestComponent />
+			</ExtensionStateContextProvider>,
+		)
+		const configuredProvider = { apiProvider: "openai-codex" as const }
+		const draft = { currentView: { type: "newTaskDraft" } as const }
+
+		act(() => dispatchExtensionState({ ...draft, taskStateSeq: 1 }))
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent("false")
+
+		act(() =>
+			dispatchExtensionState({
+				...draft,
+				taskStateSeq: 3,
+				apiConfiguration: configured ? configuredProvider : {},
+			}),
+		)
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent(String(!configured))
+
+		act(() =>
+			dispatchExtensionState({
+				...draft,
+				taskStateSeq: 2,
+				apiConfiguration: configured ? {} : configuredProvider,
+			}),
+		)
+		expect(screen.getByTestId("show-welcome")).toHaveTextContent(String(!configured))
+	})
 
 	it("never infers missing provider setup from an initial queue fast-path", () => {
 		render(
@@ -1444,6 +1479,17 @@ describe("mergeExtensionState", () => {
 			)
 			expect(parentIdentity.alphaMessages).toBe(parentMessages)
 
+			const compactParentIdentity = mergeExtensionState(
+				childState,
+				{
+					currentTaskId: "parent",
+					currentView: { type: "task", taskId: "parent" },
+					taskStateSeq: 3,
+				},
+				transcriptCache,
+			)
+			expect(compactParentIdentity.alphaMessages).toBe(parentMessages)
+
 			const staleParentIdentity = mergeExtensionState(
 				childState,
 				{
@@ -1460,6 +1506,76 @@ describe("mergeExtensionState", () => {
 				transcriptCache,
 			)
 			expect(staleParentIdentity.alphaMessages).toEqual([])
+		})
+
+		it.each([false, true])("isolates the selected chat when its task rows have not arrived: %s", (staleRows) => {
+			const transcriptCache = new Map()
+			const parentMessages = [makeMessage(1, "parent transcript")]
+			const parent: LiveTaskMetadata = {
+				id: "parent",
+				transcriptRevision: 10,
+				status: TaskStatus.Running,
+				lifecycle: TaskLifecycleState.Running,
+				isActive: true,
+				isStreaming: false,
+				isWaitingForInput: false,
+				lastUpdatedAt: 1,
+				queueCount: 1,
+				tokensIn: 0,
+				tokensOut: 0,
+				totalCost: 0,
+			}
+			const previous: ExtensionState = {
+				...baseState,
+				currentTaskId: "parent",
+				currentView: { type: "task", taskId: "parent" },
+				alphaMessages: parentMessages,
+				alphaMessagesSeq: 4,
+				messageQueue: [{ id: "parent-queued", text: "parent queue", timestamp: 1 }],
+				messageQueueSeq: 4,
+				currentTaskTodos: [{ id: "parent-todo", content: "parent plan", status: "pending" }],
+				currentTaskTodosSeq: 4,
+				taskStateSeq: 1,
+				liveTasksById: { parent, child: { ...parent, id: "child", transcriptRevision: 20, queueCount: 0 } },
+			}
+			const currentView = { type: "task", taskId: "child" } as const
+			const selected = mergeExtensionState(
+				previous,
+				{
+					currentTaskId: "child",
+					currentView,
+					taskStateSeq: 3,
+					...(staleRows
+						? {
+								alphaMessages: [],
+								alphaMessagesSeq: 3,
+								messageQueue: [],
+								messageQueueSeq: 3,
+								currentTaskTodos: [],
+								currentTaskTodosSeq: 3,
+							}
+						: {}),
+				},
+				transcriptCache,
+			)
+			const afterLateTranscript = mergeExtensionState(
+				selected,
+				{ currentTaskId: "child", currentView, taskStateSeq: 2, alphaMessages: [], alphaMessagesSeq: 5 },
+				transcriptCache,
+			)
+			mergeExtensionState(
+				afterLateTranscript,
+				{ currentView: { type: "newTaskDraft" }, taskStateSeq: 4 },
+				transcriptCache,
+			)
+
+			expect(selected.currentTaskId).toBe("child")
+			expect(selected.alphaMessages).toEqual([])
+			expect(selected.messageQueue).toBeUndefined()
+			expect(selected.currentTaskTodos).toBeUndefined()
+			expect(afterLateTranscript.alphaMessages).toEqual([])
+			expect(transcriptCache.get("parent")?.messages).toBe(parentMessages)
+			expect(transcriptCache.has("child")).toBe(false)
 		})
 
 		it("rejects stale alphaMessages when seq is not newer", () => {

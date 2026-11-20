@@ -38,7 +38,6 @@ import {
 	readFileIfExists,
 	getConfigDirectoriesForCwd,
 	getAllConfigDirectoriesForCwd,
-	getAgentsDirectoriesForCwd,
 	discoverSubfolderConfigDirectories,
 	loadConfiguration,
 } from "../index"
@@ -474,44 +473,6 @@ describe("AlphaConfigService", () => {
 				path.join("/project/path", ".alpha"), // project second
 				path.join("/project/path", "apple", ".alpha"), // subfolders alphabetically
 				path.join("/project/path", "zebra", ".alpha"),
-			])
-		})
-	})
-
-	describe("getAgentsDirectoriesForCwd", () => {
-		it("should return root directory and parent directories of subfolder .alpha dirs", async () => {
-			mockExecuteRipgrep.mockResolvedValueOnce([{ path: "package-a/.alpha/rules/rule.md", type: "file" }])
-
-			const result = await getAgentsDirectoriesForCwd("/project/path")
-
-			expect(result).toEqual([
-				"/project/path", // root
-				path.join("/project/path", "package-a"), // parent of .alpha
-			])
-		})
-
-		it("should always include root even when no subfolders", async () => {
-			mockExecuteRipgrep.mockResolvedValue([])
-
-			const result = await getAgentsDirectoriesForCwd("/project/path")
-
-			expect(result).toEqual(["/project/path"])
-		})
-
-		it("should include multiple subfolder parent directories", async () => {
-			mockExecuteRipgrep.mockResolvedValueOnce([
-				{ path: "package-a/.alpha/rules/rule.md", type: "file" },
-				{ path: "package-b/.alpha/rules-code/rule.md", type: "file" },
-				{ path: "packages/core/.alpha/rules/rule.md", type: "file" },
-			])
-
-			const result = await getAgentsDirectoriesForCwd("/project/path")
-
-			expect(result).toEqual([
-				"/project/path",
-				path.join("/project/path", "package-a"),
-				path.join("/project/path", "package-b"),
-				path.join("/project/path", "packages/core"),
 			])
 		})
 	})

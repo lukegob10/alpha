@@ -298,6 +298,21 @@ describe("CodeIndexConfigManager", () => {
 		expect(second.requiresRestart).toBe(true)
 	})
 
+	it("advances the service revision once for overlapping loads of the same model change", async () => {
+		const context = createContextProxy(vertexConfig())
+		const manager = new CodeIndexConfigManager(context as any)
+		const modelId = "gemini-embedding-2"
+		context.setState(vertexConfig({ codebaseIndexEmbedderModelId: modelId }))
+
+		const [first, second] = await Promise.all([manager.loadConfiguration(), manager.loadConfiguration()])
+
+		expect(first).toMatchObject({ requiresRestart: true, serviceRevision: 1 })
+		expect(second).toMatchObject({ requiresRestart: false, serviceRevision: 1 })
+		context.setState(vertexConfig({ codebaseIndexEmbedderModelId: modelId, codebaseIndexSearchMaxResults: 12 }))
+		expect(await manager.loadConfiguration()).toMatchObject({ requiresRestart: false, serviceRevision: 1 })
+		expect(manager.currentSearchMaxResults).toBe(12)
+	})
+
 	it("requires a restart when a legacy provider is replaced by Vertex", async () => {
 		const context = createContextProxy(
 			vertexConfig({ codebaseIndexEmbedderProvider: "retired-embedding-provider" }),

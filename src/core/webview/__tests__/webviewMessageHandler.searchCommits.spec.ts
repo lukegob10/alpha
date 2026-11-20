@@ -32,7 +32,7 @@ describe("webview commit search routing", () => {
 	it("searches the addressed task's repository and echoes its request identity", async () => {
 		const { host, task, provider } = fixture()
 		await webviewMessageHandler(provider, { ...request, taskId: "origin" })
-		expect(searchCommits).toHaveBeenCalledExactlyOnceWith(request.query, task.cwd)
+		expect(searchCommits).toHaveBeenCalledExactlyOnceWith(request.query, task.cwd, undefined)
 		expect(host.postMessageToWebview).toHaveBeenCalledExactlyOnceWith({
 			type: "commitSearchResults",
 			requestId: request.requestId,
@@ -56,10 +56,40 @@ describe("webview commit search routing", () => {
 	it("keeps correlated draft searches in the draft workspace after task selection changes", async () => {
 		const { host, provider } = fixture()
 		await webviewMessageHandler(provider, request)
-		expect(searchCommits).toHaveBeenCalledExactlyOnceWith(request.query, host.cwd)
+		expect(searchCommits).toHaveBeenCalledExactlyOnceWith(request.query, host.cwd, undefined)
 		expect(host.postMessageToWebview).toHaveBeenCalledWith(
 			expect.objectContaining({ requestId: request.requestId, commits }),
 		)
+	})
+
+	it("looks up the repository captured when the draft request was submitted", async () => {
+		const { provider } = fixture()
+		const { signal } = new AbortController()
+		await webviewMessageHandler(provider, request, {
+			commitSearch: { cwd: "/captured-workspace", signal },
+		})
+		expect(searchCommits).toHaveBeenCalledExactlyOnceWith(request.query, "/captured-workspace", signal)
+	})
+
+	it.each(["aborted", "detached"])("drops a pending reply when the lookup is %s", async (interruption) => {
+		const { host, provider } = fixture()
+		const controller = new AbortController()
+		let isCurrent = true
+		let resolveSearch!: (result: typeof commits) => void
+		const pending = new Promise<typeof commits>((resolve) => {
+			resolveSearch = resolve
+		})
+		vi.mocked(searchCommits).mockReturnValueOnce(pending)
+		const search = webviewMessageHandler(provider, request, {
+			commitSearch: { cwd: host.cwd, signal: controller.signal },
+			isCurrentWebview: () => isCurrent,
+		})
+		if (interruption === "aborted") controller.abort()
+		else isCurrent = false
+		resolveSearch(commits)
+
+		await search
+		expect(host.postMessageToWebview).not.toHaveBeenCalled()
 	})
 
 	it("discards results from a superseded task runtime", async () => {

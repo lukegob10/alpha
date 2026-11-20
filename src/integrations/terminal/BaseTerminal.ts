@@ -173,8 +173,6 @@ export abstract class BaseTerminal implements AlphaTerminal {
 	public static defaultShellIntegrationTimeout = 5_000
 	private static shellIntegrationTimeout: number = BaseTerminal.defaultShellIntegrationTimeout
 	private static shellIntegrationDisabled: boolean = false
-	private static commandDelay: number = 0
-	private static powershellCounter: boolean = false
 	private static terminalZshClearEolMark: boolean = true
 	private static terminalZshOhMy: boolean = false
 	private static terminalZshP10k: boolean = false
@@ -200,38 +198,6 @@ export abstract class BaseTerminal implements AlphaTerminal {
 
 	public static getShellIntegrationDisabled(): boolean {
 		return BaseTerminal.shellIntegrationDisabled
-	}
-
-	/**
-	 * Sets the command delay in milliseconds
-	 * @param delayMs The delay in milliseconds
-	 */
-	public static setCommandDelay(delayMs: number): void {
-		BaseTerminal.commandDelay = delayMs
-	}
-
-	/**
-	 * Gets the command delay in milliseconds
-	 * @returns The command delay in milliseconds
-	 */
-	public static getCommandDelay(): number {
-		return BaseTerminal.commandDelay
-	}
-
-	/**
-	 * Sets whether to use the PowerShell counter workaround
-	 * @param enabled Whether to enable the PowerShell counter workaround
-	 */
-	public static setPowershellCounter(enabled: boolean): void {
-		BaseTerminal.powershellCounter = enabled
-	}
-
-	/**
-	 * Gets whether to use the PowerShell counter workaround
-	 * @returns Whether the PowerShell counter workaround is enabled
-	 */
-	public static getPowershellCounter(): boolean {
-		return BaseTerminal.powershellCounter
 	}
 
 	/**

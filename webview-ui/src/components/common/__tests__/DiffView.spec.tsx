@@ -118,6 +118,30 @@ describe("DiffView", () => {
 		expect(highlightHunksMock).toHaveBeenCalledTimes(1)
 	})
 
+	it("updates an open diff's syntax colors when VS Code changes theme", async () => {
+		const originalClasses = document.body.className
+		document.body.className = "vscode-dark"
+		const parseSpy = vi.spyOn(diffParser, "parseUnifiedDiff")
+		highlightHunksMock
+			.mockResolvedValueOnce({ oldLines: ["old dark highlighted"], newLines: ["new dark highlighted"] })
+			.mockResolvedValueOnce({ oldLines: ["old light highlighted"], newLines: ["new light highlighted"] })
+		const { unmount } = render(<DiffView source={diff("theme change")} filePath="example.ts" />)
+
+		try {
+			expect(await screen.findByText("new dark highlighted")).toBeInTheDocument()
+			await act(async () => {
+				document.body.className = "vscode-light"
+			})
+
+			expect(screen.getByText("new light highlighted")).toBeInTheDocument()
+			expect(highlightHunksMock.mock.calls.map(([, , , theme]) => theme)).toEqual(["dark", "light"])
+			expect(parseSpy).toHaveBeenCalledTimes(1)
+		} finally {
+			unmount()
+			document.body.className = originalClasses
+		}
+	})
+
 	it("keeps highlighted line lookup work linear for a large mixed hunk", async () => {
 		const rowCount = 900
 		let lineTypeReads = 0

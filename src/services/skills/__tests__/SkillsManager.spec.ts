@@ -1447,11 +1447,23 @@ Instructions here...`
 				})
 			})
 
-			it("allows a later watcher event to retry after discovery fails", async () => {
+			it("reports a failed watcher batch once and recovers on a later event", async () => {
 				await prepareWatchers()
-				mockProjectInstructionDirectories.mockRejectedValueOnce(new Error("Root lookup failed"))
-				await expect(emitChange()).rejects.toThrow("Root lookup failed")
+				using reported = vi.spyOn(console, "warn").mockImplementation(() => {})
+				const failure = new Error("Root lookup failed")
+				mockProjectInstructionDirectories.mockRejectedValueOnce(failure)
+				await Promise.all(Array.from({ length: 3 }, (_, index) => emitChange(index)))
+				expect(reported).toHaveBeenCalledExactlyOnceWith(
+					"Failed to refresh skills after a file change:",
+					failure,
+				)
+				expect(skillsManager.getSkillsForMode("code")[0]?.description).toBe("Initial")
 				expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
+
+				mockProjectInstructionDirectories.mockRejectedValueOnce(failure)
+				await expect(skillsManager.refreshSkills()).rejects.toBe(failure)
+				expect(reported).toHaveBeenCalledTimes(1)
+
 				mockReadFile.mockResolvedValue(skillText("Recovered"))
 				await emitChange()
 
@@ -1468,6 +1480,7 @@ Instructions here...`
 				"serves an explicit change queued behind a failed $failure (latest fails: $latestFails)",
 				async ({ failure, latestFails }) => {
 					await prepareWatchers()
+					using reported = vi.spyOn(console, "warn").mockImplementation(() => {})
 					let failOperation!: (error: Error) => void
 					let operationStarted!: () => void
 					const started = new Promise<void>((resolve) => {
@@ -1485,10 +1498,10 @@ Instructions here...`
 					} else {
 						publication.mockImplementationOnce(pendingOperation)
 					}
-					const first = emitChange().catch(() => undefined)
+					const first = emitChange()
 					await started
+					const latestError = new Error("Latest operation failed")
 					if (latestFails) {
-						const latestError = new Error("Latest operation failed")
 						if (failure === "discovery") {
 							mockProjectInstructionDirectories.mockRejectedValueOnce(latestError)
 						} else {
@@ -1497,12 +1510,16 @@ Instructions here...`
 					}
 					mockReadFile.mockResolvedValue(skillText("Latest"))
 					const latest = emitChange()
-					const completed = Promise.all([first, latest])
-					const expected = latestFails
-						? expect(completed).rejects.toThrow("Latest operation failed")
-						: expect(completed).resolves.toEqual([undefined, undefined])
 					failOperation(new Error("Obsolete operation failed"))
-					await expected
+					await Promise.all([first, latest])
+					if (latestFails) {
+						expect(reported).toHaveBeenCalledExactlyOnceWith(
+							"Failed to refresh skills after a file change:",
+							latestError,
+						)
+					} else {
+						expect(reported).not.toHaveBeenCalled()
+					}
 
 					expect(mockProjectInstructionDirectories).toHaveBeenCalledTimes(2)
 					expect(publication).toHaveBeenCalledTimes(failure === "publication" ? 2 : latestFails ? 0 : 1)

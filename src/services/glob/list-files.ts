@@ -2,6 +2,7 @@ import os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import * as childProcess from "child_process"
+import { StringDecoder } from "node:string_decoder"
 import ignore from "ignore"
 import { arePathsEqual } from "../../utils/path"
 import { getPathRelativeToRoot } from "../../core/tools/pathSafety"
@@ -965,6 +966,7 @@ function execRipgrepAtPath(
 		// Scope exclusion globs to this listing; an ancestor named tmp or temp
 		// must not exclude every file in an explicitly requested workspace.
 		const rgProcess = childProcess.spawn(rgPath, args, { cwd })
+		const decoder = new StringDecoder("utf8")
 		let output = ""
 		const results: string[] = []
 		let stopped = false
@@ -1009,6 +1011,7 @@ function execRipgrepAtPath(
 				return
 			}
 
+			output += decoder.end()
 			processRipgrepOutput(true)
 			// Exit 1 means no files matched. A signal is expected only when this
 			// invocation deliberately stopped at its output limit.
@@ -1038,7 +1041,7 @@ function execRipgrepAtPath(
 		// Process stdout data as it comes in
 		rgProcess.stdout.on("data", (data) => {
 			if (stopped || settled || signal?.aborted) return
-			output += data.toString()
+			output += typeof data === "string" ? data : decoder.write(data)
 			processRipgrepOutput()
 
 			// Kill the process if we've reached the limit

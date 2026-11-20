@@ -242,6 +242,40 @@ describe("scheduled task setup", () => {
 		expect(messages().filter((message) => message.type === "createScheduledTask")).toHaveLength(2)
 	})
 
+	it("clears a created schedule when it is removed from the authoritative list", () => {
+		const { rerender } = render(<ScheduledTasksView onDone={() => {}} />)
+		input("Name", saved.name)
+		input("Prompt", saved.prompt)
+		select("Profile", apiConfig.id)
+		fireEvent.click(screen.getByRole("button", { name: "Create" }))
+		const request = messages().find((message) => message.type === "createScheduledTask")!
+		const task = { ...saved, apiConfig }
+		act(() => {
+			window.dispatchEvent(
+				new MessageEvent("message", {
+					data: {
+						type: "scheduledTaskCreationResult",
+						scheduledTaskCreationResult: {
+							requestId: request.scheduledTask?.creationRequestId,
+							status: "success",
+							task,
+						},
+					},
+				}),
+			)
+		})
+		expect(screen.getByRole("button", { name: "Run Now" })).toBeEnabled()
+
+		state = { ...state, scheduledTasks: [task] }
+		rerender(<ScheduledTasksView onDone={() => {}} />)
+		state = { ...state, scheduledTasks: [] }
+		rerender(<ScheduledTasksView onDone={() => {}} />)
+
+		expect(screen.queryByRole("button", { name: "Run Now" })).not.toBeInTheDocument()
+		expect(screen.getByLabelText("Name")).toHaveValue("")
+		expect(screen.getByRole("button", { name: "Create" })).toBeDisabled()
+	})
+
 	it("retries the immutable creation after timeout and ignores its late acknowledgement after New Task", () => {
 		vi.useFakeTimers()
 		try {

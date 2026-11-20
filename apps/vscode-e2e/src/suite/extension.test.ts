@@ -494,22 +494,9 @@ suite("Alpha Extension", function () {
 					(tab) =>
 						tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes("alpha.tickets"),
 				)
-		const opened = new Promise<void>((resolve, reject) => {
-			const listener = vscode.window.tabGroups.onDidChangeTabs(() => {
-				if (ticketTabs().length) {
-					clearTimeout(timeout)
-					listener.dispose()
-					resolve()
-				}
-			})
-			const timeout = setTimeout(() => {
-				listener.dispose()
-				reject(new Error("Ticket tab did not open"))
-			}, 10000)
-		})
 		// VS Code 1.141.0 title-menu mouse actions forward this focus context.
 		await vscode.commands.executeCommand("alpha.openTickets", { preserveFocus: false })
-		await opened
+		await waitFor(() => ticketTabs().length > 0, { timeout: 10_000, description: "ticket tab to open" })
 		const ticketTab = ticketTabs()[0]
 		assert.ok(ticketTab)
 		const ticketGroup = vscode.window.tabGroups.all.find((group) => group.tabs.includes(ticketTab))

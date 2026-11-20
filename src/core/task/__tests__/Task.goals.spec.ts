@@ -386,6 +386,7 @@ describe("Task idle continuation completion authority", () => {
 		"leaves queued input unclaimed when %s wins an awaited goal admission",
 		async (terminal) => {
 			const { task, controller, store, queue } = fixture()
+			const completed = terminal === "completed" || terminal === "stop-after-complete"
 			await controller.create({ objective: "Finish." }, "user")
 			const { entered, release } = holdIdleReservation(controller, store)
 			const claim = vi.spyOn(queue, "claimMessage")
@@ -403,7 +404,7 @@ describe("Task idle continuation completion authority", () => {
 			try {
 				await entered.promise
 				const queued = queue.addMessage("Keep this queued after the terminal boundary.")
-				if (terminal === "completed" || terminal === "stop-after-complete") task.markCompleted()
+				if (completed) task.markCompleted()
 				if (terminal === "stop" || terminal === "stop-after-complete") task.abort = true
 				if (terminal === "abandoned") Object.assign(task, { abandoned: true })
 				if (terminal === "replaced") Object.assign(task, { isCurrentApiConversationHistoryOwner: () => false })
@@ -427,7 +428,7 @@ describe("Task idle continuation completion authority", () => {
 				expect(terminalEvents).toEqual(
 					terminal === "replaced"
 						? []
-						: [[expect.objectContaining({ status: terminal === "completed" ? "completed" : "aborted" })]],
+						: [[expect.objectContaining({ status: completed ? "completed" : "aborted" })]],
 				)
 				expect(await controller.get()).toMatchObject({ continuationCount: 0 })
 			} finally {

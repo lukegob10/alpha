@@ -70,7 +70,6 @@ interface ChatTextAreaProps {
 	onImageReadsPendingChange?: (taskId: string | undefined, pending: boolean) => void
 	onSend: () => void
 	canForkChat?: boolean
-	onSelectImages: () => void
 	shouldDisableImages: boolean
 	onHeightChange?: (height: number) => void
 	mode: Mode
@@ -991,7 +990,7 @@ export const ChatTextArea = memo(
 			)
 
 			const appendImages = useCallback(
-				async (files: File[], source: "paste" | "drop") => {
+				async (files: File[]) => {
 					const owner = conversationTaskId
 					const batches = imageReadBatches.current
 					const existing = batches.get(owner)
@@ -1010,7 +1009,6 @@ export const ChatTextArea = memo(
 							return
 						}
 						setSelectedImages((previous) => [...previous, ...dataUrls].slice(0, MAX_IMAGES_PER_MESSAGE))
-						if (source === "drop") vscode.postMessage({ type: "draggedImages", dataUrls })
 					} finally {
 						batch.pending--
 						if (batch.pending === 0 && batches.get(owner) === batch) {
@@ -1069,9 +1067,7 @@ export const ChatTextArea = memo(
 						e.preventDefault()
 
 						const files = imageItems.map((item) => item.getAsFile()).filter((file) => file !== null)
-						void appendImages(files, "paste").catch((error) =>
-							console.error(t("chat:errorReadingFile"), error),
-						)
+						void appendImages(files).catch((error) => console.error(t("chat:errorReadingFile"), error))
 					}
 				},
 				[
@@ -1223,7 +1219,7 @@ export const ChatTextArea = memo(
 						})
 
 						if (!shouldDisableImages && imageFiles.length > 0) {
-							void appendImages(imageFiles, "drop").catch((error) =>
+							void appendImages(imageFiles).catch((error) =>
 								console.error(t("chat:errorReadingFile"), error),
 							)
 						}

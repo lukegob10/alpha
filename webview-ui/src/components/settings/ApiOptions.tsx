@@ -405,6 +405,7 @@ const ApiOptions = ({
 
 					{selectedProvider === "openai" && (
 						<OpenAICompatible
+							key={profileIdentity}
 							apiConfiguration={apiConfiguration}
 							models={openAiModels}
 							setApiConfigurationField={setApiConfigurationField}

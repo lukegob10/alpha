@@ -550,7 +550,7 @@ async function discoverModels(dependencies: LiveCopilotDiscoveryDependencies = {
 						inFlight = false
 						if (!Array.isArray(models)) {
 							fail()
-						} else if (models.length > 0) {
+						} else if (models.length > 0 && !refreshNeeded) {
 							finish({ ok: true, vscode, models, readiness: readiness("ready") })
 						} else {
 							scheduleRefresh()

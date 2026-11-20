@@ -48,6 +48,7 @@ export class ContextProxy {
 	private readonly committedGlobalState = new Map<GlobalStateKey, GlobalState[GlobalStateKey]>()
 	private globalStateGeneration = 0
 	private secretCache: SecretState
+	private readonly secretReads = new Map<SecretStateKey, symbol>()
 	private openAiHeadersRevision = 0
 	private _isInitialized = false
 
@@ -376,6 +377,7 @@ export class ContextProxy {
 			})
 		}
 
+		this.secretReads.delete(key)
 		// Write directly to context.
 		return value === undefined
 			? this.originalContext.secrets.delete(key)
@@ -395,9 +397,13 @@ export class ContextProxy {
 		await Promise.all([
 			...SECRET_STATE_KEYS.map((key) => {
 				const load = async () => {
+					// Vertex migration already serializes reads and writes under the credential lock.
+					const read = key === "vertexJsonCredentials" ? undefined : Symbol()
+					if (read) this.secretReads.set(key, read)
 					let loaded = false
 					try {
-						this.secretCache[key] = await this.originalContext.secrets.get(key)
+						const value = await this.originalContext.secrets.get(key)
+						if (this.secretReads.get(key) === read) this.secretCache[key] = value
 						loaded = true
 					} catch (error) {
 						logger.error(
@@ -647,6 +653,7 @@ export class ContextProxy {
 		// Clear in-memory caches
 		this.stateCache = {}
 		this.secretCache = {}
+		this.secretReads.clear()
 
 		await Promise.all([
 			...GLOBAL_STATE_KEYS.filter((key) => key !== "openAiHeaders").map((key) =>

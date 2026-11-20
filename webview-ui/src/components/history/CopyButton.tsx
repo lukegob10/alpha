@@ -1,27 +1,27 @@
 import { useCallback } from "react"
 
-import { useClipboard } from "@/components/ui/hooks"
 import { Button, StandardTooltip } from "@/components/ui"
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { cn } from "@/lib/utils"
+import { useCopyToClipboard } from "@/utils/clipboard"
 
 type CopyButtonProps = {
 	itemTask: string
 }
 
 export const CopyButton = ({ itemTask }: CopyButtonProps) => {
-	const { isCopied, copy } = useClipboard()
+	const { showCopyFeedback: isCopied, copyWithFeedback } = useCopyToClipboard()
 	const { t } = useAppTranslation()
 
 	const onCopy = useCallback(
 		(e: React.MouseEvent) => {
 			e.stopPropagation()
 
-			if (!isCopied) {
-				copy(itemTask)
+			if (!isCopied && itemTask) {
+				void copyWithFeedback(itemTask)
 			}
 		},
-		[isCopied, copy, itemTask],
+		[isCopied, copyWithFeedback, itemTask],
 	)
 
 	return (

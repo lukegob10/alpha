@@ -328,6 +328,7 @@ describe("registerCommands", () => {
 
 	it.each(["editor", "sidebar"])("focuses the originating %s before requesting New Chat", async (surface) => {
 		const sidebar = {
+			waitForWebviewLaunch: vi.fn().mockResolvedValue(true),
 			focusInput: vi.fn().mockResolvedValue(undefined),
 			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 		} as unknown as AlphaProvider
@@ -356,6 +357,28 @@ describe("registerCommands", () => {
 		)
 		expect(other.focusInput).not.toHaveBeenCalled()
 		expect(other.postMessageToWebview).not.toHaveBeenCalled()
+	})
+
+	it.each([true, false])("waits for the requested sidebar before opening a draft (ready: %s)", async (ready) => {
+		const sidebar = {
+			waitForWebviewLaunch: vi.fn().mockResolvedValue(ready),
+			focusInput: vi.fn().mockResolvedValue(undefined),
+			postMessageToWebview: vi.fn().mockResolvedValue(undefined),
+		} as unknown as AlphaProvider
+		const context = { subscriptions: [] } as unknown as vscode.ExtensionContext
+		registerCommands({ context, outputChannel: mockOutputChannel, provider: sidebar })
+		const callback = vi
+			.mocked(vscode.commands.registerCommand)
+			.mock.calls.find(([id]) => id === "alpha.plusButtonClicked")![1]
+
+		const opening = callback("sidebar")
+		if (ready) await expect(opening).resolves.toBeUndefined()
+		else await expect(opening).rejects.toThrow("Alpha sidebar did not become ready")
+
+		expect(AlphaProvider.getVisibleInstance).not.toHaveBeenCalled()
+		expect(vscode.commands.executeCommand).toHaveBeenCalledExactlyOnceWith("alpha.SidebarProvider.focus")
+		expect(sidebar.waitForWebviewLaunch).toHaveBeenCalledExactlyOnceWith(5_000, { requireVisible: true })
+		expect(sidebar.postMessageToWebview).toHaveBeenCalledTimes(ready ? 1 : 0)
 	})
 
 	it("focuses the visible provider's composer even when it is an editor chat", async () => {

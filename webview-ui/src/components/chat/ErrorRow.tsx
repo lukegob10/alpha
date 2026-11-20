@@ -91,10 +91,10 @@ export const ErrorRow = memo(
 	}: ErrorRowProps) => {
 		const { t } = useTranslation()
 		const [isExpanded, setIsExpanded] = useState(defaultExpanded)
-		const [showCopySuccess, setShowCopySuccess] = useState(false)
 		const [isDetailsDialogOpen, setIsDetailsDialogOpen] = useState(false)
-		const [showDetailsCopySuccess, setShowDetailsCopySuccess] = useState(false)
-		const { copyWithFeedback } = useCopyToClipboard()
+		const { showCopyFeedback: showCopySuccess, copyWithFeedback } = useCopyToClipboard(1000)
+		const { showCopyFeedback: showDetailsCopySuccess, copyWithFeedback: copyDetailsWithFeedback } =
+			useCopyToClipboard(1000)
 		const { version, apiConfiguration } = useShellState()
 		const { provider, id: modelId } = useSelectedModel(apiConfiguration)
 
@@ -164,33 +164,16 @@ export const ErrorRow = memo(
 		}, [expandable, isExpanded])
 
 		const handleCopy = useCallback(
-			async (e: React.MouseEvent) => {
-				e.stopPropagation()
-				const success = await copyWithFeedback(message)
-				if (success) {
-					setShowCopySuccess(true)
-					setTimeout(() => {
-						setShowCopySuccess(false)
-					}, 1000)
-				}
-			},
+			(e: React.MouseEvent) => void copyWithFeedback(message, e),
 			[message, copyWithFeedback],
 		)
 
 		const handleCopyDetails = useCallback(
-			async (e: React.MouseEvent) => {
+			(e: React.MouseEvent) => {
 				e.stopPropagation()
-				if (formattedErrorDetails) {
-					const success = await copyWithFeedback(formattedErrorDetails)
-					if (success) {
-						setShowDetailsCopySuccess(true)
-						setTimeout(() => {
-							setShowDetailsCopySuccess(false)
-						}, 1000)
-					}
-				}
+				if (formattedErrorDetails) void copyDetailsWithFeedback(formattedErrorDetails)
 			},
-			[formattedErrorDetails, copyWithFeedback],
+			[formattedErrorDetails, copyDetailsWithFeedback],
 		)
 
 		const errorTitle = getDefaultTitle()

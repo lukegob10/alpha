@@ -4,13 +4,23 @@ import { PassThrough } from "node:stream"
 
 import { executeRipgrep, executeRipgrepForFiles, searchWorkspaceFiles } from "../file-search"
 
-const { spawn, getBinPath, executeWithRipgrepFallback } = vi.hoisted(() => ({
+const { spawn, getBinPath, executeWithRipgrepFallback, statFile } = vi.hoisted(() => ({
 	spawn: vi.fn(),
 	getBinPath: vi.fn(),
 	executeWithRipgrepFallback: vi.fn(),
+	statFile: vi.fn(),
 }))
 
 vi.mock("child_process", () => ({ spawn }))
+vi.mock("fs", async (load) => ({
+	...(await load<typeof import("fs")>()),
+	existsSync: () => true,
+	lstatSync: statFile,
+}))
+vi.mock("node:fs/promises", async (load) => ({
+	...(await load<typeof import("node:fs/promises")>()),
+	lstat: async (file: string) => statFile(file),
+}))
 vi.mock("../../ripgrep", () => ({
 	getBinPath,
 	executeWithRipgrepFallback,
@@ -29,6 +39,7 @@ describe("file-search ripgrep process lifecycle", () => {
 			kill: vi.fn().mockReturnValue(true),
 		})
 		getBinPath.mockReset().mockResolvedValue("/owned/rg")
+		statFile.mockReset()
 		executeWithRipgrepFallback.mockReset().mockImplementation((binaryPath, execute) => execute(binaryPath))
 		started = new Promise<void>((resolve) => {
 			spawn.mockReset().mockImplementation(() => {
@@ -239,6 +250,29 @@ describe("file-search ripgrep process lifecycle", () => {
 
 		expect(await running).toBe(reason)
 		expect(spawn).not.toHaveBeenCalled()
+	})
+
+	it("keeps other picker matches when one candidate disappears during type verification", async () => {
+		statFile.mockImplementation((file: string) => {
+			if (path.basename(file) === "source-removed.ts") {
+				throw Object.assign(new Error("File no longer exists"), { code: "ENOENT" })
+			}
+			return { isDirectory: () => true }
+		})
+		const running = searchWorkspaceFiles("source", workspacePath, 20)
+		await started
+		await endStdout(
+			["source-removed.ts", "source-present"].map((file) => path.join(workspacePath, file)).join("\n"),
+		)
+		child.emit("close", 0, null)
+
+		await expect(running).resolves.toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ path: "source-present", type: "folder" }),
+				expect.objectContaining({ path: "source-removed.ts", type: "file" }),
+			]),
+		)
+		expect(statFile).toHaveBeenCalledTimes(2)
 	})
 
 	it.each(["stdout", "stderr"] as const)("stops and joins the child when %s fails", async (stream) => {

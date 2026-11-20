@@ -224,7 +224,13 @@ const provider = {
 						throw new Error("The exact VS Code host does not expose LanguageModelThinkingPart")
 					}
 					progress.report(
-						new vscode.LanguageModelThinkingPart(["Read", "the fixture"], "fixture-thinking-1", {
+						new vscode.LanguageModelThinkingPart("I", "fixture-thinking-1", {
+							vscode_thinking_origin_api: "responses",
+						}),
+					)
+					progress.report(new vscode.LanguageModelTextPart(""))
+					progress.report(
+						new vscode.LanguageModelThinkingPart([" will read", "the fixture"], "fixture-thinking-1", {
 							fixture: { signature: "synthetic-signature", ordinal: 1 },
 						}),
 					)

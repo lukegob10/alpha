@@ -171,6 +171,24 @@ test("events during an in-flight query coalesce into one refresh without losing 
 	assert.equal(host.state().listeners, 0)
 })
 
+test("a catalog change invalidates a pending nonempty response", async () => {
+	const firstQuery = deferred<LanguageModelChat[]>()
+	const removedModel = { ...model, id: "removed-model" }
+	const host = fixture({ select: (query) => (query === 1 ? firstQuery.promise : [model]) })
+	const result = discoverLiveCopilotModels({}, host.dependencies)
+	await nextTurn()
+	host.emit()
+	firstQuery.resolve([removedModel])
+	const metadata = await result
+	assert.deepEqual(
+		metadata.availableModels.map(({ id }) => id),
+		[model.id],
+	)
+	assert.equal(metadata.readiness?.queryCount, 2)
+	assert.equal(host.state().maxInFlight, 1)
+	assert.equal(host.state().disposed, 1)
+})
+
 for (const stage of ["load", "activation", "query", "empty"] as const) {
 	test(`one deadline bounds ${stage} and ignores late completion`, async (context) => {
 		context.mock.timers.enable({ apis: ["setTimeout"] })

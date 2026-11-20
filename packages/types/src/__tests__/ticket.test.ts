@@ -204,6 +204,17 @@ describe("ticket wire contracts", () => {
 		expect(createTicketSchema.safeParse({ name: "Ticket", path: "../escape" }).success).toBe(false)
 		expect(createTicketSchema.safeParse({ name: "", context: "x".repeat(16001) }).success).toBe(false)
 	})
+	it("accepts an optional initial status on editor creates only", () => {
+		const operation = { action: "create", input: { name: "Ticket" } }
+		const base = { type: "ticketRequest", project: "project", requestId: "create-ticket" }
+		expect(ticketRequestSchema.parse({ ...base, operation }).operation).toEqual(operation)
+		const withStatus = { ...operation, initialStatus: "complete" }
+		expect(ticketRequestSchema.parse({ ...base, operation: withStatus }).operation).toEqual(withStatus)
+		expect(
+			ticketRequestSchema.safeParse({ ...base, operation: { ...operation, initialStatus: "unknown" } }).success,
+		).toBe(false)
+		expect(createTicketSchema.safeParse({ ...operation.input, initialStatus: "complete" }).success).toBe(false)
+	})
 	it("requires a revision and rejects unknown message actions", () => {
 		expect(
 			updateTicketSchema.safeParse({ id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f", name: "Changed" }).success,

@@ -1,7 +1,8 @@
-import { memo, useEffect, useRef, useCallback, useState, useSyncExternalStore } from "react"
+import { memo, useEffect, useLayoutEffect, useRef, useCallback, useState, useSyncExternalStore } from "react"
 import styled from "styled-components"
 import { useCopyToClipboard } from "@src/utils/clipboard"
 import { getHighlighter, normalizeLanguage } from "@src/utils/highlighter"
+import { getWebviewTheme, subscribeToWebviewTheme } from "@src/utils/webviewTheme"
 import type { ShikiTransformer } from "shiki"
 import { toJsxRuntime } from "hast-util-to-jsx-runtime"
 import { Fragment, jsx, jsxs } from "react/jsx-runtime"
@@ -14,7 +15,6 @@ export const CODE_BLOCK_BG_COLOR =
 
 // Configuration constants
 export const WINDOW_SHADE_SETTINGS = {
-	transitionDelayS: 0.2,
 	collapsedHeight: 500, // Default collapsed height in pixels
 }
 
@@ -26,35 +26,10 @@ const MAX_HIGHLIGHT_CHARACTERS = 100_000
 const MAX_HIGHLIGHT_LINES = 1_000
 
 type SyntaxTheme = "github-light" | "github-dark"
-const syntaxThemeListeners = new Set<() => void>()
-let syntaxThemeObserver: MutationObserver | undefined
 
 function getSyntaxTheme(): SyntaxTheme | undefined {
-	const classes = document.body.classList
-	if (classes.contains("vscode-high-contrast") || classes.contains("vscode-high-contrast-light")) return undefined
-	return classes.contains("vscode-light") ? "github-light" : "github-dark"
-}
-
-function subscribeToSyntaxTheme(listener: () => void): () => void {
-	syntaxThemeListeners.add(listener)
-	if (!syntaxThemeObserver) {
-		let theme = getSyntaxTheme()
-		// A single observer covers mounted blocks. Retokenize only when the host kind changes.
-		syntaxThemeObserver = new MutationObserver(() => {
-			const next = getSyntaxTheme()
-			if (next === theme) return
-			theme = next
-			for (const notify of syntaxThemeListeners) notify()
-		})
-		syntaxThemeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] })
-	}
-	return () => {
-		syntaxThemeListeners.delete(listener)
-		if (syntaxThemeListeners.size === 0) {
-			syntaxThemeObserver?.disconnect()
-			syntaxThemeObserver = undefined
-		}
-	}
+	const theme = getWebviewTheme()
+	if (theme === "light" || theme === "dark") return `github-${theme}`
 }
 
 /*
@@ -227,8 +202,9 @@ const CodeBlock = memo(
 		// Use word wrap from props, default to true
 		const wordWrap = initialWordWrap
 		const [windowShade, setWindowShade] = useState(initialWindowShade)
+		const committedWindowShade = useRef(windowShade)
 		const currentLanguage = normalizeLanguage(language)
-		const syntaxTheme = useSyncExternalStore(subscribeToSyntaxTheme, getSyntaxTheme)
+		const syntaxTheme = useSyncExternalStore(subscribeToWebviewTheme, getSyntaxTheme)
 		const [highlightedCode, setHighlightedCode] = useState<{
 			source: string
 			language: string
@@ -242,8 +218,6 @@ const CodeBlock = memo(
 		const { showCopyFeedback, copyWithFeedback } = useCopyToClipboard()
 		const { t } = useAppTranslation()
 		const buttonPositionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-		const collapseTimeout1Ref = useRef<NodeJS.Timeout | null>(null)
-		const collapseTimeout2Ref = useRef<NodeJS.Timeout | null>(null)
 
 		const sourceText = source || ""
 		const shouldHighlight =
@@ -329,23 +303,6 @@ const CodeBlock = memo(
 				cancelled = true
 			}
 		}, [sourceText, currentLanguage, shouldHighlight, syntaxTheme])
-
-		useEffect(() => {
-			return () => {
-				if (buttonPositionTimeoutRef.current) {
-					clearTimeout(buttonPositionTimeoutRef.current)
-					buttonPositionTimeoutRef.current = null
-				}
-				if (collapseTimeout1Ref.current) {
-					clearTimeout(collapseTimeout1Ref.current)
-					collapseTimeout1Ref.current = null
-				}
-				if (collapseTimeout2Ref.current) {
-					clearTimeout(collapseTimeout2Ref.current)
-					collapseTimeout2Ref.current = null
-				}
-			}
-		}, [])
 
 		// Check if content height exceeds collapsed height whenever content changes
 		useEffect(() => {
@@ -467,6 +424,13 @@ const CodeBlock = memo(
 				codeBlock.style.setProperty("--copy-button-right", `${rightPosition}px`)
 			}
 		}, [])
+
+		useLayoutEffect(() => {
+			if (committedWindowShade.current === windowShade) return
+			committedWindowShade.current = windowShade
+			codeBlockRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" })
+			updateCodeBlockButtonPosition()
+		}, [windowShade, updateCodeBlockButtonPosition])
 
 		useEffect(() => {
 			const handleScroll = () => updateCodeBlockButtonPosition()
@@ -594,35 +558,7 @@ const CodeBlock = memo(
 								<CodeBlockButton
 									type="button"
 									aria-label={t(`chat:codeblock.tooltips.${windowShade ? "expand" : "collapse"}`)}
-									onClick={() => {
-										// Get the current code block element
-										const codeBlock = codeBlockRef.current // Capture ref early
-										// Toggle window shade state
-										setWindowShade(!windowShade)
-
-										// Clear any previous timeouts
-										if (collapseTimeout1Ref.current) clearTimeout(collapseTimeout1Ref.current)
-										if (collapseTimeout2Ref.current) clearTimeout(collapseTimeout2Ref.current)
-
-										// After UI updates, ensure code block is visible and update button position
-										collapseTimeout1Ref.current = setTimeout(
-											() => {
-												if (codeBlock) {
-													// Check if codeBlock element still exists
-													codeBlock.scrollIntoView({ behavior: "smooth", block: "nearest" })
-
-													// Wait for scroll to complete before updating button position
-													collapseTimeout2Ref.current = setTimeout(() => {
-														// updateCodeBlockButtonPosition itself should also check for refs if needed
-														updateCodeBlockButtonPosition()
-														collapseTimeout2Ref.current = null
-													}, 50)
-												}
-												collapseTimeout1Ref.current = null
-											},
-											WINDOW_SHADE_SETTINGS.transitionDelayS * 1000 + 50,
-										)
-									}}>
+									onClick={() => setWindowShade((current) => !current)}>
 									{windowShade ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
 								</CodeBlockButton>
 							</StandardTooltip>

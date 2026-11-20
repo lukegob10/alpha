@@ -1754,6 +1754,7 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 							type: "upsertApiConfiguration",
 							text: "new-profile",
 							apiConfiguration: snapshot?.configuration ?? test.savedProvider,
+							apiConfigurationCreateOnly: true,
 						},
 					],
 				])
@@ -2664,6 +2665,24 @@ describe("SettingsView - Unsaved Changes Detection", () => {
 
 		expect(mockPostMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: messageType }))
 		expect(screen.getByText("settings:unsavedChangesDialog.title")).toBeInTheDocument()
+	})
+
+	it("requests create-only profile admission when adding a profile", () => {
+		render(
+			<QueryClientProvider client={queryClient}>
+				<SettingsView onDone={vi.fn()} targetSection="providers" />
+			</QueryClientProvider>,
+		)
+
+		revealSettingsSection("providers")
+		fireEvent.click(screen.getByTestId("create-profile"))
+		expect(mockPostMessage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "upsertApiConfiguration",
+				text: "new-profile",
+				apiConfigurationCreateOnly: true,
+			}),
+		)
 	})
 
 	it("should handle initialization from undefined to value without triggering unsaved changes", async () => {

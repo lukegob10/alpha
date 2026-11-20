@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import OpenAI from "openai"
 import { GoogleAuth } from "google-auth-library"
+import { probeModel } from "../../probeModel"
 import { VertexOpenAiHandler } from "../vertex-openai"
 
 const { token, create } = vi.hoisted(() => ({ token: vi.fn(), create: vi.fn() }))
@@ -9,12 +10,22 @@ vi.mock("google-auth-library", () => ({
 		return { getAccessToken: token }
 	}),
 }))
-vi.mock("openai", () => ({
+vi.mock("openai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("openai")>()),
 	default: vi.fn(function () {
 		return { chat: { completions: { create } } }
 	}),
 }))
 const options = { apiModelId: "partner-model", projectId: "project", location: "us-central1" }
+
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((complete) => {
+		resolve = complete
+	})
+	return { promise, resolve }
+}
+
 beforeEach(() => {
 	vi.clearAllMocks()
 	token.mockResolvedValue("google-access-token")
@@ -28,6 +39,62 @@ afterEach(() => {
 })
 
 describe("native Vertex OpenAI partner adapter", () => {
+	it("passes model readiness through the actual SDK and reports cancellation during dispatch", async () => {
+		const { default: ActualOpenAI } = await vi.importActual<typeof import("openai")>("openai")
+		const sdk = vi.mocked(OpenAI)
+		const original = sdk.getMockImplementation()!
+		sdk.mockImplementation(function (config) {
+			return new ActualOpenAI(config)
+		})
+		const fetch = vi
+			.fn<typeof globalThis.fetch>()
+			.mockResolvedValueOnce(
+				new Response(
+					'data: {"choices":[{"index":0,"delta":{"content":"OK"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+					{ headers: { "content-type": "text/event-stream" } },
+				),
+			)
+		vi.stubGlobal("fetch", fetch)
+		const settings = { ...options, apiProvider: "vertex" } as const
+
+		try {
+			await expect(probeModel(settings)).resolves.toMatchObject({
+				status: "completed",
+				requests: 1,
+				modelId: options.apiModelId,
+				failureCode: null,
+			})
+			const dispatched = deferred<AbortSignal>()
+			const release = deferred<Response>()
+			fetch.mockImplementationOnce(async (_input, request) => {
+				dispatched.resolve(request!.signal!)
+				return await release.promise
+			})
+			const controller = new AbortController()
+			const pending = probeModel(settings, controller.signal)
+			try {
+				const signal = await Promise.race([
+					dispatched.promise,
+					pending.then((result) => {
+						throw new Error(`Probe settled before dispatch: ${result.failureCode}`)
+					}),
+				])
+				controller.abort()
+				await expect(pending).resolves.toMatchObject({
+					status: "failed",
+					requests: 1,
+					failureCode: "cancelled_or_deadline",
+				})
+				expect(signal.aborted).toBe(true)
+			} finally {
+				release.resolve(new Response())
+			}
+			expect(fetch).toHaveBeenCalledTimes(2)
+		} finally {
+			sdk.mockImplementation(original)
+		}
+	})
+
 	it("does not send ambient OpenAI account headers through the real SDK", async () => {
 		vi.stubEnv("OPENAI_ORG_ID", "unrelated-openai-organization")
 		vi.stubEnv("OPENAI_PROJECT_ID", "unrelated-openai-project")
@@ -57,11 +124,8 @@ describe("native Vertex OpenAI partner adapter", () => {
 
 	it.each([-1, 25])("enforces a deadline %d ms from now during credential acquisition", async (remainingMs) => {
 		vi.useFakeTimers()
-		let resolveCredentials!: (value: string) => void
-		const credentials = new Promise<string>((resolve) => {
-			resolveCredentials = resolve
-		})
-		token.mockReturnValue(credentials)
+		const credentials = deferred<string>()
+		token.mockReturnValue(credentials.promise)
 		const handler = new VertexOpenAiHandler({ ...options, vertexStreamingEnabled: false })
 		const rejected = vi.fn()
 		const stream = handler.createMessage("System", [{ role: "user", content: "hello" }], {
@@ -81,7 +145,7 @@ describe("native Vertex OpenAI partner adapter", () => {
 			)
 			expect(token).toHaveBeenCalledTimes(remainingMs < 0 ? 0 : 1)
 		} finally {
-			resolveCredentials("late-token")
+			credentials.resolve("late-token")
 			await pending
 			await stream.return(undefined)
 		}
@@ -138,19 +202,23 @@ describe("native Vertex OpenAI partner adapter", () => {
 		expect(token).not.toHaveBeenCalled()
 		expect(create).not.toHaveBeenCalled()
 	})
-	it("settles cancellation during Google authentication and ignores its late token", async () => {
-		let resolve!: (value: string) => void
-		token.mockReturnValueOnce(
-			new Promise<string>((done) => {
-				resolve = done
-			}),
-		)
-		const controller = new AbortController()
-		const pending = new VertexOpenAiHandler(options).completePrompt("hello", { signal: controller.signal })
-		controller.abort(new Error("cancelled"))
-		await expect(pending).rejects.toThrow("cancelled")
-		resolve("late-token")
-		await Promise.resolve()
-		expect(create).not.toHaveBeenCalled()
-	})
+	it.each(["completion", "stream"])(
+		"cancels %s during Google authentication and ignores its late token",
+		async (kind) => {
+			const credentials = deferred<string>()
+			token.mockReturnValueOnce(credentials.promise)
+			const controller = new AbortController()
+			const handler = new VertexOpenAiHandler(options)
+			const metadata = { taskId: "fixture", signal: controller.signal }
+			const pending =
+				kind === "completion"
+					? handler.completePrompt("hello", metadata)
+					: handler.createMessage("System", [{ role: "user", content: "hello" }], metadata).next()
+			controller.abort(new Error("cancelled"))
+			await expect(pending).rejects.toThrow("cancelled")
+			credentials.resolve("late-token")
+			await Promise.resolve()
+			expect(create).not.toHaveBeenCalled()
+		},
+	)
 })

@@ -27,6 +27,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 	let mockAlphaProvider: AlphaProvider
 	let mockFilterPaths: Mock
 	let mockDispose: Mock
+	let getSetting: Mock
 
 	beforeEach(() => {
 		vi.clearAllMocks()
@@ -34,6 +35,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		// Spy on the mock AlphaIgnoreController prototype methods
 		mockFilterPaths = vi.fn()
 		mockDispose = vi.fn()
+		getSetting = vi.fn()
 
 		// Override the filterPaths method on the prototype
 		;(AlphaIgnoreController.prototype as any).filterPaths = mockFilterPaths
@@ -42,6 +44,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 
 		// Create mock AlphaProvider
 		mockAlphaProvider = {
+			contextProxy: { getValue: getSetting },
 			getState: vi.fn(),
 			postMessageToWebview: vi.fn(),
 			getCurrentTask: vi.fn(),
@@ -58,10 +61,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
 
-		// Setup state with showAlphaIgnoredFiles = false
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: false,
-		})
+		getSetting.mockReturnValue(false)
 
 		// Setup filter to exclude secrets folder
 		mockFilterPaths.mockReturnValue(["src/index.ts", "src/utils.ts"])
@@ -74,6 +74,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 			query: "index",
 			requestId: "test-request-123",
 		})
+		expect(mockAlphaProvider.getState).not.toHaveBeenCalled()
 
 		// Verify filterPaths was called with all result paths
 		expect(mockFilterPaths).toHaveBeenCalledWith(["src/index.ts", "secrets/config.json", "src/utils.ts"])
@@ -97,10 +98,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
 
-		// Setup state with showAlphaIgnoredFiles = true
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: true,
-		})
+		getSetting.mockReturnValue(true)
 
 		// No current task
 		;(mockAlphaProvider.getCurrentTask as Mock).mockReturnValue(null)
@@ -110,6 +108,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 			query: "index",
 			requestId: "test-request-456",
 		})
+		expect(AlphaIgnoreController.prototype.initialize).not.toHaveBeenCalled()
 
 		// Verify filterPaths was NOT called
 		expect(mockFilterPaths).not.toHaveBeenCalled()
@@ -129,11 +128,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 			{ path: "private/secret.ts", type: "file" as const, label: "secret.ts" },
 		]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
-
-		// Setup state with showAlphaIgnoredFiles = false
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: false,
-		})
 
 		// Create a mock task with its own AlphaIgnoreController
 		const taskFilterPaths = vi.fn().mockReturnValue(["src/index.ts"])
@@ -188,11 +182,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 
 	it("should handle errors from searchWorkspaceFiles", async () => {
 		mockSearchWorkspaceFiles.mockRejectedValue(new Error("File search failed"))
-
-		// Setup state
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: false,
-		})
 		;(mockAlphaProvider.getCurrentTask as Mock).mockReturnValue(null)
 
 		await webviewMessageHandler(mockAlphaProvider, {
@@ -210,13 +199,10 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		})
 	})
 
-	it("should default showAlphaIgnoredFiles to false when state is null", async () => {
+	it("filters ignored paths when the preference is missing", async () => {
 		// Setup mock results from file search
 		const mockResults = [{ path: "src/index.ts", type: "file" as const, label: "index.ts" }]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
-
-		// Setup state to return null
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue(null)
 
 		// Setup filter to return all paths (no filtering)
 		mockFilterPaths.mockReturnValue(["src/index.ts"])
@@ -239,11 +225,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		const mockResults = [{ path: "src/index.ts", type: "file" as const, label: "index.ts" }]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
 
-		// Setup state
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: false,
-		})
-
 		// Setup filter
 		mockFilterPaths.mockReturnValue(["src/index.ts"])
 
@@ -264,11 +245,6 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		// Setup mock results from file search
 		const mockResults = [{ path: "src/index.ts", type: "file" as const, label: "index.ts" }]
 		mockSearchWorkspaceFiles.mockResolvedValue(mockResults)
-
-		// Setup state
-		;(mockAlphaProvider.getState as Mock).mockResolvedValue({
-			showAlphaIgnoredFiles: false,
-		})
 
 		// Create a mock task with its own AlphaIgnoreController
 		const taskFilterPaths = vi.fn().mockReturnValue(["src/index.ts"])
@@ -322,7 +298,7 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 				return initializing
 			})
 		})
-		mockSearchWorkspaceFiles.mockResolvedValueOnce([])
+		mockSearchWorkspaceFiles.mockResolvedValueOnce([{ path: "source.ts", type: "file" }])
 		const controller = new AbortController()
 		const running = webviewMessageHandler(
 			mockAlphaProvider,
@@ -338,12 +314,11 @@ describe("webviewMessageHandler - searchFiles with AlphaIgnore filtering", () =>
 		expect(mockAlphaProvider.postMessageToWebview).not.toHaveBeenCalled()
 	})
 
-	it("does not publish a result to a replacement webview after loading settings", async () => {
-		mockSearchWorkspaceFiles.mockResolvedValueOnce([])
+	it("does not publish a result to a replacement webview after loading the ignore rules", async () => {
+		mockSearchWorkspaceFiles.mockResolvedValueOnce([{ path: "source.ts", type: "file" }])
 		let current = true
-		;(mockAlphaProvider.getState as Mock).mockImplementationOnce(async () => {
+		vi.mocked(AlphaIgnoreController.prototype.initialize).mockImplementationOnce(async () => {
 			current = false
-			return {}
 		})
 		const controller = new AbortController()
 		await webviewMessageHandler(

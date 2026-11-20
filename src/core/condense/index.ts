@@ -166,55 +166,8 @@ export function transformMessagesForCondensing<
 }
 
 /**
- * The API history normally uses Anthropic's `tool_use`/`tool_result` names,
- * while a few OpenAI-compatible adapters persist `tool_call` blocks.  Keep the
- * pair handling structural so context recovery works for both forms without
- * widening the provider API types.
- */
-export type ToolCallResultPair = {
-	id: string
-	callMessageIndexes: number[]
-	resultMessageIndexes: number[]
-}
-
-/**
- * Collects the message indexes participating in each tool call/result pair.
- * The returned map is useful to truncation policies: a pair can be hidden as
- * one unit, so compaction never leaves an API-visible orphan.
- */
-export function getToolCallResultPairs(messages: ApiMessage[]): Map<string, ToolCallResultPair> {
-	const pairs = new Map<string, ToolCallResultPair>()
-	const ensurePair = (id: string): ToolCallResultPair => {
-		const existing = pairs.get(id)
-		if (existing) return existing
-		const created: ToolCallResultPair = { id, callMessageIndexes: [], resultMessageIndexes: [] }
-		pairs.set(id, created)
-		return created
-	}
-
-	messages.forEach((message, messageIndex) => {
-		if (!Array.isArray(message.content)) return
-		for (const block of message.content) {
-			const callId = getToolCallId(block)
-			if (callId) {
-				const pair = ensurePair(callId)
-				if (!pair.callMessageIndexes.includes(messageIndex)) pair.callMessageIndexes.push(messageIndex)
-			}
-			const resultId = getToolResultId(block)
-			if (resultId) {
-				const pair = ensurePair(resultId)
-				if (!pair.resultMessageIndexes.includes(messageIndex)) pair.resultMessageIndexes.push(messageIndex)
-			}
-		}
-	})
-
-	return pairs
-}
-
-/**
  * Reports whether each call has exactly one later result and every result has
- * a corresponding earlier call. This is intentionally pure and does not discard
- * history; callers that need recovery can use `injectSyntheticToolResults`.
+ * a corresponding earlier call.
  */
 export function hasToolCallResultIntegrity(messages: ApiMessage[]): boolean {
 	const pending = new Set<string>()
@@ -670,50 +623,6 @@ export function filterOrphanToolResults(messages: ApiMessage[]): ApiMessage[] {
 }
 
 export { MIN_CONDENSE_THRESHOLD, MAX_CONDENSE_THRESHOLD } from "../context-management/recovery"
-
-/**
- * Injects synthetic tool_results for orphan tool_calls that don't have matching results.
- * This is necessary because OpenAI's Responses API rejects conversations with orphan tool_calls.
- * This can happen when the user triggers condense after receiving a tool_call (like attempt_completion)
- * but before responding to it.
- *
- * @param messages - The conversation messages to process
- * @returns The messages with synthetic tool_results appended if needed
- */
-export function injectSyntheticToolResults(messages: ApiMessage[]): ApiMessage[] {
-	// A provider may reuse a completed call ID. Only a result for the currently
-	// pending occurrence can satisfy that call; older receipts remain untouched.
-	const pending = new Set<string>()
-	for (const message of messages) {
-		if (!Array.isArray(message.content)) continue
-		for (const block of message.content) {
-			const callId = getToolCallId(block)
-			if (callId !== undefined) pending.add(callId)
-			const resultId = getToolResultId(block)
-			if (resultId !== undefined) pending.delete(resultId)
-		}
-	}
-	const orphanIds = [...pending]
-
-	if (orphanIds.length === 0) {
-		return messages
-	}
-
-	// Inject synthetic tool_results as a new user message
-	const syntheticResults: Anthropic.Messages.ToolResultBlockParam[] = orphanIds.map((id) => ({
-		type: "tool_result" as const,
-		tool_use_id: id,
-		content: "Context condensation triggered. Tool execution deferred.",
-	}))
-
-	const syntheticMessage: ApiMessage = {
-		role: "user",
-		content: syntheticResults,
-		ts: Date.now(),
-	}
-
-	return [...messages, syntheticMessage]
-}
 
 /**
  * Extracts <command> blocks from a message's content.
@@ -1727,7 +1636,6 @@ export function getEffectiveApiHistory(
 		activeMessages.filter(
 			(msg) =>
 				!(msg.condenseCopyParent && !existingSummaryIds.has(msg.condenseCopyParent)) &&
-				!(!lastSummary && msg.condenseParent && existingSummaryIds.has(msg.condenseParent)) &&
 				!(msg.truncationParent && existingTruncationIds.has(msg.truncationParent)),
 		),
 	)

@@ -1507,6 +1507,7 @@ export class ToolScheduler {
 				console.error("[ToolScheduler] Prepared command cleanup also failed", error)
 			}
 		}
+		// Observe terminal publication failures before joining prepared owners in finally.
 		try {
 			this.approvalRequestCount = 0
 			this.approvalDeniedCount = 0
@@ -1590,7 +1591,7 @@ export class ToolScheduler {
 
 			if (this.isCancelled()) {
 				this.fillCancelledResults(results, calls)
-				return this.abortOutcome(results, calls, calls.length, 0, startedAt)
+				return await this.abortOutcome(results, calls, calls.length, 0, startedAt)
 			}
 
 			let cursor = 0
@@ -1612,7 +1613,7 @@ export class ToolScheduler {
 			while (cursor < prepared.length) {
 				if (this.isCancelled()) {
 					this.fillCancelledResults(results, calls, cursor)
-					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+					return await this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 				}
 				// Preflight and retry-block receipts also carry stopping evidence. Observe
 				// them before admitting the next call; executed results are deduplicated.
@@ -1621,7 +1622,14 @@ export class ToolScheduler {
 						await this.observeToolResult(results[cursor - 1]!, calls[cursor - 1])
 					} catch (error) {
 						if (!(error instanceof ToolEffectFenceError)) throw error
-						return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+						return await this.failedOutcome(
+							results,
+							calls,
+							error,
+							calls.length,
+							parallelBatchCount,
+							startedAt,
+						)
 					}
 				}
 
@@ -1630,7 +1638,7 @@ export class ToolScheduler {
 					item = prepared[cursor] = await this.applyPreToolHook(item)
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
-					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+					return await this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 				}
 				if (item.preparationResult) {
 					results[item.index] = item.preparationResult
@@ -1672,7 +1680,7 @@ export class ToolScheduler {
 					await prepareWindowRead(cursor, maxQueuedReads)
 				} catch (error) {
 					if (!(error instanceof ToolEffectFenceError)) throw error
-					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+					return await this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 				}
 				const parallel = this.isSelectableParallel(item)
 				if (commandPreflights.size && (item.preparationResult || item.validationError || !parallel)) {
@@ -1702,7 +1710,7 @@ export class ToolScheduler {
 							await prepareWindowRead(cursor, lookahead)
 						} catch (error) {
 							if (!(error instanceof ToolEffectFenceError)) throw error
-							return this.failedOutcome(
+							return await this.failedOutcome(
 								results,
 								calls,
 								error,
@@ -1790,7 +1798,7 @@ export class ToolScheduler {
 						)
 					}
 					if (settled.failure) {
-						return this.failedOutcome(
+						return await this.failedOutcome(
 							results,
 							calls,
 							settled.failure,
@@ -1801,7 +1809,7 @@ export class ToolScheduler {
 					}
 					if (this.isCancelled()) {
 						this.fillCancelledResults(results, calls, cursor)
-						return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+						return await this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 					}
 					continue
 				}
@@ -1844,18 +1852,18 @@ export class ToolScheduler {
 						)
 					}
 					if (!(error instanceof ToolEffectFenceError)) throw error
-					return this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
+					return await this.failedOutcome(results, calls, error, calls.length, parallelBatchCount, startedAt)
 				}
 				cursor += 1
 				if (this.isCancelled()) {
 					this.fillCancelledResults(results, calls, cursor)
-					return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+					return await this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 				}
 			}
 
 			if (this.isCancelled()) {
 				this.fillCancelledResults(results, calls)
-				return this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
+				return await this.abortOutcome(results, calls, calls.length, parallelBatchCount, startedAt)
 			}
 
 			return await this.commitResults(results, calls, calls.length, parallelBatchCount, startedAt)
@@ -2474,15 +2482,16 @@ export class ToolScheduler {
 			}
 		}
 		let executionAdmitted = false
-		const recordExecutionFailure = (status: "error" | "denied" | "cancelled") => {
+		const recordExecutionFailure = (status: "error" | "denied" | "cancelled", afterEffectStart = false) => {
 			if (collector.getMetadata().failure) return
 			const effectsUnknown =
-				executionAdmitted &&
-				!prepareCommand &&
-				!prepareMcpRead &&
-				(!prepared.commandRead || prepared.commandRead.serialFallback) &&
-				prepared.descriptor?.capabilities.sideEffects !== "none" &&
-				status !== "denied"
+				afterEffectStart ||
+				(executionAdmitted &&
+					!prepareCommand &&
+					!prepareMcpRead &&
+					(!prepared.commandRead || prepared.commandRead.serialFallback) &&
+					prepared.descriptor?.capabilities.sideEffects !== "none" &&
+					status !== "denied")
 			collector.setMetadata({
 				failure: createToolFailure({
 					reason: effectsUnknown
@@ -3256,11 +3265,19 @@ export class ToolScheduler {
 			await execution
 			if (this.effectFenceFailure?.call.id === prepared.call.id) throw this.effectFenceFailure
 		} catch (error) {
-			if (error instanceof ToolEffectFenceError) throw error
-			const cancelled = this.isCancelled()
+			const interruptedBySiblingFence =
+				error instanceof ToolEffectFenceError &&
+				error === this.effectFenceFailure &&
+				error === this.executionSignal.reason &&
+				error.call.id !== prepared.call.id &&
+				executionAdmitted &&
+				this.effectStartedCallIds.has(callId)
+			if (error instanceof ToolEffectFenceError && !interruptedBySiblingFence) throw error
+			const cancelled = this.isCancelled() || interruptedBySiblingFence
 			const status = cancelled ? "cancelled" : error instanceof ToolReadDeniedError ? "denied" : "error"
 			collector.setStatus(status)
-			recordExecutionFailure(status)
+			if (interruptedBySiblingFence) collector.setMetadata({ executionStatus: "cancelled" })
+			recordExecutionFailure(status, interruptedBySiblingFence)
 			if (prepared.read && error instanceof Error && "timedOut" in error && error.timedOut === true) {
 				collector.setMetadata({ status: "error", timedOut: true })
 			}

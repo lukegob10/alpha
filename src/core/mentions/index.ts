@@ -530,27 +530,29 @@ async function getWorkspaceProblems(cwd: string, maxDiagnosticMessages: number =
  * @returns The terminal contents as a string
  */
 export async function getLatestTerminalOutput(): Promise<string> {
-	// Store original clipboard content to restore later
+	if (!vscode.window.activeTerminal) {
+		return ""
+	}
+
 	const originalClipboard = await vscode.env.clipboard.readText()
+	let copiedClipboard: string | undefined
 
 	try {
 		// Select terminal content
 		await vscode.commands.executeCommand("workbench.action.terminal.selectAll")
 
-		// Copy selection to clipboard
-		await vscode.commands.executeCommand("workbench.action.terminal.copySelection")
+		try {
+			await vscode.commands.executeCommand("workbench.action.terminal.copySelection")
+		} finally {
+			await vscode.commands.executeCommand("workbench.action.terminal.clearSelection")
+		}
 
-		// Clear the selection
-		await vscode.commands.executeCommand("workbench.action.terminal.clearSelection")
-
-		// Get terminal contents from clipboard
-		let terminalContents = (await vscode.env.clipboard.readText()).trim()
-
-		// Check if there's actually a terminal open
-		if (terminalContents === originalClipboard) {
+		copiedClipboard = await vscode.env.clipboard.readText()
+		if (copiedClipboard === originalClipboard) {
 			return ""
 		}
 
+		let terminalContents = copiedClipboard.trim()
 		// Clean up command separation
 		const lines = terminalContents.split("\n")
 		const lastLine = lines.pop()?.trim()
@@ -567,8 +569,9 @@ export async function getLatestTerminalOutput(): Promise<string> {
 
 		return terminalContents
 	} finally {
-		// Restore original clipboard content
-		await vscode.env.clipboard.writeText(originalClipboard)
+		if (copiedClipboard !== originalClipboard) {
+			await vscode.env.clipboard.writeText(originalClipboard)
+		}
 	}
 }
 

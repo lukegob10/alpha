@@ -970,7 +970,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					id: taskId,
 					mode: "architect",
 				}),
-				{ preserveMode: false },
+				{ preserveMode: false, broadcast: false },
 			)
 		})
 
@@ -1059,7 +1059,7 @@ describe("AlphaProvider - Sticky Mode", () => {
 					id: taskId,
 					mode: "architect",
 				}),
-				{ preserveMode: false },
+				{ preserveMode: false, broadcast: false },
 			)
 		})
 	})
@@ -1567,19 +1567,14 @@ describe("AlphaProvider - Sticky Mode", () => {
 			expect(mockContext.globalState.update).not.toHaveBeenCalled()
 		})
 
-		it("should handle errors during mode switch gracefully", async () => {
+		it("keeps a committed mode switch when a listener throws", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
-			// Create a mock task that throws on emit only for specific events
-			let emitCallCount = 0
 			const mockTask = {
 				taskId: "test-task-id",
 				_taskMode: "code",
 				emit: vi.fn().mockImplementation((event) => {
-					emitCallCount++
-					// Only throw on the second emit call (taskModeSwitched event)
-					// The first call is for TaskFocused in addTaskToStack
-					if (emitCallCount === 2 && event === "taskModeSwitched") {
+					if (event === "taskModeSwitched") {
 						throw new Error("Emit failed")
 					}
 				}),
@@ -1610,28 +1605,15 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Mock updateTaskHistory
 			vi.spyOn(provider, "updateTaskHistory").mockImplementation(() => Promise.resolve([]))
 
-			// Mock console.error to suppress error output
-			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-
-			// Clear previous mock calls to isolate this test
 			vi.mocked(mockContext.globalState.update).mockClear()
 
-			// The handleModeSwitch method doesn't catch errors from emit, so it will throw
-			// The error is thrown before the task's mode is updated
-			await expect(provider.handleModeSwitch("architect")).rejects.toThrow("Emit failed")
-
-			// Since the error is thrown before updating the task's _taskMode,
-			// neither the task mode nor global state are updated
-			const modeCalls = vi.mocked(mockContext.globalState.update).mock.calls.filter((call) => call[0] === "mode")
-			expect(modeCalls.length).toBe(0)
-
-			// The task's mode should NOT have been updated since the error occurred first
-			expect(mockTask._taskMode).toBe("code")
-
-			consoleErrorSpy.mockRestore()
+			await provider.handleModeSwitch("architect")
+			expect(mockTask.emit).toHaveBeenCalledWith("taskModeSwitched", mockTask.taskId, "architect")
+			expect(mockContext.globalState.update).toHaveBeenCalledWith("mode", "architect")
+			expect(mockTask._taskMode).toBe("architect")
 		})
 
-		it("should handle updateTaskHistory failures", async () => {
+		it("keeps the previous mode and skips notification when persistence fails", async () => {
 			await provider.resolveWebviewView(mockWebviewView)
 
 			// Create a mock task
@@ -1666,14 +1648,9 @@ describe("AlphaProvider - Sticky Mode", () => {
 			// Mock updateTaskHistory to throw error
 			vi.spyOn(provider, "updateTaskHistory").mockRejectedValue(new Error("Update failed"))
 
-			// Mock console.error
-			const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {})
-
-			// The updateTaskHistory failure will cause handleModeSwitch to throw
-			// This is the actual behavior based on the test failure
 			await expect(provider.handleModeSwitch("architect")).rejects.toThrow("Update failed")
-
-			consoleErrorSpy.mockRestore()
+			expect(mockTask.emit).not.toHaveBeenCalledWith("taskModeSwitched", mockTask.taskId, "architect")
+			expect(mockTask._taskMode).toBe("code")
 		})
 	})
 

@@ -32,6 +32,7 @@ import { openAlphaInNewTab } from "../activate/registerCommands"
 import { getSkillCommands } from "../services/skills/skillInvocation"
 import { defaultModeSlug } from "../shared/modes"
 import { probeModel } from "../api/probeModel"
+import { ProviderProfileSaveError } from "../core/config/ProviderSettingsManager"
 import { readExecutionIdentity } from "./executionIdentity"
 
 export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
@@ -197,9 +198,29 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		eventName: K,
 		...args: K extends keyof AlphaCodeEvents ? AlphaCodeEvents[K] : never
 	) {
-		const data = { eventName: eventName as AlphaCodeEventName, payload: args } as TaskEvent
-		this.ipc?.broadcast({ type: IpcMessageType.TaskEvent, origin: IpcOrigin.Server, data })
+		this.broadcastEvent(eventName, args)
 		return super.emit(eventName, ...args)
+	}
+
+	private broadcastEvent<K extends keyof AlphaCodeEvents>(eventName: K, args: AlphaCodeEvents[K]) {
+		this.ipc?.broadcast({
+			type: IpcMessageType.TaskEvent,
+			origin: IpcOrigin.Server,
+			data: { eventName, payload: args } as TaskEvent,
+		})
+	}
+
+	private publishTaskEvent<K extends keyof AlphaCodeEvents>(eventName: K, ...args: AlphaCodeEvents[K]) {
+		this.broadcastEvent(eventName, args)
+		const reportFailure = () => this.outputChannel.appendLine(`[API] Task observer failed for ${eventName}`)
+		for (const listener of this.rawListeners(eventName)) {
+			try {
+				const result = Reflect.apply(listener, this, args) as PromiseLike<unknown> | undefined
+				if (typeof result?.then === "function") void Promise.resolve(result).catch(reportFailure)
+			} catch {
+				reportFailure()
+			}
+		}
 	}
 
 	public async startNewTask({
@@ -349,111 +370,114 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			// mailbox commit. Raw TaskCompleted is a candidate at that boundary.
 			const isSubtask = subtaskById.get(taskId) ?? Boolean(provider.getLiveTask(taskId)?.parentTaskId)
 			subtaskById.delete(taskId)
-			this.emit(AlphaCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage, { isSubtask })
+			this.publishTaskEvent(AlphaCodeEventName.TaskCompleted, taskId, tokenUsage, toolUsage, { isSubtask })
 			void this.fileLog(
-				`[${new Date().toISOString()}] taskCompleted -> ${taskId} | ${JSON.stringify(tokenUsage, null, 2)} | ${JSON.stringify(toolUsage, null, 2)}\n`,
+				() =>
+					`[${new Date().toISOString()}] taskCompleted -> ${taskId} | ${JSON.stringify(tokenUsage, null, 2)} | ${JSON.stringify(toolUsage, null, 2)}\n`,
 			)
 		})
 		provider.on(AlphaCodeEventName.TaskCreated, (task) => {
 			subtaskById.set(task.taskId, !!task.parentTaskId)
 			// Task Lifecycle
 
-			task.on(AlphaCodeEventName.TaskStarted, async () => {
-				this.emit(AlphaCodeEventName.TaskStarted, task.taskId)
-				await this.fileLog(`[${new Date().toISOString()}] taskStarted -> ${task.taskId}\n`)
+			task.on(AlphaCodeEventName.TaskStarted, () => {
+				this.publishTaskEvent(AlphaCodeEventName.TaskStarted, task.taskId)
+				void this.fileLog(() => `[${new Date().toISOString()}] taskStarted -> ${task.taskId}\n`)
 			})
 
 			task.on(AlphaCodeEventName.TaskAborted, () => {
 				subtaskById.delete(task.taskId)
-				this.emit(AlphaCodeEventName.TaskAborted, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskAborted, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskFocused, () => {
-				this.emit(AlphaCodeEventName.TaskFocused, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskFocused, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskUnfocused, () => {
-				this.emit(AlphaCodeEventName.TaskUnfocused, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskUnfocused, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskActive, () => {
 				subtaskById.set(task.taskId, !!task.parentTaskId)
-				this.emit(AlphaCodeEventName.TaskActive, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskActive, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskInteractive, () => {
-				this.emit(AlphaCodeEventName.TaskInteractive, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskInteractive, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskResumable, () => {
-				this.emit(AlphaCodeEventName.TaskResumable, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskResumable, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskIdle, () => {
-				this.emit(AlphaCodeEventName.TaskIdle, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskIdle, task.taskId)
 			})
 
 			// Subtask Lifecycle
 
 			task.on(AlphaCodeEventName.TaskPaused, () => {
-				this.emit(AlphaCodeEventName.TaskPaused, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskPaused, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskUnpaused, () => {
-				this.emit(AlphaCodeEventName.TaskUnpaused, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskUnpaused, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskSpawned, (childTaskId) => {
-				this.emit(AlphaCodeEventName.TaskSpawned, task.taskId, childTaskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskSpawned, task.taskId, childTaskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskDelegated as any, (childTaskId: string) => {
-				;(this.emit as any)(AlphaCodeEventName.TaskDelegated, task.taskId, childTaskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskDelegated, task.taskId, childTaskId)
 			})
 
 			task.on(AlphaCodeEventName.TaskDelegationCompleted as any, (childTaskId: string, summary: string) => {
-				;(this.emit as any)(AlphaCodeEventName.TaskDelegationCompleted, task.taskId, childTaskId, summary)
+				this.publishTaskEvent(AlphaCodeEventName.TaskDelegationCompleted, task.taskId, childTaskId, summary)
 			})
 
 			task.on(AlphaCodeEventName.TaskDelegationResumed as any, (childTaskId: string) => {
-				;(this.emit as any)(AlphaCodeEventName.TaskDelegationResumed, task.taskId, childTaskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskDelegationResumed, task.taskId, childTaskId)
 			})
 
 			// Task Execution
 
-			task.on(AlphaCodeEventName.Message, async (message) => {
-				this.emit(AlphaCodeEventName.Message, { taskId: task.taskId, ...message })
+			task.on(AlphaCodeEventName.Message, (message) => {
+				this.publishTaskEvent(AlphaCodeEventName.Message, { taskId: task.taskId, ...message })
 
 				if (message.message.partial !== true) {
-					await this.fileLog(`[${new Date().toISOString()}] ${JSON.stringify(message.message, null, 2)}\n`)
+					void this.fileLog(
+						() => `[${new Date().toISOString()}] ${JSON.stringify(message.message, null, 2)}\n`,
+					)
 				}
 			})
 
 			task.on(AlphaCodeEventName.TaskModeSwitched, (taskId, mode) => {
-				this.emit(AlphaCodeEventName.TaskModeSwitched, taskId, mode)
+				this.publishTaskEvent(AlphaCodeEventName.TaskModeSwitched, taskId, mode)
 			})
 
 			task.on(AlphaCodeEventName.TaskAskResponded, () => {
-				this.emit(AlphaCodeEventName.TaskAskResponded, task.taskId)
+				this.publishTaskEvent(AlphaCodeEventName.TaskAskResponded, task.taskId)
 			})
 
 			task.on(AlphaCodeEventName.QueuedMessagesUpdated, (taskId, messages) => {
-				this.emit(AlphaCodeEventName.QueuedMessagesUpdated, taskId, messages)
+				this.publishTaskEvent(AlphaCodeEventName.QueuedMessagesUpdated, taskId, messages)
 			})
 
 			// Task Analytics
 
 			task.on(AlphaCodeEventName.TaskToolFailed, (taskId, tool, error) => {
-				this.emit(AlphaCodeEventName.TaskToolFailed, taskId, tool, error)
+				this.publishTaskEvent(AlphaCodeEventName.TaskToolFailed, taskId, tool, error)
 			})
 
 			task.on(AlphaCodeEventName.TaskTokenUsageUpdated, (_, tokenUsage, toolUsage) => {
-				this.emit(AlphaCodeEventName.TaskTokenUsageUpdated, task.taskId, tokenUsage, toolUsage)
+				this.publishTaskEvent(AlphaCodeEventName.TaskTokenUsageUpdated, task.taskId, tokenUsage, toolUsage)
 			})
 
 			// Let's go!
 
-			this.emit(AlphaCodeEventName.TaskCreated, task.taskId)
+			this.publishTaskEvent(AlphaCodeEventName.TaskCreated, task.taskId)
 		})
 	}
 
@@ -490,13 +514,13 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 		}
 	}
 
-	private async fileLog(message: string) {
+	private async fileLog(formatMessage: () => string) {
 		if (!this.logfile) {
 			return
 		}
 
 		try {
-			await fs.appendFile(this.logfile, message, "utf8")
+			await fs.appendFile(this.logfile, formatMessage(), "utf8")
 		} catch (_) {
 			this.logfile = undefined
 		}
@@ -532,19 +556,19 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 	}
 
 	public async createProfile(name: string, profile?: ProviderSettings, activate: boolean = true) {
-		const entry = this.getProfileEntry(name)
-
-		if (entry) {
-			throw new Error(`Profile with name "${name}" already exists`)
+		try {
+			const { id } = await this.sidebarProvider.upsertProviderProfile(
+				{ name, createOnly: true },
+				profile ?? {},
+				activate,
+			)
+			return id
+		} catch (error) {
+			if (error instanceof ProviderProfileSaveError && error.code === "conflict") {
+				throw new Error(`Profile with name "${name}" already exists`)
+			}
+			throw new Error(`Failed to create profile with name "${name}"`, { cause: error })
 		}
-
-		const id = await this.sidebarProvider.upsertProviderProfile(name, profile ?? {}, activate)
-
-		if (!id) {
-			throw new Error(`Failed to create profile with name "${name}"`)
-		}
-
-		return id
 	}
 
 	public async updateProfile(
@@ -558,13 +582,19 @@ export class API extends EventEmitter<AlphaCodeEvents> implements AlphaCodeAPI {
 			throw new Error(`Profile with name "${name}" does not exist`)
 		}
 
-		const id = await this.sidebarProvider.upsertProviderProfile(name, profile, activate)
-
-		if (!id) {
-			throw new Error(`Failed to update profile with name "${name}"`)
+		try {
+			const { id } = await this.sidebarProvider.upsertProviderProfile(
+				{ id: entry.id, expectedName: name },
+				profile,
+				activate,
+			)
+			return id
+		} catch (error) {
+			if (error instanceof ProviderProfileSaveError && error.code === "notFound") {
+				throw new Error(`Profile with name "${name}" does not exist`)
+			}
+			throw new Error(`Failed to update profile with name "${name}"`, { cause: error })
 		}
-
-		return id
 	}
 
 	public async upsertProfile(

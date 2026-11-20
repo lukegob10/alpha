@@ -225,6 +225,7 @@ export function isApiStreamAbortError(error: unknown, signal?: AbortSignal): boo
 
 /** Semantic model output is distinct from usage, status, and structural events. */
 export function isApiStreamSemanticChunk(chunk: ApiStreamChunk): boolean {
+	if (chunk.type === "text") return chunk.text.length > 0
 	// Host-only completion/signature parts carry replay state, not visible output.
 	if (
 		chunk.type === "reasoning" &&
@@ -233,7 +234,6 @@ export function isApiStreamSemanticChunk(chunk: ApiStreamChunk): boolean {
 	)
 		return false
 	return (
-		chunk.type === "text" ||
 		chunk.type === "reasoning" ||
 		chunk.type === "tool_call" ||
 		chunk.type === "tool_call_start" ||
@@ -379,39 +379,14 @@ export function normalizeApiStreamErrorMetadata(
  */
 export async function* iterateApiStreamWithAbort<T>(source: AsyncIterable<T>, signal?: AbortSignal): AsyncGenerator<T> {
 	const iterator = source[Symbol.asyncIterator]()
-	let finished = false
 	try {
-		while (!finished) {
-			if (signal?.aborted) break
-			const nextPromise = iterator.next()
-			const result = signal
-				? await Promise.race([
-						Promise.resolve(nextPromise),
-						new Promise<IteratorResult<T>>((resolve) => {
-							if (signal.aborted) {
-								resolve({ done: true, value: undefined as T })
-								return
-							}
-							const onAbort = () => resolve({ done: true, value: undefined as T })
-							signal.addEventListener("abort", onAbort, { once: true })
-							// Attach both fulfillment and rejection handlers. A stalled/late
-							// provider iterator must not turn cancellation into an unhandled
-							// rejection after this adapter has already completed.
-							Promise.resolve(nextPromise).then(
-								() => signal.removeEventListener("abort", onAbort),
-								() => signal.removeEventListener("abort", onAbort),
-							)
-						}),
-					])
-				: await nextPromise
-			if (result.done) {
-				finished = true
-				break
-			}
+		while (!signal?.aborted) {
+			const result = signal ? await raceApiStreamAbort(iterator.next(), signal) : await iterator.next()
+			// Cancellation can arrive while a ready result is queued for delivery.
+			if (signal?.aborted || !result || result.done) break
 			yield result.value
 		}
 	} finally {
-		finished = true
 		if (typeof iterator.return === "function") {
 			try {
 				// Do not await return(): some SDKs leave a pending next() until
@@ -447,11 +422,10 @@ export async function raceApiStreamAbort<T>(promise: PromiseLike<T>, signal?: Ab
 		signal.addEventListener("abort", onAbort, { once: true })
 	})
 	try {
-		return await Promise.race([Promise.resolve(promise), abortPromise])
+		// The race observes late failures even after cancellation wins.
+		return await Promise.race([promise, abortPromise])
 	} finally {
 		if (onAbort) signal.removeEventListener("abort", onAbort)
-		// Consume late transport failures after cancellation.
-		Promise.resolve(promise).catch(() => undefined)
 	}
 }
 

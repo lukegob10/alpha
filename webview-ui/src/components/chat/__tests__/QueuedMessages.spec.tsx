@@ -43,6 +43,22 @@ describe("QueuedMessages", () => {
 		{ id: "msg1", timestamp: 1, text: "first", images: [] },
 		{ id: "msg2", timestamp: 2, text: "second", images: [] },
 	]
+	it("disables only editing when the composer is awaiting a receipt", () => {
+		render(
+			<QueuedMessages
+				queue={queue}
+				editingDisabled
+				onRemove={vi.fn()}
+				onSteer={vi.fn()}
+				onEdit={vi.fn()}
+				onReorder={vi.fn()}
+			/>,
+		)
+		for (const button of screen.getAllByTitle("queuedMessages.editTooltip")) expect(button).toBeDisabled()
+		for (const button of screen.getAllByTitle("queuedMessages.steerTooltip")) expect(button).toBeEnabled()
+		for (const button of screen.getAllByLabelText("common:answers.remove")) expect(button).toBeEnabled()
+		expect(screen.getAllByLabelText("queuedMessages.dragHandle").every((handle) => handle.draggable)).toBe(true)
+	})
 	it("locks queue controls while the host selects the next steer, before a message identity is known", () => {
 		render(
 			<QueuedMessages

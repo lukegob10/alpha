@@ -359,6 +359,28 @@ describe("ContextProxy", () => {
 	})
 
 	describe("storeSecret", () => {
+		it.each(["new-secret", undefined])("keeps a newer secret edit to %s during refresh", async (value) => {
+			let finishRead!: (value: string) => void
+			const pendingRead = new Promise<string>((resolve) => (finishRead = resolve))
+			let finishWrite!: () => void
+			const pendingWrite = new Promise<void>((resolve) => (finishWrite = resolve))
+			mockSecrets.get.mockImplementation((key: string) =>
+				key === "openAiApiKey" ? pendingRead : Promise.resolve(undefined),
+			)
+			mockSecrets.store.mockReturnValueOnce(pendingWrite)
+			mockSecrets.delete.mockReturnValueOnce(pendingWrite)
+			const refreshing = proxy.refreshSecrets()
+			const saving = proxy.storeSecret("openAiApiKey", value)
+			try {
+				finishRead("test-secret")
+				await refreshing
+				expect(proxy.getSecret("openAiApiKey")).toBe(value)
+			} finally {
+				finishWrite()
+				await saving
+			}
+		})
+
 		it("should store secret directly in original context", async () => {
 			await proxy.storeSecret("openAiApiKey", "new-secret")
 

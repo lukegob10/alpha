@@ -67,6 +67,45 @@ it("preserves newer durable fields that a stale sibling's metadata update omits"
 	expect(reloaded.get(item.id)).toEqual({ ...latest, tokensIn: 42 })
 })
 
+it("appends concurrent child IDs without rolling back newer parent history", async () => {
+	const first = await openStore()
+	const original: HistoryItem = { ...item, childIds: ["first-child"], status: "active" }
+	await first.upsert(original)
+	const sibling = await openStore()
+	const latest: HistoryItem = { ...original, status: "completed", tokensIn: 42 }
+	await first.upsert(latest)
+
+	await Promise.all([
+		first.appendChildIds(original, ["second-child", "first-child"]),
+		sibling.appendChildIds(sibling.get(item.id)!, ["third-child"]),
+	])
+	await sibling.upsert({ ...latest, tokensOut: 8 })
+
+	const reloaded = await openStore()
+	const saved = reloaded.get(item.id)
+	expect({ ...saved, childIds: [...(saved?.childIds ?? [])].sort() }).toEqual({
+		...latest,
+		tokensOut: 8,
+		childIds: ["first-child", "second-child", "third-child"],
+	})
+})
+
+it("attaches a child to index-only history before backfill", async () => {
+	const tasksDir = path.join(storage, "tasks")
+	const taskDir = path.join(tasksDir, item.id)
+	const legacy = { ...item, childIds: ["first-child"], tokensIn: 42 }
+	await fs.mkdir(taskDir, { recursive: true })
+	await fs.writeFile(
+		path.join(tasksDir, GlobalFileNames.historyIndex),
+		JSON.stringify({ version: 1, updatedAt: 1, entries: [legacy] }),
+	)
+	const store = await openStore()
+
+	await store.appendChildIds(item, ["second-child"])
+	const persisted = JSON.parse(await fs.readFile(path.join(taskDir, GlobalFileNames.historyItem), "utf8"))
+	expect(persisted).toEqual({ ...legacy, childIds: ["first-child", "second-child"] })
+})
+
 it("does not load history from a linked task directory", async () => {
 	const store = await openStore()
 	await linkTaskDirectory()

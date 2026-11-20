@@ -23,8 +23,10 @@ const createDOMPurify = createRequire(path.join(repository, "webview-ui/package.
 ) => unknown
 const kitScript = readFileSync(path.join(kitDirectory, "kit.js"), "utf8")
 const viewerScript = readFileSync(path.join(repository, "webview-ui/public/html-document/viewer.js"), "utf8")
-const examples = ["review", "spec", "report"] as const
+const examples = ["brief", "review", "spec", "report", "runbook"] as const
 const sourceFor = (name: string) => readFileSync(path.join(kitDirectory, "examples", `${name}.html`), "utf8")
+const skillDirectory = path.join(repository, "src/assets/skills/rich-documents")
+const skill = readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8")
 
 describe("bundled Rich documents authoring and viewer contract", () => {
 	it("renders charts through sanitization and the actual viewer message adapter on initial delivery and refresh", () => {
@@ -55,20 +57,35 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 			window.eval(kitScript)
 			window.eval(viewerScript)
 			expect(api.postMessage).toHaveBeenCalledWith({ ...identity, action: "ready", revision: 0 })
-			const sanitized = sanitizeDocument(sourceFor("report"))
+			const source = sourceFor("report")
+			const sanitized = sanitizeDocument(source)
 			expect(sanitized.html).not.toMatch(/<script|<svg|<canvas/)
-			for (const revision of [1, 2]) {
-				const previous = window.document.querySelector("svg")
+			const deliver = (revision: number, { html, title }: typeof sanitized) => {
 				window.dispatchEvent(
 					new window.MessageEvent("message", {
-						data: { ...identity, type: "document", revision, html: sanitized.html, title: sanitized.title },
+						data: { ...identity, type: "document", revision, html, title },
 					}),
 				)
+			}
+			const expectCharts = (firstValue: number) => {
 				expect(window.document.querySelectorAll("figure[data-alpha-chart] svg")).toHaveLength(2)
 				expect(window.document.querySelectorAll("table[data-alpha-chart-data] tbody tr")).toHaveLength(16)
-				expect(window.document.querySelectorAll("svg [tabindex]").length).toBeGreaterThan(0)
-				if (previous) expect(previous.isConnected).toBe(false)
+				expect(window.document.querySelector("svg [tabindex]")?.getAttribute("aria-label")).toContain(
+					`Dec 2023, All items: ${firstValue}`,
+				)
 			}
+			deliver(1, sanitized)
+			expectCharts(3.4)
+			const initialChart = window.document.querySelector("svg")
+			deliver(2, sanitized)
+			expect(initialChart?.isConnected).toBe(true)
+			expectCharts(3.4)
+			deliver(
+				3,
+				sanitizeDocument(source.replace('<td data-value="3.4">3.4%</td>', '<td data-value="3.6">3.6%</td>')),
+			)
+			expect(initialChart?.isConnected).toBe(false)
+			expectCharts(3.6)
 			window.dispatchEvent(new window.Event("pagehide"))
 			expect(window.document.querySelector("svg")).toBeNull()
 		} finally {
@@ -77,7 +94,6 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 	})
 
 	it("requires native HTML preview delivery and source validation without browser fallbacks", () => {
-		const skill = readFileSync(path.join(repository, "src/assets/skills/rich-documents/SKILL.md"), "utf8")
 		expect(skill).toContain("Always use Alpha's built-in HTML previewer")
 		expect(skill).toContain("Never use browser tools")
 		for (const tool of ["open_browser_page", "navigate_page", "run_playwright_code"]) expect(skill).toContain(tool)
@@ -85,6 +101,17 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 		expect(skill).toContain("[Open document](alpha-document://open?uri=")
 		expect(skill).toContain("validate the source and deliver the document link")
 		expect(skill).not.toContain("Use available preview validation")
+	})
+
+	it("can preview the skill's standalone starting markup without any example or external assets", () => {
+		const scaffold = skill.match(/```html\r?\n([\s\S]+?)\r?\n```/)?.[1]
+		expect(scaffold).toBeDefined()
+		const { html, references, images } = sanitizeDocument(scaffold!)
+		const document = load(html)
+		expect(document("main.alpha-doc > header h1").text().trim()).not.toBe("")
+		expect(document("section h2").text().trim()).not.toBe("")
+		expect(references.size).toBe(0)
+		expect(images.size).toBe(0)
 	})
 
 	it("retains labeled status components and table controls from the component gallery", () => {
@@ -200,7 +227,11 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 						"images/layout-sample.png",
 					)
 				}
-				expect(root.querySelector("nav[data-alpha-toc] a")).not.toBeNull()
+				if (name === "review" || name === "spec" || name === "report")
+					expect(root.querySelector("nav[data-alpha-toc] a")).not.toBeNull()
+				root.querySelectorAll<HTMLAnchorElement>('a[href^="#"]:not([href="#"])').forEach((link) => {
+					expect(window.document.getElementById(link.hash.slice(1))).not.toBeNull()
+				})
 				dispose()
 				expect(root.querySelectorAll("svg, th button")).toHaveLength(0)
 				expect(tableRows()).toEqual(originalTableText)
@@ -213,10 +244,12 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 	)
 
 	it("resolves every on-demand skill reference to a source resource copied to its installed location", () => {
-		const skillDirectory = path.join(repository, "src/assets/skills/rich-documents")
-		const skill = readFileSync(path.join(skillDirectory, "SKILL.md"), "utf8")
+		const gallery = load(sourceFor("index"))
+		const galleryExamples = gallery("nav a[href$='.html']")
+			.map((_, link) => gallery(link).attr("href"))
+			.get()
+		expect(galleryExamples.sort()).toEqual(examples.map((name) => `${name}.html`).sort())
 		const links = [...skill.matchAll(/\]\((\.\.\/[^)]+)\)/g)].map((match) => match[1])
-		expect(links).toHaveLength(4)
 		const installedRoot = path.join(repository, "src/webview-ui/build/artifact-kit/v1")
 		const resolved = links.map((link) => {
 			const relative = path.relative(installedRoot, path.resolve(skillDirectory, link))
@@ -225,12 +258,7 @@ describe("bundled Rich documents authoring and viewer contract", () => {
 			expect(existsSync(path.join(kitDirectory, relative))).toBe(true)
 			return relative.split(path.sep).join("/")
 		})
-		expect(resolved.sort()).toEqual([
-			"examples/report.html",
-			"examples/review.html",
-			"examples/spec.html",
-			"reference.md",
-		])
+		expect(resolved.sort()).toEqual([...examples.map((name) => `examples/${name}.html`), "reference.md"].sort())
 		expect(readFileSync(path.join(repository, "src/.vscodeignore"), "utf8")).toContain(
 			"!webview-ui/build/artifact-kit/**",
 		)

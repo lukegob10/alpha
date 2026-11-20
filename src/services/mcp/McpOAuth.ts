@@ -19,8 +19,9 @@ import { t } from "../../i18n"
 
 type Fetch = typeof globalThis.fetch
 
-function withAbort<T>(work: PromiseLike<T>, signal: AbortSignal): Promise<T> {
+function withAbort<T>(dispatch: () => PromiseLike<T>, signal: AbortSignal): Promise<T> {
 	signal.throwIfAborted()
+	const work = dispatch()
 	return new Promise((resolve, reject) => {
 		const cancel = () => reject(signal.reason ?? new Error("MCP authorization cancelled"))
 		signal.addEventListener("abort", cancel, { once: true })
@@ -93,12 +94,16 @@ export function createMcpOAuthFetch(
 		authSignal.throwIfAborted()
 		await secrets.store(`${key}.${suffix}`, JSON.stringify(value))
 	}
-	const authFetch: Fetch = async (input, init) => {
-		secureUrl(input instanceof Request ? input.url : input.toString())
-		// Never forward a credential-bearing registration/token POST through a redirect.
-		const operationSignal = authSignal
-		return withAbort(fetcher(input, { ...init, redirect: "error", signal: operationSignal }), operationSignal)
-	}
+	const createAuthFetch =
+		(operationSignal: AbortSignal): Fetch =>
+		async (input, init) => {
+			secureUrl(input instanceof Request ? input.url : input.toString())
+			// Never forward a credential-bearing registration/token POST through a redirect.
+			return withAbort(
+				() => fetcher(input, { ...init, redirect: "error", signal: operationSignal }),
+				operationSignal,
+			)
+		}
 	const provider: OAuthClientProvider = {
 		discoveryState: () => discovery,
 		saveDiscoveryState: (value) => {
@@ -147,23 +152,28 @@ export function createMcpOAuthFetch(
 		},
 		redirectToAuthorization: async (url) => {
 			secureUrl(url)
-			authSignal.throwIfAborted()
+			const operationSignal = authSignal
 			const answer = await withAbort(
-				vscode.window.showInformationMessage(
-					t("common:mcpOAuth.authorize", { server: server.origin, issuer: url.origin }),
-					{ modal: true },
-					t("common:mcpOAuth.openBrowser"),
-				),
-				authSignal,
+				() =>
+					vscode.window.showInformationMessage(
+						t("common:mcpOAuth.authorize", { server: server.origin, issuer: url.origin }),
+						{ modal: true },
+						t("common:mcpOAuth.openBrowser"),
+					),
+				operationSignal,
 			)
-			authSignal.throwIfAborted()
+			operationSignal.throwIfAborted()
 			if (answer !== t("common:mcpOAuth.openBrowser")) throw new Error("MCP authorization declined")
 			if (!(await vscode.env.openExternal(vscode.Uri.parse(url.href))))
 				throw new Error("MCP authorization browser unavailable")
 			if (!receiveCode) throw new Error("MCP callback unavailable")
 			const code = await receiveCode
 			closeCallback()
-			const result = await auth(provider, { serverUrl: server, authorizationCode: code, fetchFn: authFetch })
+			const result = await auth(provider, {
+				serverUrl: server,
+				authorizationCode: code,
+				fetchFn: createAuthFetch(operationSignal),
+			})
 			if (result !== "AUTHORIZED") throw new Error("MCP authorization incomplete")
 		},
 	}
@@ -209,7 +219,7 @@ export function createMcpOAuthFetch(
 			if (!address || typeof address === "string") throw new Error("MCP callback address unavailable")
 			redirectUrl = `http://127.0.0.1:${address.port}/callback`
 			const result = await withAbort(
-				auth(provider, { serverUrl: server, ...challenge, fetchFn: authFetch }),
+				() => auth(provider, { serverUrl: server, ...challenge, fetchFn: createAuthFetch(operationSignal) }),
 				operationSignal,
 			)
 			if (result !== "AUTHORIZED" && !(await provider.tokens())) throw new Error("MCP authorization incomplete")
@@ -256,15 +266,16 @@ export function createMcpOAuthFetch(
 		}
 		if (!initialization) return response
 		await response.body?.cancel()
-		requestSignal.throwIfAborted()
-		if (!pending) {
-			authSignal = requestSignal
-			pending = authorize(response).finally(() => {
-				pending = undefined
-				authSignal = signal
-			})
-		}
-		await withAbort(pending, requestSignal)
+		await withAbort(() => {
+			if (!pending) {
+				authSignal = requestSignal
+				pending = authorize(response).finally(() => {
+					pending = undefined
+					authSignal = signal
+				})
+			}
+			return pending
+		}, requestSignal)
 		requestSignal.throwIfAborted()
 		const tokens = await provider.tokens()
 		if (!tokens) throw new Error("MCP authorization token unavailable")

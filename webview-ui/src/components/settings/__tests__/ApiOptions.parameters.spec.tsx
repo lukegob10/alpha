@@ -178,9 +178,10 @@ const CachedParameterSettings = ({
 describe("ApiOptions request parameter applicability", () => {
 	const setApiConfigurationField = vi.fn()
 	const setErrorMessage = vi.fn()
-	const options = (apiConfiguration: ProviderSettings) => (
+	const options = (apiConfiguration: ProviderSettings, profileIdentity?: string) => (
 		<ApiOptions
 			uriScheme={undefined}
+			profileIdentity={profileIdentity}
 			apiConfiguration={apiConfiguration}
 			setApiConfigurationField={setApiConfigurationField}
 			errorMessage={undefined}
@@ -189,6 +190,23 @@ describe("ApiOptions request parameter applicability", () => {
 	)
 
 	beforeEach(() => vi.clearAllMocks())
+
+	it("clears an invalid output limit when switching between profiles with the same saved cap", () => {
+		const configuration: ProviderSettings = {
+			...nativeResponses,
+			includeMaxTokens: true,
+			openAiCustomModelInfo: { ...declaredCapabilities, maxTokens: 512 },
+		}
+		const { rerender } = render(options(configuration, "profile-a"))
+		fireEvent.input(screen.getByTestId("max-output-tokens"), { target: { value: "1.5" } })
+		expect(setErrorMessage).toHaveBeenLastCalledWith("settings:validation.outputTokenLimit")
+		rerender(options({ ...configuration, verbosity: "low" }, "profile-a"))
+		expect(screen.getByTestId("max-output-tokens")).toHaveValue("1.5")
+
+		rerender(options({ ...configuration }, "profile-b"))
+		expect(screen.getByTestId("max-output-tokens")).toHaveValue("512")
+		expect(setErrorMessage).toHaveBeenLastCalledWith(undefined)
+	})
 
 	it.each<[string, ProviderSettings, boolean, boolean]>([
 		["native Responses", nativeResponses, false, true],

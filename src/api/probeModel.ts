@@ -71,14 +71,18 @@ export async function probeModel(configuration: ProviderSettings, signal?: Abort
 			if (chunk.type === "text" && chunk.text.trim()) {
 				text = true
 				result.firstTextMs ??= performance.now() - start
-			} else if (chunk.type === "usage")
-				result.usage = {
-					inputTokens: chunk.inputTokens,
-					outputTokens: chunk.outputTokens,
-					source: chunk.usageSource ?? "unknown",
-					cost: chunk.totalCost ?? null,
+			} else if (chunk.type === "usage") {
+				const usage = (result.usage ??= { inputTokens: 0, outputTokens: 0, source: "unknown", cost: null })
+				usage.inputTokens += chunk.inputTokens
+				usage.outputTokens += chunk.outputTokens
+				if (chunk.totalCost !== undefined) usage.cost = (usage.cost ?? 0) + chunk.totalCost
+				if (
+					chunk.usageSource === "provider" ||
+					(chunk.usageSource === "estimate" && usage.source === "unknown")
+				) {
+					usage.source = chunk.usageSource
 				}
-			else if (chunk.type === "outcome") {
+			} else if (chunk.type === "outcome") {
 				control.signal.throwIfAborted()
 				completed = chunk.terminal && chunk.status === "completed" && !chunk.requiresContinuation
 				failed ||= !completed

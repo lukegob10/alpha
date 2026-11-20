@@ -30,11 +30,18 @@ describe("bundled skill resources", () => {
 		},
 	)
 
+	it.each(["brief.html", "runbook.html"])("allows the packaged rich-document example %s", async (fileName) => {
+		const resource = await createResource(`webview-ui/build/artifact-kit/v1/examples/${fileName}`)
+		await expect(isBundledSkillResource(extensionPath, resource)).resolves.toBe(true)
+	})
+
 	it("does not widen access to adjacent, missing, relative, or traversal paths", async () => {
 		const adjacent = await createResource("assets/skills/skill-builder/references/private.md")
 		const references = path.dirname(adjacent)
 
 		await expect(isBundledSkillResource(extensionPath, adjacent)).resolves.toBe(false)
+		const unpublished = await createResource("webview-ui/build/artifact-kit/v1/examples/unpublished.html")
+		await expect(isBundledSkillResource(extensionPath, unpublished)).resolves.toBe(false)
 		await expect(
 			isBundledSkillResource(
 				extensionPath,

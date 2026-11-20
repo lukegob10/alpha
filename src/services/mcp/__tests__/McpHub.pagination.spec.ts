@@ -11,6 +11,7 @@ import {
 
 import type { AlphaProvider } from "../../../core/webview/AlphaProvider"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
+import { fileExistsAtPath } from "../../../utils/fs"
 import { McpHub, ServerConfigSchema, type ConnectedMcpConnection } from "../McpHub"
 import { MAX_MCP_PAGINATION_CURSOR_BYTES } from "../pagination"
 
@@ -248,6 +249,139 @@ describe("McpHub complete paginated catalogs", () => {
 		return connectionFor(hub, source)
 	}
 
+	it("joins a concurrent refresh and completes once its connections are ready", async () => {
+		const existing = await connect()
+		const closing = deferred<void>()
+		const released = deferred<void>()
+		vi.mocked(existing.transport.close).mockImplementationOnce(async () => {
+			closing.resolve()
+			await released.promise
+		})
+		const replacement = createClient("refreshed")
+		mocks.clients.push(replacement)
+		vi.useFakeTimers()
+		const first = hub.refreshAllConnections()
+		const second = hub.refreshAllConnections()
+		let settled = false
+		const refreshed = Promise.all([first, second]).then(() => {
+			settled = true
+		})
+		try {
+			await closing.promise
+			await vi.advanceTimersByTimeAsync(0)
+			expect(replacement.connect).not.toHaveBeenCalled()
+			expect(settled).toBe(false)
+			released.resolve()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(settled).toBe(true)
+			expect(replacement.connect).toHaveBeenCalledOnce()
+			expect(connectionFor(hub).client).toBe(replacement)
+		} finally {
+			released.resolve()
+			await vi.runAllTimersAsync()
+			await refreshed
+		}
+	})
+
+	it("joins a detached server's close before a newer same-source replacement starts", async () => {
+		const existing = await connect()
+		const closing = deferred<void>()
+		const released = deferred<void>()
+		vi.mocked(existing.transport.close).mockImplementationOnce(async () => {
+			closing.resolve()
+			await released.promise
+		})
+		vi.useFakeTimers()
+		const superseded = hub.updateServerConnections({ shared: { ...config, args: ["first-replacement.js"] } })
+		await closing.promise
+		const replacement = createClient("replacement")
+		mocks.clients.push(replacement)
+		const replacementConfig = { ...config, args: ["next-replacement.js"] }
+		writeSettings("global", replacementConfig)
+		const replacing = hub.updateServerConnections({ shared: replacementConfig })
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(mocks.transports).toHaveLength(1)
+			expect(hub.getServers()).toEqual([])
+		} finally {
+			released.resolve()
+			await Promise.all([superseded, replacing])
+		}
+		expect(replacement.connect).toHaveBeenCalledOnce()
+		expect(connectionFor(hub).client).toBe(replacement)
+	})
+
+	it("joins an already-detached transport close during disposal", async () => {
+		const existing = await connect()
+		const closing = deferred<void>()
+		const released = deferred<void>()
+		vi.mocked(existing.transport.close).mockImplementationOnce(async () => {
+			closing.resolve()
+			await released.promise
+		})
+		vi.useFakeTimers()
+		const deleting = hub.deleteConnection("shared", "global")
+		await closing.promise
+		const disposed = vi.fn()
+		const disposing = hub.dispose().then(disposed)
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(disposed).not.toHaveBeenCalled()
+		} finally {
+			released.resolve()
+			await Promise.all([deleting, disposing])
+		}
+		expect(disposed).toHaveBeenCalledOnce()
+		expect(existing.transport.close).toHaveBeenCalledOnce()
+	})
+
+	it("starts a valid restart without advancing the clock", async () => {
+		await connect()
+		const replacement = createClient("restarted")
+		mocks.clients.push(replacement)
+		vi.useFakeTimers()
+		const restarting = hub.restartConnection("shared", "global")
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(replacement.connect).toHaveBeenCalledOnce()
+		} finally {
+			await vi.runAllTimersAsync()
+			await restarting
+		}
+		expect(connectionFor(hub).client).toBe(replacement)
+	})
+
+	it("keeps a healthy server usable when restart configuration cannot be read", async () => {
+		const existing = await connect()
+		mocks.files.set(settingsPath, JSON.stringify({ mcpServers: {} }))
+		vi.useFakeTimers()
+		const restarting = hub.restartConnection("shared", "global")
+		await vi.runAllTimersAsync()
+		await restarting
+
+		expect(connectionFor(hub)).toBe(existing)
+		expect(existing.server.status).toBe("connected")
+		expect(hub.getServerCatalogRevision(existing.server)).toBeDefined()
+		expect(existing.transport.close).not.toHaveBeenCalled()
+	})
+
+	it("preserves global settings created after the initial existence check", async () => {
+		const winningSettings = JSON.stringify({ mcpServers: { shared: config } })
+		vi.mocked(fileExistsAtPath).mockImplementationOnce(async () => {
+			mocks.files.set(settingsPath, winningSettings)
+			return false
+		})
+		mocks.writeFile.mockImplementationOnce(async (filePath, content, options) => {
+			const key = path.resolve(filePath)
+			if (mocks.files.has(key) && options?.flag === "wx") {
+				throw Object.assign(new Error("File exists"), { code: "EEXIST" })
+			}
+			mocks.files.set(key, content)
+		})
+		await expect(hub.getMcpSettingsFilePath()).resolves.toBe(settingsPath)
+		expect(mocks.files.get(settingsPath)).toBe(winningSettings)
+	})
+
 	it("preserves a revoked grant when another settings write was queued before its commit", async () => {
 		const client = createClient("allowed")
 		await connect(client, "global", { ...config, alwaysAllow: ["allowed"] })
@@ -443,19 +577,21 @@ describe("McpHub complete paginated catalogs", () => {
 	)
 
 	it.each(["removed", "disabled", "replaced"])(
-		"does not revive a server %s while a restart is awaiting presentation",
+		"does not revive a server %s while a restart reads configuration",
 		async (change) => {
-			await connect()
+			const existing = await connect()
 			const entering = deferred<void>()
 			const release = deferred<void>()
-			const presentation = hub as unknown as { notifyWebviewOfServerChanges(): Promise<void> }
-			vi.spyOn(presentation, "notifyWebviewOfServerChanges").mockImplementationOnce(async () => {
+			const restartConfig = mocks.files.get(settingsPath)
+			mocks.readFile.mockImplementationOnce(async () => {
 				entering.resolve()
 				await release.promise
+				return restartConfig
 			})
 			vi.useFakeTimers()
 			const restarting = hub.restartConnection("shared", "global")
 			await entering.promise
+			expect(existing.server.status).toBe("connected")
 			if (change === "removed") {
 				mocks.files.set(settingsPath, JSON.stringify({ mcpServers: {} }))
 				await hub.updateServerConnections({}, "global")

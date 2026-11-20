@@ -326,7 +326,14 @@ describe("forced compaction step ownership", () => {
 			allowedFunctionNames: ["apply_patch"],
 			surface,
 		})
-		provider.getState.mockResolvedValue({ approvalMode: "ask", autoCondenseContext: false })
+		const requestState = {
+			approvalMode: "ask",
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 85,
+			autoCondenseContextScope: "after-prefix",
+			customSupportPrompts: { CONDENSE: "Preserve earlier implementation decisions" },
+		}
+		provider.getState.mockResolvedValue(requestState)
 		vi.mocked(task["getSystemPrompt"]).mockImplementation(async (_state, _provider, _handoff, _mode, capture) => {
 			capture?.(fragments)
 			return "Captured system instructions"
@@ -359,7 +366,11 @@ describe("forced compaction step ownership", () => {
 				>)
 			},
 			recover: () =>
-				Reflect.apply(task["handleContextWindowExceededError"], task, [undefined, step]) as Promise<void>,
+				Reflect.apply(task["handleContextWindowExceededError"], task, [
+					undefined,
+					step,
+					requestState,
+				]) as Promise<void>,
 		}
 	}
 
@@ -382,7 +393,13 @@ describe("forced compaction step ownership", () => {
 		task["effectiveApiConfiguration"] = { ...task.apiConfiguration }
 		vi.mocked(task.getTaskMode).mockResolvedValue("architect")
 		vi.mocked(task["getSystemPrompt"]).mockResolvedValue("Changed live instructions")
-		provider.getState.mockResolvedValue({ approvalMode: "auto", autoCondenseContext: false })
+		provider.getState.mockResolvedValue({
+			approvalMode: "auto",
+			autoCondenseContext: false,
+			autoCondenseContextPercent: 95,
+			autoCondenseContextScope: "full-context",
+			customSupportPrompts: { CONDENSE: "Changed live compaction prompt" },
+		})
 		task["taskApprovalModePersistence"] = Promise.resolve(true)
 		expect(task.setTaskApprovalMode("auto")).toBe(true)
 		await task["taskApprovalModePersistence"]
@@ -394,6 +411,7 @@ describe("forced compaction step ownership", () => {
 		vi.mocked(buildNativeToolsArrayWithRestrictions).mockResolvedValue({ tools: [], surface: updatedSurface })
 		const buildsBeforeRecovery = vi.mocked(buildNativeToolsArrayWithRestrictions).mock.calls.length
 		await finishFailure()
+		provider.getState.mockClear()
 		vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => ({
 			...compactedResult(messages),
 			prevContextTokens: 100_000,
@@ -407,6 +425,12 @@ describe("forced compaction step ownership", () => {
 		expect(recovery.apiHandler).toBe(api)
 		expect(recovery.contextWindow).toBe(128_000)
 		expect(recovery.systemPrompt).toBe("Captured system instructions")
+		expect(recovery).toMatchObject({
+			autoCondenseContextPercent: 85,
+			autoCondenseContextScope: "after-prefix",
+			customCondensingPrompt: "Preserve earlier implementation decisions",
+		})
+		expect(provider.getState).not.toHaveBeenCalled()
 		expect(recovery.metadata).toMatchObject({
 			mode: "code",
 			instructionFragments: fragments,
@@ -1718,6 +1742,56 @@ describe("Task context recovery admission", () => {
 		},
 	)
 
+	it.each(["manual", "automatic", "forced"] as const)(
+		"does not overwrite a concurrent append while %s compaction waits for receipt settlement",
+		async (trigger) => {
+			const { task, api, provider, history, save } = harness()
+			const settling = deferred<void>()
+			const release = deferred<void>()
+			Object.assign(provider, {
+				settleIndependentTaskWaitReceiptsForParent: vi.fn(async () => {
+					settling.resolve()
+					await release.promise
+				}),
+			})
+			const result = {
+				...compactedResult(history),
+				prevContextTokens: 100,
+				targetContextTokens: 80,
+				status: "reduced" as const,
+			}
+			vi.mocked(summarizeConversation).mockResolvedValueOnce(result)
+			vi.mocked(manageContext).mockResolvedValueOnce(result)
+
+			const running = runRecovery(task, trigger).catch((error: unknown) => error)
+			await settling.promise
+			const appended: ApiMessage = { role: "user", content: "New input during settlement", ts: 20 }
+			history.push(appended)
+			release.resolve()
+
+			expect(await running).toMatchObject({ message: expect.stringContaining("Conversation history changed") })
+			expect(task.apiConversationHistory).toBe(history)
+			expect(task.apiConversationHistory.at(-1)).toBe(appended)
+			expect(save).not.toHaveBeenCalled()
+			expect(api.createMessage).not.toHaveBeenCalled()
+		},
+	)
+
+	it("preserves a newer transcript when preflight compaction leaves its source unchanged", async () => {
+		const { task, api, history, save } = harness()
+		const replacement: ApiMessage[] = [...history, { role: "user", content: "New input", ts: 20 }]
+		vi.mocked(manageContext).mockImplementationOnce(async ({ messages }) => {
+			task.apiConversationHistory = replacement
+			return { messages, prevContextTokens: 1000, summary: "", cost: 0, status: "unchanged" }
+		})
+
+		await runRecovery(task, "automatic")
+
+		expect(task.apiConversationHistory).toBe(replacement)
+		expect(save).not.toHaveBeenCalled()
+		expect(api.createMessage.mock.calls[0][1].at(-1)?.content).toContainEqual({ type: "text", text: "New input" })
+	})
+
 	beforeEach(() => vi.clearAllMocks())
 	afterEach(() => vi.restoreAllMocks())
 
@@ -2174,16 +2248,22 @@ describe("Task context recovery admission", () => {
 	})
 
 	it("forces recovery below local thresholds and links its summary to rewind and task cancellation", async () => {
-		const { task, save, history } = harness()
+		const { task, provider, save, history } = harness()
 		const result = { ...compactedResult(history), prevContextTokens: 100, status: "reduced" as const }
 		vi.mocked(manageContext).mockResolvedValue(result)
+		provider.getState.mockResolvedValue({ customSupportPrompts: { CONDENSE: "Keep the recent file changes" } })
 
 		await Reflect.get(task, "handleContextWindowExceededError").call(task)
 
 		expect(save).toHaveBeenCalledOnce()
 		expect(task.apiConversationHistory).toEqual(result.messages)
 		expect(manageContext).toHaveBeenCalledWith(
-			expect.objectContaining({ totalTokens: 100, contextWindow: 128_000, forceCompaction: true }),
+			expect.objectContaining({
+				totalTokens: 100,
+				contextWindow: 128_000,
+				forceCompaction: true,
+				customCondensingPrompt: "Keep the recent file changes",
+			}),
 		)
 		expect(vi.mocked(manageContext).mock.calls[0][0].metadata).toMatchObject({
 			signal: expect.any(AbortSignal),

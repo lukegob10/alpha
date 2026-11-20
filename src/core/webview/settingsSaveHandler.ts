@@ -60,12 +60,6 @@ function applyTerminalSetting(key: SettingKey, value: unknown) {
 		case "terminalShellIntegrationDisabled":
 			Terminal.setShellIntegrationDisabled(value as boolean)
 			break
-		case "terminalCommandDelay":
-			Terminal.setCommandDelay(value as number)
-			break
-		case "terminalPowershellCounter":
-			Terminal.setPowershellCounter(value as boolean)
-			break
 		case "terminalZshClearEolMark":
 			Terminal.setTerminalZshClearEolMark(value as boolean)
 			break

@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 import * as path from "path"
-import * as fs from "fs"
+import { lstat } from "node:fs/promises"
 import * as childProcess from "child_process"
 import * as readline from "readline"
 import { byLengthAsc, Fzf } from "fzf"
@@ -264,22 +264,13 @@ export async function searchWorkspaceFiles(
 		// Get all matching results from fzf
 		const fzfResults = fzf.find(query).map((result) => result.item.original)
 
-		// Verify types of the shortest results
 		const verifiedResults = await Promise.all(
-			fzfResults.map(async (result) => {
+			fzfResults.map(async (result): Promise<FileResult> => {
 				signal?.throwIfAborted()
-				const fullPath = path.join(workspacePath, result.path)
-				// Verify if the path exists and is actually a directory
-				if (fs.existsSync(fullPath)) {
-					const isDirectory = fs.lstatSync(fullPath).isDirectory()
-					return {
-						...result,
-						path: result.path.toPosix(),
-						type: isDirectory ? ("folder" as const) : ("file" as const),
-					}
-				}
-				// If path doesn't exist, keep original type
-				return result
+				const stats = await lstat(path.join(workspacePath, result.path)).catch(() => undefined)
+				return stats
+					? { ...result, path: result.path.toPosix(), type: stats.isDirectory() ? "folder" : "file" }
+					: result
 			}),
 		)
 

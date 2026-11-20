@@ -10,7 +10,13 @@ import { worktreeIncludeService } from "../worktree-include.js"
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
-	return { ...actual, writeFile: vi.fn(actual.writeFile), rename: vi.fn(actual.rename), unlink: vi.fn(actual.unlink) }
+	return {
+		...actual,
+		access: vi.fn(actual.access),
+		writeFile: vi.fn(actual.writeFile),
+		rename: vi.fn(actual.rename),
+		unlink: vi.fn(actual.unlink),
+	}
 })
 
 const execFileAsync = promisify(execFile)
@@ -42,6 +48,41 @@ describe("Worker capture failure preserves uncommitted changes", () => {
 		await git(["commit", "-m", "initial"])
 		service = new ManagedSubagentWorktreeService()
 	}, TIMEOUT)
+
+	it(
+		"preserves uncommitted worker changes when the checkout is temporarily inaccessible",
+		async () => {
+			const prepared = await service.create(storage, "worker", await service.validateScope(repo, ["src"]))
+			const artifactId = prepared.artifact.id
+			const metadata = await service.load(storage, artifactId)
+			const file = path.join(prepared.workspacePath, "src/value.txt")
+			await fs.writeFile(file, "worker changes\n")
+			const actual = await vi.importActual<typeof import("fs/promises")>("fs/promises")
+			const denied = Object.assign(new Error("Checkout temporarily inaccessible"), { code: "EACCES" })
+			vi.mocked(fs.access).mockImplementation((candidate, mode) =>
+				candidate === prepared.artifact.worktreePath ? Promise.reject(denied) : actual.access(candidate, mode),
+			)
+
+			try {
+				await expect(service.recoverOrphans(storage)).resolves.toEqual([])
+			} finally {
+				vi.mocked(fs.access).mockReset()
+			}
+			expect(await service.load(storage, artifactId)).toEqual(metadata)
+			expect(await fs.readFile(file, "utf8")).toBe("worker changes\n")
+
+			const recovered = await service.recoverOrphans(storage)
+			expect(recovered).toHaveLength(1)
+			expect(recovered[0]).toMatchObject({
+				id: artifactId,
+				status: "pending_review",
+				partial: true,
+				changes: [expect.objectContaining({ path: "src/value.txt" })],
+			})
+			expect(await fs.readFile(path.join(repo, "src/value.txt"), "utf8")).toBe("baseline\n")
+		},
+		TIMEOUT,
+	)
 
 	it(
 		"recovers retained terminal cleanup after removal completed but every prune attempt failed",

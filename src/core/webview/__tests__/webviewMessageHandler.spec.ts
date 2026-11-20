@@ -286,6 +286,34 @@ describe("provider profile Save messages", () => {
 		create.mockReset().mockResolvedValue(saved)
 	})
 
+	it("routes Settings Add through case-insensitive create-only admission", async () => {
+		const message = {
+			type: "upsertApiConfiguration",
+			text: "new-profile",
+			apiConfigurationCreateOnly: true,
+			apiConfiguration: draft,
+		} as const
+		await webviewMessageHandler(modernHost, message)
+		expect(upsert).toHaveBeenCalledExactlyOnceWith(
+			{ name: "new-profile", createOnly: true, caseInsensitive: true },
+			draft,
+		)
+		expect(create).not.toHaveBeenCalled()
+	})
+
+	it("reports a duplicate Settings Add without retrying an upsert", async () => {
+		upsert.mockRejectedValueOnce(new ProviderProfileSaveError("conflict"))
+		const message = {
+			type: "upsertApiConfiguration",
+			text: "existing-profile",
+			apiConfigurationCreateOnly: true,
+			apiConfiguration: draft,
+		} as const
+		await webviewMessageHandler(modernHost, message)
+		expect(upsert).toHaveBeenCalledTimes(1)
+		expect(vscode.window.showErrorMessage).toHaveBeenCalledWith(t("common:errors.provider_profile_name_in_use"))
+	})
+
 	it("routes a modern Save by stable ID and ignores its stale display name", async () => {
 		await webviewMessageHandler(modernHost, {
 			type: "upsertApiConfiguration",

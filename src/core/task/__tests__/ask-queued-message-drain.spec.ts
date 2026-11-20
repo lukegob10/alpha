@@ -1,6 +1,6 @@
 import { Task } from "../Task"
 import { createSubagentCommandApprovalPolicy } from "../../auto-approval/commands"
-import type { AlphaMessage } from "@alpha-code/types"
+import type { AlphaMessage, ToolApprovalRequest } from "@alpha-code/types"
 
 // Keep this test focused: if a queued message arrives while Task.ask() is blocked,
 // it should be consumed and used to fulfill the ask.
@@ -517,6 +517,62 @@ describe("Task.ask queued message drain", () => {
 			}
 		},
 	)
+
+	it.each(["publication", "cleanup"] as const)("retires a subagent approval when parent %s fails", async (stage) => {
+		const task = await createAskOnlyTask()
+		const failure = new Error("Parent approval write failed")
+		let publish!: () => void
+		const published = new Promise<void>((resolve) => {
+			publish = resolve
+		})
+		const clearSubagentApproval = vi.fn(async () => {
+			if (stage === "cleanup") throw failure
+		})
+		const log = vi.fn()
+		Object.assign(task, {
+			taskKind: "subagent",
+			addToAlphaMessages: async (message: AlphaMessage) => {
+				task.alphaMessages.push(message)
+			},
+			providerRef: {
+				deref: () => ({
+					getState: async () => ({}),
+					isTaskOnScreen: () => true,
+					surfaceSubagentApproval: async () => {
+						if (stage === "publication") throw failure
+						publish()
+					},
+					clearSubagentApproval,
+					log,
+				}),
+			},
+		})
+
+		const request: ToolApprovalRequest = {
+			requestId: "subagent-approval",
+			taskId: task.taskId,
+			callId: "call",
+			toolName: "execute_command",
+			askType: "command",
+			description: "git status",
+			forceApproval: false,
+			requiresExplicitApproval: true,
+			availableDecisions: ["approve_once", "deny", "abort"],
+		}
+		const approval = task.requestToolApproval(request)
+		if (stage === "publication") {
+			await expect(approval).rejects.toBe(failure)
+		} else {
+			await published
+			expect(task.handleWebviewToolApprovalResponse(request.requestId, { decision: "approve_once" })).toBe(true)
+			await expect(approval).resolves.toEqual({ decision: "approve_once" })
+			expect(log).toHaveBeenCalledOnce()
+		}
+		expect(task.hasPendingAsk()).toBe(false)
+		expect(task.hasPendingToolApprovalRequest()).toBe(false)
+		expect(task.alphaMessages[0]?.isAnswered).toBe(true)
+		expect(clearSubagentApproval).toHaveBeenCalledExactlyOnceWith(task.taskId)
+	})
 
 	it.each(["completion_result", "resume_task", "resume_completed_task"] as const)(
 		"consumes exactly one pre-queued message in FIFO order for %s",

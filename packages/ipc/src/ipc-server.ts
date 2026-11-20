@@ -23,6 +23,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 	private readonly _handleDisconnect = (socket: Socket) => this.onDisconnect(socket)
 	private readonly _handleMessage = (data: unknown, socket: Socket) => this.onMessage(data, socket)
 	private readonly _handleStart = () => this.onStart()
+	private readonly _handleStartError = (error: unknown) => this.onStartError(error)
 
 	private _isListening = false
 	private _isDisposed = false
@@ -47,8 +48,6 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 			return
 		}
 
-		this._isListening = true
-
 		ipc.config.silent = true
 
 		// node-ipc 12 prefixes server paths unconditionally on Windows; its client
@@ -61,15 +60,26 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		ipc.serve(transportPath, this._handleStart)
 
 		const server = (this._server = ipc.server)
+		this._isListening = true
 
 		try {
+			server.on("error", this._handleStartError)
 			server.start()
 		} catch (error) {
 			this._isListening = false
-			this._server = undefined
-			this.detachServerListeners(server, true)
+			this.releaseServer(server)
 			throw error
 		}
+	}
+
+	private onStartError(error: unknown) {
+		const server = this._server
+		if (!server || this._serverStarted) return
+
+		// node-ipc emits bind errors without a subsequent start event.
+		this._isListening = false
+		this.releaseServer(server)
+		this.log(`[server#listen] bind failed -> ${error instanceof Error ? error.message : String(error)}`)
 	}
 
 	private onStart() {
@@ -80,6 +90,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 		}
 
 		this._serverStarted = true
+		server.off("error", this._handleStartError)
 
 		if (!this._isListening) {
 			this.stopServer(server)
@@ -99,6 +110,7 @@ export class IpcServer extends EventEmitter<IpcServerEvents> implements AlphaCod
 
 		if (includeStart) {
 			server.off("start", this._handleStart)
+			if (!this._serverStarted) server.off("error", this._handleStartError)
 		}
 	}
 

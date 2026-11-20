@@ -89,6 +89,8 @@ function prepareImportedRules(rules: readonly { relativePath: string; content?: 
 	})
 }
 
+type ModeLoadSource = "read" | "refresh" | "settingsChange"
+
 interface ExportResult {
 	success: boolean
 	yaml?: string
@@ -256,19 +258,20 @@ export class CustomModesManager {
 		}
 	}
 
-	private async loadModesFromFile(filePath: string): Promise<ModeConfig[]> {
+	private async loadModesFromFile(filePath: string, validateSettings = false): Promise<ModeConfig[]> {
 		try {
 			const content = await fs.readFile(filePath, "utf-8")
 			const settings = this.parseYamlSafely(content, filePath)
 
 			// Ensure settings has customModes property
-			if (!settings || typeof settings !== "object" || !settings.customModes) {
+			if (!validateSettings && (!settings || typeof settings !== "object" || !settings.customModes)) {
 				return []
 			}
 
 			const result = customModesSettingsSchema.safeParse(settings)
 
 			if (!result.success) {
+				if (validateSettings) throw result.error
 				console.error(`[CustomModesManager] Schema validation failed for ${filePath}:`, result.error)
 
 				// Show user-friendly error for .alphamodes files
@@ -290,6 +293,7 @@ export class CustomModesManager {
 			// Add source to each mode
 			return result.data.customModes.map((mode) => ({ ...mode, source }))
 		} catch (error) {
+			if (validateSettings) throw error
 			// Only log if the error wasn't already handled in parseYamlSafely
 			if (!(error as any).alreadyHandled) {
 				const errorMsg = `Failed to load modes from ${filePath}: ${error instanceof Error ? error.message : String(error)}`
@@ -297,29 +301,6 @@ export class CustomModesManager {
 			}
 			return []
 		}
-	}
-
-	private async mergeCustomModes(projectModes: ModeConfig[], globalModes: ModeConfig[]): Promise<ModeConfig[]> {
-		const slugs = new Set<string>()
-		const merged: ModeConfig[] = []
-
-		// Add project mode (takes precedence)
-		for (const mode of projectModes) {
-			if (!slugs.has(mode.slug)) {
-				slugs.add(mode.slug)
-				merged.push({ ...mode, source: "project" })
-			}
-		}
-
-		// Add non-duplicate global modes
-		for (const mode of globalModes) {
-			if (!slugs.has(mode.slug)) {
-				slugs.add(mode.slug)
-				merged.push({ ...mode, source: "global" })
-			}
-		}
-
-		return merged
 	}
 
 	public async getCustomModesFilePath(): Promise<string> {
@@ -355,94 +336,43 @@ export class CustomModesManager {
 		const settingsPath = await this.getCustomModesFilePath()
 		if (this.disposed) return
 
-		// Watch settings file
-		const settingsWatcher = vscode.workspace.createFileSystemWatcher(settingsPath)
-
-		const handleSettingsChange = async () => {
-			try {
-				// Ensure that the settings file exists (especially important for delete events)
-				await this.getCustomModesFilePath()
-				const content = await fs.readFile(settingsPath, "utf-8")
-
-				const errorMessage = t("common:customModes.errors.invalidFormat")
-
-				let config: any
-
-				try {
-					config = this.parseYamlSafely(content, settingsPath)
-				} catch (error) {
-					console.error(error)
-					vscode.window.showErrorMessage(errorMessage)
-					return
-				}
-
-				const result = customModesSettingsSchema.safeParse(config)
-
-				if (!result.success) {
-					vscode.window.showErrorMessage(errorMessage)
-					return
-				}
-
-				// Get modes from .alphamodes if it exists (takes precedence)
-				const alphaModesPath = await this.getWorkspaceAlphaModes()
-				const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
-
-				// Merge modes from both sources (.alphamodes takes precedence)
-				const mergedModes = await this.mergeCustomModes(workspaceFileModes, result.data.customModes)
-				await this.context.globalState.update("customModes", mergedModes)
-				this.clearCache()
-				await this.onUpdate()
-			} catch (error) {
-				console.error(`[CustomModesManager] Error handling settings file change:`, error)
-			}
-		}
-
-		this.disposables.push(settingsWatcher.onDidChange(handleSettingsChange))
-		this.disposables.push(settingsWatcher.onDidCreate(handleSettingsChange))
-		this.disposables.push(settingsWatcher.onDidDelete(handleSettingsChange))
-		this.disposables.push(settingsWatcher)
-
-		// Watch .alphamodes file - watch the path even if it doesn't exist yet
-		const workspaceFolders = vscode.workspace.workspaceFolders
-		if (workspaceFolders && workspaceFolders.length > 0) {
-			const workspaceRoot = getWorkspacePath()
-			const alphaModesPath = path.join(workspaceRoot, ALPHAMODES_FILENAME)
-			const alphaModesWatcher = vscode.workspace.createFileSystemWatcher(alphaModesPath)
-
-			const handleAlphaModesChange = async () => {
-				try {
-					const settingsModes = await this.loadModesFromFile(settingsPath)
-					const workspaceFileModes = await this.loadModesFromFile(alphaModesPath)
-					// .alphamodes takes precedence
-					const mergedModes = await this.mergeCustomModes(workspaceFileModes, settingsModes)
-					await this.context.globalState.update("customModes", mergedModes)
-					this.clearCache()
-					await this.onUpdate()
-				} catch (error) {
-					console.error(`[CustomModesManager] Error handling .alphamodes file change:`, error)
-				}
-			}
-
-			this.disposables.push(alphaModesWatcher.onDidChange(handleAlphaModesChange))
-			this.disposables.push(alphaModesWatcher.onDidCreate(handleAlphaModesChange))
-			this.disposables.push(
-				alphaModesWatcher.onDidDelete(async () => {
-					// When .alphamodes is deleted, refresh with only settings modes
-					try {
-						const settingsModes = await this.loadModesFromFile(settingsPath)
-						await this.context.globalState.update("customModes", settingsModes)
-						this.clearCache()
-						await this.onUpdate()
-					} catch (error) {
-						console.error(`[CustomModesManager] Error handling .alphamodes file deletion:`, error)
+		const watch = (filePath: string, validateSettings = false) => {
+			const watcher = vscode.workspace.createFileSystemWatcher(filePath)
+			const refresh = () =>
+				this.refreshMergedState(validateSettings ? "settingsChange" : "refresh").catch((error) => {
+					if (this.disposed) return
+					if (validateSettings && error instanceof z.ZodError) {
+						vscode.window.showErrorMessage(t("common:customModes.errors.invalidFormat"))
+					} else {
+						console.error("[CustomModesManager] Error handling file change for", filePath, error)
 					}
-				}),
+				})
+			this.disposables.push(
+				watcher.onDidChange(refresh),
+				watcher.onDidCreate(refresh),
+				watcher.onDidDelete(refresh),
+				watcher,
 			)
-			this.disposables.push(alphaModesWatcher)
+		}
+		watch(settingsPath, true)
+		if (vscode.workspace.workspaceFolders?.length) {
+			watch(path.join(getWorkspacePath(), ALPHAMODES_FILENAME))
 		}
 	}
 
 	public async getCustomModes(): Promise<ModeConfig[]> {
+		const generation = this.cacheGeneration
+		try {
+			const modes = await this.getOrLoadCustomModes("read")
+			if (this.disposed || generation === this.cacheGeneration) return modes
+		} catch (error) {
+			// A direct reader can join a settings watcher, whose validation is stricter.
+			if (this.disposed || (generation === this.cacheGeneration && !(error instanceof z.ZodError))) throw error
+		}
+		return this.getCustomModes()
+	}
+
+	private async getOrLoadCustomModes(source: ModeLoadSource): Promise<ModeConfig[]> {
 		// Check if we have a valid cached result.
 		const now = Date.now()
 
@@ -451,7 +381,7 @@ export class CustomModesManager {
 		}
 		if (this.loadingModes) return this.loadingModes
 
-		const loading = this.loadCustomModes(this.cacheGeneration)
+		const loading = this.loadCustomModes(this.cacheGeneration, source)
 		this.loadingModes = loading
 		try {
 			return await loading
@@ -460,47 +390,21 @@ export class CustomModesManager {
 		}
 	}
 
-	private async loadCustomModes(generation: number): Promise<ModeConfig[]> {
-		// Get modes from settings file.
+	private async loadCustomModes(generation: number, source: ModeLoadSource): Promise<ModeConfig[]> {
 		const settingsPath = await this.getCustomModesFilePath()
-		const settingsModes = await this.loadModesFromFile(settingsPath)
-
-		// Get modes from .alphamodes if it exists.
+		const settingsModes = await this.loadModesFromFile(settingsPath, source === "settingsChange")
 		const alphaModesPath = await this.getWorkspaceAlphaModes()
-		const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
+		const projectModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
+		const projectSlugs = new Set(projectModes.map(({ slug }) => slug))
+		const mergedModes = [...projectModes, ...settingsModes.filter(({ slug }) => !projectSlugs.has(slug))]
 
-		// Create maps to store modes by source.
-		const projectModes = new Map<string, ModeConfig>()
-		const globalModes = new Map<string, ModeConfig>()
-
-		// Add project modes (they take precedence).
-		for (const mode of workspaceFileModes) {
-			projectModes.set(mode.slug, { ...mode, source: "project" as const })
-		}
-
-		// Add global modes.
-		for (const mode of settingsModes) {
-			if (!projectModes.has(mode.slug)) {
-				globalModes.set(mode.slug, { ...mode, source: "global" as const })
-			}
-		}
-
-		// Combine modes in the correct order: project modes first, then global modes.
-		const mergedModes = [
-			...workspaceFileModes.map((mode) => ({ ...mode, source: "project" as const })),
-			...settingsModes
-				.filter((mode) => !projectModes.has(mode.slug))
-				.map((mode) => ({ ...mode, source: "global" as const })),
-		]
-
-		// A reset or file change can invalidate a load while its I/O is pending.
-		if (generation !== this.cacheGeneration) return this.getCustomModes()
+		// An invalidated read must never overwrite the current projection.
+		if (this.disposed || generation !== this.cacheGeneration) return mergedModes
 		await this.context.globalState.update("customModes", mergedModes)
-		if (generation !== this.cacheGeneration) return this.getCustomModes()
-
-		this.cachedModes = mergedModes
-		this.cachedAt = Date.now()
-
+		if (source === "read" && !this.disposed && generation === this.cacheGeneration) {
+			this.cachedModes = mergedModes
+			this.cachedAt = Date.now()
+		}
 		return mergedModes
 	}
 
@@ -554,7 +458,6 @@ export class CustomModesManager {
 					return updatedModes
 				})
 
-				this.clearCache()
 				await this.refreshMergedState()
 			})
 		} catch (error) {
@@ -591,19 +494,17 @@ export class CustomModesManager {
 		})
 	}
 
-	private async refreshMergedState(): Promise<void> {
-		const settingsPath = await this.getCustomModesFilePath()
-		const alphaModesPath = await this.getWorkspaceAlphaModes()
-
-		const settingsModes = await this.loadModesFromFile(settingsPath)
-		const workspaceFileModes = alphaModesPath ? await this.loadModesFromFile(alphaModesPath) : []
-		const mergedModes = await this.mergeCustomModes(workspaceFileModes, settingsModes)
-
-		await this.context.globalState.update("customModes", mergedModes)
-
+	private async refreshMergedState(source: Exclude<ModeLoadSource, "read"> = "refresh"): Promise<void> {
+		if (this.disposed) return
 		this.clearCache()
-
-		await this.onUpdate()
+		const generation = this.cacheGeneration
+		try {
+			await this.getOrLoadCustomModes(source)
+		} catch (error) {
+			if (this.disposed || generation !== this.cacheGeneration) return
+			throw error
+		}
+		if (!this.disposed && generation === this.cacheGeneration) await this.onUpdate()
 	}
 
 	public async deleteCustomMode(slug: string): Promise<void> {
@@ -641,8 +542,6 @@ export class CustomModesManager {
 					await this.deleteRulesFolder(slug, modeToDelete)
 				}
 
-				// Clear cache when modes are deleted
-				this.clearCache()
 				await this.refreshMergedState()
 			})
 		} catch (error) {
@@ -705,8 +604,8 @@ export class CustomModesManager {
 						requireAtomicReplace: true,
 					}),
 				)
-				await this.context.globalState.update("customModes", [])
 				this.clearCache()
+				await this.context.globalState.update("customModes", [])
 				await this.onUpdate()
 			})
 		} catch (error) {

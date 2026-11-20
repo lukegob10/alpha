@@ -32,6 +32,7 @@ const metadata = vi.fn()
 let temp: string
 let cwd: string
 let task: Task
+let documentState: { version: number; isClosed: boolean }
 const args: NavigateCodeParams = { operation: "definition", path: "input.ts", line: 2, column: 5 }
 const callbacks = { askApproval: approval, pushToolResult: result, setResultMetadata: metadata, handleError: vi.fn() }
 
@@ -51,10 +52,13 @@ beforeEach(async () => {
 		cwd,
 		alphaIgnoreController: { validateAccess: (file: string) => path.basename(file) !== "ignored.ts" },
 	} as Task
-	openDocument.mockResolvedValue({
-		uri: vscode.Uri.file(path.join(cwd, "input.ts")),
-		validatePosition: (position: vscode.Position) => (position.line < 4 ? position : new vscode.Position(3, 0)),
-	} as vscode.TextDocument)
+	documentState = { version: 1, isClosed: false }
+	openDocument.mockResolvedValue(
+		Object.assign(documentState, {
+			uri: vscode.Uri.file(path.join(cwd, "input.ts")),
+			validatePosition: (position: vscode.Position) => (position.line < 4 ? position : new vscode.Position(3, 0)),
+		}) as vscode.TextDocument,
+	)
 })
 afterEach(async () => rm(temp, { recursive: true, force: true }))
 
@@ -131,6 +135,31 @@ it("suppresses results when the source becomes ignored during lookup", async () 
 	await navigateCodeTool.execute(args, task, callbacks)
 	expect(metadata).toHaveBeenCalledWith({ status: "denied" })
 	expect(result.mock.calls[0][0]).not.toContain("target.ts")
+})
+
+it.each(["edited", "closed"] as const)("does not publish locations from a source %s during lookup", async (change) => {
+	let resolveLookup!: (locations: ReturnType<typeof location>[]) => void
+	let markLookupStarted!: () => void
+	const lookupStarted = new Promise<void>((resolve) => (markLookupStarted = resolve))
+	provider.mockImplementationOnce(
+		() =>
+			new Promise<ReturnType<typeof location>[]>((resolve) => {
+				resolveLookup = resolve
+				markLookupStarted()
+			}),
+	)
+
+	const running = navigateCodeTool.execute(args, task, callbacks)
+	await lookupStarted
+	if (change === "edited") documentState.version++
+	else documentState.isClosed = true
+	resolveLookup([location(path.join(cwd, "target.ts"))])
+	await running
+
+	expect(metadata).toHaveBeenCalledWith({ status: "error" })
+	expect(result).toHaveBeenCalledExactlyOnceWith(
+		expect.stringContaining("Retry with coordinates from the current document"),
+	)
 })
 
 it("cancels pending host work without emitting its late result", async () => {

@@ -84,7 +84,7 @@ describe("ChatRow render isolation", () => {
 		unmount()
 	})
 
-	it("receives matching edit images and releases the listener on cancel and unmount", () => {
+	it("keeps an open message edit off the streamed message event path", () => {
 		const message: AlphaMessage = { ts: 42, type: "say", say: "user_feedback", text: "Edit this prompt" }
 		const environment: ChatRowEnvironment = {
 			mcpServers: [],
@@ -95,9 +95,7 @@ describe("ChatRow render isolation", () => {
 			getAlphaMessages: () => [message],
 		}
 		const addListener = vi.spyOn(window, "addEventListener")
-		const removeListener = vi.spyOn(window, "removeEventListener")
-		const messageListeners = () => addListener.mock.calls.filter(([type]) => type === "message")
-		const { unmount } = render(
+		render(
 			<ChatRow
 				message={message}
 				environment={environment}
@@ -107,34 +105,9 @@ describe("ChatRow render isolation", () => {
 				onToggleExpand={() => {}}
 			/>,
 		)
-		const selectImages = (context: string, messageTs: number) =>
-			fireEvent(
-				window,
-				new MessageEvent("message", {
-					data: { type: "selectedImages", context, messageTs, images: ["data:image/png;base64,YQ=="] },
-				}),
-			)
-
-		expect(messageListeners()).toHaveLength(0)
-		fireEvent.click(screen.getByRole("button", { name: "chat:messageActions.edit" }))
-		expect(messageListeners()).toHaveLength(1)
-		const firstListener = messageListeners()[0][1]
-		selectImages("composer", message.ts)
-		selectImages("edit", message.ts + 1)
-		expect(screen.getByLabelText("Edit attachments")).toBeEmptyDOMElement()
-		selectImages("edit", message.ts)
-		expect(screen.getByLabelText("Edit attachments")).toHaveTextContent("data:image/png;base64,YQ==")
-
-		fireEvent.click(screen.getByRole("button", { name: "Cancel edit" }))
-		expect(removeListener).toHaveBeenCalledWith("message", firstListener)
-		expect(messageListeners()).toHaveLength(1)
-		selectImages("edit", message.ts)
 		fireEvent.click(screen.getByRole("button", { name: "chat:messageActions.edit" }))
 		expect(screen.getByLabelText("Edit attachments")).toBeEmptyDOMElement()
-		expect(messageListeners()).toHaveLength(2)
-		const secondListener = messageListeners()[1][1]
-		unmount()
-		expect(removeListener).toHaveBeenCalledWith("message", secondListener)
+		expect(addListener.mock.calls.filter(([type]) => type === "message")).toHaveLength(0)
 	})
 
 	it.each(["completed", "interrupted", "failed", undefined] as const)(

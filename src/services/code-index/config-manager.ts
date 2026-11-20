@@ -28,11 +28,15 @@ export class CodeIndexConfigManager {
 	private unsupported?: string
 	private removedVertexConnection = false
 	private config: CodeIndexConfig = { isConfigured: false, embedderProvider: "vertex" }
+	private revision = 0
 	constructor(private readonly contextProxy: ContextProxy) {
 		this.readConfiguration()
 	}
 	getContextProxy(): ContextProxy {
 		return this.contextProxy
+	}
+	get serviceRevision(): number {
+		return this.revision
 	}
 	private readConfiguration(): void {
 		const persisted = this.contextProxy.getGlobalState("codebaseIndexConfig")
@@ -120,13 +124,16 @@ export class CodeIndexConfigManager {
 		}
 	}
 	async loadConfiguration({ refreshSecrets = true }: CodeIndexConfigurationLoadOptions = {}) {
-		const configSnapshot = this.snapshot()
 		if (refreshSecrets || !this.contextProxy.isInitialized) await this.contextProxy.refreshSecrets()
+		const configSnapshot = this.snapshot()
 		this.readConfiguration()
+		const requiresRestart = this.doesConfigChangeRequireRestart(configSnapshot)
+		if (requiresRestart) this.revision++
 		return {
 			configSnapshot,
 			currentConfig: this.getConfig(),
-			requiresRestart: this.doesConfigChangeRequireRestart(configSnapshot),
+			requiresRestart,
+			serviceRevision: this.revision,
 		}
 	}
 	isConfigured(): boolean {

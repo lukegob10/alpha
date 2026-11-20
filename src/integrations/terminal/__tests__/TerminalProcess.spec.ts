@@ -163,52 +163,33 @@ describe("TerminalProcess", () => {
 			expect(completed).toHaveBeenCalledExactlyOnceWith("command output\n")
 		})
 
-		it.each([
-			{ family: "bash", profile: "PowerShell", expected: "echo test" },
-			{ family: "powershell", profile: "Git Bash", expected: "echo test ; start-sleep -milliseconds 50" },
-		] as const)("uses $family for Windows workarounds", async ({ family, profile, expected }) => {
-			const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!
-			const originalDelay = Terminal.getCommandDelay()
-			const originalCounter = Terminal.getPowershellCounter()
-			const config = vi.spyOn(vscode.workspace, "getConfiguration").mockReturnValue({
-				...vscode.workspace.getConfiguration("terminal.integrated.defaultProfile"),
-				get: vi.fn().mockReturnValue(profile),
-			})
-			try {
-				Object.defineProperty(process, "platform", { value: "win32" })
-				Terminal.setCommandDelay(50)
-				Terminal.setPowershellCounter(false)
-				const terminal = new Terminal(
-					99_001,
-					mockTerminal,
-					"./",
-					{},
-					{
-						shellPath: family === "powershell" ? "C:\\pwsh.exe" : "C:\\bash.exe",
-						family,
-						login: false,
-						binaryIdentity: "test shell",
-						identity: family,
-					},
+		it("submits the approved PowerShell command unchanged", async () => {
+			const terminal = new Terminal(
+				99_001,
+				mockTerminal,
+				"./",
+				{},
+				{
+					shellPath: "C:\\pwsh.exe",
+					family: "powershell",
+					login: false,
+					binaryIdentity: "test shell",
+					identity: "powershell",
+				},
+			)
+			const command = new TerminalProcess(terminal)
+			terminal.process = command
+			mockTerminal.shellIntegration.executeCommand.mockImplementation(() => {
+				terminal.setActiveStream(
+					(async function* () {
+						yield "\x1b]633;C\x07output\n"
+						terminal.shellExecutionComplete({ exitCode: 1 })
+					})(),
 				)
-				const command = new TerminalProcess(terminal)
-				terminal.process = command
-				mockTerminal.shellIntegration.executeCommand.mockImplementation(() => {
-					terminal.setActiveStream(
-						(async function* () {
-							yield "\x1b]633;C\x07output\n"
-							terminal.shellExecutionComplete({ exitCode: 0 })
-						})(),
-					)
-				})
-				await command.run("echo test")
-				expect(mockTerminal.shellIntegration.executeCommand).toHaveBeenCalledExactlyOnceWith(expected)
-			} finally {
-				Object.defineProperty(process, "platform", originalPlatform)
-				Terminal.setCommandDelay(originalDelay)
-				Terminal.setPowershellCounter(originalCounter)
-				config.mockRestore()
-			}
+			})
+			const approved = 'Write-Error "fixture failure" -ErrorAction SilentlyContinue'
+			await command.run(approved)
+			expect(mockTerminal.shellIntegration.executeCommand).toHaveBeenCalledExactlyOnceWith(approved)
 		})
 
 		it("does not submit a command cancelled before shell integration becomes available", async () => {
@@ -706,7 +687,7 @@ describe("TerminalProcess", () => {
 			expect(mockTerminalInfo.running).toBe(true)
 			running.abort()
 			running.abort()
-			expect(mockTerminal.sendText).toHaveBeenCalledExactlyOnceWith("\x03")
+			expect(mockTerminal.sendText).toHaveBeenCalledExactlyOnceWith("\x03", false)
 			mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
 		})
 
@@ -728,7 +709,7 @@ describe("TerminalProcess", () => {
 			running.abort()
 			running.abort()
 			expect(mockTerminal.sendText).toHaveBeenCalledTimes(2)
-			expect(mockTerminal.sendText).toHaveBeenLastCalledWith("\x03")
+			expect(mockTerminal.sendText).toHaveBeenLastCalledWith("\x03", false)
 			mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
 		})
 
@@ -771,7 +752,7 @@ describe("TerminalProcess", () => {
 				running.writeInput!("hello\n")
 				running.abort()
 				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(1, "hello\n", false)
-				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(2, "\x03")
+				expect(mockTerminal.sendText).toHaveBeenNthCalledWith(2, "\x03", false)
 			} finally {
 				mockTerminalInfo.shellExecutionComplete({ exitCode: 130, signalName: "SIGINT" })
 				release()

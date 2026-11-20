@@ -44,9 +44,13 @@ export const generateSystemPrompt = async (provider: AlphaProvider, message: Web
 	let modelId: string | undefined
 	try {
 		const tempApiHandler = buildApiHandler(apiConfiguration)
-		const model = tempApiHandler.getModel()
-		modelInfo = model.info
-		modelId = model.instructionModelId ?? model.id
+		try {
+			const model = tempApiHandler.getModel()
+			modelInfo = model.info
+			modelId = model.instructionModelId ?? model.id
+		} finally {
+			tempApiHandler.dispose?.()
+		}
 	} catch (error) {
 		console.error("Error fetching model info for system prompt preview:", error)
 	}

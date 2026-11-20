@@ -57,52 +57,22 @@ function logLifecycle(lifecycle: ExtensionLifecycle, message: string): void {
 	}
 }
 
-/**
- * Check if we should auto-open the Alpha sidebar after switching to a worktree.
- * This is called during extension activation to handle the worktree auto-open flow.
- */
-async function checkWorktreeAutoOpen(
-	context: vscode.ExtensionContext,
-	outputChannel: vscode.OutputChannel,
-): Promise<void> {
+async function checkWorktreeAutoOpen(lifecycle: ExtensionLifecycle): Promise<void> {
+	if (lifecycle.shutdown) return
+	const { context } = lifecycle
 	try {
 		const worktreeAutoOpenPath = context.globalState.get<string>("worktreeAutoOpenPath")
-		if (!worktreeAutoOpenPath) {
-			return
-		}
+		const currentPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+		if (!worktreeAutoOpenPath || !currentPath || path.relative(currentPath, worktreeAutoOpenPath) !== "") return
 
-		const workspaceFolders = vscode.workspace.workspaceFolders
-		if (!workspaceFolders || workspaceFolders.length === 0) {
-			return
-		}
-
-		const currentPath = workspaceFolders[0].uri.fsPath
-
-		// Normalize paths for comparison
-		const normalizePath = (p: string) => p.replace(/\/+$/, "").replace(/\\+/g, "/").toLowerCase()
-
-		// Check if current workspace matches the worktree path
-		if (normalizePath(currentPath) === normalizePath(worktreeAutoOpenPath)) {
-			// Clear the state first to prevent re-triggering
+		await vscode.commands.executeCommand("alpha.plusButtonClicked", "sidebar")
+		if (context.globalState.get<string>("worktreeAutoOpenPath") === worktreeAutoOpenPath) {
 			await context.globalState.update("worktreeAutoOpenPath", undefined)
-
-			outputChannel.appendLine(`[Worktree] Auto-opening Alpha sidebar for worktree: ${worktreeAutoOpenPath}`)
-
-			// Open the Alpha sidebar with a slight delay to ensure UI is ready
-			const autoOpenTimer = setTimeout(async () => {
-				try {
-					await vscode.commands.executeCommand("alpha.plusButtonClicked")
-				} catch (error) {
-					outputChannel.appendLine(
-						`[Worktree] Error auto-opening sidebar: ${error instanceof Error ? error.message : String(error)}`,
-					)
-				}
-			}, 500)
-			context.subscriptions.push({ dispose: () => clearTimeout(autoOpenTimer) })
 		}
 	} catch (error) {
-		outputChannel.appendLine(
-			`[Worktree] Error checking worktree auto-open: ${error instanceof Error ? error.message : String(error)}`,
+		logLifecycle(
+			lifecycle,
+			`[Worktree] Error auto-opening sidebar: ${error instanceof Error ? error.message : String(error)}`,
 		)
 	}
 }
@@ -124,6 +94,7 @@ export async function activate(context: vscode.ExtensionContext) {
 	try {
 		const api = await activateExtension(lifecycle, startupConfigurationReady)
 		completeStartupConfiguration()
+		void Promise.resolve().then(() => checkWorktreeAutoOpen(lifecycle))
 		// Allows other extensions to activate once Alpha is ready.
 		void Promise.resolve()
 			.then(() => vscode.commands.executeCommand(`${Package.name}.activationCompleted`))
@@ -245,8 +216,6 @@ async function activateExtension(lifecycle: ExtensionLifecycle, startupConfigura
 
 	registerCommands({ context, outputChannel, provider })
 	registerEditorChatSerializer({ context, outputChannel })
-	// Auto-import may be slow; admit auto-open only once its target command exists.
-	await checkWorktreeAutoOpen(context, outputChannel)
 	registerHtmlDocumentViewer(context)
 
 	/**

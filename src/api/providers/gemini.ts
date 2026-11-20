@@ -55,7 +55,6 @@ import {
 type GeminiRequestContext = {
 	client: GoogleGenAI
 	model: string
-	httpOptions?: GenerateContentConfig["httpOptions"]
 }
 
 function createGenAiAbortSignal(signal: AbortSignal): AbortSignal {
@@ -134,21 +133,28 @@ function prependUserInstructionContext(
 	return [{ ...firstMessage, content }, ...messages.slice(1)]
 }
 
+function getGeminiStopReason(response: GenerateContentResponse): string | undefined {
+	const blockReason = response.promptFeedback?.blockReason?.replace(/^BLOCK(?:ED)?_REASON_/, "")
+	if (blockReason && blockReason !== "UNSPECIFIED") return blockReason
+
+	const finishReason = response.candidates?.[0]?.finishReason?.replace(/^FINISH_REASON_/, "")
+	return finishReason && finishReason !== "UNSPECIFIED" ? finishReason : undefined
+}
+
 function createGeminiOutcome(
 	finishReason: string | undefined,
 	semanticOutputObserved: boolean,
 	metadata?: ApiHandlerCreateMessageMetadata,
 	hasContent = true,
 ) {
-	const normalizedReason = finishReason?.replace(/^FINISH_REASON_/, "")
-	const terminal = Boolean(normalizedReason && normalizedReason !== "UNSPECIFIED")
+	const terminal = Boolean(finishReason)
 	let reason: string | undefined
-	if (!terminal) {
+	if (!finishReason) {
 		reason = "Gemini response ended before a terminal finish reason."
-	} else if (normalizedReason === "MAX_TOKENS") {
+	} else if (finishReason === "MAX_TOKENS") {
 		reason = "Gemini response reached the output token limit (finishReason=MAX_TOKENS)."
-	} else if (normalizedReason !== "STOP") {
-		reason = `Gemini response stopped with finish reason ${normalizedReason}.`
+	} else if (finishReason !== "STOP") {
+		reason = `Gemini response stopped with finish reason ${finishReason}.`
 	} else if (!hasContent) {
 		reason = "Gemini response completed without visible content or tool calls."
 	}
@@ -344,33 +350,9 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 		return wrapped
 	}
 
-	private mergeHttpOptions(
-		baseHttpOptions: GenerateContentConfig["httpOptions"],
-		overrideHttpOptions: GenerateContentConfig["httpOptions"],
-	): GenerateContentConfig["httpOptions"] {
-		if (!baseHttpOptions && !overrideHttpOptions) {
-			return undefined
-		}
-
-		const mergedHeaders =
-			baseHttpOptions?.headers || overrideHttpOptions?.headers
-				? {
-						...(baseHttpOptions?.headers ?? {}),
-						...(overrideHttpOptions?.headers ?? {}),
-					}
-				: undefined
-
-		return {
-			...(baseHttpOptions ?? {}),
-			...(overrideHttpOptions ?? {}),
-			...(mergedHeaders ? { headers: mergedHeaders } : {}),
-		}
-	}
-
-	private getNoVisibleContentMessage(finishReason?: string): string {
+	private getNoVisibleContentMessage(finishReason: string): string {
 		switch (finishReason) {
 			case "MAX_TOKENS":
-			case "FINISH_REASON_MAX_TOKENS":
 				return t("common:errors.gemini.thinking_complete_truncated")
 			case "SAFETY":
 			case "IMAGE_SAFETY":
@@ -378,19 +360,10 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 			case "SPII":
 			case "BLOCKLIST":
 			case "IMAGE_PROHIBITED_CONTENT":
-			case "FINISH_REASON_SAFETY":
-			case "FINISH_REASON_BLOCKLIST":
-			case "FINISH_REASON_PROHIBITED_CONTENT":
-			case "FINISH_REASON_IMAGE_PROHIBITED_CONTENT":
-			case "FINISH_REASON_SPII":
 				return t("common:errors.gemini.thinking_complete_safety")
 			case "RECITATION":
-			case "FINISH_REASON_RECITATION":
 				return t("common:errors.gemini.thinking_complete_recitation")
-			case undefined:
 			case "STOP":
-			case "FINISH_REASON_UNSPECIFIED":
-			case "FINISH_REASON_STOP":
 				return t("common:errors.gemini.thinking_complete_no_output")
 			default:
 				return `${t("common:errors.gemini.thinking_complete_no_output")} Finish reason: ${finishReason}.`
@@ -529,316 +502,152 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 		}
 		const requestTimeoutMs = getApiRequestTimeout()
 
-		while (true) {
-			metadata?.signal?.throwIfAborted()
-			const requestContext = await this.getRequestContext(model)
-			metadata?.signal?.throwIfAborted()
-			// Both Google routes require original signed Part boundaries on replay.
-			// Custom/older Vertex models can return unsigned calls; the curated native models require a signature.
-			// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures (2026-10-26)
-			const responseCapture = new GeminiResponseCapture(model, this.transportProvider === "gemini")
-			const requestControl = createLinkedAbortController({
-				signal: metadata?.signal,
-				deadline: metadata?.deadline,
-				deadlineScope: metadata?.deadlineScope,
-			})
-			const requestAbortController = requestControl.controller
-			const throwIfRequestAborted = () => {
-				if (!requestControl.signal.aborted) return
-				const reason = requestControl.signal.reason
-				if (reason instanceof ApiStreamDeadlineError) throw reason
-				requestControl.signal.throwIfAborted()
-			}
-			const awaitRequest = async <T>(operation: PromiseLike<T>, operationName: string): Promise<T> => {
-				// Stop or an explicit deadline must settle the read's timer even if the SDK stalls.
-				// Codex 16280e19 also drops its per-read idle timeout when the response consumer closes.
-				const result = await withApiRequestTimeout(
-					raceApiStreamAbort(operation, requestControl.signal),
-					operationName,
-					requestTimeoutMs,
-					() =>
-						requestAbortController.abort(new ApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0)),
-				)
-				throwIfRequestAborted()
-				return result as T
-			}
-			let resultIterator: AsyncIterator<GenerateContentResponse> | undefined
-			let streamIteratorCompleted = false
-			const streamIdleTimeout = new ApiRequestIdleTimeout(
-				`${this.providerName} stream response for ${requestContext.model}`,
+		metadata?.signal?.throwIfAborted()
+		const requestContext = await this.getRequestContext(model)
+		metadata?.signal?.throwIfAborted()
+		// Both Google routes require original signed Part boundaries on replay.
+		// Custom/older Vertex models can return unsigned calls; the curated native models require a signature.
+		// https://docs.cloud.google.com/vertex-ai/generative-ai/docs/thought-signatures (2026-10-26)
+		const responseCapture = new GeminiResponseCapture(model, this.transportProvider === "gemini")
+		const requestControl = createLinkedAbortController({
+			signal: metadata?.signal,
+			deadline: metadata?.deadline,
+			deadlineScope: metadata?.deadlineScope,
+		})
+		const requestAbortController = requestControl.controller
+		const throwIfRequestAborted = () => {
+			if (!requestControl.signal.aborted) return
+			const reason = requestControl.signal.reason
+			if (reason instanceof ApiStreamDeadlineError) throw reason
+			requestControl.signal.throwIfAborted()
+		}
+		const awaitRequest = async <T>(operation: PromiseLike<T>, operationName: string): Promise<T> => {
+			// Stop or an explicit deadline must settle the read's timer even if the SDK stalls.
+			// Codex 16280e19 also drops its per-read idle timeout when the response consumer closes.
+			const result = await withApiRequestTimeout(
+				raceApiStreamAbort(operation, requestControl.signal),
+				operationName,
 				requestTimeoutMs,
-				(error) => requestAbortController.abort(error),
+				() => requestAbortController.abort(new ApiRequestTimeoutError(operationName, requestTimeoutMs ?? 0)),
 			)
-			// @google/genai 1.47 retains httpOptions.timeout for the entire SSE body.
-			// The owned admission/read timers above and below enforce inactivity;
-			// the linked signal preserves explicit caller deadlines and Stop.
-			const httpOptions = this.mergeHttpOptions(config.httpOptions, requestContext.httpOptions)
-			const params: GenerateContentParameters = {
-				model: requestContext.model,
-				contents,
-				config: {
-					...config,
-					httpOptions,
-					abortSignal: createGenAiAbortSignal(requestControl.signal),
-				},
-			}
+			throwIfRequestAborted()
+			return result as T
+		}
+		let resultIterator: AsyncIterator<GenerateContentResponse> | undefined
+		let streamIteratorCompleted = false
+		const streamIdleTimeout = new ApiRequestIdleTimeout(
+			`${this.providerName} stream response for ${requestContext.model}`,
+			requestTimeoutMs,
+			(error) => requestAbortController.abort(error),
+		)
+		// @google/genai 1.47 retains httpOptions.timeout for the entire SSE body.
+		// The owned admission/read timers above and below enforce inactivity;
+		// the linked signal preserves explicit caller deadlines and Stop.
+		const params: GenerateContentParameters = {
+			model: requestContext.model,
+			contents,
+			config: {
+				...config,
+				abortSignal: createGenAiAbortSignal(requestControl.signal),
+			},
+		}
 
-			let emittedAnyStreamChunk = false
-			let semanticOutputObserved = false
-			let pendingUsage: ApiStreamUsageChunk | undefined
-			const captureUsage = (usage: GenerateContentResponseUsageMetadata | undefined) => {
-				if (!usage) return
-				const inputTokens = usage.promptTokenCount ?? 0
-				const candidateTokens = usage.candidatesTokenCount ?? 0
-				const cacheReadTokens = usage.cachedContentTokenCount
-				const reasoningTokens = usage.thoughtsTokenCount
-				pendingUsage = {
-					type: "usage",
+		let emittedAnyStreamChunk = false
+		let semanticOutputObserved = false
+		let pendingUsage: ApiStreamUsageChunk | undefined
+		const captureUsage = (usage: GenerateContentResponseUsageMetadata | undefined) => {
+			if (!usage) return
+			const inputTokens = usage.promptTokenCount ?? 0
+			const candidateTokens = usage.candidatesTokenCount ?? 0
+			const cacheReadTokens = usage.cachedContentTokenCount
+			const reasoningTokens = usage.thoughtsTokenCount
+			pendingUsage = {
+				type: "usage",
+				inputTokens,
+				outputTokens: candidateTokens + (reasoningTokens ?? 0),
+				cacheReadTokens,
+				reasoningTokens,
+				totalCost: this.calculateCost({
+					info,
 					inputTokens,
-					outputTokens: candidateTokens + (reasoningTokens ?? 0),
+					outputTokens: candidateTokens,
 					cacheReadTokens,
 					reasoningTokens,
-					totalCost: this.calculateCost({
-						info,
-						inputTokens,
-						outputTokens: candidateTokens,
-						cacheReadTokens,
-						reasoningTokens,
-					}),
-				}
+				}),
 			}
-			const takeUsage = () => {
-				const usage = pendingUsage
-				pendingUsage = undefined
-				return usage
-			}
+		}
+		const takeUsage = () => {
+			const usage = pendingUsage
+			pendingUsage = undefined
+			return usage
+		}
 
-			try {
-				throwIfRequestAborted()
-				if (this.transportProvider === "vertex" && this.options.vertexStreamingEnabled === false) {
-					const result = await awaitRequest(
-						requestContext.client.models.generateContent(params),
-						`${this.providerName} request for ${requestContext.model}`,
-					)
-					captureUsage(result.usageMetadata)
-
-					let toolCallCounter = 0
-					let hasContent = false
-					const candidate = result.candidates?.[0]
-
-					if (result.responseId) {
-						this.lastResponseId = result.responseId
-					}
-
-					if (candidate?.content?.parts) {
-						for (const part of candidate.content.parts as Array<{
-							thought?: boolean
-							text?: string
-							thoughtSignature?: string
-							functionCall?: { id?: string; name: string; args?: Record<string, unknown> }
-						}>) {
-							throwIfRequestAborted()
-							responseCapture.add([part])
-							const thoughtSignature = part.thoughtSignature
-							if (includeThoughtSignatures && thoughtSignature) {
-								this.lastThoughtSignature = thoughtSignature
-							}
-
-							if (part.thought) {
-								if (part.text) {
-									semanticOutputObserved = true
-									yield { type: "reasoning", text: part.text }
-								}
-							} else if (part.functionCall) {
-								hasContent = true
-								semanticOutputObserved = true
-								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
-								const geminiResponse = responseCapture.snapshot()
-								yield {
-									type: "tool_call",
-									id: callId,
-									name: part.functionCall.name,
-									arguments: JSON.stringify(part.functionCall.args ?? {}),
-									...(geminiResponse ? { geminiResponse } : {}),
-								}
-								throwIfRequestAborted()
-								yield { type: "tool_call_end", id: callId }
-								toolCallCounter++
-							} else if (part.text) {
-								hasContent = true
-								semanticOutputObserved = true
-								yield { type: "text", text: part.text }
-							}
-						}
-					} else if (result.text) {
-						hasContent = true
-						semanticOutputObserved = true
-						yield { type: "text", text: result.text }
-					}
-
-					if (candidate?.groundingMetadata) {
-						const sources = this.extractGroundingSources(candidate.groundingMetadata)
-						if (sources.length > 0) {
-							yield { type: "grounding", sources }
-						}
-					}
-
-					const usage = takeUsage()
-					if (usage) yield usage
-
-					if (!hasContent) {
-						yield { type: "text", text: this.getNoVisibleContentMessage(candidate?.finishReason) }
-					}
-
-					throwIfRequestAborted()
-					const geminiResponse = responseCapture.snapshot()
-					if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
-					throwIfRequestAborted()
-					yield createGeminiOutcome(candidate?.finishReason, semanticOutputObserved, metadata, hasContent)
-					return
-				}
-
-				const admission = Promise.resolve(requestContext.client.models.generateContentStream(params)).then(
-					(result) => {
-						const iterator = result[Symbol.asyncIterator]()
-						if (requestControl.signal.aborted) {
-							closeGeminiIterator(iterator)
-							requestControl.signal.throwIfAborted()
-						}
-						resultIterator = iterator
-						return iterator
-					},
+		try {
+			throwIfRequestAborted()
+			if (this.transportProvider === "vertex" && this.options.vertexStreamingEnabled === false) {
+				const result = await awaitRequest(
+					requestContext.client.models.generateContent(params),
+					`${this.providerName} request for ${requestContext.model}`,
 				)
-				const iterator = await awaitRequest(
-					admission,
-					`${this.providerName} stream request for ${requestContext.model}`,
-				)
-
-				let pendingGroundingMetadata: GroundingMetadata | undefined
-				let finalResponse: { responseId?: string } | undefined
-				let finishReason: string | undefined
+				captureUsage(result.usageMetadata)
 
 				let toolCallCounter = 0
 				let hasContent = false
+				const candidate = result.candidates?.[0]
+				const finishReason = getGeminiStopReason(result)
 
-				while (true) {
-					throwIfRequestAborted()
-					const nextChunk = await streamIdleTimeout.wait(
-						raceApiStreamAbort(iterator.next(), requestControl.signal),
-					)
-					throwIfRequestAborted()
+				if (result.responseId) {
+					this.lastResponseId = result.responseId
+				}
 
-					if (!nextChunk || nextChunk.done) {
-						streamIteratorCompleted = true
-						break
-					}
-
-					const chunk = nextChunk.value
-					emittedAnyStreamChunk = true
-					// Capture billing before yielding any part: cancellation can interrupt delivery of this same chunk.
-					captureUsage(chunk.usageMetadata)
-
-					// Track the final structured response (per SDK pattern: candidate.finishReason)
-					if (chunk.candidates && chunk.candidates[0]?.finishReason) {
-						finalResponse = chunk as { responseId?: string }
-						finishReason = chunk.candidates[0].finishReason
-					}
-					// Process candidates and their parts to separate thoughts from content
-					if (chunk.candidates && chunk.candidates.length > 0) {
-						const candidate = chunk.candidates[0]
-
-						if (candidate.groundingMetadata) {
-							pendingGroundingMetadata = candidate.groundingMetadata
+				if (candidate?.content?.parts) {
+					for (const part of candidate.content.parts as Array<{
+						thought?: boolean
+						text?: string
+						thoughtSignature?: string
+						functionCall?: { id?: string; name: string; args?: Record<string, unknown> }
+					}>) {
+						throwIfRequestAborted()
+						responseCapture.add([part])
+						const thoughtSignature = part.thoughtSignature
+						if (includeThoughtSignatures && thoughtSignature) {
+							this.lastThoughtSignature = thoughtSignature
 						}
 
-						if (candidate.content && candidate.content.parts) {
-							for (const part of candidate.content.parts as Array<{
-								thought?: boolean
-								text?: string
-								thoughtSignature?: string
-								functionCall?: { id?: string; name: string; args: Record<string, unknown> }
-							}>) {
-								throwIfRequestAborted()
-								responseCapture.add([part])
-								// Capture thought signatures so they can be persisted into API history.
-								const thoughtSignature = part.thoughtSignature
-								// Persist thought signatures so they can be round-tripped in the next step.
-								// Gemini 3 requires this during tool calling; other Gemini thinking models
-								// benefit from it for continuity.
-								if (includeThoughtSignatures && thoughtSignature) {
-									this.lastThoughtSignature = thoughtSignature
-								}
-
-								if (part.thought) {
-									// This is a thinking/reasoning part
-									if (part.text) {
-										semanticOutputObserved = true
-										yield { type: "reasoning", text: part.text }
-									}
-								} else if (part.functionCall) {
-									hasContent = true
-									semanticOutputObserved = true
-									// Gemini sends complete function calls in a single chunk
-									// Emit as partial chunks for consistent handling with NativeToolCallParser
-									const callId =
-										part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
-									const args = JSON.stringify(part.functionCall.args ?? {})
-
-									// Emit name first
-									yield {
-										type: "tool_call_partial",
-										index: toolCallCounter,
-										id: callId,
-										name: part.functionCall.name,
-										arguments: undefined,
-									}
-									throwIfRequestAborted()
-
-									// Then emit arguments
-									yield {
-										type: "tool_call_partial",
-										index: toolCallCounter,
-										id: callId,
-										name: undefined,
-										arguments: args,
-									}
-									throwIfRequestAborted()
-									const geminiResponse = responseCapture.snapshot()
-									yield {
-										type: "tool_call_end",
-										id: callId,
-										...(geminiResponse ? { geminiResponse } : {}),
-									}
-
-									toolCallCounter++
-								} else {
-									// This is regular content
-									if (part.text) {
-										hasContent = true
-										semanticOutputObserved = true
-										yield { type: "text", text: part.text }
-									}
-								}
+						if (part.thought) {
+							if (part.text) {
+								semanticOutputObserved = true
+								yield { type: "reasoning", text: part.text }
 							}
+						} else if (part.functionCall) {
+							hasContent = true
+							semanticOutputObserved = true
+							const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
+							const geminiResponse = responseCapture.snapshot()
+							yield {
+								type: "tool_call",
+								id: callId,
+								name: part.functionCall.name,
+								arguments: JSON.stringify(part.functionCall.args ?? {}),
+								...(geminiResponse ? { geminiResponse } : {}),
+							}
+							throwIfRequestAborted()
+							yield { type: "tool_call_end", id: callId }
+							toolCallCounter++
+						} else if (part.text) {
+							hasContent = true
+							semanticOutputObserved = true
+							yield { type: "text", text: part.text }
 						}
 					}
-
-					// Fallback to the original text property if no candidates structure
-					else if (chunk.text) {
-						hasContent = true
-						semanticOutputObserved = true
-						yield { type: "text", text: chunk.text }
-					}
+				} else if (result.text) {
+					hasContent = true
+					semanticOutputObserved = true
+					yield { type: "text", text: result.text }
 				}
 
-				if (finalResponse?.responseId) {
-					// Capture responseId so Task.addToApiConversationHistory can store it
-					// alongside the assistant message in api_history.json.
-					this.lastResponseId = finalResponse.responseId
-				}
-
-				if (pendingGroundingMetadata) {
-					const sources = this.extractGroundingSources(pendingGroundingMetadata)
+				if (candidate?.groundingMetadata) {
+					const sources = this.extractGroundingSources(candidate.groundingMetadata)
 					if (sources.length > 0) {
 						yield { type: "grounding", sources }
 					}
@@ -847,42 +656,201 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				const usage = takeUsage()
 				if (usage) yield usage
 
-				if (!hasContent) {
+				if (!hasContent && finishReason) {
 					yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
 				}
 
-				// EOF is transport closure; only STOP is successful provider completion.
 				throwIfRequestAborted()
 				const geminiResponse = responseCapture.snapshot()
 				if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
 				throwIfRequestAborted()
 				yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata, hasContent)
 				return
-			} catch (error) {
-				// Flush observed usage on failure/cancellation, never from finally: consumer return must stay terminal.
-				const usage = takeUsage()
-				if (usage) yield usage
-				if (metadata?.signal?.aborted) {
-					throwIfRequestAborted()
-					throw error
-				}
-
-				if (error instanceof ApiStreamDeadlineError || error instanceof ApiRequestTimeoutError) throw error
-
-				if (error instanceof Error) {
-					throw this.wrapProviderError(error, "common:errors.gemini.generate_stream", "Gemini stream error")
-				}
-
-				throw error
-			} finally {
-				streamIdleTimeout.dispose()
-				if (resultIterator && !streamIteratorCompleted) {
-					// GenAI 1.47.0 releases its reader lock on return without cancelling the SSE body.
-					requestAbortController.abort()
-					closeGeminiIterator(resultIterator)
-				}
-				requestControl.dispose()
 			}
+
+			const admission = Promise.resolve(requestContext.client.models.generateContentStream(params)).then(
+				(result) => {
+					const iterator = result[Symbol.asyncIterator]()
+					if (requestControl.signal.aborted) {
+						closeGeminiIterator(iterator)
+						requestControl.signal.throwIfAborted()
+					}
+					resultIterator = iterator
+					return iterator
+				},
+			)
+			const iterator = await awaitRequest(
+				admission,
+				`${this.providerName} stream request for ${requestContext.model}`,
+			)
+
+			let pendingGroundingMetadata: GroundingMetadata | undefined
+			let finalResponse: { responseId?: string } | undefined
+			let finishReason: string | undefined
+
+			let toolCallCounter = 0
+			let hasContent = false
+
+			while (true) {
+				throwIfRequestAborted()
+				const nextChunk = await streamIdleTimeout.wait(
+					raceApiStreamAbort(iterator.next(), requestControl.signal),
+				)
+				throwIfRequestAborted()
+
+				if (!nextChunk || nextChunk.done) {
+					streamIteratorCompleted = true
+					break
+				}
+
+				const chunk = nextChunk.value
+				emittedAnyStreamChunk = true
+				// Capture billing before yielding any part: cancellation can interrupt delivery of this same chunk.
+				captureUsage(chunk.usageMetadata)
+
+				const stopReason = getGeminiStopReason(chunk)
+				if (stopReason) {
+					finalResponse = chunk
+					finishReason = stopReason
+				}
+				// Process candidates and their parts to separate thoughts from content
+				if (chunk.candidates && chunk.candidates.length > 0) {
+					const candidate = chunk.candidates[0]
+
+					if (candidate.groundingMetadata) {
+						pendingGroundingMetadata = candidate.groundingMetadata
+					}
+
+					if (candidate.content && candidate.content.parts) {
+						for (const part of candidate.content.parts as Array<{
+							thought?: boolean
+							text?: string
+							thoughtSignature?: string
+							functionCall?: { id?: string; name: string; args: Record<string, unknown> }
+						}>) {
+							throwIfRequestAborted()
+							responseCapture.add([part])
+							// Capture thought signatures so they can be persisted into API history.
+							const thoughtSignature = part.thoughtSignature
+							// Persist thought signatures so they can be round-tripped in the next step.
+							// Gemini 3 requires this during tool calling; other Gemini thinking models
+							// benefit from it for continuity.
+							if (includeThoughtSignatures && thoughtSignature) {
+								this.lastThoughtSignature = thoughtSignature
+							}
+
+							if (part.thought) {
+								// This is a thinking/reasoning part
+								if (part.text) {
+									semanticOutputObserved = true
+									yield { type: "reasoning", text: part.text }
+								}
+							} else if (part.functionCall) {
+								hasContent = true
+								semanticOutputObserved = true
+								// Gemini sends complete function calls in a single chunk
+								// Emit as partial chunks for consistent handling with NativeToolCallParser
+								const callId = part.functionCall.id || `${part.functionCall.name}-${toolCallCounter}`
+								const args = JSON.stringify(part.functionCall.args ?? {})
+
+								// Emit name first
+								yield {
+									type: "tool_call_partial",
+									index: toolCallCounter,
+									id: callId,
+									name: part.functionCall.name,
+									arguments: undefined,
+								}
+								throwIfRequestAborted()
+
+								// Then emit arguments
+								yield {
+									type: "tool_call_partial",
+									index: toolCallCounter,
+									id: callId,
+									name: undefined,
+									arguments: args,
+								}
+								throwIfRequestAborted()
+								const geminiResponse = responseCapture.snapshot()
+								yield {
+									type: "tool_call_end",
+									id: callId,
+									...(geminiResponse ? { geminiResponse } : {}),
+								}
+
+								toolCallCounter++
+							} else {
+								// This is regular content
+								if (part.text) {
+									hasContent = true
+									semanticOutputObserved = true
+									yield { type: "text", text: part.text }
+								}
+							}
+						}
+					}
+				}
+
+				// Fallback to the original text property if no candidates structure
+				else if (chunk.text) {
+					hasContent = true
+					semanticOutputObserved = true
+					yield { type: "text", text: chunk.text }
+				}
+			}
+
+			if (finalResponse?.responseId) {
+				// Capture responseId so Task.addToApiConversationHistory can store it
+				// alongside the assistant message in api_history.json.
+				this.lastResponseId = finalResponse.responseId
+			}
+
+			if (pendingGroundingMetadata) {
+				const sources = this.extractGroundingSources(pendingGroundingMetadata)
+				if (sources.length > 0) {
+					yield { type: "grounding", sources }
+				}
+			}
+
+			const usage = takeUsage()
+			if (usage) yield usage
+
+			if (!hasContent && finishReason) {
+				yield { type: "text", text: this.getNoVisibleContentMessage(finishReason) }
+			}
+
+			// EOF is transport closure; only STOP is successful provider completion.
+			throwIfRequestAborted()
+			const geminiResponse = responseCapture.snapshot()
+			if (geminiResponse) yield { type: "reasoning", text: "", geminiResponse }
+			throwIfRequestAborted()
+			yield createGeminiOutcome(finishReason, semanticOutputObserved, metadata, hasContent)
+			return
+		} catch (error) {
+			// Flush observed usage on failure/cancellation, never from finally: consumer return must stay terminal.
+			const usage = takeUsage()
+			if (usage) yield usage
+			if (metadata?.signal?.aborted) {
+				throwIfRequestAborted()
+				throw error
+			}
+
+			if (error instanceof ApiStreamDeadlineError || error instanceof ApiRequestTimeoutError) throw error
+
+			if (error instanceof Error) {
+				throw this.wrapProviderError(error, "common:errors.gemini.generate_stream", "Gemini stream error")
+			}
+
+			throw error
+		} finally {
+			streamIdleTimeout.dispose()
+			if (resultIterator && !streamIteratorCompleted) {
+				// GenAI 1.47.0 releases its reader lock on return without cancelling the SSE body.
+				requestAbortController.abort()
+				closeGeminiIterator(resultIterator)
+			}
+			requestControl.dispose()
 		}
 	}
 
@@ -939,83 +907,78 @@ export abstract class GeminiTransportHandler extends BaseProvider implements Sin
 				: requestedMaxOutputTokens
 		const requestTimeoutMs = getApiRequestTimeout()
 
-		while (true) {
+		throwIfSingleCompletionAborted(metadata)
+		const requestContext = await awaitSingleCompletion(this.getRequestContext(model, metadata), metadata)
+		const requestControl = createLinkedAbortController({ signal: metadata?.signal })
+
+		const { supportsTemperature } = resolveModelParameterApplicability({
+			provider: this.transportProvider,
+			modelId: model,
+			model: info,
+			settings: this.options,
+		})
+		const temperatureConfig = supportsTemperature
+			? (this.options.modelTemperature ?? info.defaultTemperature ?? 1)
+			: undefined
+
+		const promptConfig: GenerateContentConfig = {
+			...(this.transportProvider === "gemini" ? { thinkingConfig } : {}),
+			httpOptions: requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
+			abortSignal: createGenAiAbortSignal(requestControl.signal),
+			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
+			...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
+		}
+
+		const request = {
+			model: requestContext.model,
+			contents: [{ role: "user", parts: [{ text: prompt }] }],
+			config: promptConfig,
+		}
+
+		try {
 			throwIfSingleCompletionAborted(metadata)
-			const requestContext = await awaitSingleCompletion(this.getRequestContext(model, metadata), metadata)
-			const requestControl = createLinkedAbortController({ signal: metadata?.signal })
+			const result = await withApiRequestTimeout(
+				awaitSingleCompletion(requestContext.client.models.generateContent(request), {
+					signal: requestControl.signal,
+				}),
+				`${this.providerName} completion request for ${requestContext.model}`,
+				requestTimeoutMs,
+				() => requestControl.controller.abort(),
+			)
 
-			const { supportsTemperature } = resolveModelParameterApplicability({
-				provider: this.transportProvider,
-				modelId: model,
-				model: info,
-				settings: this.options,
-			})
-			const temperatureConfig = supportsTemperature
-				? (this.options.modelTemperature ?? info.defaultTemperature ?? 1)
-				: undefined
+			let text = result.text ?? ""
 
-			const promptConfig: GenerateContentConfig = {
-				...(this.transportProvider === "gemini" ? { thinkingConfig } : {}),
-				httpOptions: this.mergeHttpOptions(
-					requestContext.httpOptions,
-					requestTimeoutMs ? { timeout: requestTimeoutMs } : undefined,
-				),
-				abortSignal: createGenAiAbortSignal(requestControl.signal),
-				...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-				...(temperatureConfig !== undefined ? { temperature: temperatureConfig } : {}),
-			}
-
-			const request = {
-				model: requestContext.model,
-				contents: [{ role: "user", parts: [{ text: prompt }] }],
-				config: promptConfig,
-			}
-
-			try {
-				throwIfSingleCompletionAborted(metadata)
-				const result = await withApiRequestTimeout(
-					awaitSingleCompletion(requestContext.client.models.generateContent(request), {
-						signal: requestControl.signal,
-					}),
-					`${this.providerName} completion request for ${requestContext.model}`,
-					requestTimeoutMs,
-					() => requestControl.controller.abort(),
+			const candidate = result.candidates?.[0]
+			if (
+				this.transportProvider === "gemini" &&
+				(candidate?.finishReason?.replace(/^FINISH_REASON_/, "") !== "STOP" || !text)
+			) {
+				throw new Error(
+					`Gemini completion did not finish successfully (${candidate?.finishReason ?? "missing finish reason"}).`,
 				)
-
-				let text = result.text ?? ""
-
-				const candidate = result.candidates?.[0]
-				if (
-					this.transportProvider === "gemini" &&
-					(candidate?.finishReason?.replace(/^FINISH_REASON_/, "") !== "STOP" || !text)
-				) {
-					throw new Error(
-						`Gemini completion did not finish successfully (${candidate?.finishReason ?? "missing finish reason"}).`,
-					)
-				}
-				if (candidate?.groundingMetadata) {
-					const citations = this.extractCitationsOnly(candidate.groundingMetadata)
-					if (citations) {
-						text += `\n\n${t("common:errors.gemini.sources")} ${citations}`
-					}
-				}
-
-				return text
-			} catch (error) {
-				throwIfSingleCompletionAborted(metadata)
-
-				if (error instanceof Error) {
-					throw this.wrapProviderError(
-						error,
-						"common:errors.gemini.generate_complete_prompt",
-						"Gemini completion error",
-					)
-				}
-
-				throw error
-			} finally {
-				requestControl.dispose()
 			}
+			if (candidate?.groundingMetadata) {
+				const citations = this.extractCitationsOnly(candidate.groundingMetadata)
+				if (citations) {
+					text += `\n\n${t("common:errors.gemini.sources")} ${citations}`
+				}
+			}
+
+			return text
+		} catch (error) {
+			throwIfSingleCompletionAborted(metadata)
+
+			if (error instanceof Error) {
+				throw this.wrapProviderError(
+					error,
+					"common:errors.gemini.generate_complete_prompt",
+					"Gemini completion error",
+				)
+			}
+
+			throw error
+		} finally {
+			requestControl.dispose()
 		}
 	}
 

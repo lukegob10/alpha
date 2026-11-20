@@ -114,6 +114,45 @@ describe("Claude Copilot routing identity", () => {
 		})
 	})
 
+	it("rechecks a route after the last catalog observer is disposed", async () => {
+		const selected = claudeModel()
+		const replacement = claudeModel({ id: "replacement-route" })
+		selectChatModels.mockResolvedValueOnce([selected]).mockResolvedValueOnce([replacement])
+		const first = handlerFor(selected)
+		const peer = handlerFor(selected)
+		await first.initializeClient()
+		first.dispose()
+		await peer.initializeClient()
+		expect(selectChatModels).toHaveBeenCalledExactlyOnceWith(selector(selected))
+
+		peer.dispose()
+		expect(modelChanges.size).toBe(0)
+		refreshModels()
+		vi.spyOn(console, "error").mockImplementation(() => undefined)
+		await expect(handlerFor(selected).initializeClient()).rejects.toMatchObject({ code: "InvalidModelSelector" })
+		expect(selectChatModels).toHaveBeenCalledTimes(2)
+	})
+
+	it("retries a stale no-match result when the catalog made the configured route available", async () => {
+		const selected = claudeModel()
+		let release!: (models: vscode.LanguageModelChat[]) => void
+		const staleSelection = new Promise<vscode.LanguageModelChat[]>((resolve) => {
+			release = resolve
+		})
+		selectChatModels.mockReturnValueOnce(staleSelection).mockResolvedValueOnce([selected])
+		const handler = handlerFor(selected)
+		vi.spyOn(console, "error").mockImplementation(() => undefined)
+
+		const initialization = handler.initializeClient()
+		expect(selectChatModels).toHaveBeenCalledExactlyOnceWith(selector(selected))
+		refreshModels()
+		release([])
+
+		await expect(initialization).resolves.toBeUndefined()
+		expect(selectChatModels).toHaveBeenCalledTimes(2)
+		expect(handler.getModel().id).toBe(selected.id)
+	})
+
 	it("rejects a removed Claude route after catalog invalidation without selecting another available model", async () => {
 		const selected = claudeModel()
 		const otherClaude = claudeModel({ id: "other-claude-route", family: "claude-opus-4.6" })

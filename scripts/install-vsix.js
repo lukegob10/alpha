@@ -122,10 +122,15 @@ function runEditor(editor, args, options = {}) {
 	return execFileSyncImpl(invocation.file, invocation.args, invocation.options)
 }
 
-function askQuestion(rl, question) {
-	return new Promise((resolve) => {
-		rl.question(question, resolve)
-	})
+function createPrompt(rl) {
+	const answers = rl[Symbol.asyncIterator]()
+	return async (question) => {
+		rl.setPrompt(question)
+		rl.prompt()
+		const { value, done } = await answers.next()
+		if (done) throw new Error("Installer input closed before a response. Use -y to skip prompts.")
+		return value.trim()
+	}
 }
 
 async function main(argv = process.argv.slice(2)) {
@@ -152,27 +157,21 @@ async function main(argv = process.argv.slice(2)) {
 			throw new Error(`VSIX file not found: ${vsixFileName}. Make sure the build completed successfully.`)
 		}
 
-		rl = readline.createInterface({
-			input: process.stdin,
-			output: process.stdout,
-		})
-
-		let editor = validatedEditorArgument
-		if (editor === undefined && !autoYes) {
-			editor =
-				(
-					await askQuestion(
-						rl,
-						"\nWhich editor command to use? (code/cursor/code-insiders) [default: code]: ",
-					)
-				).trim() || "code"
-		}
-		editor = normalizeEditor(editor === undefined ? "code" : editor)
-
-		const answer = autoYes ? "y" : await askQuestion(rl, "\nDo you wish to continue? (y/n): ")
-		if (answer.trim().toLowerCase() !== "y") {
-			console.log("Installation cancelled.")
-			return
+		let editor = validatedEditorArgument ?? "code"
+		if (!autoYes) {
+			rl = readline.createInterface({ input: process.stdin, output: process.stdout })
+			const prompt = createPrompt(rl)
+			if (validatedEditorArgument === undefined) {
+				const selection = await prompt(
+					"\nWhich editor command to use? (code/cursor/code-insiders) [default: code]: ",
+				)
+				editor = normalizeEditor(selection || "code")
+			}
+			const answer = await prompt("\nDo you wish to continue? (y/n): ")
+			if (answer.toLowerCase() !== "y") {
+				console.log("Installation cancelled.")
+				return
+			}
 		}
 
 		console.log(`\nProceeding with installation using '${editor}' command...`)

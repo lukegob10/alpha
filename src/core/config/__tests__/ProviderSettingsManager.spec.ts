@@ -4,6 +4,7 @@ import { ExtensionContext } from "vscode"
 
 import { retiredProviderNames, type ProviderSettings } from "@alpha-code/types"
 
+import * as api from "../../../api"
 import { ProviderSettingsManager, ProviderProfiles } from "../ProviderSettingsManager"
 
 // Mock VSCode ExtensionContext
@@ -882,6 +883,33 @@ describe("ProviderSettingsManager", () => {
 	})
 
 	describe("Export", () => {
+		it.each(["success", "failure"])("disposes the model metadata handler on lookup %s", async (result) => {
+			await providerSettingsManager.initialize()
+			mockSecrets.get.mockResolvedValue(
+				JSON.stringify({
+					currentApiConfigName: "selected",
+					apiConfigs: { selected: { id: "profile-id", apiProvider: "vscode-lm" } },
+				}),
+			)
+			const dispose = vi.fn()
+			const build = vi.spyOn(api, "buildApiHandler").mockReturnValueOnce({
+				countTokens: vi.fn(),
+				createMessage: vi.fn(),
+				getModel: () => {
+					if (result === "failure") throw new Error("model metadata unavailable")
+					return { id: "model", info: { contextWindow: 1024, supportsPromptCache: false } }
+				},
+				dispose,
+			})
+			try {
+				const exported = await providerSettingsManager.export()
+				expect(exported.apiConfigs.selected).toMatchObject({ apiProvider: "vscode-lm" })
+				expect(dispose).toHaveBeenCalledOnce()
+			} finally {
+				build.mockRestore()
+			}
+		})
+
 		it("should preserve retired provider profiles with full fields", async () => {
 			const existingConfig = {
 				currentApiConfigName: "retired",

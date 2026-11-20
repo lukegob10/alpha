@@ -1,8 +1,14 @@
-import { memo, useMemo, useEffect, useState } from "react"
+import { memo, useMemo, useEffect, useState, useSyncExternalStore } from "react"
 import { parseUnifiedDiff, type DiffLine } from "@src/utils/parseUnifiedDiff"
 import { normalizeLanguage } from "@src/utils/highlighter"
 import { getLanguageFromPath } from "@src/utils/getLanguageFromPath"
 import { highlightHunks } from "@src/utils/highlightDiff"
+import { getWebviewTheme, subscribeToWebviewTheme } from "@src/utils/webviewTheme"
+
+function getDiffTheme(): "light" | "dark" {
+	const theme = getWebviewTheme()
+	return theme === "light" || theme === "high-contrast-light" ? "light" : "dark"
+}
 
 interface DiffViewProps {
 	source: string
@@ -26,11 +32,7 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 	// Determine language from file path
 	const normalizedLang = useMemo(() => normalizeLanguage(getLanguageFromPath(filePath || "") || "txt"), [filePath])
 
-	const isLightTheme = useMemo(() => {
-		if (typeof document === "undefined") return false
-		const cls = document.body.className
-		return /\bvscode-light\b|\bvscode-high-contrast-light\b/i.test(cls)
-	}, [])
+	const theme = useSyncExternalStore(subscribeToWebviewTheme, getDiffTheme, () => "dark" as const)
 
 	// Disable syntax highlighting for large diffs (performance optimization)
 	const shouldHighlight = useMemo(() => {
@@ -123,7 +125,7 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 						hunk.oldText,
 						hunk.newText,
 						normalizedLang,
-						isLightTheme ? "light" : "dark",
+						theme,
 						i,
 						filePath,
 					)
@@ -152,7 +154,7 @@ const DiffView = memo(({ source, filePath }: DiffViewProps) => {
 		return () => {
 			cancelled = true
 		}
-	}, [hunks, shouldHighlight, normalizedLang, isLightTheme, filePath])
+	}, [hunks, shouldHighlight, normalizedLang, theme, filePath])
 
 	// Render helper that uses precomputed highlighting
 	const renderContent = (line: DiffLine, hunk: Hunk, oldLineIndex: number, newLineIndex: number): React.ReactNode => {

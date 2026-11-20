@@ -1,3 +1,4 @@
+import { getEventListeners } from "node:events"
 import type { Mock } from "vitest"
 
 const { mockGetApiRequestTimeoutSetting, mockCancellationSources, mockVsCodeVersion } = vi.hoisted(() => ({
@@ -3140,31 +3141,35 @@ describe("VsCodeLmHandler", () => {
 			}
 		})
 
-		it("should cancel when VS Code LM response stream stalls past the API timeout", async () => {
-			mockGetApiRequestTimeoutSetting.mockReturnValue(0.001)
-
-			const systemPrompt = "You are a helpful assistant"
-			const messages: Anthropic.Messages.MessageParam[] = [
-				{
-					role: "user" as const,
-					content: "Hello",
-				},
-			]
-
-			mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
-				stream: {
-					[Symbol.asyncIterator]() {
-						return {
-							next: () => new Promise(() => undefined),
-						}
+		it("releases the abort wait when a timed-out host stream never settles", async () => {
+			vi.useFakeTimers()
+			try {
+				mockGetApiRequestTimeoutSetting.mockReturnValue(1)
+				mockLanguageModelChat.sendRequest.mockResolvedValueOnce({
+					stream: {
+						[Symbol.asyncIterator]() {
+							return { next: () => new Promise(() => undefined) }
+						},
 					},
-				},
-			})
+				})
 
-			await expect(handler.createMessage(systemPrompt, messages).next()).rejects.toThrow(
-				/VS Code LM response stream .* timed out after 1 second/,
-			)
-			expect(mockCancellationSources[0]?.cancel).toHaveBeenCalled()
+				const pending = handler.createMessage("System", [{ role: "user", content: "Hello" }]).next()
+				const signal = handler["currentRequestControl"]!.signal
+				const rejected = expect(pending).rejects.toMatchObject({
+					code: "ProviderTimeout",
+					timeoutScope: "provider_idle",
+					message: expect.stringMatching(/VS Code LM response stream .* timed out after 1 second/),
+				})
+				await vi.advanceTimersByTimeAsync(1_000)
+				await rejected
+
+				expect(mockCancellationSources[0]?.cancel).toHaveBeenCalledOnce()
+				expect(mockCancellationSources[0]?.dispose).toHaveBeenCalledOnce()
+				expect(getEventListeners(signal, "abort")).toHaveLength(0)
+				expect(vi.getTimerCount()).toBe(0)
+			} finally {
+				vi.useRealTimers()
+			}
 		})
 
 		it("should abort a stalled stream read after the first chunk and release request ownership", async () => {

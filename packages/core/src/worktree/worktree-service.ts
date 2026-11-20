@@ -205,9 +205,13 @@ export class WorktreeService {
 			const options = { cwd, env: createWorktreeGitEnvironment() }
 			// Run all git commands in parallel for better performance
 			const [worktrees, localResult, remoteResult, currentBranch] = await Promise.all([
-				this.listWorktrees(cwd),
+				includeWorktreeBranches ? [] : this.listWorktrees(cwd),
 				execAsync('git branch --format="%(refname:short)"', options),
-				execAsync('git branch -r --format="%(refname:short)"', options),
+				execFileAsync(
+					"git",
+					["branch", "-r", "--format=%(if)%(symref)%(then)%(else)%(refname:short)%(end)"],
+					options,
+				),
 				this.getCurrentBranch(cwd),
 			])
 
@@ -217,18 +221,13 @@ export class WorktreeService {
 			const localBranches = localResult.stdout
 				.trim()
 				.split("\n")
-				.filter((b) => b && (includeWorktreeBranches || !branchesInWorktrees.has(b)))
+				.filter((b) => b && !branchesInWorktrees.has(b))
 
 			// Filter remote branches
 			const remoteBranches = remoteResult.stdout
 				.trim()
 				.split("\n")
-				.filter(
-					(b) =>
-						b &&
-						!b.includes("HEAD") &&
-						(includeWorktreeBranches || !branchesInWorktrees.has(b.replace(/^origin\//, ""))),
-				)
+				.filter((b) => b && !branchesInWorktrees.has(b.replace(/^origin\//, "")))
 
 			return {
 				localBranches,

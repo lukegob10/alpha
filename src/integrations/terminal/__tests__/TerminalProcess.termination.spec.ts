@@ -47,7 +47,7 @@ describe("VS Code command hard termination", () => {
 		const settled = vi.fn()
 		try {
 			const stopping = fixture.command.terminate().then(settled)
-			expect(fixture.host.sendText).toHaveBeenCalledExactlyOnceWith("\x03")
+			expect(fixture.host.sendText).toHaveBeenCalledExactlyOnceWith("\x03", false)
 			await vi.advanceTimersByTimeAsync(249)
 			expect(fixture.host.dispose).not.toHaveBeenCalled()
 			await vi.advanceTimersByTimeAsync(1)

@@ -193,6 +193,153 @@ describe("scheduled terminal result durability", () => {
 		await fs.rm(tmpDir, { recursive: true, force: true })
 	})
 
+	it("keeps one tick in flight when schedules change", async () => {
+		const firstRefresh = deferred<boolean>()
+		vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockImplementationOnce(() => firstRefresh.promise)
+		await vi.advanceTimersByTimeAsync(TICK_MS)
+		expect(tick).toHaveBeenCalledOnce()
+		try {
+			await service.createTask(payload())
+			await vi.advanceTimersByTimeAsync(TICK_MS)
+			expect(tick).toHaveBeenCalledOnce()
+		} finally {
+			firstRefresh.resolve(false)
+			await tick.mock.results[0].value
+		}
+		await advanceTick()
+	})
+
+	it("does not postpone an armed tick when schedules change", async () => {
+		await vi.advanceTimersByTimeAsync(TICK_MS / 2)
+		await service.createTask(payload())
+		await vi.advanceTimersByTimeAsync(TICK_MS / 2)
+		expect(tick).toHaveBeenCalledOnce()
+		await tick.mock.results[0].value
+	})
+
+	it("keeps a due occurrence when saving other fields with the same schedule", async () => {
+		const startAt = Date.now() + 60_000
+		const task = await service.createTask(payload({ schedule: { type: "once", startAt, timezone: "UTC" } }))
+		vi.spyOn(Date, "now").mockReturnValue(startAt + 1)
+		await service.updateTask(task.id, { name: "Renamed review", schedule: { ...task.schedule } })
+		expect(service.getState().tasks[0]).toMatchObject({ name: "Renamed review", nextRunAt: startAt })
+
+		const started = deferred<AlphaTask>()
+		onStart = started.resolve
+		await advanceTick()
+		await started.promise
+		expect(service.getState().runs).toMatchObject([{ taskId: task.id, scheduledFor: startAt, trigger: "schedule" }])
+	})
+
+	it.each(["schedule", "manual"] as const)(
+		"declines a %s claim that has not started when disposal begins",
+		async (trigger) => {
+			const startAt = Date.now() + 60_000
+			const task = await service.createTask(payload({ schedule: { type: "once", startAt, timezone: "UTC" } }))
+			vi.spyOn(Date, "now").mockReturnValue(startAt + 1)
+			const entering = deferred()
+			const proceed = deferred()
+			const claimRun = ScheduledTaskStore.prototype.claimRun
+			const claim = vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementationOnce(async function (
+				this: ScheduledTaskStore,
+				...args
+			) {
+				entering.resolve()
+				await proceed.promise
+				return claimRun.apply(this, args)
+			})
+			const running = trigger === "schedule" ? advanceTick() : service.runNow(task.id)
+			await entering.promise
+			const disposal = service.dispose()
+			proceed.resolve()
+			await Promise.all([running, disposal])
+
+			expect(service.getState().runs).toEqual([])
+			expect(service.getState().tasks[0]).toMatchObject({ enabled: true, nextRunAt: startAt })
+			await expect(service.runNow(task.id)).rejects.toThrow("Scheduled task service is disposed")
+			expect(claim).toHaveBeenCalledOnce()
+			expect(provider.createTask).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each([false, true])(
+		"settles a committed claim before releasing ownership (workspace closed: %s)",
+		async (closed) => {
+			const task = await service.createTask(payload())
+			const committed = deferred()
+			const handoff = deferred()
+			const claimRun = ScheduledTaskStore.prototype.claimRun
+			vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementationOnce(async function (
+				this: ScheduledTaskStore,
+				...args
+			) {
+				const claimed = await claimRun.apply(this, args)
+				committed.resolve()
+				await handoff.promise
+				return claimed
+			})
+			const running = service.runNow(task.id)
+			await committed.promise
+			if (closed) Object.assign(vscode.workspace, { workspaceFolders: [] })
+			const disposal = service.dispose()
+			try {
+				await Promise.resolve()
+				expect(leaseReleases.size).toBe(0)
+			} finally {
+				handoff.resolve()
+				await Promise.all([running, disposal])
+			}
+
+			const persisted = new ScheduledTaskStore(tmpDir)
+			await persisted.initialize()
+			expect(persisted.getState().runs).toMatchObject([{ taskId: task.id, status: "canceled" }])
+			expect(leaseReleases.size).toBe(1)
+			expect(provider.createTask).not.toHaveBeenCalled()
+		},
+	)
+
+	it.each([false, true])("settles runs still queued during disposal (retry: %s)", async (retry) => {
+		const first = await service.createTask(payload({ name: "First scheduled task" }))
+		const second = await service.createTask(payload({ name: "Second scheduled task" }))
+		const completeRun = ScheduledTaskStore.prototype.completeRun
+		let failQueuedWrite = retry
+		vi.spyOn(ScheduledTaskStore.prototype, "completeRun").mockImplementation(async function (
+			this: ScheduledTaskStore,
+			run,
+		) {
+			if (failQueuedWrite && run.taskId === second.id) {
+				failQueuedWrite = false
+				throw new Error("Queued cancellation could not be persisted")
+			}
+			return completeRun.call(this, run)
+		})
+		const loadingProfile = deferred()
+		const profileResult = deferred<typeof profile>()
+		provider.providerSettingsManager.getProfile.mockImplementationOnce(async () => {
+			loadingProfile.resolve()
+			return profileResult.promise
+		})
+		await service.runNow(first.id)
+		await loadingProfile.promise
+		await service.runNow(second.id)
+		const disposal = service.dispose()
+		profileResult.resolve(profile)
+		if (retry) {
+			await expect(disposal).rejects.toThrow("Scheduled task cleanup failed")
+			expect(leaseReleases.size).toBe(0)
+			expect(service.getState().runs.find((run) => run.taskId === second.id)?.status).toBe("queued")
+			await service.dispose()
+		} else {
+			await disposal
+		}
+
+		const runs = service.getState().runs
+		expect(runs.find((run) => run.taskId === first.id)?.status).toBe("failed")
+		expect(runs.find((run) => run.taskId === second.id)?.status).toBe("canceled")
+		expect(leaseReleases.size).toBe(1)
+		expect(provider.createTask).not.toHaveBeenCalled()
+	})
+
 	it("continues admitting due schedules when another schedule's claim fails", async () => {
 		const first = await service.createTask(payload({ name: "A unavailable schedule" }))
 		const second = await service.createTask(payload({ name: "B valid schedule" }))

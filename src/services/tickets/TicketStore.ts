@@ -1321,7 +1321,7 @@ export class TicketStore {
 		cache.bytes -= entry.bytes
 	}
 
-	async create(input: CreateTicket, signal?: AbortSignal): Promise<Ticket> {
+	async create(input: CreateTicket, signal?: AbortSignal, initialStatus: TicketStatus = "backlog"): Promise<Ticket> {
 		const fields = createTicketSchema.parse(input)
 		return this.transaction(async () => {
 			const { tickets } = await this.scan(signal)
@@ -1330,9 +1330,10 @@ export class TicketStore {
 			const ticket: Ticket = {
 				schemaVersion: 1,
 				id: randomUUID(),
-				status: "backlog",
+				status: initialStatus,
 				createdAt: now,
 				updatedAt: now,
+				completedAt: initialStatus === "complete" ? now : undefined,
 				linkedTaskIds: [],
 				revision: "",
 				description: "",

@@ -11,8 +11,13 @@ import { extractTextFromFileWithMetadata } from "../../../integrations/misc/extr
 // Mock vscode
 vi.mock("vscode", () => ({
 	window: {
+		get activeTerminal() {
+			return undefined
+		},
 		showErrorMessage: vi.fn(),
 	},
+	commands: { executeCommand: vi.fn() },
+	env: { clipboard: { readText: vi.fn(), writeText: vi.fn() } },
 }))
 
 vi.mock("fs/promises", () => ({
@@ -46,6 +51,64 @@ describe("parseMentions - URL mention handling", () => {
 
 		// URL mentions are now replaced with a quoted reference (no fetching)
 		expect(result.text).toContain("'https://example.com'")
+	})
+})
+
+describe("parseMentions - terminal output", () => {
+	const clipboardText = "  Sample text\nAnother line\n"
+
+	beforeEach(() => {
+		vi.mocked(vscode.commands.executeCommand).mockReset()
+		vi.mocked(vscode.env.clipboard.readText).mockReset().mockResolvedValue(clipboardText)
+		vi.mocked(vscode.env.clipboard.writeText).mockReset()
+	})
+
+	afterEach(() => {
+		vi.restoreAllMocks()
+	})
+
+	it("keeps the clipboard untouched when there is no active terminal", async () => {
+		const result = await parseMentions("Check @terminal", "/test")
+
+		expect(result.text).toContain("<terminal_output>\n\n</terminal_output>")
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		expect(vscode.env.clipboard.readText).not.toHaveBeenCalled()
+		expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled()
+	})
+
+	it("keeps an unchanged clipboard out of the attachment when terminal copy does nothing", async () => {
+		vi.spyOn(vscode.window, "activeTerminal", "get").mockReturnValue({} as vscode.Terminal)
+
+		const result = await parseMentions("Check @terminal", "/test")
+
+		expect(result.text).toContain("<terminal_output>\n\n</terminal_output>")
+		expect(vscode.commands.executeCommand).toHaveBeenCalledWith("workbench.action.terminal.clearSelection")
+		expect(vscode.env.clipboard.writeText).not.toHaveBeenCalled()
+	})
+
+	it("attaches copied terminal output and restores the original clipboard", async () => {
+		vi.spyOn(vscode.window, "activeTerminal", "get").mockReturnValue({} as vscode.Terminal)
+		vi.mocked(vscode.env.clipboard.readText)
+			.mockResolvedValueOnce(clipboardText)
+			.mockResolvedValueOnce("$ echo test\ntest\n$ ")
+
+		const result = await parseMentions("Check @terminal", "/test")
+
+		expect(result.text).toContain("<terminal_output>\n$ echo test\ntest\n</terminal_output>")
+		expect(vscode.env.clipboard.writeText).toHaveBeenCalledExactlyOnceWith(clipboardText)
+	})
+
+	it("clears the selection and restores the clipboard when copying fails", async () => {
+		vi.spyOn(vscode.window, "activeTerminal", "get").mockReturnValue({} as vscode.Terminal)
+		vi.mocked(vscode.commands.executeCommand)
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error("copy failed"))
+
+		const result = await parseMentions("Check @terminal", "/test")
+
+		expect(result.text).toContain("Error fetching terminal output: copy failed")
+		expect(vscode.commands.executeCommand).toHaveBeenCalledWith("workbench.action.terminal.clearSelection")
+		expect(vscode.env.clipboard.writeText).toHaveBeenCalledExactlyOnceWith(clipboardText)
 	})
 })
 

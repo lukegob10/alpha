@@ -146,7 +146,7 @@ describe("scheduled direct command approval", () => {
 		vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
 		vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (_id, _time, _trigger, build) => {
 			const claimed = build(task, false)
-			currentRun = claimed.run
+			currentRun = claimed?.run
 			return claimed
 		})
 		vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockImplementation(async (run) => {
@@ -191,8 +191,10 @@ describe("scheduled direct command approval", () => {
 				expect(warning).not.toHaveBeenCalled()
 				return
 			}
-			await vi.waitFor(() => expect(currentRun?.status).toBe("waiting_for_approval"))
-			expect(warning).toHaveBeenCalledWith(expect.stringContaining("pnpm test"), { modal: true }, "Run once")
+			await vi.waitFor(() => {
+				expect(currentRun?.status).toBe("waiting_for_approval")
+				expect(warning).toHaveBeenCalledWith(expect.stringContaining("pnpm test"), { modal: true }, "Run once")
+			})
 			resolveApproval(undefined)
 			await vi.waitFor(() => expect(currentRun?.status).toBe("canceled"))
 		} finally {
@@ -227,7 +229,7 @@ it("fails a legacy prompt with private deny rules before starting an agent", asy
 	vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
 	vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (_id, _time, _trigger, build) => {
 		const claimed = build(task, false)
-		currentRun = claimed.run
+		currentRun = claimed?.run
 		return claimed
 	})
 	vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockImplementation(async (run) => {

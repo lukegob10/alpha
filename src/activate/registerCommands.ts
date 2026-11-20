@@ -99,6 +99,12 @@ const getCommandsMap = ({ context, outputChannel, provider }: RegisterCommandOpt
 		if (!visibleProvider) {
 			return
 		}
+		if (surface === "sidebar") {
+			await vscode.commands.executeCommand(`${AlphaProvider.sideBarId}.focus`)
+			if (!(await visibleProvider.waitForWebviewLaunch(5_000, { requireVisible: true }))) {
+				throw new Error("Alpha sidebar did not become ready")
+			}
+		}
 
 		// Keyboard commands can run from Quick Input; focus the native owner before the UI starts a draft.
 		await visibleProvider.focusInput()
@@ -246,7 +252,7 @@ async function attachAlphaEditorPanel(
 	{ context, outputChannel }: Omit<RegisterCommandOptions, "provider">,
 	panel: vscode.WebviewPanel,
 	state?: EditorChatState,
-): Promise<AlphaProvider> {
+): Promise<{ provider: AlphaProvider; isOpen: () => boolean }> {
 	let closed = false
 	let provider: AlphaProvider | undefined
 	context.subscriptions.push(
@@ -271,7 +277,7 @@ async function attachAlphaEditorPanel(
 		setPanel(panel, "tab")
 		await provider.resolveWebviewView(panel)
 		if (closed) throw new EditorPanelClosedError()
-		return provider
+		return { provider, isOpen: () => !closed }
 	} catch (error) {
 		await provider?.dispose()
 		if (closed) throw new EditorPanelClosedError()
@@ -315,17 +321,11 @@ export function registerEditorChatSerializer(options: Omit<RegisterCommandOption
 }
 
 export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<RegisterCommandOptions, "provider">) => {
-	const lastCol = Math.max(...vscode.window.visibleTextEditors.map((editor) => editor.viewColumn || 0))
-
-	// Check if there are any visible text editors, otherwise open a new group
-	// to the right.
-	const hasVisibleEditors = vscode.window.visibleTextEditors.length > 0
-
-	if (!hasVisibleEditors) {
+	const groups = vscode.window.tabGroups.all
+	const targetCol = Math.max(vscode.ViewColumn.One, ...groups.map((group) => group.viewColumn)) + 1
+	if (groups.length <= 1 && !groups[0]?.tabs.length) {
 		await vscode.commands.executeCommand("workbench.action.newGroupRight")
 	}
-
-	const targetCol = hasVisibleEditors ? Math.max(lastCol + 1, 1) : vscode.ViewColumn.Two
 
 	const newPanel = vscode.window.createWebviewPanel(AlphaProvider.tabPanelId, "Alpha", targetCol, {
 		enableScripts: true,
@@ -333,11 +333,21 @@ export const openAlphaInNewTab = async ({ context, outputChannel }: Omit<Registe
 		localResourceRoots: [context.extensionUri],
 	})
 
-	const tabProvider = await attachAlphaEditorPanel({ context, outputChannel }, newPanel)
+	const { provider, isOpen } = await attachAlphaEditorPanel({ context, outputChannel }, newPanel).catch((error) => {
+		newPanel.dispose()
+		throw error
+	})
 
 	// Lock the editor group so clicking on files doesn't open them over the panel.
 	await delay(100)
-	await vscode.commands.executeCommand("workbench.action.lockEditorGroup")
+	if (
+		isOpen() &&
+		newPanel.visible &&
+		newPanel.active &&
+		vscode.window.tabGroups.activeTabGroup.viewColumn === newPanel.viewColumn
+	) {
+		await vscode.commands.executeCommand("workbench.action.lockEditorGroup")
+	}
 
-	return tabProvider
+	return provider
 }

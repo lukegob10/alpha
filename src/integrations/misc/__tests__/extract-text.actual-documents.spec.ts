@@ -274,6 +274,28 @@ describe("real document parsers through canonical extraction imports", () => {
 		expect(clipped.content).not.toContain(markers[4]!)
 	})
 
+	it.each([
+		{ name: "string", source: "# Heading\nBody\n" },
+		{ name: "chunks", source: ["# Heading\n", "Bo", "dy\n"] },
+	])("preserves notebook line breaks in $name sources", async ({ name, source }) => {
+		const filename = path.join(fixtureRoot!, `source-${name}.ipynb`)
+		await fs.writeFile(
+			filename,
+			JSON.stringify({
+				nbformat: 4,
+				nbformat_minor: 5,
+				metadata: {},
+				cells: [{ cell_type: "markdown", id: "source", metadata: {}, source }],
+			}),
+			{ flag: "wx" },
+		)
+		try {
+			await expect(extractTextFromFileRaw(filename)).resolves.toBe("# Heading\nBody\n")
+		} finally {
+			await fs.unlink(filename)
+		}
+	})
+
 	afterAll(async () => {
 		try {
 			if (!fixtureRoot) return

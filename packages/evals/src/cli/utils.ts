@@ -1,5 +1,6 @@
 import * as fs from "fs"
 import * as fsp from "fs/promises"
+import { finished } from "node:stream/promises"
 import * as path from "path"
 
 import { execa, type ResultPromise } from "execa"
@@ -67,6 +68,7 @@ interface LoggerOptions {
 
 export class Logger {
 	private logStream: fs.WriteStream | undefined
+	private logClosed: Promise<void> | undefined
 	private logFilePath: string
 	private tag: string
 
@@ -89,6 +91,10 @@ export class Logger {
 
 		try {
 			this.logStream = fs.createWriteStream(this.logFilePath, { flags: "a" })
+			this.logClosed = finished(this.logStream, { cleanup: true }).catch((error: unknown) => {
+				this.logStream = undefined
+				console.error(`Failed to write to log file ${this.logFilePath}:`, error)
+			})
 		} catch (error) {
 			console.error(`Failed to create log file ${this.logFilePath}:`, error)
 		}
@@ -148,11 +154,11 @@ export class Logger {
 		}
 	}
 
-	public close(): void {
-		if (this.logStream) {
-			this.logStream.end()
-			this.logStream = undefined
-		}
+	public async close(): Promise<void> {
+		const stream = this.logStream
+		this.logStream = undefined
+		stream?.end()
+		await this.logClosed
 	}
 }
 

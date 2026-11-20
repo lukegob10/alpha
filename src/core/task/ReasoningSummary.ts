@@ -1,9 +1,9 @@
 import type { AlphaMessage } from "@alpha-code/types"
 import type { ApiHandler } from "../../api"
 import {
-	createLinkedAbortController,
 	iterateApiStreamWithAbort,
 	raceApiStreamAbort,
+	scheduleApiStreamDeadline,
 	type ApiStreamUsageChunk,
 } from "../../api/transform/stream"
 import { calculateApiCostAnthropic, calculateApiCostOpenAI } from "../../shared/cost"
@@ -62,20 +62,23 @@ export class ReasoningSummary {
 		this.pending = undefined
 		if (!job || this.disposed) return
 		const controller = new AbortController()
+		const deadline = Date.now() + 15_000
+		const timer = scheduleApiStreamDeadline(controller, deadline)
 		this.active = controller
-		void this.run(job, controller.signal).finally(() => {
+		void this.run(job, controller, deadline).finally(() => {
+			clearTimeout(timer)
 			this.active = undefined
 			if (this.pending && !this.disposed) this.timer = setTimeout(() => this.start(), 750)
 		})
 	}
 
-	private async run(job: Job, signal: AbortSignal): Promise<void> {
+	private async run(job: Job, controller: AbortController, deadline: number): Promise<void> {
 		const { message } = job
+		const { signal } = controller
 		const source = message.text ?? ""
 		const previous = this.attempts.get(message)
 		if (previous && (previous.count >= 2 || source.length <= previous.sourceLength)) return
 		this.attempts.set(message, { count: (previous?.count ?? 0) + 1, sourceLength: source.length })
-		const control = createLinkedAbortController({ signal, deadline: Date.now() + 15_000 })
 		let summary = ""
 		let failed = false
 		let completed = false
@@ -84,22 +87,18 @@ export class ReasoningSummary {
 			handler = job.createHandler()
 			// Do not launch background requests on transports that cannot stop with the task.
 			if (!handler.streamCapabilities?.cancellation) return
-			if (handler.prepareModel)
-				await raceApiStreamAbort(
-					handler.prepareModel({ signal: control.signal, deadline: Date.now() + 15_000 }),
-					control.signal,
-				)
-			control.signal.throwIfAborted()
+			if (handler.prepareModel) await raceApiStreamAbort(handler.prepareModel({ signal, deadline }), signal)
+			signal.throwIfAborted()
 			const model = handler.getModel().info
-			await job.observeRequest?.()
-			control.signal.throwIfAborted()
+			if (job.observeRequest) await raceApiStreamAbort(Promise.resolve(job.observeRequest()), signal)
+			signal.throwIfAborted()
 			const stream = handler.createMessage(
 				PROMPT,
 				[{ role: "user", content: JSON.stringify({ reasoning: source.slice(-12_000) }) }],
 				{
 					taskId: this.taskId,
-					signal: control.signal,
-					deadline: Date.now() + 15_000,
+					signal,
+					deadline,
 					tools: [],
 					tool_choice: "none",
 					parallelToolCalls: false,
@@ -108,7 +107,7 @@ export class ReasoningSummary {
 				},
 			)
 			let characters = 0
-			for await (const chunk of iterateApiStreamWithAbort(stream, control.signal)) {
+			for await (const chunk of iterateApiStreamWithAbort(stream, signal)) {
 				if (chunk.type === "usage") {
 					const cost = (job.protocol === "anthropic" ? calculateApiCostAnthropic : calculateApiCostOpenAI)(
 						model,
@@ -132,7 +131,13 @@ export class ReasoningSummary {
 						cacheReads: usage.cacheReads + (chunk.cacheReadTokens ?? 0),
 						cost: usage.cost + (chunk.totalCost ?? cost.totalCost),
 					}
-					await job.observeUsage?.(chunk, chunk.totalCost ?? cost.totalCost)
+					if (job.observeUsage) {
+						await raceApiStreamAbort(
+							Promise.resolve(job.observeUsage(chunk, chunk.totalCost ?? cost.totalCost)),
+							signal,
+						)
+						signal.throwIfAborted()
+					}
 				} else if (chunk.type === "text") {
 					summary += chunk.text
 					characters += chunk.text.length
@@ -146,7 +151,7 @@ export class ReasoningSummary {
 				}
 				if (characters > 8_000) {
 					failed = true
-					control.controller.abort()
+					controller.abort()
 					break
 				}
 			}
@@ -162,14 +167,14 @@ export class ReasoningSummary {
 					/* A discarded presentation handler cannot affect the task. */
 				}
 			}
-			control.dispose()
 		}
-		if (this.disposed || signal.aborted) return
+		if (this.disposed) return
 		const plain = summary.replace(/\s+/gu, " ").trim()
-		if (!failed && !control.signal.aborted && plain && plain.length <= 280 && message.text?.startsWith(source))
+		if (!failed && !signal.aborted && plain && plain.length <= 280 && message.text?.startsWith(source))
 			message.reasoningSummary = plain
 		try {
-			await this.publish(message)
+			// Publish retained usage even on a deadline, without holding the next row behind delivery.
+			await raceApiStreamAbort(this.publish(message), signal)
 		} catch {
 			/* Presentation delivery is best effort. */
 		}

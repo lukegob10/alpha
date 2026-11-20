@@ -246,6 +246,7 @@ vi.mock("../QueuedMessages", () => ({
 		onSteer,
 		onEdit,
 		onReorder,
+		editingDisabled,
 		editingMessageId,
 		steeringMessageId,
 	}: {
@@ -254,6 +255,7 @@ vi.mock("../QueuedMessages", () => ({
 		onSteer?: (index: number) => void
 		onEdit?: (index: number) => void
 		onReorder?: (fromIndex: number, toIndex: number) => void
+		editingDisabled?: boolean
 		editingMessageId?: string
 		steeringMessageId?: string
 	}) {
@@ -269,7 +271,10 @@ vi.mock("../QueuedMessages", () => ({
 						<button aria-label="Remove message" onClick={() => onRemove?.(index)}>
 							Remove
 						</button>
-						<button aria-label={`Edit ${msg.id}`} onClick={() => onEdit?.(index)}>
+						<button
+							aria-label={`Edit ${msg.id}`}
+							disabled={editingDisabled}
+							onClick={() => onEdit?.(index)}>
 							Edit
 						</button>
 						<button
@@ -334,6 +339,7 @@ interface ChatTextAreaProps {
 	selectApiConfigDisabled?: boolean
 	placeholderText?: string
 	selectedImages?: string[]
+	setSelectedImages?: React.Dispatch<React.SetStateAction<string[]>>
 	shouldDisableImages?: boolean
 	isEditMode?: boolean
 	onCancel?: () => void
@@ -345,6 +351,8 @@ interface ChatTextAreaProps {
 
 const mockInputRef = React.createRef<HTMLInputElement>()
 const mockFocus = vi.fn()
+const pasteImages = (input: HTMLInputElement, images: string[]) =>
+	fireEvent.paste(input, { clipboardData: { getData: () => JSON.stringify(images) } })
 
 vi.mock("../ChatTextArea", () => {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -376,6 +384,10 @@ vi.mock("../ChatTextArea", () => {
 					ref={mockInputRef}
 					type="text"
 					value={props.inputValue || ""}
+					onPaste={(event) => {
+						const images = JSON.parse(event.clipboardData.getData("application/json")) as string[]
+						props.setSelectedImages?.((current) => [...current, ...images])
+					}}
 					onChange={(e) => {
 						// Use parent's setInputValue if available
 						if (props.setInputValue) {
@@ -395,6 +407,7 @@ vi.mock("../ChatTextArea", () => {
 						}
 					}}
 					data-sending-disabled={props.sendingDisabled}
+					data-images-disabled={props.shouldDisableImages}
 					data-is-streaming={props.isStreaming}
 				/>
 				<button data-testid="mock-stop" disabled={!props.isStreaming} onClick={props.onStop}>
@@ -989,7 +1002,7 @@ describe("ChatView async user input", () => {
 			const draftText = matchingDraft ? "Use blue and label it Ready." : "Keep this separate draft"
 			const images = matchingDraft ? [] : ["data:image/png;base64,unrelated-draft"]
 			fireEvent.change(input, { target: { value: draftText } })
-			act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } })))
+			pasteImages(input, images)
 			vi.mocked(vscode.postMessage).mockClear()
 			fireEvent.click(submit)
 
@@ -3034,7 +3047,7 @@ describe("ChatView - Follow-up suggestion copy", () => {
 		const composer = getByTestId("chat-textarea")
 		const input = composer.querySelector("input")!
 		fireEvent.change(input, { target: { value: "Keep this separate draft" } })
-		act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } })))
+		pasteImages(input, images)
 		expect(composer).toHaveAttribute("data-selected-images", JSON.stringify(images))
 
 		fireEvent.click(suggestion)
@@ -4146,9 +4159,7 @@ describe("ChatView - Message Queueing Tests", () => {
 				} else if (method === "suggestion") {
 					fireEvent.click(suggestion)
 				} else {
-					await act(async () => {
-						window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } }))
-					})
+					pasteImages(input, images)
 					fireEvent.change(input, { target: { value: text } })
 					fireEvent.keyDown(input, { key: "Enter", code: "Enter" })
 				}
@@ -6040,7 +6051,7 @@ describe("ChatView - Message Queueing Tests", () => {
 			const nativeAction = await waitFor(() => view.getByTestId(`native-user-input-${action}-2`))
 			const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
 			fireEvent.change(input, { target: { value: "Keep this separate composer message" } })
-			act(() => window.dispatchEvent(new MessageEvent("message", { data: { type: "selectedImages", images } })))
+			pasteImages(input, images)
 			vi.mocked(vscode.postMessage).mockClear()
 
 			fireEvent.click(nativeAction)
@@ -8018,15 +8029,17 @@ describe("ChatView chat-owned composer commands", () => {
 			)
 		},
 	)
-	it("edits queued input even when its text resembles a composer operation", async () => {
+	it("edits queued operation text and pauses new attachments until the edit settles", async () => {
 		const view = renderChatView()
 		mockPostMessage({
 			...runningState("a", [{ id: "queued-a", text: "Review the remaining changes" }]),
 			autoSteer: true,
+			apiConfiguration: { apiProvider: "anthropic" },
 		})
 		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
 		fireEvent.click(view.getByLabelText("Edit queued-a"))
 		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		expect(input).toHaveAttribute("data-images-disabled", "false")
 		fireEvent.change(input, { target: { value: "compact the context" } })
 		fireEvent.keyDown(input, { key: "Enter" })
 		expect(vscode.postMessage).toHaveBeenCalledWith(
@@ -8037,6 +8050,12 @@ describe("ChatView chat-owned composer commands", () => {
 			}),
 		)
 		expect(input).toHaveValue("compact the context")
+		expect(input).toHaveAttribute("data-images-disabled", "true")
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "editQueuedMessage")![0]
+		receipt("editQueuedMessage", request.requestId!, "a", "accepted")
+		expect(input).toHaveAttribute("data-images-disabled", "false")
 	})
 	it.each(
 		(["streaming", "command", "tool"] as const).flatMap((boundary) =>
@@ -8143,6 +8162,60 @@ describe("ChatView chat-owned composer commands", () => {
 		fireEvent.change(input, { target: { value: "New draft" } })
 		receipt("askResponse", request.requestId!, "a", "accepted")
 		expect(input).toHaveValue("New draft")
+	})
+	it.each(["accepted", "rejected"])("keeps queued edits closed until a submission is %s", async (status) => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
+		const input = view.getByTestId("chat-textarea").querySelector("input")! as HTMLInputElement
+		const edit = view.getByLabelText("Edit queue-a")
+		fireEvent.change(input, { target: { value: "Ordinary draft" } })
+		fireEvent.click(view.getByTestId("mock-enqueue"))
+		const request = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "queueMessage")![0]
+		expect(edit).toBeDisabled()
+		fireEvent.click(edit)
+		expect(view.queryByText("Editing in composer")).toBeNull()
+		receipt("queueMessage", request.requestId!, "a", status)
+		expect(edit).toBeEnabled()
+		fireEvent.click(edit)
+		expect(input).toHaveValue("Original queued text")
+		fireEvent.keyDown(input, { key: "Escape" })
+		expect(input).toHaveValue(status === "rejected" ? "Ordinary draft" : "")
+	})
+	it("keeps later edits attached to the queued message after a save is accepted", async () => {
+		const view = renderChatView()
+		mockPostMessage(runningState("a", [{ id: "queue-a", text: "Original queued text" }]))
+		await waitFor(() => within(view.getByTestId("chat-transcript-viewport")).getByText("Prompt a"))
+		const composer = view.getByTestId("chat-textarea")
+		const input = composer.querySelector("input")! as HTMLInputElement
+		fireEvent.change(input, { target: { value: "Prior draft" } })
+		pasteImages(input, ["prior.png"])
+		fireEvent.click(view.getByLabelText("Edit queue-a"))
+		fireEvent.change(input, { target: { value: "First edit" } })
+		pasteImages(input, ["edit.png"])
+		fireEvent.keyDown(input, { key: "Enter" })
+		const first = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.find(([message]) => message.type === "editQueuedMessage")![0]
+		fireEvent.change(input, { target: { value: "Later edit" } })
+		receipt("editQueuedMessage", first.requestId!, "a", "accepted")
+		expect(input).toHaveValue("Later edit")
+		expect(composer).toHaveAttribute("data-selected-images", '["edit.png"]')
+		fireEvent.keyDown(input, { key: "Enter" })
+		const edits = vi
+			.mocked(vscode.postMessage)
+			.mock.calls.filter(([message]) => message.type === "editQueuedMessage")
+		expect(edits).toHaveLength(2)
+		expect(edits[1][0]).toMatchObject({
+			taskId: "a",
+			payload: { id: "queue-a", text: "Later edit", images: ["edit.png"] },
+		})
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "queueMessage" }))
+		receipt("editQueuedMessage", edits[1][0].requestId!, "a", "accepted")
+		expect(input).toHaveValue("Prior draft")
+		expect(composer).toHaveAttribute("data-selected-images", '["prior.png"]')
 	})
 	it("keeps edits and late receipts on their originating chat across navigation", async () => {
 		const view = renderChatView()

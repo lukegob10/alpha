@@ -106,7 +106,7 @@ function fixture(target: CompletionHookTarget = "Stop") {
 		stop: [{ command: process.execPath }],
 		subagentStop: [{ command: process.execPath }],
 	})
-	return { task, controller, events, trace, snapshot: () => snapshot }
+	return { task, controller, events, provider, trace, snapshot: () => snapshot }
 }
 
 beforeEach(() => vi.clearAllMocks())
@@ -224,6 +224,112 @@ describe("completion hooks inside the canonical turn", () => {
 			expect.objectContaining({ payload: expect.objectContaining({ status: "interrupted" }) }),
 		])
 	})
+
+	it.each(["goal progress", "finalizing phase", "durable commit", "durable completion"] as const)(
+		"resolves Stop while %s is in flight",
+		async (boundary) => {
+			const { task, controller, events, provider, trace, snapshot } = fixture()
+			const entered = deferred()
+			const release = deferred()
+			const hold = () => {
+				entered.resolve()
+				return release.promise
+			}
+			const durable = boundary === "durable commit" || boundary === "durable completion"
+			if (!durable) {
+				const goal = {
+					goalId: "active-goal",
+					controlVersion: 1,
+					status: "active",
+					objective: "Finish the goal.",
+					continuationCount: 0,
+				}
+				const goalController = {
+					get: async () => goal,
+					invalidateContinuation: vi.fn(),
+					invalidateRequests: vi.fn(),
+					systemStop: vi.fn(async () => undefined),
+					recordTurnProgress: boundary === "goal progress" ? hold : vi.fn(async () => undefined),
+				}
+				Object.assign(task, {
+					goalController,
+					beginGoalStep: async () => ({
+						controller: goalController,
+						goalTaskId: task.taskId,
+						goalId: goal.goalId,
+						controlVersion: goal.controlVersion,
+						requestGeneration: 1,
+						eventId: "goal-step",
+						startedAt: Date.now(),
+						accountElapsed: false,
+						responseAccounted: true,
+						finished: true,
+					}),
+				})
+			}
+			if (boundary === "durable commit") {
+				vi.mocked(task["finalizeTaskCompletion"]).mockImplementation(async () => {
+					task.markCompleted()
+					await hold()
+					return true
+				})
+			} else if (boundary !== "goal progress") {
+				const publish = provider.publishAgentLifecycleEvent
+				vi.spyOn(provider, "publishAgentLifecycleEvent").mockImplementation(async (event) => {
+					if (
+						event.type === "phase_changed" &&
+						"phase" in event.payload &&
+						event.payload.phase === "finalizing"
+					)
+						await hold()
+					return publish(event)
+				})
+			}
+			Object.assign(task, {
+				commandExecutionEvidence: new Map(),
+				stopTaskCommands: vi.fn(async () => undefined),
+				completeTaskAbort: vi.fn(async () => undefined),
+				flushApiConversationHistoryPersistence: vi.fn(async () => undefined),
+				finalizeAgentStopMessage: vi.fn(async () => undefined),
+				runTerminationLifecycleHooks: vi.fn(async (event?: "Interrupt") => trace.push(event ?? "SessionEnd")),
+			})
+			vi.mocked(runCompletionHooks).mockResolvedValue({ warnings: [] })
+			const running = task["initiateTaskLoop"]([{ type: "text", text: "Finish the work." }])
+			task["ownedLifecyclePromise"] = running
+			try {
+				await Promise.race([
+					entered.promise,
+					running.then(() => {
+						throw new Error(`The task finished before reaching ${boundary}.`)
+					}),
+				])
+				expect(snapshot()?.status).toBe("in_progress")
+				expect(task.isCompleted()).toBe(durable)
+				const stop = task.beginTaskCancellation()
+				expect(controller.signal.aborted).toBe(true)
+				release.resolve()
+				await Promise.all([running, stop.abort, stop.termination])
+			} finally {
+				release.resolve()
+				await running
+			}
+			expect(events.filter(({ type }) => type === "turn_terminal")).toEqual([
+				expect.objectContaining({
+					payload: expect.objectContaining({ status: durable ? "completed" : "interrupted" }),
+				}),
+			])
+			expect(task["appendAgentTurnEvent"]).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "task_completed", status: durable ? "completed" : "aborted" }),
+			)
+			expect(
+				trace.filter((event) => ["Interrupt", "lifecycle:turn_terminal", "SessionEnd"].includes(event)),
+			).toEqual(
+				durable
+					? ["lifecycle:turn_terminal", "SessionEnd"]
+					: ["Interrupt", "lifecycle:turn_terminal", "SessionEnd"],
+			)
+		},
+	)
 
 	it("assigns a fresh identity to a subsequent human turn after hooks accepted the prior turn", async () => {
 		const { task, events, trace } = fixture()

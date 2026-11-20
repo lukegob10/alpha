@@ -196,10 +196,6 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 		metadata?: ApiHandlerSingleCompletionMetadata,
 	): Promise<AnthropicRequestContext>
 
-	protected shouldRetryWithRefreshedGatewayToken(_error: unknown): Promise<boolean> {
-		return Promise.resolve(false)
-	}
-
 	protected getToolChoiceForRequest(
 		metadata?: ApiHandlerCreateMessageMetadata,
 	): ApiHandlerCreateMessageMetadata["tool_choice"] {
@@ -358,8 +354,6 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 		const betaRequestOptions: Anthropic.RequestOptions | undefined = betas?.length
 			? { headers: { "anthropic-beta": betas.join(",") } }
 			: undefined
-		let didRetryForGatewayAuth = false
-		let didRetryWithoutPromptCache = false
 		let usePromptCache = supportsPromptCache
 
 		while (true) {
@@ -665,22 +659,7 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 					throw error
 				}
 
-				if (
-					!didRetryForGatewayAuth &&
-					!emittedAnyStreamChunk &&
-					(await this.shouldRetryWithRefreshedGatewayToken(error))
-				) {
-					didRetryForGatewayAuth = true
-					continue
-				}
-
-				if (
-					!didRetryWithoutPromptCache &&
-					!emittedAnyStreamChunk &&
-					usePromptCache &&
-					this.isPromptCachingDisabledError(error)
-				) {
-					didRetryWithoutPromptCache = true
+				if (!emittedAnyStreamChunk && usePromptCache && this.isPromptCachingDisabledError(error)) {
 					usePromptCache = false
 					continue
 				}
@@ -703,8 +682,6 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 				outputConfig,
 			} = this.getModel()
 
-			let didRetryForGatewayAuth = false
-			let didRetryWithoutPromptCache = false
 			let usePromptCache = supportsPromptCache
 
 			while (true) {
@@ -749,16 +726,7 @@ export abstract class AnthropicMessageHandler extends BaseProvider implements Si
 					return this.getCompletionText(response)
 				} catch (error) {
 					throwIfSingleCompletionAborted(metadata)
-					if (
-						!didRetryForGatewayAuth &&
-						(await awaitSingleCompletion(this.shouldRetryWithRefreshedGatewayToken(error), metadata))
-					) {
-						didRetryForGatewayAuth = true
-						continue
-					}
-
-					if (!didRetryWithoutPromptCache && usePromptCache && this.isPromptCachingDisabledError(error)) {
-						didRetryWithoutPromptCache = true
+					if (usePromptCache && this.isPromptCachingDisabledError(error)) {
 						usePromptCache = false
 						continue
 					}

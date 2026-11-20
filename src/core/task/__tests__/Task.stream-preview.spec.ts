@@ -229,6 +229,39 @@ afterEach(async () => {
 })
 
 describe("Task streaming text previews", () => {
+	it("keeps the same thinking row across empty text and a metadata-only thinking part", async () => {
+		const first = "I"
+		const rest = " should check the result."
+		const fixture = await harness(async function* (_attempt, task) {
+			yield { type: "reasoning", text: first }
+			await task["streamingPreviewQueue"]
+			yield { type: "text", text: "" }
+			yield { type: "reasoning", text: rest }
+			yield {
+				type: "reasoning",
+				text: "",
+				vscodeLmThinking: { value: "", metadata: { vscode_reasoning_done: true } },
+			}
+			await task["streamingPreviewQueue"]
+			yield { type: "text", text: "Finished." }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		const deliveries: AlphaMessage[] = []
+		vi.mocked(fixture.task.providerRef.deref()!.postMessageToWebview).mockImplementation(async (message) => {
+			if (message.alphaMessage?.say === "reasoning") deliveries.push(structuredClone(message.alphaMessage))
+		})
+
+		await fixture.run()
+
+		expect(deliveries[0]).toMatchObject({ text: first, partial: true })
+		expect(deliveries).toContainEqual(
+			expect.objectContaining({ ts: deliveries[0].ts, text: first + rest, partial: true }),
+		)
+		expect((await fixture.uiHistory()).filter((message) => message.say === "reasoning")).toEqual([
+			expect.objectContaining({ ts: deliveries[0].ts, text: first + rest, partial: false }),
+		])
+	})
+
 	it("continues updating the same live reasoning row while its initial history publication is pending", async () => {
 		const historyEntered = deferred()
 		const releaseHistory = deferred()

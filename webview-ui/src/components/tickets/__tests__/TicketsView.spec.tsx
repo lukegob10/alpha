@@ -770,7 +770,7 @@ describe("ticket editor", () => {
 	})
 
 	it.each(["in-progress", "complete", "canceled"] as const)(
-		"retains the created ticket when its initial %s status update fails",
+		"saves a new %s ticket in one request",
 		async (status) => {
 			vi.mocked(vscode.getState).mockReturnValue({
 				project: "project",
@@ -779,34 +779,33 @@ describe("ticket editor", () => {
 			})
 			render(<TicketsView />)
 			fireEvent.click(screen.getByRole("button", { name: "save" }))
-			const created = { ...ticket, name: "New ticket", revision: "created" }
-			reply({ type: "ticketResponse", requestId: requests("create")[0].requestId, result: created })
-			await waitFor(() => expect(requests("update")).toHaveLength(1))
-			reply({
-				type: "ticketResponse",
-				requestId: requests("update")[0].requestId,
-				error: "Status update failed",
-			})
-			await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Status update failed"))
-			expect(screen.getByRole("textbox", { name: "name" })).toHaveValue("New ticket")
-			expect(screen.getByRole("combobox", { name: "status" })).toHaveValue(status)
-			expect(vscode.setState).toHaveBeenLastCalledWith(
-				expect.objectContaining({ ticket: created, draft: expect.objectContaining({ status }), editing: true }),
-			)
-			fireEvent.click(screen.getByRole("button", { name: "save" }))
 			expect(requests("create")).toHaveLength(1)
-			expect(requests("update")).toHaveLength(2)
-			expect(requests("update")[1].operation).toMatchObject({
-				input: { id: created.id, expectedRevision: created.revision, name: created.name, status },
-			})
+			const [{ requestId, operation }] = requests("create")
+			expect(operation).toMatchObject({ input: { name: "New ticket" }, initialStatus: status })
+			const created = { ...ticket, name: "New ticket", status, revision: "created" }
 			reply({
 				type: "ticketResponse",
-				requestId: requests("update")[1].requestId,
-				result: { ...created, status, revision: "saved" },
+				requestId,
+				result: created,
 			})
 			await screen.findByRole("article", { name: created.name })
+			expect(requests("update")).toHaveLength(0)
 		},
 	)
+	it("keeps the draft when creation in its chosen status fails", async () => {
+		vi.mocked(vscode.getState).mockReturnValue({
+			project: "project",
+			draft: { ...draft, name: "New ticket", status: "in-progress" },
+			editing: true,
+		})
+		render(<TicketsView />)
+		fireEvent.click(screen.getByRole("button", { name: "save" }))
+		reply({ type: "ticketResponse", requestId: requests("create")[0].requestId, error: "Create failed" })
+		await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Create failed"))
+		expect(screen.getByRole("textbox", { name: "name" })).toHaveValue("New ticket")
+		expect(screen.getByRole("combobox", { name: "status" })).toHaveValue("in-progress")
+		expect(requests("update")).toHaveLength(0)
+	})
 
 	it.each(["feature", "decision", "review"] as const)("preserves %s filtering through navigation", async (type) => {
 		vi.useFakeTimers()

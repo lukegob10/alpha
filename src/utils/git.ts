@@ -43,15 +43,16 @@ export async function checkGitInstalled(signal?: AbortSignal): Promise<boolean> 
 	}
 }
 
-export async function searchCommits(query: string, cwd: string): Promise<GitCommit[]> {
+export async function searchCommits(query: string, cwd: string, signal?: AbortSignal): Promise<GitCommit[]> {
+	const options = signal ? { cwd, signal } : { cwd }
 	try {
-		const isInstalled = await checkGitInstalled()
+		const isInstalled = await checkGitInstalled(signal)
 		if (!isInstalled) {
 			console.error("Git is not installed")
 			return []
 		}
 
-		const isRepo = await checkGitRepo(cwd)
+		const isRepo = await checkGitRepo(cwd, signal)
 		if (!isRepo) {
 			console.error("Not a git repository")
 			return []
@@ -69,8 +70,9 @@ export async function searchCommits(query: string, cwd: string): Promise<GitComm
 				`--grep=${query}`,
 				"--regexp-ignore-case",
 			],
-			{ cwd },
+			options,
 		)
+		signal?.throwIfAborted()
 
 		let output = stdout
 		if (!output.trim() && /^[a-f0-9]+$/i.test(query)) {
@@ -78,23 +80,16 @@ export async function searchCommits(query: string, cwd: string): Promise<GitComm
 			const { stdout: hashStdout } = await execFileAsync(
 				"git",
 				["log", "-n", "10", "--format=%H%n%h%n%s%n%an%n%ad", "--date=short", "--author-date-order", query],
-				{ cwd },
+				options,
 			).catch(() => ({ stdout: "" }))
-
-			if (!hashStdout.trim()) {
-				return []
-			}
-
+			signal?.throwIfAborted()
 			output = hashStdout
 		}
 
 		const commits: GitCommit[] = []
-		const lines = output
-			.trim()
-			.split("\n")
-			.filter((line) => line !== "--")
+		const lines = output.trim().split(/\r?\n/)
 
-		for (let i = 0; i < lines.length; i += 5) {
+		for (let i = 0; i + 4 < lines.length; i += 5) {
 			commits.push({
 				hash: lines[i],
 				shortHash: lines[i + 1],
@@ -106,6 +101,7 @@ export async function searchCommits(query: string, cwd: string): Promise<GitComm
 
 		return commits
 	} catch (error) {
+		signal?.throwIfAborted()
 		console.error("Error searching commits:", error)
 		return []
 	}

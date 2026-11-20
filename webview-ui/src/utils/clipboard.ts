@@ -75,40 +75,40 @@ export const copyToClipboard = async (text: string, options?: CopyOptions): Prom
  */
 export const useCopyToClipboard = (feedbackDuration = 2000) => {
 	const [showCopyFeedback, setShowCopyFeedback] = useState(false)
-	const timeoutRef = useRef<NodeJS.Timeout | null>(null)
+	const timeoutRef = useRef<ReturnType<typeof setTimeout>>()
+	const lifetimeRef = useRef(0)
 
 	const copyWithFeedback = useCallback(
 		async (text: string, e?: React.MouseEvent) => {
 			e?.stopPropagation()
-
-			// Clear any existing timeout
-			if (timeoutRef.current) {
-				clearTimeout(timeoutRef.current)
-			}
-
-			const success = await copyToClipboard(text, {
-				onSuccess: () => {
-					setShowCopyFeedback(true)
-					timeoutRef.current = setTimeout(() => {
-						setShowCopyFeedback(false)
-						timeoutRef.current = null
-					}, feedbackDuration)
-				},
+			const lifetime = lifetimeRef.current
+			const success = await copyToClipboard(text).catch((error: unknown) => {
+				console.error("Failed to copy to clipboard:", error)
+				return false
 			})
+
+			if (success && lifetime === lifetimeRef.current) {
+				clearTimeout(timeoutRef.current)
+				setShowCopyFeedback(true)
+				timeoutRef.current = setTimeout(() => {
+					setShowCopyFeedback(false)
+					timeoutRef.current = undefined
+				}, feedbackDuration)
+			}
 
 			return success
 		},
 		[feedbackDuration],
 	)
 
-	// Cleanup timeout on unmount
-	useEffect(() => {
-		return () => {
-			if (timeoutRef.current) {
-				clearTimeout(timeoutRef.current)
-			}
-		}
-	}, [])
+	useEffect(
+		() => () => {
+			lifetimeRef.current++
+			clearTimeout(timeoutRef.current)
+			timeoutRef.current = undefined
+		},
+		[],
+	)
 
 	return {
 		showCopyFeedback,

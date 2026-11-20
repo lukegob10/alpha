@@ -1,7 +1,7 @@
 // npx vitest run src/components/chat/__tests__/ChatView.preserve-images.spec.tsx
 
 import React from "react"
-import { render, waitFor, act } from "@/utils/test-utils"
+import { render, waitFor, act, fireEvent } from "@/utils/test-utils"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -139,6 +139,8 @@ interface ChatTextAreaProps {
 
 const mockInputRef = React.createRef<HTMLInputElement>()
 const mockFocus = vi.fn()
+const pasteImages = (images: string[]) =>
+	fireEvent.paste(mockInputRef.current!, { clipboardData: { getData: () => JSON.stringify(images) } })
 
 // Mock ChatTextArea to expose selectedImages via a data attribute
 vi.mock("../ChatTextArea", () => {
@@ -159,6 +161,10 @@ vi.mock("../ChatTextArea", () => {
 					ref={mockInputRef}
 					type="text"
 					value={props.inputValue || ""}
+					onPaste={(event) => {
+						const images = JSON.parse(event.clipboardData.getData("application/json")) as string[]
+						props.setSelectedImages?.((current) => [...current, ...images])
+					}}
 					onChange={(e) => {
 						if (props.setInputValue) {
 							props.setInputValue(e.target.value)
@@ -244,18 +250,9 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 			expect(getByTestId("chat-textarea")).toBeInTheDocument()
 		})
 
-		// Simulate user pasting an image via the selectedImages message
-		await act(async () => {
-			window.postMessage(
-				{
-					type: "selectedImages",
-					images: [
-						"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-					],
-				},
-				"*",
-			)
-		})
+		pasteImages([
+			"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+		])
 
 		// Verify images are set
 		await waitFor(() => {
@@ -314,16 +311,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 			expect(getByTestId("chat-textarea")).toBeInTheDocument()
 		})
 
-		// Simulate user pasting two images
-		await act(async () => {
-			window.postMessage(
-				{
-					type: "selectedImages",
-					images: ["data:image/png;base64,image1", "data:image/png;base64,image2"],
-				},
-				"*",
-			)
-		})
+		pasteImages(["data:image/png;base64,image1", "data:image/png;base64,image2"])
 
 		// Verify both images are set
 		await waitFor(() => {
@@ -392,16 +380,7 @@ describe("ChatView - Preserve Images During Chat Activity", () => {
 			expect(getByTestId("chat-textarea")).toBeInTheDocument()
 		})
 
-		// Add an image
-		await act(async () => {
-			window.postMessage(
-				{
-					type: "selectedImages",
-					images: ["data:image/png;base64,testimage"],
-				},
-				"*",
-			)
-		})
+		pasteImages(["data:image/png;base64,testimage"])
 
 		// Verify image is set
 		await waitFor(() => {

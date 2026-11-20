@@ -58,7 +58,7 @@ describe("governed production scheduling", () => {
 		id: number
 		benchmarkTaskIdentity?: string
 		finishedAt: Date | null
-		benchmarkPartition: "development"
+		benchmarkPartition: "development" | "holdout"
 		taskMetrics: { cost: number } | null
 	}
 	const run = {
@@ -498,6 +498,45 @@ describe("governed production scheduling", () => {
 	})
 
 	it.each([
+		{ evidenceStatus: "pending", digest: null, admitted: false },
+		{ evidenceStatus: "invalid", digest: `sha256:${"a".repeat(64)}`, admitted: false },
+		{ evidenceStatus: "valid", digest: "malformed", admitted: false },
+		{ evidenceStatus: "valid", digest: `sha256:${"a".repeat(64)}`, admitted: true },
+	])("gates resumed holdout dispatch on visible evidence $evidenceStatus ($digest)", async (testCase) => {
+		tasks = tasks.slice(0, 2)
+		for (const task of tasks) task.benchmarkTaskIdentity = `task-${task.id}`
+		tasks[0]!.finishedAt = new Date(0)
+		tasks[0]!.taskMetrics = { cost: 0.01 }
+		tasks[1]!.benchmarkPartition = "holdout"
+		mocks.findTrialForTask.mockImplementation(async (taskId: number) => {
+			const trial = terminalTrial(taskId, taskId === 1 ? "outcome_failed" : "passed")
+			return {
+				...trial,
+				finishedAt: tasks.find(({ id }) => id === taskId)!.finishedAt,
+				attempts: trial.attempts.map((attempt) => ({
+					...attempt,
+					terminalStatus: trial.status,
+					...(taskId === 1 && {
+						evidenceStatus: testCase.evidenceStatus,
+						evidenceBundleDigest: testCase.digest,
+					}),
+				})),
+			}
+		})
+
+		if (testCase.admitted) {
+			await expect(runEvals(run.id)).resolves.toMatchObject({ counts: { passed: 1, outcome_failed: 1 } })
+			expect(mocks.processTask).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ taskId: 2 }))
+		} else {
+			await expect(runEvals(run.id)).rejects.toThrow(
+				"Private holdout execution is blocked by invalid visible evidence",
+			)
+			expect(mocks.processTask).not.toHaveBeenCalled()
+			expect(mocks.finishRun).not.toHaveBeenCalled()
+		}
+	})
+
+	it.each([
 		{ executionOutcome: "completed", status: "passed" },
 		{ executionOutcome: "completed", status: "outcome_failed" },
 		{ executionOutcome: "budget_exhausted", status: "budget_exhausted" },
@@ -520,6 +559,38 @@ describe("governed production scheduling", () => {
 		await expect(runEvals(run.id)).rejects.toThrow("incomplete: 1")
 		expect(mocks.processTask.mock.calls.map(([input]) => input.taskId)).toEqual([1, 2, 3])
 		expect(mocks.finishRun).not.toHaveBeenCalled()
+	})
+
+	it("stops staggered dispatch on interruption and waits for the admitted task to settle", async () => {
+		mocks.findRun.mockResolvedValue({ ...run, campaignHardCapUsd: null, taskCostCapUsd: null, concurrency: 2 })
+		let settleTask!: () => void
+		const taskCompletion = new Promise<void>((resolve) => (settleTask = resolve))
+		mocks.processTask.mockImplementationOnce(() => taskCompletion)
+		vi.useFakeTimers()
+		const interrupted = expect(runEvals(run.id)).rejects.toThrow("Evaluation controller interrupted")
+		try {
+			await vi.advanceTimersByTimeAsync(0)
+			expect(mocks.processTask).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ taskId: 1 }))
+			mocks.startHeartbeat.mock.calls[0]![2]()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(mocks.stopHeartbeat).not.toHaveBeenCalled()
+			expect(mocks.closeLogger).not.toHaveBeenCalled()
+
+			settleTask()
+			await vi.advanceTimersByTimeAsync(0)
+			expect(mocks.stopHeartbeat).toHaveBeenCalledExactlyOnceWith(run.id, 1)
+			expect(mocks.closeLogger).toHaveBeenCalledOnce()
+			expect(mocks.processTask).toHaveBeenCalledOnce()
+			expect(mocks.finishRun).not.toHaveBeenCalled()
+		} finally {
+			settleTask()
+			try {
+				await vi.runAllTimersAsync()
+				await interrupted
+			} finally {
+				vi.useRealTimers()
+			}
+		}
 	})
 
 	it.each(["infrastructure_error", "grader_error"])(

@@ -30,6 +30,14 @@ describe("TicketStore", () => {
 		])
 		await expect(fs.stat(path.join(home, ".alpha"))).rejects.toMatchObject({ code: "ENOENT" })
 	})
+	it.each(["in-progress", "complete", "canceled"] as const)("creates a ticket directly in %s", async (status) => {
+		const created = await store.create({ name: "New ticket" }, undefined, status)
+		expect(created).toMatchObject({ name: "New ticket", status })
+		expect(created.completedAt).toBe(status === "complete" ? created.createdAt : undefined)
+		await expect(fs.stat(path.join(store.directory, "backlog"))).rejects.toMatchObject({ code: "ENOENT" })
+		expect(await store.markdownPath(created.id)).toBe(path.join(store.directory, status, `${created.id}.md`))
+		expect(await store.read(created.id)).toEqual(created)
+	})
 	it.each(["PRO-01", "pro1", "PRO number 1"])(
 		"rejects a changed %s reference between resolution and the authoritative read",
 		async (locator) => {

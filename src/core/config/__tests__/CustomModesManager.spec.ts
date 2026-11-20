@@ -11,7 +11,7 @@ import * as vscode from "vscode"
 import type { ModeConfig } from "@alpha-code/types"
 
 import { fileExistsAtPath } from "../../../utils/fs"
-import { getWorkspacePath, arePathsEqual } from "../../../utils/path"
+import { getWorkspacePath } from "../../../utils/path"
 import { GlobalFileNames } from "../../../shared/globalFileNames"
 
 import { CustomModesManager } from "../CustomModesManager"
@@ -50,6 +50,14 @@ vi.mock("../../task-persistence/atomicWrite", () => ({
 
 vi.mock("../../../utils/fs")
 vi.mock("../../../utils/path")
+
+function deferred<T>() {
+	let resolve!: (value: T) => void
+	const promise = new Promise<T>((settle) => {
+		resolve = settle
+	})
+	return { promise, resolve }
+}
 
 describe("CustomModesManager", () => {
 	let manager: CustomModesManager
@@ -885,55 +893,64 @@ describe("CustomModesManager", () => {
 			}
 		})
 
-		it("watches file for changes", async () => {
-			const configPath = path.join(mockStoragePath, "settings", GlobalFileNames.customModes)
-
-			;(fs.readFile as Mock).mockResolvedValue(yaml.stringify({ customModes: [] }))
-			;(arePathsEqual as Mock).mockImplementation(
-				(path1: string, path2: string) => path.normalize(path1) === path.normalize(path2),
-			)
-
-			// Mock createFileSystemWatcher to return a mock watcher
-			const mockWatcher = {
-				onDidChange: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-				onDidCreate: vi.fn().mockReturnValue({ dispose: vi.fn() }),
-				onDidDelete: vi.fn().mockReturnValue({ dispose: vi.fn() }),
+		it("discards a superseded file watcher read", async () => {
+			const disposable = { dispose: vi.fn() }
+			const watcherReady = deferred<void>()
+			const readStarted = deferred<void>()
+			const oldRead = deferred<string>()
+			const createWatcher = () => ({
+				ignoreCreateEvents: false,
+				ignoreChangeEvents: false,
+				ignoreDeleteEvents: false,
+				onDidChange: vi.fn<vscode.Event<vscode.Uri>>(() => disposable),
+				onDidCreate: vi.fn<vscode.Event<vscode.Uri>>(() => disposable),
+				onDidDelete: vi.fn<vscode.Event<vscode.Uri>>(() => disposable),
 				dispose: vi.fn(),
-			}
-			const createFileSystemWatcherMock = vi.fn().mockReturnValue(mockWatcher)
-			;(vscode.workspace as any).createFileSystemWatcher = createFileSystemWatcherMock
+			})
+			const settingsWatcher = createWatcher()
+			const projectWatcher = createWatcher()
+			projectWatcher.onDidDelete.mockImplementation(() => {
+				watcherReady.resolve()
+				return disposable
+			})
+			vi.mocked(vscode.workspace.createFileSystemWatcher)
+				.mockReturnValueOnce(settingsWatcher)
+				.mockReturnValueOnce(projectWatcher)
 
-			// Temporarily set NODE_ENV to allow file watching
+			const oldMode = { slug: "global", name: "Previous", roleDefinition: "Global role", groups: ["read"] }
+			const globalMode = { ...oldMode, name: "Current" }
+			const projectMode = { ...globalMode, slug: "project", name: "Project" }
+			vi.mocked(fs.readFile)
+				.mockImplementationOnce(() => {
+					readStarted.resolve()
+					return oldRead.promise
+				})
+				.mockImplementation(async (filePath) =>
+					yaml.stringify({ customModes: [filePath === mockAlphaModes ? projectMode : globalMode] }),
+				)
+
 			const originalNodeEnv = process.env.NODE_ENV
 			process.env.NODE_ENV = "development"
-
+			const testManager = new CustomModesManager(mockContext, mockOnUpdate)
 			try {
-				// Create a new manager to trigger the file watcher setup
-				const testManager = new CustomModesManager(mockContext, mockOnUpdate)
+				await watcherReady.promise
+				const [onChange] = settingsWatcher.onDidChange.mock.calls[0]
+				const [onCreate] = projectWatcher.onDidCreate.mock.calls[0]
+				const previous = onChange({ fsPath: mockSettingsPath } as vscode.Uri)
+				await readStarted.promise
+				await onCreate({ fsPath: mockAlphaModes } as vscode.Uri)
+				oldRead.resolve(yaml.stringify({ customModes: [oldMode] }))
+				await previous
 
-				// Wait a bit for the async watchCustomModesFiles to complete
-				await new Promise((resolve) => setTimeout(resolve, 10))
-
-				// Verify createFileSystemWatcher was called
-				expect(createFileSystemWatcherMock).toHaveBeenCalled()
-
-				// Get the onChange callback that was registered
-				const onChangeCall = mockWatcher.onDidChange.mock.calls[0]
-				expect(onChangeCall).toBeDefined()
-				const [onChangeCallback] = onChangeCall
-
-				// Simulate file change event
-				await onChangeCallback()
-
-				// Verify file was processed
-				expect(fs.readFile).toHaveBeenCalledWith(configPath, "utf-8")
-				expect(mockContext.globalState.update).toHaveBeenCalled()
-				expect(mockOnUpdate).toHaveBeenCalled()
-
-				// Clean up
-				testManager.dispose()
+				const currentModes = [
+					{ ...projectMode, source: "project" },
+					{ ...globalMode, source: "global" },
+				]
+				expect(mockContext.globalState.update).toHaveBeenCalledExactlyOnceWith("customModes", currentModes)
+				expect(mockOnUpdate).toHaveBeenCalledOnce()
+				await expect(testManager.getCustomModes()).resolves.toEqual(currentModes)
 			} finally {
-				// Restore original NODE_ENV
+				testManager.dispose()
 				process.env.NODE_ENV = originalNodeEnv
 			}
 		})

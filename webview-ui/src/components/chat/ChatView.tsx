@@ -13,7 +13,6 @@ import { useDeepCompareEffect, useEvent } from "react-use"
 import useSound from "use-sound"
 import { LRUCache } from "lru-cache"
 
-import { appendImages } from "@src/utils/imageUtils"
 import { getCostBreakdownIfNeeded } from "@src/utils/costFormatting"
 
 import type {
@@ -1976,6 +1975,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		(message: QueuedMessage) => {
 			if (
 				!visibleCurrentTaskId ||
+				pendingQueueRequestRef.current ||
 				pendingEditRequestRef.current ||
 				pendingImageReads.current.has(visibleCurrentTaskId)
 			)
@@ -2293,9 +2293,8 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 		],
 	)
 
-	const selectImages = useCallback(() => vscode.postMessage({ type: "selectImages" }), [])
-
-	const shouldDisableImages = !model?.supportsImages || selectedImages.length >= MAX_IMAGES_PER_MESSAGE
+	const shouldDisableImages =
+		!model?.supportsImages || selectedImages.length >= MAX_IMAGES_PER_MESSAGE || pendingEditRequest !== null
 
 	const handleMessage = useCallback(
 		(e: MessageEvent) => {
@@ -2312,15 +2311,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						case "focusInput":
 							textAreaRef.current?.focus()
 							break
-					}
-					break
-				case "selectedImages":
-					// Only handle selectedImages if it's not for editing context
-					// When context is "edit", ChatRow will handle the images
-					if (message.context !== "edit") {
-						setSelectedImages((prevImages: string[]) =>
-							appendImages(prevImages, message.images, MAX_IMAGES_PER_MESSAGE),
-						)
 					}
 					break
 				case "invoke":
@@ -2524,28 +2514,28 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 					) {
 						const submission = draft.pendingEditRequest
 						if (owner === visibleCurrentTaskId) pendingEditRequestRef.current = null
-						updateTaskDraft(owner, (current) => ({
-							...current,
-							pendingEditRequest: null,
-							...(result.status === "accepted" && current.editingQueuedMessage
-								? {
-										inputValue:
-											current.inputValue.trim() === submission.text
-												? current.editingQueuedMessage.priorText
-												: current.inputValue,
-										selectedImages:
-											current.selectedImages.length === submission.images.length &&
-											current.selectedImages.every(
-												(image, index) => image === submission.images[index],
-											)
-												? current.editingQueuedMessage.priorImages
-												: current.selectedImages,
-										editingQueuedMessage: null,
-									}
-								: {}),
-							chatCommandError:
-								result.status === "accepted" ? undefined : t("chat:queuedMessages.editFailed"),
-						}))
+						updateTaskDraft(owner, (current) => {
+							const edit = current.editingQueuedMessage
+							const restoreDraft =
+								result.status === "accepted" &&
+								edit?.id === submission.messageId &&
+								current.inputValue.trim() === submission.text &&
+								current.selectedImages.length === submission.images.length &&
+								current.selectedImages.every((image, index) => image === submission.images[index])
+							return {
+								...current,
+								pendingEditRequest: null,
+								...(restoreDraft
+									? {
+											inputValue: edit.priorText,
+											selectedImages: edit.priorImages,
+											editingQueuedMessage: null,
+										}
+									: {}),
+								chatCommandError:
+									result.status === "accepted" ? undefined : t("chat:queuedMessages.editFailed"),
+							}
+						})
 					}
 					if (
 						result.command === "resumeCompletedTask" &&
@@ -2624,7 +2614,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 			isCondensing,
 			getTaskDraft,
 			updateTaskDraft,
-			setSelectedImages,
 			setChatCommandError,
 			historyFocusRequest,
 			isHidden,
@@ -3910,6 +3899,7 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 									transcriptQueuedMessageIds.has(message.id),
 							)?.id
 						}
+						editingDisabled={Boolean(pendingQueueRequest || pendingEditRequest)}
 						editingMessageId={editingQueuedMessage?.id}
 						steeringMessageId={pendingSteerRequest?.messageId}
 						steeringPending={Boolean(pendingSteerRequest)}
@@ -4045,7 +4035,6 @@ const ChatViewComponent: React.ForwardRefRenderFunction<ChatViewRef, ChatViewPro
 						onImageReadsPendingChange={handleImageReadsPendingChange}
 						onSend={handleComposerSend}
 						canForkChat={canForkChat}
-						onSelectImages={selectImages}
 						shouldDisableImages={shouldDisableImages}
 						mode={mode}
 						setMode={setMode}

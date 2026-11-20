@@ -414,7 +414,7 @@ export const processTask = async ({
 			try {
 				if (localSandboxRoot) await fs.rm(localSandboxRoot, { recursive: true, force: true })
 			} finally {
-				if (ownsLogger) logger.close()
+				if (ownsLogger) await logger.close()
 			}
 		}
 	}

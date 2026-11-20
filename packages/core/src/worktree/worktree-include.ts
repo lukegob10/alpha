@@ -8,6 +8,7 @@
 import { execFile, spawn } from "child_process"
 import * as fs from "fs/promises"
 import * as path from "path"
+import { setTimeout as delay } from "timers/promises"
 import { promisify } from "util"
 
 import ignore, { type Ignore } from "ignore"
@@ -218,7 +219,7 @@ export class WorktreeIncludeService {
 					await fs.copyFile(sourcePath, targetPath)
 
 					// Update bytes copied
-					bytesCopied += this.getSizeOnDisk(stats)
+					if (onProgress) bytesCopied += this.getSizeOnDisk(stats)
 				}
 
 				copiedItems.push(item)
@@ -246,30 +247,6 @@ export class WorktreeIncludeService {
 		}
 		// Fallback to logical size when blksize not available
 		return stats.size
-	}
-
-	/**
-	 * Get the total size on disk of a file or directory (recursively).
-	 * Uses native Node.js fs operations for cross-platform compatibility.
-	 */
-	private async getPathSize(targetPath: string, signal?: AbortSignal): Promise<number> {
-		signal?.throwIfAborted()
-		try {
-			const stats = await fs.stat(targetPath)
-
-			if (stats.isFile()) {
-				return this.getSizeOnDisk(stats)
-			}
-
-			if (stats.isDirectory()) {
-				return await this.getDirectorySizeRecursive(targetPath, signal)
-			}
-
-			return 0
-		} catch {
-			signal?.throwIfAborted()
-			return 0
-		}
 	}
 
 	/**
@@ -306,23 +283,7 @@ export class WorktreeIncludeService {
 	}
 
 	/**
-	 * Get the current size of a directory (for progress tracking).
-	 */
-	private async getCurrentDirectorySize(dirPath: string, signal?: AbortSignal): Promise<number> {
-		signal?.throwIfAborted()
-		try {
-			await fs.access(dirPath)
-			return await this.getDirectorySizeRecursive(dirPath, signal)
-		} catch {
-			signal?.throwIfAborted()
-			return 0
-		}
-	}
-
-	/**
-	 * Copy directory with progress polling using native cp command.
-	 * Starts native copy and polls target directory size to report progress.
-	 * Returns the updated bytesCopied count.
+	 * Use the platform's native copy command and measure destination size when reporting progress.
 	 */
 	private async copyDirectoryWithProgress(
 		source: string,
@@ -337,73 +298,47 @@ export class WorktreeIncludeService {
 		cancellation?.signal.throwIfAborted()
 
 		const isWindows = process.platform === "win32"
-
-		// Start the copy process
-		let proc: ReturnType<typeof spawn> | undefined
-		const copyPromise = new Promise<void>((resolve, reject) => {
-			if (isWindows) {
-				// Discovery skips junctions. Keep the same boundary inside a matched directory.
-				proc = spawn(
-					"robocopy",
-					[source, target, "/E", "/XJ", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"],
-					{ windowsHide: true },
-				)
-			} else {
-				proc = spawn("cp", ["-r", "--", source, target])
-			}
-
-			proc.on("close", (code) => {
-				if (isWindows) {
-					// robocopy returns non-zero for success (values < 8)
-					if (code !== null && code < 8) {
-						resolve()
-					} else {
-						reject(new Error(`robocopy failed with code ${code}`))
-					}
-				} else {
-					if (code === 0) {
-						resolve()
-					} else {
-						reject(new Error(`cp failed with code ${code}`))
-					}
-				}
+		const program = isWindows ? "robocopy" : "cp"
+		// Keep junctions excluded and override Robocopy's default million retries.
+		const args = isWindows
+			? [source, target, "/E", "/XJ", "/R:1", "/W:1", "/NFL", "/NDL", "/NJH", "/NJS", "/NC", "/NS", "/NP"]
+			: ["-r", "--", source, target]
+		const proc = spawn(program, args, { windowsHide: true, stdio: "ignore" })
+		const execution = new Promise<void>((resolve, reject) => {
+			proc.once("error", reject)
+			proc.once("close", (code) => {
+				if (code !== null && (isWindows ? code < 8 : code === 0)) resolve()
+				else reject(new Error(`${program} failed with code ${code}`))
 			})
+		})
+		const copy = joinWorktreeProcess(execution, proc, cancellation)
+		if (!onProgress) {
+			await copy
+			return bytesCopiedBefore
+		}
 
-			proc.on("error", reject)
+		const progress = new AbortController()
+		const signal = cancellation ? AbortSignal.any([progress.signal, cancellation.signal]) : progress.signal
+		const poll = (async () => {
+			while (!signal.aborted) {
+				await delay(500, undefined, { signal })
+				if (signal.aborted) return
+				const currentSize = await this.getDirectorySizeRecursive(target, cancellation?.signal)
+				if (signal.aborted) return
+				onProgress({ bytesCopied: bytesCopiedBefore + currentSize, itemName })
+			}
+		})().catch((error: unknown) => {
+			if (!signal.aborted) console.error("Failed to update worktree copy progress:", error)
 		})
 
-		// Poll progress while copying
-		const pollInterval = 500 // Poll every 500ms
-		let polling = true
-
-		const pollProgress = async () => {
-			while (polling) {
-				const currentSize = await this.getCurrentDirectorySize(target, cancellation?.signal)
-				const totalCopied = bytesCopiedBefore + currentSize
-
-				onProgress?.({
-					bytesCopied: totalCopied,
-					itemName,
-				})
-
-				await new Promise((resolve) => setTimeout(resolve, pollInterval))
-			}
-		}
-
-		// Start polling and wait for copy to complete
-		const pollPromise = pollProgress()
-		void pollPromise.catch(() => undefined)
-
 		try {
-			await (proc ? joinWorktreeProcess(copyPromise, proc, cancellation) : copyPromise)
+			await copy
 		} finally {
-			polling = false
-			// Wait for final poll iteration to complete
-			await pollPromise.catch(() => {})
+			progress.abort()
+			await poll
 		}
 
-		// Get the final size of the copied directory
-		const finalSize = await this.getPathSize(target, cancellation?.signal)
+		const finalSize = await this.getDirectorySizeRecursive(target, cancellation?.signal)
 		return bytesCopiedBefore + finalSize
 	}
 

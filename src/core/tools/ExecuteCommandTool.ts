@@ -1525,35 +1525,52 @@ export async function executeCommandInTerminal(
 	let lastQueuedCommandOutput = ""
 	let lastCommandOutputEmitAt = 0
 	let pendingCommandOutputEmitTimer: NodeJS.Timeout | undefined
-	let commandOutputSayChain: Promise<void> = Promise.resolve()
+	let onCompletedInvoked = false
+	let pendingCommandOutput: { text: string; partial: boolean } | undefined
+	let commandOutputPublication: Promise<void> | undefined
 
-	const queueCommandOutputMessage = (text: string, partial: boolean, force = false): Promise<void> => {
-		if (!force && text === lastQueuedCommandOutput) {
-			return commandOutputSayChain
+	const publishCommandOutput = async (text: string, partial: boolean, assertOwnership?: () => void) => {
+		assertOwnership?.()
+		try {
+			await task.say("command_output", text, undefined, partial, undefined, undefined, {
+				isNonInteractive: true,
+				commandExecutionId: executionId,
+				turn: commandTurn,
+			})
+		} catch (error) {
+			console.error("[ExecuteCommandTool] Failed to publish command output:", error)
+		}
+		assertOwnership?.()
+	}
+	const queueCommandOutputMessage = (text: string, partial: boolean): Promise<void> => {
+		if (partial && (onCompletedInvoked || text === lastQueuedCommandOutput)) {
+			return commandOutputPublication ?? Promise.resolve()
 		}
 
 		lastQueuedCommandOutput = text
-		return project("command-output", async (assertOwnership) => {
-			commandOutputSayChain = commandOutputSayChain.then(async () => {
-				assertOwnership?.()
-				try {
-					await task.say("command_output", text, undefined, partial, undefined, undefined, {
-						isNonInteractive: true,
-						commandExecutionId: executionId,
-						turn: commandTurn,
-					})
-				} catch (error) {
-					console.error("[ExecuteCommandTool] Failed to publish command output:", error)
-				}
-				assertOwnership?.()
-			})
+		if (presentation) {
+			return project("command-output", (assertOwnership) =>
+				Promise.resolve().then(() => publishCommandOutput(text, partial, assertOwnership)),
+			)
+		}
 
-			await commandOutputSayChain
+		pendingCommandOutput = { text, partial }
+		commandOutputPublication ??= Promise.resolve().then(async () => {
+			try {
+				while (pendingCommandOutput) {
+					const next = pendingCommandOutput
+					pendingCommandOutput = undefined
+					await publishCommandOutput(next.text, next.partial)
+				}
+			} finally {
+				commandOutputPublication = undefined
+			}
 		})
+		return commandOutputPublication
 	}
 
 	const schedulePartialCommandOutputUpdate = () => {
-		if (!latestCompressedOutput || completed) {
+		if (!latestCompressedOutput || onCompletedInvoked) {
 			return
 		}
 
@@ -1579,7 +1596,6 @@ export async function executeCommandInTerminal(
 	let onCompletedPromise: Promise<void> | undefined
 	let resolveOnCompleted: (() => void) | undefined
 	let rejectOnCompleted: ((error: CommandOutputBookkeepingError) => void) | undefined
-	let onCompletedInvoked = false
 	let outputDrainTimeout: NodeJS.Timeout | undefined
 	let backgroundResultReturned = false
 	let outputBookkeepingFailure: CommandOutputBookkeepingError | undefined
@@ -1766,6 +1782,7 @@ export async function executeCommandInTerminal(
 			try {
 				clearTimeout(pendingCommandOutputEmitTimer)
 				pendingCommandOutputEmitTimer = undefined
+				if (pendingCommandOutput?.partial) pendingCommandOutput = undefined
 
 				// Finalize interceptor and get persisted result.
 				// We await finalize() to ensure the artifact file is fully flushed
@@ -1779,13 +1796,10 @@ export async function executeCommandInTerminal(
 				}
 				latestCompressedOutput = result
 
-				// Preserve order: wait for queued partial updates, then emit the final
-				// non-partial command_output update.
-				if (!presentation) await commandOutputSayChain
 				const artifactNotice = process?.outputArtifactId
 					? `\nArtifact ID: ${process.outputArtifactId}\n${t("tools:commandOutputSearch.readTaskArtifact")}`
 					: ""
-				await queueCommandOutputMessage(result + artifactNotice, false, true)
+				await queueCommandOutputMessage(result + artifactNotice, false)
 				completed = true
 				resolveOnCompleted?.()
 			} catch (error) {

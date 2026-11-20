@@ -195,6 +195,8 @@
 		"search_commits": "Failed to search commits",
 		"save_api_config": "Failed to save api configuration",
 		"create_api_config": "Failed to create api configuration",
+		"provider_profile_name_in_use": "A profile with this name already exists.",
+		"provider_profile_created_not_applied": "The profile was created but could not be selected. Select it in Settings to try again.",
 		"rename_api_config": "Failed to rename api configuration",
 		"load_api_config": "Failed to load api configuration",
 		"invalid_provider_profile": "This saved provider profile has invalid settings{{fields}}. It has been retained. Export settings, then correct the saved configuration or create a replacement before using it.",

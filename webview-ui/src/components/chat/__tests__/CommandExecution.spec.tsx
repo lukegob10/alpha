@@ -3,7 +3,7 @@
 import React, { useState } from "react"
 import { render, screen, fireEvent, act } from "@testing-library/react"
 import { useEvent } from "react-use"
-import type { CommandExecutionStatus } from "@alpha-code/types"
+import { commandExecutionStatusSchema, type CommandExecutionStatus } from "@alpha-code/types"
 
 import { CommandExecution } from "../CommandExecution"
 import { ShellStateContext } from "../../../context/ExtensionStateContext"
@@ -121,6 +121,35 @@ describe("CommandExecution", () => {
 	})
 	beforeEach(() => {
 		vi.clearAllMocks()
+	})
+
+	it("decodes one output event once across mounted command rows", () => {
+		const parse = vi.spyOn(commandExecutionStatusSchema, "safeParse")
+		try {
+			render(
+				<ExtensionStateWrapper>
+					<CommandExecution executionId="first" text="pnpm lint" isExpanded />
+					<CommandExecution executionId="second" text="pnpm test" isExpanded />
+				</ExtensionStateWrapper>,
+			)
+			const event = new MessageEvent("message", {
+				data: {
+					type: "commandExecutionStatus",
+					text: JSON.stringify({ executionId: "second", status: "output", output: "Second command output" }),
+				},
+			})
+			const listeners = vi.mocked(useEvent).mock.calls.filter(([type]) => type === "message")
+			expect(listeners).toHaveLength(2)
+
+			act(() => {
+				for (const [, listener] of listeners) (listener as (event: MessageEvent) => void)(event)
+			})
+
+			expect(screen.getByTestId("terminal-output")).toHaveTextContent("Second command output")
+			expect(parse).toHaveBeenCalledOnce()
+		} finally {
+			parse.mockRestore()
+		}
 	})
 
 	it("keeps command details collapsed through start, output, and exit until the user opens them", () => {

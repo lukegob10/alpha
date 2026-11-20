@@ -73,6 +73,7 @@ import {
 	type SubagentGroupState,
 	type SubagentLifecycleEvent,
 	type SubagentRunPhase,
+	type SubagentTerminalRunStatus,
 	type SubagentSpawnHandle,
 	type SubagentChangeSetState,
 	type ExternalMutationCapability,
@@ -311,7 +312,13 @@ import {
 	type AgentLifecycleSnapshotResyncRequest,
 } from "./AgentLifecycleProjection"
 import { awaitTaskCancellationBoundary, hasTaskCancellationBoundary } from "./TaskCancellationBoundary"
-import { cancelTicketSearches, enqueueFileSearch, enqueueTicketSearch } from "./ticketSearchRequests"
+import {
+	cancelWebviewSearches,
+	enqueueCommitSearch,
+	enqueueFileSearch,
+	enqueueOpenAiModelDiscovery,
+	enqueueTicketSearch,
+} from "./ticketSearchRequests"
 import { getSkillsCatalogSectionParts, type SkillCatalogEntry } from "../prompts/sections"
 import { getEffectiveApiHistory } from "../condense"
 import { compactSubagentCommandApprovalCeilings, createSubagentCommandApprovalPolicy } from "../auto-approval/commands"
@@ -434,6 +441,16 @@ const managedAgentUsage = (value: unknown, fallbackDurationMs = 0): SubagentUsag
 }
 
 type TaskCancellationSource = "webview_stop" | "checkpoint_restore" | "unknown"
+
+type TaskMessagePost = {
+	type: "messageCreated" | "messageUpdated"
+	taskId: string
+	alphaMessage: AlphaMessage
+	alphaMessagesSeq: number
+	liveTask?: LiveTaskMetadata
+}
+
+type AssistantPreviewDelivery = { pending?: TaskMessagePost | "resync" }
 
 type ManagedCreateTaskOptions = CreateTaskOptions & {
 	goalAccountingBinding?: Promise<GoalAccountingBinding | undefined>
@@ -644,6 +661,7 @@ export class AlphaProvider
 	private readonly immediateWebviewOperations = new Set<Promise<void>>()
 	private agentLifecycleMessageQueue: Promise<void> = Promise.resolve()
 	private compactLifecycleDelivery?: { refreshPending: boolean }
+	private assistantPreviewDelivery?: AssistantPreviewDelivery
 	private modeSwitchQueue: Promise<void> = Promise.resolve()
 	private static readonly GLOBAL_STATE_WRITE_THROUGH_DEBOUNCE_MS = 5000 // 5 seconds
 
@@ -1140,7 +1158,7 @@ export class AlphaProvider
 
 	private webviewLaunched = false
 	private webviewAcceptsTaskMessages = false
-	private webviewLaunchWaiters?: Set<(launched: boolean) => void>
+	private webviewLaunchWaiters?: Set<() => void>
 	public settingsImportedAt?: number
 	public readonly latestAnnouncementId = "november-2026-v3.2.42-alpha-tickets-example"
 	public readonly providerSettingsManager: ProviderSettingsManager
@@ -1625,8 +1643,9 @@ export class AlphaProvider
 	*/
 	private clearWebviewResources() {
 		this.compactLifecycleDelivery = undefined
+		this.assistantPreviewDelivery = undefined
 		this.isViewLaunched = false
-		cancelTicketSearches(this)
+		cancelWebviewSearches(this)
 		this.clearWebviewFocus()
 		while (this.webviewDisposables.length) {
 			const x = this.webviewDisposables.pop()
@@ -1678,13 +1697,11 @@ export class AlphaProvider
 
 	private async disposeOwnedResources(): Promise<void> {
 		this._disposed = true
-		this.webviewLaunchWaiters?.forEach((finish) => finish(false))
+		this.webviewLaunchWaiters?.forEach((check) => check())
 		const memoryStopped = this.stopMemoryServices()
 		// Cleanup joins this below; foreground cancellation must not wait for a background model.
 		void memoryStopped.catch(() => undefined)
 		this.log("Disposing AlphaProvider...")
-		cancelTicketSearches(this)
-
 		// Accepted compaction and tool operations can wait on task cancellation.
 		// Signal every owned task before draining those queues or joining teardown.
 		this.clearWebviewResources()
@@ -1834,22 +1851,18 @@ export class AlphaProvider
 	}
 
 	public static async getInstance(): Promise<AlphaProvider | undefined> {
-		let visibleProvider = AlphaProvider.getVisibleInstance()
+		const visibleProvider = AlphaProvider.getVisibleInstance()
+		if (visibleProvider) return visibleProvider
+		const sidebar = [...AlphaProvider.activeInstances].find(
+			(provider) => !provider._disposed && provider.renderContext === "sidebar",
+		)
+		if (!sidebar) return undefined
 
-		// If no visible provider, try to show the sidebar view
-		if (!visibleProvider) {
-			await vscode.commands.executeCommand(`${Package.name}.SidebarProvider.focus`)
-			// Wait briefly for the view to become visible
-			await delay(100)
-			visibleProvider = AlphaProvider.getVisibleInstance()
-		}
-
-		// If still no visible provider, return
-		if (!visibleProvider) {
-			return
-		}
-
-		return visibleProvider
+		// On VS Code 1.125.0 and 1.141.0, the focus command starts opening the
+		// sidebar asynchronously. Wait for visibility and renderer readiness.
+		await vscode.commands.executeCommand(`${AlphaProvider.sideBarId}.focus`)
+		const launched = await sidebar.waitForWebviewLaunch(5_000, { requireVisible: true })
+		return launched ? AlphaProvider.getVisibleInstance() : undefined
 	}
 
 	public static async isActiveTask(): Promise<boolean> {
@@ -1902,20 +1915,16 @@ export class AlphaProvider
 					this.contextProxy.getValue("terminalShellIntegrationTimeout") ??
 					Terminal.defaultShellIntegrationTimeout,
 				disabled: this.contextProxy.getValue("terminalShellIntegrationDisabled") ?? true,
-				commandDelay: this.contextProxy.getValue("terminalCommandDelay") ?? 0,
 				zshClearEolMark: this.contextProxy.getValue("terminalZshClearEolMark") ?? true,
 				zshOhMy: this.contextProxy.getValue("terminalZshOhMy") ?? false,
 				zshP10k: this.contextProxy.getValue("terminalZshP10k") ?? false,
-				powershellCounter: this.contextProxy.getValue("terminalPowershellCounter") ?? false,
 				zdotdir: this.contextProxy.getValue("terminalZdotdir") ?? false,
 			}
 			Terminal.setShellIntegrationTimeout(terminalSettings.timeout)
 			Terminal.setShellIntegrationDisabled(terminalSettings.disabled)
-			Terminal.setCommandDelay(terminalSettings.commandDelay)
 			Terminal.setTerminalZshClearEolMark(terminalSettings.zshClearEolMark)
 			Terminal.setTerminalZshOhMy(terminalSettings.zshOhMy)
 			Terminal.setTerminalZshP10k(terminalSettings.zshP10k)
-			Terminal.setPowershellCounter(terminalSettings.powershellCounter)
 			Terminal.setTerminalZdotdir(terminalSettings.zdotdir)
 		} catch (error) {
 			this.log(
@@ -1961,33 +1970,19 @@ export class AlphaProvider
 		})
 		this.webviewDisposables.push(activeEditorSubscription)
 
-		// Listen for when the panel becomes visible.
-		// https://github.com/microsoft/vscode-discussions/discussions/840
-		if ("onDidChangeViewState" in webviewView) {
-			// WebviewView and WebviewPanel have all the same properties except
-			// for this visibility listener panel.
-			const viewStateDisposable = webviewView.onDidChangeViewState(() => {
-				if (!isCurrentView()) return
-				if (this.view?.visible) {
-					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
-				} else {
-					this.clearWebviewFocus()
-				}
-			})
-
-			this.webviewDisposables.push(viewStateDisposable)
+		const onVisibilityChange = () => {
+			if (!isCurrentView()) return
+			if (webviewView.visible) {
+				this.webviewLaunchWaiters?.forEach((check) => check())
+				void this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
+			} else {
+				this.clearWebviewFocus()
+			}
+		}
+		if (inTabMode) {
+			this.webviewDisposables.push(webviewView.onDidChangeViewState(onVisibilityChange))
 		} else if ("onDidChangeVisibility" in webviewView) {
-			// sidebar
-			const visibilityDisposable = webviewView.onDidChangeVisibility(() => {
-				if (!isCurrentView()) return
-				if (this.view?.visible) {
-					this.postMessageToWebview({ type: "action", action: "didBecomeVisible" })
-				} else {
-					this.clearWebviewFocus()
-				}
-			})
-
-			this.webviewDisposables.push(visibilityDisposable)
+			this.webviewDisposables.push(webviewView.onDidChangeVisibility(onVisibilityChange))
 		}
 
 		// Listen for when color changes
@@ -2490,6 +2485,8 @@ export class AlphaProvider
 			"chatGptCancelSignIn",
 			"chatGptSignOut",
 			"chatGptSelectAccount",
+			"requestOpenAiModels",
+			"searchCommits",
 			// A recreated webview needs its initial state even while an older request is still running.
 			"webviewDidLaunch",
 			// Captured diff snapshots need no task or settings transition. Keep review
@@ -2512,13 +2509,34 @@ export class AlphaProvider
 				`[webviewMessageHandler] ${message?.type ?? "unknown"} failed: ${error instanceof Error ? error.message : String(error)}`,
 			)
 		}
-		const run = (message: WebviewMessage) =>
-			message.type === "webviewDidLaunch" ||
-			message.type === "forkChat" ||
-			message.type === "deleteMultipleTasksWithIds" ||
-			message.type.startsWith("chatGpt")
+		const run = (message: WebviewMessage) => {
+			if (message.type === "searchCommits") {
+				const { taskId, requestId } = message
+				const task = typeof taskId === "string" && taskId ? this.getLiveTask(taskId) : undefined
+				const cwd =
+					taskId === undefined
+						? (requestId === undefined && this.getCurrentTask()?.cwd) || this.cwd
+						: task?.cwd
+				return enqueueCommitSearch(this, taskId, (signal) =>
+					webviewMessageHandler(this, message, { commitSearch: { signal, cwd, task }, isCurrentWebview }),
+				).catch(async (error) => {
+					if (!isCurrentWebview()) return
+					logFailure(message, error)
+					await this.postMessageToWebview({ type: "commitSearchResults", taskId, requestId, commits: [] })
+				})
+			}
+			if (message.type === "requestOpenAiModels") {
+				return enqueueOpenAiModelDiscovery(this, (signal) =>
+					webviewMessageHandler(this, message, { isCurrentWebview, openAiModelDiscoverySignal: signal }),
+				)
+			}
+			return message.type === "webviewDidLaunch" ||
+				message.type === "forkChat" ||
+				message.type === "deleteMultipleTasksWithIds" ||
+				message.type.startsWith("chatGpt")
 				? webviewMessageHandler(this, message, { isCurrentWebview })
 				: webviewMessageHandler(this, message)
+		}
 		const failTicketSearch = (requestId: string) =>
 			this.postMessageToWebview({
 				type: "ticketSearchResults",
@@ -2529,6 +2547,15 @@ export class AlphaProvider
 		const onReceiveMessage = (message: WebviewMessage) => {
 			if (!isCurrentWebview()) return
 			const messageType = message && typeof message === "object" ? message.type : undefined
+			if (messageType === "focusPanelRequest") {
+				const panel = this.view
+				try {
+					if (panel && "reveal" in panel && panel.visible && !panel.active) panel.reveal(undefined, false)
+				} catch (error) {
+					logFailure(message, error)
+				}
+				return
+			}
 			if (messageType === "webviewDidLaunch") this.webviewAcceptsTaskMessages = true
 			if (messageType === "webviewError") {
 				if (reportedWebviewErrors.size >= 10) return
@@ -2909,39 +2936,37 @@ export class AlphaProvider
 		}
 		const { postState = true } = options
 		const currentMode = await getTaskModeForSwitch(task)
-		if (mode === planModeSlug && currentMode !== planModeSlug) {
-			const transition = this.workspaceMutationGate.runIfIdle(
-				task.taskId,
-				"enter Plan mode",
-				() => this.setTaskModeWithinAdmission(task, currentMode, mode, { postState }),
-				() => task.abort,
-			)
-			if (!transition) {
-				throw new Error(t("common:subagentMode.busy"))
-			}
-			return transition
+		const commit = () => this.setTaskModeWithinAdmission(task, currentMode, mode)
+		const transition =
+			mode === planModeSlug && currentMode !== planModeSlug
+				? this.workspaceMutationGate.runIfIdle(taskId, "enter Plan mode", commit, () => task.abort)
+				: commit()
+		if (!transition) throw new Error(t("common:subagentMode.busy"))
+		const previousItem = await transition
+
+		try {
+			task.emit(AlphaCodeEventName.TaskModeSwitched, taskId, mode)
+		} catch (error) {
+			this.log(`Failed to notify listeners of mode switch for task ${taskId}: ${String(error)}`)
 		}
 
-		return this.setTaskModeWithinAdmission(task, currentMode, mode, { postState })
+		if (previousItem) await this.publishTaskHistoryUpdate(taskId, previousItem)
+		if (postState && this.isTaskOnScreen(taskId)) await this.postStateToWebview()
 	}
 
 	private async setTaskModeWithinAdmission(
 		task: Task,
 		currentMode: string | undefined,
 		mode: string,
-		options: { postState: boolean },
-	): Promise<void> {
-		const { postState } = options
+	): Promise<HistoryItem | undefined> {
 		await this.assertPlanModeEntryAllowed(task, currentMode, mode)
-
-		task.emit(AlphaCodeEventName.TaskModeSwitched, task.taskId, mode)
 
 		const taskHistoryItem =
 			this.taskHistoryStore.get(task.taskId) ??
 			(this.getGlobalState("taskHistory") ?? []).find((item) => item.id === task.taskId)
 
 		if (taskHistoryItem) {
-			await this.updateTaskHistory({ ...taskHistoryItem, mode }, { preserveMode: false })
+			await this.updateTaskHistory({ ...taskHistoryItem, mode }, { preserveMode: false, broadcast: false })
 		}
 
 		if (typeof task.setTaskMode === "function") {
@@ -2950,9 +2975,7 @@ export class AlphaProvider
 			;(task as any)._taskMode = mode
 		}
 
-		if (postState && this.isTaskOnScreen(task.taskId)) {
-			await this.postStateToWebview()
-		}
+		return taskHistoryItem
 	}
 
 	private subagentRequiresCodeMode(agent: Pick<AgentRecord, "taskId" | "role" | "snapshot">): boolean {
@@ -3226,7 +3249,7 @@ export class AlphaProvider
 	}
 
 	upsertProviderProfile(
-		target: ProviderProfileSaveTarget,
+		target: ProviderProfileSaveTarget | ProviderProfileCreateTarget,
 		providerSettings: ProviderSettings,
 		activate?: boolean,
 	): Promise<ProviderProfileSaved>
@@ -3236,7 +3259,7 @@ export class AlphaProvider
 		activate?: boolean,
 	): Promise<string | undefined>
 	async upsertProviderProfile(
-		target: string | ProviderProfileSaveTarget,
+		target: string | ProviderProfileSaveTarget | ProviderProfileCreateTarget,
 		providerSettings: ProviderSettings,
 		activate: boolean = true,
 	): Promise<string | ProviderProfileSaved | undefined> {
@@ -3981,8 +4004,16 @@ export class AlphaProvider
 					if (this.getLiveTask(taskId)) await this.removeTaskFromStack({ taskId })
 				}
 				await this.joinTaskLifecycleHistoryWrites(allIdsToDelete)
-				await this.taskHistoryStore.deleteMany(allIdsToDelete, { storageBasePath })
-				this.recentTasksCache = undefined
+				const cachedIds = allIdsToDelete.filter((taskId) => this.taskHistoryStore.get(taskId))
+				try {
+					await this.taskHistoryStore.deleteMany(allIdsToDelete, { storageBasePath })
+				} catch (error) {
+					await this.publishDeletedTaskHistory(
+						cachedIds.filter((taskId) => !this.taskHistoryStore.get(taskId)),
+					)
+					throw error
+				}
+				await this.publishDeletedTaskHistory(allIdsToDelete)
 				// Retain agent-control evidence until the authoritative deletion succeeds.
 				await this.purgeDeletedAgentControlRoots(allIdsToDelete)
 
@@ -4010,7 +4041,7 @@ export class AlphaProvider
 			if (this.getLiveTask(id)) await this.removeTaskFromStack({ taskId: id })
 			await this.joinTaskLifecycleHistoryWrites([id])
 			await this.taskHistoryStore.delete(id)
-			this.recentTasksCache = undefined
+			await this.publishDeletedTaskHistory([id])
 			await this.purgeDeletedAgentControlRoots([id])
 		})
 
@@ -4094,12 +4125,12 @@ export class AlphaProvider
 	 * overwriting a newer incremental message after asynchronous state assembly.
 	 */
 	async postTaskMessageToWebview(
-		type: "messageCreated" | "messageUpdated",
+		type: TaskMessagePost["type"],
 		taskId: string,
 		alphaMessage: AlphaMessage,
 	): Promise<void> {
 		this.taskSessions.markActivity(taskId)
-		const transcriptRevision = this.taskSessions.markTranscriptChanged(taskId)
+		this.taskSessions.markTranscriptChanged(taskId)
 		const liveTask = this.taskSessions.getMetadataForTask(taskId)
 		const publications: Promise<void>[] = []
 		const isAssistantPreview =
@@ -4111,14 +4142,16 @@ export class AlphaProvider
 			if (provider._disposed) continue
 			// VS Code queues posts until the webview starts. Its launch snapshot supplies the transcript.
 			if (isAssistantPreview && !provider.webviewAcceptsTaskMessages) continue
-			const alphaMessagesSeq = ++provider.alphaMessagesSeq
-			publications.push(
-				provider.postMessageToWebview({ type, taskId, alphaMessage, alphaMessagesSeq, liveTask }).then(() => {
-					if (provider.isTaskSelected(taskId) && provider.publishedTaskTranscriptRevisions.has(taskId)) {
-						provider.recordPublishedTaskTranscript(taskId, transcriptRevision)
-					}
-				}),
-			)
+			const message = { type, taskId, alphaMessage, alphaMessagesSeq: ++provider.alphaMessagesSeq, liveTask }
+			const publication = isAssistantPreview
+				? provider.postAssistantPreview(message)
+				: provider.postLocalTaskMessage(message)
+			if (publication) publications.push(publication)
+		}
+		if (isAssistantPreview) {
+			// Pace the shared presenter by the first ready view. Each slower view coalesces its own updates.
+			if (publications.length) await Promise.race(publications)
+			return
 		}
 		await Promise.all(publications)
 		const task = this.getLiveTask(taskId)
@@ -4134,6 +4167,65 @@ export class AlphaProvider
 					this.view?.visible === true &&
 					this.isTaskOnScreen(taskId),
 			)
+		}
+	}
+
+	private async postLocalTaskMessage(message: TaskMessagePost): Promise<void> {
+		const view = this.view
+		await this.postMessageToWebview(message)
+		const pending = this.assistantPreviewDelivery?.pending
+		// A later row can arrive before a buffered partial. Its revision cannot certify the whole transcript yet.
+		if (this._disposed || this.view !== view || pending === "resync" || pending?.taskId === message.taskId) return
+		if (this.isTaskSelected(message.taskId) && this.publishedTaskTranscriptRevisions.has(message.taskId)) {
+			this.recordPublishedTaskTranscript(message.taskId, message.liveTask?.transcriptRevision)
+		}
+	}
+
+	private postAssistantPreview(message: TaskMessagePost): Promise<void> | undefined {
+		const active = this.assistantPreviewDelivery
+		if (active) {
+			const pending = active.pending
+			const sameRow =
+				pending &&
+				pending !== "resync" &&
+				pending.taskId === message.taskId &&
+				pending.alphaMessage.ts === message.alphaMessage.ts
+			if (message.type === "messageUpdated" && message.alphaMessage.partial) {
+				// Updates are cumulative. If multiple rows fell behind, one transcript snapshot covers them all.
+				active.pending = !pending || sameRow ? message : "resync"
+				return
+			}
+			// Submit creates and final rows immediately, even when a partial post is still waiting on VS Code.
+			if (sameRow) active.pending = undefined
+			return this.postLocalTaskMessage(message)
+		}
+
+		const delivery: AssistantPreviewDelivery = {}
+		this.assistantPreviewDelivery = delivery
+		return this.flushAssistantPreviews(delivery, message)
+	}
+
+	private async flushAssistantPreviews(delivery: AssistantPreviewDelivery, first: TaskMessagePost): Promise<void> {
+		try {
+			await this.postLocalTaskMessage(first)
+			while (this.assistantPreviewDelivery === delivery && delivery.pending) {
+				const pending = delivery.pending
+				delivery.pending = undefined
+				if (pending !== "resync" && pending.alphaMessagesSeq === this.alphaMessagesSeq) {
+					await this.postLocalTaskMessage(pending)
+				} else {
+					// A newer publication can supersede a buffered row's wire sequence. Rehydrate the current selection.
+					this.queueCompactLifecycleState()
+					if (this.currentView.type === "task")
+						await this.postVisibleTaskTranscript(
+							this.currentView.taskId,
+							this.taskStateSeq,
+							this.taskNavigationGeneration,
+						)
+				}
+			}
+		} finally {
+			if (this.assistantPreviewDelivery === delivery) this.assistantPreviewDelivery = undefined
 		}
 	}
 
@@ -5796,7 +5888,7 @@ export class AlphaProvider
 
 		const history = preserveMode
 			? await this.taskHistoryStore.upsert(item, { preserveMode: true })
-			: await this.taskHistoryStore.upsert(item)
+			: await this.taskHistoryStore.updateMode(item)
 		this.recentTasksCache = undefined
 
 		if (broadcast) await this.publishTaskHistoryUpdate(item.id, previousItem)
@@ -5986,25 +6078,29 @@ export class AlphaProvider
 	set isViewLaunched(launched: boolean) {
 		this.webviewLaunched = launched
 		this.webviewAcceptsTaskMessages = launched
-		if (launched) this.webviewLaunchWaiters?.forEach((finish) => finish(true))
+		if (launched) this.webviewLaunchWaiters?.forEach((check) => check())
 	}
 
 	get viewLaunched() {
 		return this.isViewLaunched
 	}
 
-	waitForWebviewLaunch(timeoutMs: number): Promise<boolean> {
-		if (this._disposed || this.isViewLaunched) return Promise.resolve(!this._disposed)
+	waitForWebviewLaunch(timeoutMs: number, { requireVisible = false } = {}): Promise<boolean> {
+		const ready = () => this.isViewLaunched && (!requireVisible || this.view?.visible === true)
+		if (this._disposed || ready()) return Promise.resolve(!this._disposed)
 
 		const waiters = (this.webviewLaunchWaiters ??= new Set())
 		return new Promise((resolve) => {
 			const finish = (launched: boolean) => {
 				clearTimeout(timer)
-				waiters.delete(finish)
+				waiters.delete(check)
 				resolve(launched)
 			}
+			const check = () => {
+				if (this._disposed || ready()) finish(!this._disposed)
+			}
 			const timer = setTimeout(() => finish(false), timeoutMs)
-			waiters.add(finish)
+			waiters.add(check)
 		})
 	}
 
@@ -6033,10 +6129,15 @@ export class AlphaProvider
 		projectInstructionDiscovery?: ProjectInstructionDiscoveryOptions,
 	): Promise<SkillsManager> {
 		if (this._disposed) throw new Error("Skills manager owner has been disposed")
-		const owner = this.getTaskOwner(task.taskId)
+		const { taskId } = task
+		const isCurrentTask = () => !this._disposed && this.taskSessions.getTask(taskId) === task
+		const released = "Skills manager owner was released during discovery"
+		if (!isCurrentTask()) throw new Error(released)
+		const owner = this.getTaskOwner(taskId)
 		if (owner && owner !== this) {
 			const manager = await owner.getSkillsManager(task, projectInstructionDiscovery)
 			if (!manager) throw new Error("Skills manager owner is unavailable")
+			if (!isCurrentTask()) throw new Error(released)
 			return manager
 		}
 		const workspacePath = path.resolve(task.taskKind === "subagent" ? task.historyWorkspacePath : task.cwd)
@@ -6045,10 +6146,14 @@ export class AlphaProvider
 		// snapshot from a fresh request boundary may apply changed user settings.
 		if (projectInstructionDiscovery === undefined) {
 			for (const [key, existing] of this.scopedSkillsManagers) {
-				if (!key.startsWith(`${workspaceKey}:`) || !existing.taskIds.has(task.taskId)) continue
+				if (!key.startsWith(`${workspaceKey}:`) || !existing.taskIds.has(taskId)) continue
 				await existing.ready
-				if (this._disposed || this.scopedSkillsManagers.get(key) !== existing) {
-					throw new Error("Skills manager owner was released during discovery")
+				if (
+					!isCurrentTask() ||
+					!existing.taskIds.has(taskId) ||
+					this.scopedSkillsManagers.get(key) !== existing
+				) {
+					throw new Error(released)
 				}
 				return existing.manager
 			}
@@ -6056,7 +6161,8 @@ export class AlphaProvider
 		projectInstructionDiscovery ??= captureProjectInstructionDiscoveryOptions()
 		// A changed user boundary gets a new catalog; existing task leases retain their snapshot.
 		const key = `${workspaceKey}:${JSON.stringify(projectInstructionDiscovery)}`
-		await this.releaseScopedSkillsManager(task.taskId, key)
+		await this.releaseScopedSkillsManager(taskId, key)
+		if (!isCurrentTask()) throw new Error(released)
 		let entry = this.scopedSkillsManagers.get(key)
 		if (!entry) {
 			const manager = new SkillsManager(this, workspacePath, {
@@ -6072,10 +6178,10 @@ export class AlphaProvider
 				throw error
 			})
 		}
-		entry.taskIds.add(task.taskId)
+		entry.taskIds.add(taskId)
 		await entry.ready
-		if (this._disposed || this.scopedSkillsManagers.get(key) !== entry) {
-			throw new Error("Skills manager owner was released during discovery")
+		if (!isCurrentTask() || !entry.taskIds.has(taskId) || this.scopedSkillsManagers.get(key) !== entry) {
+			throw new Error(released)
 		}
 		return entry.manager
 	}
@@ -6156,10 +6262,15 @@ export class AlphaProvider
 	 * TaskProviderLike
 	 */
 
-	private markTaskLifecycle(taskId: string, lifecycle: TaskLifecycleState, waitingReason?: string): void {
+	private markTaskLifecycle(
+		taskId: string,
+		lifecycle: TaskLifecycleState,
+		waitingReason?: string,
+		managedTerminalStatus?: SubagentTerminalRunStatus,
+	): void {
 		this.taskSessions.markLifecycle(taskId, lifecycle, waitingReason)
 		this.log(`[task-session] ${taskId}: ${lifecycle}${waitingReason ? ` (${waitingReason})` : ""}`)
-		this.queueTaskLifecycleHistoryStatus(taskId, lifecycle, waitingReason)
+		this.queueTaskLifecycleHistoryStatus(taskId, lifecycle, waitingReason, managedTerminalStatus)
 		void this.postTaskSessionStateToWebview()
 	}
 
@@ -6172,18 +6283,19 @@ export class AlphaProvider
 		taskId: string,
 		lifecycle: TaskLifecycleState,
 		waitingReason?: string,
+		managedTerminalStatus?: SubagentTerminalRunStatus,
 	): void {
 		if (this.taskSessions.isHistoryDeleting(taskId) && !this.getLiveTask(taskId)) return
 		const historyStatus: NonNullable<HistoryItem["status"]> =
-			lifecycle === TaskLifecycleState.Completed
+			managedTerminalStatus ??
+			(lifecycle === TaskLifecycleState.Completed
 				? "completed"
 				: lifecycle === TaskLifecycleState.Failed
 					? "failed"
-					: lifecycle === TaskLifecycleState.Closed
+					: lifecycle === TaskLifecycleState.Closed ||
+						  (lifecycle === TaskLifecycleState.Waiting && waitingReason === "resumable")
 						? "interrupted"
-						: lifecycle === TaskLifecycleState.Waiting && waitingReason === "resumable"
-							? "interrupted"
-							: "active"
+						: "active")
 		const historyWrites = (this.taskLifecycleHistoryWrites ??= new Map<string, Promise<void>>())
 		const previous = historyWrites.get(taskId) ?? Promise.resolve()
 		const write = previous
@@ -6195,8 +6307,9 @@ export class AlphaProvider
 				// Disposing a terminal runtime is not an interrupted turn. A resumed
 				// turn queues "active" first, so its later interruption still persists.
 				if (
+					!managedTerminalStatus &&
 					historyStatus === "interrupted" &&
-					(current.status === "completed" || current.status === "failed")
+					["completed", "blocked", "failed", "cancelled", "timed_out"].includes(current.status ?? "")
 				) {
 					return
 				}
@@ -6286,7 +6399,7 @@ export class AlphaProvider
 		return write
 	}
 
-	private publishDurableManagedTaskCompletion(taskId: string, status: AgentLifecycleStatus = "completed"): void {
+	private publishDurableManagedTaskCompletion(taskId: string, status: SubagentTerminalRunStatus): void {
 		const completion = this.pendingManagedTaskCompletions.get(taskId)
 		const completedSuccessfully = status === "completed" || status === "blocked"
 		if (!completion && completedSuccessfully) {
@@ -6301,6 +6414,8 @@ export class AlphaProvider
 				: status === "failed"
 					? TaskLifecycleState.Failed
 					: TaskLifecycleState.Closed,
+			undefined,
+			status,
 		)
 		if (!completion || !completedSuccessfully) return
 		try {
@@ -9888,10 +10003,7 @@ export class AlphaProvider
 						() => this.persistSpawnedSubagentLifecycle(parent, controlRecord, event),
 					)
 					if (event.type === "completed") {
-						this.publishDurableManagedTaskCompletion(
-							event.taskId,
-							event.snapshot.status as AgentLifecycleStatus,
-						)
+						this.publishDurableManagedTaskCompletion(event.taskId, event.snapshot.status)
 					}
 					await this.publishSpawnedSubagentLifecycle(parent, prepared, event)
 				})
@@ -9928,9 +10040,6 @@ export class AlphaProvider
 				? this.asyncSubagentRunManager.relaunch(envelope, launchOptions, controller.signal)
 				: this.asyncSubagentRunManager.launch(envelope, launchOptions, controller.signal)
 			launched = true
-			if (!isFollowup) {
-				parent.emit(AlphaCodeEventName.TaskSpawned, handle.taskId)
-			}
 			// Lifecycle callbacks are queued from launch(), so set the mode before
 			// their first persistence write.
 			prepared.group.executionMode = "async"
@@ -9957,6 +10066,13 @@ export class AlphaProvider
 						.catch(() => undefined)
 				}
 			})
+			if (!isFollowup) {
+				try {
+					parent.emit(AlphaCodeEventName.TaskSpawned, handle.taskId)
+				} catch (error) {
+					this.log(`Failed to notify listeners of managed task ${handle.taskId} spawn: ${String(error)}`)
+				}
+			}
 			return handle
 		} catch (error) {
 			parentSignal.removeEventListener("abort", cancelFromParent)
@@ -10214,7 +10330,7 @@ export class AlphaProvider
 			retained.rootTaskId,
 		)
 		records.set(taskId, updated)
-		this.publishDurableManagedTaskCompletion(taskId, agent.status as AgentLifecycleStatus)
+		this.publishDurableManagedTaskCompletion(taskId, agent.status)
 	}
 
 	private toAgentRuntimeSnapshot(agent: SubagentGroupState["agents"][number]): AgentRuntimeSnapshot {
@@ -13933,12 +14049,12 @@ export class AlphaProvider
 	private async attachSubagentGroupToParentHistory(parent: Task, prepared: PreparedSubagentGroup): Promise<void> {
 		try {
 			const { historyItem } = await this.getTaskWithId(parent.taskId, { includeApiConversationHistory: false })
-			await this.updateTaskHistory({
-				...historyItem,
-				childIds: Array.from(
-					new Set([...(historyItem.childIds ?? []), ...prepared.envelopes.map((envelope) => envelope.id)]),
-				),
-			})
+			await this.taskHistoryStore.appendChildIds(
+				historyItem,
+				prepared.envelopes.map(({ id }) => id),
+			)
+			this.recentTasksCache = undefined
+			await this.publishTaskHistoryUpdate(parent.taskId, historyItem)
 		} catch (error) {
 			this.log(`Failed to attach sub-agent group ${prepared.group.groupId} to parent history: ${String(error)}`)
 		}

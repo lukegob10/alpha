@@ -270,7 +270,7 @@ describe("WorkspaceTracker", () => {
 		vitest.runAllTimers()
 
 		// Should initialize file paths for new workspace
-		expect(listFiles).toHaveBeenCalledWith("/test/new-workspace", true, 1000)
+		expect(listFiles).toHaveBeenCalledWith("/test/new-workspace", true, 1000, expect.any(AbortSignal))
 		vitest.runAllTimers()
 	})
 
@@ -286,6 +286,28 @@ describe("WorkspaceTracker", () => {
 		expect(mockProvider.postMessageToWebview).not.toHaveBeenCalled()
 	})
 
+	it("cancels the previous workspace discovery and publishes the reset workspace", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		vitest
+			.mocked(listFiles)
+			.mockReturnValueOnce(discovery.promise)
+			.mockResolvedValueOnce([["/test/new-workspace/current.ts"], false])
+		const previous = workspaceTracker.initializeFilePaths()
+		;(getWorkspacePath as Mock).mockReturnValue("/test/new-workspace")
+		await registeredTabChangeCallback!()
+		expect(vitest.mocked(listFiles).mock.calls[0][3]?.aborted).toBe(true)
+		await vitest.runAllTimersAsync()
+		discovery.resolve([["/test/workspace/stale.ts"], false])
+		await previous
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["current.ts"],
+			openedTabs: [],
+		})
+	})
+
 	it("should discard a superseded initialization in the same workspace", async () => {
 		const discovery = deferred<[string[], boolean]>()
 		;(listFiles as Mock)
@@ -293,6 +315,7 @@ describe("WorkspaceTracker", () => {
 			.mockResolvedValueOnce([["/test/workspace/current.ts"], false])
 		const staleInitialization = workspaceTracker.initializeFilePaths()
 		await workspaceTracker.initializeFilePaths()
+		expect(vitest.mocked(listFiles).mock.calls[0][3]?.aborted).toBe(true)
 		discovery.resolve([["/test/workspace/stale.ts"], false])
 		await staleInitialization
 		vitest.runAllTimers()
@@ -304,11 +327,94 @@ describe("WorkspaceTracker", () => {
 		})
 	})
 
+	it("keeps a watcher deletion when the scan still contains the deleted path", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		vitest.mocked(listFiles).mockReturnValueOnce(discovery.promise)
+		const initialization = workspaceTracker.initializeFilePaths()
+		const [[remove]] = mockOnDidDelete.mock.calls
+		remove({ fsPath: "/test/workspace/deleted.ts" })
+		discovery.resolve([["/test/workspace/deleted.ts", "/test/workspace/current.ts"], false])
+		await initialization
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["current.ts"],
+			openedTabs: [],
+		})
+	})
+
+	it("drops descendants from an in-flight scan when the watcher reports only their folder deletion", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		vitest.mocked(listFiles).mockReturnValueOnce(discovery.promise)
+		const initialization = workspaceTracker.initializeFilePaths()
+		const [[remove]] = mockOnDidDelete.mock.calls
+		remove({ fsPath: "/test/workspace/deleted" })
+		discovery.resolve([
+			["/test/workspace/deleted/", "/test/workspace/deleted/nested/file.ts", "/test/workspace/deleted-copy.ts"],
+			false,
+		])
+		await initialization
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["deleted-copy.ts"],
+			openedTabs: [],
+		})
+	})
+
+	it("drops tracked and pending children on a folder deletion", async () => {
+		vitest
+			.mocked(listFiles)
+			.mockResolvedValueOnce([
+				["/test/workspace/deleted/", "/test/workspace/deleted/tracked.ts", "/test/workspace/deleted-copy.ts"],
+				false,
+			])
+		await workspaceTracker.initializeFilePaths()
+		const stat = deferred<vscode.FileStat>()
+		vitest.mocked(vscode.workspace.fs.stat).mockReturnValueOnce(stat.promise)
+		const [[create]] = mockOnDidCreate.mock.calls
+		const [[remove]] = mockOnDidDelete.mock.calls
+		const creation = create({ fsPath: "/test/workspace/deleted/pending.ts" })
+		remove({ fsPath: "/test/workspace/deleted" })
+		stat.resolve({ type: vscode.FileType.File, ctime: 0, mtime: 0, size: 0 })
+		await creation
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["deleted-copy.ts"],
+			openedTabs: [],
+		})
+	})
+
+	it("retains the watcher entry when a deleted directory is recreated as a file during discovery", async () => {
+		const discovery = deferred<[string[], boolean]>()
+		vitest.mocked(listFiles).mockReturnValueOnce(discovery.promise)
+		const initialization = workspaceTracker.initializeFilePaths()
+		const [[remove]] = mockOnDidDelete.mock.calls
+		const [[create]] = mockOnDidCreate.mock.calls
+		const fsPath = "/test/workspace/replaced"
+		remove({ fsPath })
+		await create({ fsPath })
+		discovery.resolve([[`${fsPath}/`], false])
+		await initialization
+		await vitest.runAllTimersAsync()
+
+		expect(mockProvider.postMessageToWebview).toHaveBeenLastCalledWith({
+			type: "workspaceUpdated",
+			filePaths: ["replaced"],
+			openedTabs: [],
+		})
+	})
+
 	it("should not publish discovery completed after disposal", async () => {
 		const discovery = deferred<[string[], boolean]>()
 		;(listFiles as Mock).mockReturnValueOnce(discovery.promise)
 		const initialization = workspaceTracker.initializeFilePaths()
 		workspaceTracker.dispose()
+		expect(vitest.mocked(listFiles).mock.calls[0][3]?.aborted).toBe(true)
 		discovery.resolve([["/test/workspace/file.ts"], false])
 		await initialization
 

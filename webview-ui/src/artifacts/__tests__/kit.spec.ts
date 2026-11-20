@@ -212,14 +212,77 @@ describe("Alpha HTML kit charts", () => {
 	it("keeps negative and zero bars finite and inspectable", () => {
 		const { root, mount } = fixture(chart(["-2", "0", "3"], "bar"))
 		mount()
-		const bars = [...root.querySelectorAll("svg rect")]
+		const bars = [...root.querySelectorAll<SVGRectElement>("svg rect")]
 		expect(bars).toHaveLength(3)
 		for (const bar of bars) {
 			for (const name of ["x", "y", "width", "height"])
 				expect(Number.isFinite(Number(bar.getAttribute(name)))).toBe(true)
 			expect(Number(bar.getAttribute("height"))).toBeGreaterThan(0)
-			expect(bar.getAttribute("tabindex")).toBe("0")
 		}
+		expect(bars.map((bar) => bar.tabIndex)).toEqual([0, -1, -1])
+	})
+
+	it("keeps one plotted value per chart in the Tab order while navigating across series", () => {
+		const markup = `<figure data-alpha-chart data-chart-type="line"><figcaption>Daily requests</figcaption>
+			<table data-alpha-chart-data><thead><tr><th>Day</th><th data-unit="requests">Completed</th>
+			<th data-unit="requests">Queued</th></tr></thead><tbody>
+			<tr><th>Mon</th><td data-value="">Missing</td><td data-value="3">3</td></tr>
+			<tr><th>Tue</th><td data-value="0">0</td><td data-value="">Missing</td></tr>
+			<tr><th>Wed</th><td data-value="2">2</td><td data-value="5">5</td></tr></tbody></table></figure>`
+		const { root, mount, window } = fixture(markup + chart(["10"]))
+		const tableBefore = root.querySelector("table")!
+		const dispose = mount()
+		const [figure, secondFigure] = root.querySelectorAll("figure")
+		const points = [...figure.querySelectorAll<SVGElement>('svg [role="img"]')]
+		const status = figure.querySelector('[role="status"]')!
+		const tabStop = (scope: Element) => {
+			const stops = scope.querySelectorAll('svg [tabindex="0"]')
+			expect(stops).toHaveLength(1)
+			return stops[0]
+		}
+		const keyDown = (node: Element, key: string, modifiers: KeyboardEventInit = {}) =>
+			node.dispatchEvent(
+				new window.KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...modifiers }),
+			)
+		expect(tabStop(figure)).toBe(points[0])
+		const otherChartStop = tabStop(secondFigure)
+		expect(figure.querySelector(".kit-chart-scroll")?.getAttribute("aria-description")).toBe(status.textContent)
+		expect(points.map((point) => point.getAttribute("aria-label"))).toEqual([
+			"Tue, Completed: 0 requests",
+			"Wed, Completed: 2 requests",
+			"Mon, Queued: 3 requests",
+			"Wed, Queued: 5 requests",
+		])
+		points[0].focus()
+		for (const [key, index] of [
+			["ArrowLeft", 0],
+			["ArrowRight", 1],
+			["ArrowDown", 2],
+			["End", 3],
+			["ArrowRight", 3],
+			["ArrowUp", 2],
+			["Home", 0],
+		] as const) {
+			expect(keyDown(window.document.activeElement!, key)).toBe(false)
+			expect(window.document.activeElement).toBe(points[index])
+			expect(tabStop(figure)).toBe(points[index])
+			expect(status.textContent).toBe(points[index].getAttribute("aria-label"))
+		}
+		points[3].dispatchEvent(new window.Event("pointerenter"))
+		expect(status.textContent).toBe(points[3].getAttribute("aria-label"))
+		expect(tabStop(figure)).toBe(points[0])
+		expect(keyDown(points[0], "Tab")).toBe(true)
+		expect(keyDown(points[0], "Tab", { shiftKey: true })).toBe(true)
+		expect(keyDown(points[0], "Home", { ctrlKey: true })).toBe(true)
+		points[2].focus()
+		expect(tabStop(figure)).toBe(points[2])
+		expect(tabStop(secondFigure)).toBe(otherChartStop)
+		dispose()
+		expect(figure.querySelector("svg")).toBeNull()
+		expect(figure.querySelector("table")).toBe(tableBefore)
+		expect(keyDown(points[2], "End")).toBe(true)
+		mount()
+		expect(tabStop(figure).getAttribute("aria-label")).toBe("Tue, Completed: 0 requests")
 	})
 
 	it.each(['<th data-unit=" ">Completed</th>', '<th data-unit="requests"> </th>'])(

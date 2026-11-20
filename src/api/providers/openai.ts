@@ -1944,37 +1944,31 @@ export class OpenAiHandler extends BaseProvider implements SingleCompletionHandl
 	}
 }
 
-export async function getOpenAiModels(baseUrl?: string, apiKey?: string, openAiHeaders?: Record<string, string>) {
+export async function getOpenAiModels(
+	baseUrl?: string,
+	apiKey?: string,
+	openAiHeaders?: Record<string, string>,
+	signal?: AbortSignal,
+): Promise<string[]> {
+	const trimmedBaseUrl = baseUrl?.trim()
+	if (!trimmedBaseUrl || !URL.canParse(trimmedBaseUrl) || signal?.aborted) return []
+
+	const headers: Record<string, string> = { ...DEFAULT_HEADERS, ...openAiHeaders }
+	if (apiKey) headers.Authorization = `Bearer ${apiKey}`
+
+	// Advisory catalog discovery follows the five-second refresh budget used by Codex.
+	const request = createLinkedAbortController({ signal, deadline: Date.now() + 5_000 })
 	try {
-		if (!baseUrl) {
-			return []
-		}
-
-		// Trim whitespace from baseUrl to handle cases where users accidentally include spaces
-		const trimmedBaseUrl = baseUrl.trim()
-
-		if (!URL.canParse(trimmedBaseUrl)) {
-			return []
-		}
-
-		const config: Record<string, any> = {}
-		const headers: Record<string, string> = {
-			...DEFAULT_HEADERS,
-			...(openAiHeaders || {}),
-		}
-
-		if (apiKey) {
-			headers["Authorization"] = `Bearer ${apiKey}`
-		}
-
-		if (Object.keys(headers).length > 0) {
-			config["headers"] = headers
-		}
-
-		const response = await axios.get(`${trimmedBaseUrl}/models`, config)
-		const modelsArray = response.data?.data?.map((model: any) => model.id) || []
-		return [...new Set<string>(modelsArray)]
-	} catch (error) {
+		const response = await axios.get<{ data?: ({ id?: unknown } | null)[] }>(`${trimmedBaseUrl}/models`, {
+			headers,
+			signal: request.signal,
+		})
+		const models = response.data?.data
+		if (request.signal.aborted || !Array.isArray(models)) return []
+		return [...new Set(models.map((model) => model?.id).filter((id): id is string => typeof id === "string"))]
+	} catch {
 		return []
+	} finally {
+		request.dispose()
 	}
 }

@@ -1,4 +1,5 @@
 import { CodeIndexManager } from "../manager"
+import { CodeIndexConfigManager } from "../config-manager"
 import { CodeIndexServiceFactory } from "../service-factory"
 import { CodeIndexOrchestrator } from "../orchestrator"
 import { CacheManager } from "../cache-manager"
@@ -531,6 +532,105 @@ describe("CodeIndexManager - handleSettingsChange regression", () => {
 				await initialization
 				initializeCache.mockRestore()
 			}
+		})
+
+		it.each([true, false])("discards startup validation after indexing is disabled (valid=%s)", async (valid) => {
+			const validation = deferred<{ valid: boolean }>()
+			const validationStarted = deferred<void>()
+			const configManager = (manager as any)._configManager
+			;(manager as any)._cacheManager = { initialize: vi.fn() }
+			mockServiceFactoryInstance.validateEmbedder.mockImplementation(() => {
+				validationStarted.resolve(undefined)
+				return validation.promise
+			})
+
+			const initialization = manager.initialize({} as Parameters<CodeIndexManager["initialize"]>[0])
+			await validationStarted.promise
+			configManager.isFeatureEnabled = false
+			await manager.handleSettingsChange()
+			validation.resolve({ valid })
+			await initialization
+
+			expect(CodeIndexOrchestrator.prototype.startIndexing).not.toHaveBeenCalled()
+			expect(manager.isInitialized).toBe(false)
+			expect(mockFileWatcher.dispose).toHaveBeenCalledOnce()
+			expect(mockStateManager.setSystemState).toHaveBeenLastCalledWith("Standby", "Code indexing is disabled")
+		})
+
+		it.each([true, false])("discards validation from superseded embedding settings (valid=%s)", async (valid) => {
+			let model = "old-model"
+			const contextProxy = {
+				getGlobalState: () => ({
+					codebaseIndexEnabled: true,
+					codebaseIndexEmbedderProvider: "openai",
+					codebaseIndexEmbedderModelId: model,
+					codebaseIndexEmbedderModelDimension: 3,
+					codebaseIndexOpenAiCompatibleBaseUrl: "http://embeddings.invalid",
+				}),
+				getSecret: vi.fn(),
+				refreshSecrets: vi.fn().mockResolvedValue(undefined),
+			} as unknown as Parameters<CodeIndexManager["initialize"]>[0]
+			const configManager = new CodeIndexConfigManager(contextProxy)
+			;(manager as any)._configManager = configManager
+			;(manager as any)._cacheManager = { initialize: vi.fn() }
+			mockFileWatcher.whenIdle = vi.fn().mockResolvedValue(undefined)
+			const selectedWatcher = { ...mockFileWatcher, dispose: vi.fn() }
+			const selectedEmbedder = { embedderInfo: { name: "openai" } }
+			mockServiceFactoryInstance.createServices.mockReturnValueOnce({
+				embedder: mockEmbedder,
+				vectorStore: mockVectorStore,
+				scanner: mockScanner,
+				fileWatcher: mockFileWatcher,
+			})
+			mockServiceFactoryInstance.createServices.mockReturnValueOnce({
+				embedder: selectedEmbedder,
+				vectorStore: mockVectorStore,
+				scanner: mockScanner,
+				fileWatcher: selectedWatcher,
+			})
+			const olderValidation = deferred<{ valid: boolean; error?: string }>()
+			const currentValidation = deferred<{ valid: boolean }>()
+			const olderStarted = deferred<void>()
+			const currentStarted = deferred<void>()
+			mockServiceFactoryInstance.validateEmbedder
+				.mockImplementationOnce(() => {
+					olderStarted.resolve(undefined)
+					return olderValidation.promise
+				})
+				.mockImplementationOnce(() => {
+					currentStarted.resolve(undefined)
+					return currentValidation.promise
+				})
+
+			const initialization = manager.initialize(contextProxy)
+			await olderStarted.promise
+			const configurationLoaded = deferred<void>()
+			const load = configManager.loadConfiguration.bind(configManager)
+			vi.spyOn(configManager, "loadConfiguration").mockImplementationOnce(async (options) => {
+				const result = await load(options)
+				configurationLoaded.resolve(undefined)
+				return result
+			})
+			model = "selected-model"
+			const reconfiguration = manager.handleSettingsChange()
+			const settled = Promise.allSettled([initialization, reconfiguration])
+			await configurationLoaded.promise
+			olderValidation.resolve({ valid, error: "Rejected previous credentials" })
+			await currentStarted.promise
+			const startedBeforeCurrentValidation = vi.mocked(CodeIndexOrchestrator.prototype.startIndexing).mock.calls
+				.length
+			currentValidation.resolve({ valid: true })
+
+			expect(await settled).toEqual([
+				{ status: "fulfilled", value: { requiresRestart: false } },
+				{ status: "fulfilled", value: undefined },
+			])
+			expect(startedBeforeCurrentValidation).toBe(0)
+			expect(CodeIndexOrchestrator.prototype.startIndexing).toHaveBeenCalledOnce()
+			expect(mockStateManager.setSystemState).not.toHaveBeenCalledWith("Error", expect.any(String))
+			expect(mockFileWatcher.dispose).toHaveBeenCalledOnce()
+			expect(selectedWatcher.dispose).not.toHaveBeenCalled()
+			expect(manager.isInitialized).toBe(true)
 		})
 
 		it.each(["initialize", "handleSettingsChange"] as const)(

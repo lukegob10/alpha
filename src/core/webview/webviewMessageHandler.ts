@@ -102,7 +102,6 @@ import { getWorkspacePath } from "../../utils/path"
 import { Mode, defaultModeSlug } from "../../shared/modes"
 import { generateSystemPrompt } from "./generateSystemPrompt"
 import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
-import { getCommand } from "../../utils/commands"
 import { setPendingTodoList } from "../tools/UpdateTodoListTool"
 import {
 	handleListWorktrees,
@@ -181,6 +180,8 @@ export const webviewMessageHandler = async (
 	options?: {
 		ticketSearch?: { signal: AbortSignal; cwd: string }
 		fileSearch?: { signal: AbortSignal; cwd: string }
+		commitSearch?: { signal: AbortSignal; cwd?: string; task?: Task }
+		openAiModelDiscoverySignal?: AbortSignal
 		isCurrentWebview?: () => boolean
 	},
 ) => {
@@ -1245,22 +1246,22 @@ export const webviewMessageHandler = async (
 		case "resetState":
 			await provider.resetState()
 			break
-		case "requestOpenAiModels":
-			if (message?.values?.baseUrl && message?.values?.apiKey) {
-				const openAiModels = await getOpenAiModels(
-					message?.values?.baseUrl,
-					message?.values?.apiKey,
-					message?.values?.openAiHeaders,
-				)
-
-				await provider.postMessageToWebview({
-					type: "openAiModels",
-					openAiModels,
-					requestId: message.requestId,
-				})
-			}
-
+		case "requestOpenAiModels": {
+			const { baseUrl, apiKey, openAiHeaders } = message.values ?? {}
+			const signal = options?.openAiModelDiscoverySignal
+			if (
+				typeof baseUrl !== "string" ||
+				!baseUrl ||
+				!apiKey ||
+				signal?.aborted ||
+				options?.isCurrentWebview?.() === false
+			)
+				break
+			const openAiModels = await getOpenAiModels(baseUrl, apiKey, openAiHeaders, signal)
+			if (signal?.aborted || options?.isCurrentWebview?.() === false) break
+			await provider.postMessageToWebview({ type: "openAiModels", openAiModels, requestId: message.requestId })
 			break
+		}
 		case "requestVsCodeLmModels":
 			const vsCodeLmModels = await getVsCodeLmModels()
 			// TODO: Cache like we do for OpenRouter, etc?
@@ -1903,18 +1904,34 @@ export const webviewMessageHandler = async (
 			break
 		case "searchCommits": {
 			const { taskId, requestId, query } = message
-			const task = typeof taskId === "string" && taskId ? provider.getLiveTask(taskId) : undefined
-			const cwd = taskId === undefined ? (requestId === undefined ? getCurrentCwd() : provider.cwd) : task?.cwd
+			const search = options?.commitSearch
+			const isCurrent = () => !search?.signal.aborted && (options?.isCurrentWebview?.() ?? true)
+			if (!isCurrent()) break
+			const task = search
+				? search.task
+				: typeof taskId === "string" && taskId
+					? provider.getLiveTask(taskId)
+					: undefined
+			const cwd = search
+				? search.cwd
+				: taskId === undefined
+					? requestId === undefined
+						? getCurrentCwd()
+						: provider.cwd
+					: task?.cwd
+			const ownsTask = () => !task || provider.getLiveTask(taskId) === task
 			let commits: GitCommit[] = []
-			if (cwd) {
+			if (cwd && ownsTask()) {
 				try {
-					commits = await searchCommits(query || "", cwd)
+					commits = await searchCommits(query || "", cwd, search?.signal)
 				} catch (error) {
+					if (!isCurrent()) break
 					provider.log(`Error searching commits: ${error instanceof Error ? error.message : String(error)}`)
 					void vscode.window.showErrorMessage(t("common:errors.search_commits"))
 				}
 			}
-			if (task && provider.getLiveTask(taskId) !== task) commits = []
+			if (!isCurrent()) break
+			if (!ownsTask()) commits = []
 			await provider.postMessageToWebview({ type: "commitSearchResults", taskId, requestId, commits })
 			break
 		}
@@ -1951,24 +1968,15 @@ export const webviewMessageHandler = async (
 				)
 				if (!isCurrent()) break
 
-				// Get the AlphaIgnoreController from the current task, or create a new one
-				let alphaIgnoreController = currentTask?.alphaIgnoreController
-
-				// If no current task or no controller, create a temporary one
-				if (!alphaIgnoreController) {
-					tempController = new AlphaIgnoreController(workspacePath)
-					await tempController.initialize()
-					alphaIgnoreController = tempController
-				}
-				if (!isCurrent()) break
-
-				// Get showAlphaIgnoredFiles setting from state
-				const { showAlphaIgnoredFiles = false } = (await provider.getState()) ?? {}
-				if (!isCurrent()) break
-
-				// Filter results using AlphaIgnoreController if showAlphaIgnoredFiles is false
 				let filteredResults = results
-				if (!showAlphaIgnoredFiles && alphaIgnoreController) {
+				if (results.length > 0 && !getGlobalState("showAlphaIgnoredFiles")) {
+					let alphaIgnoreController = currentTask?.alphaIgnoreController
+					if (!alphaIgnoreController) {
+						tempController = new AlphaIgnoreController(workspacePath)
+						await tempController.initialize()
+						if (!isCurrent()) break
+						alphaIgnoreController = tempController
+					}
 					const allowedPaths = alphaIgnoreController.filterPaths(results.map((r) => r.path))
 					filteredResults = results.filter((r) => allowedPaths.includes(r.path))
 				}
@@ -2045,6 +2053,38 @@ export const webviewMessageHandler = async (
 			}
 			break
 		case "upsertApiConfiguration": {
+			if ("apiConfigurationCreateOnly" in message) {
+				const name = typeof message.text === "string" ? message.text.trim() : ""
+				if (
+					message.apiConfigurationCreateOnly !== true ||
+					!name ||
+					!message.apiConfiguration ||
+					"apiConfigurationId" in message ||
+					"requestId" in message ||
+					"apiConfigurationExpectedVersion" in message ||
+					"apiConfigurationReturnVersion" in message
+				) {
+					break
+				}
+				try {
+					await provider.upsertProviderProfile(
+						{ name, createOnly: true, caseInsensitive: true },
+						message.apiConfiguration,
+					)
+				} catch (error) {
+					const code = error instanceof ProviderProfileSaveError ? error.code : "saveFailed"
+					const key =
+						code === "conflict"
+							? "common:errors.provider_profile_name_in_use"
+							: code === "applyFailed"
+								? "common:errors.provider_profile_created_not_applied"
+								: "common:errors.create_api_config"
+					void Promise.resolve(vscode.window.showErrorMessage(t(key))).catch(() =>
+						provider.log("[ProviderProfileCreate] notification_failed"),
+					)
+				}
+				break
+			}
 			if (
 				!("apiConfigurationId" in message) &&
 				!("requestId" in message) &&
@@ -3111,11 +3151,6 @@ export const webviewMessageHandler = async (
 					},
 				})
 			}
-			break
-		}
-		case "focusPanelRequest": {
-			// Execute the focusPanel command to focus the WebView
-			await vscode.commands.executeCommand(getCommand("focusPanel"))
 			break
 		}
 		case "switchTab": {

@@ -1,5 +1,19 @@
 # Changelog
 
+## 3.2.43
+
+### Patch Changes
+
+- Keep Stop, approvals, and recovery tied to the correct turn. Preserve completed work and keep stale command output
+  out of replacement turns.
+- Keep chat history, queued drafts, and editor focus with the chat you select. Protect saved profiles during concurrent
+  edits.
+- Reduce repeated terminal processing and webview updates. Keep file and commit searches responsive while chat
+  actions run.
+- Settle scheduled runs safely during shutdown and keep MCP connections aligned with the current workspace.
+- Save new tickets directly in their selected status. Preserve focus when an HTML preview refreshes with the same
+  content, and use the new brief and runbook examples to get started.
+
 ## 3.2.42
 
 ### Patch Changes

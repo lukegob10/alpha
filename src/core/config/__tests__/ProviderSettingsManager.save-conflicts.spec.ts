@@ -235,6 +235,42 @@ describe("ProviderSettingsManager save conflicts", () => {
 		})
 	})
 
+	it.each([1, 2])("preserves the existing profile when reset deletion %s rejects", async (failedDelete) => {
+		await withFence(async (fenced, file) => {
+			const before = stored
+			const receipt = await fs.readFile(file, "utf8")
+			if (failedDelete === 2) secrets.delete.mockResolvedValueOnce(undefined)
+			secrets.delete.mockRejectedValueOnce(new Error("storage rejected"))
+
+			await expect(fenced.resetAllConfigs()).rejects.toThrow("storage rejected")
+
+			expect(stored).toBe(before)
+			expect(await fs.readFile(file, "utf8")).toBe(receipt)
+			await expect(fenced.getProfileSnapshot({ id: profile.id })).resolves.toMatchObject({ id: profile.id })
+		})
+	})
+
+	it("finishes a reset when the canonical deletion took effect before rejecting", async () => {
+		await withFence(async (fenced, file) => {
+			secrets.delete.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => {
+				stored = ""
+				throw new Error("storage acknowledgement lost")
+			})
+
+			await expect(fenced.resetAllConfigs()).rejects.toThrow("storage acknowledgement lost")
+			await expect(fenced.getProfileSnapshot({ name: "default" })).resolves.toMatchObject({ id: "default" })
+			expect(JSON.parse(await fs.readFile(file, "utf8"))).toMatchObject({ state: "committed" })
+		})
+	})
+
+	it("allows an explicit reset to replace an invalid saved receipt", async () => {
+		await withFence(async (fenced, file) => {
+			await fs.writeFile(file, "invalid receipt")
+			await expect(fenced.resetAllConfigs()).resolves.toBeUndefined()
+			await expect(fenced.getProfileSnapshot({ name: "default" })).resolves.toMatchObject({ id: "default" })
+		})
+	})
+
 	it("restores the previous receipt after a rejected secret write and permits the same draft retry", async () => {
 		await withFence(async (fenced, file) => {
 			const snapshot = await fenced.getProfileSnapshot({ id: profile.id })
@@ -521,19 +557,31 @@ describe("ProviderSettingsManager save conflicts", () => {
 		},
 	)
 
-	it("creates at most one profile across independent views and returns its atomic content base", async () => {
-		const sibling = new ProviderSettingsManager({ secrets } as unknown as ExtensionContext)
-		const writes = await Promise.allSettled([
-			manager.saveConfig({ name: "new", createOnly: true }, { apiProvider: "openai", openAiModelId: "first" }),
-			sibling.saveConfig({ name: "new", createOnly: true }, { apiProvider: "openai", openAiModelId: "second" }),
-		])
-		expect(writes[0]).toMatchObject({ status: "fulfilled", value: { name: "new", version: expect.any(String) } })
-		expect(writes[1]).toMatchObject({ status: "rejected", reason: { code: "conflict" } })
-		const saved = (await manager.listConfig()).find((entry) => entry.name === "new")!
-		if (writes[0].status === "fulfilled") expect(saved.version).toBe(writes[0].value.version)
-		expect(JSON.parse(stored).apiConfigs.new.openAiModelId).toBe("first")
-		expect(secrets.store).toHaveBeenCalledOnce()
-	})
+	it.each([
+		{ name: "new", otherName: "new", constraints: {} },
+		{ name: "New", otherName: "new", constraints: { caseInsensitive: true as const } },
+	])(
+		"creates at most one profile across independent views for $name and $otherName",
+		async ({ name, otherName, constraints }) => {
+			const sibling = new ProviderSettingsManager({ secrets } as unknown as ExtensionContext)
+			const writes = await Promise.allSettled([
+				manager.saveConfig(
+					{ name, createOnly: true, ...constraints },
+					{ apiProvider: "openai", openAiModelId: "first" },
+				),
+				sibling.saveConfig(
+					{ name: otherName, createOnly: true, ...constraints },
+					{ apiProvider: "openai", openAiModelId: "second" },
+				),
+			])
+			expect(writes[0]).toMatchObject({ status: "fulfilled", value: { name, version: expect.any(String) } })
+			expect(writes[1]).toMatchObject({ status: "rejected", reason: { code: "conflict" } })
+			const saved = (await manager.listConfig()).find((entry) => entry.name === name)!
+			if (writes[0].status === "fulfilled") expect(saved.version).toBe(writes[0].value.version)
+			expect(JSON.parse(stored).apiConfigs[name].openAiModelId).toBe("first")
+			expect(secrets.store).toHaveBeenCalledOnce()
+		},
+	)
 
 	it("cannot create over an existing saved identity or use a draft ID for new creation", async () => {
 		await expect(manager.saveConfig({ name: "saved", createOnly: true }, profile)).rejects.toMatchObject({

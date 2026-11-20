@@ -6359,6 +6359,7 @@ describe("Alpha", () => {
 			loopStoragePath = fsSync.mkdtempSync(path.join(loopStorageParent, loopStoragePrefix))
 			Object.assign(mockExtensionContext, { globalStorageUri: { fsPath: loopStoragePath } })
 			i18n.addResourceBundle("en", "common", enCommon)
+			vi.spyOn(mockProvider, "getSkillsManager").mockResolvedValue(undefined)
 			mockProvider.getParentCompletionDecision = vi.fn().mockResolvedValue({ allowed: true })
 			vi.mocked(vscode.workspace.getConfiguration).mockImplementation(
 				() => ({ get: (_key: string, defaultValue: unknown) => defaultValue }) as any,
@@ -6450,7 +6451,7 @@ describe("Alpha", () => {
 			})
 			const emitted = vi.spyOn(task, "emit")
 			const followup = task.resumeCompletedTaskFollowup(queued!.text, [], "human", [queued!.id])
-			await acknowledgementStarted.promise
+			await Promise.race([acknowledgementStarted.promise, followup.then(() => acknowledgementStarted.promise)])
 			expect(savedReceipts.some((ids) => ids.includes(queued!.id))).toBe(true)
 			expect(task.messageQueueService.hasUnconsumedInput()).toBe(false)
 			expect(providerRequest).not.toHaveBeenCalled()
@@ -9896,6 +9897,7 @@ describe("Alpha", () => {
 				expect(compact).toHaveBeenCalledExactlyOnceWith(
 					maxElapsedMs === undefined ? undefined : expect.any(Number),
 					undefined,
+					{ autoApprovalEnabled },
 				)
 				expect(request).toHaveBeenCalledTimes(2)
 				expect(request.mock.calls[1]?.[1]).toMatchObject({

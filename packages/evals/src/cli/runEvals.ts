@@ -1,5 +1,6 @@
 import os from "node:os"
 import path from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 import PQueue from "p-queue"
 
 import {
@@ -17,7 +18,7 @@ import {
 import { CampaignCostLedger } from "../benchmark/budgets"
 import { canonicalJson, sha256 } from "../evidence/index"
 import { EVALS_REPO_PATH } from "../exercises/index"
-import { assertCompleteRun, type RunOutcomeSummary } from "../lifecycle/index"
+import { assertCompleteRun, summarizeRunOutcomes, type RunOutcomeSummary } from "../lifecycle/index"
 
 import { Logger, getTag, isDockerContainer, resetEvalsRepo, commitEvalsRepoChanges } from "./utils"
 import { assertHeartbeatOwnership, startHeartbeat, stopHeartbeat } from "./redis"
@@ -107,6 +108,7 @@ export const runEvals = async (runId: number) => {
 			try {
 				await assertOwnership()
 				if (task.benchmarkPartition === "holdout") await assertVisibleGatePassed(run.id)
+				controller.signal.throwIfAborted()
 				if (containerized) {
 					return await processTaskInContainer({
 						taskId: task.id,
@@ -160,13 +162,19 @@ export const runEvals = async (runId: number) => {
 			}
 		} else {
 			// Legacy, non-governed campaigns retain concurrent scheduling.
-			for (let i = 0; i < filteredTasks.length; i++) {
-				const task = filteredTasks[i]
-				if (!task) continue
-				if (run.concurrency > 1 && i > 0) await new Promise((resolve) => setTimeout(resolve, STAGGER_DELAY_MS))
-				queue.add(createTaskRunner(task))
+			try {
+				for (const [index, task] of filteredTasks.entries()) {
+					if (run.concurrency > 1 && index > 0)
+						await delay(STAGGER_DELAY_MS, undefined, { signal: controller.signal })
+					controller.signal.throwIfAborted()
+					queue.add(createTaskRunner(task))
+				}
+			} catch (error) {
+				controller.signal.throwIfAborted()
+				throw error
+			} finally {
+				await queue.onIdle()
 			}
-			await queue.onIdle()
 		}
 
 		await assertOwnership()
@@ -205,7 +213,7 @@ export const runEvals = async (runId: number) => {
 			if (!failure) failure = { error }
 		} finally {
 			try {
-				logger.close()
+				await logger.close()
 			} catch (error) {
 				if (!failure) failure = { error }
 			}
@@ -282,11 +290,11 @@ async function assertVisibleGatePassed(runId: number): Promise<void> {
 	)
 	if (!visible.length || visible.some(({ finishedAt }) => finishedAt === null))
 		throw new Error("Private holdout execution requires completed visible evidence")
-	const trials = await Promise.all(visible.map(({ id }) => findTrialForTask(id)))
-	if (trials.some((trial) => !trial || trial.status === "pending" || trial.status === "running"))
-		throw new Error("Private holdout execution requires terminal visible trials")
-	if (trials.some((trial) => trial?.status === "safety_failed"))
+	const outcomes = summarizeRunOutcomes(
+		await Promise.all(visible.map(async (task) => ({ ...task, trial: await findTrialForTask(task.id) }))),
+	)
+	if (outcomes.incompleteTaskIds.length) throw new Error("Private holdout execution requires terminal visible trials")
+	if (outcomes.counts.safety_failed)
 		throw new Error("Private holdout execution is blocked by a visible safety failure")
-	if (trials.some((trial) => trial?.status === "infrastructure_error" || trial?.status === "grader_error"))
-		throw new Error("Private holdout execution is blocked by invalid visible evidence")
+	if (outcomes.invalid) throw new Error("Private holdout execution is blocked by invalid visible evidence")
 }

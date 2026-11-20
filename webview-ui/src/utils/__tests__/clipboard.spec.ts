@@ -1,4 +1,6 @@
-import { copyToClipboard } from "../clipboard"
+import { act, renderHook } from "@testing-library/react"
+
+import { copyToClipboard, useCopyToClipboard } from "../clipboard"
 
 describe("copyToClipboard", () => {
 	beforeEach(() => {
@@ -53,5 +55,59 @@ describe("copyToClipboard", () => {
 		await expect(copyToClipboard("nope", { onError })).resolves.toBe(false)
 
 		expect(onError).toHaveBeenCalledTimes(1)
+	})
+})
+
+describe("useCopyToClipboard", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+	})
+	afterEach(() => {
+		vi.useRealTimers()
+	})
+
+	it("shows the full feedback duration after the latest successful write", async () => {
+		const firstWrite = Promise.withResolvers<void>()
+		const secondWrite = Promise.withResolvers<void>()
+		const writeText = vi.fn().mockReturnValueOnce(firstWrite.promise).mockReturnValueOnce(secondWrite.promise)
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+		const { result } = renderHook(() => useCopyToClipboard(1000))
+		const firstCopy = result.current.copyWithFeedback("first")
+		const secondCopy = result.current.copyWithFeedback("second")
+
+		await act(async () => {
+			firstWrite.resolve()
+			await firstCopy
+		})
+		act(() => {
+			vi.advanceTimersByTime(500)
+		})
+		await act(async () => {
+			secondWrite.resolve()
+			await secondCopy
+		})
+
+		act(() => {
+			vi.advanceTimersByTime(999)
+		})
+		expect(result.current.showCopyFeedback).toBe(true)
+		act(() => {
+			vi.advanceTimersByTime(1)
+		})
+		expect(result.current.showCopyFeedback).toBe(false)
+	})
+
+	it("does not schedule feedback when a pending write succeeds after unmount", async () => {
+		const write = Promise.withResolvers<void>()
+		const writeText = vi.fn().mockReturnValue(write.promise)
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+		const { result, unmount } = renderHook(() => useCopyToClipboard())
+		const copy = result.current.copyWithFeedback("text")
+
+		unmount()
+		write.resolve()
+
+		await expect(copy).resolves.toBe(true)
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })

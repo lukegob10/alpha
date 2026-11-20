@@ -328,6 +328,80 @@ describe("primary command timeout mutation receipts", () => {
 		expect(onCommandResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ exit_code: 0 }))
 	})
 
+	it("coalesces blocked command previews and publishes the final row once", async () => {
+		const fixture = await createFixture()
+		fixture.task.ask = vi.fn().mockResolvedValue({ response: "yesButtonClicked" })
+		const deferred = () => {
+			let resolve!: () => void
+			const promise = new Promise<void>((complete) => (resolve = complete))
+			return { resolve, promise }
+		}
+		const firstEntered = deferred()
+		const secondEntered = deferred()
+		const releaseFirst = deferred()
+		const releaseSecond = deferred()
+		const rows: Array<{ text?: string; partial?: boolean; executionId?: string }> = []
+		vi.mocked(fixture.task.say).mockImplementation(
+			async (kind, text, _images, partial, _checkpoint, _progress, options) => {
+				if (kind !== "command_output") return undefined
+				rows.push({ text, partial, executionId: options?.commandExecutionId })
+				if (rows.length === 1) {
+					firstEntered.resolve()
+					await releaseFirst.promise
+				} else if (rows.length === 2) {
+					secondEntered.resolve()
+					await releaseSecond.promise
+				}
+				return undefined
+			},
+		)
+		let now = Date.now()
+		vi.spyOn(Date, "now").mockImplementation(() => now)
+		const sendLine = (index: number) => {
+			now += 150
+			fixture.reportOutput(`line ${index}\n`)
+		}
+		const onCommandResult = vi.fn()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "blocked-foreground",
+			command: "command",
+			agentTimeout: 0,
+			commandExecutionTimeout: 0,
+			onCommandResult,
+		})
+		let finishing: Promise<void> | undefined
+		try {
+			await fixture.launch
+			sendLine(0)
+			await firstEntered.promise
+			for (let index = 1; index < 64; index++) sendLine(index)
+			expect(rows).toHaveLength(1)
+			releaseFirst.resolve()
+			await secondEntered.promise
+			expect(rows[1]?.text).toContain("line 63")
+			for (let index = 64; index < 128; index++) sendLine(index)
+			finishing = fixture.finishProcess()
+			expect(onCommandResult).not.toHaveBeenCalled()
+			releaseSecond.resolve()
+			await finishing
+			await execution
+			expect(rows.map(({ executionId, partial }) => [executionId, partial])).toEqual([
+				["blocked-foreground", true],
+				["blocked-foreground", true],
+				["blocked-foreground", false],
+			])
+			expect(rows[2]?.text).toBe("finished")
+			expect(onCommandResult).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({ exit_code: 0, output: "finished" }),
+			)
+		} finally {
+			releaseFirst.resolve()
+			releaseSecond.resolve()
+			await (finishing ?? fixture.finishProcess())
+			await execution.catch(() => undefined)
+		}
+	})
+
 	it("publishes bounded background progress without consuming session output or reopening a user ask", async () => {
 		const fixture = await createFixture()
 		vi.useFakeTimers()

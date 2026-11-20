@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import * as os from "node:os"
 import * as path from "node:path"
 import * as vscode from "vscode"
-import { type AlphaMessage } from "@alpha-code/types"
+import { type AlphaMessage, type WebviewMessage } from "@alpha-code/types"
 import { createCompletionReviewAcknowledger, withBoundedFixtureCleanup } from "./proportional-context-support"
 import { waitFor } from "./utils"
 
@@ -224,8 +224,31 @@ suite("Command and path approval in the extension host", function () {
 			}
 			const configuration = globalThis.api.getConfiguration()
 			const provider = (
-				globalThis.api as unknown as { sidebarProvider: { getLiveTask(id: string): ApprovalTask | undefined } }
+				globalThis.api as unknown as {
+					sidebarProvider: {
+						getLiveTask(id: string): ApprovalTask | undefined
+						setWebviewMessageListener(webview: Pick<vscode.Webview, "onDidReceiveMessage">): void
+					}
+				}
 			).sidebarProvider
+			let receiveSettings: ((message: WebviewMessage) => Promise<void>) | undefined
+			const settingsSubscription = new vscode.Disposable(() => {
+				receiveSettings = undefined
+			})
+			provider.setWebviewMessageListener({
+				onDidReceiveMessage(handler) {
+					receiveSettings = handler
+					return settingsSubscription
+				},
+			})
+			const setTerminalReadinessDeadline = async (terminalShellIntegrationTimeout: number) => {
+				assert.ok(receiveSettings)
+				await receiveSettings({ type: "updateSettings", updatedSettings: { terminalShellIntegrationTimeout } })
+				assert.equal(
+					globalThis.api.getConfiguration().terminalShellIntegrationTimeout,
+					terminalShellIntegrationTimeout,
+				)
+			}
 			const scripted = new CommandPathAI(
 				observation,
 				(id) => {
@@ -254,6 +277,8 @@ suite("Command and path approval in the extension host", function () {
 			await withBoundedFixtureCleanup(async () => {
 				await fs.writeFile(pipesFile, markers[0]!, { flag: "wx" })
 				await fs.writeFile(ttyFile, markers[1]!, { flag: "wx" })
+				// This suite checks the shell contract and output, including on a cold PTY host.
+				await setTerminalReadinessDeadline(20_000)
 				await terminalConfiguration.update(
 					"defaultProfile.windows",
 					"Command Prompt",
@@ -295,6 +320,8 @@ suite("Command and path approval in the extension host", function () {
 			}, [
 				() => globalThis.api.clearCurrentTask(),
 				() => scripted.removeFromCache?.(),
+				() => setTerminalReadinessDeadline(configuration.terminalShellIntegrationTimeout ?? 5_000),
+				() => settingsSubscription.dispose(),
 				() => globalThis.api.setConfiguration(configuration),
 				() =>
 					terminalConfiguration.update(

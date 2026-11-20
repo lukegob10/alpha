@@ -161,6 +161,7 @@ export class TicketPanel implements vscode.Disposable {
 		for (const folder of vscode.workspace.workspaceFolders ?? []) {
 			if (folder.uri.scheme !== "file") continue
 			const store = await TicketStore.forWorkspace(folder.uri.fsPath, undefined, this.maintenance.signal)
+			if (!this.panel || generation !== this.loadGeneration) return
 			await store.prepareReferences(this.maintenance.signal)
 			if (!this.panel || generation !== this.loadGeneration) return
 			projects.set(store.projectId, store)
@@ -358,15 +359,16 @@ export class TicketPanel implements vscode.Disposable {
 		try {
 			await this.waitForProjects()
 			if (!panel || panel !== this.panel) return
+			const signal = this.transfers.signal
 			const store = this.projects.get(project)
 			if (!store) throw new Error("Open the ticket's project workspace first")
 			let result: TicketResponse & { type: "ticketResponse" } = { type: "ticketResponse", requestId }
 			switch (operation.action) {
 				case "list":
-					result.result = await store.list(operation.input)
+					result.result = await store.list(operation.input, signal)
 					break
 				case "overview":
-					result.result = await store.overview(this.transfers.signal)
+					result.result = await store.overview(signal)
 					break
 				case "export":
 				case "previewImport":
@@ -375,10 +377,10 @@ export class TicketPanel implements vscode.Disposable {
 					result.result = await this.transfer(operation, project, store, panel)
 					break
 				case "read":
-					result.result = await store.read(operation.id)
+					result.result = await store.read(operation.id, signal)
 					break
 				case "relations":
-					result.result = await store.relations(operation.id)
+					result.result = await store.relations(operation.id, signal)
 					break
 				case "openLinkedTask": {
 					const ticket = await store.read(operation.id)
@@ -389,7 +391,7 @@ export class TicketPanel implements vscode.Disposable {
 					break
 				}
 				case "create":
-					result.result = await store.create(operation.input)
+					result.result = await store.create(operation.input, undefined, operation.initialStatus)
 					break
 				case "update":
 					result.result = await store.update(operation.input)

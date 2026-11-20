@@ -3,6 +3,16 @@ import type { ApiHandler, ApiHandlerCreateMessageMetadata } from "../../../api"
 import type { ApiStream } from "../../../api/transform/stream"
 import { ReasoningSummary } from "../ReasoningSummary"
 
+function deferred() {
+	let resolve!: () => void
+	let reject!: (error: Error) => void
+	const promise = new Promise<void>((onResolve, onReject) => {
+		resolve = onResolve
+		reject = onReject
+	})
+	return { promise, resolve, reject }
+}
+
 function harness(createMessage?: ApiHandler["createMessage"]) {
 	const handler: ApiHandler = {
 		streamCapabilities: { cancellation: true, lifecycle: true },
@@ -65,6 +75,8 @@ describe("ReasoningSummary", () => {
 		expect(h.message.reasoningSummary).toContain("Checking roles")
 		expect(h.message.reasoningSummaryUsage).toMatchObject({ tokensIn: 100, tokensOut: 20, cost: 0.01 })
 		expect(h.publish).toHaveBeenCalledOnce()
+		expect(h.observeRequest).toHaveBeenCalledBefore(vi.mocked(h.handler.createMessage))
+		expect(h.observeUsage).toHaveBeenCalledBefore(h.publish)
 		h.summary.dispose()
 	})
 
@@ -173,6 +185,62 @@ describe("ReasoningSummary", () => {
 		expect(newest.reasoningSummary).toBe("Checking the implementation.")
 		expect(dispose).toHaveBeenCalledTimes(2)
 		h.summary.dispose()
+	})
+
+	it.each(["request", "usage", "publish"] as const)(
+		"releases the queue after a stalled %s observer",
+		async (kind) => {
+			const h = harness()
+			const stalled = deferred()
+			const observer = { request: h.observeRequest, usage: h.observeUsage, publish: h.publish }[kind]
+			observer.mockImplementationOnce(() => stalled.promise)
+			const dispose = vi.fn()
+			Object.assign(h.handler, { dispose })
+			h.update()
+			await vi.advanceTimersByTimeAsync(750)
+			expect(observer).toHaveBeenCalledOnce()
+			const newest: AlphaMessage = { ts: 2, type: "say", say: "reasoning", text: "Next reasoning row." }
+			h.summary.update({ message: newest, createHandler: () => h.handler, protocol: "openai" })
+
+			await vi.advanceTimersByTimeAsync(15_000)
+			expect(dispose).toHaveBeenCalledOnce()
+			if (kind === "usage") {
+				expect(h.message.reasoningSummaryUsage?.cost).toBe(0.01)
+				expect(h.message.reasoningSummary).toBeUndefined()
+				expect(h.publish).toHaveBeenCalledWith(h.message)
+			}
+			await vi.advanceTimersByTimeAsync(750)
+			expect(dispose).toHaveBeenCalledTimes(2)
+			expect(h.handler.createMessage).toHaveBeenCalledTimes(kind === "request" ? 1 : 2)
+			expect(newest.reasoningSummary).toContain("Checking roles")
+			expect(h.publish).toHaveBeenLastCalledWith(newest)
+
+			stalled.reject(new Error("Late observer failure"))
+			await vi.advanceTimersByTimeAsync(0)
+			expect(h.publish).toHaveBeenLastCalledWith(newest)
+			h.summary.dispose()
+			expect(vi.getTimerCount()).toBe(0)
+		},
+	)
+
+	it.each(["request", "usage"] as const)("disposes the handler while a %s observer is stalled", async (kind) => {
+		const h = harness()
+		const stalled = deferred()
+		const observer = kind === "request" ? h.observeRequest : h.observeUsage
+		observer.mockImplementationOnce(() => stalled.promise)
+		const dispose = vi.fn()
+		Object.assign(h.handler, { dispose })
+		h.update()
+		await vi.advanceTimersByTimeAsync(750)
+		expect(observer).toHaveBeenCalledOnce()
+
+		h.summary.dispose()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(dispose).toHaveBeenCalledOnce()
+		stalled.resolve()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(h.publish).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
 	})
 
 	it("retains reported usage when cancellation discards a late summary", async () => {

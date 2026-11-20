@@ -967,6 +967,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 									vscode.postMessage({
 										type: "upsertApiConfiguration",
 										text: configName,
+										apiConfigurationCreateOnly: true,
 										// Discard restores the saved profile before running this callback.
 										apiConfiguration: hadUnsavedChanges
 											? (savedState.current.apiConfiguration ?? {})

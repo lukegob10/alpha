@@ -19,7 +19,6 @@ import { getApiRequestTimeout } from "./utils/timeout-config"
  * https://docs.cloud.google.com/vertex-ai/generative-ai/docs/samples/generativeaionvertexai-gemini-chat-completions-non-streaming
  */
 export class VertexOpenAiHandler extends OpenAiHandler {
-	override readonly streamCapabilities = { cancellation: false, lifecycle: true } as const
 	private readonly auth: GoogleAuth
 	private activeToken?: string
 	private readonly baseUrl: string

@@ -195,6 +195,23 @@ describe("custom instruction assembly discovery", () => {
 		expect(executeRipgrep).toHaveBeenCalledTimes(2)
 	})
 
+	it("orders duplicate rule filenames by their original paths regardless of enumeration order", async () => {
+		await write("workspace/.alpha/rules/a/rule.md", "first nested rule")
+		await write("workspace/.alpha/rules/b/rule.md", "second nested rule")
+		const rulesDirectory = path.join(cwd, ".alpha", "rules")
+		const original = fs.readdir.bind(fs)
+		vi.spyOn(fs, "readdir").mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+			const entries = await original(...args)
+			if (String(args[0]) === rulesDirectory) {
+				entries.sort((a, b) => b.parentPath.localeCompare(a.parentPath))
+			}
+			return entries
+		})
+
+		const prompt = await loadRuleFiles(cwd)
+		expect(prompt.match(/^.*nested rule$/gm)).toEqual(["first nested rule", "second nested rule"])
+	})
+
 	it("shares discovery without requiring a mode or live agent sources", async () => {
 		const prompt = await addCustomInstructions("", "", cwd, "", {
 			settings: {

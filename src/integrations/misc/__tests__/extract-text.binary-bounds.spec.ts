@@ -26,7 +26,7 @@ describe("bounded extracted document projection", () => {
 	function parserOutput(extension: string, raw: string) {
 		vi.mocked(fs.readFile).mockResolvedValue(
 			extension === ".ipynb"
-				? JSON.stringify({ cells: [{ cell_type: "markdown", source: raw.slice(0, -1).split("\n") }] })
+				? JSON.stringify({ cells: [{ cell_type: "markdown", source: raw }] })
 				: Buffer.from("parser input bytes"),
 		)
 		vi.mocked(mammoth.extractRawText).mockResolvedValue({ value: raw, messages: [] })
@@ -85,7 +85,7 @@ describe("bounded extracted document projection", () => {
 		vi.mocked(fs.readFile).mockResolvedValue(
 			JSON.stringify({
 				cells: [
-					{ cell_type: "markdown", source: ["Requirement one", "Requirement two"] },
+					{ cell_type: "markdown", source: ["Requirement one\n", "Requirement two"] },
 					{ cell_type: "raw", source: ["RAW_CELL_OMITTED"] },
 					{ cell_type: "code", source: ["doWork()"], outputs: [{ text: "OUTPUT_OMITTED" }] },
 				],

@@ -13,7 +13,6 @@ import {
 } from "../index"
 import {
 	getEffectiveApiHistory,
-	getToolCallResultPairs,
 	getToolFreeMetadata,
 	hasToolCallResultIntegrity,
 	summarizeConversation,
@@ -261,7 +260,7 @@ describe("bounded context recovery policy", () => {
 		expect(result.messages).toHaveLength(messages.length + 1)
 		expect(result.messages.find((message) => message.ts === 6)?.truncationParent).toBe(result.truncationId)
 		expect(result.messages.find((message) => message.ts === 7)?.truncationParent).toBe(result.truncationId)
-		expect(getToolCallResultPairs(result.messages).get("call-1")).toBeDefined()
+		expect(hasToolCallResultIntegrity(result.messages)).toBe(true)
 		const visible = getEffectiveApiHistory(result.messages)
 		expect(hasToolCallResultIntegrity(visible)).toBe(true)
 		expect(visible.slice(0, 2)).toEqual(messages.slice(0, 2))

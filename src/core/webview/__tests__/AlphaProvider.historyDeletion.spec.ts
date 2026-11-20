@@ -61,6 +61,24 @@ describe("project chat deletion", () => {
 	const deleteSelected = (ids: string[]) =>
 		webviewMessageHandler(provider, { type: "deleteMultipleTasksWithIds", ids })
 
+	const openHistoryPeer = async () => {
+		const peerStore = new TaskHistoryStore(storage)
+		stores.push(peerStore)
+		await peerStore.initialize()
+		const peerPost = vi.fn()
+		const peer = Object.assign(Object.create(AlphaProvider.prototype), {
+			currentWorkspacePath: workspace,
+			taskHistoryStore: peerStore,
+			taskHistoryMetadataReady: Promise.resolve(),
+			webviewLaunchWaiters: new Set(),
+			isViewLaunched: true,
+			scheduleGlobalStateWriteThrough: vi.fn(),
+			postMessageToWebview: peerPost,
+		}) as AlphaProvider
+		peers.push(peer)
+		return { peerStore, peerPost }
+	}
+
 	beforeEach(async () => {
 		storage = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-bulk-chat-delete-"))
 		workspace = path.join(storage, "project")
@@ -226,20 +244,7 @@ describe("project chat deletion", () => {
 	it("publishes committed history while cleanup is pending and refuses to reopen deleted metadata", async () => {
 		const selected = await seed("deleted")
 		const kept = await seed("keep")
-		const peerStore = new TaskHistoryStore(storage)
-		stores.push(peerStore)
-		await peerStore.initialize()
-		const peerPost = vi.fn()
-		const peer = Object.assign(Object.create(AlphaProvider.prototype), {
-			currentWorkspacePath: workspace,
-			taskHistoryStore: peerStore,
-			taskHistoryMetadataReady: Promise.resolve(),
-			webviewLaunchWaiters: new Set(),
-			isViewLaunched: true,
-			scheduleGlobalStateWriteThrough: vi.fn(),
-			postMessageToWebview: peerPost,
-		}) as AlphaProvider
-		peers.push(peer)
+		const { peerStore, peerPost } = await openHistoryPeer()
 		expect(peerStore.get(selected.id)).toEqual(selected)
 		const cleanupStarted = barrier()
 		const releaseCleanup = barrier()
@@ -275,6 +280,53 @@ describe("project chat deletion", () => {
 		}
 		// An already queued restore is not allowed to resurrect the history either.
 		await expect(provider.getTaskWithId(selected.id)).rejects.toThrow("Task not found")
+	})
+
+	it.each(["deleteTaskWithId", "deleteTaskFromState"] as const)(
+		"publishes %s to both views before agent cleanup",
+		async (deleteTask) => {
+			const selected = await seed("deleted")
+			const kept = await seed("keep")
+			const { peerStore, peerPost } = await openHistoryPeer()
+			expect(peerStore.get(selected.id)).toEqual(selected)
+
+			const cleanupStarted = barrier()
+			const releaseCleanup = barrier()
+			vi.mocked(provider["purgeDeletedAgentControlRoots"]).mockImplementationOnce(async () => {
+				cleanupStarted.resolve()
+				await releaseCleanup.promise
+				return []
+			})
+
+			const deleting = provider[deleteTask](selected.id)
+			try {
+				await Promise.race([cleanupStarted.promise, deleting])
+				await expect(fs.access(historyPath(selected.id))).rejects.toMatchObject({ code: "ENOENT" })
+				expect(peerStore.getAll()).toEqual([kept])
+				const projection = { type: "taskHistoryUpdated", taskHistory: [kept] }
+				expect(post).toHaveBeenCalledExactlyOnceWith(projection)
+				expect(peerPost).toHaveBeenCalledExactlyOnceWith(projection)
+			} finally {
+				releaseCleanup.resolve()
+				await deleting
+			}
+		},
+	)
+
+	it("publishes committed history when single deletion fails to remove a child", async () => {
+		const root = await seed("parent", { childIds: ["denied"] })
+		const denied = await seed("denied", { parentTaskId: root.id })
+		const { peerStore, peerPost } = await openHistoryPeer()
+		const deniedPath = historyPath(denied.id)
+		await fs.rename(deniedPath, `${deniedPath}.kept`)
+		await fs.mkdir(deniedPath)
+
+		await expect(provider.deleteTaskWithId(root.id)).rejects.toBeInstanceOf(Error)
+
+		expect(store.getAll()).toEqual([denied])
+		expect(peerStore.getAll()).toEqual([denied])
+		expect(peerPost).toHaveBeenCalledExactlyOnceWith({ type: "taskHistoryUpdated", taskHistory: [denied] })
+		expect(provider["purgeDeletedAgentControlRoots"]).not.toHaveBeenCalled()
 	})
 
 	it("still removes successful chats and reports an I/O failure without waiting for the notification", async () => {

@@ -75,9 +75,16 @@ export class ExecaTerminal extends BaseTerminal {
 		process.once("shell_execution_complete", (details) => callbacks.onShellExecutionComplete(details, process))
 
 		const promise = new Promise<void>((resolve, reject) => {
-			process.once("continue", () => resolve())
+			let continued = false
+			process.once("continue", () => {
+				continued = true
+				resolve()
+			})
 			process.once("error", (error) => reject(error))
-			process.run(command, directCommand)
+			void process.run(command, directCommand).catch((error: unknown) => {
+				reject(error)
+				if (continued) console.error(`[ExecaTerminal ${this.id}] command runner failed after continuing`)
+			})
 		})
 
 		return mergePromise(process, promise)

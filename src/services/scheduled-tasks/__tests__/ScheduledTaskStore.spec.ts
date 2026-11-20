@@ -316,6 +316,27 @@ describe("ScheduledTaskStore", () => {
 		expect(persisted?.ownerId).toBe(storedOwnerId)
 	})
 
+	it("declines cancellation of a hidden queued run from a different owner", async () => {
+		const workspace = path.join(tmpDir, "repo-a")
+		const ownerId = "26ecc491-458a-480e-9f69-737fef9739d8"
+		await store.upsertTask(makeTask({ workspace }))
+		const run = makeRun({ workspace, ownerId, status: "queued" })
+		await store.upsertRun(run)
+		const scoped = new ScheduledTaskStore(tmpDir, () => [])
+		await scoped.initialize()
+
+		expect(
+			await scoped.completeRun({
+				...run,
+				ownerId: "a2a213e0-b2da-4771-a6af-97861dc171a8",
+				status: "canceled",
+				finishedAt: 2_000,
+			}),
+		).toBeUndefined()
+		await store.refresh()
+		expect(store.getRunsForTask(run.taskId)).toMatchObject([run])
+	})
+
 	it("persists independent reasoning preferences on schedules and queued runs", async () => {
 		const reasoningPreference = { kind: "effort" as const, effort: "high" as const }
 		const task = makeTask({ reasoningPreference })

@@ -219,7 +219,10 @@ export class ScheduledTaskStore {
 		taskId: string,
 		scheduledFor: number,
 		trigger: ScheduledTaskRun["trigger"],
-		build: (task: ScheduledTask, hasActiveRun: boolean) => { task: ScheduledTask; run: ScheduledTaskRun },
+		build: (
+			task: ScheduledTask,
+			hasActiveRun: boolean,
+		) => { task: ScheduledTask; run: ScheduledTaskRun } | undefined,
 	): Promise<{ task: ScheduledTask; run: ScheduledTaskRun } | undefined> {
 		return this.withLock(async () => {
 			const current = this.getTask(taskId)
@@ -236,6 +239,7 @@ export class ScheduledTaskStore {
 						run.status === "waiting_for_approval"),
 			)
 			const claimed = build(current, active)
+			if (!claimed) return undefined
 			if (claimed.task.id !== taskId || claimed.run.taskId !== taskId) {
 				throw new Error("Scheduled run claim must update its owning task")
 			}
@@ -260,10 +264,10 @@ export class ScheduledTaskStore {
 				!task &&
 				currentRun?.ownerId &&
 				currentRun.ownerId === run.ownerId &&
-				(currentRun.status === "running" || failedCommandAdmission)
+				(currentRun.status === "running" ||
+					failedCommandAdmission ||
+					(currentRun.status === "queued" && run.status === "canceled"))
 			) {
-				// Closing a workspace revokes admission. Its owner can still record a running outcome
-				// or the failure of a command that was queued or awaiting approval.
 				task = this.tasks.get(currentRun.taskId)
 			}
 			if (

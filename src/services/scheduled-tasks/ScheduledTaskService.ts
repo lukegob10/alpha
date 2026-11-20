@@ -12,6 +12,7 @@ import {
 	scheduledTaskCreationRequestIdSchema,
 	scheduledTaskExecutionSchema,
 	scheduledTaskProfileSchema,
+	scheduledTaskScheduleSchema,
 	taskReasoningPreferenceSchema,
 	taskReasoningStateSchema,
 	type CreateScheduledTaskPayload,
@@ -115,6 +116,8 @@ type ActiveScheduledAlphaTask = {
 	closing?: Promise<void>
 }
 
+type ScheduledRunClaim = { task: ScheduledTask; run: ScheduledTaskRun }
+
 export class ScheduledTaskService implements vscode.Disposable {
 	private readonly store: ScheduledTaskStore
 	private readonly ownerId = crypto.randomUUID()
@@ -132,7 +135,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 		string,
 		{ task: ScheduledTask; run: ScheduledTaskRun; inFlight?: Promise<void> }
 	>()
-	private queue: Array<{ task: ScheduledTask; run: ScheduledTaskRun }> = []
+	private readonly pendingRunClaims = new Set<Promise<boolean>>()
+	private readonly queue: ScheduledRunClaim[] = []
 	private processingCompletion: Promise<void> | undefined
 
 	constructor(
@@ -247,7 +251,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 		} else {
 			for (const active of activeTasks) active.closing = undefined
 		}
-		this.queue = []
+		const queuedRuns = this.queue.splice(0)
 		this.provider.off(AlphaCodeEventName.TaskCompleted, this.handleTaskCompleted)
 		this.provider.off(AlphaCodeEventName.TaskAborted, this.handleTaskAborted)
 		this.workspaceListener?.dispose()
@@ -271,6 +275,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 			)
 		})
 		const results = await Promise.allSettled([
+			...this.pendingRunClaims,
+			...queuedRuns.map((claim) => this.cancelUnstartedRun(claim)),
 			...this.commandCompletions.values(),
 			...taskCompletions,
 			...pendingCompletions.flatMap(({ task, run, inFlight }) =>
@@ -339,7 +345,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 		const created = await this.store.createTask(task)
 		await this.broadcast()
-		this.scheduleTick()
 		return created
 	}
 
@@ -347,7 +352,12 @@ export class ScheduledTaskService implements vscode.Disposable {
 		const now = Date.now()
 		await this.store.updateTask(taskId, (existing) => {
 			this.validateSetup({ ...existing, ...payload })
-			const schedule = payload.schedule ?? existing.schedule
+			const schedule = scheduledTaskScheduleSchema.parse(payload.schedule ?? existing.schedule)
+			// Compare the persisted form, where optional fields with undefined values are omitted.
+			const rescheduled =
+				JSON.stringify(schedule) !== JSON.stringify(existing.schedule) ||
+				(!existing.enabled && payload.enabled === true) ||
+				!arePathsEqual(existing.workspace, payload.workspace ?? existing.workspace)
 			const execution = normalizeExecution(payload.execution ?? existing.execution)
 			const autoApproval = normalizeAutoApproval(payload.autoApproval ?? existing.autoApproval)
 			return {
@@ -370,11 +380,10 @@ export class ScheduledTaskService implements vscode.Disposable {
 					...payload.permissions,
 				}),
 				updatedAt: now,
-				nextRunAt: getNextRunAt(schedule, now - 1),
+				nextRunAt: rescheduled ? getNextRunAt(schedule, now - 1) : existing.nextRunAt,
 			}
 		})
 		await this.broadcast()
-		this.scheduleTick()
 	}
 
 	async deleteTask(taskId: string): Promise<void> {
@@ -395,7 +404,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 			nextRunAt: getNextRunAt(task.schedule, Date.now() - 1),
 		}))
 		await this.broadcast()
-		this.scheduleTick()
 	}
 
 	async duplicateTask(taskId: string): Promise<void> {
@@ -416,21 +424,17 @@ export class ScheduledTaskService implements vscode.Disposable {
 	}
 
 	async runNow(taskId: string): Promise<void> {
+		if (this.disposed) throw new Error("Scheduled task service is disposed")
 		await this.store.refresh()
 		await this.recoverInterruptedRuns()
+		if (this.disposed) return
 		const task = this.requireTask(taskId)
 		if (!task.workspace) throw new Error("Assign this legacy schedule to the open workspace before running it")
 		await this.enqueueRun(task, Date.now(), "manual")
 	}
 
 	private scheduleTick(): void {
-		if (this.disposed) {
-			return
-		}
-		if (this.timer) {
-			this.timer.refresh()
-			return
-		}
+		if (this.disposed || this.timer) return
 		this.timer = setTimeout(() => {
 			this.timer = undefined
 			void this.tick()
@@ -467,6 +471,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 			if (this.disposed) return
 			const now = Date.now()
 			for (const task of this.store.getState().tasks) {
+				if (this.disposed) return
 				if (task.workspace && task.enabled && task.nextRunAt !== undefined && task.nextRunAt <= now) {
 					try {
 						await this.enqueueRun(task, task.nextRunAt, "schedule")
@@ -486,12 +491,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 	}
 
-	private async enqueueRun(
-		task: ScheduledTask,
-		scheduledFor: number,
-		trigger: ScheduledTaskRun["trigger"],
-	): Promise<void> {
-		const claimed = await this.store.claimRun(task.id, scheduledFor, trigger, (current, hasActiveRun) => {
+	private enqueueRun(task: ScheduledTask, scheduledFor: number, trigger: ScheduledTaskRun["trigger"]): Promise<void> {
+		return this.claimRun(task.id, scheduledFor, trigger, (current, hasActiveRun) => {
 			const run: ScheduledTaskRun = {
 				id: crypto.randomUUID(),
 				taskId: current.id,
@@ -531,12 +532,47 @@ export class ScheduledTaskService implements vscode.Disposable {
 				run,
 			}
 		})
-		if (!claimed) return
-		if (claimed.run.status === "queued") {
-			this.queue.push(claimed)
-			void this.processQueue()
+	}
+
+	private async claimRun(
+		taskId: string,
+		scheduledFor: number,
+		trigger: ScheduledTaskRun["trigger"],
+		build: (task: ScheduledTask, hasActiveRun: boolean) => ScheduledRunClaim,
+	): Promise<void> {
+		if (this.disposed) return
+		const handoff = this.store
+			.claimRun(taskId, scheduledFor, trigger, (task, hasActiveRun) =>
+				this.disposed ? undefined : build(task, hasActiveRun),
+			)
+			.then(async (claimed) => {
+				if (!claimed) return false
+				if (claimed.run.status === "queued") {
+					if (this.disposed) await this.cancelUnstartedRun(claimed)
+					else {
+						this.queue.push(claimed)
+						void this.processQueue()
+					}
+				}
+				return true
+			})
+
+		this.pendingRunClaims.add(handoff)
+		let claimed: boolean
+		try {
+			claimed = await handoff
+		} finally {
+			this.pendingRunClaims.delete(handoff)
 		}
-		await this.broadcast()
+		if (claimed && !this.disposed) await this.broadcast()
+	}
+
+	private cancelUnstartedRun({ task, run }: ScheduledRunClaim): Promise<void> {
+		return this.finishRun(
+			task,
+			{ ...run, status: "canceled", summary: "Scheduled task was aborted.", finishedAt: Date.now() },
+			true,
+		)
 	}
 
 	private processQueue(): Promise<void> {
@@ -984,9 +1020,11 @@ export class ScheduledTaskService implements vscode.Disposable {
 
 	private async recoverInterruptedRuns(): Promise<void> {
 		for (const run of this.store.getState().runs) {
+			if (this.disposed) return
 			if (ACTIVE_RUN_STATUSES.has(run.status)) {
 				if (run.ownerId === this.ownerId) continue
 				if (run.ownerId && (await this.store.isOwnerLive(run.ownerId))) continue
+				if (this.disposed) return
 				const task = this.store.getTask(run.taskId)
 				if (!task) {
 					continue
@@ -1004,6 +1042,7 @@ export class ScheduledTaskService implements vscode.Disposable {
 	private async detectMissedRuns(): Promise<void> {
 		const now = Date.now()
 		for (const task of this.store.getState().tasks) {
+			if (this.disposed) return
 			if (
 				!task.workspace ||
 				!task.enabled ||
@@ -1023,8 +1062,8 @@ export class ScheduledTaskService implements vscode.Disposable {
 		}
 	}
 
-	private async recordSkipped(task: ScheduledTask, scheduledFor: number, reason: string): Promise<void> {
-		const claimed = await this.store.claimRun(task.id, scheduledFor, "missed", (current) => {
+	private recordSkipped(task: ScheduledTask, scheduledFor: number, reason: string): Promise<void> {
+		return this.claimRun(task.id, scheduledFor, "missed", (current) => {
 			const run: ScheduledTaskRun = {
 				id: crypto.randomUUID(),
 				taskId: current.id,
@@ -1057,7 +1096,6 @@ export class ScheduledTaskService implements vscode.Disposable {
 				run,
 			}
 		})
-		if (claimed) await this.broadcast()
 	}
 
 	private async notifyBeforeRun(task: ScheduledTask, run: ScheduledTaskRun): Promise<void> {

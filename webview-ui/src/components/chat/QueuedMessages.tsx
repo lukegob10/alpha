@@ -16,6 +16,7 @@ interface QueuedMessagesProps {
 	onSteer: (index: number) => void
 	onEdit: (index: number) => void
 	onReorder: (fromIndex: number, toIndex: number) => void
+	editingDisabled?: boolean
 	editingMessageId?: string
 	steeringMessageId?: string
 	steeringPending?: boolean
@@ -28,6 +29,7 @@ export const QueuedMessages = ({
 	onSteer,
 	onEdit,
 	onReorder,
+	editingDisabled,
 	editingMessageId,
 	steeringMessageId,
 	steeringPending = false,
@@ -196,7 +198,7 @@ export const QueuedMessages = ({
 											className="shrink-0"
 											title={t("queuedMessages.editTooltip")}
 											aria-label={t("queuedMessages.editTooltip")}
-											disabled={controlsDisabled}
+											disabled={controlsDisabled || editingDisabled}
 											onClick={(e) => {
 												e.stopPropagation()
 												onEdit(index)

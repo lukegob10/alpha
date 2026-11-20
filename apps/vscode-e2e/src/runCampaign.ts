@@ -20,6 +20,7 @@ import {
 } from "./campaign/types"
 import { assertSafeRoot, readBounded } from "./evidence/paths"
 import { prepareLiveSidecar } from "./liveHostProtocol"
+import { withProcessSignals } from "./processSignals"
 import { captureCampaignEvaluationIdentity, finishCampaignEvaluationIdentity } from "./campaign/evaluationIdentity"
 import { campaignAccountingMatches } from "./campaign/reportAccounting"
 import {
@@ -43,19 +44,6 @@ export function resolveCampaignProfileRoot(campaignRoot: string, profileDir?: st
 		throw new Error("Campaign profile directory must be an absolute path")
 	// Marker, profile ownership and normal-user-data exclusions remain the existing runner's responsibility.
 	return profileDir ?? path.join(campaignRoot, "profiles")
-}
-
-async function withProcessSignals<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
-	const abort = new AbortController()
-	const onSignal = () => abort.abort()
-	process.once("SIGINT", onSignal)
-	process.once("SIGTERM", onSignal)
-	try {
-		return await operation(abort.signal)
-	} finally {
-		process.removeListener("SIGINT", onSignal)
-		process.removeListener("SIGTERM", onSignal)
-	}
 }
 
 interface PreparedMatrixGate {

@@ -35,20 +35,26 @@ vi.mock("../../../services/skills/SkillsManager", () => ({
 }))
 
 import { AlphaProvider } from "../AlphaProvider"
+import { TaskSessionRegistry } from "../TaskSessionRegistry"
 
 function fixture() {
+	const taskSessions = new TaskSessionRegistry()
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		_disposed: false,
 		scopedSkillsManagers: new Map(),
-		getTaskOwner: vi.fn(() => undefined),
+		taskSessions,
 	}) as AlphaProvider
-	const task = (id: string, workspace = process.cwd()) =>
-		({
+	const task = (id: string, workspace = process.cwd(), overrides: Partial<Task> = {}) => {
+		const current = {
 			taskId: id,
 			taskKind: "primary",
 			cwd: workspace,
 			historyWorkspacePath: workspace,
-		}) as Task
+			...overrides,
+		} as Task
+		taskSessions.register(current, { focus: false })
+		return current
+	}
 	return { provider, task }
 }
 
@@ -105,12 +111,10 @@ describe("task-owned instruction and skill discovery snapshots", () => {
 		const first = await provider.getSkillsManager(task("first", root), options)
 		const second = await provider.getSkillsManager(task("second", path.join(root, "other")), options)
 		expect(second).not.toBe(first)
-		const child = {
-			taskId: "child",
+		const child = task("child", path.join(root, "private-worktree"), {
 			taskKind: "subagent",
-			cwd: path.join(root, "private-worktree"),
 			historyWorkspacePath: root,
-		} as Task
+		})
 
 		expect(await provider.getSkillsManager(child, options)).toBe(first)
 		expect(created[0].workspacePath).toBe(path.resolve(root))

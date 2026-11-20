@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events"
 import fs from "fs/promises"
 import * as fsPromises from "fs/promises"
 import * as path from "path"
@@ -357,6 +358,33 @@ describe("McpHub", () => {
 	})
 
 	describe("File watcher cleanup", () => {
+		it("handles filesystem errors from both configured server watchers", async () => {
+			const { default: chokidar } = await import("chokidar")
+			const sourceWatcher = Object.assign(new EventEmitter(), { close: vi.fn().mockResolvedValue(undefined) })
+			const buildWatcher = Object.assign(new EventEmitter(), { close: vi.fn().mockResolvedValue(undefined) })
+			vi.mocked(chokidar.watch)
+				.mockReturnValueOnce(sourceWatcher as unknown as ReturnType<typeof chokidar.watch>)
+				.mockReturnValueOnce(buildWatcher as unknown as ReturnType<typeof chokidar.watch>)
+			const settings = ServerConfigSchema.parse({
+				type: "stdio",
+				command: "node",
+				args: ["build/index.js"],
+				watchPaths: ["src"],
+			})
+			const restart = vi.spyOn(mcpHub, "restartConnection")
+			try {
+				mcpHub["setupFileWatcher"]("watched-server", settings)
+				for (const watcher of [sourceWatcher, buildWatcher]) {
+					const failure = new Error("Filesystem unavailable")
+					expect(() => watcher.emit("error", failure)).not.toThrow()
+					expect(console.error).toHaveBeenCalledWith(expect.stringContaining("watched-server"), failure)
+				}
+				expect(restart).not.toHaveBeenCalled()
+			} finally {
+				await mcpHub.dispose()
+			}
+		})
+
 		it("does not create a settings watcher when discovery finishes after disposal", async () => {
 			await mcpHub.waitUntilReady()
 			let resolveSettingsPath!: (value: string) => void
@@ -508,6 +536,85 @@ describe("McpHub", () => {
 				await mcpHub.dispose()
 				Object.assign(vscode.workspace, { workspaceFolders })
 				combine.mockReset()
+				vi.unstubAllEnvs()
+			}
+		})
+
+		it("ignores queued and late events from a retired project watcher", async () => {
+			await mcpHub.waitUntilReady()
+			const workspaceFolders = vscode.workspace.workspaceFolders
+			const first = path.resolve("mcp-first-workspace")
+			const second = path.resolve("mcp-second-workspace")
+			const firstUri = { fsPath: path.join(first, ".alpha", "mcp.json") }
+			const secondUri = { fsPath: path.join(second, ".alpha", "mcp.json") }
+			const firstServers = { first: { command: "node" } }
+			const secondServers = { second: { command: "node" } }
+			const updatedServers = { updated: { command: "node" } }
+			const event = () =>
+				vi
+					.fn<(listener: (uri: { fsPath: string }) => void) => vscode.Disposable>()
+					.mockReturnValue({ dispose: vi.fn() })
+			const watcher = () => ({
+				onDidChange: event(),
+				onDidCreate: event(),
+				onDidDelete: event(),
+				dispose: vi.fn(),
+			})
+			const original = watcher()
+			const current = watcher()
+			const createWatcher = vi.mocked(vscode.workspace.createFileSystemWatcher)
+			const workspaceEvent = vi.mocked(vscode.workspace.onDidChangeWorkspaceFolders)
+			const combine = vi.mocked(vscode.Disposable.from)
+			const watch = mcpHub as unknown as { watchProjectMcpFile(): Promise<void> }
+			const reconcile = vi.spyOn(mcpHub, "updateServerConnections").mockResolvedValue(undefined)
+			vi.mocked(fsPromises.access).mockResolvedValue(undefined)
+			const readSettings = vi
+				.mocked(fsPromises.readFile)
+				.mockImplementation(async (filePath) =>
+					JSON.stringify({ mcpServers: filePath === firstUri.fsPath ? firstServers : secondServers }),
+				)
+			createWatcher
+				.mockReturnValueOnce(original as unknown as vscode.FileSystemWatcher)
+				.mockReturnValueOnce(current as unknown as vscode.FileSystemWatcher)
+			workspaceEvent.mockReturnValueOnce({ dispose: vi.fn() })
+			combine.mockImplementation((...subscriptions) => ({
+				dispose: () => subscriptions.forEach((subscription) => subscription.dispose()),
+			}))
+			vi.stubEnv("NODE_ENV", "development")
+			vi.useFakeTimers()
+			try {
+				Object.assign(vscode.workspace, { workspaceFolders: [{ uri: { fsPath: first } }] })
+				Object.assign(mockProvider, { cwd: first })
+				await watch.watchProjectMcpFile()
+				mcpHub.setupWorkspaceFoldersWatcher()
+				original.onDidChange.mock.calls[0][0](firstUri)
+
+				Object.assign(vscode.workspace, { workspaceFolders: [{ uri: { fsPath: second } }] })
+				Object.assign(mockProvider, { cwd: second })
+				await workspaceEvent.mock.calls[0][0]({ added: [], removed: [] })
+				await vi.advanceTimersByTimeAsync(500)
+				expect(reconcile.mock.calls.map(([servers, source]) => [Object.keys(servers), source])).toEqual([
+					[["second"], "project"],
+				])
+
+				original.onDidCreate.mock.calls[0][0](firstUri)
+				original.onDidDelete.mock.calls[0][0](firstUri)
+				readSettings.mockResolvedValue(JSON.stringify({ mcpServers: updatedServers }))
+				current.onDidCreate.mock.calls[0][0](secondUri)
+				await vi.advanceTimersByTimeAsync(500)
+				current.onDidDelete.mock.calls[0][0](secondUri)
+				await vi.advanceTimersByTimeAsync(0)
+				expect(reconcile.mock.calls.map(([servers, source]) => [Object.keys(servers), source])).toEqual([
+					[["second"], "project"],
+					[["updated"], "project"],
+					[[], "project"],
+				])
+			} finally {
+				await mcpHub.dispose()
+				Object.assign(vscode.workspace, { workspaceFolders })
+				readSettings.mockResolvedValue("{}")
+				combine.mockReset()
+				vi.useRealTimers()
 				vi.unstubAllEnvs()
 			}
 		})

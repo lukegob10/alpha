@@ -3,9 +3,9 @@
 Author a complete, semantic HTML document. No generated JavaScript, React, build step,
 remote assets, inline event handlers, or custom stylesheet is needed. The viewer
 loads the trusted packaged `kit.css` and `kit.js` from `webview-ui/build/artifact-kit/v1/`.
-The source directory is `webview-ui/public/artifact-kit/v1/`. Standalone examples opt
-in with `<script defer data-alpha-standalone src="../kit.js"></script>`; this is a
-gallery harness, not permission for authored executable code in the viewer.
+The source directory is `webview-ui/public/artifact-kit/v1/`. The standalone gallery
+adds its own stylesheet, and interactive examples also load the kit script. When
+adapting an example, keep its semantic structure and omit those imports and gallery links.
 
 Preview authored documents only in Alpha's built-in HTML previewer using the
 `alpha-document://open` chat action from the rich-documents skill. Do not open or
@@ -38,9 +38,9 @@ deliver the document link without claiming visual verification.
 </html>
 ```
 
-The document marker belongs to the viewer contract. The root marker selects the
-kit contract independently. Unsupported kit versions retain semantic content and
-show an explanation. Do not hide essential information awaiting enhancement.
+The viewer requires one v1 document marker and a v1 `main.alpha-doc` directly under
+`body`. An unsupported document version or root produces a diagnostic. Inspect the
+source before migrating it. Keep essential information readable before widgets initialize.
 
 ## Composition
 
@@ -118,7 +118,8 @@ unique IDs. The kit lists up to 200 headings, excluding headings inside navigati
 details, or tabs. Outline labels are capped at 160 characters; full headings remain
 in the document. Links move keyboard focus to the section in the viewer. Use ordinary
 `href="#section-id"` links for section references, glossary terms, and return links.
-Do not hide required decisions inside tabs or disclosures.
+Keep decisions and citation targets visible. The viewer moves focus to a fragment
+target but does not expand a closed disclosure or switch tabs to reveal it.
 
 Evidence cards use `aside.evidence-card` with an h3, a source link, and a description
 list for provenance, method, and limits. A card must identify what a source supports;
@@ -317,8 +318,10 @@ for different units. Line categories are evenly spaced: use regular periods, not
 irregular timestamps. Supply a meaningful title, source and time range, rounding
 and uncertainty notes, and a table caption. Every table remains visible and
 accessible. Invalid or empty data retains the table and adds an actionable
-explanation. Inspect points with keyboard focus or pointer hover; exact labels
-include category, series, value, and unit. Do not use charts as the sole evidence.
+explanation. Tab to a plotted value, then use the arrows to move between available
+values in series order. Home and End move to the first and last available values.
+Tab continues past the chart. Keyboard focus and pointer hover both expose the
+category, series, value, and unit.
 Large or very small axis ticks use scientific notation; rounded ticks carry `≈`.
 Inspection labels and the canonical table retain the exact supplied values.
 Keep labels concise; full labels remain in the table. Bar charts use zero baseline.
@@ -360,17 +363,17 @@ propagate VS Code theme variables into the isolated content. Fallback colors
 support standalone light/dark previews; forced colors and reduced motion are
 supported. Do not load this sheet as host-control styling.
 
-## Complete examples and release checks
+## Worked examples
 
-- `examples/review.html`: prioritized fictional multi-file review.
-- `examples/spec.html`: implementation decision, tradeoffs and unresolved policy.
-- `examples/report.html`: archived BLS CPI observations, calculations and limits.
-- `examples/index.html`: standalone gallery with cards, semantic status badges, a filterable status table, and packaged assets.
-- `examples/review-baseline.md`: same review content for the existing Markdown/diff comparison.
+- The [decision brief](examples/brief.html) uses two shift notes to propose a weekend pilot.
+- The [engineering review](examples/review.html) prioritizes findings in a fictional multi-file change.
+- The [implementation spec](examples/spec.html) explains a design decision, its tradeoffs, and an unresolved policy.
+- The [quantitative report](examples/report.html) works through archived BLS observations, calculations, and limits.
+- The [operator runbook](examples/runbook.html) walks a recipient through checking an offline document handoff.
+- The [gallery](examples/index.html) shows the components together. The [Markdown baseline](examples/review-baseline.md) presents the same engineering review for comparison.
 
-Before release, verify all three in the actual viewer on VS Code 1.122.1: light,
-dark, high contrast, narrow split and text zoom; keyboard through every control;
-source links, refresh, missing/invalid data and long content. Compare conclusion,
-evidence and source tasks against the baseline; record observations and action
-counts, not inferred usability from screenshots. DOM tests alone do not satisfy
-this host gate. Verify the installed VSIX includes the same files.
+For kit release checks, use the repository’s reference VS Code host. Check the packaged
+examples in light, dark, and high contrast, in a narrow pane and at increased text zoom.
+Exercise keyboard controls, source links, refresh, and invalid data in the actual viewer.
+Compare finding the conclusion and tracing a source against the Markdown baseline, and
+verify that the installed VSIX includes the tested assets.

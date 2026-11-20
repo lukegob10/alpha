@@ -5,6 +5,7 @@ import { randomUUID } from "crypto"
 
 import { prepareTestProfile, cleanupTestProfile } from "./testProfile"
 import { acquireProfileLease } from "./hostOwnership"
+import { withProcessSignals } from "./processSignals"
 import {
 	TestRunError,
 	testRunFailureCode,
@@ -942,9 +943,15 @@ export async function runExtensionTests(
 	return result
 }
 
+export function runExtensionTestCli(
+	argv?: string[],
+	dependencies?: ExtensionTestRunDependencies,
+): Promise<ExtensionTestRunResult> {
+	return withProcessSignals((signal) => runExtensionTests({ ...readRunOptions(argv), signal }, dependencies))
+}
+
 if (require.main === module) {
-	Promise.resolve()
-		.then(() => runExtensionTests(readRunOptions()))
+	runExtensionTestCli()
 		.then((result) => {
 			console.log(JSON.stringify(result))
 			process.exitCode = result.exitCode

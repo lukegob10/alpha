@@ -1,6 +1,6 @@
 // npx vitest run src/components/common/__tests__/ImageViewer.spec.tsx
 
-import { render, fireEvent, screen } from "@/utils/test-utils"
+import { act, render, fireEvent, screen } from "@/utils/test-utils"
 import { describe, it, expect, vi } from "vitest"
 import { ImageViewer } from "../ImageViewer"
 
@@ -133,5 +133,29 @@ describe("ImageViewer", () => {
 		fireEvent.click(zoom)
 		expect(screen.getByRole("dialog", { name: "Preview" })).toBeInTheDocument()
 		expect(screen.getByRole("button", { name: "common:mermaid.buttons.close" })).toBeInTheDocument()
+	})
+
+	it("shows copy feedback only after the image path is copied", async () => {
+		const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard")
+		const writeText = vi.fn().mockRejectedValueOnce(new Error("denied")).mockResolvedValueOnce(undefined)
+		Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+		const logError = vi.spyOn(console, "error").mockImplementation(() => {})
+
+		try {
+			render(<ImageViewer imageUri="data:image/png;base64,AA==" imagePath="/workspace/image.png" />)
+			const copy = screen.getByRole("button", { name: "common:mermaid.buttons.copy" })
+			await act(async () => {
+				fireEvent.click(copy)
+			})
+			expect(copy.firstElementChild).toHaveClass("codicon-copy")
+			await act(async () => {
+				fireEvent.click(copy)
+			})
+			expect(copy.firstElementChild).toHaveClass("codicon-check")
+		} finally {
+			logError.mockRestore()
+			if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard)
+			else Reflect.deleteProperty(navigator, "clipboard")
+		}
 	})
 })

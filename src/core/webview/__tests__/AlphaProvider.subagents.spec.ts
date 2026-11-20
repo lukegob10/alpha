@@ -18,6 +18,7 @@ import {
 	inferApprovalModeFromPolicy,
 	getCuratedModelInfo,
 	type ApprovalMode,
+	type HistoryItem,
 	type ProviderSettings,
 	type SubagentGroupState,
 	type SubagentSpawnHandle,
@@ -113,7 +114,7 @@ const makeProviderHarness = (
 			{ focus: false },
 		)
 	}
-	const historyItems = new Map([
+	const historyItems = new Map<string, HistoryItem>([
 		[
 			"parent-1",
 			{
@@ -150,6 +151,13 @@ const makeProviderHarness = (
 		taskHistoryStore: {
 			get: () => undefined,
 			getAll: () => [],
+			appendChildIds: vi.fn(async (parent: HistoryItem, childIds: readonly string[]) => {
+				const current = historyItems.get(parent.id) ?? parent
+				historyItems.set(parent.id, {
+					...current,
+					childIds: [...new Set([...(current.childIds ?? []), ...childIds])],
+				})
+			}),
 			upsert: vi.fn(async (item: any) => {
 				historyItems.set(item.id, item)
 			}),
@@ -5901,6 +5909,83 @@ If complete, use attempt_completion.
 				contextManifest: expectedManifest,
 			},
 		})
+	})
+
+	it("retains ownership when a TaskSpawned listener throws", async () => {
+		const provider = makeProviderHarness()
+		const parent = makeParent()
+		parent.emit.mockImplementation((event: AlphaCodeEventName) => {
+			if (event === AlphaCodeEventName.TaskSpawned) throw new Error("Observer failed")
+		})
+		const finish = deferred()
+		const bounded = new BoundedDelegationManager(async ({ id }) => {
+			await finish.promise
+			return {
+				taskId: id,
+				status: "completed",
+				summary: "Reviewed",
+				evidence: [],
+				changedFiles: [],
+				verification: [],
+				remainingRisks: [],
+				usage: { durationMs: 1 },
+			}
+		})
+		const runs = new AsyncSubagentRunManager(bounded)
+		const internals = provider as any
+		internals.boundedDelegationManager = bounded
+		internals.asyncSubagentRunManager = runs
+		const prepared = await provider.prepareSubagentGroup(parent as any, [
+			{ objective: "Review the parser", agent_kind: "review" },
+		])
+		const taskId = prepared.envelopes[0].id
+		try {
+			const handle = await provider.launchPreparedSubagentGroup(
+				parent as any,
+				prepared,
+				new AbortController().signal,
+			)
+			expect(handle.taskId).toBe(taskId)
+			const finalization = ownedFinalization(internals.subagentRunFinalizations.get(taskId))
+			expect(finalization).toBeDefined()
+			finish.resolve()
+			await finalization
+			expect(
+				internals.agentControlStore.getUnacknowledgedMailboxEntries(parent.taskId, { kinds: ["result"] }),
+			).toEqual([
+				expect.objectContaining({
+					senderTaskId: taskId,
+					payload: expect.objectContaining({ status: "completed" }),
+				}),
+			])
+		} finally {
+			finish.resolve()
+			await runs.waitForResult(taskId)
+		}
+	})
+
+	it.each([
+		["blocked", "blocked"],
+		["cancelled", "cancelled"],
+		["timed_out", "timed_out"],
+		["active", "failed"],
+	] as const)("keeps managed history at %s when publishing a %s terminal outcome", async (existingStatus, status) => {
+		const provider = makeProviderHarness()
+		const internals = provider as any
+		const history: Map<string, HistoryItem> = internals.__historyItems
+		const taskId = "managed-child"
+		history.set(taskId, { ...history.get("parent-1")!, id: taskId, status: existingStatus })
+		internals.taskHistoryStore.get = (id: string) => history.get(id)
+		internals.emit = vi.fn()
+		internals.pendingManagedTaskCompletions.set(taskId, { tokenUsage: {}, toolUsage: {} })
+
+		internals.publishDurableManagedTaskCompletion(taskId, status)
+		await internals.taskLifecycleHistoryWrites.get(taskId)
+
+		expect(history.get(taskId)?.status).toBe(status)
+		internals.markTaskLifecycle(taskId, TaskLifecycleState.Closed)
+		await internals.taskLifecycleHistoryWrites.get(taskId)
+		expect(history.get(taskId)?.status).toBe(status)
 	})
 
 	it.each(["async", "blocking"] as const)(

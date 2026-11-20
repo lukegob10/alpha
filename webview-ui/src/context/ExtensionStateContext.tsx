@@ -173,8 +173,10 @@ function getCachedTaskTranscript(cache: TaskTranscriptCache, taskId: string): Ca
 	return cached
 }
 
+type RendererState = ExtensionState & { providerSetupRequired?: boolean }
+
 export const mergeExtensionState = (
-	prevState: ExtensionState,
+	prevState: RendererState,
 	newState: Partial<ExtensionState>,
 	transcriptCache?: TaskTranscriptCache,
 ) => {
@@ -218,7 +220,8 @@ export const mergeExtensionState = (
 	// Transcript, lifecycle, queue, and todos are delivered independently. Guard
 	// each domain separately so a tiny queue patch cannot suppress a valid later
 	// lifecycle snapshot (or let an older full snapshot erase a newer queue).
-	if (isStale(newState.alphaMessagesSeq, prevState.alphaMessagesSeq)) {
+	const staleAlphaMessages = isStale(newState.alphaMessagesSeq, prevState.alphaMessagesSeq)
+	if (staleAlphaMessages) {
 		rest.alphaMessages = prevState.alphaMessages
 		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
@@ -284,12 +287,12 @@ export const mergeExtensionState = (
 	// A late transcript from an older navigation can carry a higher message
 	// sequence. Reject it so it cannot replace the task that is now on screen.
 	// An equal task sequence is the transcript for the accepted navigation.
-	if (
+	const staleTranscriptNavigation =
 		typeof newState.taskStateSeq === "number" &&
 		typeof prevState.taskStateSeq === "number" &&
 		newState.taskStateSeq < prevState.taskStateSeq &&
 		Object.prototype.hasOwnProperty.call(newState, "alphaMessages")
-	) {
+	if (staleTranscriptNavigation) {
 		rest.alphaMessages = prevState.alphaMessages
 		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
@@ -345,23 +348,41 @@ export const mergeExtensionState = (
 		rest.alphaMessages = prevState.alphaMessages
 		rest.alphaMessagesSeq = prevState.alphaMessagesSeq
 	}
-	if (rejectScopedDomains || isStale(incomingQueueSeq, previousQueueSeq)) {
+	const staleQueue = isStale(incomingQueueSeq, previousQueueSeq)
+	if (rejectScopedDomains || staleQueue) {
 		rest.messageQueue = prevState.messageQueue
 		rest.messageQueueSeq = prevState.messageQueueSeq
 	}
-	if (rejectScopedDomains || isStale(incomingTodosSeq, previousTodosSeq)) {
+	const staleTodos = isStale(incomingTodosSeq, previousTodosSeq)
+	if (rejectScopedDomains || staleTodos) {
 		rest.currentTaskTodos = prevState.currentTaskTodos
 		rest.currentTaskTodosSeq = prevState.currentTaskTodosSeq
+	}
+	const previousTaskId = prevState.currentTaskId
+	const currentTaskId = rest.currentTaskId
+	const taskChanged = previousTaskId !== currentTaskId
+	const receivedTranscript =
+		!staleAlphaMessages &&
+		!staleTranscriptNavigation &&
+		!rejectScopedDomains &&
+		Array.isArray(newState.alphaMessages)
+	if (taskChanged) {
+		if (!receivedTranscript) rest.alphaMessages = []
+		if (staleQueue || newState.messageQueue === undefined) rest.messageQueue = undefined
+		if (staleTodos || newState.currentTaskTodos === undefined) rest.currentTaskTodos = undefined
 	}
 
 	// Note that we completely replace the previous apiConfiguration and customSupportPrompts objects
 	// with new ones since the state that is broadcast is the entire objects so merging is not necessary.
+	const acceptedApiConfiguration = acceptedTaskSnapshot ? apiConfiguration : undefined
 	const mergedState = {
 		...rest,
-		apiConfiguration:
-			taskStateIsStale || patchHasNoTaskStateSequence
-				? prevState.apiConfiguration
-				: (apiConfiguration ?? prevState.apiConfiguration),
+		apiConfiguration: acceptedApiConfiguration ?? prevState.apiConfiguration,
+		// Onboarding follows accepted host settings, independently of local form edits.
+		providerSetupRequired:
+			acceptedApiConfiguration !== undefined
+				? !checkExistKey(acceptedApiConfiguration)
+				: prevState.providerSetupRequired,
 		customModePrompts,
 		customSupportPrompts: customSupportPrompts ?? prevState.customSupportPrompts,
 		experiments,
@@ -370,9 +391,6 @@ export const mergeExtensionState = (
 	}
 
 	if (transcriptCache) {
-		const previousTaskId = prevState.currentTaskId
-		const currentTaskId = mergedState.currentTaskId
-		const taskChanged = previousTaskId !== currentTaskId
 		if (taskChanged && previousTaskId) {
 			cacheTaskTranscript(
 				transcriptCache,
@@ -382,13 +400,7 @@ export const mergeExtensionState = (
 			)
 		}
 
-		if (
-			taskChanged &&
-			currentTaskId &&
-			newState.currentTaskId === currentTaskId &&
-			Array.isArray(newState.alphaMessages) &&
-			newState.alphaMessages.length === 0
-		) {
+		if (taskChanged && currentTaskId && mergedState.alphaMessages.length === 0) {
 			const cached = getCachedTaskTranscript(transcriptCache, currentTaskId)
 			const revision = mergedState.liveTasksById?.[currentTaskId]?.transcriptRevision
 			if (cached && revision !== undefined && cached.revision === revision) {
@@ -399,8 +411,8 @@ export const mergeExtensionState = (
 		if (
 			currentTaskId &&
 			newState.currentTaskId === currentTaskId &&
-			Array.isArray(newState.alphaMessages) &&
-			newState.alphaMessages.length > 0
+			receivedTranscript &&
+			newState.alphaMessages?.length
 		) {
 			cacheTaskTranscript(
 				transcriptCache,
@@ -498,7 +510,7 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	const getCachedTranscriptRevision = useCallback((taskId: string) => {
 		return getCachedTaskTranscript(transcriptCacheRef.current, taskId)?.revision
 	}, [])
-	const [state, setState] = useState<ExtensionState>({
+	const [state, setState] = useState<RendererState>({
 		apiConfiguration: {},
 		version: "",
 		alphaMessages: [],
@@ -578,7 +590,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	})
 
 	const [didHydrateState, setDidHydrateState] = useState(false)
-	const [providerSetupRequired, setProviderSetupRequired] = useState(false)
 	const [observedActiveTaskId, setObservedActiveTaskId] = useState<string>()
 	const [theme, setTheme] = useState<any>(undefined)
 	const [filePaths, setFilePaths] = useState<string[]>([])
@@ -840,11 +851,6 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 						latestTaskTodosSeqRef.current = newState.currentTaskTodosSeq
 					}
 
-					// Configuration-less state messages are partial transport patches, not
-					// evidence that provider setup is missing.
-					if (newState.apiConfiguration !== undefined) {
-						setProviderSetupRequired(!checkExistKey(newState.apiConfiguration))
-					}
 					setDidHydrateState(true)
 					// Update alwaysAllowFollowupQuestions if present in state message
 					if ((newState as any).alwaysAllowFollowupQuestions !== undefined) {
@@ -1037,14 +1043,15 @@ export const ExtensionStateContextProvider: React.FC<{ children: React.ReactNode
 	// Provider setup is onboarding for a new-task draft, never an overlay for an
 	// established chat. Deriving the task guard from the sequence-aware merged
 	// state also prevents stale lifecycle patches from hiding the current view.
+	const { providerSetupRequired, ...extensionState } = state
 	const showWelcome =
-		providerSetupRequired &&
+		providerSetupRequired === true &&
 		state.currentView?.type !== "task" &&
 		state.currentTaskId === undefined &&
 		observedActiveTaskId === undefined
 
 	const contextValue: ExtensionStateContextType = {
-		...state,
+		...extensionState,
 		managedSteeringDrafts,
 		updateManagedSteeringDraft,
 		autoCondenseContextScope: state.autoCondenseContextScope ?? "full-context",

@@ -1237,6 +1237,7 @@ export type WebviewMessage =
 			type: "upsertApiConfiguration"
 			/** Creation and historical webviews retain the name-based contract. */
 			apiConfigurationId?: never
+			apiConfigurationCreateOnly?: true
 			requestId?: never
 	  })
 	| (Omit<WebviewMessageBase, "type"> & { type: "queueMessage"; clientSubmittedAt?: number })

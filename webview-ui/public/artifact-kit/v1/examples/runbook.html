@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="alpha-document" content="1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Runbook — check an offline document handoff</title>
+		<link rel="stylesheet" href="../kit.css" />
+	</head>
+	<body>
+		<main class="alpha-doc" data-alpha-kit="1">
+			<header class="doc-header">
+				<p class="eyebrow">Operator runbook · worked example</p>
+				<h1 id="handoff">Check an offline document handoff</h1>
+				<p class="lead">
+					Before handing a colleague the sample design spec, check that they can open the copy in Alpha and
+					see its layout illustration using only the files they receive.
+				</p>
+			</header>
+			<section>
+				<h2 id="before-you-start">Before you start</h2>
+				<p>
+					Use VS Code with Alpha installed and the handoff folder extracted outside the author’s workspace. In
+					this example the packet contains <code>spec.html</code> and <code>images/layout-sample.png</code>.
+					Keep the original packet available in case the copy is incomplete.
+				</p>
+			</section>
+			<section>
+				<h2 id="check-the-copy">Check the recipient’s copy</h2>
+				<ol class="steps">
+					<li>
+						<strong>Open the extracted folder as the workspace.</strong> In Explorer, confirm
+						<code>spec.html</code> is at the root and <code>layout-sample.png</code> is inside
+						<code>images</code>. If either is missing, stop and ask the author for a complete packet.
+					</li>
+					<li>
+						<strong>Preview the spec.</strong> Open the copied HTML and run
+						<strong>Alpha: Preview HTML Document</strong> from the Command Palette. The sample opens with
+						the heading beginning “A document belongs to a task” and the label “Proposed design”. If another
+						document appears, check the selected folder and file before continuing.
+					</li>
+					<li>
+						<strong>Inspect the figure under “Proposed ownership boundaries”.</strong> The wireframe shows a
+						narrow left column and two panels beneath the wide panel on the right. A caption alone is
+						insufficient. If the picture is missing, compare the file path with the image reference in the
+						copied HTML. Have the author correct the packet, then repeat the checks on a fresh copy.
+					</li>
+				</ol>
+			</section>
+			<section class="summary">
+				<h2 id="handoff-result">Record the handoff result</h2>
+				<p>
+					Mark the copy ready when both the expected spec and its illustration appear. Record the packet name
+					and what you observed so the recipient can identify the checked copy. If a check fails, mark it
+					blocked and give the author the failing step, file path and visible symptom.
+				</p>
+			</section>
+		</main>
+	</body>
+</html>

@@ -579,7 +579,7 @@ describe("Task recovery through provider adapters", () => {
 		]
 		const scope = nock("https://api.anthropic.com")
 			.post("/v1/messages")
-			.reply(200, sse(...(hasText ? textEvents : textEvents.slice(0, 1))), {
+			.reply(200, sse(...(hasText ? textEvents : textEvents.slice(0, 2))), {
 				"Content-Type": "text/event-stream",
 			})
 			.post("/v1/messages")
@@ -1969,6 +1969,94 @@ describe("Task committed partial stream recovery", () => {
 })
 
 describe("Task request error provenance", () => {
+	function observeStreamReturns(task: Task) {
+		const attempt = task.attemptApiRequest.bind(task)
+		const close = vi.fn()
+		vi.spyOn(task, "attemptApiRequest").mockImplementation((...args) => {
+			const stream = attempt(...args)
+			const returnStream = stream.return.bind(stream)
+			stream.return = (value) => {
+				close()
+				return returnStream(value)
+			}
+			return stream
+		})
+		return close
+	}
+
+	it("closes the provider stream when ownership changes before the next chunk is accepted", async () => {
+		const finalized = deferred()
+		const fixture = await harness(async function* (_attempt, task) {
+			try {
+				const step = task["currentAgentStep"]!
+				task["currentAgentStep"] = { ...step }
+				yield { type: "text", text: "Superseded output" }
+			} finally {
+				finalized.resolve()
+			}
+		})
+		const close = observeStreamReturns(fixture.task)
+
+		await fixture.run()
+
+		expect(close).toHaveBeenCalledOnce()
+		await finalized.promise
+		expect(fixture.task["currentRequestSignal"]).toBeUndefined()
+		expect(JSON.stringify(await fixture.history())).not.toContain("Superseded output")
+	})
+
+	it("lets the usage drain consume a handed-off stream through EOF", async () => {
+		const releaseUsage = deferred()
+		const usagePublished = deferred()
+		const fixture = await harness(async function* (_attempt, task) {
+			yield { type: "text", text: "Finished" }
+			task.didRejectTool = true
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+			await releaseUsage.promise
+			yield { type: "usage", inputTokens: 23, outputTokens: 4 }
+		})
+		const close = observeStreamReturns(fixture.task)
+		vi.mocked(fixture.hooks.updateAlphaMessage).mockImplementation(async (message) => {
+			if (message.say === "api_req_started" && message.text?.includes('"tokensIn":23')) usagePublished.resolve()
+		})
+
+		try {
+			await fixture.run()
+			expect(close).not.toHaveBeenCalled()
+			releaseUsage.resolve()
+			await usagePublished.promise
+			expect(close).not.toHaveBeenCalled()
+		} finally {
+			releaseUsage.resolve()
+		}
+	})
+
+	it("releases a staged response transaction superseded before the engine accepts it", async () => {
+		const fixture = await harness(async function* () {
+			yield { type: "text", text: "Superseded response" }
+			yield createApiStreamOutcome({ status: "completed", semanticOutputObserved: true })
+		})
+		const sample = fixture.task.runAgentRequests.bind(fixture.task)
+		const released = vi.fn()
+		vi.spyOn(fixture.task, "runAgentRequests").mockImplementation(async (...args) => {
+			const result = await sample(...args)
+			if (typeof result === "boolean" || !result.transaction) throw new Error("Expected a staged transaction")
+			const { release } = result.transaction
+			result.transaction.release = () => {
+				released()
+				release()
+			}
+			fixture.task["currentAgentStep"] = { ...fixture.task["currentAgentStep"]! }
+			return result
+		})
+
+		await fixture.run()
+
+		expect(released).toHaveBeenCalledOnce()
+		expect(fixture.task["stepInterruptionController"]).toBeUndefined()
+		expect(JSON.stringify(await fixture.history())).not.toContain("Superseded response")
+	})
+
 	async function openRequest(fixture: Awaited<ReturnType<typeof harness>>) {
 		await fixture.task["beginCanonicalLifecycleTurn"]()
 		return fixture.task.attemptApiRequest(0, { skipProviderRateLimit: true, ownerHandlesRetry: true })

@@ -43,7 +43,7 @@ function fixture() {
 			return taskId ? getLiveTask(taskId) : undefined
 		},
 		getLiveTask,
-		clearWebviewResources: vi.fn(),
+		clearWebviewFocus: vi.fn(),
 		postMessageToWebview: vi.fn().mockResolvedValue(undefined),
 		log: vi.fn(),
 	})

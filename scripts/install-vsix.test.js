@@ -172,8 +172,9 @@ test("rejects shell text supplied as an editor option", () => {
 	}
 })
 
-test("selects the host-targeted artifact name before invoking an editor", async () => {
+test("checks the host-targeted artifact and requires answers to interactive prompts", async () => {
 	const { hostVsixTarget } = await import("../src/lancedb-native.mjs")
+	const artifactName = `alpha-1.2.3-${hostVsixTarget()}.vsix`
 	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "alpha-installer-target-")))
 	try {
 		fs.mkdirSync(path.join(root, "src"))
@@ -181,9 +182,32 @@ test("selects the host-targeted artifact name before invoking an editor", async 
 			path.join(root, "src", "package.json"),
 			JSON.stringify({ name: "alpha", version: "1.2.3", publisher: "Alpha" }),
 		)
-		const result = spawnSync(process.execPath, [installerPath, "-y"], { cwd: root, encoding: "utf8" })
-		assert.equal(result.status, 1)
-		assert.ok(result.stderr.includes(`alpha-1.2.3-${hostVsixTarget()}.vsix`), result.stderr)
+		const invoke = (args, input = "") =>
+			spawnSync(process.execPath, [installerPath, ...args], {
+				cwd: root,
+				encoding: "utf8",
+				input,
+				timeout: 5_000,
+			})
+		const missing = invoke(["-y"])
+		assert.equal(missing.status, 1)
+		assert.ok(missing.stderr.includes(artifactName), missing.stderr)
+
+		fs.mkdirSync(path.join(root, "bin"))
+		fs.writeFileSync(path.join(root, "bin", artifactName), "")
+		for (const [args, input, prompt] of [
+			[[], "", /Which editor command/u],
+			[[], "code\n", /Do you wish to continue/u],
+			[["--editor=code"], "", /Do you wish to continue/u],
+		]) {
+			const result = invoke(args, input)
+			assert.match(result.stdout, prompt)
+			assert.equal(result.status, 1)
+			assert.match(result.stderr, /Installer input closed before a response/u)
+		}
+		const declined = invoke([], "\nn\n")
+		assert.equal(declined.status, 0)
+		assert.match(declined.stdout, /Installation cancelled/u)
 	} finally {
 		assert.equal(path.dirname(root), fs.realpathSync(os.tmpdir()))
 		assert.match(path.basename(root), /^alpha-installer-target-/u)

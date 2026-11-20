@@ -213,6 +213,18 @@ afterEach(async () => {
 })
 
 describe("official ChatGPT authentication", () => {
+	it("retries loading credentials after a transient storage failure", async () => {
+		const f = fixture()
+		f.secretStore.get.mockRejectedValueOnce(new Error("temporary storage failure"))
+		const initial = [f.service.getStatus(), f.service.getStatus()]
+		await Promise.all(
+			initial.map((status) => expect(status).rejects.toThrow("Could not read saved ChatGPT credentials")),
+		)
+		expect(f.secretStore.get).toHaveBeenCalledOnce()
+		await expect(f.service.getStatus()).resolves.toEqual({ connecting: false, connected: false, accounts: [] })
+		expect(f.secretStore.get).toHaveBeenCalledTimes(2)
+	})
+
 	it("registers its own PKCE client, verifies identity, and keeps tokens out of status", async () => {
 		const f = fixture()
 		expect(f.fetcher).not.toHaveBeenCalled()

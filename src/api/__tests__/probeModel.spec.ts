@@ -39,6 +39,21 @@ describe("actual adapter readiness", () => {
 		)
 		expect(api.dispose).toHaveBeenCalledOnce()
 	})
+	it("sums usage deltas and retains the strongest reported source and known cost", async () => {
+		handler(async function* () {
+			yield { type: "text", text: "OK" }
+			yield { type: "usage", inputTokens: 10, outputTokens: 1, usageSource: "provider", totalCost: 0.125 }
+			yield { type: "usage", inputTokens: 0, outputTokens: 2, usageSource: "provider", totalCost: 0.25 }
+			yield { type: "usage", inputTokens: 0, outputTokens: 0, usageSource: "estimate" }
+			yield { type: "usage", inputTokens: 0, outputTokens: 0 }
+			yield { type: "outcome", status: "completed", terminal: true, semanticOutputObserved: true }
+		})
+
+		expect(await probeModel({})).toMatchObject({
+			status: "completed",
+			usage: { inputTokens: 10, outputTokens: 3, source: "provider", cost: 0.375 },
+		})
+	})
 	it("does not count metadata-only or incomplete output as readiness and preserves unknown usage", async () => {
 		handler(async function* () {
 			yield { type: "outcome", status: "completed", terminal: true, semanticOutputObserved: false }

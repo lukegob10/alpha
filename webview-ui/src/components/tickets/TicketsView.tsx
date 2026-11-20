@@ -601,7 +601,7 @@ export default function TicketsView() {
 	const save = async (): Promise<Ticket | undefined> => {
 		if (!draft) return ticket
 		const { status, parentId, ...fields } = draft
-		let result = ticket
+		const result = ticket
 			? await request({
 					action: "update",
 					input: {
@@ -612,21 +612,7 @@ export default function TicketsView() {
 						parentId: parentId ?? null,
 					},
 				})
-			: await request({ action: "create", input: { ...fields, parentId } })
-		if (!ticket && status !== "backlog") {
-			const created = ticketSchema.parse(result)
-			// Creation is already durable. Preserve its identity and the desired draft
-			// so a failed status update can be retried without creating another ticket.
-			ticketChangeSequence.current++
-			latest.current = { ...latest.current, id: created.id, revision: created.revision }
-			returnToTicket.current = created.id
-			setTicket(created)
-			setRefresh((value) => value + 1)
-			result = await request({
-				action: "update",
-				input: { id: created.id, expectedRevision: created.revision, status },
-			})
-		}
+			: await request({ action: "create", input: { ...fields, parentId }, initialStatus: status })
 		accept(result)
 		setRefresh((value) => value + 1)
 		return ticketSchema.parse(result)

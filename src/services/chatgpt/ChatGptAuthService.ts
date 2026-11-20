@@ -208,7 +208,10 @@ export class ChatGptAuthService {
 	}
 
 	private load(): Promise<void> {
-		return (this.loaded ??= this.reload())
+		return (this.loaded ??= this.reload().catch((error) => {
+			this.loaded = undefined
+			throw error
+		}))
 	}
 
 	private async reload(): Promise<void> {

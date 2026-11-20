@@ -21,11 +21,21 @@ const mocks = vi.hoisted(() => {
 		createProvider,
 		getContextProxy: vi.fn(async (): Promise<unknown> => ({})),
 		registerSerializer: vi.fn((_viewType: string, _serializer: unknown) => ({ dispose: vi.fn() })),
+		createWebviewPanel: vi.fn(),
+		executeCommand: vi.fn().mockResolvedValue(undefined),
+		tabGroups: { all: [] as Array<{ viewColumn: number; tabs: unknown[] }>, activeTabGroup: { viewColumn: 1 } },
 	}
 })
 
 vi.mock("vscode", () => ({
-	window: { registerWebviewPanelSerializer: mocks.registerSerializer },
+	commands: { executeCommand: mocks.executeCommand },
+	window: {
+		registerWebviewPanelSerializer: mocks.registerSerializer,
+		createWebviewPanel: mocks.createWebviewPanel,
+		visibleTextEditors: [],
+		tabGroups: mocks.tabGroups,
+	},
+	ViewColumn: { One: 1, Two: 2 },
 	Uri: { joinPath: vi.fn(() => ({})) },
 }))
 vi.mock("../../core/webview/AlphaProvider", () => ({ AlphaProvider: mocks.createProvider }))
@@ -35,7 +45,7 @@ vi.mock("../../i18n", () => ({ t: (key: string) => key }))
 vi.mock("../handleTask", () => ({ handleNewTask: vi.fn() }))
 vi.mock("../goalCommands", () => ({ manageTaskGoal: vi.fn() }))
 
-import { getPanel, registerEditorChatSerializer, setPanel } from "../registerCommands"
+import { getPanel, openAlphaInNewTab, registerEditorChatSerializer, setPanel } from "../registerCommands"
 
 const barrier = () => {
 	let resolve!: () => void
@@ -45,14 +55,19 @@ const barrier = () => {
 
 function panelFixture() {
 	const disposals = new Set<() => void>()
+	const close = vi.fn(() => disposals.forEach((listener) => listener()))
 	const panel = {
 		webview: { html: "", options: {} },
+		active: true,
+		visible: true,
+		viewColumn: 3,
+		dispose: close,
 		onDidDispose: vi.fn((listener: () => void) => {
 			disposals.add(listener)
 			return { dispose: () => disposals.delete(listener) }
 		}),
 	} as unknown as vscode.WebviewPanel
-	return { panel, close: () => disposals.forEach((listener) => listener()) }
+	return { panel, close }
 }
 
 function fixture() {
@@ -64,6 +79,61 @@ function fixture() {
 }
 
 const savedTask = (taskId: string) => ({ alphaEditorChat: { version: 1, currentView: { type: "task", taskId } } })
+
+describe("opening an editor chat", () => {
+	beforeEach(() => {
+		vi.clearAllMocks()
+		mocks.providers.length = 0
+		mocks.tabGroups.all = [
+			{ viewColumn: 1, tabs: [{ input: "webview" }] },
+			{ viewColumn: 2, tabs: [{ input: "custom editor" }] },
+		]
+		mocks.tabGroups.activeTabGroup = { viewColumn: 3 }
+		setPanel(undefined, "tab")
+		vi.useFakeTimers()
+	})
+
+	afterEach(() => vi.useRealTimers())
+
+	it("opens past existing non-text editor groups and locks its own active group", async () => {
+		const { panel } = panelFixture()
+		mocks.createWebviewPanel.mockReturnValueOnce(panel)
+		const opening = openAlphaInNewTab(fixture())
+		await vi.runAllTimersAsync()
+		await expect(opening).resolves.toBe(mocks.providers[0])
+		expect(mocks.createWebviewPanel).toHaveBeenCalledWith("alpha.TabPanelProvider", "Alpha", 3, expect.anything())
+		expect(mocks.executeCommand).toHaveBeenCalledExactlyOnceWith("workbench.action.lockEditorGroup")
+	})
+
+	it("leaves another active group unlocked while the chat opens", async () => {
+		mocks.tabGroups.activeTabGroup = { viewColumn: 1 }
+		mocks.createWebviewPanel.mockReturnValueOnce(panelFixture().panel)
+		const opening = openAlphaInNewTab(fixture())
+		await vi.runAllTimersAsync()
+		await expect(opening).resolves.toBe(mocks.providers[0])
+		expect(mocks.executeCommand).not.toHaveBeenCalledWith("workbench.action.lockEditorGroup")
+	})
+
+	it("does not lock a group after its newly opened chat closes", async () => {
+		const { panel, close } = panelFixture()
+		mocks.createWebviewPanel.mockReturnValueOnce(panel)
+		const opening = openAlphaInNewTab(fixture())
+		await vi.advanceTimersByTimeAsync(0)
+		close()
+		await vi.runAllTimersAsync()
+		await expect(opening).resolves.toBe(mocks.providers[0])
+		expect(mocks.executeCommand).not.toHaveBeenCalledWith("workbench.action.lockEditorGroup")
+	})
+
+	it("closes a newly created tab when attaching its chat fails", async () => {
+		const { panel, close } = panelFixture()
+		const attachmentError = new Error("Context initialization failed")
+		mocks.createWebviewPanel.mockReturnValueOnce(panel)
+		mocks.getContextProxy.mockRejectedValueOnce(attachmentError)
+		await expect(openAlphaInNewTab(fixture())).rejects.toBe(attachmentError)
+		expect(close).toHaveBeenCalledOnce()
+	})
+})
 
 describe("editor chat panel serializer", () => {
 	beforeEach(() => {

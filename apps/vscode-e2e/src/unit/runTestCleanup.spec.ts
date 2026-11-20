@@ -1,13 +1,66 @@
 import assert from "node:assert/strict"
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 
-import { HostLaunchFailureError } from "../hostLaunch"
-import { runExtensionTests } from "../runTest"
+import { HostLaunchCancelledError, HostLaunchFailureError } from "../hostLaunch"
+import { runExtensionTestCli, runExtensionTests } from "../runTest"
 import { TestRunError } from "../runFailure"
 import { ImprovementCaptureHelperError } from "../evidence/improvementCapture"
+
+test("direct runner signals cancel the owned host and preserve its cleanup receipt", async () => {
+	for (const { event, cleanupVerified } of [
+		{ event: "SIGINT", cleanupVerified: true },
+		{ event: "SIGTERM", cleanupVerified: false },
+	] as const) {
+		const root = await realpath(await mkdtemp(join(tmpdir(), "alpha-signal-lease-")))
+		const sigintListeners = process.listenerCount("SIGINT")
+		const sigtermListeners = process.listenerCount("SIGTERM")
+		let released = false
+		try {
+			const result = await runExtensionTestCli(
+				[
+					"--provider",
+					"scripted",
+					"--vscode-version",
+					"1.141.0",
+					"--profile-dir",
+					join(root, "profile"),
+					"--workspace",
+					join(root, "workspace"),
+					"--artifacts-dir",
+					join(root, "artifacts"),
+					"--init-profile",
+				],
+				{
+					acquireLease: async () => async () => {
+						released = true
+					},
+					launchHost: async (_options, onSpawn, signal) => {
+						onSpawn?.(123)
+						process.emit(event)
+						assert.equal(signal?.aborted, true)
+						assert.equal(released, false)
+						throw new HostLaunchCancelledError(1, cleanupVerified)
+					},
+				},
+			)
+			assert.equal(result.status, "blocked")
+			assert.equal(result.failure, "host-cancelled")
+			assert.equal(result.hostExitObserved, true)
+			assert.equal(result.hostCleanupVerified, cleanupVerified)
+			assert.equal(released, cleanupVerified)
+			const receipt = JSON.parse(await readFile(join(result.artifactsDir, "run-result.json"), "utf8"))
+			assert.equal(receipt.failure, result.failure)
+			assert.equal(receipt.hostCleanupVerified, result.hostCleanupVerified)
+			assert.equal(process.listenerCount("SIGINT"), sigintListeners)
+			assert.equal(process.listenerCount("SIGTERM"), sigtermListeners)
+		} finally {
+			await rm(root, { recursive: true, force: true })
+		}
+	}
+})
 
 test("a pre-host helper cleanup failure retains the lease and forbids later evidence or host dispatch", async () => {
 	for (const cleanupVerified of [false, true]) {

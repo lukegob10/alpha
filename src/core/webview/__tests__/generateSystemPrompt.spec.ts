@@ -87,9 +87,11 @@ describe("generateSystemPrompt", () => {
 		}
 	})
 
-	it("uses the resolved instruction model identity for a host model alias", async () => {
+	it("uses the resolved instruction model identity and releases the preview handler", async () => {
+		const dispose = vi.fn()
 		vi.mocked(buildApiHandler).mockReturnValue({
 			getModel: () => ({ id: "copilot-host-alias", instructionModelId: "gpt-6.1-sol", info: {} }),
+			dispose,
 		} as any)
 		const provider = {
 			context: {} as vscode.ExtensionContext,
@@ -103,6 +105,7 @@ describe("generateSystemPrompt", () => {
 		await generateSystemPrompt(provider as any, { mode: "code" } as any)
 
 		expect(vi.mocked(SYSTEM_PROMPT_FRAGMENTS).mock.calls[0]?.[14]).toBe("gpt-6.1-sol")
+		expect(dispose).toHaveBeenCalledOnce()
 	})
 
 	it("previews the current task's captured memory instead of the latest host summary", async () => {

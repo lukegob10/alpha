@@ -28,11 +28,10 @@ export function ImageViewer({
 }: ImageViewerProps) {
 	const [showModal, setShowModal] = useState(false)
 	const [zoomLevel, setZoomLevel] = useState(1)
-	const [copyFeedback, setCopyFeedback] = useState(false)
 	const [isDragging, setIsDragging] = useState(false)
 	const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 })
 	const [imageError, setImageError] = useState<string | null>(null)
-	const { copyWithFeedback } = useCopyToClipboard()
+	const { showCopyFeedback: copyFeedback, copyWithFeedback } = useCopyToClipboard()
 	const { t } = useAppTranslation()
 
 	/**
@@ -48,20 +47,9 @@ export function ImageViewer({
 	/**
 	 * Copies the image path to clipboard
 	 */
-	const handleCopy = async (e: React.MouseEvent) => {
+	const handleCopy = (e: React.MouseEvent) => {
 		e.stopPropagation()
-
-		try {
-			// Copy the file path if available
-			if (imagePath) {
-				await copyWithFeedback(imagePath, e)
-				// Show feedback
-				setCopyFeedback(true)
-				setTimeout(() => setCopyFeedback(false), 2000)
-			}
-		} catch (err) {
-			console.error("Error copying:", err instanceof Error ? err.message : String(err))
-		}
+		if (imagePath) void copyWithFeedback(imagePath)
 	}
 
 	/**

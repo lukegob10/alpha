@@ -140,6 +140,7 @@ type VsCodeLmClientCacheEntry = {
 
 const vsCodeLmClientCache = new Map<string, VsCodeLmClientCacheEntry>()
 let vsCodeLmClientCacheGeneration = 0
+let vsCodeLmClientCacheOwners = 0
 
 function getVsCodeLmClientCacheKey(selector: vscode.LanguageModelChatSelector): string {
 	return JSON.stringify([
@@ -180,6 +181,7 @@ function getCachedVsCodeLmClient(
 	selector: vscode.LanguageModelChatSelector,
 	resolve: () => Promise<vscode.LanguageModelChat>,
 ): Promise<vscode.LanguageModelChat> {
+	if (vsCodeLmClientCacheOwners === 0) return resolve()
 	const key = getVsCodeLmClientCacheKey(selector)
 	const cached = vsCodeLmClientCache.get(key)
 	if (cached?.generation === vsCodeLmClientCacheGeneration) {
@@ -198,7 +200,7 @@ function getCachedVsCodeLmClient(
 			entry.settled = true
 			// VS Code documents that retained clients remain valid until its model-change
 			// event. If that event races selection, re-query instead of caching a stale client.
-			if (generation !== vsCodeLmClientCacheGeneration) {
+			if (generation !== vsCodeLmClientCacheGeneration && vsCodeLmClientCacheOwners > 0) {
 				return getCachedVsCodeLmClient(selector, resolve)
 			}
 			trimVsCodeLmClientCache()
@@ -206,6 +208,9 @@ function getCachedVsCodeLmClient(
 		},
 		(error) => {
 			entry.settled = true
+			if (generation !== vsCodeLmClientCacheGeneration && vsCodeLmClientCacheOwners > 0) {
+				return getCachedVsCodeLmClient(selector, resolve)
+			}
 			if (vsCodeLmClientCache.get(key)?.promise === promise) {
 				vsCodeLmClientCache.delete(key)
 			}
@@ -750,6 +755,12 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 					}),
 				)
 			}
+			vsCodeLmClientCacheOwners++
+			this.disposables.push({
+				dispose: () => {
+					if (--vsCodeLmClientCacheOwners === 0) invalidateVsCodeLmClientCache()
+				},
+			})
 		} catch (error) {
 			// Ensure cleanup if constructor fails
 			this.dispose()
@@ -1119,6 +1130,11 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		disposeSignalBridge: () => void,
 		streamCompleted: boolean,
 	): void {
+		// A host may ignore cancellation after admission. Settle our abort waits
+		// before disposing the bridge, even if the VS Code token is already cancelled.
+		if (!streamCompleted && !requestControl.signal.aborted) {
+			requestControl.controller.abort(new vscode.CancellationError())
+		}
 		disposeSignalBridge()
 		requestControl.dispose()
 
@@ -1131,9 +1147,6 @@ export class VsCodeLmHandler extends BaseProvider implements SingleCompletionHan
 		this.currentRequestCancellation = null
 		this.currentRequestControl = null
 		this.currentRequestSignalCleanup = null
-		if (!streamCompleted && !cancellation.token.isCancellationRequested) {
-			cancellation.cancel()
-		}
 		cancellation.dispose()
 	}
 

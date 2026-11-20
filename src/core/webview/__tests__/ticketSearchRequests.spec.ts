@@ -1,4 +1,4 @@
-import { cancelTicketSearches, enqueueFileSearch, enqueueTicketSearch } from "../ticketSearchRequests"
+import { cancelWebviewSearches, enqueueFileSearch, enqueueTicketSearch } from "../ticketSearchRequests"
 
 function deferred() {
 	let resolve!: () => void
@@ -86,7 +86,7 @@ describe("picker search ownership", () => {
 			enqueueFileSearch(provider, undefined, pending),
 			enqueueTicketSearch(provider, undefined, pending),
 		]
-		cancelTicketSearches(provider)
+		cancelWebviewSearches(provider)
 		await Promise.all(queued)
 		expect(signals.every((signal) => signal.aborted)).toBe(true)
 		expect(pending).not.toHaveBeenCalled()

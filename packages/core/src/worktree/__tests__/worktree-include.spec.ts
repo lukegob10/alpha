@@ -407,10 +407,13 @@ describe("WorktreeIncludeService", () => {
 			await fs.writeFile(path.join(sourceDir, ".gitignore"), "node_modules")
 			await fs.mkdir(path.join(sourceDir, "node_modules"), { recursive: true })
 
-			// Should not throw when no callback is provided
-			const result = await service.copyWorktreeIncludeFiles(sourceDir, targetDir)
-
-			expect(result).toContain("node_modules")
+			const scheduleTimer = vi.spyOn(globalThis, "setTimeout")
+			try {
+				await expect(service.copyWorktreeIncludeFiles(sourceDir, targetDir)).resolves.toEqual(["node_modules"])
+				expect(scheduleTimer).not.toHaveBeenCalledWith(expect.any(Function), 500)
+			} finally {
+				scheduleTimer.mockRestore()
+			}
 		})
 	})
 })

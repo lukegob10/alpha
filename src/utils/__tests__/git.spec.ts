@@ -121,14 +121,14 @@ describe("git utils", () => {
 			"2024-01-05",
 		].join("\n")
 
-		it("should return commits when git is installed and repo exists", async () => {
+		it.each(["fix: test commit", "--"])("keeps commit fields aligned with subject %j", async (subject) => {
 			// Set up mock responses
 			const responses = new Map([
 				["git --version", { stdout: "git version 2.39.2", stderr: "" }],
 				["git rev-parse --git-dir", { stdout: ".git", stderr: "" }],
 				[
 					'git log -n 10 --format="%H%n%h%n%s%n%an%n%ad" --date=short --grep="test" --regexp-ignore-case',
-					{ stdout: mockCommitData, stderr: "" },
+					{ stdout: mockCommitData.replace("fix: test commit", subject), stderr: "" },
 				],
 			])
 
@@ -150,9 +150,16 @@ describe("git utils", () => {
 			expect(result[0]).toEqual({
 				hash: "abc123def456",
 				shortHash: "abc123",
-				subject: "fix: test commit",
+				subject,
 				author: "John Doe",
 				date: "2024-01-06",
+			})
+			expect(result[1]).toEqual({
+				hash: "def456abc789",
+				shortHash: "def456",
+				subject: "feat: new feature",
+				author: "Jane Smith",
+				date: "2024-01-05",
 			})
 
 			// Then verify all commands were called correctly
@@ -163,6 +170,48 @@ describe("git utils", () => {
 				{ cwd },
 				expect.any(Function),
 			)
+		})
+
+		it("returns no rows when a message search has no matches", async () => {
+			vitest.mocked(exec).mockImplementation((_command, _options, callback?: CallbackProcessFunction) => {
+				callback?.(null, { stdout: "", stderr: "" })
+				return {} as ReturnType<typeof exec>
+			})
+
+			expect(await searchCommits("missing subject", cwd)).toEqual([])
+		})
+
+		it("propagates cancellation through the Git probes and hash lookup", async () => {
+			const controller = new AbortController()
+			const { signal } = controller
+			const reason = new Error("commit search superseded")
+			vitest.mocked(exec).mockImplementation((_command, _options, callback?: CallbackProcessFunction) => {
+				callback?.(null, { stdout: "", stderr: "" })
+				return {} as ReturnType<typeof exec>
+			})
+			vitest.mocked(execFile).mockImplementation(((
+				_file,
+				args: string[],
+				_options,
+				callback: CallbackProcessFunction,
+			) => {
+				if (args.includes("--author-date-order")) {
+					controller.abort(reason)
+					callback(new Error("process aborted"))
+				} else {
+					callback(null, { stdout: "", stderr: "" })
+				}
+				return {} as ReturnType<typeof execFile>
+			}) as typeof execFile)
+
+			await expect(searchCommits("abc123", cwd, signal)).rejects.toBe(reason)
+			expect(vitest.mocked(execFile).mock.calls.map(([, , options]) => options)).toEqual([
+				{ signal },
+				{ cwd, signal },
+				{ cwd, signal },
+				{ cwd, signal },
+			])
+			expect(exec).not.toHaveBeenCalled()
 		})
 
 		it("should return empty array when git is not installed", async () => {

@@ -63,6 +63,7 @@ export class NavigateCodeTool extends BaseTool<"navigate_code"> {
 		signal?.throwIfAborted()
 		const uri = vscode.Uri.file(source)
 		const document = await awaitEnvironmentRead(Promise.resolve(vscode.workspace.openTextDocument(uri)), signal)
+		const documentVersion = document.version
 		const position = new vscode.Position(line - 1, column - 1)
 		if (!position.isEqual(document.validatePosition(position))) {
 			callbacks.setResultMetadata?.({ status: "error" })
@@ -114,6 +115,15 @@ export class NavigateCodeTool extends BaseTool<"navigate_code"> {
 		signal?.throwIfAborted()
 		if ((await allowedFile(task, root, file)) !== source) return denied(inaccessible)
 		signal?.throwIfAborted()
+		if (document.isClosed || document.version !== documentVersion) {
+			callbacks.setResultMetadata?.({ status: "error" })
+			pushToolResult(
+				formatResponse.toolError(
+					"Source document changed or closed during navigation. Retry with coordinates from the current document.",
+				),
+			)
+			return
+		}
 		if (truncated) callbacks.setResultMetadata?.({ truncated })
 		pushToolResult(JSON.stringify({ locations, truncated }))
 	}

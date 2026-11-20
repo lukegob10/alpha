@@ -2117,7 +2117,13 @@ export class ManagedSubagentWorktreeService {
 					try {
 						await fs.access(candidate)
 						recoverableWorktreePath = candidate
-					} catch {
+					} catch (error) {
+						if (
+							artifact.status === "active" &&
+							(error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT"
+						) {
+							throw error
+						}
 						// Try the conventional path. Older cancellation code could remove
 						// worktreePath from metadata even when Git cleanup failed.
 					}

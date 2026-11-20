@@ -150,6 +150,26 @@ describe("CodeBlock", () => {
 		expect(screen.getByText(/const x = 1/)).toBeInTheDocument()
 	})
 
+	it("scrolls on the committed expanded and collapsed layout", () => {
+		const height = vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(700)
+		try {
+			render(<CodeBlock source="const value = 1" language="typescript" partial />)
+			const pre = screen.getByText("const value = 1").closest<HTMLElement>("[windowshade]")!
+			const scrollIntoView = vi.fn(() => pre.getAttribute("windowshade"))
+			pre.parentElement!.scrollIntoView = scrollIntoView
+
+			fireEvent.click(screen.getByRole("button", { name: "Expand code block" }))
+			expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ behavior: "smooth", block: "nearest" })
+			expect(scrollIntoView).toHaveReturnedWith("false")
+
+			fireEvent.click(screen.getByRole("button", { name: "Collapse code block" }))
+			expect(scrollIntoView).toHaveBeenCalledTimes(2)
+			expect(scrollIntoView).toHaveLastReturnedWith("true")
+		} finally {
+			height.mockRestore()
+		}
+	})
+
 	it("updates an already highlighted block when the host theme changes", async () => {
 		const code = "const x = 1;"
 		const bodyClass = document.body.className

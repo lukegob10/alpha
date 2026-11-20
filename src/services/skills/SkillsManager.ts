@@ -145,9 +145,10 @@ export class SkillsManager {
 								await this.providerRef.deref()?.postMessageToWebview({ type: "skills", skills })
 							}
 						} catch (error) {
-							// A newer event still requires a scan even if obsolete discovery or publication failed.
-							if (this.watcherRefreshRequested && !this.isDisposed) continue
-							throw error
+							// VS Code does not await watcher callbacks. Report a current batch failure once.
+							if (!this.watcherRefreshRequested && !this.isDisposed) {
+								console.warn("Failed to refresh skills after a file change:", error)
+							}
 						}
 					}
 				} finally {
@@ -1032,20 +1033,10 @@ Add your skill instructions here.
 		const pattern = new vscode.RelativePattern(basePath, globPattern)
 		const watcher = vscode.workspace.createFileSystemWatcher(pattern)
 
-		watcher.onDidChange(async (uri) => {
-			if (this.isDisposed) return
-			await this.refreshSkillsAndNotify()
-		})
-
-		watcher.onDidCreate(async (uri) => {
-			if (this.isDisposed) return
-			await this.refreshSkillsAndNotify()
-		})
-
-		watcher.onDidDelete(async (uri) => {
-			if (this.isDisposed) return
-			await this.refreshSkillsAndNotify()
-		})
+		const refresh = () => this.refreshSkillsAndNotify()
+		watcher.onDidChange(refresh)
+		watcher.onDidCreate(refresh)
+		watcher.onDidDelete(refresh)
 
 		this.disposables.push(watcher)
 	}

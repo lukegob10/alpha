@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useState } from "react"
+import React, { memo, useCallback, useMemo, useState } from "react"
 import { useTranslation, Trans } from "react-i18next"
 import deepEqual from "fast-deep-equal"
 import { VSCodeBadge } from "@vscode/webview-ui-toolkit/react"
@@ -63,10 +63,8 @@ import { InProgressRow, CondensationResultRow, CondensationErrorRow, TruncationR
 import CodebaseSearchResultsDisplay from "./CodebaseSearchResultsDisplay"
 import { CodebaseSearchActivity } from "./CodebaseSearchActivity"
 import { FileSearchBatch } from "./FileSearchBatch"
-import { appendImages } from "@src/utils/imageUtils"
 import { McpExecution } from "./McpExecution"
 import { ChatTextArea } from "./ChatTextArea"
-import { MAX_IMAGES_PER_MESSAGE } from "./ChatView"
 import { useSelectedModel } from "../ui/hooks/useSelectedModel"
 import {
 	Eye,
@@ -322,22 +320,6 @@ const ChatRowContentInner = ({
 		})
 	}, [currentTaskId, isCurrentStoredPlan, messageActionsDisabled, storedDesignHandoff])
 
-	// Handle message events for image selection during edit mode
-	useEffect(() => {
-		// Closed edit buffers must not receive every streamed extension update.
-		if (!isEditing) return
-
-		const handleMessage = (event: MessageEvent) => {
-			const msg = event.data
-			if (msg.type === "selectedImages" && msg.context === "edit" && msg.messageTs === message.ts && isEditing) {
-				setEditImages((prevImages) => appendImages(prevImages, msg.images, MAX_IMAGES_PER_MESSAGE))
-			}
-		}
-
-		window.addEventListener("message", handleMessage)
-		return () => window.removeEventListener("message", handleMessage)
-	}, [isEditing, message.ts])
-
 	// Memoized callback to prevent re-renders caused by inline arrow functions.
 	const handleToggleExpand = useCallback(() => {
 		onToggleExpand(message.ts)
@@ -408,11 +390,6 @@ const ChatRowContentInner = ({
 			}
 		}
 	}, [currentTaskId, getAlphaMessages, messageActionsDisabled, message.partial, message.ts])
-
-	// Handle image selection for editing
-	const handleSelectImages = useCallback(() => {
-		vscode.postMessage({ type: "selectImages", context: "edit", messageTs: message.ts })
-	}, [message.ts])
 
 	const [cost, apiReqCancelReason, apiReqStreamingFailedMessage, apiReqAgentStopMessageId] = useMemo(() => {
 		if (message.text !== null && message.text !== undefined && message.say === "api_req_started") {
@@ -1626,7 +1603,6 @@ const ChatRowContentInner = ({
 											selectedImages={editImages}
 											setSelectedImages={setEditImages}
 											onSend={handleSaveEdit}
-											onSelectImages={handleSelectImages}
 											shouldDisableImages={!modelSupportsImages}
 											mode={editMode}
 											setMode={setEditMode}

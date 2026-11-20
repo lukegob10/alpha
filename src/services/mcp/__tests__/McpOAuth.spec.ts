@@ -121,10 +121,27 @@ it("rejects cancellation before network access", async () => {
 	expect(fetcher).not.toHaveBeenCalled()
 })
 
+it("does not start an SDK discovery request after disconnect", async () => {
+	const { request, fetcher, controller } = fixture()
+	const reason = new Error("connection replaced")
+	let discovery: Promise<Response> | undefined
+	fetcher.mockResolvedValueOnce(new Response(null, { status: 401 })).mockResolvedValue(new Response("unused"))
+	vi.mocked(auth).mockImplementationOnce(async (_provider, options) => {
+		controller.abort(reason)
+		discovery = options.fetchFn!("https://issuer.example/.well-known/oauth-authorization-server")
+		await discovery
+		return "AUTHORIZED"
+	})
+	await expect(request("https://mcp.example/tools")).rejects.toBe(reason)
+	await expect(discovery).rejects.toBe(reason)
+	expect(fetcher).toHaveBeenCalledOnce()
+})
+
 it("aborts held discovery HTTP when the authorization deadline expires", async () => {
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
 	const { request, fetcher } = fixture()
 	let discoverySignal: AbortSignal | undefined
+	let discover!: () => Promise<Response>
 	let started!: () => void
 	const discoveryStarted = new Promise<void>((resolve) => {
 		started = resolve
@@ -136,7 +153,8 @@ it("aborts held discovery HTTP when the authorization deadline expires", async (
 		return new Promise<Response>(() => {})
 	})
 	vi.mocked(auth).mockImplementationOnce(async (_provider, options) => {
-		await options.fetchFn!("https://issuer.example/.well-known/oauth-authorization-server")
+		discover = () => options.fetchFn!("https://issuer.example/.well-known/oauth-authorization-server")
+		await discover()
 		return "AUTHORIZED"
 	})
 	const result = request("https://mcp.example/tools")
@@ -146,6 +164,8 @@ it("aborts held discovery HTTP when the authorization deadline expires", async (
 	await vi.advanceTimersByTimeAsync(120_000)
 	await rejected
 	expect(discoverySignal?.aborted).toBe(true)
+	await expect(discover()).rejects.toThrow("timed out")
+	expect(fetcher).toHaveBeenCalledTimes(2)
 	expect(vi.getTimerCount()).toBe(0)
 })
 

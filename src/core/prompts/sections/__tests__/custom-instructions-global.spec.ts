@@ -10,7 +10,6 @@ const {
 	mockRealpath,
 	mockGetConfigDirectoriesForCwd,
 	mockGetAllConfigDirectoriesForCwd,
-	mockGetAgentsDirectoriesForCwd,
 	mockGetProjectInstructionDirectoriesForCwd,
 	mockGetGlobalConfigDirectory,
 } = vi.hoisted(() => ({
@@ -22,7 +21,6 @@ const {
 	mockRealpath: vi.fn(),
 	mockGetConfigDirectoriesForCwd: vi.fn(),
 	mockGetAllConfigDirectoriesForCwd: vi.fn(),
-	mockGetAgentsDirectoriesForCwd: vi.fn(),
 	mockGetProjectInstructionDirectoriesForCwd: vi.fn(),
 	mockGetGlobalConfigDirectory: vi.fn(),
 }))
@@ -51,7 +49,6 @@ vi.mock("../../../../services/config-paths", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../../../services/config-paths")>()),
 	getConfigDirectoriesForCwd: mockGetConfigDirectoriesForCwd,
 	getAllConfigDirectoriesForCwd: mockGetAllConfigDirectoriesForCwd,
-	getAgentsDirectoriesForCwd: mockGetAgentsDirectoriesForCwd,
 	getProjectInstructionDirectoriesForCwd: mockGetProjectInstructionDirectoriesForCwd,
 	getGlobalConfigDirectory: mockGetGlobalConfigDirectory,
 }))
@@ -70,8 +67,6 @@ describe("custom-instructions global .alpha support", () => {
 		mockGetConfigDirectoriesForCwd.mockReturnValue([globalConfigDir, projectConfigDir])
 		// getAllConfigDirectoriesForCwd is now async and returns the same directories by default
 		mockGetAllConfigDirectoriesForCwd.mockResolvedValue([globalConfigDir, projectConfigDir])
-		// getAgentsDirectoriesForCwd returns parent directories (without .alpha)
-		mockGetAgentsDirectoriesForCwd.mockResolvedValue([mockCwd])
 		mockGetProjectInstructionDirectoriesForCwd.mockResolvedValue({ root: mockCwd, directories: [mockCwd] })
 		mockGetGlobalConfigDirectory.mockReturnValue(globalConfigDir)
 		// Default lstat to reject (file not found)

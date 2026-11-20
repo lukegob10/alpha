@@ -10,10 +10,7 @@ import { t } from "../../i18n"
 
 export class Terminal extends BaseTerminal {
 	public terminal: vscode.Terminal
-	readonly commandShellFamily?: CommandShellLaunch["family"]
 	private readonly pendingProcesses = new Set<TerminalProcess>()
-
-	public cmdCounter: number = 0
 
 	constructor(
 		id: number,
@@ -28,7 +25,6 @@ export class Terminal extends BaseTerminal {
 		const env = { ...Terminal.getEnv(), ...(zshDirectory ? { ZDOTDIR: zshDirectory } : {}), ...commandEnv }
 		const iconPath = new vscode.ThemeIcon("rocket")
 		const commandShell = shellLaunch ?? (terminal ? undefined : getDefaultWindowsCommandShell())
-		this.commandShellFamily = commandShell?.family
 		this.terminal =
 			terminal ??
 			vscode.window.createTerminal({
@@ -243,14 +239,6 @@ export class Terminal extends BaseTerminal {
 		// Set Powerlevel10k shell integration if enabled
 		if (Terminal.getTerminalZshP10k()) {
 			env.POWERLEVEL9K_TERM_SHELL_INTEGRATION = "true"
-		}
-
-		// VSCode bug#237208: Command output can be lost due to a race between completion
-		// sequences and consumers. Add delay via PROMPT_COMMAND to ensure the
-		// \x1b]633;D escape sequence arrives after command output is processed.
-		// Only add this if commandDelay is not zero
-		if (Terminal.getCommandDelay() > 0) {
-			env.PROMPT_COMMAND = `sleep ${Terminal.getCommandDelay() / 1000}`
 		}
 
 		// Clear the ZSH EOL mark to prevent issues with command output interpretation

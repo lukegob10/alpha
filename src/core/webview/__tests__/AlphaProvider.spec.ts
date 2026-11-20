@@ -693,7 +693,7 @@ describe("AlphaProvider", () => {
 			tokenUsage,
 			toolUsage: {},
 		})
-		;(provider as any).publishDurableManagedTaskCompletion(child.taskId)
+		Reflect.get(provider, "publishDurableManagedTaskCompletion").call(provider, child.taskId, "completed")
 
 		expect(providerCompletion).toHaveBeenCalledWith(child.taskId, tokenUsage, {})
 	})
@@ -796,12 +796,12 @@ describe("AlphaProvider", () => {
 				terminalPowershellCounter: true,
 				terminalZdotdir: true,
 			},
-			expected: [0, false, 25, false, true, true, true, true],
+			expected: [0, false, false, true, true, true],
 		},
 		{
 			label: "defaults",
 			settings: {},
-			expected: [Terminal.defaultShellIntegrationTimeout, true, 0, true, false, false, false, false],
+			expected: [Terminal.defaultShellIntegrationTimeout, true, true, false, false, false],
 		},
 	])("hydrates terminal settings from $label without projecting extension state", async ({ settings, expected }) => {
 		await provider.contextProxy.setValues(settings)
@@ -809,11 +809,9 @@ describe("AlphaProvider", () => {
 		const terminalSetters = [
 			vi.spyOn(Terminal, "setShellIntegrationTimeout").mockImplementation(() => undefined),
 			vi.spyOn(Terminal, "setShellIntegrationDisabled").mockImplementation(() => undefined),
-			vi.spyOn(Terminal, "setCommandDelay").mockImplementation(() => undefined),
 			vi.spyOn(Terminal, "setTerminalZshClearEolMark").mockImplementation(() => undefined),
 			vi.spyOn(Terminal, "setTerminalZshOhMy").mockImplementation(() => undefined),
 			vi.spyOn(Terminal, "setTerminalZshP10k").mockImplementation(() => undefined),
-			vi.spyOn(Terminal, "setPowershellCounter").mockImplementation(() => undefined),
 			vi.spyOn(Terminal, "setTerminalZdotdir").mockImplementation(() => undefined),
 		]
 		try {

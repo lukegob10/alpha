@@ -8,6 +8,7 @@ import { GlobalFileNames } from "../../../shared/globalFileNames"
 
 const migration = vi.hoisted(() => ({
 	primaryPath: "",
+	unreadableFallbackPath: "",
 	beforeRename: undefined as (() => Promise<void>) | undefined,
 	missingObserved: undefined as (() => void) | undefined,
 	publishAuthority: undefined as (() => Promise<void>) | undefined,
@@ -15,9 +16,15 @@ const migration = vi.hoisted(() => ({
 
 vi.mock("fs/promises", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("fs/promises")>()
+	const checkAccess = (file: unknown) => {
+		if (String(file) === migration.unreadableFallbackPath) {
+			throw Object.assign(new Error("Access denied"), { code: "EACCES" })
+		}
+	}
 	const mocked = {
 		...actual,
 		access: (async (...args) => {
+			checkAccess(args[0])
 			try {
 				return await actual.access(...args)
 			} catch (error) {
@@ -30,12 +37,42 @@ vi.mock("fs/promises", async (importOriginal) => {
 				throw error
 			}
 		}) as typeof actual.access,
+		readFile: (async (...args: Parameters<typeof actual.readFile>) => {
+			checkAccess(args[0])
+			return actual.readFile(...args)
+		}) as typeof actual.readFile,
 		rename: (async (source, destination) => {
 			if (String(destination) === migration.primaryPath) await migration.beforeRename?.()
 			return actual.rename(source, destination)
 		}) as typeof actual.rename,
 	}
 	return { ...mocked, default: mocked }
+})
+
+it("rejects an unreadable legacy fallback without reporting a missing transcript", async () => {
+	const storagePath = await fs.mkdtemp(path.join(os.tmpdir(), "alpha-migration-unreadable-"))
+	const taskId = "migration-unreadable"
+	const taskDirectory = path.join(storagePath, "tasks", taskId)
+	const fallbackPath = path.join(taskDirectory, "claude_messages.json")
+	const fallback = JSON.stringify([{ role: "user", content: "Existing conversation" }])
+	const onRead = vi.fn()
+	try {
+		await fs.mkdir(taskDirectory, { recursive: true })
+		await fs.writeFile(fallbackPath, fallback)
+		migration.unreadableFallbackPath = fallbackPath
+
+		await expect(readApiMessages({ taskId, globalStoragePath: storagePath, onRead })).rejects.toMatchObject({
+			code: "read_failed",
+			cause: { code: "EACCES" },
+		})
+		expect(onRead).not.toHaveBeenCalled()
+		migration.unreadableFallbackPath = ""
+		expect(await fs.readFile(fallbackPath, "utf8")).toBe(fallback)
+		expect(await fs.readdir(taskDirectory)).toEqual(["claude_messages.json"])
+	} finally {
+		migration.unreadableFallbackPath = ""
+		await fs.rm(storagePath, { recursive: true, force: true })
+	}
 })
 
 it("reads the committed authority after another cold reader completes migration", async () => {

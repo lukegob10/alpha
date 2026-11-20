@@ -75,7 +75,6 @@ function Composer({
 				selectApiConfigDisabled={false}
 				placeholderText="Message"
 				onSend={() => onSend(composer.selectedImages)}
-				onSelectImages={noOp}
 				shouldDisableImages={false}
 				mode={defaultModeSlug}
 				setMode={noOp}
@@ -149,6 +148,7 @@ describe("asynchronous composer image ownership", () => {
 
 		await act(async () => reader.finish(image))
 		expect(send).toBeEnabled()
+		expect(vscode.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: "draggedImages" }))
 		fireEvent.click(send)
 		expect(onSend).toHaveBeenCalledExactlyOnceWith([image])
 	})

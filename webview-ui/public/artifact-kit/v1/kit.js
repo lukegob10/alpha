@@ -18,7 +18,8 @@
 		imageUnavailable:
 			"Image unavailable. Check the workspace path and use a static PNG or JPEG within the documented size limits.",
 		missing: "Missing",
-		inspect: "Chart values are available in the data table. Focus a plotted value to inspect it.",
+		inspect:
+			"Tab to a plotted value, then use the arrow keys to inspect it and its neighbors. Home and End jump to the first and last values. The table lists all observations.",
 		sortAscending: "ascending",
 		sortDescending: "descending",
 	}
@@ -338,11 +339,13 @@
 			viewport.tabIndex = 0
 			viewport.setAttribute("role", "group")
 			viewport.setAttribute("aria-label", figure.querySelector("figcaption").textContent.trim())
+			viewport.setAttribute("aria-description", t("inspect"))
 			viewport.append(svg)
 			table.parentNode.insertBefore(viewport, table)
 			cleanups.push(() => svg.remove())
 			const status = notice(figure, "inspect")
 			status.setAttribute("role", "status")
+			viewport.before(status)
 			function shape(tag, attrs, text) {
 				const el = doc.createElementNS(ns, tag)
 				for (const [key, value] of Object.entries(attrs)) el.setAttribute(key, String(value))
@@ -370,6 +373,8 @@
 				)
 			}
 			shape("text", { x: 95, y: 18 }, unit)
+			const points = []
+			let activeIndex = 0
 			for (const [s, head] of series.entries()) {
 				shape("line", {
 					x1: 65 + s * 205,
@@ -409,7 +414,9 @@
 									class: `series-${s}`,
 								})
 							: shape("circle", { cx: x(i), cy: y(value), r: 4 + s, class: `series-${s}` })
-					point.setAttribute("tabindex", "0")
+					const index = points.length
+					points.push(point)
+					point.tabIndex = index === 0 ? 0 : -1
 					if (type === "bar" && series.length > 1)
 						shape(
 							"text",
@@ -426,6 +433,9 @@
 					title.textContent = label
 					point.append(title)
 					listen(point, "focus", () => {
+						points[activeIndex].tabIndex = -1
+						activeIndex = index
+						point.tabIndex = 0
 						status.textContent = label
 					})
 					listen(point, "pointerenter", () => {
@@ -435,6 +445,37 @@
 				}
 				flush()
 			}
+			listen(svg, "keydown", (event) => {
+				if (
+					event.target !== points[activeIndex] ||
+					event.altKey ||
+					event.ctrlKey ||
+					event.metaKey ||
+					event.shiftKey
+				)
+					return
+				let next
+				switch (event.key) {
+					case "ArrowLeft":
+					case "ArrowUp":
+						next = Math.max(0, activeIndex - 1)
+						break
+					case "ArrowRight":
+					case "ArrowDown":
+						next = Math.min(points.length - 1, activeIndex + 1)
+						break
+					case "Home":
+						next = 0
+						break
+					case "End":
+						next = points.length - 1
+						break
+					default:
+						return
+				}
+				event.preventDefault()
+				points[next].focus()
+			})
 			const stride = Math.max(1, Math.ceil(rows.length / 5))
 			rows.forEach((row, i) => {
 				if (i % stride === 0 || i === rows.length - 1)

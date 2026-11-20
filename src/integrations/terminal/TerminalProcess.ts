@@ -1,4 +1,4 @@
-import * as vscode from "vscode"
+import type * as vscode from "vscode"
 import { inspect } from "util"
 
 import { MAX_TERMINAL_OUTPUT_RECEIPT_CARRY_CHARACTERS } from "./types"
@@ -272,20 +272,12 @@ export class TerminalProcess extends BaseTerminalProcess {
 			if (onShellExecutionComplete) this.removeListener("shell_execution_complete", onShellExecutionComplete)
 		}
 
-		let commandToExecute = command
-		if (this.usesWindowsPowerShell()) {
-			if (Terminal.getPowershellCounter()) {
-				commandToExecute += ` ; "(Alpha/PS Workaround: ${this.terminal.cmdCounter++})" > $null`
-			}
-			if (Terminal.getCommandDelay() > 0) {
-				commandToExecute += ` ; start-sleep -milliseconds ${Terminal.getCommandDelay()}`
-			}
-		}
 		const pendingShellEvents: (() => void)[] = []
 		this.pendingShellEvents = pendingShellEvents
 		try {
 			this.commandSubmitted = true
-			this.shellExecution = terminal.shellIntegration.executeCommand(commandToExecute)
+			// VS Code reports PowerShell's last statement status. Keep the approved command intact.
+			this.shellExecution = terminal.shellIntegration.executeCommand(command)
 			// Once the host has accepted the command, a missing stream
 			// cannot release the shell for reuse. Only its end or close can.
 			if (this.shellExecution && this.terminal.process === this) this.terminal.running = true
@@ -430,16 +422,6 @@ export class TerminalProcess extends BaseTerminalProcess {
 		await this.finishCompletion(this.getOutputTranscript())
 	}
 
-	private usesWindowsPowerShell(): boolean {
-		if (process.platform !== "win32") return false
-		const family = this.terminal.commandShellFamily
-		if (family) return family === "powershell"
-		const profile = vscode.workspace
-			.getConfiguration("terminal.integrated.defaultProfile")
-			.get<string | null>("windows")
-		return profile === null || profile?.toLowerCase().includes("powershell") === true
-	}
-
 	public override continue() {
 		this.emitRemainingBufferIfListening()
 		this.isListening = false
@@ -456,7 +438,7 @@ export class TerminalProcess extends BaseTerminalProcess {
 			try {
 				// Send SIGINT using CTRL+C. Only an accepted interrupt is idempotent;
 				// a synchronous transport failure must leave cleanup retryable.
-				this.terminal.terminal.sendText("\x03")
+				this.terminal.terminal.sendText("\x03", false)
 			} catch (error) {
 				this.aborted = false
 				throw error

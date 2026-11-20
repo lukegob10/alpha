@@ -15,6 +15,11 @@ describe("API Stream Types", () => {
 		expect(isApiStreamSemanticChunk({ type: "text", text: "Visible.", phase: "final_answer" })).toBe(true)
 	})
 
+	it("classifies an empty indexed text chunk as structural and preserves whitespace output", () => {
+		expect(isApiStreamSemanticChunk({ type: "text", text: "", outputIndex: 0 })).toBe(false)
+		expect(isApiStreamSemanticChunk({ type: "text", text: "\n", outputIndex: 0 })).toBe(true)
+	})
+
 	describe("ApiStreamChunk", () => {
 		it("should correctly handle text chunks", () => {
 			const textChunk: ApiStreamChunk = {

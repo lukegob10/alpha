@@ -253,8 +253,8 @@ export class ProviderProfileSaveError extends Error {
 }
 
 export type ProviderProfileSaved = Pick<ProviderSettingsEntry, "id" | "name" | "version">
-export type ProviderProfileSaveTarget = { id: string; expectedVersion?: string }
-export type ProviderProfileCreateTarget = { name: string; createOnly: true }
+export type ProviderProfileSaveTarget = { id: string; expectedVersion?: string; expectedName?: string }
+export type ProviderProfileCreateTarget = { name: string; createOnly: true; caseInsensitive?: true }
 
 export interface ProviderProfileRename {
 	id: string
@@ -703,7 +703,12 @@ export class ProviderSettingsManager {
 					if (
 						typeof target !== "string" &&
 						(Object.hasOwn(providerProfiles.apiConfigs, name) ||
-							Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name))
+							Object.hasOwn(providerProfiles.retainedApiConfigs ?? {}, name) ||
+							(target.caseInsensitive &&
+								[
+									...Object.keys(providerProfiles.apiConfigs),
+									...Object.keys(providerProfiles.retainedApiConfigs ?? {}),
+								].some((existingName) => existingName.toLowerCase() === name.toLowerCase())))
 					) {
 						throw new ProviderProfileSaveError("conflict")
 					}
@@ -712,7 +717,9 @@ export class ProviderSettingsManager {
 					const matches = this.profileEntries(providerProfiles).filter(({ id }) => id === target.id)
 					if (matches.length > 1) throw new ProviderProfileSaveError("invalid")
 					const entry = matches[0]
-					if (!entry) throw new ProviderProfileSaveError("notFound")
+					if (!entry || (target.expectedName !== undefined && entry.name !== target.expectedName)) {
+						throw new ProviderProfileSaveError("notFound")
+					}
 					name = entry.name
 					id = target.id
 					if (target.expectedVersion !== undefined) {
@@ -975,15 +982,14 @@ export class ProviderSettingsManager {
 					// Try to build an API handler to get model information
 					try {
 						const apiHandler = buildApiHandler(configs[name])
-						const modelInfo = apiHandler.getModel().info
-
-						// Check if the model supports reasoning budgets
-						const supportsReasoningBudget =
-							modelInfo.supportsReasoningBudget || modelInfo.requiredReasoningBudget
-
-						// The output cap is independent of reasoning controls and must survive export.
-						if (!supportsReasoningBudget) {
-							delete configs[name].modelMaxThinkingTokens
+						try {
+							const { supportsReasoningBudget, requiredReasoningBudget } = apiHandler.getModel().info
+							// The output cap is independent of reasoning controls and must survive export.
+							if (!supportsReasoningBudget && !requiredReasoningBudget) {
+								delete configs[name].modelMaxThinkingTokens
+							}
+						} finally {
+							apiHandler.dispose?.()
 						}
 					} catch (error) {
 						// If we can't build the API handler or get model info, skip filtering
@@ -1077,12 +1083,29 @@ export class ProviderSettingsManager {
 	public async resetAllConfigs() {
 		return await this.lock(async () => {
 			const nextHash = profileVersion(null)
-			if (this.fencePath)
-				await this.writeFence({ format: 1, state: "prepared", previousHash: nextHash, nextHash })
-			// Delete the recovery source first so a successful reset cannot resurrect it.
-			await this.context.secrets.delete(ProviderSettingsManager.LEGACY_SECRETS_KEY)
-			await this.context.secrets.delete(this.secretsKey)
-			if (this.fencePath) await this.writeFence({ format: 1, state: "committed", hash: nextHash })
+			let previousHash: string | undefined
+			if (this.fencePath) {
+				try {
+					previousHash = await this.verifyFence(await this.context.secrets.get(this.secretsKey))
+				} catch {
+					// An explicit reset can recover from invalid data or an unsettled receipt.
+				}
+				await this.writeFence({
+					format: 1,
+					state: "prepared",
+					previousHash: previousHash ?? nextHash,
+					nextHash,
+				})
+			}
+			try {
+				// Delete the recovery source first so a successful reset cannot resurrect it.
+				await this.context.secrets.delete(ProviderSettingsManager.LEGACY_SECRETS_KEY)
+				await this.context.secrets.delete(this.secretsKey)
+			} catch (error) {
+				if (previousHash !== undefined) await this.recoverRejectedWrite(previousHash, nextHash)
+				throw error
+			}
+			await this.writeFence({ format: 1, state: "committed", hash: nextHash })
 		})
 	}
 
@@ -1093,6 +1116,18 @@ export class ProviderSettingsManager {
 
 	private async writeFence(fence: ProviderStorageFence) {
 		if (this.fencePath) await atomicWriteText(this.fencePath, JSON.stringify(fence), { requireAtomicReplace: true })
+	}
+
+	private async recoverRejectedWrite(previousHash: string, nextHash: string): Promise<boolean> {
+		try {
+			const observed = await this.context.secrets.get(this.secretsKey)
+			const observedHash = profileVersion(observed ? JSON.parse(observed) : null)
+			if (observedHash !== previousHash) return observedHash === nextHash
+			await this.writeFence({ format: 1, state: "committed", hash: previousHash })
+		} catch {
+			// Keep the prepared receipt when readback or rollback leaves acceptance uncertain.
+		}
+		return false
 	}
 
 	private async verifyFence(content: string | undefined): Promise<string> {
@@ -1190,17 +1225,8 @@ export class ProviderSettingsManager {
 			try {
 				await this.context.secrets.store(this.secretsKey, content)
 			} catch (error) {
-				let accepted = false
-				try {
-					const observed = await this.context.secrets.get(this.secretsKey)
-					const observedHash = profileVersion(observed ? JSON.parse(observed) : null)
-					if (observedHash === previousHash)
-						await this.writeFence({ format: 1, state: "committed", hash: previousHash })
-					else accepted = observedHash === nextHash
-				} catch {
-					// Keep the prepared fence when rejection/readback/rollback leaves acceptance uncertain.
-				}
-				if (accepted) throw new ProviderProfileCommitPendingError()
+				if (await this.recoverRejectedWrite(previousHash, nextHash))
+					throw new ProviderProfileCommitPendingError()
 				throw error
 			}
 			try {

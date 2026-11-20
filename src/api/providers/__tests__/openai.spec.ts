@@ -2460,6 +2460,38 @@ describe("getOpenAiModels", () => {
 		vi.mocked(axios.get).mockClear()
 	})
 
+	it("does not dispatch after the lookup owner has cancelled", async () => {
+		const controller = new AbortController()
+		controller.abort()
+		expect(await getOpenAiModels("https://api.example.com/v1", "test-key", undefined, controller.signal)).toEqual(
+			[],
+		)
+		expect(axios.get).not.toHaveBeenCalled()
+	})
+
+	it("bounds the lookup and clears its deadline on settlement", async () => {
+		vi.useFakeTimers()
+		try {
+			vi.mocked(axios.get).mockImplementationOnce(async (_url, config) => {
+				const signal = config?.signal
+				if (!(signal instanceof AbortSignal)) throw new Error("expected a discovery signal")
+				return new Promise((_, reject) =>
+					signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }),
+				)
+			})
+			const timedOut = getOpenAiModels("https://api.example.com/v1", "test-key")
+			await vi.advanceTimersToNextTimerAsync()
+			expect(vi.mocked(axios.get).mock.calls[0]?.[1]?.signal?.aborted).toBe(true)
+			await expect(timedOut).resolves.toEqual([])
+
+			vi.mocked(axios.get).mockResolvedValueOnce({ data: { data: [{ id: "model" }] } })
+			await expect(getOpenAiModels("https://api.example.com/v1", "test-key")).resolves.toEqual(["model"])
+			expect(vi.getTimerCount()).toBe(0)
+		} finally {
+			vi.useRealTimers()
+		}
+	})
+
 	it("should return empty array when baseUrl is not provided", async () => {
 		const result = await getOpenAiModels(undefined, "test-key")
 		expect(result).toEqual([])

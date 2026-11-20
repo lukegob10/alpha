@@ -78,6 +78,20 @@ describe("API stream cancellation", () => {
 		expect(close).toHaveBeenCalledOnce()
 	})
 
+	it("drops a queued source item when cancellation arrives before it is yielded", async () => {
+		const controller = new AbortController()
+		const next = vi.fn(async () => ({ done: false as const, value: "Queued output" }))
+		const close = vi.fn(async () => ({ done: true as const, value: undefined }))
+		const source = { [Symbol.asyncIterator]: () => ({ next, return: close }) }
+		const read = iterateApiStreamWithAbort(source, controller.signal).next()
+
+		controller.abort()
+
+		await expect(read).resolves.toMatchObject({ done: true })
+		expect(next).toHaveBeenCalledOnce()
+		expect(close).toHaveBeenCalledOnce()
+	})
+
 	it.each([true, false])(
 		"consumes late transport rejection when cancellation is already pending: %s",
 		async (aborted) => {
@@ -109,6 +123,19 @@ describe("API stream cancellation", () => {
 	it("preserves transport failures while the caller remains active", async () => {
 		const failure = new Error("Provider unavailable")
 		await expect(raceApiStreamAbort(Promise.reject(failure), new AbortController().signal)).rejects.toBe(failure)
+	})
+
+	it("observes a lazy transport thenable once", async () => {
+		const response = Promise.resolve("Provider output")
+		const startTransport = vi.fn(() => response)
+		const transport: PromiseLike<string> = {
+			then(onFulfilled, onRejected) {
+				return startTransport().then(onFulfilled, onRejected)
+			},
+		}
+
+		await expect(raceApiStreamAbort(transport, new AbortController().signal)).resolves.toBe("Provider output")
+		expect(startTransport).toHaveBeenCalledOnce()
 	})
 })
 

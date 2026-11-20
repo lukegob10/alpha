@@ -90,33 +90,6 @@ describe("TerminalRegistry", () => {
 			})
 		})
 
-		it("adds PROMPT_COMMAND when Terminal.getCommandDelay() > 0", () => {
-			// Set command delay to 50ms for this test
-			const originalDelay = Terminal.getCommandDelay()
-			Terminal.setCommandDelay(50)
-
-			try {
-				TerminalRegistry.createTerminal("/test/path", "vscode")
-
-				expect(mockCreateTerminal).toHaveBeenCalledWith({
-					...windowsShellOptions,
-					cwd: "/test/path",
-					name: "Alpha",
-					iconPath: expect.any(Object),
-					env: {
-						PAGER,
-						ALPHA_ACTIVE: "true",
-						PROMPT_COMMAND: "sleep 0.05",
-						VTE_VERSION: "0",
-						PROMPT_EOL_MARK: "",
-					},
-				})
-			} finally {
-				// Restore original delay
-				Terminal.setCommandDelay(originalDelay)
-			}
-		})
-
 		it("adds Oh My Zsh integration env var when enabled", () => {
 			Terminal.setTerminalZshOhMy(true)
 			try {

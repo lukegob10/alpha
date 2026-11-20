@@ -476,6 +476,82 @@ describe("Gemini stream fidelity", () => {
 		},
 	)
 
+	describe.each(["native", "Vertex streaming", "Vertex nonstreaming"] as const)("%s finalization", (route) => {
+		async function collect(frames: readonly object[]): Promise<ApiStreamChunk[]> {
+			if (route === "Vertex nonstreaming") {
+				generateContent.mockResolvedValueOnce(frames[0] ?? {})
+			} else {
+				generateContentStream.mockResolvedValueOnce({
+					async *[Symbol.asyncIterator]() {
+						yield* frames
+					},
+				})
+			}
+			const handler =
+				route === "native"
+					? new GeminiHandler({ geminiApiKey: "fixture-key" })
+					: new VertexHandler({
+							apiModelId: "gemini-3.7-flash",
+							vertexProjectId: "fixture-project",
+							vertexRegion: "global",
+							vertexStreamingEnabled: route === "Vertex streaming",
+						})
+			const chunks: ApiStreamChunk[] = []
+			for await (const chunk of handler.createMessage("System", messages)) chunks.push(chunk)
+			return chunks
+		}
+
+		it.each([
+			{ name: "empty reply", frames: [] },
+			{ name: "usage without a candidate", frames: [{ usageMetadata: { promptTokenCount: 17 } }] },
+			{
+				name: "unspecified finish reason",
+				frames: [{ candidates: [{ finishReason: "FINISH_REASON_UNSPECIFIED" }] }],
+			},
+			{
+				name: "unspecified REST prompt block",
+				frames: [{ promptFeedback: { blockReason: "BLOCK_REASON_UNSPECIFIED" } }],
+			},
+			{
+				name: "unspecified SDK prompt block",
+				frames: [{ promptFeedback: { blockReason: "BLOCKED_REASON_UNSPECIFIED" } }],
+			},
+		])("reports $name as a retryable incomplete response without assistant text", async ({ frames }) => {
+			const chunks = await collect(frames)
+			expect(chunks.some((chunk) => chunk.type === "text")).toBe(false)
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "incomplete",
+				terminal: false,
+				semanticOutputObserved: false,
+				retryable: true,
+			})
+			if (frames.some((frame) => "usageMetadata" in frame)) {
+				expect(chunks.filter((chunk) => chunk.type === "usage")).toEqual([
+					expect.objectContaining({ inputTokens: 17 }),
+				])
+			}
+		})
+
+		it.each([
+			{ name: "candidate safety stop", frame: { candidates: [{ finishReason: "SAFETY" }] } },
+			{ name: "prompt safety block", frame: { promptFeedback: { blockReason: "SAFETY" } } },
+		])("keeps $name terminal with a visible safety notice", async ({ frame }) => {
+			const chunks = await collect([frame])
+			expect(chunks).toContainEqual({
+				type: "text",
+				text: commonTranslations.errors.gemini.thinking_complete_safety,
+			})
+			expect(chunks.at(-1)).toMatchObject({
+				type: "outcome",
+				status: "incomplete",
+				terminal: true,
+				semanticOutputObserved: false,
+				retryable: false,
+			})
+		})
+	})
+
 	it("preserves unsigned function parts from an older Vertex model without inventing a signature", async () => {
 		const parts = [{ functionCall: { name: "list_tools" } }]
 		generateContentStream.mockResolvedValue({

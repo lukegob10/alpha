@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, within } from "@/utils/test-utils"
+import { fireEvent, render, screen, waitFor, within } from "@/utils/test-utils"
 import userEvent from "@testing-library/user-event"
 import type { AlphaMessage } from "@alpha-code/types"
 import { ExtensionStateContextProvider } from "@src/context/ExtensionStateContext"
@@ -176,23 +176,19 @@ describe("user message bubbles", () => {
 		})
 	})
 
-	it("retains edited text and attachments while host confirmation is cancelled or the restart fails", () => {
+	it("retains edited text and attachments while host confirmation is cancelled or the restart fails", async () => {
 		const { rerender } = renderMessage(false, true)
 		fireEvent.click(screen.getByRole("button", { name: "Edit and resend" }))
 		const editor = screen.getByRole("textbox", { name: "Edit your message..." })
 		fireEvent.change(editor, { target: { value: "Keep this revised prompt" } })
-		act(() => {
-			window.dispatchEvent(
-				new MessageEvent("message", {
-					data: {
-						type: "selectedImages",
-						context: "edit",
-						messageTs: message.ts,
-						images: ["data:image/png;base64,bmV3"],
-					},
-				}),
-			)
+		const file = new File(["new"], "attachment.png", { type: "image/png" })
+		fireEvent.paste(editor, {
+			clipboardData: {
+				getData: () => "",
+				items: [{ type: file.type, getAsFile: () => file }],
+			},
 		})
+		await waitFor(() => expect(screen.getAllByRole("img")).toHaveLength(2))
 		const request = {
 			type: "submitEditedMessage",
 			value: message.ts,

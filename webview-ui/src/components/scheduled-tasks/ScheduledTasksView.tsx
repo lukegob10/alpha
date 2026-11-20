@@ -89,6 +89,8 @@ const localDateTimeValue = (time: number) => {
 
 const fromLocalDateTimeValue = (value: string) => new Date(value).getTime()
 
+const defaultStartAt = () => localDateTimeValue(Date.now() + 60 * 60 * 1000)
+
 const formatTime = (time?: number) => (time ? new Date(time).toLocaleString() : "Not scheduled")
 
 const buildSchedule = (
@@ -177,15 +179,13 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"
 	const [selectedId, setSelectedId] = useState<string | undefined>()
 	const [acknowledgedTask, setAcknowledgedTask] = useState<ScheduledTask>()
-	const selectedTask =
-		scheduledTasks.find((task) => task.id === selectedId) ??
-		(acknowledgedTask?.id === selectedId ? acknowledgedTask : undefined)
+	const projectedTask = scheduledTasks.find((task) => task.id === selectedId)
+	const selectedTask = projectedTask ?? (acknowledgedTask?.id === selectedId ? acknowledgedTask : undefined)
 	const creationIntent = useRef<CreateScheduledTaskPayload>()
 	const creationPending = useRef(false)
 	const creationTimeout = useRef<ReturnType<typeof setTimeout>>()
 	const [creating, setCreating] = useState(false)
 	const [creationError, setCreationError] = useState<string>()
-	const nowPlusHour = Date.now() + 60 * 60 * 1000
 
 	const [name, setName] = useState("")
 	const [prompt, setPrompt] = useState("")
@@ -209,7 +209,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 	const [approvalMode, setApprovalMode] = useState<ApprovalMode>(DEFAULT_APPROVAL_MODE)
 	const [bypassWarningOpen, setBypassWarningOpen] = useState(false)
 	const [scheduleType, setScheduleType] = useState<ScheduleKind>("daily")
-	const [startAt, setStartAt] = useState(localDateTimeValue(nowPlusHour))
+	const [startAt, setStartAt] = useState(defaultStartAt)
 	const [interval, setIntervalValue] = useState(1)
 	const [notificationPreference, setNotificationPreference] =
 		useState<ScheduledTaskNotificationPreference>("on_failure")
@@ -294,15 +294,13 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		[scheduledTaskRuns, selectedId],
 	)
 
-	const resetForm = () => {
+	const resetForm = useCallback(() => {
 		creationIntent.current = undefined
 		creationPending.current = false
 		clearTimeout(creationTimeout.current)
 		setCreating(false)
 		setCreationError(undefined)
 		setAcknowledgedTask(undefined)
-		handledTargetId.current = targetTaskId
-		hydratedDefaultTask.current = true
 		setName("")
 		setPrompt("")
 		setExecutionType("prompt")
@@ -322,11 +320,23 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 		setApprovalMode(DEFAULT_APPROVAL_MODE)
 		setBypassWarningOpen(false)
 		setScheduleType("daily")
-		setStartAt(localDateTimeValue(nowPlusHour))
+		setStartAt(defaultStartAt())
 		setIntervalValue(1)
 		setNotificationPreference("on_failure")
 		setSelectedId(undefined)
+	}, [cwd, mode])
+
+	const openNewTask = () => {
+		handledTargetId.current = targetTaskId
+		hydratedDefaultTask.current = true
+		resetForm()
 	}
+
+	useEffect(() => {
+		// The acknowledgement only bridges the time before the first authoritative projection.
+		if (projectedTask && acknowledgedTask) setAcknowledgedTask(undefined)
+		if (selectedId && !selectedTask) resetForm()
+	}, [acknowledgedTask, projectedTask, resetForm, selectedId, selectedTask])
 
 	const editTask = useCallback(
 		(task: ScheduledTask) => {
@@ -522,7 +532,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 					<CalendarClock className="size-4 shrink-0 text-vscode-descriptionForeground" aria-hidden="true" />
 					<h3 className="m-0 truncate text-sm font-semibold">Scheduled Tasks</h3>
 				</div>
-				<Button variant="secondary" size="sm" onClick={resetForm} disabled={creating}>
+				<Button variant="secondary" size="sm" onClick={openNewTask} disabled={creating}>
 					<Plus />
 					New
 				</Button>
@@ -644,7 +654,7 @@ const ScheduledTasksView = ({ onDone, targetTaskId }: ScheduledTasksViewProps) =
 														type: "deleteScheduledTask",
 														scheduledTaskId: selectedTask.id,
 													})
-													resetForm()
+													openNewTask()
 												}}>
 												<Trash2 />
 												Delete

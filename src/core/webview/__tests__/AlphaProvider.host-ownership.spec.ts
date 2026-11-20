@@ -4,7 +4,7 @@ import os from "node:os"
 import fs from "node:fs/promises"
 import * as vscode from "vscode"
 
-import { type HistoryItem, AlphaCodeEventName, TaskLifecycleState } from "@alpha-code/types"
+import { type HistoryItem, type WebviewMessage, AlphaCodeEventName, TaskLifecycleState } from "@alpha-code/types"
 
 import { AlphaProvider } from "../AlphaProvider"
 import { TaskSessionRegistry } from "../TaskSessionRegistry"
@@ -20,7 +20,15 @@ import { API } from "../../../extension/api"
 import { openAlphaInNewTab } from "../../../activate/registerCommands"
 
 vi.mock("../../task/Task", () => ({ Task: vi.fn() }))
-vi.mock("../../../activate/registerCommands", () => ({ openAlphaInNewTab: vi.fn() }))
+vi.mock("../../../activate/registerCommands", () => ({ openAlphaInNewTab: vi.fn(), setPanel: vi.fn() }))
+vi.mock("../webviewHtml", () => ({ resolveWebviewHtml: vi.fn(async () => "<html></html>") }))
+vi.mock("vscode", async (importOriginal) => {
+	const vscode = await importOriginal<typeof import("vscode")>()
+	return {
+		...vscode,
+		workspace: { ...vscode.workspace, onDidChangeConfiguration: () => ({ dispose: vi.fn() }) },
+	}
+})
 
 const barrier = () => {
 	let resolve!: () => void
@@ -209,6 +217,44 @@ describe("agent hotkey view ownership", () => {
 		expect(vscode.commands.executeCommand).toHaveBeenLastCalledWith("setContext", "alpha.focusedWebview", "editor")
 	})
 
+	it("focuses the clicked editor in place while global requests are pending", async () => {
+		const source = makeProvider(storage())
+		const other = makeProvider(storage())
+		const busy = barrier()
+		const sourcePanel = { visible: true, active: false, reveal: vi.fn() }
+		const otherPanel = { visible: true, active: true, reveal: vi.fn() }
+		Object.assign(source, { view: sourcePanel, renderContext: "editor", webviewMessageQueue: busy.promise })
+		Object.assign(other, { view: otherPanel, renderContext: "editor" })
+		let receive!: (message: WebviewMessage) => void | Promise<void>
+		const webview = {
+			onDidReceiveMessage: (handler: typeof receive) => {
+				receive = handler
+				return { dispose: vi.fn() }
+			},
+		}
+		Reflect.get(source, "setWebviewMessageListener").call(
+			source,
+			webview,
+			() => Reflect.get(source, "view") === sourcePanel,
+		)
+		const request: WebviewMessage = { type: "focusPanelRequest" }
+		const focus = receive(request)
+		try {
+			expect(sourcePanel.reveal).toHaveBeenCalledExactlyOnceWith(undefined, false)
+			sourcePanel.visible = false
+			expect(receive(request)).toBeUndefined()
+			otherPanel.active = false
+			Object.assign(source, { view: otherPanel })
+			expect(receive(request)).toBeUndefined()
+			expect(sourcePanel.reveal).toHaveBeenCalledOnce()
+			expect(otherPanel.reveal).not.toHaveBeenCalled()
+		} finally {
+			busy.resolve()
+			await focus
+		}
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+	})
+
 	it("clears disposed focus and ignores focus notifications from hidden or disposed views", async () => {
 		const sidebar = makeProvider(storage())
 		Object.assign(sidebar, { view: { visible: false } })
@@ -387,6 +433,89 @@ describe("agent hotkey view ownership", () => {
 		expect(restore).toHaveBeenCalledWith(older, expect.objectContaining({ preserveExisting: true }))
 		expect(provider.getActiveTaskId()).toBe("older")
 		expect(newest.abortTask).not.toHaveBeenCalled()
+	})
+})
+
+describe("sidebar readiness for keyboard commands", () => {
+	beforeEach(() => {
+		vi.useFakeTimers()
+		vi.spyOn(vscode.commands, "executeCommand").mockResolvedValue(undefined)
+	})
+	afterEach(() => vi.useRealTimers())
+
+	it("returns an already visible provider immediately", async () => {
+		const sidebar = makeProvider(storage())
+		Object.assign(sidebar, { view: { visible: true } })
+
+		await expect(AlphaProvider.getInstance()).resolves.toBe(sidebar)
+		expect(vscode.commands.executeCommand).not.toHaveBeenCalled()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("waits beyond the old delay for a cold sidebar renderer to launch", async () => {
+		const sidebar = makeProvider(storage())
+		const lookup = AlphaProvider.getInstance()
+		const received = vi.fn()
+		void lookup.then(received)
+
+		await vi.advanceTimersByTimeAsync(200)
+		expect(vscode.commands.executeCommand).toHaveBeenCalledWith(`${AlphaProvider.sideBarId}.focus`)
+		expect(received).not.toHaveBeenCalled()
+		Object.assign(sidebar, { view: { visible: true } })
+		sidebar.isViewLaunched = true
+
+		await expect(lookup).resolves.toBe(sidebar)
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("waits for a launched but hidden sidebar to become visible", async () => {
+		const sidebar = makeProvider(storage())
+		let visibilityChanged!: () => void
+		const view = {
+			visible: false,
+			webview: { onDidReceiveMessage: () => ({ dispose: vi.fn() }) },
+			onDidDispose: () => ({ dispose: vi.fn() }),
+			onDidChangeVisibility: (handler: () => void) => {
+				visibilityChanged = handler
+				return { dispose: vi.fn() }
+			},
+		}
+		vi.spyOn(sidebar, "getCurrentWorkspaceCodeIndexManager").mockReturnValue(undefined)
+		vi.spyOn(sidebar, "removeTaskFromStack").mockResolvedValue(undefined)
+		await sidebar.resolveWebviewView(view as unknown as vscode.WebviewView)
+		sidebar.isViewLaunched = true
+
+		const lookup = AlphaProvider.getInstance()
+		const received = vi.fn()
+		void lookup.then(received)
+		await vi.advanceTimersByTimeAsync(200)
+		expect(received).not.toHaveBeenCalled()
+
+		view.visible = true
+		visibilityChanged()
+		await expect(lookup).resolves.toBe(sidebar)
+		expect(vi.getTimerCount()).toBe(0)
+		await sidebar.dispose()
+	})
+
+	it("releases readiness waiters when the provider is disposed", async () => {
+		const sidebar = makeProvider(storage())
+		const lookup = AlphaProvider.getInstance()
+		await vi.advanceTimersByTimeAsync(0)
+		expect(vi.getTimerCount()).toBe(1)
+
+		await sidebar.dispose()
+		await expect(lookup).resolves.toBeUndefined()
+		expect(vi.getTimerCount()).toBe(0)
+	})
+
+	it("cleans up when the focused sidebar never launches", async () => {
+		makeProvider(storage())
+		const lookup = AlphaProvider.getInstance()
+
+		await vi.advanceTimersByTimeAsync(5_000)
+		await expect(lookup).resolves.toBeUndefined()
+		expect(vi.getTimerCount()).toBe(0)
 	})
 })
 
@@ -843,6 +972,104 @@ describe("AlphaProvider host ownership", () => {
 			release.resolve()
 			await initial
 		}
+	})
+
+	it("streams the full thinking row to a ready view while a launched peer is stalled", async () => {
+		const host = storage()
+		const slow = makeProvider(host)
+		const ready = makeProvider(host)
+		const task = makeTask("shared")
+		await slow.addTaskToStack(task)
+		await ready.focusTask(task.taskId)
+		for (const view of [slow, ready]) {
+			view.isViewLaunched = true
+			vi.mocked(view.postMessageToWebview).mockClear()
+		}
+		const release = barrier()
+		const slowTransport = vi.mocked(slow.postMessageToWebview)
+		slowTransport.mockImplementationOnce(() => release.promise)
+		const row = { ts: 1, type: "say" as const, say: "reasoning" as const, text: "I", partial: true }
+		const sentence = "I should check the result."
+		const stream = (async () => {
+			await slow.postTaskMessageToWebview("messageCreated", task.taskId, row)
+			for (let length = 2; length <= sentence.length; length++) {
+				await slow.postTaskMessageToWebview("messageUpdated", task.taskId, {
+					...row,
+					text: sentence.slice(0, length),
+				})
+			}
+		})()
+
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve))
+			expect(ready.postMessageToWebview).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "messageUpdated", alphaMessage: { ...row, text: sentence } }),
+			)
+			expect(slowTransport).toHaveBeenCalledTimes(1)
+		} finally {
+			release.resolve()
+			await stream
+		}
+		await new Promise<void>((resolve) => setImmediate(resolve))
+		expect(slowTransport).toHaveBeenCalledTimes(2)
+		expect(slowTransport).toHaveBeenLastCalledWith(
+			expect.objectContaining({ type: "messageUpdated", alphaMessage: { ...row, text: sentence } }),
+		)
+	})
+
+	it("sends final thinking immediately and discards its buffered partial", async () => {
+		const view = makeProvider(storage())
+		const task = makeTask("final-thinking")
+		await view.addTaskToStack(task)
+		view.isViewLaunched = true
+		const release = barrier()
+		const transport = vi.mocked(view.postMessageToWebview).mockClear()
+		transport.mockImplementationOnce(() => release.promise)
+		const row = { ts: 1, type: "say" as const, say: "reasoning" as const, text: "I", partial: true }
+		const first = view.postTaskMessageToWebview("messageCreated", task.taskId, row)
+		const final = { ...row, text: "I checked the result.", partial: false }
+		try {
+			await view.postTaskMessageToWebview("messageUpdated", task.taskId, { ...row, text: "I checked" })
+			await view.postTaskMessageToWebview("messageUpdated", task.taskId, final)
+			expect(transport).toHaveBeenLastCalledWith(expect.objectContaining({ alphaMessage: final }))
+		} finally {
+			release.resolve()
+			await first
+		}
+		expect(transport).toHaveBeenCalledTimes(2)
+	})
+
+	it("refreshes the selected transcript when a slow view missed updates to different rows", async () => {
+		const view = makeProvider(storage())
+		const task = makeTask("interleaved-previews")
+		await view.addTaskToStack(task)
+		view.isViewLaunched = true
+		const published = view["publishedTaskTranscriptRevisions"]
+		const initialRevision = sessions(view).getTranscriptRevision(task.taskId)!
+		published.set(task.taskId, initialRevision)
+		const release = barrier()
+		const transport = vi.mocked(view.postMessageToWebview).mockClear()
+		transport.mockImplementationOnce(() => release.promise)
+		const thought = { ts: 1, type: "say" as const, say: "reasoning" as const, text: "I", partial: true }
+		const answer = { ...thought, ts: 2, say: "text" as const, text: "A" }
+		const first = view.postTaskMessageToWebview("messageCreated", task.taskId, thought)
+		try {
+			task.alphaMessages.push({ ...thought, text: "I checked." }, { ...answer, text: "All done." })
+			await view.postTaskMessageToWebview("messageUpdated", task.taskId, task.alphaMessages[0])
+			await view.postTaskMessageToWebview("messageCreated", task.taskId, answer)
+			expect(published.get(task.taskId)).toBe(initialRevision)
+			await view.postTaskMessageToWebview("messageUpdated", task.taskId, task.alphaMessages[1])
+			expect(transport).toHaveBeenCalledTimes(2)
+		} finally {
+			release.resolve()
+			await first
+		}
+		const snapshots = transport.mock.calls.map(([message]) => message.state).filter((state) => state?.alphaMessages)
+		expect(snapshots).toEqual([
+			expect.objectContaining({ currentTaskId: task.taskId, alphaMessages: task.alphaMessages }),
+		])
+		expect(snapshots[0]?.alphaMessagesSeq).toBeGreaterThan(transport.mock.calls[1][0].alphaMessagesSeq!)
+		expect(published.get(task.taskId)).toBe(sessions(view).getTranscriptRevision(task.taskId))
 	})
 
 	it("consumes an exceptional transport rejection for a passive row", async () => {

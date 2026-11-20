@@ -7,7 +7,7 @@
 	"invalidChart": "Chart enhancement is unavailable. Check the data table: up to 120 rows, three series, one shared unit, and finite numeric values; leave missing values empty.",
 	"invalidTabs": "Tabs are unavailable. Give each section a unique ID and a tab label.",
 	"missing": "Missing",
-	"inspect": "Chart values are available in the data table. Focus a plotted value to inspect it.",
+	"inspect": "Tab to a plotted value, then use the arrow keys to inspect it and its neighbors. Home and End jump to the first and last values. The table lists all observations.",
 	"sortAscending": "ascending",
 	"sortDescending": "descending",
 	"invalidDiagram": "Diagram unavailable. Use a three-column relationship table with at most 24 named nodes, 48 links, and no cycles. The table remains readable.",

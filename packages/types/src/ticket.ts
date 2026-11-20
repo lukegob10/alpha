@@ -301,7 +301,11 @@ export const ticketRequestSchema = z
 			}),
 			z.object({ action: z.literal("discardImport"), token: z.guid() }),
 			z.object({ action: z.literal("read"), id: ticketIdSchema }),
-			z.object({ action: z.literal("create"), input: createTicketSchema }),
+			z.object({
+				action: z.literal("create"),
+				input: createTicketSchema,
+				initialStatus: ticketStatusSchema.optional(),
+			}),
 			z.object({ action: z.literal("update"), input: updateTicketSchema }),
 			z.object({ action: z.literal("delete"), input: deleteTicketSchema }),
 			z.object({ action: z.literal("relations"), id: ticketIdSchema }),

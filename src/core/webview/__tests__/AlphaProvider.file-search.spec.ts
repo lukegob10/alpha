@@ -93,6 +93,118 @@ beforeEach(() => {
 	vi.mocked(webviewMessageHandler).mockReset()
 })
 
+describe("commit picker provider dispatch", () => {
+	const query = (requestId: string): WebviewMessage => ({ type: "searchCommits", requestId, query: requestId })
+	const calls = () =>
+		vi.mocked(webviewMessageHandler).mock.calls.filter(([, message]) => message.type === "searchCommits")
+
+	it("keeps speculative lookups off task submission and searches only the latest pending query", async () => {
+		const entered = deferred()
+		const held = deferred()
+		const submitted = vi.fn()
+		vi.mocked(webviewMessageHandler).mockImplementation(async (_provider, message) => {
+			if (message.requestId === "r") {
+				entered.resolve()
+				await held.promise
+			}
+			if (message.type === "newTask") submitted()
+		})
+		const { receive, setCwd } = fixture()
+		const first = receive(query("r"))
+		await entered.promise
+		const later = ["re", "rep", "repa", "repai", "repair"].map((requestId) => receive(query(requestId)))
+		setCwd("/different-workspace")
+		const submission = receive({ type: "newTask", text: "Review this change" })
+		await Promise.resolve()
+		try {
+			expect(submitted).toHaveBeenCalledOnce()
+			expect(calls()[0]?.[2]?.commitSearch?.signal.aborted).toBe(true)
+		} finally {
+			held.resolve()
+			await Promise.all([first, ...later, submission])
+		}
+		expect(calls().map(([, message]) => message.requestId)).toEqual(["r", "repair"])
+		expect(calls()[1]?.[2]?.commitSearch?.cwd).toBe("/workspace")
+	})
+
+	it("cancels the active lookup and drops pending work when the view detaches", async () => {
+		const entered = deferred()
+		const held = deferred()
+		vi.mocked(webviewMessageHandler).mockImplementation(async (_provider, message) => {
+			if (message.requestId === "first") {
+				entered.resolve()
+				await held.promise
+			}
+		})
+		const { receive, detach } = fixture()
+		const first = receive(query("first"))
+		await entered.promise
+		const latest = receive(query("latest"))
+		detach()
+		try {
+			expect(calls()[0]?.[2]?.commitSearch?.signal.aborted).toBe(true)
+		} finally {
+			held.resolve()
+			await Promise.all([first, latest])
+		}
+		expect(calls().map(([, message]) => message.requestId)).toEqual(["first"])
+	})
+})
+
+describe("OpenAI model discovery dispatch", () => {
+	const discovery = (requestId: string): WebviewMessage => ({
+		type: "requestOpenAiModels",
+		requestId,
+		values: { baseUrl: "https://api.example.com/v1", apiKey: "test-key" },
+	})
+	const signalFor = (requestId: string) =>
+		vi.mocked(webviewMessageHandler).mock.calls.find(([, message]) => message.requestId === requestId)?.[2]
+			?.openAiModelDiscoverySignal
+
+	it("keeps the latest lookup off the settings write queue", async () => {
+		const blocked = deferred()
+		const saved = vi.fn()
+		vi.mocked(webviewMessageHandler).mockImplementation(async (_provider, message) => {
+			if (message.requestId === "first") await blocked.promise
+			if (message.type === "customInstructions") saved()
+		})
+		const { receive } = fixture()
+		const first = receive(discovery("first"))
+		await drain()
+		const superseded = receive(discovery("superseded"))
+		const latest = receive(discovery("latest"))
+		const save = receive({ type: "customInstructions", text: "new settings" })
+		await drain()
+		try {
+			expect(saved).toHaveBeenCalledOnce()
+			expect(signalFor("first")?.aborted).toBe(true)
+		} finally {
+			blocked.resolve()
+			await Promise.all([first, superseded, latest, save])
+		}
+		expect(vi.mocked(webviewMessageHandler).mock.calls.map(([, message]) => message.requestId)).toEqual([
+			"first",
+			undefined,
+			"latest",
+		])
+	})
+
+	it("cancels a lookup when its view detaches", async () => {
+		const blocked = deferred()
+		vi.mocked(webviewMessageHandler).mockReturnValue(blocked.promise)
+		const { receive, detach } = fixture()
+		const running = receive(discovery("first"))
+		await drain()
+		detach()
+		try {
+			expect(signalFor("first")?.aborted).toBe(true)
+		} finally {
+			blocked.resolve()
+			await running
+		}
+	})
+})
+
 describe("file picker provider dispatch", () => {
 	it("uses the draft workspace while an outgoing task is still active", async () => {
 		const { receive, getLiveTask } = fixture()

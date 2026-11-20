@@ -61,7 +61,7 @@ class TicketsScriptedAI {
 		this.requests.push({ messages: structuredClone(messages), tools: structuredClone(tools) })
 
 		if (this.requests.length === 1) {
-			assert.doesNotMatch(systemPrompt, /<name>alpha-tickets<\/name>/, "The workflow is opt-in")
+			assert.doesNotMatch(systemPrompt, /# Alpha Tickets workflow/)
 			assert.doesNotMatch(JSON.stringify(messages), /# Alpha Tickets workflow/)
 			const names = tools.flatMap((tool) => {
 				if (!tool || typeof tool !== "object" || !("function" in tool)) return []
@@ -149,6 +149,63 @@ suite("Alpha Tickets eager tool acceptance", function () {
 		}
 	})
 
+	test("makes the built-in workflow available for a plain-language creation request", async () => {
+		assert.equal(vscode.version, "1.141.0")
+		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
+		const api = globalThis.api
+		const provider = (api as unknown as { sidebarProvider: TicketHost }).sidebarProvider
+		const original = api.getConfiguration()
+		const completions: string[] = []
+		const onCompleted = (taskId: string) => completions.push(taskId)
+		const skill = { skill: "alpha-tickets" }
+		const model: FeatureScriptedAI = new FeatureScriptedAI((request) => {
+			if (request.ordinal === 1) {
+				assert.match(request.system, /<name>alpha-tickets<\/name>\s*<description>[^<]*create or draft tickets/)
+				assert.doesNotMatch(request.system, /# Alpha Tickets workflow/)
+				assert.doesNotMatch(JSON.stringify(request.messages), /# Alpha Tickets workflow/)
+				return { name: "skill", arguments: skill }
+			}
+			assert.equal(request.ordinal, 2)
+			assertFeatureToolCall(request.messages, `${model.id}-1`, "skill", skill)
+			assertFeatureToolResult(request.messages, `${model.id}-1`, {
+				error: false,
+				marker: "# Alpha Tickets workflow",
+			})
+			assert.ok(request.tools.includes("create_ticket"))
+			return undefined
+		})
+		api.on(AlphaCodeEventName.TaskCompleted, onCompleted)
+		try {
+			const taskId = await api.startNewTask({
+				configuration: {
+					...original,
+					apiProvider: "fake-ai",
+					fakeAi: model,
+					mode: "code",
+					approvalMode: "auto",
+					requestDelaySeconds: 0,
+					enableCheckpoints: false,
+				},
+				text: "I want to use Alpha Tickets to create tickets.",
+			})
+			await waitFor(
+				() => {
+					model.assertHealthy()
+					const task = provider.getLiveTask(taskId)
+					if (task?.taskAsk?.ask === "completion_result") task.approveAsk()
+					return completions.filter((id) => id === taskId).length === 1
+				},
+				{ timeout: 60_000, description: "the Alpha Tickets skill load to complete" },
+			)
+			assert.equal(model.requests.length, 2)
+		} finally {
+			api.off(AlphaCodeEventName.TaskCompleted, onCompleted)
+			await api.clearCurrentTask().catch(() => undefined)
+			await api.setConfiguration(original)
+			model.dispose()
+		}
+	})
+
 	test("loads the selected built-in workflow for a spec draft in Plan mode", async () => {
 		assert.equal(vscode.version, "1.141.0")
 		assert.equal(process.env.ALPHA_E2E_PROVIDER_MODE, "scripted")
@@ -187,7 +244,7 @@ suite("Alpha Tickets eager tool acceptance", function () {
 			model.assertHealthy()
 			assert.equal(model.requests.length, 1)
 			const request = model.requests[0]!
-			assert.doesNotMatch(request.system, /<name>alpha-tickets<\/name>/)
+			assert.doesNotMatch(request.system, /# Alpha Tickets workflow/)
 			const content = JSON.stringify(request.messages)
 			assert.match(content, /Skill: alpha-tickets.*Source: builtin.*# Alpha Tickets workflow/)
 			assert.match(content, /## Work on and close a ticket/)

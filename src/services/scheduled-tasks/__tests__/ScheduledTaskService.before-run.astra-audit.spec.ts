@@ -78,7 +78,7 @@ describe("before-run notifications remain advisory", () => {
 		vi.spyOn(ScheduledTaskStore.prototype, "refresh").mockResolvedValue(false)
 		vi.spyOn(ScheduledTaskStore.prototype, "claimRun").mockImplementation(async (id, _time, _trigger, build) => {
 			const claimed = build(tasks.find((task) => task.id === id)!, false)
-			save(claimed.run)
+			if (claimed) save(claimed.run)
 			return claimed
 		})
 		vi.spyOn(ScheduledTaskStore.prototype, "projectRunStatus").mockImplementation(async (run) => {

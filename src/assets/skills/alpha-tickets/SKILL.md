@@ -1,6 +1,6 @@
 ---
 name: alpha-tickets
-description: Draft, review, maintain, and verify work in native Alpha Tickets. Select this skill to turn a spec or conversation into tickets, check coverage, revise existing tickets, or work against a ticket's success criteria.
+description: Use for Alpha Tickets when asked to create or draft tickets, turn a spec or conversation into a ticket set, review coverage, revise existing tickets, or implement and verify work against a ticket's success criteria.
 ---
 
 # Alpha Tickets workflow

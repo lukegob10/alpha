@@ -467,6 +467,52 @@ describe("approved command batches", () => {
 		])
 	})
 
+	it("observes cancelled receipt publication before joining a prepared command owner", async () => {
+		const test = fixture("selective-parallel", 1)
+		const publishing = deferred()
+		const releasePublication = deferred()
+		const publicationError = new Error("Cancelled tool receipt publication failed")
+		const run = vi.fn()
+		const dispose = vi.fn(async () => {})
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register({
+			...test.descriptor,
+			prepareParallelCommand: async () => {
+				test.controller.abort()
+				return { scope: test.host.cwd!, run, dispose }
+			},
+		})
+		const scheduler = new ToolScheduler({
+			executionHost: test.host,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			policy: createToolPolicySnapshot({
+				visibleTools: [test.descriptor.name],
+				capabilities: { [test.descriptor.name]: test.descriptor.capabilities },
+			}),
+			signal: test.controller.signal,
+			preserveAbortedResults: true,
+			onEvent: async (event) => {
+				if (event.type !== "tool_result") return
+				publishing.resolve()
+				await releasePublication.promise
+				throw publicationError
+			},
+		})
+
+		const settlement = expect(scheduler.run(test.calls)).rejects.toBe(publicationError)
+		await publishing.promise
+		const disposeCallsDuringPublication = dispose.mock.calls.length
+		releasePublication.resolve()
+		await settlement
+
+		expect(disposeCallsDuringPublication).toBe(0)
+		expect(dispose).toHaveBeenCalledOnce()
+		expect(run).not.toHaveBeenCalled()
+		expect(test.host.userMessageContent).toMatchObject([{ tool_use_id: "command-0", is_error: true }])
+	})
+
 	it("discards deferred command presentation when the provider rejects the response", async () => {
 		const test = fixture("selective-parallel", 2, "read", () => 0, true, true)
 		await test.scheduler.run(test.calls)

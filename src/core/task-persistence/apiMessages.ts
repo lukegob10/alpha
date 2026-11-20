@@ -118,16 +118,18 @@ export async function readApiMessages({
 		}
 
 		const oldPath = path.join(taskDir, "claude_messages.json")
-		if (!(await fileExistsAtPath(oldPath))) {
-			onRead?.({ missing: true })
-			return []
+		let fallbackContents: string
+		try {
+			fallbackContents = await fs.readFile(oldPath, "utf8")
+		} catch (cause) {
+			if ((cause as NodeJS.ErrnoException).code === "ENOENT") {
+				onRead?.({ missing: true })
+				return []
+			}
+			throw new ProviderTranscriptStoreError("read_failed", "Unable to read legacy transcript", taskId, { cause })
 		}
 
-		const messages = parseHistory(
-			await fs.readFile(oldPath, "utf8"),
-			taskId,
-			"Invalid legacy API conversation history JSON",
-		)
+		const messages = parseHistory(fallbackContents, taskId, "Invalid legacy API conversation history JSON")
 		let migratedPrecondition: ApiMessagesWritePrecondition = { missing: true }
 		try {
 			// Commit the replacement before removing the fallback. resumeTaskFromHistory

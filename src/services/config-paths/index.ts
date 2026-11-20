@@ -320,36 +320,6 @@ export async function getAllConfigDirectoriesForCwd(cwd: string): Promise<string
 }
 
 /**
- * Gets project instruction directories from the nearest .git root through cwd,
- * followed by parent directories of discovered subfolder .alpha directories.
- *
- * @param cwd - Current working directory (project path)
- * @returns Ordered directories to check for agent instruction files
- *
- * @example
- * ```typescript
- * const dirs = await getAgentsDirectoriesForCwd('/Users/john/monorepo')
- * // Returns: ['/Users/john/monorepo', '/Users/john/monorepo/package-a', ...]
- * ```
- */
-export async function getAgentsDirectoriesForCwd(cwd: string): Promise<string[]> {
-	const { directories } = await getProjectInstructionDirectoriesForCwd(cwd)
-
-	// Get all subfolder .alpha directories
-	const subfolderConfigDirs = await discoverSubfolderConfigDirectories(cwd)
-
-	// Extract parent directories (remove .alpha from path)
-	for (const configDir of subfolderConfigDirs) {
-		const parentDir = path.dirname(configDir)
-		if (!directories.some((directory) => path.resolve(directory) === path.resolve(parentDir))) {
-			directories.push(parentDir)
-		}
-	}
-
-	return directories
-}
-
-/**
  * Finds the nearest project root marked by a configured entry and returns its
  * directories from root to cwd. If no marker is found, cwd is the only
  * instruction directory.

@@ -579,8 +579,9 @@ suite("Alpha VS Code LM exact-host contract", function () {
 		const cleanupReadProof = await createReadProofFile()
 		fixture.reset("thinking-tool-followup", { holdRequestIndexes: [1] })
 		const thinking = [
+			{ value: "I", id: "fixture-thinking-1", metadata: { vscode_thinking_origin_api: "responses" } },
 			{
-				value: ["Read", "the fixture"],
+				value: [" will read", "the fixture"],
 				id: "fixture-thinking-1",
 				metadata: { fixture: { signature: "synthetic-signature", ordinal: 1 } },
 			},
@@ -629,6 +630,15 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			})
 			const initialTask = provider.getLiveTask(taskId)
 			await waitForRequestCount(provider, fixture, taskId, 2)
+			const assertFullThinkingRow = () =>
+				assert.deepStrictEqual(
+					provider
+						.getLiveTask(taskId)
+						?.alphaMessages?.filter((row) => row.say === "reasoning")
+						.map((row) => row.text),
+					["I will read\nthe fixture"],
+				)
+			assertFullThinkingRow()
 			assertThinkingReplay(fixture.getRequests()[1]!)
 
 			const { taskDirPath } = await provider.getTaskWithId(taskId)
@@ -650,16 +660,16 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			)
 			assert.deepStrictEqual(
 				canonical?.map((item) => item.type),
-				["reasoning", "reasoning", "tool_call"],
+				["reasoning", "reasoning", "reasoning", "tool_call"],
 			)
 			assert.deepStrictEqual(
 				canonical?.filter((item) => item.type === "reasoning").map((item) => item.vscodeLmThinking),
 				persistedThinking,
-				"Canonical response evidence must retain both host parts even when their IDs match",
+				"Canonical response evidence must retain all host parts even when their IDs match",
 			)
 			assert.deepStrictEqual(
 				canonical?.filter((item) => item.type === "reasoning").map((item) => item.text),
-				["Read\nthe fixture", ""],
+				["I", " will read\nthe fixture", ""],
 			)
 
 			fixture.releaseRequest(1)
@@ -667,6 +677,8 @@ suite("Alpha VS Code LM exact-host contract", function () {
 			await globalThis.api.clearCurrentTask()
 			await provider.showTaskWithId(taskId)
 			assert.notStrictEqual(provider.getLiveTask(taskId), initialTask, "Reload must create a fresh task instance")
+			await waitFor(() => provider.getLiveTask(taskId)?.isInitialized === true, { timeout: 10_000 })
+			assertFullThinkingRow()
 			assert.equal(fixture.getRequests().length, 2, "Reload must not start an unsolicited provider request")
 			await globalThis.api.sendMessage("Continue from the saved thinking fixture and finish briefly.")
 			await waitForRequestCount(provider, fixture, taskId, 3)

@@ -14,9 +14,7 @@ import {
 	getEffectiveApiHistory,
 	cleanupAfterTruncation,
 	extractCommandBlocks,
-	injectSyntheticToolResults,
 	hasToolCallResultIntegrity,
-	getToolCallResultPairs,
 	filterOrphanToolResults,
 	toolUseToText,
 	toolResultToText,
@@ -38,11 +36,6 @@ describe("tool transaction occurrence integrity", () => {
 		const messages = [call(), result("Error: first read failed"), call("list_files"), result("Error: denied")]
 		const before = structuredClone(messages)
 		expect(hasToolCallResultIntegrity(messages)).toBe(true)
-		expect(getToolCallResultPairs(messages).get("reused-call")).toEqual({
-			id: "reused-call",
-			callMessageIndexes: [0, 2],
-			resultMessageIndexes: [1, 3],
-		})
 		expect(messages).toEqual(before)
 	})
 
@@ -107,7 +100,7 @@ describe("tool transaction occurrence integrity", () => {
 	)
 
 	it.each(["tool_use_id", "tool_call_id"])(
-		"repairs only the current missing result after a completed reused-ID %s transaction",
+		"detects a missing result after a completed reused-ID %s transaction",
 		(resultIdField) => {
 			const messages = [
 				call(),
@@ -125,23 +118,12 @@ describe("tool transaction occurrence integrity", () => {
 				call("list_files"),
 			] as unknown as ApiMessage[]
 			const before = structuredClone(messages)
-			const repaired = injectSyntheticToolResults(messages)
-			expect(repaired).toHaveLength(4)
-			expect(repaired.slice(0, 3)).toEqual(before)
-			expect(repaired[3].content).toEqual([
-				{
-					type: "tool_result",
-					tool_use_id: "reused-call",
-					content: "Context condensation triggered. Tool execution deferred.",
-				},
-			])
-			expect(hasToolCallResultIntegrity(repaired)).toBe(true)
-			expect(injectSyntheticToolResults(repaired)).toBe(repaired)
+			expect(hasToolCallResultIntegrity(messages)).toBe(false)
 			expect(messages).toEqual(before)
 		},
 	)
 
-	it("preserves an accepted legacy error result rather than injecting a successful replacement", () => {
+	it("preserves an accepted legacy error result in effective history", () => {
 		const messages = [
 			call(),
 			{
@@ -158,7 +140,7 @@ describe("tool transaction occurrence integrity", () => {
 			},
 		] as unknown as ApiMessage[]
 		expect(hasToolCallResultIntegrity(messages)).toBe(true)
-		expect(injectSyntheticToolResults(messages)).toEqual(messages)
+		expect(getEffectiveApiHistory(messages)).toEqual(messages)
 	})
 })
 
@@ -235,145 +217,6 @@ Line 2
 		const result = extractCommandBlocks(message)
 		expect(result).toContain('name="test"')
 		expect(result).toContain('attr1="value1"')
-	})
-})
-
-describe("injectSyntheticToolResults", () => {
-	it("should return messages unchanged when no orphan tool_calls exist", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{
-				role: "assistant",
-				content: [{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "test.ts" } }],
-				ts: 2,
-			},
-			{
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: "tool-1", content: "file contents" }],
-				ts: 3,
-			},
-		]
-
-		const result = injectSyntheticToolResults(messages)
-		expect(result).toEqual(messages)
-	})
-
-	it("should inject synthetic tool_result for orphan tool_call", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{
-				role: "assistant",
-				content: [
-					{ type: "tool_use", id: "tool-orphan", name: "attempt_completion", input: { result: "Done" } },
-				],
-				ts: 2,
-			},
-			// No tool_result for tool-orphan
-		]
-
-		const result = injectSyntheticToolResults(messages)
-
-		expect(result.length).toBe(3)
-		expect(result[2].role).toBe("user")
-
-		const content = result[2].content as any[]
-		expect(content.length).toBe(1)
-		expect(content[0].type).toBe("tool_result")
-		expect(content[0].tool_use_id).toBe("tool-orphan")
-		expect(content[0].content).toBe("Context condensation triggered. Tool execution deferred.")
-	})
-
-	it("should inject synthetic tool_results for multiple orphan tool_calls", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{
-				role: "assistant",
-				content: [
-					{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "test.ts" } },
-					{ type: "tool_use", id: "tool-2", name: "write_file", input: { path: "out.ts", content: "code" } },
-				],
-				ts: 2,
-			},
-			// No tool_results for either
-		]
-
-		const result = injectSyntheticToolResults(messages)
-
-		expect(result.length).toBe(3)
-		const content = result[2].content as any[]
-		expect(content.length).toBe(2)
-		expect(content[0].tool_use_id).toBe("tool-1")
-		expect(content[1].tool_use_id).toBe("tool-2")
-	})
-
-	it("should only inject for orphan tool_calls, not matched ones", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{
-				role: "assistant",
-				content: [
-					{ type: "tool_use", id: "matched-tool", name: "read_file", input: { path: "test.ts" } },
-					{ type: "tool_use", id: "orphan-tool", name: "attempt_completion", input: { result: "Done" } },
-				],
-				ts: 2,
-			},
-			{
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: "matched-tool", content: "file contents" }],
-				ts: 3,
-			},
-			// No tool_result for orphan-tool
-		]
-
-		const result = injectSyntheticToolResults(messages)
-
-		expect(result.length).toBe(4)
-		const syntheticContent = result[3].content as any[]
-		expect(syntheticContent.length).toBe(1)
-		expect(syntheticContent[0].tool_use_id).toBe("orphan-tool")
-	})
-
-	it("should handle messages with string content (no tool_use/tool_result)", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{ role: "assistant", content: "Hi there!", ts: 2 },
-		]
-
-		const result = injectSyntheticToolResults(messages)
-		expect(result).toEqual(messages)
-	})
-
-	it("should handle empty messages array", () => {
-		const result = injectSyntheticToolResults([])
-		expect(result).toEqual([])
-	})
-
-	it("should handle tool_results spread across multiple user messages", () => {
-		const messages: ApiMessage[] = [
-			{ role: "user", content: "Hello", ts: 1 },
-			{
-				role: "assistant",
-				content: [
-					{ type: "tool_use", id: "tool-1", name: "read_file", input: { path: "a.ts" } },
-					{ type: "tool_use", id: "tool-2", name: "read_file", input: { path: "b.ts" } },
-				],
-				ts: 2,
-			},
-			{
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: "tool-1", content: "contents a" }],
-				ts: 3,
-			},
-			{
-				role: "user",
-				content: [{ type: "tool_result", tool_use_id: "tool-2", content: "contents b" }],
-				ts: 4,
-			},
-		]
-
-		const result = injectSyntheticToolResults(messages)
-		// Both tool_uses have matching tool_results, no injection needed
-		expect(result).toEqual(messages)
 	})
 })
 

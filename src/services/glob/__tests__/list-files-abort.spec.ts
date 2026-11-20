@@ -41,20 +41,20 @@ interface MockRipgrepProcess {
 		on: import("vitest").Mock
 		kill: import("vitest").Mock
 	}
-	emitData(data: string): void
+	emitData(data: string | Buffer): void
 	emitClose(code?: number | null, signal?: NodeJS.Signals | null): void
 	emitError(error: Error): void
 }
 
 function createMockRipgrepProcess(): MockRipgrepProcess {
-	let onData: ((data: string) => void) | undefined
+	let onData: ((data: string | Buffer) => void) | undefined
 	let onClose: ((code: number | null, signal: NodeJS.Signals | null) => void) | undefined
 	let onError: ((error: Error) => void) | undefined
 
 	const process = {
 		stdout: {
 			on: vi.fn((event: string, listener: EventListener) => {
-				if (event === "data") onData = listener as (data: string) => void
+				if (event === "data") onData = listener
 			}),
 		},
 		stderr: {
@@ -144,6 +144,19 @@ describe("listFiles cancellation and strict execution", () => {
 
 		expect(childProcess.spawn).not.toHaveBeenCalled()
 		expect(getBinPath).not.toHaveBeenCalled()
+	})
+
+	it("preserves UTF-8 characters split across ripgrep stdout chunks", async () => {
+		const ripgrep = createMockRipgrepProcess()
+		vi.mocked(childProcess.spawn).mockReturnValue(ripgrep.process as any)
+		const listing = listFiles("/test/project", false, 10, undefined, { includeDirectories: false })
+		await waitForRipgrepSpawn()
+		const bytes = Buffer.from("café.ts\n")
+		ripgrep.emitData(bytes.subarray(0, 4))
+		ripgrep.emitData(bytes.subarray(4))
+		ripgrep.emitClose()
+
+		await expect(listing).resolves.toEqual([[path.resolve("/test/project", "café.ts")], false])
 	})
 
 	it("disables symlink traversal explicitly for strict listings", async () => {

@@ -13,7 +13,7 @@ interface SearchLane {
 }
 
 type SearchLanes = Map<string | symbol, SearchLane>
-type SearchKind = "ticket" | "file"
+type SearchKind = "ticket" | "file" | "commit" | "openai"
 
 const searchesByProvider = new WeakMap<object, Record<SearchKind, SearchLanes>>()
 
@@ -34,6 +34,18 @@ export function enqueueFileSearch(
 	return enqueueSearch(provider, "file", taskId, run)
 }
 
+export function enqueueOpenAiModelDiscovery(provider: object, run: PendingSearch["run"]): Promise<void> {
+	return enqueueSearch(provider, "openai", undefined, run)
+}
+
+export function enqueueCommitSearch(
+	provider: object,
+	taskId: string | undefined,
+	run: PendingSearch["run"],
+): Promise<void> {
+	return enqueueSearch(provider, "commit", taskId, run)
+}
+
 function enqueueSearch(
 	provider: object,
 	kind: SearchKind,
@@ -42,7 +54,7 @@ function enqueueSearch(
 ): Promise<void> {
 	let scopes = searchesByProvider.get(provider)
 	if (!scopes) {
-		scopes = { ticket: new Map(), file: new Map() }
+		scopes = { ticket: new Map(), file: new Map(), commit: new Map(), openai: new Map() }
 		searchesByProvider.set(provider, scopes)
 	}
 	// Each picker retains its existing admission capacity and cannot supersede another kind's reader.
@@ -87,8 +99,8 @@ async function drainSearches(
 	if (searches.get(key) === lane) searches.delete(key)
 }
 
-/** Both picker kinds use this existing view/disposal hook; store indexing retains its own lifecycle. */
-export function cancelTicketSearches(provider: object): void {
+/** Cancel read requests owned by the detaching webview. */
+export function cancelWebviewSearches(provider: object): void {
 	const scopes = searchesByProvider.get(provider)
 	if (!scopes) return
 	for (const searches of Object.values(scopes)) {

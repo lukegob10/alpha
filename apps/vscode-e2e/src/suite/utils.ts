@@ -63,25 +63,6 @@ export const waitFor = async (
 	)
 }
 
-type WaitUntilAbortedOptions = WaitForOptions & {
-	api: AlphaCodeAPI
-	taskId: string
-}
-
-export const waitUntilAborted = async ({ api, taskId, ...options }: WaitUntilAbortedOptions) => {
-	const set = new Set<string>()
-	const onTaskAborted = (abortedTaskId: string) => set.add(abortedTaskId)
-	api.on(AlphaCodeEventName.TaskAborted, onTaskAborted)
-	try {
-		await waitFor(() => set.has(taskId), {
-			description: `task ${taskId} to abort`,
-			...options,
-		})
-	} finally {
-		api.off(AlphaCodeEventName.TaskAborted, onTaskAborted)
-	}
-}
-
 type WaitUntilCompletedOptions = WaitForOptions & {
 	api: AlphaCodeAPI
 	taskId: string

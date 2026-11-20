@@ -51,23 +51,28 @@ export async function extractTextFromXLSX(filePathOrWorkbook: string | ExcelJS.W
 		workbook = filePathOrWorkbook
 	}
 
-	workbook.eachSheet((worksheet, sheetId) => {
+	workbook.eachSheet((worksheet) => {
 		if (worksheet.state === "hidden" || worksheet.state === "veryHidden") {
 			return
 		}
 
 		excelText += `--- Sheet: ${worksheet.name} ---\n`
 
-		worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+		const rowCount = worksheet.rowCount
+		for (let rowNumber = 1; rowNumber <= rowCount; rowNumber++) {
+			const row = worksheet.findRow(rowNumber)
+			if (!row?.hasValues) {
+				continue
+			}
 			if (rowNumber > ROW_LIMIT) {
 				excelText += `[... truncated at row ${rowNumber} ...]\n`
-				return false
+				break
 			}
 
 			const rowTexts: string[] = []
 			let hasContent = false
 
-			row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+			row.eachCell({ includeEmpty: true }, (cell) => {
 				const cellText = formatCellValue(cell)
 				if (cellText.trim()) {
 					hasContent = true
@@ -78,9 +83,7 @@ export async function extractTextFromXLSX(filePathOrWorkbook: string | ExcelJS.W
 			if (hasContent) {
 				excelText += rowTexts.join("\t") + "\n"
 			}
-
-			return true
-		})
+		}
 
 		excelText += "\n"
 	})

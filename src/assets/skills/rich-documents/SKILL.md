@@ -1,48 +1,63 @@
 ---
 name: rich-documents
-description: Create or revise a rich HTML document in Alpha's built-in HTML previewer for a substantial spec, review, or quantitative report, or when explicitly requested. Respect plain text, Markdown, existing output destinations, and ordinary short answers or code fixes.
+description: Create or revise workspace HTML in Alpha's built-in previewer for a requested rich document or a substantial brief, review, spec, report, or runbook. Honor other formats and destinations. Keep ordinary questions and code fixes in chat.
 ---
 
 # Rich documents
 
-Create a useful document using Alpha's packaged HTML design kit, version 1. Select this skill through the ordinary skill invocation path; it grants no additional file, tool, network, or approval authority.
+Start with the reader’s task. Put the decision, finding, or next action where the reader can see it on opening the document. Honor the requested format and destination. In Plan mode, give the proposed content or edits in chat when a file write would be required.
 
-Always use Alpha's built-in HTML previewer for these documents. Never use browser tools (`open_browser_page`, `navigate_page`, `run_playwright_code`), an external browser, or a localhost server to open, screenshot, validate, or repair them. The `alpha-document://open` link below is a chat action handled by Alpha, not a browser URL. Read the source and packaged examples with file tools.
+## Choose a starting point
 
-Before authoring, read [the component and chart reference](../../../webview-ui/build/artifact-kit/v1/reference.md). Read only the relevant complete example: [review](../../../webview-ui/build/artifact-kit/v1/examples/review.html), [spec](../../../webview-ui/build/artifact-kit/v1/examples/spec.html), or [quantitative report](../../../webview-ui/build/artifact-kit/v1/examples/report.html). Resolve these links against this selected skill's base directory. These resources are installed with Alpha and work offline; do not install packages, fetch a CDN, or copy managed guidance into the workspace.
+When **revising an existing document**, read its source first. Make the requested change in the same file. Preserve unaffected wording, section IDs, citations, and image paths. A prose edit needs no template lookup.
 
-## Content and layout
+When **creating a document**, use the smallest structure that answers the request. If a worked example would help, read the one that matches what the reader needs to do.
 
-Lead with the conclusion, decision, or recommendation. Choose the example whose information structure fits the request; replace its content rather than filling every available component. A review needs meaningful findings with evidence and actionable recommendations. A spec needs the behavior being proposed, boundaries, decisions, and verifiable acceptance criteria. A quantitative report needs a clear question, sourced observations, units, date range, methodology, and limitations.
+- [Brief](../../../webview-ui/build/artifact-kit/v1/examples/brief.html) — make a decision or take over work. State what changed, the evidence that matters, and the next action. Include an owner and date when known.
+- [Review](../../../webview-ui/build/artifact-kit/v1/examples/review.html) — prioritize findings by consequence. Tie each to evidence and a correction the reader can verify. For an incident review, establish the impact and sequence of events.
+- [Spec](../../../webview-ui/build/artifact-kit/v1/examples/spec.html) — define proposed behavior, boundaries, tradeoffs, and observable acceptance criteria. For a design decision, explain why the proposed option fits the constraints.
+- [Quantitative report](../../../webview-ui/build/artifact-kit/v1/examples/report.html) — answer a question from data. Give the source, method, periods, units, baselines, and limits.
+- [Runbook](../../../webview-ui/build/artifact-kit/v1/examples/runbook.html) — carry out a procedure. Identify prerequisites, pair actions with observable checks, and explain when to stop, recover, or hand off.
 
-Distinguish measured facts, estimates, illustrative examples, and missing information. Never invent values, imply that sample data describes the user's project, or add empty panels to fill a template. Cite actual evidence using inspectable tables, source links, and concise notes. Charts are optional: use them when comparisons or trends become easier to understand. Preserve the semantic data table and a text takeaway so the information remains accessible without widget execution. Use only the reference's supported table/chart schemas, finite numeric values, explicit units, and missing-value conventions.
+Resolve packaged links from this skill’s directory using the permitted file tools. Borrow structure only. Omit the gallery stylesheet, scripts, return links, and sample evidence. Read the [component reference](../../../webview-ui/build/artifact-kit/v1/reference.md) when adding or repairing a widget, plotting data, or embedding an image. For a simple document or when kit resources are unavailable, this v1 structure works on its own.
 
-Let long content flow naturally; use headings, anchor navigation, and native details for supporting evidence. Keep the conclusion and key findings visible. Avoid fixed-height prose panels and decorative controls. Every interaction must help the reader inspect the content. Use plain semantic tables for small static schemas or comparisons; add `data-alpha-table` only when sorting or filtering is useful.
+```html
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="alpha-document" content="1" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Weekend handoff</title>
+	</head>
+	<body>
+		<main class="alpha-doc" data-alpha-kit="1">
+			<header class="doc-header"><h1>Weekend handoff</h1></header>
+			<section>
+				<h2>Next shift</h2>
+				<p>Bring the open request list so the next shift can confirm an owner for each callback.</p>
+			</section>
+		</main>
+	</body>
+</html>
+```
 
-Use the full document width for headers, summaries, tables, and major findings. The kit handles readable prose and responsive spacing; do not add narrow wrappers or nest the entire report inside a grid cell. Use `badge` with a textual `status-good`, `status-warning`, `status-danger`, `status-info`, or `status-neutral` label for evidenced status. Red, amber, and green must mean risk, attention, and verified health, not decoration. Use cards for distinct options, `metrics` only for sourced quantitative summaries, and a `table-toolbar` for useful filters. Read the reference's composition examples; select a few components that serve this document rather than filling a dashboard template.
+## Write for the reader
 
-## Write, preview, and revise
+Attribute claims to what you actually have, including user-supplied notes. Mark estimates, proposals, and unknowns where they affect a decision. For rates, show the counts and denominators and recompute differences from the source. Keep comparisons between partial and complete periods explicit. A small comparison often fits in one sentence or a captioned table.
 
-Choose additional components by the reader's task. Use a generated outline with stable section IDs for long documents; evidence cards and numbered citations for traceable claims; metric cards for a few contextualized results; and a timeline for a proposed sequence. Metric cards must include units, periods, evidence, and meaningful baselines. Values are authored, not automatically computed or verified. Do not fill a document with decorative cards.
+Use one descriptive h1 and a logical heading order. Keep decisions, actions, and citation targets visible in ordinary sections. Let content flow in a narrow pane. Use native disclosures for optional detail. Add a chart only when it clarifies a comparison or trend. Keep its canonical semantic table, units, missing values, and a plain-language takeaway. Put images in the workspace as PNG/JPEG files with meaningful alt text and a provenance caption. The viewer supplies styles and interactions.
 
-Use a relationship diagram only for a small directed acyclic flow or dependency structure; its three-column table remains the canonical evidence. Use a plain table for cyclic or unsupported graph forms. For visual evidence and analytical plots (including Matplotlib), save actual PNG/JPEG assets inside the workspace. Use `<img src="plots/chart.png" alt="Describe the chart">` with a path relative to the HTML file, or `data-image` with a workspace-root-relative path. Include a provenance caption and respect the documented image byte/pixel limits. Images are workspace dependencies, not remote fetches or content to embed as authored base64. Do not invent screenshots or claim a schematic depicts the running product. The complete spec example demonstrates diagrams, images, and timelines; the report demonstrates metrics, citations, and evidence cards.
+Link to actual workspace evidence with `<a data-source="src/example.ts" data-line="12">Source label</a>`, substituting the workspace-root-relative path and positive line number. Use HTTPS links for external sources. Keep authored HTML free of executable code, inline styles, and external asset dependencies.
 
-Useful compositions: an architecture decision combines a recommendation, alternatives table, relationship diagram and open questions; an incident review combines impact, a dated timeline, linked evidence and corrective actions; an experiment report combines the question, method, metric cards, full data and limitations. Choose only the components needed by the content.
+## Save and deliver
 
-Write HTML through the existing file tools, respecting workspace protections and any requested output location. For a new document without a specified destination, use `.alpha/documents/<task-id>/<descriptive-slug>.html` within the current workspace when the actual task ID is available. If it is unavailable, choose a descriptive workspace filename rather than inventing an ID. The canonical file URI is the document identity. When revising, edit the same file and keep its identity and links stable.
+Write with the existing file tools and permissions. For a new document with no requested location, use `.alpha/documents/<task-id>/<descriptive-slug>.html` when the actual task ID is available. Otherwise use a descriptive workspace filename. The built-in preview opens local `.html` or `.htm` files inside an open workspace. For another requested destination, deliver the file at that location using its ordinary file link.
 
-Include `<!doctype html>`, a language, UTF-8 charset, a meaningful `<title>`, `<meta name="alpha-document" content="1">`, and `<main class="alpha-doc" data-alpha-kit="1">`. Use semantic HTML and exactly the shipped version-1 markup. The viewer supplies trusted styles and widgets. Do not add executable scripts, inline event handlers, author CSS, external assets, React/TSX, or build tooling. Embedded chart data lives in semantic tables, not executable or JSON script elements.
+Always use Alpha's built-in HTML previewer for native document preview. Never use browser tools (`open_browser_page`, `navigate_page`, `run_playwright_code`), an external browser, or a localhost server for this preview. Check the saved source, heading order, evidence, anchors, and any table calculations. If you cannot inspect the preview directly, validate the source and deliver the document link. Say which checks you performed. If Alpha reports an unsupported version or invalid markup, inspect the diagnostic and source before repairing the same file.
 
-For workspace evidence, use `<a data-source="src/example.ts" data-line="12">Descriptive source label</a>` with the actual workspace-root-relative path and positive line number. Do not use traversal, absolute paths, backslashes, or URI schemes in `data-source`. Use ordinary HTTPS references for external evidence. A source link does not grant access outside the open workspace.
-
-The final response should state the takeaway and link to the file using:
+After a successful workspace write, state the takeaway and include the following Markdown link outside a code block.
 
 `[Open document](alpha-document://open?uri=<percent-encoded-absolute-file-URI>&task=<actual-task-id>)`
 
-Encode the absolute file URI as a query parameter, including spaces and reserved characters; omit `&task=...` if the actual task ID is unavailable. For example, a real file URI `file:///workspace/.alpha/documents/review.html` becomes `file%3A%2F%2F%2Fworkspace%2F.alpha%2Fdocuments%2Freview.html`. Never substitute this example path for the written file. On a new completed response in the visible task, Alpha opens the linked document in the active editor group while keeping chat focus. Keep the Open document link for explicit reopening. Do not invoke extra commands or regenerate the source to open it; revisions refresh the existing preview. Background tasks and restored history retain their links without opening tabs. The user can also use **Alpha: Preview HTML Document** for the source file.
-
-## Validate and repair
-
-Inspect the written document against the reference: version marker and root, coherent heading order, real evidence, labels and units, supported widget markup, and readable table alternatives. Check that the final link points to the file actually written. If direct inspection of Alpha's HTML previewer is unavailable, validate the source and deliver the document link; state that visual verification was unavailable. Do not claim visual verification without viewing it or switch to browser tools when preview inspection is unavailable.
-
-If the viewer reports invalid or unsupported content, repair the same source file using its diagnostic and the shipped reference, then refresh/reopen. Remove unsupported scripts or CSS, correct malformed data cells, restore required metadata, or replace an unnecessary chart with the plain evidence table. Do not reset the task or create a second artifact to bypass validation. An older unsupported document should follow the viewer's compatibility fallback; do not silently rewrite its version marker without checking its markup.
+Encode the complete file URI as one query parameter. Omit the task parameter when the ID is unknown. The link opens the saved document in Alpha and reopens the same preview after edits.

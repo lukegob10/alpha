@@ -30,6 +30,8 @@ interface CommandPattern {
 	description?: string
 }
 
+const parsedStatusByEvent = new WeakMap<MessageEvent, ReturnType<typeof commandExecutionStatusSchema.safeParse>>()
+
 interface CommandExecutionProps {
 	executionId: string
 	executionStatus?: CommandExecutionStatus
@@ -144,7 +146,11 @@ export const CommandExecution = ({
 			const message: ExtensionMessage = event.data
 
 			if (message.type === "commandExecutionStatus") {
-				const result = commandExecutionStatusSchema.safeParse(safeJsonParse(message.text, {}))
+				let result = parsedStatusByEvent.get(event)
+				if (!result) {
+					result = commandExecutionStatusSchema.safeParse(safeJsonParse(message.text, {}))
+					parsedStatusByEvent.set(event, result)
+				}
 
 				if (result.success) {
 					const data = result.data

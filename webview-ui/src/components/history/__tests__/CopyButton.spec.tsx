@@ -1,10 +1,10 @@
 import { render, screen, fireEvent } from "@/utils/test-utils"
 
-import { useClipboard } from "@/components/ui/hooks"
+import { useCopyToClipboard } from "@/utils/clipboard"
 
 import { CopyButton } from "../CopyButton"
 
-vi.mock("@/components/ui/hooks")
+vi.mock("@/utils/clipboard")
 vi.mock("@src/i18n/TranslationContext", () => ({
 	useAppTranslation: () => ({
 		t: (key: string) => key,
@@ -16,9 +16,9 @@ describe("CopyButton", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks()
-		;(useClipboard as any).mockReturnValue({
-			isCopied: false,
-			copy: mockCopy,
+		vi.mocked(useCopyToClipboard).mockReturnValue({
+			showCopyFeedback: false,
+			copyWithFeedback: mockCopy,
 		})
 	})
 

@@ -133,6 +133,18 @@ const makeHarness = (
 	}))
 	const bounded = new BoundedDelegationManager(runner)
 	const runs = new AsyncSubagentRunManager(bounded)
+	const historyStore = {
+		get: (taskId: string) => history.get(taskId),
+		getAll: () => [...history.values()],
+		upsert: vi.fn(async (item: HistoryItem) => {
+			history.set(item.id, structuredClone(item))
+		}),
+		async appendChildIds(parent: HistoryItem, childIds: readonly string[]) {
+			const current = history.get(parent.id) ?? parent
+			history.set(parent.id, { ...current, childIds: [...new Set([...(current.childIds ?? []), ...childIds])] })
+			return this.getAll()
+		},
+	}
 	const provider = Object.assign(Object.create(AlphaProvider.prototype), {
 		agentControlStoreLoadedAt: Date.now(),
 		contextProxy: { getValues: () => settings, globalStorageUri: { fsPath: storagePath } },
@@ -147,13 +159,7 @@ const makeHarness = (
 		},
 		taskSessions: sessions,
 		getSkillsManager: vi.fn(async () => undefined),
-		taskHistoryStore: {
-			get: (taskId: string) => history.get(taskId),
-			getAll: () => [...history.values()],
-			upsert: vi.fn(async (item: HistoryItem) => {
-				history.set(item.id, structuredClone(item))
-			}),
-		},
+		taskHistoryStore: historyStore,
 		subagentNicknameRegistry: new SubagentNicknameRegistry({ pickIndex: () => 0 }),
 		preparedSubagentGroups: new Map(),
 		subagentGroupControllers: new Map(),
@@ -210,7 +216,20 @@ const makeHarness = (
 		expect(record?.snapshot?.contextManifest?.modelRoute?.unboundProfile).toBeUndefined()
 		return { prepared, handle }
 	}
-	return { provider, persistence, store, sessions, history, parent, parentAbort, runner, runs, launch, ready }
+	return {
+		provider,
+		persistence,
+		store,
+		sessions,
+		history,
+		historyStore,
+		parent,
+		parentAbort,
+		runner,
+		runs,
+		launch,
+		ready,
+	}
 }
 
 const reloadHarness = async (previous: ReturnType<typeof makeHarness>) => {
@@ -243,7 +262,7 @@ const deferred = <T = void>() => {
 
 describe("managed spawn request admission", () => {
 	it.each(["mode", "history"] as const)("cancels an interrupted request during %s preparation", async (stage) => {
-		const { provider, parent, parentAbort, runner, store, sessions, ready } = makeHarness()
+		const { provider, parent, parentAbort, runner, store, sessions, historyStore, ready } = makeHarness()
 		await ready
 		const prepared = await provider.prepareSubagentGroup(parent as unknown as Task, [
 			{ objective: "Inspect source", agent_kind: "review", fork_turns: "none" },
@@ -260,11 +279,11 @@ describe("managed spawn request admission", () => {
 				return "code"
 			})
 		} else {
-			const update = provider.updateTaskHistory.bind(provider)
-			const spy = vi.spyOn(provider, "updateTaskHistory").mockImplementationOnce(async (item) => {
+			const appendChildIds = historyStore.appendChildIds.bind(historyStore)
+			const spy = vi.spyOn(historyStore, "appendChildIds").mockImplementationOnce(async (parent, childIds) => {
 				entered.resolve()
 				await held.promise
-				return update(item)
+				return appendChildIds(parent, childIds)
 			})
 			restore = () => spy.mockRestore()
 		}

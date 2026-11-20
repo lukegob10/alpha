@@ -31,8 +31,12 @@ async function extractTextFromIPYNB(filePath: string, signal?: AbortSignal): Pro
 	let extractedText = ""
 
 	for (const cell of notebook.cells) {
-		if ((cell.cell_type === "markdown" || cell.cell_type === "code") && cell.source) {
-			extractedText += cell.source.join("\n") + "\n"
+		if (cell.cell_type !== "markdown" && cell.cell_type !== "code") {
+			continue
+		}
+		const source = Array.isArray(cell.source) ? cell.source.join("") : cell.source
+		if (typeof source === "string" && source.length > 0) {
+			extractedText += source.endsWith("\n") ? source : source + "\n"
 		}
 	}
 

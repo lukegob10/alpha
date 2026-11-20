@@ -37,6 +37,20 @@ describe("extractTextFromXLSX", () => {
 	})
 
 	describe("sheet handling", () => {
+		it("emits one truncation marker and continues with the next sheet", async () => {
+			const workbook = new ExcelJS.Workbook()
+			const capped = workbook.addWorksheet("Capped")
+			capped.getCell("A1").value = "Before cap"
+			capped.getCell("A50000").value = "At cap"
+			capped.getCell("A50002").value = "After cap"
+			capped.getCell("A50005").value = "Further after cap"
+			workbook.addWorksheet("Next").getCell("A1").value = "Next sheet content"
+
+			await expect(extractTextFromXLSX(workbook)).resolves.toBe(
+				"--- Sheet: Capped ---\nBefore cap\nAt cap\n[... truncated at row 50002 ...]\n\n--- Sheet: Next ---\nNext sheet content",
+			)
+		})
+
 		it("should process multiple sheets", async () => {
 			const workbook = new ExcelJS.Workbook()
 

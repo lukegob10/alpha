@@ -37,7 +37,6 @@ const defaultProps = {
 	onSend: noOp,
 	sendingDisabled: false,
 	selectApiConfigDisabled: false,
-	onSelectImages: noOp,
 	shouldDisableImages: false,
 	placeholderText: "Message",
 	selectedImages: [],

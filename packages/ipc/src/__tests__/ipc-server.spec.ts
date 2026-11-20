@@ -402,4 +402,43 @@ describe("IpcServer disposal", () => {
 		server.listen()
 		expect(mocks.backendServer.start).toHaveBeenCalledOnce()
 	})
+
+	it("releases a failed bind and allows another listen attempt", () => {
+		mocks.setDeferStart(true)
+		const log = vi.fn()
+		const server = new IpcServer("test.sock", log)
+		try {
+			server.listen()
+			mocks.emitBackend("error", new Error("address in use"))
+
+			expect(server.isListening).toBe(false)
+			expect(log).toHaveBeenCalledWith(expect.stringContaining("address in use"))
+			expect(mocks.handlers.has("start")).toBe(false)
+			expect(mocks.handlers.has("error")).toBe(false)
+
+			mocks.setDeferStart(false)
+			server.listen()
+
+			expect(server.isListening).toBe(true)
+			expect(mocks.backendServer.start).toHaveBeenCalledTimes(2)
+			expect(mocks.handlers.has("error")).toBe(false)
+			mocks.emitBackend("error", new Error("client connection reset"))
+			expect(server.isListening).toBe(true)
+		} finally {
+			server.dispose()
+		}
+	})
+
+	it("releases a pending bind that fails after disposal", () => {
+		mocks.setDeferStart(true)
+		const server = new IpcServer("test.sock", vi.fn())
+		server.listen()
+		server.dispose()
+
+		mocks.emitBackend("error", new Error("address in use"))
+
+		expect(mocks.handlers.has("start")).toBe(false)
+		expect(mocks.handlers.has("error")).toBe(false)
+		expect(mocks.backendServer.stop).not.toHaveBeenCalled()
+	})
 })

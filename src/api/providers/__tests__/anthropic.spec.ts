@@ -457,6 +457,18 @@ describe("native Anthropic adapter", () => {
 		})
 	})
 
+	it("retries a cache rejection only once for auxiliary completions", async () => {
+		const cacheError = new Error("Prompt caching has been disabled")
+		mocks.create.mockRejectedValueOnce(cacheError).mockRejectedValueOnce(cacheError)
+		const handler = new AnthropicHandler({ apiKey: "key" })
+		await expect(handler.completePrompt("prompt")).rejects.toBe(cacheError)
+		expect(mocks.create).toHaveBeenCalledTimes(2)
+		expect(mocks.create.mock.calls[0][0].messages[0].content).toEqual([
+			{ type: "text", text: "prompt", cache_control: { type: "ephemeral" } },
+		])
+		expect(mocks.create.mock.calls[1][0].messages[0].content).toBe("prompt")
+	})
+
 	it("does not accept truncated auxiliary completions or late success after cancellation", async () => {
 		const handler = new AnthropicHandler({ apiKey: "key" })
 		mocks.create.mockResolvedValue({ stop_reason: "max_tokens", content: [{ type: "text", text: "partial" }] })

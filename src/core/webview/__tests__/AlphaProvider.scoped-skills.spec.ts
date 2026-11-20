@@ -287,7 +287,7 @@ describe("AlphaProvider task-scoped skills", () => {
 		expect(managerMocks.instances[0].dispose).toHaveBeenCalledOnce()
 	})
 
-	it("keeps shared pending discovery alive when one of its task owners is removed", async () => {
+	it("keeps shared discovery alive and rejects pending lookups by a removed task", async () => {
 		const discovery = barrier()
 		const entered = barrier()
 		managerMocks.initialize.mockImplementationOnce(() => {
@@ -302,17 +302,43 @@ describe("AlphaProvider task-scoped skills", () => {
 		const firstLookup = track(provider.getSkillsManager(first))
 		const remainingLookup = track(provider.getSkillsManager(remaining))
 		await entered.promise
+		const repeatedLookup = track(provider.getSkillsManager(first))
 
 		await provider.removeTaskFromStack({ taskId: first.taskId })
 		expect(managerMocks.instances[0].dispose).not.toHaveBeenCalled()
 		discovery.resolve()
 		const manager = await remainingLookup
-		await Promise.allSettled([firstLookup])
+		await Promise.all([
+			expect(firstLookup).rejects.toThrow("released during discovery"),
+			expect(repeatedLookup).rejects.toThrow("released during discovery"),
+		])
 		expect(await provider.getSkillsManager(remaining)).toBe(manager)
 		expect(managerMocks.instances).toHaveLength(1)
 		expect(managerMocks.instances[0].initialize).toHaveBeenCalledOnce()
 
 		await provider.removeTaskFromStack({ taskId: remaining.taskId })
+		expect(managerMocks.instances[0].dispose).toHaveBeenCalledOnce()
+	})
+
+	it("does not create a new catalog after its task is removed during catalog replacement", async () => {
+		const disposal = barrier()
+		const entered = barrier()
+		managerMocks.dispose.mockImplementationOnce(() => {
+			entered.resolve()
+			return disposal.promise
+		})
+		const { provider, sessions } = makeProvider()
+		const task = makeTask("switching", workspace("project"))
+		sessions.register(task, { focus: false })
+		await provider.getSkillsManager(task, { projectRootMarkers: [".git"] })
+		const replacement = track(provider.getSkillsManager(task, { projectRootMarkers: [] }))
+		await entered.promise
+
+		await provider.removeTaskFromStack({ taskId: task.taskId })
+		expect(sessions.getTask(task.taskId)).toBeUndefined()
+		disposal.resolve()
+		await expect(replacement).rejects.toThrow("released during discovery")
+		expect(managerMocks.instances).toHaveLength(1)
 		expect(managerMocks.instances[0].dispose).toHaveBeenCalledOnce()
 	})
 

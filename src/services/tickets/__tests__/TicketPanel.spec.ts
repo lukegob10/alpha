@@ -30,10 +30,10 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-function deferred() {
-	let resolve!: () => void
+function deferred<T = void>() {
+	let resolve!: (value: T) => void
 	let reject!: (error: Error) => void
-	const promise = new Promise<void>((done, fail) => {
+	const promise = new Promise<T>((done, fail) => {
 		resolve = done
 		reject = fail
 	})
@@ -50,6 +50,7 @@ function setupProject() {
 		directory: "/tickets/project",
 		prepareReferences: vi.fn().mockResolvedValue(undefined),
 		list: vi.fn().mockResolvedValue(result),
+		create: vi.fn(),
 		delete: vi.fn(),
 		read: vi.fn(),
 		relations: vi.fn(),
@@ -99,6 +100,36 @@ const listRequest = (requestId: string, project = "project") => ({
 })
 
 describe("ticket panel navigation", () => {
+	it("passes the selected status to the editor create transaction", async () => {
+		const { store } = setupProject()
+		const input = { name: "New ticket" }
+		const result = { ...input, status: "complete" }
+		store.create.mockResolvedValue(result)
+		const { panel, webview, receive } = createPanel()
+		const ready = deferred()
+		const response = deferred<unknown>()
+		webview.postMessage.mockImplementation(async (message) => {
+			if (message.type === "ticketProjects") ready.resolve()
+			if (message.type === "ticketResponse") response.resolve(message)
+			return true
+		})
+		try {
+			await panel.open()
+			receive({ type: "ticketsReady" })
+			await ready.promise
+			receive({
+				type: "ticketRequest",
+				requestId: "create",
+				project: "project",
+				operation: { action: "create", input, initialStatus: "complete" },
+			})
+			await expect(response.promise).resolves.toEqual({ type: "ticketResponse", requestId: "create", result })
+			expect(store.create).toHaveBeenCalledExactlyOnceWith(input, undefined, "complete")
+		} finally {
+			panel.dispose()
+		}
+	})
+
 	it.each([true, false])("validates linked conversation membership (linked: %s)", async (linked) => {
 		const { store } = setupProject()
 		store.read.mockResolvedValue({ linkedTaskIds: linked ? ["linked-task"] : ["other-task"] })
@@ -155,7 +186,7 @@ describe("ticket panel navigation", () => {
 				result: relations,
 			}),
 		)
-		expect(store.relations).toHaveBeenCalledExactlyOnceWith(id)
+		expect(store.relations).toHaveBeenCalledExactlyOnceWith(id, expect.any(AbortSignal))
 		panel.dispose()
 	})
 	it.each([undefined, null, { preserveFocus: false }, { preserveFocus: true }])(
@@ -307,24 +338,43 @@ describe("ticket panel navigation", () => {
 		expect(vscode.workspace.createFileSystemWatcher).toHaveBeenCalledOnce()
 		panel.dispose()
 	})
-	it("does not publish a late result into a reopened panel", async () => {
-		const { store, result } = setupProject()
-		let complete!: (value: typeof result) => void
-		store.list.mockImplementationOnce(
-			() =>
-				new Promise((resolve) => {
-					complete = resolve
-				}),
+	it("skips reference preparation when a project load is superseded before resolving its store", async () => {
+		const { store } = setupProject()
+		const previous = deferred<TicketStore>()
+		vi.mocked(TicketStore.forWorkspace).mockReturnValueOnce(previous.promise)
+		const { panel, webview, receive } = createPanel()
+		await panel.open()
+		receive({ type: "ticketsReady" })
+		expect(TicketStore.forWorkspace).toHaveBeenCalledOnce()
+		vi.mocked(vscode.workspace.onDidChangeWorkspaceFolders).mock.calls.at(-1)![0]({ added: [], removed: [] })
+		await vi.waitFor(() =>
+			expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
 		)
+		previous.resolve(store as unknown as TicketStore)
+		await previous.promise
+		expect(store.prepareReferences).toHaveBeenCalledOnce()
+		panel.dispose()
+	})
+	it.each(["list", "read", "relations"] as const)("cancels %s when its panel is replaced", async (action) => {
+		const { store, result } = setupProject()
+		const reading = deferred<typeof result>()
+		const read = store[action]
+		read.mockResolvedValue(result).mockReturnValueOnce(reading.promise)
+		const operation =
+			action === "list" ? { action, input: {} } : { action, id: "a97392fe-59bf-4f80-8a10-51b2cb62a38f" }
+		const request = (requestId: string) => ({ type: "ticketRequest", requestId, project: "project", operation })
 		const { panel, webview, receive, nativePanel } = createPanel()
 		await panel.open()
 		receive({ type: "ticketsReady" })
 		await vi.waitFor(() =>
 			expect(webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
 		)
-		receive(listRequest("old"))
-		await vi.waitFor(() => expect(store.list).toHaveBeenCalledOnce())
+		receive(request("old"))
+		await vi.waitFor(() => expect(read).toHaveBeenCalledOnce())
+		const signal = read.mock.calls[0][1]
+		expect(signal?.aborted).toBe(false)
 		nativePanel.dispose()
+		expect(signal?.aborted).toBe(true)
 		const nextWebview = { ...webview, postMessage: vi.fn() }
 		vi.mocked(vscode.window.createWebviewPanel).mockReturnValue({
 			...nativePanel,
@@ -335,12 +385,13 @@ describe("ticket panel navigation", () => {
 		await vi.waitFor(() =>
 			expect(nextWebview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: "ticketProjects" })),
 		)
-		complete(result)
-		receive(listRequest("new"))
+		reading.resolve(result)
+		receive(request("new"))
 		await vi.waitFor(() =>
 			expect(nextWebview.postMessage).toHaveBeenCalledWith({ type: "ticketResponse", requestId: "new", result }),
 		)
 		expect(nextWebview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ requestId: "old" }))
+		expect(read.mock.calls[1][1]?.aborted).toBe(false)
 		panel.dispose()
 	})
 	it("waits for project initialization before handling a restored list request", async () => {

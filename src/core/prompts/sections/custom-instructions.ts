@@ -279,7 +279,10 @@ async function readTextFilesFromDirectory(
 			.sort((a, b) => {
 				const filenameA = path.basename(a.sortKey).toLowerCase()
 				const filenameB = path.basename(b.sortKey).toLowerCase()
-				return filenameA.localeCompare(filenameB)
+				const filenameOrder = filenameA.localeCompare(filenameB)
+				if (filenameOrder !== 0) return filenameOrder
+				if (a.sortKey === b.sortKey) return 0
+				return a.sortKey < b.sortKey ? -1 : 1
 			})
 			.map(({ filename, content }) => ({ filename, content }))
 	} catch (error) {

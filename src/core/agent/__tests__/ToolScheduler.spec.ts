@@ -3776,6 +3776,64 @@ describe("ToolScheduler", () => {
 		}
 	})
 
+	it("keeps an interrupted sibling's started effect in the terminal receipts when another fence fails", async () => {
+		const task = makeTask()
+		const dispatched = deferred()
+		const interrupted = mcpDescriptor(
+			"mcp_read",
+			async ({ callbacks, signal }) => {
+				if (!(await callbacks.askApproval("use_mcp_server", "read"))) return
+				await new Promise<never>((_resolve, reject) => {
+					signal!.addEventListener("abort", () => reject(signal!.reason), { once: true })
+					dispatched.resolve()
+				})
+			},
+			true,
+		)
+		const executeRejected = vi.fn(async () => {})
+		const rejected = descriptor("local_read", "parallel", executeRejected)
+		const registry = new ToolRegistry({ includeBuiltIns: false })
+		registry.register(interrupted)
+		registry.register(rejected)
+		const onEffectStart = vi.fn()
+		const outcome = await new ToolScheduler({
+			task,
+			registry,
+			mode: "code",
+			executionMode: "selective-parallel",
+			maxConcurrency: 2,
+			validateCall: () => {},
+			policy: createToolPolicySnapshot({
+				visibleTools: [interrupted.name, rejected.name],
+				capabilities: { [interrupted.name]: interrupted.capabilities, [rejected.name]: rejected.capabilities },
+			}),
+			beforeEffect: async ({ id }) => {
+				if (id !== "rejected") return
+				await dispatched.promise
+				throw new Error("Provider transcript receipt changed")
+			},
+			onEffectStart,
+		}).run(response({ id: "interrupted", name: interrupted.name }, { id: "rejected", name: rejected.name }))
+
+		expect(onEffectStart).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "interrupted" }))
+		expect(executeRejected).not.toHaveBeenCalled()
+		expect(outcome).toMatchObject({
+			status: "failed",
+			failure: { kind: "effect_fence", callId: "rejected", message: "Provider transcript receipt changed" },
+			results: [
+				{
+					callId: "interrupted",
+					status: "cancelled",
+					executionStatus: "cancelled",
+					content: expect.stringContaining("its outcome is unknown"),
+					failure: { reason: "outcome_unknown", outcome: "unknown" },
+				},
+				{ callId: "rejected", status: "error" },
+			],
+		})
+		expect(resultIds(task)).toEqual(["interrupted", "rejected"])
+	})
+
 	it("observes a preflight failure before admitting a later mutation", async () => {
 		const task = makeTask()
 		const registry = new ToolRegistry({ includeBuiltIns: false })

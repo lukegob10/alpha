@@ -83,7 +83,7 @@ describe("task cancellation of owned VS Code commands", () => {
 				.stopActiveTaskCommands(false)
 				.then(settled)
 			try {
-				expect(fixture.host.sendText).toHaveBeenCalledExactlyOnceWith("\x03")
+				expect(fixture.host.sendText).toHaveBeenCalledExactlyOnceWith("\x03", false)
 				await vi.advanceTimersByTimeAsync(250)
 				expect(fixture.host.dispose).toHaveBeenCalledOnce()
 				expect(settled).not.toHaveBeenCalled()

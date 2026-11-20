@@ -256,7 +256,6 @@ describe("extension lifecycle", () => {
 	)
 
 	it("rolls back services and registrations when activation fails after the import", async () => {
-		vi.useFakeTimers()
 		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
 		const initializationError = new Error("API initialization failed")
 		const existing = { dispose: vi.fn() }
@@ -304,9 +303,8 @@ describe("extension lifecycle", () => {
 		expect(context.subscriptions).toEqual([existing])
 		expect(existing.dispose).not.toHaveBeenCalled()
 		expect(JSON.stringify(mocks.outputChannel.appendLine.mock.calls)).not.toContain("SECRET")
-		await vi.advanceTimersByTimeAsync(500)
-		expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
-		expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.activationCompleted")
+		expect(context.globalState.update).not.toHaveBeenCalledWith("worktreeAutoOpenPath", undefined)
+		expect(commands.executeCommand).not.toHaveBeenCalled()
 	})
 
 	it("releases listeners when provider configuration fails before a task provider exists", async () => {
@@ -329,15 +327,67 @@ describe("extension lifecycle", () => {
 		expect(context.subscriptions).toEqual([])
 	})
 
-	it("waits for command registration before auto-opening a switched worktree", async () => {
-		vi.useFakeTimers()
-		let finishImport!: () => void
-		let startImport!: () => void
-		const importStarted = new Promise<void>((resolve) => (startImport = resolve))
-		mocks.autoImportSettings.mockImplementationOnce(() => {
-			startImport()
-			return new Promise<void>((resolve) => (finishImport = resolve))
-		})
+	it.each([false, true])(
+		"opens the worktree sidebar outside the activation join (superseded: %s)",
+		async (superseded) => {
+			vi.useFakeTimers()
+			let finishImport!: () => void
+			let startImport!: () => void
+			const importStarted = new Promise<void>((resolve) => (startImport = resolve))
+			mocks.autoImportSettings.mockImplementationOnce(() => {
+				startImport()
+				return new Promise<void>((resolve) => (finishImport = resolve))
+			})
+			mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
+			let worktreeAutoOpenPath = "/worktree"
+			const context = {
+				extensionPath: "/extension",
+				extensionUri: {},
+				globalStorageUri: { fsPath: "/storage" },
+				secrets: createSecretStorage(),
+				globalState: {
+					get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? worktreeAutoOpenPath : undefined)),
+					update: vi.fn().mockResolvedValue(undefined),
+				},
+				subscriptions: [],
+			} as unknown as vscode.ExtensionContext
+			let finishDispatch!: () => void
+			const dispatch = new Promise<void>((resolve) => (finishDispatch = resolve))
+			await vi.mocked(commands.executeCommand).withImplementation(
+				async (command) => {
+					if (command === "alpha.plusButtonClicked") {
+						expect(mocks.registerCommands).toHaveBeenCalledOnce()
+						expect(mocks.constructApi).toHaveBeenCalledOnce()
+						await dispatch
+					}
+				},
+				async () => {
+					const activating = activate(context)
+					try {
+						await importStarted
+						expect(commands.executeCommand).not.toHaveBeenCalled()
+						finishImport()
+						await activating
+						expect(commands.executeCommand).toHaveBeenCalledWith("alpha.plusButtonClicked", "sidebar")
+						expect(context.globalState.update).not.toHaveBeenCalled()
+						if (superseded) worktreeAutoOpenPath = "/next-worktree"
+						finishDispatch()
+						await dispatch
+						await Promise.resolve()
+						if (superseded) expect(context.globalState.update).not.toHaveBeenCalled()
+						else expect(context.globalState.update).toHaveBeenCalledWith("worktreeAutoOpenPath", undefined)
+					} finally {
+						finishImport()
+						finishDispatch()
+						await activating
+						await deactivate()
+					}
+				},
+			)
+		},
+	)
+
+	it("retains the worktree marker when the sidebar command rejects", async () => {
 		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
 		const context = {
 			extensionPath: "/extension",
@@ -350,48 +400,52 @@ describe("extension lifecycle", () => {
 			},
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
-		const activating = activate(context)
-		try {
-			await importStarted
-			await vi.advanceTimersByTimeAsync(500)
-			expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
-			finishImport()
-			await activating
-			expect(mocks.registerCommands).toHaveBeenCalledOnce()
-			await vi.advanceTimersByTimeAsync(500)
-			expect(commands.executeCommand).toHaveBeenCalledWith("alpha.plusButtonClicked")
-		} finally {
-			finishImport()
-			await activating
-			await deactivate()
-			vi.useRealTimers()
-		}
+		await vi.mocked(commands.executeCommand).withImplementation(
+			async (command) => {
+				if (command === "alpha.plusButtonClicked") throw new Error("Sidebar unavailable")
+			},
+			async () => {
+				try {
+					await activate(context)
+					expect(commands.executeCommand).toHaveBeenCalledWith("alpha.plusButtonClicked", "sidebar")
+					expect(context.globalState.update).not.toHaveBeenCalledWith("worktreeAutoOpenPath", undefined)
+				} finally {
+					await deactivate()
+				}
+			},
+		)
 	})
 
-	it("cancels delayed worktree auto-open when the extension subscriptions are disposed", async () => {
-		vi.useFakeTimers()
-		mocks.workspaceFolders = [{ uri: { fsPath: "/worktree" } }]
+	it("uses native case and separator rules to match the pending worktree", async () => {
+		const isWindows = process.platform === "win32"
+		const currentPath = isWindows ? "C:\\Worktrees\\Feature\\" : "/worktrees/Feature"
+		const pendingPath = isWindows ? "c:/worktrees/feature" : "/worktrees/feature"
+		mocks.workspaceFolders = [{ uri: { fsPath: currentPath } }]
+		const update = vi.fn().mockResolvedValue(undefined)
 		const context = {
 			extensionPath: "/extension",
 			extensionUri: {},
 			globalStorageUri: { fsPath: "/storage" },
 			secrets: createSecretStorage(),
 			globalState: {
-				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? "/worktree" : undefined)),
-				update: vi.fn().mockResolvedValue(undefined),
+				get: vi.fn((key: string) => (key === "worktreeAutoOpenPath" ? pendingPath : undefined)),
+				update,
 			},
 			subscriptions: [],
 		} as unknown as vscode.ExtensionContext
+
 		try {
 			await activate(context)
-			for (const subscription of context.subscriptions) {
-				if (typeof subscription.dispose === "function") subscription.dispose()
+			await Promise.resolve()
+			if (isWindows) {
+				expect(update).toHaveBeenCalledWith("worktreeAutoOpenPath", undefined)
+				expect(commands.executeCommand).toHaveBeenCalledWith("alpha.plusButtonClicked", "sidebar")
+			} else {
+				expect(update).not.toHaveBeenCalled()
+				expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked", "sidebar")
 			}
-			await vi.advanceTimersByTimeAsync(500)
-			expect(commands.executeCommand).not.toHaveBeenCalledWith("alpha.plusButtonClicked")
 		} finally {
 			await deactivate()
-			vi.useRealTimers()
 		}
 	})
 

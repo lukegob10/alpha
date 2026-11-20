@@ -1,6 +1,6 @@
 import * as vscode from "vscode"
 
-import { diagnosticsToProblemsString } from "../index"
+import { diagnosticsToProblemsString, getNewDiagnostics } from "../index"
 
 // Mock path module
 vitest.mock("path", () => ({
@@ -69,6 +69,20 @@ vitest.mock("vscode", () => ({
 		openTextDocument: vitest.fn(),
 	},
 }))
+
+describe("getNewDiagnostics", () => {
+	it("matches snapshots for the same resource even when VS Code recreates its URI", () => {
+		const beforeUri = vscode.Uri.file("/path/to/file.ts")
+		const afterUri = vscode.Uri.file("/path/to/file.ts")
+		const existing = () =>
+			new vscode.Diagnostic(new vscode.Range(0, 0, 0, 5), "Existing error", vscode.DiagnosticSeverity.Error)
+		const added = new vscode.Diagnostic(new vscode.Range(1, 0, 1, 5), "New error", vscode.DiagnosticSeverity.Error)
+
+		expect(getNewDiagnostics([[beforeUri, [existing()]]], [[afterUri, [existing(), added]]])).toEqual([
+			[afterUri, [added]],
+		])
+	})
+})
 
 describe("diagnosticsToProblemsString", () => {
 	beforeEach(() => {

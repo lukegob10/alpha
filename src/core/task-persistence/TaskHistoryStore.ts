@@ -235,9 +235,46 @@ export class TaskHistoryStore {
 	 * updates the in-memory Map, and schedules a debounced index write.
 	 */
 	async upsert(item: HistoryItem, options: { preserveMode?: boolean } = {}): Promise<HistoryItem[]> {
+		return this.mutateHistoryItem(item, (current) => {
+			if (!current) return item
+			return {
+				...current,
+				...item,
+				// History tracks all spawned children. A stale full row cannot undo an attachment.
+				...(current.childIds && {
+					childIds: item.childIds ? [...new Set([...current.childIds, ...item.childIds])] : current.childIds,
+				}),
+				// Metadata projections cannot undo a host mode change or a consumed fork start.
+				...(options.preserveMode && current.mode !== undefined ? { mode: current.mode } : {}),
+				displayName: current.displayName,
+				generatedTitle: current.generatedTitle,
+				...(current.forkSessionStarted === true ? { forkSessionStarted: true } : {}),
+			}
+		})
+	}
+
+	/** Attach children against the durable parent, using the known legacy row only before backfill. */
+	async appendChildIds(parent: HistoryItem, childIds: readonly string[]): Promise<HistoryItem[]> {
+		return this.mutateHistoryItem(parent, (current) => {
+			const item = current ?? this.cache.get(parent.id) ?? parent
+			if (!current && !isStoredHistoryItem(item)) throw new Error("Task history metadata is invalid")
+			return { ...item, childIds: [...new Set([...(item.childIds ?? []), ...childIds])] }
+		})
+	}
+
+	async updateMode(item: HistoryItem): Promise<HistoryItem[]> {
+		return this.mutateHistoryItem(item, (current) => ({
+			...(current ?? this.cache.get(item.id) ?? item),
+			mode: item.mode,
+		}))
+	}
+
+	private async mutateHistoryItem(
+		item: HistoryItem,
+		mutate: (current: HistoryItem | undefined) => HistoryItem,
+	): Promise<HistoryItem[]> {
 		return this.withLock(async () => {
-			// Merge omitted fields from the durable record under the file lease.
-			const merged = await this.writeTaskFile(item, options)
+			const merged = await this.writeTaskFile(item, mutate)
 
 			// Update in-memory cache
 			this.cache.set(merged.id, merged)
@@ -820,7 +857,10 @@ export class TaskHistoryStore {
 	/**
 	 * Write a HistoryItem to its per-task `history_item.json` file.
 	 */
-	private async writeTaskFile(item: HistoryItem, options: { preserveMode?: boolean }): Promise<HistoryItem> {
+	private async writeTaskFile(
+		item: HistoryItem,
+		mutate: (current: HistoryItem | undefined) => HistoryItem,
+	): Promise<HistoryItem> {
 		const filePath = await this.getTaskFilePath(item.id)
 		let merged = item
 		let expectedContent: string | undefined
@@ -829,20 +869,7 @@ export class TaskHistoryStore {
 			prepareData: async () => {
 				const current = await this.readHistoryForMutation(filePath, item.id)
 				expectedContent = current?.content
-				// A stale full-record save may never undo user naming or generated-title state.
-				if (current) {
-					merged = {
-						...current.item,
-						...item,
-						// Metadata projections cannot undo a host mode change committed while
-						// their metadata was being prepared. Legacy records still initialize it.
-						...(options.preserveMode && current.item.mode !== undefined ? { mode: current.item.mode } : {}),
-						displayName: current.item.displayName,
-						generatedTitle: current.item.generatedTitle,
-						// A stale metadata projection cannot make a consumed fork start pending again.
-						...(current.item.forkSessionStarted === true ? { forkSessionStarted: true } : {}),
-					}
-				}
+				merged = mutate(current?.item)
 				return merged
 			},
 			commitTempFile: (temporaryPath, destinationPath) => {

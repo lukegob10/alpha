@@ -18,7 +18,7 @@ class WorkspaceTracker {
 	private resetTimer: NodeJS.Timeout | null = null
 	private disposed = false
 	private generation = 0
-	private discoveryGeneration = 0
+	private discovery?: { controller: AbortController; deletedPaths: Set<string> }
 
 	get cwd() {
 		return this.providerRef?.deref()?.cwd ?? getWorkspacePath()
@@ -35,13 +35,25 @@ class WorkspaceTracker {
 			return
 		}
 		const generation = this.generation
-		const discoveryGeneration = ++this.discoveryGeneration
-		const [files] = await listFiles(cwd, true, MAX_INITIAL_FILES)
-		if (!this.isCurrentWorkspace(cwd, generation) || this.discoveryGeneration !== discoveryGeneration) {
-			return
+		this.discovery?.controller.abort()
+		const discovery = { controller: new AbortController(), deletedPaths: new Set<string>() }
+		this.discovery = discovery
+		const { signal } = discovery.controller
+		try {
+			const [files] = await listFiles(cwd, true, MAX_INITIAL_FILES, signal)
+			if (signal.aborted || !this.isCurrentWorkspace(cwd, generation)) return
+			for (const file of files.slice(0, MAX_INITIAL_FILES)) {
+				const normalizedPath = path.resolve(cwd, file)
+				if (!wasDeletedDuringDiscovery(normalizedPath, discovery.deletedPaths)) {
+					this.filePaths.add(file.endsWith("/") ? normalizedPath + "/" : normalizedPath)
+				}
+			}
+			this.workspaceDidUpdate()
+		} catch (error) {
+			if (!signal.aborted) throw error
+		} finally {
+			if (this.discovery === discovery) this.discovery = undefined
 		}
-		files.slice(0, MAX_INITIAL_FILES).forEach((file) => this.filePaths.add(this.normalizeFilePath(file, cwd)))
-		this.workspaceDidUpdate()
 	}
 
 	private isCurrentWorkspace(cwd: string | undefined, generation: number): boolean {
@@ -108,6 +120,7 @@ class WorkspaceTracker {
 		if (this.disposed) return
 		const cwd = this.cwd
 		const generation = ++this.generation
+		this.discovery?.controller.abort()
 		this.pendingCreates.clear()
 		if (this.resetTimer) {
 			clearTimeout(this.resetTimer)
@@ -163,11 +176,6 @@ class WorkspaceTracker {
 		}, 300) // Debounce for 300ms
 	}
 
-	private normalizeFilePath(filePath: string, cwd = this.cwd): string {
-		const resolvedPath = cwd ? path.resolve(cwd, filePath) : path.resolve(filePath)
-		return filePath.endsWith("/") ? resolvedPath + "/" : resolvedPath
-	}
-
 	private async addFilePath(filePath: string): Promise<boolean> {
 		const cwd = this.cwd
 		const generation = this.generation
@@ -207,15 +215,30 @@ class WorkspaceTracker {
 		const cwd = this.cwd
 		if (this.disposed || this.prevWorkSpacePath !== cwd) return false
 		const normalizedPath = path.resolve(cwd ?? "", filePath)
+		// A folder event may be the only notice that its children were removed.
+		// Keep this deletion through discovery even if a watcher then adds a new entry.
+		this.discovery?.deletedPaths.add(normalizedPath)
 		this.pendingCreates.delete(normalizedPath)
 		const removedFile = this.filePaths.delete(normalizedPath)
-		return this.filePaths.delete(normalizedPath + "/") || removedFile
+		let removed = this.filePaths.delete(normalizedPath + "/") || removedFile
+		const descendantPrefix = path.join(normalizedPath, path.sep)
+		for (const pending of this.pendingCreates.keys()) {
+			if (pending.startsWith(descendantPrefix)) this.pendingCreates.delete(pending)
+		}
+		for (const tracked of this.filePaths) {
+			if (tracked.startsWith(descendantPrefix)) {
+				this.filePaths.delete(tracked)
+				removed = true
+			}
+		}
+		return removed
 	}
 
 	public dispose() {
 		if (this.disposed) return
 		this.disposed = true
 		this.generation++
+		this.discovery?.controller.abort()
 		this.pendingCreates.clear()
 		if (this.updateTimer) {
 			clearTimeout(this.updateTimer)
@@ -227,6 +250,16 @@ class WorkspaceTracker {
 		}
 		this.disposables.forEach((d) => d.dispose())
 		this.disposables = [] // Clear the array
+	}
+}
+
+function wasDeletedDuringDiscovery(filePath: string, deletedPaths: ReadonlySet<string>): boolean {
+	if (deletedPaths.size === 0) return false
+	for (;;) {
+		if (deletedPaths.has(filePath)) return true
+		const parent = path.dirname(filePath)
+		if (parent === filePath) return false
+		filePath = parent
 	}
 }
 

@@ -10,7 +10,7 @@ import { createWorktreeGitEnvironment } from "../git-environment.js"
 const execFileAsync = promisify(execFile)
 
 describe("WorktreeService", () => {
-	describe("checkoutBranch", { timeout: 30_000 }, () => {
+	describe("checkout and branch discovery", { timeout: 30_000 }, () => {
 		let repository: string
 		const git = async (...args: string[]) =>
 			(
@@ -61,6 +61,28 @@ describe("WorktreeService", () => {
 			expect((await new WorktreeService().checkoutBranch(repository, "tracked.txt")).success).toBe(true)
 			expect(await git("branch", "--show-current")).toBe("tracked.txt")
 			expect(await fs.readFile(path.join(repository, "tracked.txt"), "utf8")).toBe("user changes\n")
+		})
+
+		it("shows remote branches containing HEAD and omits symbolic aliases", async () => {
+			await git("update-ref", "refs/remotes/origin/fix-HEAD-resolution", "HEAD")
+			await git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/fix-HEAD-resolution")
+			await git("symbolic-ref", "refs/remotes/origin/default", "refs/remotes/origin/fix-HEAD-resolution")
+
+			const branches = await new WorktreeService().getAvailableBranches(repository, true)
+			expect(branches.remoteBranches).toEqual(["origin/fix-HEAD-resolution"])
+		})
+
+		it("enumerates worktrees only when filtering their checked-out branches", async () => {
+			const service = new WorktreeService()
+			const listWorktrees = vi.spyOn(service, "listWorktrees")
+			const currentBranch = await git("branch", "--show-current")
+			const allBranches = await service.getAvailableBranches(repository, true)
+			expect(allBranches.localBranches).toContain(currentBranch)
+			expect(listWorktrees).not.toHaveBeenCalled()
+
+			const checkoutBranches = await service.getAvailableBranches(repository)
+			expect(checkoutBranches.localBranches).not.toContain(currentBranch)
+			expect(listWorktrees).toHaveBeenCalledExactlyOnceWith(repository)
 		})
 	})
 })

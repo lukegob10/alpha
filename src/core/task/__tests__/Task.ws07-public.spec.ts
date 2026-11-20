@@ -530,13 +530,7 @@ describe("Alpha", () => {
 
 		afterEach(async () => {
 			const settled = await Promise.allSettled(
-				[...tasks].map(async (task) => {
-					try {
-						await task.abortTask(true)
-					} finally {
-						await task.waitForTermination()
-					}
-				}),
+				[...tasks].map((task) => mockProvider.removeTaskFromStack({ taskId: task.taskId })),
 			)
 			tasks.clear()
 			const journalResults = await Promise.allSettled([...journals.values()].map((journal) => journal.close()))
@@ -605,6 +599,7 @@ describe("Alpha", () => {
 			await task["taskApiConfigReady"]
 			await task["taskApprovalModePersistence"]
 			await task["alphaMessagesSaveQueue"]
+			await mockProvider.addTaskToStack(task, { focus: false })
 			journals.set(task.taskId, await AgentLifecycleJournal.open(task.taskId, fixtureDirectory))
 			mockProvider.getAgentLifecycleSnapshot = (taskId: string) => journals.get(taskId)?.getSnapshot()
 			mockProvider.replayAgentLifecycle = (taskId: string) => lifecycleJournal(taskId).replay()
