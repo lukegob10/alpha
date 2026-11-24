@@ -637,6 +637,42 @@ describe("primary command timeout mutation receipts", () => {
 		}
 	})
 
+	it("returns the completed command while its terminal status is still being delivered", async () => {
+		const fixture = await createFixture()
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] })
+		let statusSubmitted!: () => void
+		const submitted = new Promise<void>((resolve) => (statusSubmitted = resolve))
+		fixture.provider.postMessageToWebview.mockImplementation((message: { type: string; text?: string }) => {
+			if (message.type !== "commandExecutionStatus" || !message.text?.includes('"status":"exited"')) return
+			statusSubmitted()
+			return new Promise<void>((resolve) => setTimeout(resolve, 5_000))
+		})
+		const onCommandResult = vi.fn<(result: CommandToolResult) => void>()
+		const execution = executeCommandInTerminal(fixture.task, {
+			executionId: "slow-terminal-status",
+			toolCallId: "slow-terminal-status-call",
+			command: "command",
+			terminalShellIntegrationDisabled: true,
+			onCommandResult,
+		})
+		await fixture.launch
+		await fixture.finishProcess()
+		await submitted
+		await vi.advanceTimersByTimeAsync(0)
+		const resultBeforeDelivery = onCommandResult.mock.calls[0]?.[0]
+
+		await vi.advanceTimersByTimeAsync(5_000)
+		await expect(execution).resolves.toEqual([false, expect.stringContaining("Exit code: 0")])
+		expect(fixture.provider.releasePrimaryMutation).toHaveBeenCalledOnce()
+		expect(fixture.task.completeCommandExecution).toHaveBeenCalledOnce()
+		expect(onCommandResult).toHaveBeenCalledExactlyOnceWith({
+			exit_code: 0,
+			output: "finished",
+			wall_time_seconds: 0,
+		})
+		expect(resultBeforeDelivery).toBe(onCommandResult.mock.calls[0][0])
+	})
+
 	it("finishes command output bookkeeping without waiting for the held user question", async () => {
 		const fixture = await createFixture()
 		let resolveQuestion!: (answer: Awaited<ReturnType<Task["ask"]>>) => void

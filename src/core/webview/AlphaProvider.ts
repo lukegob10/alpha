@@ -1160,7 +1160,7 @@ export class AlphaProvider
 	private webviewAcceptsTaskMessages = false
 	private webviewLaunchWaiters?: Set<() => void>
 	public settingsImportedAt?: number
-	public readonly latestAnnouncementId = "november-2026-v3.2.42-alpha-tickets-example"
+	public readonly latestAnnouncementId = "november-2026-v3.2.44-command-continuation"
 	public readonly providerSettingsManager: ProviderSettingsManager
 	public readonly customModesManager: CustomModesManager
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.44
+
+### Patch Changes
+
+- Keep the agent moving after a command finishes. Chat can deliver the final status update in the background.
+
 ## 3.2.43
 
 ### Patch Changes

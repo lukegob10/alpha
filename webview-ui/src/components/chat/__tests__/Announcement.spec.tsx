@@ -31,7 +31,7 @@ const renderAnnouncement = (language = "en") =>
 
 describe("Announcement", () => {
 	const description =
-		"To review a backlog, enter “$builtin:alpha-tickets check these tickets against the spec” in chat. Use Plan or Code for the review and Code to save changes."
+		"The agent can continue as soon as a finished command result is ready, even while chat updates the command status."
 
 	it("renders the current release announcement", () => {
 		renderAnnouncement()

@@ -1374,6 +1374,8 @@ export async function executeCommandInTerminal(
 	const postStatus = (status: CommandExecutionStatus): Promise<void> => {
 		const slot =
 			status.status === "started" ? "started" : status.status === "output" ? "output-status" : "terminal-status"
+		const reportStatusError = (error: unknown) =>
+			console.error("[ExecuteCommandTool] Could not publish command status", error)
 		return project(slot, async () => {
 			// A proven prelaunch fallback reuses its approval row with a new physical
 			// attempt. Retired transport callbacks cannot publish over that attempt.
@@ -1391,8 +1393,15 @@ export async function executeCommandInTerminal(
 				type: "commandExecutionStatus",
 				text: JSON.stringify(scopedStatus),
 			})
-			await Promise.all([recording, publication])
-		}).catch((error) => console.error("[ExecuteCommandTool] Could not publish command status", error))
+			const settled = Promise.all([recording, publication])
+			if (slot === "terminal-status") {
+				// The collector owns the result and mutation receipt. The status row's
+				// save and delivery can finish without holding the next model step.
+				void settled.catch(reportStatusError)
+				return
+			}
+			await settled
+		}).catch(reportStatusError)
 	}
 	const handleCommandMutationFailure = (error: unknown): Promise<{ recoveryError?: unknown }> => {
 		commandMutationFailureHandling ??= (async () => {
